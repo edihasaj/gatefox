@@ -35,10 +35,16 @@ without usage credits. The remaining catalog models have not all been inferred.
 
 ## Desktop and configuration limits
 
-The signed desktop app is installed on MacBook Pro 2. First-run onboarding needs
-the user before rendered model selection can be checked. The new executor
-separation and live catalog refresh still need a real bundled-engine pass there.
-The working Mac's app has not been relaunched for this change.
+The signed desktop app is installed on MacBook Pro 2 and onboarding is complete.
+The separate-executor version passed the full bundled-engine Claude/Codex 2 loop
+there, including the unchanged isolated native-config check. Native inference was
+explicitly omitted because that test home has no native subscription login.
+
+The first rendered picker showed only native models. Process inspection confirmed
+that the running app lacked the adapter environment variables. The direct launcher
+now records its process PID; rendered gateway selection remains unverified. Live
+catalog addition has passed controlled executor tests and still needs a real
+bundled-engine addition check. The working Mac's app has not been relaunched.
 
 The installed desktop model query has a five-minute cache and refetches on focus.
 The adapter cannot promise immediate visible updates. Its initial launch hook is

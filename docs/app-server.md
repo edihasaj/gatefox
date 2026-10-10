@@ -43,14 +43,19 @@ public desktop integration API. `scripts/codex-desktop-shim` is an executable
 wrapper for the first hook. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
 `GATEWAY_CODEX_PATH` when its defaults do not match the machine.
 
-To test a fresh desktop launch, quit the app normally, keep the gateway daemon
-running, and launch it with the wrapper:
+To test a fresh desktop launch, quit the app normally with Command-Q and keep
+the gateway daemon running. The launcher refuses to stop a running app. It starts
+the signed binary directly with explicit environment variables and saves a private
+receipt with its PID. A launch receipt does not prove rendered model selection.
 
 ```sh
-open -a /Applications/ChatGPT.app \
-  --env CODEX_CLI_PATH=/absolute/path/subscription-gateway/scripts/codex-desktop-shim \
-  --env CODEX_APP_SERVER_FORCE_CLI=1
+node scripts/launch-desktop.mjs --config /absolute/path/gateway.local.json
 ```
+
+Use `--codex-home PATH` for an isolated native test home. Omit it to keep the
+original native account home. The launcher does not edit either native config
+or authentication files. LaunchServices can reuse an existing instance, so an
+`open -a` invocation alone is insufficient evidence that overrides took effect.
 
 Choose a gateway model in a **new chat**. A loaded chat cannot switch between
 native and gateway providers in this Codex version. The adapter rejects that
