@@ -17,6 +17,7 @@ An inference keeps the configuration snapshot with which it began. New requests
 load atomically replaced configuration. Invalid configuration fails closed until
 repaired. Existing aliases cannot change account, provider, credential source, or
 upstream model live. Add another alias or restart after active work finishes.
+Retiring an alias does not release its identity until the daemon restarts.
 Labels and capability metadata can update live. Listener and state-directory
 changes require a restart.
 
@@ -36,7 +37,8 @@ land in the gateway executor's private configuration.
 
 Executors share native chat storage and SQLite metadata so saved gateway chats
 remain discoverable through the desktop's normal thread list. User instructions,
-skills, and plugins keep one source through links. Native configuration is never
+skills, and plugins keep one source through links. The global AGENTS.md link
+also follows a file created after an executor starts. Native configuration is never
 linked. All model preferences are saved in gateway-owned state.
 
 The adapter fetches authenticated public model metadata from the inference host.

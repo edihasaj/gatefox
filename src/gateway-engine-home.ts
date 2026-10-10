@@ -32,7 +32,7 @@ export async function gatewayEngineHome(state: string, settings: Message): Promi
   // Keep one source of user instructions and installed skills. Never link auth or config.
   for (const name of ["AGENTS.md", "skills", "plugins"]) {
     const target = join(nativeHome, name); const path = join(home, name);
-    try { await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+    if (name !== "AGENTS.md") try { await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     try {
       if (!(await lstat(path)).isSymbolicLink() || resolve(home, await readlink(path)) !== target) throw new Error("Gateway instructions point to a different native home");
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path); }

@@ -64,9 +64,15 @@ because they share the gateway provider and its account-scoped replay handling.
 Native return from gateway history is not supported: a real probe failed on
 foreign item IDs. The adapter does not rewrite stored native history to bypass it.
 
-The rendered picker and launch procedure still need manual verification on the
-test Mac. Initial activation requires a fresh app launch with these environment
-variables. Do not relaunch a working app to test it.
+The launch procedure and real Claude/Codex 2 conversations have been verified
+in the rendered desktop on MacBook Pro 2. Initial activation requires a fresh
+app launch with these environment variables. Test on another machine before
+relaunching a working app.
+
+Max and Ultra are separate desktop display choices. Under Model features, enable
+the offered levels in Available reasoning efforts. Availability varies by model
+and the app's feature settings. The gateway does not rewrite those settings or
+advertise unsupported provider effort levels.
 
 The adapter fetches the inference host's public catalog when listing models and
 starting gateway work. A changed catalog starts a fresh gateway executor for new

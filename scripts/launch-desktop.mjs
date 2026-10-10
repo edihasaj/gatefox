@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFileSync } from 'node:child_process';
-import { access, open, readFile, chmod } from 'node:fs/promises';
+import { access, open, readFile, chmod, lstat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +25,9 @@ try {
   const file = await open(wrapper, 'wx', 0o700);
   try { await file.writeFile(content); await file.sync(); } finally { await file.close(); }
 } catch (error) {
-  if (error.code !== 'EEXIST' || await readFile(wrapper, 'utf8') !== content) throw new Error('Generated adapter path is occupied by another file');
+  if (error.code !== 'EEXIST') throw error;
+  const info = await lstat(wrapper);
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || await readFile(wrapper, 'utf8') !== content) throw new Error('Generated adapter path is occupied by another file');
 }
 await chmod(wrapper, 0o700);
 const env = { ...process.env, CODEX_CLI_PATH: wrapper, CODEX_APP_SERVER_FORCE_CLI: '1', GATEWAY_CONFIG: configPath, GATEWAY_NODE_PATH: process.execPath,

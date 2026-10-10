@@ -40,11 +40,29 @@ The separate-executor version passed the full bundled-engine Claude/Codex 2 loop
 there, including the unchanged isolated native-config check. Native inference was
 explicitly omitted because that test home has no native subscription login.
 
-The first rendered picker showed only native models. Process inspection confirmed
-that the running app lacked the adapter environment variables. The direct launcher
-now records its process PID; rendered gateway selection remains unverified. Live
-catalog addition has passed controlled executor tests and still needs a real
-bundled-engine addition check. The working Mac's app has not been relaunched.
+The direct launcher has been verified on the test Mac. Process inspection
+confirmed the override environment and wrapper children. The rendered desktop
+then completed real Claude Opus 5.5 and Codex 2 GPT-6-Luna conversations and a
+provider switch. The working Mac's app has not been relaunched.
+
+A separate staging daemon passed a live catalog addition while an older gateway
+chat ran a command. The new chat used the new context-window metadata. The
+original native and gateway executor PIDs remained alive. Cancellation completed
+in 109 ms. Shared thread discovery, saved-history resume, and public Codex reasoning
+also passed. The test alias pointed to an existing Sonnet model, not a newly
+entitled model. It was removed after verification.
+
+Instruction-only checks proved that global and repository AGENTS.md rules reached
+Claude Sonnet 5.5 at `max` and Codex 2 GPT-6.1-Sol at `ultra`. Each rule contained
+a random value absent from the user prompt; each response returned it without
+calling a tool. Changed global and repository rules reached subsequent Claude
+chats through the same connection. The isolated native config remained unchanged.
+
+The gateway advertises the provider's reasoning levels. Desktop display has a
+separate filter under Model features, Available reasoning efforts. Max is omitted
+from the installed default list; Ultra display also depends on the app's feature
+availability. The API tests prove the requested effort values reached successful
+turns, not that every level is visible in the rendered picker.
 
 The installed desktop model query has a five-minute cache and refetches on focus.
 The adapter cannot promise immediate visible updates. Its initial launch hook is
