@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
+import type { DesktopCatalog } from "./desktop-catalog.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 const gatewayProvider = "subscription_gateway";
 const preferenceKeys = new Set(["model", "model_reasoning_effort", "model_reasoning_summary", "service_tier"]);
+const requestedModel = (params: ObjectValue): unknown => object(object(params.collaborationMode).settings).model ?? params.model ?? object(params.config).model;
 
 export class AppServerRoutingError extends Error {
   readonly code = -32600;
@@ -22,8 +24,10 @@ export class AppServerRouter {
   private writes: Promise<unknown> = Promise.resolve();
   private readonly preferencesPath: string;
   readonly catalogPath: string;
-  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string) {
+  private extraModels: ObjectValue[];
+  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog) {
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
+    this.extraModels = modelCatalog(config).models;
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
     this.catalogPath = catalogPath || resolve(config.stateDirectory, "codex-models.json");
   }
@@ -52,8 +56,9 @@ export class AppServerRouter {
     this.routes.set(threadId, route); return route;
   }
   private modelRequest(params: ObjectValue, model: string): ObjectValue {
-    const metadata = this.config.providers.find(provider => Object.hasOwn(provider.models, model))?.modelMetadata?.[model];
-    const levels = metadata?.reasoningEfforts || [];
+    const metadata = this.extraModels.find(entry => entry.slug === model);
+    if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
+    const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
     const saved = this.preferences.model === model ? this.preferences.model_reasoning_effort : undefined;
     const effort = typeof saved === "string" && levels.includes(saved) ? saved : levels.includes("medium") ? "medium" : levels[0] || "none";
     return { ...params, model, modelProvider: gatewayProvider,
@@ -77,7 +82,7 @@ export class AppServerRouter {
       if (!Array.isArray(page.data)) throw new AppServerRoutingError("Native engine returned an invalid model list");
       native.push(...page.data.map(object).filter(model => !this.aliases.has(String(model.model)))); nextCursor = page.nextCursor;
     } while (typeof nextCursor === "string" && nextCursor);
-    const extra = modelCatalog(this.config).models.map(model => ({
+    const extra = this.extraModels.map(model => ({
       id: model.slug, model: model.slug, displayName: model.display_name, description: model.description,
       upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
       supportedReasoningEfforts: (model.supported_reasoning_levels as Array<{ effort: string; description: string }>).map(level => ({ reasoningEffort: level.effort, description: level.description })),
@@ -110,6 +115,13 @@ export class AppServerRouter {
     return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
+    if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start"].includes(method)) {
+      const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
+      const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
+      this.extraModels = (await this.source.refresh(strict)).models;
+      for (const model of this.extraModels) this.aliases.add(String(model.slug));
+      if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
+    }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
     if (method === "model/list") return this.models(params);
     if (method === "config/value/write" || method === "config/batchWrite") {
@@ -122,14 +134,14 @@ export class AppServerRouter {
     }
     let forwarded = params;
     if (method === "thread/start") {
-      const model = params.model ?? this.preferences.model;
+      const model = requestedModel(params) ?? this.preferences.model;
       if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model);
       else if (typeof model === "string") forwarded = { ...params, model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start"].includes(method) && typeof params.threadId === "string") {
       const route = await this.route(params.threadId);
-      this.assertSameProvider(route.provider, params.model);
+      this.assertSameProvider(route.provider, requestedModel(params));
       if (method !== "turn/start" && route.provider === gatewayProvider) {
-        const model = params.model ?? route.model;
+        const model = requestedModel(params) ?? route.model;
         if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
         forwarded = this.modelRequest(params, model);
       }
@@ -139,8 +151,9 @@ export class AppServerRouter {
       this.remember(result);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
-    if (method === "turn/start" && typeof params.model === "string" && typeof params.threadId === "string") {
-      const route = this.routes.get(params.threadId); if (route) route.model = params.model;
+    const selected = requestedModel(params);
+    if (method === "turn/start" && typeof selected === "string" && typeof params.threadId === "string") {
+      const route = this.routes.get(params.threadId); if (route) route.model = selected;
     }
     if (method === "config/read") return { ...result, config: { ...object(result.config), ...this.preferences, model_catalog_json: this.catalogPath } };
     return result;

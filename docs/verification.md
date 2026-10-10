@@ -1,94 +1,50 @@
 ---
-summary: 'Experimental Codex desktop adapter: additive model catalog and per-chat routing.'
+summary: 'Verified subscription operations and remaining desktop checks.'
 read_when:
-  - Connecting the gateway to the Codex desktop app
-  - Changing app-server routing, model selection, or configuration writes
+  - Testing subscriptions or remote clients
+  - Assessing desktop readiness
 ---
 
-# Codex app-server adapter
+# Verification
 
-The experimental adapter keeps the original Codex executable and native login.
-It adds configured gateway models after the native models and starts new gateway
-chats with `modelProvider: subscription_gateway`. Native chats keep their provider.
+Run the development gate:
 
 ```sh
-gateway codex-shim --config /absolute/path/gateway.local.json \
-  --codex /absolute/path/original-codex -- app-server --listen stdio://
+npm run build && npm run check && npm test
 ```
 
-Stdout carries JSON-RPC only. The adapter forwards notifications, maps server
-request IDs for approvals, bounds frames to 16 MiB, and stops its child on exit.
-Non-server commands, including `--version`, pass through unchanged. WebSocket and
-daemon transports are not supported by this adapter.
+Tests cover authentication, account isolation, Responses parsing and replay,
+stream termination, cancellation, live route guards, private model preferences,
+public catalog validation, approval correlation, and executor lifecycle.
+Catalog-generation tests use a controlled app-server fixture. They do not prove
+the rendered desktop picker or provider entitlement.
 
-On startup, a bounded native app-server process refreshes its own model metadata.
-The adapter copies only public model rows from that engine's configured catalog
-or model cache. It validates that the rows cover the engine's available models
-and writes a combined catalog. Cache identity and authentication are excluded.
-The resulting catalog is passed as a process argument. The native base config is
-not edited. A mismatched or unavailable cache prevents startup.
+## Real subscription checks
 
-Gateway default selections are saved to private `desktop-preferences.json` in
-the gateway state directory. Model, effort, summary, and service-tier writes are
-scoped to that file for both gateway and native model choices. String `replace` and
-`upsert` operations are supported. Writes into native profiles, native version
-guards, and batches mixing native changes with gateway defaults are rejected.
-All other configuration writes are rejected, including the legacy whole-config
-write. Obsidian-managed native settings remain the source of truth.
+MacBook Pro 2 passed a real Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol loop over an
+authenticated SSH forward. It streamed text and reasoning, read a random file
+proof, applied a dedicated patch, retained follow-up history, switched providers,
+acknowledged cancellation, released its worker, and completed a recovery turn.
+Only the gateway client token crossed SSH. Provider credentials stayed on the
+inference host.
 
-The installed desktop build recognizes `CODEX_CLI_PATH` and
-`CODEX_APP_SERVER_FORCE_CLI`. These are implementation hooks, not an established
-public desktop integration API. `scripts/codex-desktop-shim` is an executable
-wrapper for the first hook. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
-`GATEWAY_CODEX_PATH` when its defaults do not match the machine.
+Earlier bundled-engine checks on the inference host verified the primary account
+and the combined 28-model catalog. A separate Haiku 4.5 request verified its
+no-reasoning route. Listing a model does not prove inference access or inclusion
+without usage credits. The remaining catalog models have not all been inferred.
 
-To test a fresh desktop launch, quit the app normally, keep the gateway daemon
-running, and launch it with the wrapper:
+## Desktop and configuration limits
 
-```sh
-open -a /Applications/ChatGPT.app \
-  --env CODEX_CLI_PATH=/absolute/path/subscription-gateway/scripts/codex-desktop-shim \
-  --env CODEX_APP_SERVER_FORCE_CLI=1
-```
+The signed desktop app is installed on MacBook Pro 2. First-run onboarding needs
+the user before rendered model selection can be checked. The new executor
+separation and live catalog refresh still need a real bundled-engine pass there.
+The working Mac's app has not been relaunched for this change.
 
-Choose a gateway model in a **new chat**. A loaded chat cannot switch between
-native and gateway providers in this Codex version. The adapter rejects that
-change before inference. Switching Claude and Codex 2 inside a gateway chat works
-because they share the gateway provider and its account-scoped replay handling.
-Native return from gateway history is not supported: a real probe failed on
-foreign item IDs. The adapter does not rewrite stored native history to bypass it.
+The installed desktop model query has a five-minute cache and refetches on focus.
+The adapter cannot promise immediate visible updates. Its initial launch hook is
+an implementation detail, not an established public desktop extension API.
 
-The combined catalog and native/Claude/Codex 2 tool loop have passed through the
-real desktop-bundled engine. The rendered picker and this launch procedure still
-need manual verification. Do not describe this as a verified desktop install.
-
-
-The native engine caches its model catalog. A metadata-only test showed that
-rewriting the catalog and asking for a native config reload did not update a
-running engine. The current adapter loads models at connection startup. Live
-catalog propagation to a connected desktop remains unfinished.
-
-
-The daemon reloads atomically replaced gateway configuration on each request.
-Each active inference keeps its original provider snapshot. Invalid updates fail
-closed for new authenticated requests until repaired. Listener and state-directory
-changes require an explicit restart. A macOS user LaunchAgent can keep the daemon
-alive across terminal and app exits; it exports only PATH, not provider secrets.
-
-The desktop adapter stores every model preference in gateway-owned state and
-rejects writes into native Codex configuration. It does not edit Obsidian settings.
-
-
-Native SDK tool execution can add project-trust entries automatically. Run native
-home checks only in an already-trusted workspace using `--workspace PATH`, and
-keep fixture files below an ignored test directory there. For remote checks, use
-an isolated Codex home. Do not create test Git projects in the working machine's
-native configuration.
-
-
-MacBook Pro 2 has passed the real Claude Sonnet 5.5/Codex 2 loop over an
-authenticated SSH forward: text and reasoning streams, reads, dedicated patches,
-follow-ups, provider switching, cancellation, zero active workers, and recovery.
-Only a gateway client token was transferred. Provider credentials stayed on the
-inference host. Its desktop app is installed and waiting at first-run onboarding;
-rendered model selection is not yet verified.
+Native Codex may add project-trust settings when executing tools in a new Git
+workspace. Use an isolated native home on the test Mac. If a native-home check is
+necessary elsewhere, use an already-trusted workspace and `--workspace PATH`.
+Do not create new test Git projects in the working machine's native configuration.

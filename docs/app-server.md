@@ -25,8 +25,9 @@ On startup, a bounded native app-server process refreshes its own model metadata
 The adapter copies only public model rows from that engine's configured catalog
 or model cache. It validates that the rows cover the engine's available models
 and writes a combined catalog. Cache identity and authentication are excluded.
-The resulting catalog is passed as a process argument. The native base config is
-not edited. A mismatched or unavailable cache prevents startup.
+The public rows form a combined catalog for gateway executors. The original
+native process keeps its original arguments and configuration. A mismatched or
+unavailable cache prevents startup.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
 the gateway state directory. Model, effort, summary, and service-tier writes are
@@ -58,12 +59,21 @@ because they share the gateway provider and its account-scoped replay handling.
 Native return from gateway history is not supported: a real probe failed on
 foreign item IDs. The adapter does not rewrite stored native history to bypass it.
 
-The combined catalog and native/Claude/Codex 2 tool loop have passed through the
-real desktop-bundled engine. The rendered picker and this launch procedure still
-need manual verification. Do not describe this as a verified desktop install.
+The rendered picker and launch procedure still need manual verification on the
+test Mac. Initial activation requires a fresh app launch with these environment
+variables. Do not relaunch a working app to test it.
 
+The adapter fetches the inference host's public catalog when listing models and
+starting gateway work. A changed catalog starts a fresh gateway executor for new
+chats. Loaded native and gateway chats keep their connections. To select a newly
+added model in an older loaded gateway chat, close and resume that saved chat, or
+start a new one. Ephemeral chats cannot be resumed after their executor exits.
 
-The native engine caches its model catalog. A metadata-only test showed that
-rewriting the catalog and asking for a native config reload did not update a
-running engine. The current adapter loads models at connection startup. Live
-catalog propagation to a connected desktop remains unfinished.
+The desktop query itself has a five-minute cache and refetches on focus in the
+installed build. Catalog changes require no app restart after initial activation,
+but immediate visible picker updates are not guaranteed. There is no fabricated
+account-change notification to force a refresh.
+
+Gateway executors use a private configuration home and share native chat storage.
+They do not copy the primary auth file. See [architecture](architecture.md) for
+configuration isolation, catalog generations, and failure recovery.

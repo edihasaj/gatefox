@@ -8,7 +8,7 @@ import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import assert from 'node:assert/strict';
 
-const { values } = parseArgs({ options: { config: { type: 'string' }, model: { type: 'string' }, 'switch-model': { type: 'string' }, codex: { type: 'string' }, 'work-dir': { type: 'string' }, output: { type: 'string' }, shim: { type: 'boolean' }, workspace: { type: 'string' } } });
+const { values } = parseArgs({ options: { config: { type: 'string' }, model: { type: 'string' }, 'switch-model': { type: 'string' }, codex: { type: 'string' }, 'work-dir': { type: 'string' }, output: { type: 'string' }, shim: { type: 'boolean' }, workspace: { type: 'string' }, 'skip-native-inference': { type: 'boolean' } } });
 if (!values.config || !values.model || !values['work-dir'] || !values.output) throw new Error('Required: --config --model --work-dir --output');
 const directory = resolve(values['work-dir']); const fixture = resolve(directory, 'fixture'); const home = resolve(directory, 'codex-home');
 mkdirSync(fixture, { recursive: true }); mkdirSync(home, { recursive: true });
@@ -98,10 +98,13 @@ try {
     record('native-provider-preserved', { passed: true, provider: config.config.model_provider || 'openai' });
     const nativeModel = listed.find(item => !item.model.startsWith('codex/') && !item.model.startsWith('claude'));
     assert.ok(nativeModel);
-    const native = await request('thread/start', { model: nativeModel.model, cwd: workspace, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
-    assert.equal(native.modelProvider, 'openai');
-    const smoke = await turn(native.thread.id, 'Reply exactly: native-shim-ok. Do not use tools.', 'native-shim-request', { effort: 'low', model: nativeModel.model });
-    assert.equal(smoke.final.status, 'completed'); assert.equal(smoke.text.trim(), 'native-shim-ok');
+    if (values['skip-native-inference']) record('native-inference', { verified: false, reason: 'Explicitly omitted on an isolated test home without a native subscription login' });
+    else {
+      const native = await request('thread/start', { model: nativeModel.model, cwd: workspace, approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true });
+      assert.equal(native.modelProvider, 'openai');
+      const smoke = await turn(native.thread.id, 'Reply exactly: native-shim-ok. Do not use tools.', 'native-shim-request', { effort: 'low', model: nativeModel.model });
+      assert.equal(smoke.final.status, 'completed'); assert.equal(smoke.text.trim(), 'native-shim-ok');
+    }
   }
   const started = await request('thread/start', { model: values.model, modelProvider: values.shim ? 'openai' : 'subscription_gateway', cwd: workspace,
     developerInstructions: `Work only with the fixture file ${sample}. Do not modify other files, run network actions, delegate or create goals.`,

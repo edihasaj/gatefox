@@ -10,7 +10,7 @@ type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 
 /** The native engine refreshes its own public metadata with its own authentication. */
-async function nativeMetadata(executable: string, args: string[]): Promise<{ models: string[]; catalogPath?: string }> {
+async function nativeMetadata(executable: string, args: string[]): Promise<{ models: string[]; config: ObjectValue; catalogPath?: string }> {
   const child = spawn(executable, args, { stdio: ["pipe", "pipe", "pipe"] });
   const exited = new Promise<void>(resolve => child.once("close", () => resolve())); child.stderr.resume();
   const pending = new Map<number, { resolve: (value: ObjectValue) => void; reject: (error: Error) => void }>();
@@ -43,11 +43,15 @@ async function nativeMetadata(executable: string, args: string[]): Promise<{ mod
       for (const model of response.data) { const id = object(model).model; if (typeof id !== "string") throw new Error("Native engine returned an invalid model ID"); models.push(id); }
       cursor = response.nextCursor;
     } while (typeof cursor === "string" && cursor);
-    return { models, ...(typeof config.model_catalog_json === "string" ? { catalogPath: config.model_catalog_json } : {}) };
+    return { models, config, ...(typeof config.model_catalog_json === "string" ? { catalogPath: config.model_catalog_json } : {}) };
   } finally { clearTimeout(timer); stop(); await exited.catch(() => {}); clearTimeout(hardStop); lines.close(); }
 }
 
 export async function combinedNativeCatalog(executable: string, args: string[], config: GatewayConfig): Promise<string> {
+  return (await prepareNativeCatalog(executable, args, config)).path;
+}
+
+export async function prepareNativeCatalog(executable: string, args: string[], config: GatewayConfig): Promise<{ path: string; settings: ObjectValue; native: ObjectValue[] }> {
   const metadata = await nativeMetadata(executable, args);
   const home = process.env.CODEX_HOME || resolve(homedir(), ".codex");
   const source = metadata.catalogPath || resolve(home, "models_cache.json");
@@ -66,5 +70,5 @@ export async function combinedNativeCatalog(executable: string, args: string[], 
   const path = resolve(config.stateDirectory, "desktop-models.json");
   // Copy only public ModelInfo rows, never cache identity or authentication metadata.
   await writePrivateJson(path, { models: [...native, ...extra.map((model, index) => ({ ...model, priority: highest + index + 1 }))] });
-  return path;
+  return { path, settings: metadata.config, native };
 }

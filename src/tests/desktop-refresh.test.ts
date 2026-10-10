@@ -1,0 +1,88 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { shimFiles } from "./shim-fixture.js";
+import { modelCatalog } from "../catalog.js";
+import { DesktopCatalog } from "../desktop-catalog.js";
+
+async function client() {
+  const files = await shimFiles();
+  const child = spawn(process.execPath, [files.cli, "codex-shim", "--config", files.config, "--codex", files.backend, "--", "app-server"], { stdio: ["pipe", "pipe", "pipe"], env: files.env });
+  child.stderr.resume(); const lines = createInterface({ input: child.stdout }); let sequence = 0;
+  const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  lines.on("line", line => {
+    const message = JSON.parse(line); const entry = pending.get(message.id);
+    if (entry) { clearTimeout(entry.timer); pending.delete(message.id); message.error ? entry.reject(new Error(message.error.message)) : entry.resolve(message.result); }
+  });
+  const rpc = (method: string, params = {}) => new Promise<any>((resolve, reject) => {
+    const id = ++sequence; const timer = setTimeout(() => reject(new Error(`${method} timed out`)), 5000);
+    pending.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+  });
+  await rpc("initialize", { clientInfo: { name: "gateway_test", version: "1" } });
+  return { ...files, rpc, stop: async () => { const closed = once(child, "close"); child.stdin.end(); await closed; lines.close(); files.close(); } };
+}
+
+test("live additions use a new gateway catalog while native and loaded gateway chats retain their engines", { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    const native = await c.rpc("thread/start", { model: "native" });
+    const nativeEngine = await c.rpc("engine/info", { threadId: native.thread.id });
+    const old = await c.rpc("thread/start", { model: "claude/model" });
+    const oldEngine = await c.rpc("engine/info", { threadId: old.thread.id });
+    assert.notEqual(nativeEngine.pid, oldEngine.pid);
+    assert.equal(oldEngine.primaryAuthPresent, false);
+    c.value.providers[0].models["claude/new"] = "new";
+    c.value.providers[0].modelMetadata = { "claude/new": { contextWindow: 1000000, reasoningEfforts: ["high"] } };
+    c.setCatalog(modelCatalog(c.value));
+    const latest = await c.rpc("thread/start", { model: "claude/new" });
+    const latestEngine = await c.rpc("engine/info", { threadId: latest.thread.id });
+    assert.notEqual(latestEngine.pid, oldEngine.pid);
+    assert.deepEqual(latestEngine.catalog.find((m: { slug: string }) => m.slug === "claude/new"), { slug: "claude/new", context: 1000000 });
+    assert.equal((await c.rpc("engine/info", { threadId: old.thread.id })).pid, oldEngine.pid);
+    assert.equal((await c.rpc("engine/info", { threadId: native.thread.id })).pid, nativeEngine.pid);
+    assert.equal((await c.rpc("model/list")).data.at(-1).model, "claude/new");
+    assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
+    assert.equal(await readFile(join(c.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
+    await assert.rejects(c.rpc("turn/start", { threadId: old.thread.id, collaborationMode: { settings: { model: "claude/new" } } }), /older catalog/);
+    await c.rpc("thread/unsubscribe", { threadId: old.thread.id });
+    const resumed = await c.rpc("thread/resume", { threadId: old.thread.id, model: "claude/new" });
+    assert.equal(resumed.modelProvider, "subscription_gateway");
+    assert.equal((await c.rpc("engine/info", { threadId: old.thread.id })).pid, latestEngine.pid);
+  } finally { await c.stop(); }
+});
+
+test("gateway failure leaves native discovery and primary account requests usable", { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    const thread = await c.rpc("thread/start", { model: "claude/model" });
+    await assert.rejects(c.rpc("crash", { threadId: thread.thread.id }), /exited/);
+    assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
+    assert.equal((await c.rpc("model/list")).data[0].model, "native");
+    await assert.rejects(c.rpc("turn/start", { threadId: thread.thread.id, model: "claude/model" }), /resume this chat/);
+    await c.rpc("thread/resume", { threadId: thread.thread.id });
+    assert.equal((await c.rpc("engine/info", { threadId: thread.thread.id })).primaryAuthPresent, false);
+  } finally { await c.stop(); }
+});
+
+test("concurrent non-strict discovery cannot hide a failure from a gateway start", async () => {
+  const f = await shimFiles(); f.setCatalog({ models: [{ slug: "native", display_name: "collision", supported_reasoning_levels: [] }] });
+  const catalog = new DesktopCatalog(f.value, [{ slug: "native" }], join(f.directory, "desktop.json"));
+  try {
+    const results = await Promise.allSettled([catalog.refresh(false), catalog.refresh(true)]);
+    assert.equal(results[0].status, "fulfilled"); assert.equal(results[1].status, "rejected");
+    assert.equal(catalog.current().models[0].slug, "claude/model");
+  } finally { f.close(); }
+});
+
+test("missing gateway access cannot route an unknown model through the native account", { timeout: 15000 }, async () => {
+  const c = await client(); c.close();
+  try {
+    assert.equal((await c.rpc("thread/start", { model: "native" })).modelProvider, "openai");
+    await assert.rejects(c.rpc("thread/start", { model: "claude/new-not-discovered" }), /fetch failed|HTTP|discovery/);
+    assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
+  } finally { await c.stop(); }
+});

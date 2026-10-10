@@ -47,5 +47,11 @@ its tools operate on Studio's workspace instead.
 
 The MacBook-to-Studio Claude Max path has been tested with native Codex file
 reads, free-form patches, follow-up history, cancellation, and recovery. Studio
-has not yet registered a separate gateway Codex OAuth account. No launchd service
-or automatic tunnel restart is installed.
+has not yet registered a separate gateway Codex OAuth account. MacBook Pro 2 also passed the Claude/Codex 2 tool loop. Its authenticated reverse
+SSH forward is supervised by a user LaunchAgent on the inference host.
+
+For the desktop adapter, set the client configuration port to the forwarded
+loopback port. Use an absolute client state directory containing the private
+`client-token` file. The adapter fetches fresh public metadata from the inference
+host, so it does not need provider credentials or a local account discovery run.
+CLI profile catalogs remain startup snapshots.

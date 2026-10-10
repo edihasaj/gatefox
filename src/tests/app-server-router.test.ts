@@ -58,10 +58,19 @@ test("native chat never receives a gateway alias and persisted gateway chats ret
   await router.request("thread/start", { model: "native" });
   const count = calls.length;
   await assert.rejects(router.request("thread/resume", { threadId: "test", model: "claude/model" }), /Start a new chat/);
+  await assert.rejects(router.request("turn/start", { threadId: "test", model: "native", collaborationMode: { settings: { model: "claude/model" } } }), /Start a new chat/);
   assert.equal(calls.length, count);
   await router.request("thread/resume", { threadId: "persisted" });
   assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
   assert.equal(calls.at(-1)!.params.model, "codex/model");
+});
+
+test("desktop config overrides select the gateway before its first turn", async () => {
+  const { router, calls } = await fixture();
+  await router.request("thread/start", { model: null, modelProvider: "openai", config: { model: "claude/model" } });
+  assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
+  await router.request("turn/start", { threadId: "test", collaborationMode: { settings: { model: "codex/model" } } });
+  await assert.rejects(router.request("turn/start", { threadId: "test", collaborationMode: { settings: { model: "native" } } }), /Start a new chat/);
 });
 
 test("gateway default writes stay in private adapter preferences and survive restart", async () => {
