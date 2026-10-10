@@ -1,0 +1,19 @@
+#!/bin/sh
+# Experimental adapter for CODEX_CLI_PATH. The original Codex binary stays intact.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+gateway_repo=$(dirname -- "$script_dir")
+if [ -n "${GATEWAY_NODE_PATH:-}" ]; then
+  gateway_node=$GATEWAY_NODE_PATH
+elif command -v node >/dev/null 2>&1; then
+  gateway_node=$(command -v node)
+elif [ -x /opt/homebrew/opt/node@24/bin/node ]; then
+  gateway_node=/opt/homebrew/opt/node@24/bin/node
+else
+  echo 'gateway: Node 22+ is required; set GATEWAY_NODE_PATH' >&2
+  exit 2
+fi
+gateway_codex=${GATEWAY_CODEX_PATH:-/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex}
+exec "$gateway_node" "$gateway_repo/dist/cli.js" codex-shim \
+  --config "${GATEWAY_CONFIG:-$gateway_repo/gateway.local.json}" \
+  --codex "$gateway_codex" -- "$@"

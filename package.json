@@ -1,0 +1,42 @@
+{
+  "name": "@edihasaj/subscription-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A small local Responses gateway for subscription and API providers.",
+  "license": "MIT",
+  "bin": {
+    "gateway": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts",
+    "dist/auth/*.js",
+    "dist/auth/*.d.ts",
+    "dist/providers/*.js",
+    "dist/providers/*.d.ts",
+    "dist/protocol/*.js",
+    "dist/protocol/*.d.ts",
+    "LICENSE",
+    "scripts/codex-desktop-shim",
+    "README.md",
+    "docs"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "test": "node --test dist/tests/*.test.js",
+    "start": "node dist/cli.js serve"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^5.7.3"
+  }
+}
