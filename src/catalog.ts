@@ -1,5 +1,6 @@
 import { accessToken } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
+import { discoverCopilotModels } from "./providers/copilot-models.js";
 import type { GatewayConfig, ProviderConfig, ModelMetadata } from "./config.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
@@ -31,6 +32,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
 export interface DiscoveredModel { model: string; metadata: ModelMetadata }
 export async function discoverModels(provider: ProviderConfig): Promise<DiscoveredModel[]> {
   if (provider.type === "claude-subscription") return discoverClaudeModels(provider);
+  if (provider.type === "copilot-subscription") return discoverCopilotModels(provider);
   if (provider.type !== "codex-subscription" && provider.type !== "responses-api") throw new Error("This provider does not expose a verified model-discovery endpoint; declare its models explicitly");
   const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!) : process.env[provider.apiKeyEnv!];
   if (!token) throw new Error("Provider requires login or an API credential");

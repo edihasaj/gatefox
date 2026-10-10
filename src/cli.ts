@@ -13,6 +13,7 @@ import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-con
 import { codexShim } from "./codex-shim.js";
 import { LiveConfig } from "./live-config.js";
 import { macService } from "./mac-service.js";
+import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -102,6 +103,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "doctor") {
     const exec = promisify(execFile);
     const providers = await Promise.all(config.providers.map(async provider => {
+      if (provider.type === "copilot-subscription") {
+        try { const client = await openCopilot(provider); await client.close(); return { id: provider.id, ready: true, detail: "Copilot subscription login and SDK protocol 3" }; }
+        catch { return { id: provider.id, ready: false, detail: "Copilot CLI, subscription login, or SDK protocol 3 unavailable" }; }
+      }
       if (provider.type === "claude-subscription") {
         try {
           const { stdout } = await exec("claude", ["auth", "status", "--json"], { timeout: 10000, env: { ...process.env, ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
@@ -125,9 +130,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "login") {
     const provider = config.providers.find(p => p.id === id);
     if (!provider) throw new Error("login requires a configured provider ID");
-    if (provider.type === "claude-subscription") {
-      const child = spawn("claude", ["auth", "login"], { stdio: "inherit", env: { ...process.env, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
-      await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error("Claude login failed"))); });
+    if (provider.type === "claude-subscription" || provider.type === "copilot-subscription") {
+      const copilot = provider.type === "copilot-subscription";
+      const child = spawn(copilot ? "copilot" : "claude", copilot ? ["login"] : ["auth", "login"], { stdio: "inherit", env: copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
+      await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${copilot ? "Copilot" : "Claude"} login failed`))); });
     } else if (provider.type === "codex-subscription") {
       const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);
       try { await signIn(provider.credentialFile!, provider.agentName || "Subscription Gateway", async url => {

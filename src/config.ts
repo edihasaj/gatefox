@@ -3,7 +3,7 @@ import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/prom
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-export type ProviderKind = "claude-subscription" | "codex-subscription" | "responses-api" | "anthropic-api";
+export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api";
 export interface ProviderConfig {
   id: string;
   type: ProviderKind;
@@ -44,7 +44,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
-    if (!["claude-subscription", "codex-subscription", "responses-api", "anthropic-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
+    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
       if (!alias || typeof model !== "string" || !model) throw new Error(`${provider.id}: model aliases and IDs must be non-empty strings`);

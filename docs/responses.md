@@ -32,6 +32,8 @@ reasoning imported from another client also retains only its readable summary.
 Use a new provider ID and credential file for a new account.
 Generated Codex settings explicitly request `model_reasoning_summary = "auto"`.
 The client can set it to `none` to hide provider reasoning.
+For Responses upstreams, `none` removes the summary field on the wire and hides
+text summaries locally. Opaque replay state remains available on its account route.
 Some Claude CLI versions expose token progress with empty thinking text. The
 gateway emits a reasoning item and empty summary deltas with an `estimated_tokens`
 extension. It preserves that distinction instead of fabricating a summary.
@@ -44,3 +46,11 @@ are disabled to avoid repeating partially completed actions.
 The current adapters support text and caller-dispatched tools. Image/audio input,
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
+
+Copilot uses the same normalized text and replay contract. It registers native
+SDK custom tools and returns their real calls before any execution. SDK reasoning
+summaries stream separately; `auto` requests a concise summary. The adapter rejects
+BYOK usage, unexpected model/provider changes, host permission requests, foreign
+tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
+Cancellation stops the request's CLI process and waits for it to exit. The next
+request starts a separate session and replays caller-supplied history.

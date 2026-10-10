@@ -14,6 +14,10 @@ export class ResponsesAPI implements Provider {
     catch { throw new ProviderError("authentication", "ChatGPT provider requires login", 401); }
     if (!credential) throw new ProviderError("authentication", "API provider credential is missing", 401);
     const body: ResponsesRequest = { ...request, stream: true };
+    const hideSummary = (request.reasoning as { summary?: string } | undefined)?.summary === "none";
+    // Responses wire values omit the summary to disable it. Codex's local
+    // setting uses "none", which is not accepted by the upstream endpoint.
+    if (hideSummary) { body.reasoning = { ...(body.reasoning as Record<string, unknown>) }; delete (body.reasoning as Record<string, unknown>).summary; }
     let defaultNamespace = "";
     if (plan) {
       if (body.previous_response_id) throw new ProviderError("invalid_request", "ChatGPT plan requires replayed history rather than previous_response_id", 400);
@@ -51,8 +55,8 @@ export class ResponsesAPI implements Provider {
       return identity;
     };
     for await (const event of readEvents(response.body)) {
-      if (event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
-      if ((event.type === "response.output_item.added" || event.type === "response.output_item.done") && (event.item as { type?: string })?.type === "reasoning") yield { type: "reasoning-state", item: event.item as Record<string, unknown> };
+      if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
+      if ((event.type === "response.output_item.added" || event.type === "response.output_item.done") && (event.item as { type?: string })?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...(event.item as Record<string, unknown>), summary: [] } : event.item as Record<string, unknown> };
       if (event.type === "response.output_text.delta" && typeof event.delta === "string") { textSeen = true; yield { type: "text", text: event.delta }; }
       if (event.type === "response.output_item.done") {
         const item = event.item as Record<string, unknown>;

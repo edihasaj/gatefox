@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { randomUUID } from "node:crypto";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
+import { CopilotSubscription } from "./providers/copilot.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ProviderError, type Provider } from "./providers/provider.js";
@@ -13,7 +14,7 @@ import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reas
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 export function createProvider(config: ProviderConfig): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : new ResponsesAPI(config);
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : new ResponsesAPI(config);
 }
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;

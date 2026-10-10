@@ -46,6 +46,22 @@ acknowledged cancellation, released its worker, and completed a recovery turn.
 Only the gateway client token crossed SSH. Provider credentials stayed on the
 inference host.
 
+Copilot CLI 1.0.95 passed the real bundled Codex loop on MacBook Pro 2 through
+SDK protocol 3: incremental text, file proof, custom patch and verification,
+follow-up replay, provider-exposed reasoning, interruption, worker cleanup, and
+recovery. Interruption was acknowledged in 3 ms. Discovery returned 13 explicitly
+selectable models after removing Auto. This proves one model's full loop, not
+every discovered model's inference access. Copilot is not yet installed into the
+working desktop catalog.
+
+A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
+a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
+13 selectable routes. Its Opus 5 request returned Opus 4.8, so the gateway rejected
+the substitution. That route is not verified as usable. The Copilot Sol 6.1
+catalog also advertised `none`, which its endpoint rejected; discovery now omits
+that unsupported effort. These sweeps do not prove images or every model's tool
+loop. Run `node scripts/e2e-models.mjs --config PATH --output PATH` to repeat them.
+
 Earlier bundled-engine checks on the inference host verified the primary account
 and the combined 28-model catalog. A separate Haiku 4.5 request verified its
 no-reasoning route. Listing a model does not prove inference access or inclusion
