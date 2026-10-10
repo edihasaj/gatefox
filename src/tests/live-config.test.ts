@@ -57,3 +57,14 @@ test("daemon reloads catalogs while pinning in-flight inference to its original 
     await writePrivateJson(path, source); assert.equal((await fetch(url + "/health")).status, 200);
   } finally { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
+
+
+test("live reload cannot silently rebind an existing alias to another model or account", async () => {
+  const { path, source, live } = await setup(); await live.current();
+  await writePrivateJson(path, { ...source, providers: [{ ...source.providers[0], models: { old: "different-model" } }] });
+  await assert.rejects(live.current(), /cannot be rebound live/);
+  await writePrivateJson(path, { ...source, providers: [{ ...source.providers[0], id: "another-account" }] });
+  await assert.rejects(live.current(), /cannot be rebound live/);
+  await writePrivateJson(path, { ...source, providers: [{ ...source.providers[0], label: "Updated label" }] });
+  assert.equal((await live.current()).providers[0].label, "Updated label");
+});

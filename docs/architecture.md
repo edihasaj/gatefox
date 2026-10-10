@@ -77,3 +77,7 @@ alive across terminal and app exits; it exports only PATH, not provider secrets.
 
 The desktop adapter stores every model preference in gateway-owned state and
 rejects writes into native Codex configuration. It does not edit Obsidian settings.
+
+Existing aliases cannot switch account identity, provider type, or upstream model
+while the daemon is running. Add a new alias for a new route, or restart explicitly
+after active work finishes. Labels and capability metadata can update live.

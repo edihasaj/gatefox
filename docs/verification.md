@@ -84,3 +84,11 @@ home checks only in an already-trusted workspace using `--workspace PATH`, and
 keep fixture files below an ignored test directory there. For remote checks, use
 an isolated Codex home. Do not create test Git projects in the working machine's
 native configuration.
+
+
+MacBook Pro 2 has passed the real Claude Sonnet 5.5/Codex 2 loop over an
+authenticated SSH forward: text and reasoning streams, reads, dedicated patches,
+follow-ups, provider switching, cancellation, zero active workers, and recovery.
+Only a gateway client token was transferred. Provider credentials stayed on the
+inference host. Its desktop app is installed and waiting at first-run onboarding;
+rendered model selection is not yet verified.
