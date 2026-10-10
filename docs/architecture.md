@@ -26,6 +26,12 @@ Its environment contains PATH, not provider credentials. Credentials and gateway
 client tokens are private files. Logs exclude request bodies, tool arguments,
 provider tokens, and environment values.
 
+`gateway service restart` asks the daemon to stop only while idle. The daemon
+checks all HTTP requests, including unfinished body uploads, before closing its
+listener. Active work refuses the restart and keeps its process. Older daemons
+without this capability refuse the command; upgrade those during an idle window.
+Explicit stop or uninstall still stops the service and cancels active work.
+
 ## Desktop connections
 
 The stdio adapter keeps one original native app-server connection. Account

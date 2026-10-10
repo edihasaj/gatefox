@@ -4,6 +4,7 @@ import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, gatewayToken } from "./config.js";
 
 const exec = promisify(execFile);
@@ -38,9 +39,27 @@ export async function macService(action: string | undefined, configPath: string)
     return { service: label, installed: false, credentialsPreserved: true };
   }
   if (action === "restart") {
-    if (existing === undefined || !(await status(target)).installed) throw new Error("Gateway service is not installed");
-    await exec("/bin/launchctl", ["kickstart", "-k", target], { timeout: 10000 });
-    return { service: label, ...await status(target) };
+    const before = await status(target);
+    if (existing === undefined || !before.installed) throw new Error("Gateway service is not installed");
+    if (!before.pid) { await exec("/bin/launchctl", ["kickstart", target], { timeout: 10000 }); return { service: label, ...await status(target) }; }
+    const { stdout } = await exec("/usr/bin/plutil", ["-extract", "ProgramArguments", "json", "-o", "-", path]);
+    const args: unknown = JSON.parse(stdout);
+    if (!Array.isArray(args) || args.some(arg => typeof arg !== "string")) throw new Error("Managed service arguments are invalid");
+    const configIndex = args.indexOf("--config");
+    if (configIndex < 0 || typeof args[configIndex + 1] !== "string") throw new Error("Managed service has no configuration path");
+    const config = await loadConfig(args[configIndex + 1]);
+    let health: { active?: number; idleRestart?: boolean };
+    try { health = await (await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as typeof health; }
+    catch { throw new Error("Cannot verify the running gateway is idle; service was not restarted"); }
+    if (health.active !== 0) throw new Error("Gateway has active inference; finish or cancel it before restarting");
+    if (health.idleRestart !== true) throw new Error("This daemon predates safe idle restart; upgrade it after active work finishes");
+    process.kill(before.pid, "SIGUSR2");
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await delay(100); const after = await status(target);
+      if (after.pid && after.pid !== before.pid) return { service: label, ...after };
+      if (!after.pid) { await exec("/bin/launchctl", ["kickstart", target], { timeout: 10000 }); return { service: label, ...await status(target) }; }
+    }
+    throw new Error("New gateway work prevented the idle restart; the existing service is still running");
   }
   const config = await loadConfig(configPath);
   if (!config.port) throw new Error("A managed daemon requires a fixed port");

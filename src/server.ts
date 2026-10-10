@@ -23,7 +23,8 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
   return value;
 }
-export async function startGateway(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>): Promise<Server> {
+export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean };
+export async function startGateway(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>): Promise<GatewayServer> {
   const token = await gatewayToken(config.stateDirectory);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
     const adapter = factory(provider);
@@ -36,12 +37,16 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     return { config: current, routes };
   };
   const active = new Set<AbortController>();
+  let requests = 0;
   const server = createServer(async (req, res) => {
+    requests++; let released = false;
+    const release = () => { if (!released) { released = true; requests--; } };
+    res.once("finish", release); res.once("close", release);
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
     res.setHeader("X-Request-Id", randomUUID());
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); send(res, 200, { status: "ok", active: active.size }); }
-      catch { send(res, 503, { status: "configuration_error", active: active.size }); }
+      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, idleRestart: true }); }
+      catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
     if (req.headers.origin) { send(res, 403, { error: { code: "cross_origin", message: "Browser cross-origin requests are disabled" } }); return; }
@@ -85,6 +90,12 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   server.requestTimeout = 30000;
   const close = server.close.bind(server);
   server.close = callback => { for (const controller of active) controller.abort(); return close(callback); };
+  const controlled = server as GatewayServer;
+  controlled.restartWhenIdle = callback => {
+    // Includes body uploads and catalog reads, not only provider inference.
+    if (requests || active.size) return false;
+    close(callback); return true;
+  };
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
-  return server;
+  return controlled;
 }

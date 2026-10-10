@@ -153,6 +153,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     server.close(() => { clearTimeout(deadline); process.exit(0); });
   };
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
+  if (process.platform !== "win32") process.on("SIGUSR2", () => {
+    if (closing) return;
+    if (server.restartWhenIdle(() => process.exit(0))) closing = true;
+  });
 }
 
 if (process.argv[1] && await realpath(process.argv[1]).catch(() => resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {

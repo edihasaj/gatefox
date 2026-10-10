@@ -19,6 +19,24 @@ public catalog validation, approval correlation, and executor lifecycle.
 Catalog-generation tests use a controlled app-server fixture. They do not prove
 the rendered desktop picker or provider entitlement.
 
+The idle-restart regression covers active inference, partial request uploads,
+and catalog reads that have not created an inference controller. The real
+LaunchAgent check passed on MacBook Pro 2: both busy restarts were refused,
+the idle restart changed its PID, and recovery completed with the same token
+and exactly two upstream calls.
+On an unused macOS test host, run the real LaunchAgent lifecycle check:
+
+```sh
+node scripts/e2e-service.mjs --install-test-service
+```
+
+It refuses an existing gateway service or plist. It installs a temporary service,
+checks both busy restart refusals, restarts while idle, then verifies inference,
+the unchanged client token, and two upstream calls. The upstream is a local
+Responses fixture; this check does not prove provider authentication. Cleanup
+uninstalls the service. Only the temporary plist receives a dummy fixture key;
+no provider credentials or global launchd environment values are changed.
+
 ## Real subscription checks
 
 MacBook Pro 2 passed a real Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol loop over an
