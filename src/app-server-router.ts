@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import type { DesktopCatalog } from "./desktop-catalog.js";
+import { withPrivateFileLock } from "./private-file-lock.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -33,13 +34,15 @@ export class AppServerRouter {
   }
   async initialize(): Promise<void> {
     if (this.catalogPath === resolve(this.config.stateDirectory, "codex-models.json")) await writePrivateJson(this.catalogPath, modelCatalog(this.config));
+    await this.readPreferences();
+  }
+  private async readPreferences(): Promise<void> {
     let saved: unknown;
     try { saved = JSON.parse(await readFile(this.preferencesPath, "utf8")); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new AppServerRoutingError("Gateway desktop preferences are unreadable"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.preferences = {}; return; } throw new AppServerRoutingError("Gateway desktop preferences are unreadable"); }
     const preferences = object(saved);
-    if (typeof preferences.model === "string" && preferences.model) {
-      this.preferences = Object.fromEntries(Object.entries(preferences).filter(([key]) => preferenceKeys.has(key)));
-    }
+    this.preferences = typeof preferences.model === "string" && preferences.model
+      ? Object.fromEntries(Object.entries(preferences).filter(([key]) => preferenceKeys.has(key))) : {};
   }
   private remember(result: ObjectValue): void {
     const thread = object(result.thread);
@@ -115,6 +118,7 @@ export class AppServerRouter {
     return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
+    if (["thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
       const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
@@ -125,11 +129,12 @@ export class AppServerRouter {
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
     if (method === "model/list") return this.models(params);
     if (method === "config/value/write" || method === "config/batchWrite") {
-      const operation = this.writes.then(async () => {
+      const operation = this.writes.then(() => withPrivateFileLock(this.preferencesPath, async () => {
+        await this.readPreferences();
         const written = await this.writePreferences(method, params);
         if (!written) throw new AppServerRoutingError("Native Codex configuration is managed separately");
         return written;
-      });
+      }));
       this.writes = operation.catch(() => undefined); return operation;
     }
     let forwarded = params;
@@ -155,7 +160,10 @@ export class AppServerRouter {
     if (method === "turn/start" && typeof selected === "string" && typeof params.threadId === "string") {
       const route = this.routes.get(params.threadId); if (route) route.model = selected;
     }
-    if (method === "config/read") return { ...result, config: { ...object(result.config), ...this.preferences, model_catalog_json: this.catalogPath } };
+    if (method === "config/read") {
+      await this.readPreferences();
+      return { ...result, config: { ...object(result.config), ...this.preferences, model_catalog_json: this.catalogPath } };
+    }
     return result;
   }
 }

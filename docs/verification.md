@@ -130,6 +130,13 @@ text, so this desktop check does not prove image-only code reading. The separate
 bundled-engine tests above provide that proof. The desktop label still showed
 Extra High; visible Max and Ultra selections remain unverified.
 
+That investigation reproduced a separate preference bug: two adapter connections
+cached their own defaults, so one could return High after the other saved Max.
+The fix rereads preferences and locks updates across processes. Regression checks
+cover stale reads, new-chat effort, concurrent edits from separate processes,
+abandoned locks, and cleanup after a failed update. The rendered reasoning picker
+still needs to be checked after activating this fix.
+
 A separate staging daemon passed a live catalog addition while an older gateway
 chat ran a command. The new chat used the new context-window metadata. The
 original native and gateway executor PIDs remained alive. Cancellation completed

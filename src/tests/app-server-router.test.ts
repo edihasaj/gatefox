@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
 type ObjectValue = Record<string, unknown>;
 async function fixture() {
@@ -112,4 +114,43 @@ test("native model choices are saved separately and all other native config writ
   const count = calls.length;
   await assert.rejects(router.request("config/value/write", { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" }), /managed separately/);
   assert.equal(calls.length, count);
+});
+
+test("independent desktop connections refresh reasoning preferences and preserve unrelated writes", async () => {
+  const { config, backend, directory, calls } = await fixture();
+  config.providers[0]!.modelMetadata = { "claude/model": { reasoningEfforts: ["low", "high", "max"] } };
+  const first = new AppServerRouter(config, backend); await first.initialize();
+  await first.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" },
+    { keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" },
+  ] });
+  const second = new AppServerRouter(config, backend); await second.initialize();
+  await first.request("config/value/write", { keyPath: "model_reasoning_effort", value: "max", mergeStrategy: "upsert" });
+  assert.equal(((await second.request("config/read", {})).config as ObjectValue).model_reasoning_effort, "max");
+  await second.request("config/value/write", { keyPath: "model_reasoning_summary", value: "detailed", mergeStrategy: "upsert" });
+  const saved = JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8"));
+  assert.equal(saved.model_reasoning_effort, "max");
+  assert.equal(((await first.request("config/read", {})).config as ObjectValue).model_reasoning_summary, "detailed");
+  await second.request("thread/start", {});
+  assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "max");
+});
+
+test("separate adapter processes merge concurrent private preference edits", async () => {
+  const { config, router, directory } = await fixture();
+  await router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" },
+    { keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" },
+  ] });
+  const code = `import { AppServerRouter } from ${JSON.stringify(new URL("../app-server-router.js", import.meta.url).href)};
+    const router = new AppServerRouter(JSON.parse(process.argv[1]), async () => ({}));
+    await router.initialize();
+    await router.request("config/value/write", {keyPath:process.argv[2], value:process.argv[3], mergeStrategy:"upsert"});`;
+  const execute = promisify(execFile);
+  await Promise.all([
+    execute(process.execPath, ["--input-type=module", "-e", code, JSON.stringify(config), "model_reasoning_effort", "max"]),
+    execute(process.execPath, ["--input-type=module", "-e", code, JSON.stringify(config), "model_reasoning_summary", "detailed"]),
+  ]);
+  const saved = JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8"));
+  assert.equal(saved.model_reasoning_effort, "max"); assert.equal(saved.model_reasoning_summary, "detailed");
+  assert.equal(((await router.request("config/read", {})).config as ObjectValue).model_reasoning_effort, "max");
 });

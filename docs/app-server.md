@@ -37,6 +37,11 @@ guards, and batches mixing native changes with gateway defaults are rejected.
 All other configuration writes are rejected, including the legacy whole-config
 write. Obsidian-managed native settings remain the source of truth.
 
+Each adapter connection rereads private preferences when reading settings or
+starting a chat. Preference updates use a shared file lock and merge the latest
+saved values. Two desktop connections cannot return a cached reasoning level or
+overwrite an unrelated preference change with an older snapshot.
+
 The installed desktop build recognizes `CODEX_CLI_PATH` and
 `CODEX_APP_SERVER_FORCE_CLI`. These are implementation hooks, not an established
 public desktop integration API. `scripts/codex-desktop-shim` is an executable
