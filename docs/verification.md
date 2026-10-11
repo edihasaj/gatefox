@@ -52,8 +52,7 @@ follow-up replay, provider-exposed reasoning, interruption, worker cleanup, and
 recovery. Interruption was acknowledged in 3 ms. Discovery returned 13 explicitly
 selectable models after removing Auto. This proves one model's full loop, not
 every discovered model's inference access. Copilot's 13 routes are now loaded in
-the deployed host catalog. The updated rendered desktop controls still need a
-fresh test-app launch.
+the deployed host catalog. Rendered Copilot selection remains unverified.
 
 A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
 a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
@@ -123,6 +122,13 @@ The direct launcher has been verified on the test Mac. Process inspection
 confirmed the override environment and wrapper children. The rendered desktop
 then completed real Claude Opus 5.5 and Codex 2 GPT-6-Luna conversations and a
 provider switch. The working Mac's app has not been relaunched.
+
+On 11 October 2026, the updated adapter launched on MacBook Pro 2. The rendered
+Claude Opus 5.5 chat accepted a PNG attachment and correctly described its red
+circle, green square, and blue triangle. The picture code was also supplied as
+text, so this desktop check does not prove image-only code reading. The separate
+bundled-engine tests above provide that proof. The desktop label still showed
+Extra High; visible Max and Ultra selections remain unverified.
 
 A separate staging daemon passed a live catalog addition while an older gateway
 chat ran a command. The new chat used the new context-window metadata. The
