@@ -193,10 +193,13 @@ clients could read a saved gateway chat before discovery and create an empty
 executor. Saved metadata now reads through the native shared store; inference
 requires an available catalog. Both cases have regressions.
 
-The initial v0.2.0 host migration exposed a launchd KeepAlive race and safely
-refused the upgrade. v0.2.1 disables only the managed job's next launch while its
-existing process exits through the idle guard, then replaces the plist and
-reenables the job. Failure restores the earlier plist. The real MacBook Pro 2
-check passed active-inference and partial-upload protection, idle restart, idle
-upgrade with the new config, recovery, and the unchanged client token. It made
-exactly three calls to the local upstream fixture and removed its temporary service.
+The initial host migration exposed a launchd KeepAlive race and safely refused
+the upgrade. Disabling the job prevented the short-lived fixture race, but a
+long-running loaded job could still restart. v0.2.2 asks the owning daemon to
+unload its own job only after the idle guard accepts the stop. The client then
+replaces the plist and reenables the job. Failure restores the earlier plist.
+The real MacBook Pro 2 check waits beyond launchd's throttle interval and passed
+active-inference and partial-upload protection, idle restart, idle upgrade with
+the new config, recovery, and the unchanged client token. It made exactly three
+calls to the local fixture and removed its temporary service. The working host's
+previous long-running service also migrated successfully through this protocol.

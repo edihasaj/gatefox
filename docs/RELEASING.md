@@ -37,9 +37,10 @@ It saves the previous release target. Reinstalling identical content is safe;
 different content under the same version is rejected. Preserve the existing data
 directory. Service migration requests a safe idle stop before replacing a managed
 LaunchAgent. Busy inference or request uploads refuse the upgrade.
-The managed job is temporarily disabled during migration so KeepAlive cannot
-restart the old command. The running process remains active until its idle guard
-accepts the stop. Failure reenables the job and restores its earlier plist.
+The managed job is temporarily disabled during migration. The owning daemon
+unloads its job only after its idle guard accepts the stop, so KeepAlive cannot
+restart the old command. Older daemons need one safe restart to load the installed
+idle-upgrade protocol. Failure reenables the job and restores its earlier plist.
 
 Use `gateway service status`, `gateway doctor`, and `gateway desktop status` after
 installation. Registration prepares future app launches and does not interrupt an

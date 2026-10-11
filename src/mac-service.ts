@@ -79,14 +79,15 @@ export async function macService(action: string | undefined, configPath: string)
       const args: unknown = JSON.parse(stdout);
       if (!Array.isArray(args) || args.some(arg => typeof arg !== "string") || args.indexOf("--config") < 0) throw new Error("Managed service arguments are invalid");
       const previous = await loadConfig(args[args.indexOf("--config") + 1]);
-      const health = await (await fetch(`http://127.0.0.1:${previous.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; idleRestart?: boolean };
+      const health = await (await fetch(`http://127.0.0.1:${previous.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; idleRestart?: boolean; idleUpgrade?: boolean };
       if (health.active !== 0 || health.idleRestart !== true) throw new Error("Finish active gateway work before upgrading the managed service");
+      if (health.idleUpgrade !== true) throw new Error("Restart the gateway service once to load the installed idle-upgrade protocol, then repeat service install");
       // Disabling keeps the current process running but prevents KeepAlive from
       // starting the old command between its idle exit and plist replacement.
       await exec("/bin/launchctl", ["disable", target], { timeout: 5000 }); disabled = true;
-      process.kill(current.pid, "SIGUSR2");
+      process.kill(current.pid, "SIGUSR1");
       let stopped = false;
-      for (let attempt = 0; attempt < 30; attempt++) { await delay(100); const next = await status(target); if (!next.pid) { stopped = true; break; } if (next.pid !== current.pid) throw new Error("Service restarted before migration; retry while idle"); }
+      for (let attempt = 0; attempt < 30; attempt++) { await delay(100); const next = await status(target); if (!next.installed) { stopped = true; unloaded = true; break; } if (next.pid && next.pid !== current.pid) throw new Error("Service restarted before migration; retry while idle"); }
       if (!stopped) throw new Error("New gateway work prevented the service upgrade; its settings were not changed");
     }
     if ((await status(target)).installed) { await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 }); unloaded = true; }

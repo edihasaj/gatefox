@@ -48,7 +48,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
     res.setHeader("X-Request-Id", randomUUID());
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, idleRestart: true }); }
+      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, idleRestart: true, idleUpgrade: true }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }

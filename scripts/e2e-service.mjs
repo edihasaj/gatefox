@@ -66,6 +66,8 @@ try {
   const after = await waitFor(async () => { const status = await service("status"); return status.pid && status.pid !== before.pid ? status : false; });
   await waitFor(async () => (await fetch(base + "/health")).ok);
   assert.equal((await (await inference()).json()).output_text, "service-proof");
+  // An older loaded KeepAlive job may restart immediately after a long run.
+  await delay(11000);
   await service("install", upgradeConfig);
   const upgraded = await waitFor(async () => { const value = await service("status"); return value.pid && value.pid !== after.pid ? value : false; });
   await waitFor(async () => (await fetch(base + "/health")).ok);

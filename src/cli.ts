@@ -202,6 +202,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (closing) return;
     if (server.restartWhenIdle(() => process.exit(0))) closing = true;
   });
+  if (process.platform === "darwin") process.on("SIGUSR1", () => {
+    if (closing) return;
+    // Only the service that owns this process can unload itself for an upgrade.
+    const target = `gui/${process.getuid!()}/com.edihasaj.subscription-gateway`;
+    void promisify(execFile)("/bin/launchctl", ["print", target], { timeout: 3000 }).then(({ stdout }) => {
+      if (Number(stdout.match(/^\s*pid = (\d+)$/m)?.[1]) !== process.pid) return;
+      if (server.restartWhenIdle(() => {
+        void promisify(execFile)("/bin/launchctl", ["bootout", target], { timeout: 10000 }).catch(() => { process.exit(0); });
+      })) closing = true;
+    }).catch(() => undefined);
+  });
 }
 
 async function remoteCatalog(config: GatewayConfig): Promise<{ models: Array<Record<string, unknown>> }> {
