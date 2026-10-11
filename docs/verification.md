@@ -225,6 +225,16 @@ preserved file and image history. The isolated native config digest was unchange
 The test client explicitly resumes saved chats before starting turns after a
 connection change, as the native engine requires.
 
+The installed v0.2.3 package also passed this full loop on Studio through its
+permanent SSH inference forward. Claude Opus 5.5 at Max and Codex 2 GPT-6.1-Sol
+at Ultra passed all 15 checks in an isolated workspace and native home.
+Interruption acknowledgements took 10 ms and 17 ms. The isolated configuration
+digest was unchanged, and Studio's original configuration matched the separate
+digest recorded during the run. A direct SSH connection to Studio's production
+adapter returned all 42 catalog entries, including local Qwen. These checks
+prove the native proxy and backend; the rendered Studio SSH picker remains
+unverified until the connection is enabled in the client app.
+
 The rendered picker inspected on the working Mac was a Studio Control other
 devices connection. That connection reaches the native engine directly, so the
 stdio adapter's combined catalog does not establish model availability there.
