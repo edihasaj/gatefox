@@ -29,7 +29,7 @@ const fs=require('node:fs');const path=require('node:path');
 if(process.argv.includes('--version')) {console.log('native-codex-test-version');process.exit(0);}
 const overrides={};for(let i=0;i<process.argv.length;i++)if(process.argv[i]==='-c'){const arg=process.argv[++i];const at=arg.indexOf('=');try{overrides[arg.slice(0,at)]=JSON.parse(arg.slice(at+1));}catch{}}
 const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');let pending;let serial=0;const threads=new Map();
-const home=process.env.CODEX_HOME;
+const home=process.env.CODEX_HOME||${JSON.stringify(nativeHome)};
 const readThread=id=>threads.get(id)||JSON.parse(fs.readFileSync(path.join(home,'sessions',id+'.json'),'utf8'));
 createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);
