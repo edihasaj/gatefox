@@ -3,6 +3,7 @@ import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
+import { titleTool, withTitleTool, handleTitleCall } from "./chat-titles.js";
 
 interface Engine { connection: AppServerConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string> }
 
@@ -20,7 +21,9 @@ export class AppServerBackends {
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
     private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void) {
-    this.native = new AppServerConnection(executable, args, message => this.forward(this.native, message), () => onNativeExit());
+    // Register only the added provider at runtime. Native account/model defaults stay intact.
+    const registration = Object.entries(overrides).map(([key, value]) => [`-c`, `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`]).flat();
+    this.native = new AppServerConnection(executable, [...args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
   }
   private async forward(connection: AppServerConnection, message: Message): Promise<void> {
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
@@ -34,6 +37,14 @@ export class AppServerBackends {
       if (!isId(message.id) && !threadId && message.method !== "serverRequest/resolved") return;
     }
     if (isId(message.id)) {
+      if (engine && message.method === "item/tool/call" && params.tool === titleTool && params.namespace == null) {
+        const bound = typeof params.threadId === "string" && engine.threads.has(params.threadId);
+        // Keep draining this connection while its title RPC waits for a reply.
+        const operation = bound ? handleTitleCall(params, (method, args) => connection.request(method, args))
+          : Promise.reject(new Error("Chat title request belongs to another chat"));
+        void operation.catch(() => ({ success: false, contentItems: [{ type: "inputText", text: "The current chat title could not be read or updated." }] }))
+          .then(result => connection.send({ id: message.id, result })); return;
+      }
       let ids = this.reverse.get(connection); if (!ids) { ids = new Map(); this.reverse.set(connection, ids); }
       if (this.approvals.size >= 256 || ids.has(message.id)) throw new Error("Invalid or excessive pending Codex server requests");
       const id = `gateway-server-${++this.serverSequence}`;
@@ -51,7 +62,9 @@ export class AppServerBackends {
   notify(message: Message): void { this.native.send(message); }
   private async gateway(): Promise<Engine> {
     if (this.closing) throw new Error("Codex desktop connection is closing");
+    if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     const snapshot = this.catalog.current();
+    if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
     const ready = this.engines.find(engine => engine.revision === snapshot.revision && !engine.connection.closed);
     if (ready) return ready;
     const operation = this.creating.then(async () => {
@@ -84,7 +97,7 @@ export class AppServerBackends {
         engine.active.clear();
       }, gatewayEnvironment(home));
       this.engines.push(engine);
-      try { await engine.connection.request("initialize", this.initialized); engine.connection.send({ method: "initialized", params: {} }); }
+      try { await engine.connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } }); engine.connection.send({ method: "initialized", params: {} }); }
       catch (error) { engine.connection.stop(); throw error; }
       return engine;
     });
@@ -94,6 +107,8 @@ export class AppServerBackends {
     if (method === "initialize") {
       const result = await this.native.request(method, params); this.initialized = params; return result;
     }
+    // Saved metadata is shared locally and needs no inference connection or model discovery.
+    if (method === "thread/read" && typeof params.threadId === "string" && !this.bindings.has(params.threadId)) return this.native.request(method, params);
     let engine: Engine | undefined;
     if (method === "thread/start" && params.modelProvider === "subscription_gateway") engine = await this.gateway();
     else if (typeof params.threadId === "string") {
@@ -110,7 +125,7 @@ export class AppServerBackends {
     }
     const model = object(object(params.collaborationMode).settings).model ?? params.model;
     if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
-    const result = await engine.connection.request(method, params);
+    const result = await engine.connection.request(method, method === "thread/start" ? withTitleTool(params) : params);
     if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
       const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
     }

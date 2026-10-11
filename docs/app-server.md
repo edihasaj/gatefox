@@ -26,7 +26,10 @@ The adapter copies only public model rows from that engine's configured catalog
 or model cache. It validates that the rows cover the engine's available models
 and writes a combined catalog. Cache identity and authentication are excluded.
 The public rows form a combined catalog for gateway executors. The original
-native process keeps its original arguments and configuration. A mismatched or
+native process keeps its native model and account defaults. The adapter registers
+only the added `subscription_gateway` provider through process arguments, so
+saved gateway chats can resolve that provider when read or resumed. It does not
+write the native configuration. A mismatched or
 unavailable cache prevents startup.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
@@ -54,13 +57,26 @@ the signed binary directly with explicit environment variables and saves a priva
 receipt with its PID. A launch receipt does not prove rendered model selection.
 
 ```sh
-node scripts/launch-desktop.mjs --config /absolute/path/gateway.local.json
+gateway desktop --config /absolute/path/gateway.local.json
 ```
 
-Use `--codex-home PATH` for an isolated native test home. Omit it to keep the
+Use `--native-home PATH` for an isolated native test home. Omit it to keep the
 original native account home. The launcher does not edit either native config
 or authentication files. LaunchServices can reuse an existing instance, so an
 `open -a` invocation alone is insufficient evidence that overrides took effect.
+
+`gateway desktop register` stores a managed per-user LaunchAgent and sets only
+the desktop CLI override variables for future launches. The agent restores them
+at login and does not open or quit the app. Registration refuses an unrelated
+existing CLI override. `gateway desktop unregister` removes its own overrides.
+This keeps normal Dock launches configured after initial activation without
+editing the Obsidian-managed native configuration.
+
+Gateway chats receive a current-chat title tool. It reads native saved metadata
+and uses `thread/name/set` for renames. The adapter forwards the resulting live
+name notification and rejects title arguments targeting another chat. Native
+chats retain their existing tools. Read-only saved-chat metadata needs neither
+gateway inference nor model discovery.
 
 Choose a gateway model in a **new chat**. A loaded chat cannot switch between
 native and gateway providers in this Codex version. The adapter rejects that

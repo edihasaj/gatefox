@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "../config.js";
+import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
@@ -8,7 +8,7 @@ import { anthropicParts } from "../protocol/images.js";
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
-    const credential = process.env[this.config.apiKeyEnv!];
+    const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Anthropic API credential is missing", 401);
     const normalized = responsesToChatRequest(request);
     const reasoning = request.reasoning as { effort?: unknown; summary?: unknown } | undefined;

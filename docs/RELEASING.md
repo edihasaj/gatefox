@@ -1,0 +1,49 @@
+---
+summary: 'Build, verify, publish, install, and recover the Apple Silicon CLI release.'
+read_when:
+  - Cutting a gateway release
+  - Changing installation, desktop registration, or managed services
+---
+
+# Release
+
+The installer contains the compiled package and official Node 24.21.0 runtime.
+The runtime archive is pinned to its published SHA-256 digest. Node's license
+travels with it. No provider credentials, test output, or local configuration
+belongs in the release archive.
+
+1. Update the package version and lockfile. Run the development gate.
+2. Download the official macOS ARM64 runtime into `.state/release-runtime` and
+   verify it against Node's published checksums. Extract it in that directory.
+3. Run `node scripts/build-release.mjs --allow-dirty` only for preflight testing.
+   Test the extracted installer on an isolated prefix, including a repeated
+   install, paths containing spaces/quotes, and a conflicting command.
+4. Run real model tool loops and `scripts/e2e-chat-titles.mjs` against the installed
+   command on the test Mac. Use an isolated native home. Record configuration
+   digests, provider registration, saved titles, and resume results.
+5. Commit and push the final source. Wait for green CI.
+6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
+   the archive's file list and verify `SHA256SUMS`.
+7. Publish the versioned archive and checksums to the private GitHub release.
+   Install exactly that asset on each device.
+
+The build refuses dirty source unless the preflight flag is explicit. It does not
+download credentials or publish automatically.
+
+# Upgrade and recovery
+
+The installer verifies file checksums before changing the current release link.
+It saves the previous release target. Reinstalling identical content is safe;
+different content under the same version is rejected. Preserve the existing data
+directory. Service migration requests a safe idle stop before replacing a managed
+LaunchAgent. Busy inference or request uploads refuse the upgrade.
+
+Use `gateway service status`, `gateway doctor`, and `gateway desktop status` after
+installation. Registration prepares future app launches and does not interrupt an
+open app. One fresh launch is needed after first registration. The private desktop
+launch hook is specific to the tested Codex build, so verify it after app upgrades.
+
+To remove the installation, run `gateway uninstall`. The installation and managed
+LaunchAgents move to Trash. Credentials and native Codex configuration remain.
+CLI registration cannot make an unconfigured SSH/cloud backend understand gateway
+models; test each execution backend used by a shared chat.

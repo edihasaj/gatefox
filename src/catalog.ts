@@ -1,7 +1,7 @@
 import { accessToken } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
-import type { GatewayConfig, ProviderConfig, ModelMetadata } from "./config.js";
+import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -18,7 +18,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       default_reasoning_level: efforts.includes("medium") ? "medium" : efforts[0] || null,
       default_reasoning_summary: efforts.length ? "auto" : "none", supports_reasoning_summary_parameter: efforts.length > 0,
       shell_type: "unified_exec", apply_patch_tool_type: "freeform", tool_mode: "direct",
-      model_messages: { instructions_template: "You are a coding agent. Follow user instructions and repository guidance. Use the supplied tools for file access, commands and edits. Never claim a tool action succeeded without its result. Preserve working code, verify changes, and report outcomes clearly." },
+      model_messages: { instructions_template: "You are a coding agent. Follow user instructions and repository guidance. Use the supplied tools for file access, commands and edits. Never claim a tool action succeeded without its result. Preserve working code, verify changes, and report outcomes clearly. At the start of a new task, use gateway_chat_title when available to read the current chat title and set a concise descriptive title. Preserve deliberate user titles unless asked to change them." },
       include_skills_usage_instructions: true, include_plugin_usage_instructions: true, include_apps_usage_instructions: true,
       support_verbosity: false, default_verbosity: null,
       truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
@@ -33,8 +33,8 @@ export interface DiscoveredModel { model: string; metadata: ModelMetadata }
 export async function discoverModels(provider: ProviderConfig): Promise<DiscoveredModel[]> {
   if (provider.type === "claude-subscription") return discoverClaudeModels(provider);
   if (provider.type === "copilot-subscription") return discoverCopilotModels(provider);
-  if (provider.type !== "codex-subscription" && provider.type !== "responses-api") throw new Error("This provider does not expose a verified model-discovery endpoint; declare its models explicitly");
-  const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!) : process.env[provider.apiKeyEnv!];
+  if (provider.type !== "codex-subscription" && provider.type !== "responses-api" && provider.type !== "chat-completions-api") throw new Error("This provider does not expose a verified model-discovery endpoint; declare its models explicitly");
+  const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!) : await apiCredential(provider);
   if (!token) throw new Error("Provider requires login or an API credential");
   const base = provider.type === "codex-subscription" ? "https://api.openai.com/v1" : provider.baseUrl!.replace(/\/$/, "");
   const response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15000) });
@@ -48,7 +48,7 @@ export async function discoverModels(provider: ProviderConfig): Promise<Discover
     const levels = model.supported_reasoning_levels as Array<{ effort: string }> | undefined;
     return { model: id, metadata: {
       ...(typeof model.display_name === "string" ? { displayName: model.display_name } : {}),
-      ...(typeof model.context_window === "number" ? { contextWindow: model.context_window } : {}),
+      ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),
       ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : {}),
       ...(Array.isArray(model.input_modalities) ? { inputModalities: ["text" as const, ...(model.input_modalities.includes("image") ? ["image" as const] : [])] } : {}),

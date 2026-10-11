@@ -164,3 +164,31 @@ Native Codex may add project-trust settings when executing tools in a new Git
 workspace. Use an isolated native home on the test Mac. If a native-home check is
 necessary elsewhere, use an already-trusted workspace and `--workspace PATH`.
 Do not create new test Git projects in the working machine's native configuration.
+
+## Installer and local Qwen
+
+The v0.2.0 preflight installer passed repeat installation, a prefix containing
+spaces and quotes, checksum verification, and protection of an unrelated command.
+The bundled runtime has no Homebrew library dependencies. The installed command
+on MacBook Pro 2 registered the added provider at runtime while preserving the
+native provider default.
+
+Claude Sonnet 5.5, Codex 2 Sol, and local Qwen 3.8 Flash Next passed native agent
+title reads, renames, live name notifications, and saved-chat resume after a new
+adapter connection. The isolated native configuration digest was unchanged.
+This proves the native engine and adapter, not newly rendered sidebar labels.
+
+Qwen runs on the existing DGX Spark vLLM server. Its managed SSH tunnel uses the
+existing NVIDIA Sync identity without copying the private key. The real Codex
+loop passed incremental text, random file proof, custom patch and verification,
+follow-up history, reasoning, interruption (4 ms acknowledgement), worker cleanup,
+and recovery. The model uses a 500,000-token server context and currently advertises
+text input only. Native API inference on the isolated test home's primary account
+was explicitly skipped because that home has no primary login.
+
+The live checks found two translation/startup bugs. Qwen requires system
+instructions at the beginning, so the chat adapter combines system/developer
+instructions there while retaining user/tool history order. Credential-free
+clients could read a saved gateway chat before discovery and create an empty
+executor. Saved metadata now reads through the native shared store; inference
+requires an available catalog. Both cases have regressions.

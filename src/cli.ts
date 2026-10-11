@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { resolve, dirname } from "node:path";
-import { readFile, writeFile, stat, realpath } from "node:fs/promises";
+import { readFile, writeFile, stat, realpath, mkdir } from "node:fs/promises";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -14,10 +14,23 @@ import { codexShim } from "./codex-shim.js";
 import { LiveConfig } from "./live-config.js";
 import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
+import { configPath } from "./paths.js";
+import { setupGateway, setupClient } from "./setup.js";
+import { readClientToken as readPrivateClientToken } from "./config.js";
+import { launchDesktop } from "./desktop-launch.js";
+import { macTunnel } from "./mac-tunnel.js";
+import { uninstallGateway } from "./uninstall.js";
+import { macDesktop } from "./mac-desktop.js";
 
 const help = `gateway — local subscription and API inference
 
   gateway init [--config PATH]
+  gateway setup --from-config PATH [--config DESTINATION]
+  gateway setup --client --port PORT --token-file PATH [--config DESTINATION]
+  gateway desktop [--config PATH] [--native-home PATH]
+  gateway desktop register|unregister|status
+  gateway uninstall
+  gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway providers [--config PATH] [--json]
@@ -31,7 +44,7 @@ const help = `gateway — local subscription and API inference
   gateway token [--config PATH]   Credential helper; prints the local client token.
   gateway token --file PATH      Credential helper for a trusted remote gateway.
 
-Defaults: --config ./gateway.local.json (or GATEWAY_CONFIG).
+Defaults: GATEWAY_CONFIG, ./gateway.local.json, then the installed user configuration.
 Help/version require no configuration. API keys are referenced by environment name.
 Serve runs in the foreground; Ctrl-C stops requests and children. macOS service setup is explicit.
 `;
@@ -43,15 +56,22 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
-  if (argv.includes("--version")) { process.stdout.write("0.1.0\n"); return; }
+  if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
+    "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" },
+    client: { type: "boolean" },
+    "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
-  if (values.port && command !== "serve") throw new Error("--port is only valid for serve");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
+  if ((values["native-home"] || values.app) && command !== "desktop") throw new Error("--native-home and --app are only valid for desktop");
+  if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
+  if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
+  if (command !== "tunnel" && [values["tunnel-id"], values.host, values["remote-port"], values.reverse, values["ssh-config"]].some(Boolean)) throw new Error("Tunnel options are only valid for tunnel");
   if (values.model && !["codex-config", "catalog"].includes(command)) throw new Error("--model is only valid for codex-config or catalog");
   if ((values.select || values.load) && command !== "discover") throw new Error("--select and --load are only valid for discover");
   if (values["no-browser"] && command !== "login") throw new Error("--no-browser is only valid for login");
@@ -59,20 +79,37 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (command !== "token" || values.config) throw new Error("--file is only valid for token without --config");
     process.stdout.write(await readClientToken(resolve(values.file)) + "\n"); return;
   }
+  if (command === "setup" && values.client && values["token-file"]) {
+    if (!values.port || values["from-config"] || values.endpoint || values.catalog) throw new Error("Client setup requires --port and --token-file");
+    process.stdout.write(JSON.stringify(await setupClient(await configPath(values.config), Number(values.port), resolve(values["token-file"])), null, 2) + "\n"); return;
+  }
   if (values.endpoint || values["token-file"] || values.catalog) {
     if (command !== "codex-config" || !values.model || !values.endpoint || !values["token-file"] || values.config) throw new Error("Remote codex-config requires --model, --endpoint and --token-file, without --config");
     const tokenFile = resolve(values["token-file"]);
     process.stdout.write(await remoteCodexSettings(values.model, values.endpoint, tokenFile, resolve(values.catalog || `${dirname(tokenFile)}/codex-models.json`))); return;
   }
-  const path = resolve(values.config || process.env.GATEWAY_CONFIG || "gateway.local.json");
+  const path = await configPath(values.config);
+  if (command === "uninstall") { process.stdout.write(JSON.stringify(await uninstallGateway(path), null, 2) + "\n"); return; }
+  if (command === "setup") {
+    if (!values["from-config"]) throw new Error("setup requires --from-config; use gateway init for a new registration");
+    process.stdout.write(JSON.stringify(await setupGateway(resolve(values["from-config"]), path, values.client), null, 2) + "\n"); return;
+  }
+  if (command === "desktop") {
+    if (id && values["native-home"]) throw new Error("Persistent desktop registration uses the original native home; --native-home is only for a test launch");
+    if (id) process.stdout.write(JSON.stringify(await macDesktop(id, path, values.app)) + "\n");
+    else process.stdout.write(JSON.stringify(await launchDesktop(path, values["native-home"], values.app)) + "\n");
+    return;
+  }
   if (command === "service") { process.stdout.write(JSON.stringify(await macService(id, path), null, 2) + "\n"); return; }
   if (command === "init") {
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, JSON.stringify(defaults, null, 2) + "\n", { flag: "wx", mode: 0o600 });
     process.stdout.write(`${path}\n`); return;
   }
   const config = await loadConfig(path);
+  if (command === "tunnel") { process.stdout.write(JSON.stringify(await macTunnel(id, { id: values["tunnel-id"] || "", host: values.host, port: Number(values.port), remotePort: Number(values["remote-port"]), reverse: values.reverse, sshConfig: values["ssh-config"] }, config.stateDirectory), null, 2) + "\n"); return; }
   if (command === "catalog") {
-    const catalog = modelCatalog(config);
+    const catalog = config.clientOnly ? await remoteCatalog(config) : modelCatalog(config);
     if (values.model) catalog.models = catalog.models.filter(model => model.slug === values.model);
     if (!catalog.models.length) throw new Error("No configured model matches the selection");
     process.stdout.write(JSON.stringify(catalog, null, 2) + "\n"); return;
@@ -101,6 +138,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(values.json ? JSON.stringify({ providers }, null, 2) + "\n" : providers.map(p => `${p.id}\t${p.type}\t${p.models.join(", ")}`).join("\n") + "\n"); return;
   }
   if (command === "doctor") {
+    if (config.clientOnly) { const catalog = await remoteCatalog(config); process.stdout.write(JSON.stringify({ ready: true, clientOnly: true, models: catalog.models.length, providerCredentialsCopied: false }, null, 2) + "\n"); return; }
     const exec = promisify(execFile);
     const providers = await Promise.all(config.providers.map(async provider => {
       if (provider.type === "copilot-subscription") {
@@ -114,18 +152,19 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           return { id: provider.id, ready: status.loggedIn === true && status.authMethod === "claude.ai", detail: "Claude subscription login" };
         } catch { return { id: provider.id, ready: false, detail: "Claude CLI or subscription login unavailable" }; }
       }
-      const api = provider.type === "responses-api" || provider.type === "anthropic-api";
-      const ready = api ? Boolean(process.env[provider.apiKeyEnv!]) : await stat(provider.credentialFile!).then(() => true, () => false);
+      const api = ["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type);
+      const ready = provider.credentialFile ? await stat(provider.credentialFile).then(() => true, () => false) : Boolean(process.env[provider.apiKeyEnv!]);
       return { id: provider.id, ready, detail: api ? "API credential presence" : "Login file presence; inference verifies access" };
     }));
     process.stdout.write(values.json ? JSON.stringify({ providers }, null, 2) + "\n" : providers.map(p => `${p.id}\t${p.ready ? "ready" : "login needed"}\t${p.detail}`).join("\n") + "\n"); return;
   }
   if (command === "codex-config") {
-    if (!values.model || !config.providers.some(p => Object.hasOwn(p.models, values.model!))) throw new Error("--model must name a configured alias");
+    const catalog = config.clientOnly ? await remoteCatalog(config) : modelCatalog(config);
+    if (!values.model || !catalog.models.some(model => model.slug === values.model)) throw new Error("--model must name a configured alias");
     if (!config.port) throw new Error("Use a fixed port before generating Codex configuration");
     const catalogPath = resolve(config.stateDirectory, "codex-models.json");
-    await writePrivateJson(catalogPath, modelCatalog(config));
-    process.stdout.write(codexSettings(values.model, catalogPath, `http://127.0.0.1:${config.port}/v1`, ["--config", path], config.timeoutMs)); return;
+    await writePrivateJson(catalogPath, catalog);
+    process.stdout.write(codexSettings(values.model, catalogPath, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path], config.timeoutMs)); return;
   }
   if (command === "login") {
     const provider = config.providers.find(p => p.id === id);
@@ -145,7 +184,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           await promisify(execFile)(opener, args, { timeout: 10000 });
         }
       }, control.signal); } finally { process.off("SIGINT", interrupt); }
-    } else throw new Error(`Configure the ${provider.apiKeyEnv} environment variable for this API provider`);
+    } else throw new Error("Configure this API provider's credentialFile or apiKeyEnv instead of subscription login");
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }
   if (values.port) { const port = Number(values.port); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be 1 through 65535"); config.port = port; }
@@ -163,6 +202,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (closing) return;
     if (server.restartWhenIdle(() => process.exit(0))) closing = true;
   });
+}
+
+async function remoteCatalog(config: GatewayConfig): Promise<{ models: Array<Record<string, unknown>> }> {
+  const token = await readPrivateClientToken(resolve(config.stateDirectory, "client-token"));
+  const response = await fetch(`http://127.0.0.1:${config.port}/v1/model-catalog`, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(10000) });
+  if (!response.ok) throw new Error(`Remote gateway returned HTTP ${response.status}; check its tunnel`);
+  const text = await response.text(); if (text.length > 1024 * 1024) throw new Error("Remote catalog exceeds 1 MiB");
+  const catalog = JSON.parse(text) as { models: Array<Record<string, unknown>> };
+  if (!Array.isArray(catalog.models)) throw new Error("Remote gateway returned an invalid catalog");
+  return catalog;
 }
 
 if (process.argv[1] && await realpath(process.argv[1]).catch(() => resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {

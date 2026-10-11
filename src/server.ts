@@ -5,6 +5,7 @@ import { ClaudeSubscription } from "./providers/claude.js";
 import { CopilotSubscription } from "./providers/copilot.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
+import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { ResponsesTranslationError, responsesToChatRequest } from "./protocol/request.js";
@@ -14,7 +15,7 @@ import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reas
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 export function createProvider(config: ProviderConfig): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : new ResponsesAPI(config);
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;
@@ -26,6 +27,7 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
 }
 export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean };
 export async function startGateway(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>): Promise<GatewayServer> {
+  if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
   const token = await gatewayToken(config.stateDirectory);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
     const adapter = factory(provider);

@@ -46,7 +46,7 @@ function request(method, params) {
 const lines = createInterface({ input: child.stdout });
 lines.on('line', line => {
   let message; try { message = JSON.parse(line); } catch { return; }
-  appendFileSync(resolve(directory, 'rpc.jsonl'), JSON.stringify(message) + '\n');
+  appendFileSync(resolve(directory, 'rpc.jsonl'), JSON.stringify({ id: message.id, method: message.method, errorCode: message.error?.code }) + '\n');
   if (message.id !== undefined && pending.has(message.id)) {
     const entry = pending.get(message.id); pending.delete(message.id); clearTimeout(entry.timeout);
     if (message.error) entry.reject(new Error(JSON.stringify(message.error))); else entry.resolve(message.result);

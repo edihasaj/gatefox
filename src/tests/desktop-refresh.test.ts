@@ -8,9 +8,10 @@ import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 import { modelCatalog } from "../catalog.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
+import { writePrivateJson } from "../config.js";
 
-async function client() {
-  const files = await shimFiles();
+async function client(files?: Awaited<ReturnType<typeof shimFiles>>) {
+  files ??= await shimFiles();
   const child = spawn(process.execPath, [files.cli, "codex-shim", "--config", files.config, "--codex", files.backend, "--", "app-server"], { stdio: ["pipe", "pipe", "pipe"], env: files.env });
   child.stderr.resume(); const lines = createInterface({ input: child.stdout }); let sequence = 0;
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
@@ -23,7 +24,7 @@ async function client() {
     pending.set(id, { resolve, reject, timer }); child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
   });
   await rpc("initialize", { clientInfo: { name: "gateway_test", version: "1" } });
-  return { ...files, rpc, stop: async () => { const closed = once(child, "close"); child.stdin.end(); await closed; lines.close(); files.close(); } };
+  return { ...files, rpc, stop: async (keepCatalog = false) => { const closed = once(child, "close"); child.stdin.end(); await closed; lines.close(); if (!keepCatalog) files.close(); } };
 }
 
 test("live additions use a new gateway catalog while native and loaded gateway chats retain their engines", { timeout: 15000 }, async () => {
@@ -85,4 +86,17 @@ test("missing gateway access cannot route an unknown model through the native ac
     await assert.rejects(c.rpc("thread/start", { model: "claude/new-not-discovered" }), /fetch failed|HTTP|discovery/);
     assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
   } finally { await c.stop(); }
+});
+
+test("credential-free clients read saved gateway chats before model discovery and resume them", { timeout: 15000 }, async () => {
+  const files = await shimFiles(); files.value.providers = []; files.value.clientOnly = true; await writePrivateJson(files.config, files.value);
+  const first = await client(files); const started = await first.rpc("thread/start", { model: "claude/model" });
+  await first.rpc("thread/unsubscribe", { threadId: started.thread.id }); await first.stop(true);
+  const reopened = await client(files);
+  try {
+    const read = await reopened.rpc("thread/read", { threadId: started.thread.id, includeTurns: false }); assert.equal(read.thread.modelProvider, "subscription_gateway");
+    const resumed = await reopened.rpc("thread/resume", { threadId: started.thread.id }); assert.equal(resumed.modelProvider, "subscription_gateway");
+    assert.equal((await reopened.rpc("account/read")).account.email, "primary-test-account");
+    assert.equal(await readFile(join(files.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
+  } finally { await reopened.stop(); }
 });

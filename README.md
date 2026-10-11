@@ -21,23 +21,50 @@ token overrides are removed. The adapter verifies the reported subscription
 route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
 
-Requires Node 22+ and the native CLI for each configured subscription provider.
+The Apple Silicon installer bundles a verified Node runtime. Subscription
+inference hosts also need the native CLI for each configured provider. Clients
+need the signed Codex desktop app and an authenticated SSH connection to the host.
 
 ```sh
-npm ci
-npm run build
-node dist/cli.js init
-node dist/cli.js login codex
-node dist/cli.js discover claude --load
-node dist/cli.js discover codex --load
-node dist/cli.js doctor
-node dist/cli.js serve
+gh release download v0.2.0 -R edihasaj/subscription-gateway \
+  --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+tar -xzf subscription-gateway-0.2.0-macos-arm64.tar.gz
+./subscription-gateway-0.2.0-macos-arm64/install
+gateway --version
 ```
 
-In another terminal, generate Codex settings:
+The installer needs no administrator access or repository checkout. It installs
+versioned files under the user's local installation prefix. It refuses an
+unrelated `gateway` command and preserves provider registrations during upgrades.
+An earlier npm installation of this package is redirected to the installed command.
+
+For a new inference host:
 
 ```sh
-node dist/cli.js codex-config --model codex/gpt-6.1-sol > gateway.codex.toml
+gateway init
+gateway login claude
+gateway login codex
+gateway discover claude --load
+gateway discover codex --load
+gateway doctor
+gateway service install
+gateway desktop register
+```
+
+For an existing development setup, `gateway setup --from-config PATH` copies only
+gateway-owned registrations, the client token, and private preferences into the
+installed data directory. It never copies native Codex authentication or settings.
+
+Desktop registration applies to future normal app launches and is restored at
+login. Quit the app normally once after initial registration. Run `gateway desktop`
+to launch immediately with the adapter. The launcher refuses to stop a running app.
+`gateway desktop status` checks registration; `gateway desktop unregister` removes it.
+
+In another terminal, generate optional Codex CLI settings:
+
+```sh
+gateway codex-config --model codex/gpt-6.1-sol > gateway.codex.toml
 ```
 
 Keep the native account’s base configuration unchanged. Save the generated file
@@ -54,9 +81,9 @@ see the remaining limits in [verification](docs/verification.md).
 Subscription providers support account-specific discovery:
 
 ```sh
-node dist/cli.js discover claude --load
-node dist/cli.js discover codex --load
-node dist/cli.js codex-config --model codex/gpt-6.1-sol > gateway.codex.toml
+gateway discover claude --load
+gateway discover codex --load
+gateway codex-config --model codex/gpt-6.1-sol > gateway.codex.toml
 ```
 
 Claude discovery reads the official CLI initialization catalog without sending an
@@ -94,6 +121,20 @@ Changing the listener port or state directory requires a daemon restart.
 Development gate: `npm run build && npm run check && npm test`.
 Adapters also exist for ordinary APIs; the current delivery
 focus is Claude, Codex, and Copilot subscriptions.
+
+`chat-completions-api` supports local vLLM servers and compatible APIs through
+their native streaming endpoint. API providers accept either `credentialFile`
+(owner-only) or `apiKeyEnv`. Local HTTP endpoints must use loopback; reach a DGX
+Spark through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
+streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
+Its current gateway route supports text only.
+
+Gateway agents can read and rename their current chat with `gateway_chat_title`.
+Names use native saved metadata and live name-update events. Saved gateway chats
+remain readable before model discovery and resume through the registered provider.
+
+`gateway uninstall` moves the installed files to Trash, removes managed services
+and desktop registration, and preserves the data directory and credentials.
 
 Inline image attachments and image tool results use native provider image inputs.
 The verified formats are PNG, JPEG, GIF, and WebP. See [Responses support](docs/responses.md)

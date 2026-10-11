@@ -1,11 +1,16 @@
 import type { WireEvent } from "./types.js";
 
-export async function* readEvents(body: AsyncIterable<Uint8Array>): AsyncGenerator<WireEvent> {
+export async function* readEvents(body: AsyncIterable<Uint8Array>, format: "responses" | "chat" = "responses"): AsyncGenerator<WireEvent> {
   const decoder = new TextDecoder("utf-8", { fatal: true }); let buffer = "";
   const parse = (frame: string): WireEvent | null => {
     const data = frame.split(/\r?\n/).filter(line => line.startsWith("data:")).map(line => line.slice(5).trimStart()).join("\n");
-    if (!data || data === "[DONE]") return null;
+    if (!data) return null;
+    if (data === "[DONE]") return format === "chat" ? { type: "chat.done" } : null;
     const event = JSON.parse(data) as WireEvent;
+    if (format === "chat") {
+      if (!event || typeof event !== "object" || (!Array.isArray(event.choices) && !event.error)) throw new Error("Invalid chat stream event");
+      return { ...event, type: event.error ? "error" : "chat.chunk" };
+    }
     if (!event || typeof event.type !== "string") throw new Error("Invalid provider stream event");
     return event;
   };

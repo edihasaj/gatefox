@@ -23,14 +23,14 @@ over authenticated SSH into an owner-only file. Do not transfer provider tokens:
 ```sh
 umask 077
 mkdir -p .state
-ssh user@host 'cd /path/to/subscription-gateway && node dist/cli.js token' \
+ssh user@host 'gateway token' \
   > .state/remote-client-token
 ```
 
 Fetch the host's catalog and generate client settings:
 
 ```sh
-node dist/cli.js codex-config --model claude-sonnet-4-6 \
+gateway codex-config --model claude-sonnet-4-6 \
   --endpoint http://127.0.0.1:3458/v1 \
   --token-file .state/remote-client-token > gateway.codex.toml
 ```
@@ -55,3 +55,20 @@ loopback port. Use an absolute client state directory containing the private
 `client-token` file. The adapter fetches fresh public metadata from the inference
 host, so it does not need provider credentials or a local account discovery run.
 CLI profile catalogs remain startup snapshots.
+
+Installed clients can use a configuration without local providers:
+
+```sh
+gateway setup --client --port 3459 --token-file ./client-token
+gateway tunnel install --tunnel-id host --host user@host \
+  --port 3459 --remote-port 3457
+gateway doctor
+gateway desktop register
+```
+
+Copy the client token through authenticated SSH with owner-only permissions.
+`gateway doctor` verifies the forwarded public catalog. Each device needs its own
+desktop registration; syncing a chat does not register its model provider.
+Register the backend that owns the chat's workspace. Sharing the catalog does
+not transfer local workspace files or automatically configure an SSH execution
+backend that bypasses the desktop adapter.

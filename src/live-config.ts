@@ -25,7 +25,7 @@ export class LiveConfig {
     if (stamp === this.stamp) return this.value;
     const parsed = await loadConfig(this.path);
     const next = this.portOverride === undefined ? parsed : { ...parsed, port: this.portOverride };
-    if (next.port !== this.value.port || next.stateDirectory !== this.value.stateDirectory) throw new Error("Changing the gateway port or state directory requires restarting the daemon");
+    if (next.port !== this.value.port || next.stateDirectory !== this.value.stateDirectory || next.clientOnly !== this.value.clientOnly) throw new Error("Changing the gateway port, mode or state directory requires restarting the daemon");
     const before = this.pinnedBindings; const after = bindings(next);
     for (const [alias, route] of before) if (after.has(alias) && after.get(alias) !== route) throw new Error("An existing model alias cannot be rebound live; add a new alias or restart explicitly");
     for (const [alias, route] of after) this.pinnedBindings.set(alias, route);

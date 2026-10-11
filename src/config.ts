@@ -3,7 +3,7 @@ import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/prom
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
-export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api";
+export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api";
 export interface ProviderConfig {
   id: string;
   type: ProviderKind;
@@ -30,6 +30,7 @@ export interface GatewayConfig {
   providers: ProviderConfig[];
   maxConcurrent?: number;
   timeoutMs?: number;
+  clientOnly?: boolean;
 }
 
 export function validateConfig(value: unknown, directory = process.cwd()): GatewayConfig {
@@ -37,7 +38,9 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   const config = value as GatewayConfig;
   if (config.version !== 1) throw new Error("Unsupported configuration version; expected 1");
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) throw new Error("port must be 0 through 65535");
-  if (!Array.isArray(config.providers) || !config.providers.length) throw new Error("At least one provider is required");
+  if (config.clientOnly !== undefined && typeof config.clientOnly !== "boolean") throw new Error("clientOnly must be boolean");
+  if (!Array.isArray(config.providers) || (!config.clientOnly && !config.providers.length)) throw new Error("At least one provider is required");
+  if (config.clientOnly && (config.providers.length || !config.port)) throw new Error("Remote clients require a fixed forwarded port and no local providers");
   if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   const ids = new Set<string>(); const aliases = new Set<string>();
@@ -45,7 +48,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
-    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
+    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
       if (!alias || typeof model !== "string" || !model) throw new Error(`${provider.id}: model aliases and IDs must be non-empty strings`);
@@ -59,8 +62,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
       if (metadata.inputModalities !== undefined && (!Array.isArray(metadata.inputModalities) || !metadata.inputModalities.includes("text") || metadata.inputModalities.some(modality => !["text", "image"].includes(modality)) || new Set(metadata.inputModalities).size !== metadata.inputModalities.length)) throw new Error("Input modalities must contain text and optionally image");
     }
-    if (provider.type === "responses-api" || provider.type === "anthropic-api") {
-      if (!provider.baseUrl || !provider.apiKeyEnv || !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) throw new Error(`${provider.id}: baseUrl and apiKeyEnv are required`);
+    if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
+      if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);
       const url = new URL(provider.baseUrl);
       if (url.username || url.password || url.search || url.hash) throw new Error("baseUrl must not contain credentials, a query, or a fragment");
       if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
@@ -69,7 +72,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     return { ...provider, models: { ...provider.models }, ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
   });
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
-    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 120000 };
+    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 120000, ...(config.clientOnly ? { clientOnly: true } : {}) };
 }
 
 export async function loadConfig(path: string): Promise<GatewayConfig> {
@@ -89,14 +92,24 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
 }
 
 export async function readClientToken(path: string): Promise<string> {
+  const token = await readPrivateCredential(path);
+  if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error("Invalid gateway client token");
+  return token;
+}
+
+export async function readPrivateCredential(path: string): Promise<string> {
   const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
   try {
     const info = await file.stat();
     if (!info.isFile() || info.size > 4096 || (process.platform !== "win32" && ((info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()))) throw new Error("Client token must be a private file owned by this user");
     const token = (await file.readFile("utf8")).trim();
-    if (!/^[A-Za-z0-9_-]{32,256}$/.test(token)) throw new Error("Invalid gateway client token");
+    if (!token || /[\r\n]/.test(token)) throw new Error("Invalid private credential");
     return token;
   } finally { await file.close(); }
+}
+
+export async function apiCredential(provider: ProviderConfig): Promise<string | undefined> {
+  return provider.credentialFile ? readPrivateCredential(provider.credentialFile) : process.env[provider.apiKeyEnv!];
 }
 
 

@@ -9,6 +9,7 @@ import { prepareNativeCatalog } from "./native-catalog.js";
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { emitMessage, isId, jsonLines, object } from "./app-server-connection.js";
+import { gatewayCommand } from "./command.js";
 
 export async function codexShim(argv: string[]): Promise<void> {
   const separator = argv.indexOf("--");
@@ -34,11 +35,11 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (listen !== "stdio://") throw new Error("codex-shim supports app-server stdio transport only");
   const path = resolve(values.config); const config = await loadConfig(path);
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
-  const helper = fileURLToPath(new URL("./cli.js", import.meta.url));
+  const helper = gatewayCommand();
   const overrides = {
     name: "Subscription Gateway", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_max_retries: 0, stream_idle_timeout_ms: config.timeoutMs,
-    "auth.command": process.execPath, "auth.args": [helper, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
+    "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
   };
   const prepared = await prepareNativeCatalog(executable, forwarded, config);
   const source = new DesktopCatalog(config, prepared.native, prepared.path);

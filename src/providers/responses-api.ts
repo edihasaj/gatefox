@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "../config.js";
+import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken } from "../auth/chatgpt.js";
 import { normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
@@ -10,7 +10,7 @@ export class ResponsesAPI implements Provider {
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
-    try { credential = plan ? await accessToken(this.config.credentialFile!) : process.env[this.config.apiKeyEnv!]; }
+    try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
     catch { throw new ProviderError("authentication", "ChatGPT provider requires login", 401); }
     if (!credential) throw new ProviderError("authentication", "API provider credential is missing", 401);
     const body: ResponsesRequest = { ...request, stream: true };
