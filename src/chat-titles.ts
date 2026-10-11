@@ -5,7 +5,7 @@ export function withTitleTool(params: Message): Message {
   const tools = Array.isArray(params.dynamicTools) ? params.dynamicTools : [];
   if (tools.some(tool => object(tool).name === titleTool)) throw new Error("The gateway chat-title tool name is reserved");
   return { ...params, dynamicTools: [...tools, { type: "function", name: titleTool,
-    description: "Read or rename only the current chat's saved title. Read the current name before renaming. Use a short descriptive title for the task, respecting deliberate user titles.",
+    description: "Read or rename only the current chat's saved title when the user explicitly requests it. The desktop app owns automatic chat naming; do not call this tool routinely. Read the current name before a requested rename and preserve deliberate user titles.",
     inputSchema: { type: "object", properties: { operation: { type: "string", enum: ["read", "rename"] }, title: { type: "string" } }, required: ["operation"], additionalProperties: false } }] };
 }
 export async function handleTitleCall(params: Message, request: (method: string, params: Message) => Promise<Message>): Promise<Message> {

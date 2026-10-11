@@ -77,7 +77,9 @@ export class AppServerBackends {
       }
       if (this.engines.filter(engine => !engine.connection.closed).length >= 4) throw new Error("Four gateway catalog versions still have loaded chats. Close an older gateway chat before selecting a newly added model; native chats remain available.");
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
-      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", snapshot.revision), this.settings);
+      const latest = object((await this.native.request("config/read", {})).config);
+      const settings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
+      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", snapshot.revision), settings);
       const path = resolve(this.config.stateDirectory, `desktop-catalog-${snapshot.revision}.json`);
       await writePrivateJson(path, this.catalog.combined(snapshot));
       const forwarded: string[] = [];

@@ -41,6 +41,11 @@ settings for a private snapshot, excludes native provider authentication setting
 and never copies the primary auth file. Automatic project-trust writes therefore
 land in the gateway executor's private configuration.
 
+Before creating a gateway executor, the adapter rereads the native agent policy.
+Changes such as `agents.max_concurrent_threads_per_session = 30` therefore reach
+new executors instead of being replaced by the startup snapshot. Existing work
+keeps its loaded settings until its session reloads.
+
 Executors share native chat storage and SQLite metadata so saved gateway chats
 remain discoverable through the desktop's normal thread list. User instructions,
 skills, and plugins keep one source through links. The global AGENTS.md link

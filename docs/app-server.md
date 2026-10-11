@@ -103,7 +103,9 @@ existing CLI override. `gateway desktop unregister` removes its own overrides.
 This keeps normal Dock launches configured after initial activation without
 editing the Obsidian-managed native configuration.
 
-Gateway chats receive a current-chat title tool. It reads native saved metadata
+Gateway chats receive a current-chat title tool for explicit user requests.
+The desktop app owns automatic naming; models must not call the helper routinely.
+The tool reads native saved metadata
 and uses `thread/name/set` for renames. The adapter forwards the resulting live
 name notification and rejects title arguments targeting another chat. Native
 chats retain their existing tools. Read-only saved-chat metadata needs neither

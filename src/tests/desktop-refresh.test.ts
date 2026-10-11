@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 import { modelCatalog } from "../catalog.js";
@@ -55,6 +55,19 @@ test("live additions use a new gateway catalog while native and loaded gateway c
     const resumed = await c.rpc("thread/resume", { threadId: old.thread.id, model: "claude/new" });
     assert.equal(resumed.modelProvider, "subscription_gateway");
     assert.equal((await c.rpc("engine/info", { threadId: old.thread.id })).pid, latestEngine.pid);
+  } finally { await c.stop(); }
+});
+
+test("new gateway executors inherit agent limits changed after adapter initialization", { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    await writeFile(join(c.nativeHome, "agent-policy.json"), JSON.stringify({ agents: { max_concurrent_threads_per_session: 30 } }));
+    const started = await c.rpc("thread/start", { model: "claude/model" });
+    const engine = await c.rpc("engine/info", { threadId: started.thread.id });
+    const settings = await readFile(join(engine.home, "config.toml"), "utf8");
+    assert.ok(settings.includes('"max_concurrent_threads_per_session" = 30'));
+    assert.equal(await readFile(join(c.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
+    assert.equal(engine.primaryAuthPresent, false);
   } finally { await c.stop(); }
 });
 

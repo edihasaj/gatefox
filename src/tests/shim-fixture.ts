@@ -36,7 +36,7 @@ createInterface({input:process.stdin}).on('line',line=>{
  if(!m.method&&pending){if(m.id!==pending.id||m.result.decision!=='accept')process.exit(9);send({method:'serverRequest/resolved',params:{threadId:pending.params.threadId,requestId:pending.id}});send({id:pending.id,result:{turn:{id:'turn'}}});send({method:'turn/completed',params:{threadId:pending.params.threadId,turn:{id:'turn',status:'completed'}}});pending=null;return;}
  if(m.id===undefined)return;
  if(m.method==='model/list')send({id:m.id,result:{data:[{id:'native',model:'native',displayName:'Native'}],nextCursor:null}});
- else if(m.method==='config/read')send({id:m.id,result:{config:{model:'native',model_provider:'openai',model_catalog_json:${JSON.stringify(catalog)}}}});
+ else if(m.method==='config/read')send({id:m.id,result:{config:{model:'native',model_provider:'openai',model_catalog_json:${JSON.stringify(catalog)},...(fs.existsSync(path.join(home,'agent-policy.json'))?JSON.parse(fs.readFileSync(path.join(home,'agent-policy.json'),'utf8')):{})}}});
  else if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt',email:'primary-test-account'}}});
  else if(m.method==='thread/start'){
    const thread={id:process.pid+'-'+(++serial),modelProvider:m.params.modelProvider||'openai',model:m.params.model,ephemeral:!!m.params.ephemeral};threads.set(thread.id,thread);
