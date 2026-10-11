@@ -26,11 +26,11 @@ inference hosts also need the native CLI for each configured provider. Clients
 need the signed Codex desktop app and an authenticated SSH connection to the host.
 
 ```sh
-gh release download v0.2.0 -R edihasaj/subscription-gateway \
+gh release download v0.2.1 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.0-macos-arm64.tar.gz
-./subscription-gateway-0.2.0-macos-arm64/install
+tar -xzf subscription-gateway-0.2.1-macos-arm64.tar.gz
+./subscription-gateway-0.2.1-macos-arm64/install
 gateway --version
 ```
 

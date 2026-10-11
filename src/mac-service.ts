@@ -72,6 +72,8 @@ export async function macService(action: string | undefined, configPath: string)
   const current = await status(target);
   if (current.installed && existing === undefined) throw new Error("An existing service has this label without a managed LaunchAgent; refusing to replace it");
   if (existing !== contents) {
+    let disabled = false; let unloaded = false;
+    try {
     if (current.installed && current.pid) {
       const { stdout } = await exec("/usr/bin/plutil", ["-extract", "ProgramArguments", "json", "-o", "-", path]);
       const args: unknown = JSON.parse(stdout);
@@ -79,15 +81,28 @@ export async function macService(action: string | undefined, configPath: string)
       const previous = await loadConfig(args[args.indexOf("--config") + 1]);
       const health = await (await fetch(`http://127.0.0.1:${previous.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; idleRestart?: boolean };
       if (health.active !== 0 || health.idleRestart !== true) throw new Error("Finish active gateway work before upgrading the managed service");
+      // Disabling keeps the current process running but prevents KeepAlive from
+      // starting the old command between its idle exit and plist replacement.
+      await exec("/bin/launchctl", ["disable", target], { timeout: 5000 }); disabled = true;
       process.kill(current.pid, "SIGUSR2");
       let stopped = false;
       for (let attempt = 0; attempt < 30; attempt++) { await delay(100); const next = await status(target); if (!next.pid) { stopped = true; break; } if (next.pid !== current.pid) throw new Error("Service restarted before migration; retry while idle"); }
       if (!stopped) throw new Error("New gateway work prevented the service upgrade; its settings were not changed");
     }
-    if ((await status(target)).installed) await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 });
+    if ((await status(target)).installed) { await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 }); unloaded = true; }
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${process.pid}.tmp`; await writeFile(temporary, contents, { mode: 0o600 }); await rename(temporary, path);
+    await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); disabled = false;
+    await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 });
+    } catch (error) {
+      if (unloaded && existing) {
+        const temporary = `${path}.${process.pid}.rollback`; await writeFile(temporary, existing, { mode: 0o600 }); await rename(temporary, path);
+        await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); disabled = false;
+        await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 });
+      }
+      throw error;
+    } finally { if (disabled) await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); }
   }
-  if (!current.installed || existing !== contents) await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 });
+  if (!current.installed && existing === contents) { await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }); }
   return { service: label, ...await status(target), port: config.port };
 }

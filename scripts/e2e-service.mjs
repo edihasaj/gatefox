@@ -22,7 +22,6 @@ const plist = join(homedir(), "Library/LaunchAgents/com.edihasaj.subscription-ga
 assert.equal(await access(plist).then(() => true, () => false), false, "Refusing to replace an existing LaunchAgent file");
 const state = await mkdtemp(join(tmpdir(), "gateway-service-check-"));
 const config = join(state, "gateway.json");
-const envName = `GATEWAY_SERVICE_TEST_${process.pid}`;
 let started; let release; let calls = 0; let installed = false; let socket;
 const upstream = createServer(async (req, res) => {
   for await (const ignored of req) { void ignored; }
@@ -37,7 +36,9 @@ await new Promise(resolve => upstream.listen(0, "127.0.0.1", resolve));
 const upstreamPort = upstream.address().port;
 const reservation = createServer(); await new Promise(resolve => reservation.listen(0, "127.0.0.1", resolve));
 const port = reservation.address().port; await new Promise(resolve => reservation.close(resolve));
-await writeFile(config, JSON.stringify({ version: 1, port, stateDirectory: state, providers: [{ id: "test", type: "responses-api", baseUrl: `http://127.0.0.1:${upstreamPort}`, apiKeyEnv: envName, models: { test: "test" } }] }), { mode: 0o600 });
+const keyFile = join(state, "fixture-key"); await writeFile(keyFile, "fixture-only", { mode: 0o600 });
+await writeFile(config, JSON.stringify({ version: 1, port, stateDirectory: state, providers: [{ id: "test", type: "responses-api", baseUrl: `http://127.0.0.1:${upstreamPort}`, credentialFile: keyFile, models: { test: "test" } }] }), { mode: 0o600 });
+const upgradeConfig = join(state, "upgraded.json"); await writeFile(upgradeConfig, await readFile(config), { mode: 0o600 });
 const token = await gatewayToken(state);
 const base = `http://127.0.0.1:${port}`;
 async function waitFor(check) {
@@ -47,19 +48,12 @@ async function waitFor(check) {
 const inference = () => fetch(base + "/v1/responses", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "test", input: "test" }) });
 try {
   await service("install", config); installed = true;
-  // SSH launchctl environments do not necessarily propagate into the GUI domain.
-  // Add only this dummy fixture credential to the temporary managed plist.
-  const domain = `gui/${process.getuid()}`;
-  await exec("/bin/launchctl", ["bootout", `${domain}/com.edihasaj.subscription-gateway`]);
-  const contents = await readFile(plist, "utf8");
-  assert.ok(contents.includes("</dict>\n<key>RunAtLoad"));
-  await writeFile(plist, contents.replace("</dict>\n<key>RunAtLoad", `<key>${envName}</key><string>fixture-only</string></dict>\n<key>RunAtLoad`), { mode: 0o600 });
-  await exec("/bin/launchctl", ["bootstrap", domain, plist]);
   await waitFor(async () => (await (await fetch(base + "/health")).json()).idleRestart === true);
   const before = await service("status");
   const began = new Promise(resolve => { started = resolve; }); const response = inference();
   await Promise.race([began, response.then(async result => { throw new Error(`Inference ended before reaching the fixture: HTTP ${result.status}`); }), delay(10000).then(() => { throw new Error("Fixture inference did not start"); })]);
   await assert.rejects(service("restart", config), /active inference/);
+  await assert.rejects(service("install", upgradeConfig), /active gateway work/);
   assert.equal((await service("status")).pid, before.pid);
   started = undefined; release(); assert.equal((await (await response).json()).output_text, "service-proof");
   socket = connect(port, "127.0.0.1"); await once(socket, "connect");
@@ -72,8 +66,12 @@ try {
   const after = await waitFor(async () => { const status = await service("status"); return status.pid && status.pid !== before.pid ? status : false; });
   await waitFor(async () => (await fetch(base + "/health")).ok);
   assert.equal((await (await inference()).json()).output_text, "service-proof");
-  assert.equal(await gatewayToken(state), token); assert.equal(calls, 2);
-  console.log(JSON.stringify({ activeInferenceProtected: true, partialUploadProtected: true, idleRestartChangedPid: after.pid !== before.pid, recoveryCompleted: true, clientTokenPreserved: true, upstreamCalls: calls }));
+  await service("install", upgradeConfig);
+  const upgraded = await waitFor(async () => { const value = await service("status"); return value.pid && value.pid !== after.pid ? value : false; });
+  await waitFor(async () => (await fetch(base + "/health")).ok);
+  assert.equal((await (await inference()).json()).output_text, "service-proof");
+  assert.equal(await gatewayToken(state), token); assert.equal(calls, 3);
+  console.log(JSON.stringify({ activeInferenceProtected: true, partialUploadProtected: true, idleRestartChangedPid: after.pid !== before.pid, idleUpgradeChangedPid: upgraded.pid !== after.pid, upgradeConfigApplied: (await readFile(plist,"utf8")).includes(upgradeConfig), recoveryCompleted: true, clientTokenPreserved: true, upstreamCalls: calls }));
 } finally {
   socket?.destroy(); release?.();
   if (installed) await service("uninstall", config);
