@@ -72,8 +72,13 @@ try {
   const upgraded = await waitFor(async () => { const value = await service("status"); return value.pid && value.pid !== after.pid ? value : false; });
   await waitFor(async () => (await fetch(base + "/health")).ok);
   assert.equal((await (await inference()).json()).output_text, "service-proof");
-  assert.equal(await gatewayToken(state), token); assert.equal(calls, 3);
-  console.log(JSON.stringify({ activeInferenceProtected: true, partialUploadProtected: true, idleRestartChangedPid: after.pid !== before.pid, idleUpgradeChangedPid: upgraded.pid !== after.pid, upgradeConfigApplied: (await readFile(plist,"utf8")).includes(upgradeConfig), recoveryCompleted: true, clientTokenPreserved: true, upstreamCalls: calls }));
+  assert.equal((await service("status")).pid, upgraded.pid, "Only crash the fixture's managed daemon");
+  process.kill(upgraded.pid, "SIGKILL");
+  const recovered = await waitFor(async () => { const value = await service("status"); return value.pid && value.pid !== upgraded.pid ? value : false; });
+  await waitFor(async () => (await fetch(base + "/health")).ok);
+  assert.equal((await (await inference()).json()).output_text, "service-proof");
+  assert.equal(await gatewayToken(state), token); assert.equal(calls, 4);
+  console.log(JSON.stringify({ activeInferenceProtected: true, partialUploadProtected: true, idleRestartChangedPid: after.pid !== before.pid, idleUpgradeChangedPid: upgraded.pid !== after.pid, automaticCrashRecovery: recovered.pid !== upgraded.pid, upgradeConfigApplied: (await readFile(plist,"utf8")).includes(upgradeConfig), recoveryCompleted: true, clientTokenPreserved: true, upstreamCalls: calls }));
 } finally {
   socket?.destroy(); release?.();
   if (installed) await service("uninstall", config);

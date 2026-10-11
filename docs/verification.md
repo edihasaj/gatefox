@@ -200,6 +200,14 @@ unload its own job only after the idle guard accepts the stop. The client then
 replaces the plist and reenables the job. Failure restores the earlier plist.
 The real MacBook Pro 2 check waits beyond launchd's throttle interval and passed
 active-inference and partial-upload protection, idle restart, idle upgrade with
-the new config, recovery, and the unchanged client token. It made exactly three
+the new config, recovery, and the unchanged client token. On 11 October 2026,
+the installed v0.2.2 runtime also passed abrupt daemon termination: launchd
+started a replacement process and a new inference request completed without
+changing the client token. The extended fixture made exactly four
 calls to the local fixture and removed its temporary service. The working host's
 previous long-running service also migrated successfully through this protocol.
+
+The daemon and SSH tunnels are per-user LaunchAgents with RunAtLoad and KeepAlive.
+They start at login and restart after process exit. Remote clients still require
+the inference host to be awake and reachable; this setup does not provide failover
+to another inference host.
