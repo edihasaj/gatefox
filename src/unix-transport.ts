@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
-import { mkdir, lstat, chmod } from "node:fs/promises";
+import { mkdir, lstat, chmod, link, unlink } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Readable } from "node:stream";
@@ -22,11 +23,15 @@ export async function serveUnix(path: string, signal: AbortSignal,
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o022)) throw new Error("Unix socket directory must be owned by this user and not writable by others");
   try { await lstat(path); throw new Error("Unix socket path is occupied; the existing listener was not replaced"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  // Node unlinks its bind path on close. Bind privately, then expose a hard link
+  // so retiring this listener cannot unlink a newer desktop bootstrap's socket.
+  const boundPath = unixSocketPath("unix://" + resolve(dirname(path), `.gw-${randomBytes(6).toString("hex")}`));
   const server = createServer((_req, res) => { res.writeHead(404); res.end(); });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false });
   const active = new Set<Promise<unknown>>(); const controllers = new Set<AbortController>();
+  let retiring = false; let leaseTimer: NodeJS.Timeout | undefined; let inode: number | undefined;
   server.on("upgrade", (req, socket, head) => {
-    if (signal.aborted || active.size >= 8 || req.headers.origin || !["/", "/rpc"].includes(req.url || "")) { socket.destroy(); return; }
+    if (retiring || signal.aborted || active.size >= 8 || req.headers.origin || !["/", "/rpc"].includes(req.url || "")) { socket.destroy(); return; }
     sockets.handleUpgrade(req, socket, head, ws => {
       const control = new AbortController(); controllers.add(control);
       const input = new Readable({ read() { ws.resume(); } });
@@ -42,15 +47,26 @@ export async function serveUnix(path: string, signal: AbortSignal,
         ws.send(JSON.stringify(message), error => error ? reject(error) : resolve());
       });
       const task = session(input, emit, control.signal).catch(() => { ws.close(1011, "Gateway connection failed"); })
-        .finally(() => { controllers.delete(control); active.delete(task); input.destroy(); ws.terminate(); });
+        .finally(() => { controllers.delete(control); active.delete(task); input.destroy(); ws.terminate(); if (retiring && !active.size) close(); });
       active.add(task);
     });
   });
   const close = () => { for (const controller of controllers) controller.abort(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
   try {
-    server.listen(path); await once(server, "listening"); await chmod(path, 0o600);
+    server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
+    inode = (await lstat(boundPath)).ino;
+    await link(boundPath, path);
+    leaseTimer = setInterval(() => {
+      void lstat(path).then(info => info.ino === inode, () => false).then(owned => {
+        if (!owned) { retiring = true; if (!active.size) close(); }
+      });
+    }, 1000).unref();
     const closed = once(server, "close"); signal.addEventListener("abort", close, { once: true });
     if (signal.aborted) close();
     await closed;
-  } finally { signal.removeEventListener("abort", close); close(); await Promise.allSettled([...active]); sockets.close(); }
+  } finally {
+    clearInterval(leaseTimer); signal.removeEventListener("abort", close); close();
+    await Promise.allSettled([...active]); sockets.close();
+    if (inode !== undefined && await lstat(path).then(info => info.ino === inode, () => false)) await unlink(path).catch(() => {});
+  }
 }

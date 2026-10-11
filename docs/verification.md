@@ -236,3 +236,9 @@ Run `scripts/e2e-unix.mjs` with the installed gateway and package paths, an isol
 native home with public model metadata, a client-only gateway configuration, and
 a dedicated workspace/image fixture. It starts a temporary Unix listener, runs
 the native proxy checks, records only results, and stops its owned processes.
+
+A reconnect regression reproduced Node deleting a replacement Unix socket when
+an older listener closed. The adapter now binds a private socket and exposes an
+inode-checked hard link. A replaced listener keeps its connected clients until
+they disconnect, then retires. Tests prove that old clients continue working and
+closing the old listener leaves the new socket and client usable.

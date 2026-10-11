@@ -2,11 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, writeFile, readFile } from "node:fs/promises";
+import { lstat, writeFile, readFile, rename, mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
-import { unixSocketPath } from "../unix-transport.js";
+import { unixSocketPath, serveUnix } from "../unix-transport.js";
 import { shimFiles } from "./shim-fixture.js";
 
 test("Unix addresses exclude network listeners, relative paths, and oversized socket names", () => {
@@ -55,4 +56,23 @@ test("Unix startup refuses an occupied path without deleting its contents", { sk
   const child = spawn(process.execPath, [fixture.cli, "codex-shim", "--config", fixture.config, "--codex", fixture.backend, "--", "app-server", "--listen=unix://" + path], { env: fixture.env, stdio: "ignore" });
   try { await once(child, "close"); assert.equal(child.exitCode, 2); assert.equal(await readFile(path, "utf8"), "keep-this"); }
   finally { child.kill("SIGTERM"); fixture.close(); }
+});
+
+test("a replacement socket keeps old clients alive and survives old-listener shutdown", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), "gateway-unix-lease-")); const path = join(dir, "rpc.sock");
+  const first = new AbortController(); const second = new AbortController(); const clients: WebSocket[] = [];
+  const echo = async (input: import("node:stream").Readable, emit: (message: Record<string, unknown>) => Promise<void>) => {
+    for await (const chunk of input) await emit(JSON.parse(chunk.toString()));
+  };
+  const a = serveUnix(path, first.signal, echo);
+  const ready = async () => { for (let i = 0; i < 100; i++) { if (await lstat(path).then(() => true, () => false)) return; await delay(10); } throw new Error("Socket not ready"); };
+  const open = async () => { const ws = new WebSocket(`ws+unix://${path}:/rpc`); clients.push(ws); await once(ws, "open"); return ws; };
+  let b: Promise<void> | undefined;
+  try {
+    await ready(); const old = await open(); await rename(path, join(dir, "old.sock"));
+    b = serveUnix(path, second.signal, echo); await ready(); const fresh = await open();
+    await delay(1100); const reply = once(old, "message"); old.send('{"id":"old-still-working"}'); assert.equal(JSON.parse((await reply)[0].toString()).id, "old-still-working");
+    first.abort(); await a;
+    assert.ok((await lstat(path)).isSocket()); const result = once(fresh, "message"); fresh.send('{"id":"new-still-working"}'); assert.equal(JSON.parse((await result)[0].toString()).id, "new-still-working");
+  } finally { for (const ws of clients) ws.terminate(); first.abort(); second.abort(); await a; await b; }
 });
