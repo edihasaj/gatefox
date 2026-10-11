@@ -1,9 +1,11 @@
 import { resolve } from "node:path";
+import { createHash } from "node:crypto";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { titleTool, withTitleTool, handleTitleCall } from "./chat-titles.js";
+import { agentExecutorSettings, readAgentPolicy } from "./agent-profiles.js";
 
 interface Engine { connection: AppServerConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string> }
 
@@ -64,12 +66,13 @@ export class AppServerBackends {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     const snapshot = this.catalog.current();
+    const revision = createHash("sha256").update(snapshot.revision + JSON.stringify(await readAgentPolicy(this.config.stateDirectory) || null)).digest("hex");
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
-    const ready = this.engines.find(engine => engine.revision === snapshot.revision && !engine.connection.closed);
+    const ready = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
     if (ready) return ready;
     const operation = this.creating.then(async () => {
       if (this.closing) throw new Error("Codex desktop connection is closing");
-      const existing = this.engines.find(engine => engine.revision === snapshot.revision && !engine.connection.closed);
+      const existing = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
       if (existing) return existing;
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
@@ -79,7 +82,8 @@ export class AppServerBackends {
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
       const latest = object((await this.native.request("config/read", {})).config);
       const settings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
-      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", snapshot.revision), settings);
+      const agents = await agentExecutorSettings(this.config, settings);
+      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", revision), agents.settings, agents.directory);
       const path = resolve(this.config.stateDirectory, `desktop-catalog-${snapshot.revision}.json`);
       await writePrivateJson(path, this.catalog.combined(snapshot));
       const forwarded: string[] = [];
@@ -92,7 +96,7 @@ export class AppServerBackends {
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
       const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
       if (this.closing) throw new Error("Codex desktop connection is closing");
-      const engine: Engine = { connection: undefined!, revision: snapshot.revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map() };
+      const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map() };
       engine.connection = new AppServerConnection(this.executable, args, message => this.forward(engine.connection, message), () => {
         for (const [id, approval] of this.approvals) if (approval.connection === engine.connection) this.approvals.delete(id);
         this.reverse.delete(engine.connection);

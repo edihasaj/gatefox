@@ -133,6 +133,12 @@ Gateway agents can read and rename their current chat with `gateway_chat_title`.
 Names use native saved metadata and live name-update events. Saved gateway chats
 remain readable before model discovery and resume through the registered provider.
 
+Named gateway agents can use separate models for coordination, verification, and
+implementation. `gateway agents setup` creates gateway-only role files and a
+default worker. Codex 2 Sol coordinating local Qwen with Astra verification passed
+a live delegated file test. See [agent profiles](docs/agents.md) for setup and the
+parent-provider boundary.
+
 `gateway uninstall` moves the installed files to Trash, removes managed services
 and desktop registration, and preserves the data directory and credentials.
 

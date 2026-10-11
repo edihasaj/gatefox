@@ -13,11 +13,16 @@ function toml(value: unknown): string {
 }
 
 /** Share chat storage; isolate every automatic config write and all provider auth. */
-export async function gatewayEngineHome(state: string, settings: Message): Promise<string> {
+export async function gatewayEngineHome(state: string, settings: Message, agentsDirectory?: string): Promise<string> {
   const nativeHome = resolve(process.env.CODEX_HOME || join(homedir(), ".codex"));
   const home = resolve(state, "desktop-engine");
   if (home === nativeHome) throw new Error("The gateway executor home must be separate from native Codex");
   await mkdir(home, { recursive: true, mode: 0o700 });
+  if (agentsDirectory) {
+    const path = join(home, "agents"); const target = resolve(agentsDirectory);
+    try { if (!(await lstat(path)).isSymbolicLink() || resolve(home, await readlink(path)) !== target) throw new Error("Gateway agent profiles point to another source"); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path, "dir"); }
+  }
   for (const name of ["sessions", "archived_sessions"]) {
     const target = join(nativeHome, name); const path = join(home, name);
     await mkdir(target, { recursive: true, mode: 0o700 });
