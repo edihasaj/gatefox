@@ -51,8 +51,9 @@ SDK protocol 3: incremental text, file proof, custom patch and verification,
 follow-up replay, provider-exposed reasoning, interruption, worker cleanup, and
 recovery. Interruption was acknowledged in 3 ms. Discovery returned 13 explicitly
 selectable models after removing Auto. This proves one model's full loop, not
-every discovered model's inference access. Copilot is not yet installed into the
-working desktop catalog.
+every discovered model's inference access. Copilot's 13 routes are now loaded in
+the deployed host catalog. The updated rendered desktop controls still need a
+fresh test-app launch.
 
 A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
 a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
@@ -100,6 +101,18 @@ without usage credits. Native inference has not been tested for every native
 account model.
 
 ## Desktop and configuration limits
+
+The deployed daemon exposes 33 extra routes, all with image metadata. Live checks
+through the permanent SSH forward passed attachment reading, interruption,
+saved-image history after engine restart, and native `view_image` for Claude,
+Codex 2, and Copilot Luna. The main native configuration digest and client token
+were unchanged during activation. Temporary verification listeners and their
+extra SSH forward were stopped afterward.
+
+The ordinary Anthropic API adapter has a real local HTTP/SSE wire test for
+credential selection, effort, hidden summaries, custom calls, image tool replay,
+stop reasons, invalid/duplicate tools, truncated streams, disconnect, and recovery.
+This fixture proves the gateway contract, not access to a paid Anthropic account.
 
 The signed desktop app is installed on MacBook Pro 2 and onboarding is complete.
 The separate-executor version passed the full bundled-engine Claude/Codex 2 loop

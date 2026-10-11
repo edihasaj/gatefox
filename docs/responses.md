@@ -55,6 +55,20 @@ tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
 Cancellation stops the request's CLI process and waits for it to exit. The next
 request starts a separate session and replays caller-supplied history.
 
+## Ordinary Anthropic API
+
+Configured reasoning effort maps to `output_config.effort`; unsupported model
+levels fail before inference. `summary: "none"` hides thinking deltas. Tool calls
+must have distinct IDs, valid object input, and names allowed by the current
+catalog and tool selection. Required tool selection cannot finish without a call.
+
+Only `end_turn`, `stop_sequence`, and valid caller `tool_use` turns complete.
+Paused, truncated, refused, and unknown stop reasons fail, including
+`model_context_window_exceeded`. These rules follow Anthropic's
+[effort](https://platform.claude.com/docs/en/build-with-claude/effort) and
+[stop reason](https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons)
+contracts. The gateway does not retry or choose another billing route.
+
 ## Images
 
 User messages and caller tool results accept `input_image` with an inline base64
