@@ -19,7 +19,8 @@ belongs in the release archive.
    Test the extracted installer on an isolated prefix, including a repeated
    install, paths containing spaces/quotes, and a conflicting command.
 4. Run real model tool loops and `scripts/e2e-chat-titles.mjs` against the installed
-   command on the test Mac. Use an isolated native home. Record configuration
+   command on the test Mac. Use isolated native and gateway state directories.
+   The title check refuses shared state or a copied native auth file. Record configuration
    digests, provider registration, saved titles, and resume results.
 5. Commit and push the final source. Wait for green CI.
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect

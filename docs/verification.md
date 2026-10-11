@@ -178,6 +178,14 @@ title reads, renames, live name notifications, and saved-chat resume after a new
 adapter connection. The isolated native configuration digest was unchanged.
 This proves the native engine and adapter, not newly rendered sidebar labels.
 
+The installed v0.2.7 adapter also passed ordinary first turns and follow-ups with
+Claude Sonnet 5.5 and Codex 2 Sol without calling the title helper. Titles set
+through the app-server naming API stayed unchanged until an explicit agent rename
+request. Title reads, name notifications, and saved-chat resume still passed.
+The test used separate native and gateway state directories. MacBook Pro 2's
+running preflight adapter still contains the earlier automatic-title instruction;
+it needs a reload to pick up the installed behavior.
+
 Qwen runs on the existing DGX Spark vLLM server. Its managed SSH tunnel uses the
 existing NVIDIA Sync identity without copying the private key. The real Codex
 loop passed incremental text, random file proof, custom patch and verification,
