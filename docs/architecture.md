@@ -26,6 +26,11 @@ Its environment contains PATH, not provider credentials. Credentials and gateway
 client tokens are private files. Logs exclude request bodies, tool arguments,
 provider tokens, and environment values.
 
+Existing installations can consolidate their gateway jobs into one supervised
+LaunchAgent. See [service ownership and migration](services.md). Migration is
+explicit and requires a maintenance window; release installation preserves
+running chats.
+
 `gateway service restart` asks the daemon to stop only while idle. The daemon
 checks all HTTP requests, including unfinished body uploads, before closing its
 listener. Active work refuses the restart and keeps its process. Older daemons

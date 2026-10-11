@@ -53,6 +53,14 @@ installation. Registration prepares future app launches and does not interrupt a
 open app. One fresh launch is needed after first registration. The private desktop
 launch hook is specific to the tested Codex build, so verify it after app upgrades.
 
+Preview job consolidation with `gateway service consolidate`. Apply it only after
+local and remote chats finish. See [the service migration checks](services.md).
+An updated installer does not consolidate running jobs automatically.
+Test an isolated supervisor under real launchd with
+`node scripts/e2e-service-supervisor.mjs /absolute/installed/bin/gateway`.
+The fixture exercises HTTP streaming, child and supervisor crashes, login setup,
+and shutdown. Its relay child is a mock; it preserves the working native relay.
+
 To remove the installation, run `gateway uninstall`. The installation and managed
 LaunchAgents move to Trash. Credentials and native Codex configuration remain.
 CLI registration cannot make an unconfigured SSH/cloud backend understand gateway

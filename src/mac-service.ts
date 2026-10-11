@@ -7,14 +7,17 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, gatewayToken } from "./config.js";
 import { gatewayCommand } from "./command.js";
+import { readServicePlan, servicePlanPath } from "./service-plan.js";
+import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway";
 const marker = "<!-- Managed by subscription-gateway -->";
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
-export function servicePlist(node: string, cli: string, config: string, log: string, path: string, installedCommand?: string): string {
-  const args = [...(installedCommand ? [installedCommand] : [node, cli]), "serve", "--config", config].map(value => `<string>${xml(value)}</string>`).join("");
-  return `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${label}</string>\n<key>ProgramArguments</key><array>${args}</array>\n<key>WorkingDirectory</key><string>${xml(dirname(config))}</string>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n<key>StandardOutPath</key><string>${xml(log)}</string>\n<key>StandardErrorPath</key><string>${xml(log)}</string>\n</dict></plist>\n`;
+export function servicePlist(node: string, cli: string, config: string, log: string, path: string, installedCommand?: string, mode = "serve"): string {
+  const args = [...(installedCommand ? [installedCommand] : [node, cli]), mode, "--config", config].map(value => `<string>${xml(value)}</string>`).join("");
+  const processGroup = mode === "daemon" ? "<key>AbandonProcessGroup</key><false/>\n" : "";
+  return `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${label}</string>\n<key>ProgramArguments</key><array>${args}</array>\n<key>WorkingDirectory</key><string>${xml(dirname(config))}</string>\n<key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(path)}</string></dict>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>10</integer>\n${processGroup}<key>StandardOutPath</key><string>${xml(log)}</string>\n<key>StandardErrorPath</key><string>${xml(log)}</string>\n</dict></plist>\n`;
 }
 async function status(target: string): Promise<{ installed: boolean; state?: string; pid?: number }> {
   try {
@@ -27,7 +30,9 @@ export async function macService(action: string | undefined, configPath: string)
   if (!["install", "status", "restart", "uninstall"].includes(action || "")) throw new Error("Choose gateway service install, status, restart, or uninstall");
   const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const path = resolve(homedir(), "Library/LaunchAgents", `${label}.plist`);
-  if (action === "status") return { service: label, ...await status(target) };
+  const configured = await loadConfig(configPath);
+  const plan = await readServicePlan(configured.stateDirectory);
+  if (action === "status") return plan ? consolidatedStatus(configured.stateDirectory) : { service: label, ...await status(target) };
   let existing: string | undefined;
   try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Cannot read the gateway LaunchAgent"); }
   if (existing !== undefined && !existing.includes(marker)) throw new Error("An unmanaged LaunchAgent uses this name; refusing to replace it");
@@ -37,7 +42,21 @@ export async function macService(action: string | undefined, configPath: string)
       const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true, mode: 0o700 });
       await rename(path, resolve(trash, `${label}.${Date.now()}.plist`));
     }
+    if (plan) await rename(servicePlanPath(configured.stateDirectory), resolve(homedir(), ".Trash", `gateway-service-plan.${Date.now()}.json`));
     return { service: label, installed: false, credentialsPreserved: true };
+  }
+  if (plan) {
+    if (!existing || !existing.includes("<string>daemon</string>")) throw new Error("Unified service registration is incomplete; restore its saved LaunchAgent before starting it");
+    const current = await status(target);
+    if (action === "restart" && current.pid) {
+      await requireMaintenanceWindow(configPath);
+      process.kill(current.pid, "SIGUSR2");
+      for (let attempt = 0; attempt < 150; attempt++) { await delay(100); const next = await status(target); if (next.pid && next.pid !== current.pid) return consolidatedStatus(configured.stateDirectory); }
+      throw new Error("The unified service could not restart while idle; inspect gateway service status");
+    }
+    if (!current.installed) { await exec("/bin/launchctl", ["enable", target]); await exec("/bin/launchctl", ["bootstrap", domain, path]); }
+    else if (!current.pid) await exec("/bin/launchctl", ["kickstart", target]);
+    return consolidatedStatus(configured.stateDirectory);
   }
   if (action === "restart") {
     const before = await status(target);

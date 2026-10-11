@@ -3,6 +3,8 @@ import { promisify } from "node:util";
 import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { readServicePlan } from "./service-plan.js";
+import { consolidatedStatus } from "./mac-consolidate.js";
 
 const exec = promisify(execFile); const marker = "<!-- Managed by subscription-gateway tunnel -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -16,6 +18,11 @@ export function tunnelArguments(options: TunnelOptions): string[] {
 export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Managed SSH tunnels currently support macOS");
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(options.id) || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose tunnel install/status/uninstall and a lowercase --tunnel-id");
+  const plan = await readServicePlan(state);
+  if (plan) {
+    if (action === "status") return { ...await consolidatedStatus(state), component: plan.components.find(component => component.id === "tunnel-" + options.id)?.id || null };
+    throw new Error("Tunnels are owned by the unified service. Finish chats and uninstall that service before changing its tunnel configuration");
+  }
   const label = `com.edihasaj.subscription-gateway.tunnel.${options.id}`; const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist");
   const status = async () => { try { const { stdout } = await exec("/bin/launchctl", ["print", target]); return { installed: true, pid: Number(stdout.match(/^\s*pid = (\d+)$/m)?.[1]) || undefined }; } catch { return { installed: false }; } };

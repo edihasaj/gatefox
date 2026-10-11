@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
 import { gatewayCommand } from "./command.js";
+import { readServicePlan } from "./service-plan.js";
+import { consolidatedStatus } from "./mac-consolidate.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway.native";
@@ -50,10 +52,12 @@ export async function macNative(action: string | undefined, configPath: string, 
   const receipt = resolve(config.stateDirectory, "native-registration.json");
   const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist");
+  const plan = await readServicePlan(config.stateDirectory);
   if (action === "status") {
     let relay = {}; try { relay = JSON.parse(await readFile(resolve(home, "status.json"), "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-    return { service: label, ...await status(target), relay };
+    return plan ? { service: "com.edihasaj.subscription-gateway", mode: "supervised", component: "native", ...await consolidatedStatus(config.stateDirectory), relay } : { service: label, ...await status(target), relay };
   }
+  if (plan) throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to replace an unmanaged native relay service");
   if (action === "uninstall") {

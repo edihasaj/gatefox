@@ -118,6 +118,11 @@ gateway service uninstall
 Uninstall moves the managed LaunchAgent to Trash and preserves credentials.
 Changing the listener port or state directory requires a daemon restart.
 
+Use `gateway service consolidate` to preview replacing the gateway's individual
+jobs with one supervisor. Apply with `--apply` after local and remote chats finish.
+The migration preserves endpoints and saves rollback copies. See
+[service ownership](docs/services.md).
+
 Development gate: `npm run build && npm run check && npm test`.
 Adapters also exist for ordinary APIs; the current delivery
 focus is Claude, Codex, and Copilot subscriptions.
