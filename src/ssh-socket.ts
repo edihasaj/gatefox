@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { resolve, dirname } from "node:path";
 import { lstat, readFile, unlink } from "node:fs/promises";
 import { connect } from "node:net";
+import { withPrivateFileLock } from "./private-file-lock.js";
 
 export function sshControlHome(configPath: string, nativeHome = process.env.CODEX_HOME || resolve(homedir(), ".codex")): string {
   const scope = createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);
@@ -11,6 +12,11 @@ export function sshControlHome(configPath: string, nativeHome = process.env.CODE
 
 /** Reuse a live owned listener. Recover only a stale socket recorded by us. */
 export async function reuseSshSocket(path: string): Promise<boolean> {
+  if (!await lstat(path).catch(error => { if (error.code === "ENOENT") return undefined; throw error; })) return false;
+  return withPrivateFileLock(path + ".gateway-lease", () => inspectSshSocket(path));
+}
+
+async function inspectSshSocket(path: string): Promise<boolean> {
   const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
   if (!info) return false;
   const leasePath = path + ".gateway-lease";

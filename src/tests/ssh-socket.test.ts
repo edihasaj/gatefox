@@ -45,6 +45,23 @@ test("SSH proxy redirects only its child control home and never needs gateway cr
   } finally { f.close(); }
 });
 
+test("simultaneous SSH bootstraps retain one listener and a matching ownership record", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await shimFiles(); const control = await mkdtemp("/tmp/gw-ssh-race-");
+  const path = join(control, "app-server-control/app-server-control.sock");
+  const args = [f.cli, "codex-shim", "--ssh", "--ssh-home", control, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
+  const children = [0, 1].map(() => spawn(process.execPath, args, { env: f.env, stdio: "ignore" }));
+  const exited = children.map(child => once(child, "close"));
+  try {
+    for (let i = 0; i < 200 && children.every(child => child.exitCode === null); i++) await delay(20);
+    assert.deepEqual(children.map(child => child.exitCode).sort(), [0, null]);
+    assert.equal(await reuseSshSocket(path), true);
+    const info = await lstat(path, { bigint: true });
+    const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
+    assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
+  } finally { for (const child of children) child.kill("SIGTERM"); await Promise.all(exited); f.close(); }
+});
+
 test("SSH recovery refuses an unrecorded socket path", { skip: process.platform === "win32" }, async () => {
   const dir = await mkdtemp("/tmp/gw-ssh-foreign-"); const path = join(dir, "rpc.sock");
   await writeFile(path, "keep-this");

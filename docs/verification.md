@@ -258,3 +258,9 @@ Regressions cover repeated startup, live-listener reuse, recovery after abrupt
 termination, refusal of an unrecorded path, and preservation of native IPC and
 configuration. Only the proxy child's home changes; inference keeps the native
 account home and does not copy its authentication file.
+
+An intermittent CI failure exposed the socket before its ownership record was
+written. Publication and stale recovery now share a private lock. The adapter
+writes the record before publishing the socket alias, and simultaneous SSH
+bootstraps reuse the winning listener. Regressions hold publication at the lock
+to verify readiness and start two bootstrap processes together.

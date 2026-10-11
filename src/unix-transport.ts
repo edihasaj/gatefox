@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
+import { withPrivateFileLock } from "./private-file-lock.js";
 
 export function unixSocketPath(listen: string): string {
   if (!listen.startsWith("unix://")) throw new Error("Choose stdio:// or a private unix:// socket");
@@ -56,8 +57,13 @@ export async function serveUnix(path: string, signal: AbortSignal,
   try {
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
     const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
-    await link(boundPath, path);
-    await writePrivateJson(path + ".gateway-lease", { inode, device, boundPath });
+    await withPrivateFileLock(path + ".gateway-lease", async () => {
+      try { await lstat(path); throw new Error("Unix socket path is occupied; the existing listener was not replaced"); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // Publish the ownership record first. The alias is the readiness signal.
+      await writePrivateJson(path + ".gateway-lease", { inode, device, boundPath });
+      await link(boundPath, path);
+    });
     leaseTimer = setInterval(() => {
       void lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false).then(owned => {
         if (!owned) { retiring = true; if (!active.size) close(); }

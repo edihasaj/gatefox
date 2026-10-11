@@ -2,19 +2,42 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, writeFile, readFile, rename, mkdtemp } from "node:fs/promises";
+import { lstat, writeFile, readFile, rename, mkdtemp, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { unixSocketPath, serveUnix } from "../unix-transport.js";
 import { shimFiles } from "./shim-fixture.js";
+import { withPrivateFileLock } from "../private-file-lock.js";
+import { reuseSshSocket } from "../ssh-socket.js";
 
 test("Unix addresses exclude network listeners, relative paths, and oversized socket names", () => {
   assert.throws(() => unixSocketPath("ws://0.0.0.0:80"));
   assert.throws(() => unixSocketPath("unix://relative.sock"));
   assert.throws(() => unixSocketPath("unix:///" + "a".repeat(104)));
   assert.equal(unixSocketPath("unix:///tmp/socket"), "/tmp/socket");
+});
+
+test("Unix readiness never exposes a socket before its ownership record", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const dir = await mkdtemp("/tmp/gw-publication-"); const path = join(dir, "rpc.sock");
+  const controller = new AbortController(); let running: Promise<void> | undefined;
+  try {
+    await withPrivateFileLock(path + ".gateway-lease", async () => {
+      running = serveUnix(path, controller.signal, async () => {});
+      for (let i = 0; i < 100; i++) {
+        if ((await readdir(dir)).some(name => name.startsWith(".gw-"))) break;
+        await delay(10);
+      }
+      assert.ok((await readdir(dir)).some(name => name.startsWith(".gw-")));
+      await assert.rejects(lstat(path), { code: "ENOENT" });
+    });
+    for (let i = 0; i < 100 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+    const info = await lstat(path, { bigint: true });
+    const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
+    assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
+    assert.equal(await reuseSshSocket(path), true);
+  } finally { controller.abort(); await running; }
 });
 
 test("Unix clients get combined models, isolated approvals, and disconnect recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {
