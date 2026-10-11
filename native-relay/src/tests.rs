@@ -1,0 +1,56 @@
+use crate::{
+    control::network_guard,
+    frames::{FrameReader, MAX_FRAME},
+};
+use serde_json::json;
+use tokio::io::{AsyncWriteExt, BufReader};
+
+#[tokio::test]
+async fn fragmented_frames_survive_cancelled_reads() {
+    let (mut write, read) = tokio::io::duplex(128);
+    let mut frames = FrameReader::new(BufReader::new(read));
+    write.write_all(b"{\"id\":").await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(10), frames.next())
+            .await
+            .is_err()
+    );
+    write.write_all(b"7}\n{\"id\":8}\n").await.unwrap();
+    assert_eq!(frames.next().await.unwrap().unwrap(), b"{\"id\":7}");
+    assert_eq!(frames.next().await.unwrap().unwrap(), b"{\"id\":8}");
+}
+
+#[tokio::test]
+async fn truncated_and_oversized_frames_fail() {
+    let mut frames = FrameReader::new(BufReader::new(&b"{\"id\":1}"[..]));
+    assert!(frames.next().await.is_err());
+    let bytes = vec![b'x'; MAX_FRAME + 1];
+    let mut frames = FrameReader::new(BufReader::new(bytes.as_slice()));
+    assert!(frames.next().await.is_err());
+}
+
+#[test]
+fn remote_clients_cannot_use_host_biometric_operations() {
+    for method in [
+        "userVerification/enroll",
+        "userVerification/delete",
+        "userVerification/verify",
+    ] {
+        let response =
+            network_guard(&json!({"id":"opaque-id","method":method,"params":{}})).unwrap();
+        assert_eq!(response["id"], "opaque-id");
+        assert_eq!(response["error"]["data"]["type"], "unavailable");
+    }
+    assert!(network_guard(&json!({"id":1,"method":"userVerification/status"})).is_none());
+    assert!(network_guard(&json!({"id":1,"method":"turn/steer"})).is_none());
+}
+
+#[test]
+fn raw_envelopes_preserve_future_fields_and_request_ids() {
+    let expected = json!({"id":"opaque-id","result":{"future_field":[1,2,3]}});
+    let actual = serde_json::to_value(codex_app_server_transport::OutgoingMessage::Passthrough(
+        expected.clone(),
+    ))
+    .unwrap();
+    assert_eq!(actual, expected);
+}

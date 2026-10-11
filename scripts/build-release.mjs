@@ -17,6 +17,12 @@ const runtime = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64');
 cpSync(join(runtime, 'bin/node'), join(directory, 'runtime/bin/node'));
 cpSync(join(runtime, 'LICENSE'), join(directory, 'runtime/LICENSE'));
 cpSync('scripts/install.sh', join(directory, 'install')); chmodSync(join(directory, 'install'), 0o700);
+const nativeArtifact = resolve('.state/native-relay-build/artifact');
+if (process.argv.includes('--with-native')) {
+  const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
+  if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74') throw new Error('Native relay artifact does not match this release');
+  cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
+}
 writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }, null, 2));
 const files = [];
 function walk(path, relative = '') { for (const name of readdirSync(path).sort()) { const child = join(path, name); const entry = relative ? `${relative}/${name}` : name; if (statSync(child).isDirectory()) walk(child, entry); else if (entry !== 'checksums.txt') files.push(entry); } }

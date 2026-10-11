@@ -4,6 +4,7 @@ import { AppServerRouter } from "./app-server-router.js";
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
+import { NativeControl, nativeRegistration } from "./native-control.js";
 
 /** One transport connection owns its executors, approvals, and cancellation. */
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
@@ -11,8 +12,10 @@ export async function shimSession(executable: string, args: string[], config: Ga
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
   let closing = false;
-  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, emit, () => input.destroy());
-  const router = new AppServerRouter(config, (method, params) => backends.request(method, params), prepared.path, source);
+  const registration = await nativeRegistration(config);
+  const control = registration ? new NativeControl(registration.home, emit) : undefined;
+  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, message => control && message.method === "remoteControl/status/changed" ? Promise.resolve() : emit(message), () => input.destroy());
+  const router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const stop = () => { closing = true; input.destroy(); void backends.stop(); };
   signal.addEventListener("abort", stop, { once: true });
@@ -36,6 +39,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   } catch (error) { if (!closing && !backends.native.closed) throw error; }
   finally {
     closing = true; signal.removeEventListener("abort", stop);
+    control?.close();
     await backends.stop(); await Promise.allSettled(tasks);
   }
   const { code, signal: exitSignal } = await backends.native.exited;

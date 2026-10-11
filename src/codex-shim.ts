@@ -10,6 +10,7 @@ import { gatewayCommand } from "./command.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { sshControlHome, reuseSshSocket } from "./ssh-socket.js";
+import { nativeRegistration } from "./native-control.js";
 
 export function appServerIndex(args: string[]): number {
   const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
@@ -54,6 +55,7 @@ export async function codexShim(argv: string[]): Promise<void> {
     else nativeArgs[listenIndex + 1] = "stdio://";
   }
   const path = resolve(values.config); const config = await loadConfig(path);
+  if (await nativeRegistration(config)) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();
   const overrides = {

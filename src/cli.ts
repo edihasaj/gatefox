@@ -22,6 +22,7 @@ import { launchDesktop } from "./desktop-launch.js";
 import { macTunnel } from "./mac-tunnel.js";
 import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
+import { macNative } from "./mac-native.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -31,6 +32,7 @@ const help = `gateway — local subscription and API inference
   gateway desktop [--config PATH] [--native-home PATH]
   gateway desktop register|unregister|status
   gateway ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
+  gateway native install|status|uninstall [--codex MATCHING_CLI_PATH]
   gateway uninstall
   gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
@@ -67,11 +69,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "ssh", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
-  if (values.codex && command !== "ssh") throw new Error("--codex is only valid for ssh registration");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (values.codex && !["ssh", "native"].includes(command)) throw new Error("--codex is only valid for ssh or native registration");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
-  if ((values["native-home"] || values.app) && command !== "desktop") throw new Error("--native-home and --app are only valid for desktop");
+  if (values["native-home"] && !["desktop", "native"].includes(command)) throw new Error("--native-home is only valid for desktop or native registration");
+  if (values.app && command !== "desktop") throw new Error("--app is only valid for desktop");
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
   if (command !== "tunnel" && [values["tunnel-id"], values.host, values["remote-port"], values.reverse, values["ssh-config"]].some(Boolean)) throw new Error("Tunnel options are only valid for tunnel");
@@ -92,6 +95,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(await remoteCodexSettings(values.model, values.endpoint, tokenFile, resolve(values.catalog || `${dirname(tokenFile)}/codex-models.json`))); return;
   }
   const path = await configPath(values.config);
+  if (command === "native") { process.stdout.write(JSON.stringify(await macNative(id, path, { codex: values.codex, nativeHome: values["native-home"] }), null, 2) + "\n"); return; }
   if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }
   if (command === "uninstall") { process.stdout.write(JSON.stringify(await uninstallGateway(path), null, 2) + "\n"); return; }
   if (command === "setup") {
