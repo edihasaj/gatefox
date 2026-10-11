@@ -71,6 +71,13 @@ guards, and batches mixing native changes with gateway defaults are rejected.
 All other configuration writes are rejected, including the legacy whole-config
 write. Obsidian-managed native settings remain the source of truth.
 
+The current app also saves its display settings through `desktop.*` configuration
+writes. The adapter validates supported display fields and stores them in that
+same private preference file. It merges them over native desktop defaults when
+the app reads settings. This allows Max and Ultra display choices to survive
+restart without writing the Obsidian-managed file. Pending desktop migration
+batches are validated before any preference changes are saved.
+
 Each adapter connection rereads private preferences when reading settings or
 starting a chat. Preference updates use a shared file lock and merge the latest
 saved values. Two desktop connections cannot return a cached reasoning level or
@@ -136,8 +143,19 @@ relaunching a working app.
 
 Max and Ultra are separate desktop display choices. Under Model features, enable
 the offered levels in Available reasoning efforts. Availability varies by model
-and the app's feature settings. The gateway does not rewrite those settings or
-advertise unsupported provider effort levels.
+and the app's feature settings. Enable the choices in the app that renders the
+picker; enabling them on a remote Mac does not change this Mac's controls.
+The gateway persists these explicit display changes in its private settings and
+does not advertise unsupported provider effort levels.
+
+The circular arrow in the model control is **Reset to default**. It chooses a
+default power preset; it does not fetch a fresh model catalog. That preset can
+belong to the native account, so a gateway chat cannot always apply it. Provider
+switch refusals use an application error code rather than the app's configuration
+validation code, avoiding a false warning that `config.toml` is broken. Explicit
+saved model defaults are also reflected in the catalog's default flag. The app's
+power presets can still exclude custom aliases, so this flag does not permit a
+loaded chat to change providers.
 
 The adapter fetches the inference host's public catalog when listing models and
 starting gateway work. A changed catalog starts a fresh gateway executor for new

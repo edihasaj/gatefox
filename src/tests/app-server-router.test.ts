@@ -180,3 +180,66 @@ test("separate adapter processes merge concurrent private preference edits", asy
   assert.equal(saved.model_reasoning_effort, "max"); assert.equal(saved.model_reasoning_summary, "detailed");
   assert.equal(((await router.request("config/read", {})).config as ObjectValue).model_reasoning_effort, "max");
 });
+
+test("desktop reasoning display writes persist without selecting a gateway model", async () => {
+  const { config, directory, calls, backend } = await fixture();
+  const request = async (method: string, params: ObjectValue) => method === "config/read"
+    ? { config: { model: "native", desktop: { nativeOnly: true } } } : backend(method, params);
+  const first = new AppServerRouter(config, request); await first.initialize();
+  const efforts = ["low", "medium", "high", "xhigh", "max", "ultra"];
+  await first.request("config/batchWrite", { edits: [
+    { keyPath: "desktop.enabled-reasoning-efforts", value: efforts, mergeStrategy: "replace" },
+    { keyPath: "desktop.show-ultra-in-model-picker-slider", value: true, mergeStrategy: "replace" },
+  ] });
+  assert.equal(calls.length, 0);
+  const saved = JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8"));
+  assert.equal(saved.model, undefined);
+  assert.deepEqual(saved.desktop["enabled-reasoning-efforts"], efforts);
+  const reopened = new AppServerRouter(config, request); await reopened.initialize();
+  const read = (await reopened.request("config/read", { includeLayers: false })).config as ObjectValue;
+  assert.equal(read.model, "native");
+  assert.deepEqual(read.desktop, { nativeOnly: true, "enabled-reasoning-efforts": efforts, "show-ultra-in-model-picker-slider": true });
+});
+
+test("desktop preference writes merge across connections and reject mixed native changes atomically", async () => {
+  const { router, config, directory, backend } = await fixture();
+  const other = new AppServerRouter(config, backend); await other.initialize();
+  await Promise.all([
+    router.request("config/value/write", { keyPath: "desktop.enabled-reasoning-efforts", value: ["high", "max"], mergeStrategy: "replace" }),
+    other.request("config/value/write", { keyPath: "desktop.show-ultra-in-model-picker-slider", value: true, mergeStrategy: "upsert" }),
+  ]);
+  const path = join(directory, "desktop-preferences.json");
+  const before = await readFile(path, "utf8");
+  const saved = JSON.parse(before);
+  assert.deepEqual(saved.desktop, { "enabled-reasoning-efforts": ["high", "max"], "show-ultra-in-model-picker-slider": true });
+  await assert.rejects(router.request("config/batchWrite", { edits: [
+    { keyPath: "desktop.enabled-reasoning-efforts", value: ["low"], mergeStrategy: "replace" },
+    { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" },
+  ] }), /native configuration/);
+  assert.equal(await readFile(path, "utf8"), before);
+  await assert.rejects(router.request("config/value/write", { keyPath: "desktop.enabled-reasoning-efforts", value: ["bogus"], mergeStrategy: "replace" }), /unsupported value/);
+  assert.equal(await readFile(path, "utf8"), before);
+});
+
+test("model list defaults follow valid private choices while native defaults remain intact otherwise", async () => {
+  const { config, backend } = await fixture();
+  const request = async (method: string, params: ObjectValue) => method === "model/list"
+    ? { data: [{ id: "native", model: "native", isDefault: true }], nextCursor: null } : backend(method, params);
+  const first = new AppServerRouter(config, request); await first.initialize();
+  const second = new AppServerRouter(config, request); await second.initialize();
+  assert.equal(((await first.request("model/list", {})).data as ObjectValue[])[0].isDefault, true);
+  await second.request("config/value/write", { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" });
+  const rows = (await first.request("model/list", {})).data as ObjectValue[];
+  assert.deepEqual(rows.filter(row => row.isDefault).map(row => row.model), ["claude/model"]);
+  assert.equal(((await first.request("config/read", {})).config as ObjectValue).model, "claude/model");
+  assert.equal(rows[0].model, "native");
+});
+
+test("provider switch refusals are application errors rather than config validation failures", async () => {
+  const { router, calls } = await fixture();
+  await router.request("thread/start", { model: "claude/model" });
+  const before = calls.length;
+  await assert.rejects(router.request("thread/settings/update", { threadId: "test", model: "native", effort: "high" }),
+    error => error instanceof Error && (error as { code?: number }).code === -32002);
+  assert.equal(calls.length, before);
+});

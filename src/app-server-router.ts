@@ -5,6 +5,7 @@ import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
+import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -14,7 +15,7 @@ const preferenceKeys = new Set(["model", "model_reasoning_effort", "model_reason
 const requestedModel = (params: ObjectValue): unknown => object(object(params.collaborationMode).settings).model ?? params.model ?? object(params.config).model;
 
 export class AppServerRoutingError extends Error {
-  readonly code = -32600;
+  constructor(message: string, readonly code: number = -32600) { super(message); }
 }
 
 /** Adds gateway routes without replacing the native engine's authentication or defaults. */
@@ -41,8 +42,12 @@ export class AppServerRouter {
     try { saved = JSON.parse(await readFile(this.preferencesPath, "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.preferences = {}; return; } throw new AppServerRoutingError("Gateway desktop preferences are unreadable"); }
     const preferences = object(saved);
-    this.preferences = typeof preferences.model === "string" && preferences.model
-      ? Object.fromEntries(Object.entries(preferences).filter(([key]) => preferenceKeys.has(key))) : {};
+    this.preferences = Object.fromEntries(Object.entries(preferences).filter(([key]) => preferenceKeys.has(key)));
+    if (typeof this.preferences.model !== "string" || !this.preferences.model) delete this.preferences.model;
+    try {
+      const desktop = readDesktopPreferences(preferences.desktop);
+      if (Object.keys(desktop).length) this.preferences.desktop = desktop;
+    } catch { throw new AppServerRoutingError("Gateway desktop display preferences are invalid"); }
   }
   private remember(result: ObjectValue): void {
     const thread = object(result.thread);
@@ -70,7 +75,7 @@ export class AppServerRouter {
   private assertSameProvider(provider: string, model: unknown): void {
     if (typeof model !== "string") return;
     if ((provider === gatewayProvider) !== this.aliases.has(model)) {
-      throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Your account and existing chat are unchanged.");
+      throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Reset to default selects a model; it does not reload the model list. Your account and existing chat are unchanged.", -32002);
     }
   }
   private async models(params: ObjectValue): Promise<ObjectValue> {
@@ -92,7 +97,11 @@ export class AppServerRouter {
       defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
       multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: false,
     }));
-    const models = [...native, ...extra];
+    let models = [...native, ...extra];
+    const preferred = this.preferences.model;
+    if (typeof preferred === "string" && models.some(model => model.model === preferred)) {
+      models = models.map(model => ({ ...model, isDefault: model.model === preferred }));
+    }
     const offset = cursor ? Number(String(cursor).split(":")[1]) : 0;
     if (!Number.isSafeInteger(offset) || offset > models.length) throw new AppServerRoutingError("Invalid gateway model cursor");
     return { data: models.slice(offset, offset + Number(limit)), nextCursor: offset + Number(limit) < models.length ? `gateway-models:${offset + Number(limit)}` : null };
@@ -102,23 +111,28 @@ export class AppServerRouter {
     if (edits.some(edit => typeof edit.keyPath === "string" && edit.keyPath.endsWith(".model") && typeof edit.value === "string" && this.aliases.has(edit.value))) throw new AppServerRoutingError("Gateway defaults cannot be saved into a native Codex profile");
     const modelEdit = edits.find(edit => edit.keyPath === "model");
     const chosen = modelEdit ? modelEdit.value : this.preferences.model;
-    if (typeof chosen !== "string" || !chosen) throw new AppServerRoutingError("This adapter only saves model preferences; native Codex configuration is managed separately");
     const local = edits.filter(edit => preferenceKeys.has(String(edit.keyPath)));
-    if (!local.length) throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
+    const desktopEdits = edits.filter(edit => isDesktopPreferenceKey(edit.keyPath));
+    if (!local.length && !desktopEdits.length) throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
+    if (local.length && (typeof chosen !== "string" || !chosen)) throw new AppServerRoutingError("Select a model before saving its reasoning preferences");
     // Do not redirect writes explicitly aimed at a project or other profile.
     if (typeof params.filePath === "string" && params.filePath !== this.preferencesPath) throw new AppServerRoutingError("Gateway defaults are scoped to this adapter; choose a model without a custom config-file target");
     if (params.expectedVersion !== undefined && params.expectedVersion !== null) throw new AppServerRoutingError("Gateway default writes do not support a native config version guard");
     for (const edit of local) {
       if (!["replace", "upsert"].includes(String(edit.mergeStrategy)) || (edit.value !== null && typeof edit.value !== "string")) throw new AppServerRoutingError("Gateway defaults require string values with replace or upsert merge strategy");
     }
-    const remaining = edits.filter(edit => !preferenceKeys.has(String(edit.keyPath)));
+    const remaining = edits.filter(edit => !preferenceKeys.has(String(edit.keyPath)) && !isDesktopPreferenceKey(edit.keyPath));
     if (remaining.length) throw new AppServerRoutingError("Save gateway model preferences separately from native configuration changes");
-    const preferences = { ...this.preferences, ...Object.fromEntries(local.map(edit => [String(edit.keyPath), edit.value])) };
+    let desktop: ObjectValue;
+    try { desktop = applyDesktopEdits(object(this.preferences.desktop), desktopEdits); }
+    catch { throw new AppServerRoutingError("Gateway desktop display settings contain an unsupported value"); }
+    const preferences = { ...this.preferences, ...Object.fromEntries(local.map(edit => [String(edit.keyPath), edit.value])),
+      ...(Object.keys(desktop).length ? { desktop } : {}) };
     await writePrivateJson(this.preferencesPath, preferences); this.preferences = preferences;
     return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
-    if (["thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
+    if (["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
       const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
@@ -162,7 +176,8 @@ export class AppServerRouter {
     }
     if (method === "config/read") {
       await this.readPreferences();
-      return { ...result, config: { ...object(result.config), ...this.preferences, model_catalog_json: this.catalogPath } };
+      const { desktop, ...modelPreferences } = this.preferences;
+      return { ...result, config: { ...mergeDesktopPreferences(object(result.config), object(desktop)), ...modelPreferences, model_catalog_json: this.catalogPath } };
     }
     return result;
   }

@@ -13,6 +13,21 @@ Run the development gate:
 npm run build && npm run check && npm test
 ```
 
+The installed v0.2.8 preflight passed the real signed Codex app-server's desktop
+settings protocol on MacBook Pro 2. Six display efforts, including Max and Ultra,
+were saved before choosing any model. They survived a fresh adapter connection.
+Concurrent theme and font edits merged, and a batch mixing a display change with
+native sandbox configuration was rejected without partial writes. Native desktop
+defaults and the native configuration digest stayed unchanged. These checks prove
+persistence through the backend; a rendered picker after a normal app relaunch
+remains a separate check.
+
+Run `scripts/e2e-desktop-settings.mjs` against an installed command with a fresh
+client-only fixture, isolated native home, workspace, and gateway state. The
+fixture must contain public native model metadata and an unrelated native desktop
+setting. The script refuses copied account authentication and existing private
+preferences, and sends no inference requests.
+
 Tests cover authentication, account isolation, Responses parsing and replay,
 stream termination, cancellation, live route guards, private model preferences,
 public catalog validation, approval correlation, and executor lifecycle.
