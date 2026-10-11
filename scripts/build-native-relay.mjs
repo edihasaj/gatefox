@@ -12,7 +12,8 @@ const root=resolve('.state/native-relay-build');const sdk=join(root,'sdk');const
 mkdirSync(root,{recursive:true});mkdirSync(build,{recursive:true});
 const archive=resolve(values.archive||join(root,'sdk.tar.gz'));
 if(!existsSync(archive)){
-  const response=await fetch(`https://codeload.github.com/openai/codex/tar.gz/${revision}`);
+  // The pinned bytes use GitHub's API tarball format (including its root name).
+  const response=await fetch(`https://api.github.com/repos/openai/codex/tarball/${revision}`);
   if(!response.ok)throw Error(`SDK download failed: HTTP ${response.status}`);
   writeFileSync(archive,Buffer.from(await response.arrayBuffer()));
 }
