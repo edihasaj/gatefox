@@ -54,3 +54,9 @@ At most four catalog generations can retain loaded gateway chats. Close an older
 gateway chat before adding another generation at that limit. Idle generations
 without loaded chats are stopped. A gateway executor failure does not stop the
 native connection; saved gateway history can be resumed.
+
+Desktop SSH uses a private Unix socket carrying WebSocket JSON-RPC. The socket
+adapter reuses the same session router as stdio and bounds frames to 16 MiB,
+pending requests to 256 per connection, and simultaneous clients to eight.
+Disconnect aborts that connection's executors. Other clients keep their sessions.
+The transport uses the MIT-licensed `ws` package, bundled in the installer.

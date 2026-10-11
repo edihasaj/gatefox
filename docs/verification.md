@@ -211,3 +211,28 @@ The daemon and SSH tunnels are per-user LaunchAgents with RunAtLoad and KeepAliv
 They start at login and restart after process exit. Remote clients still require
 the inference host to be awake and reachable; this setup does not provide failover
 to another inference host.
+
+## Desktop SSH transport
+
+On 11 October 2026, the v0.2.3 preflight installer passed the desktop's original
+`app-server proxy` transport on MacBook Pro 2. The private Unix socket returned
+42 model rows. Claude Opus 5.5 at Max and Codex 2 GPT-6.1-Sol at Ultra passed
+incremental output, real file reads and patches, automatic repository AGENTS.md
+loading, image-only code reading, follow-ups, agent titles, interruption, and
+saved-chat resume through a new proxy connection. Cancellation acknowledgements
+took 17 ms and 13 ms respectively. Switching the resumed Claude chat to Codex 2
+preserved file and image history. The isolated native config digest was unchanged.
+The test client explicitly resumes saved chats before starting turns after a
+connection change, as the native engine requires.
+
+The rendered picker inspected on the working Mac was a Studio Control other
+devices connection. That connection reaches the native engine directly, so the
+stdio adapter's combined catalog does not establish model availability there.
+The same limitation applies to the old, offline MacBook Pro 2 remote connection.
+Use the managed SSH adapter for gateway routing to a remote workspace. The newly
+rendered SSH picker still requires verification after adding that connection.
+
+Run `scripts/e2e-unix.mjs` with the installed gateway and package paths, an isolated
+native home with public model metadata, a client-only gateway configuration, and
+a dedicated workspace/image fixture. It starts a temporary Unix listener, runs
+the native proxy checks, records only results, and stops its owned processes.

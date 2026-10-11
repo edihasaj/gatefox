@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { macService } from "./mac-service.js";
 import { macTunnel } from "./mac-tunnel.js";
 import { macDesktop } from "./mac-desktop.js";
+import { macSsh } from "./mac-ssh.js";
 
 export async function uninstallGateway(configPath: string): Promise<Record<string, unknown>> {
   const command = process.env.GATEWAY_COMMAND;
@@ -12,6 +13,7 @@ export async function uninstallGateway(configPath: string): Promise<Record<strin
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
   await macService("uninstall", configPath);
   await macDesktop("unregister", configPath);
+  await macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
   for (const file of await readdir(directory)) {
     const match = /^com\.edihasaj\.subscription-gateway\.tunnel\.([a-z][a-z0-9-]{0,63})\.plist$/.exec(file);

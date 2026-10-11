@@ -18,8 +18,32 @@ gateway codex-shim --config /absolute/path/gateway.local.json \
 
 Stdout carries JSON-RPC only. The adapter forwards notifications, maps server
 request IDs for approvals, bounds frames to 16 MiB, and stops its child on exit.
-Non-server commands, including `--version`, pass through unchanged. WebSocket and
-daemon transports are not supported by this adapter.
+Non-server commands, including `--version`, pass through unchanged. The adapter
+accepts `stdio://` and private `unix://` listeners. A Unix listener serves the
+WebSocket protocol used by desktop SSH connections. It gives each connection its
+own native and gateway executors. It refuses occupied sockets, requires a
+user-owned directory without group/world write access, and sets the socket to
+mode 0600. Network WebSocket listeners are rejected.
+
+For the desktop SSH path, install the managed command on the remote Mac:
+
+```sh
+gateway ssh register --codex /opt/homebrew/bin/codex
+gateway ssh status
+```
+
+Use the absolute path returned by `command -v codex` before registration. The
+managed `~/.local/bin/codex` command decorates app-server operations and delegates
+other commands to that original CLI. Registration refuses an unrelated existing
+command. `gateway ssh unregister` moves only its own command to Trash. Native
+configuration and authentication files are unchanged.
+
+The app prepends `~/.local/bin` to the remote command search path and starts a
+Unix listener. Its original `app-server proxy` command forwards bytes to that
+socket. Add the host under Settings, Connections, SSH, then select its workspace.
+The built-in Control other devices connection reaches the native engine directly
+and bypasses this adapter. Registering a desktop or SSH wrapper does not make
+gateway models work through that separate connection.
 
 On startup, a bounded native app-server process refreshes its own model metadata.
 The adapter copies only public model rows from that engine's configured catalog

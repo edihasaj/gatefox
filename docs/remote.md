@@ -72,3 +72,9 @@ desktop registration; syncing a chat does not register its model provider.
 Register the backend that owns the chat's workspace. Sharing the catalog does
 not transfer local workspace files or automatically configure an SSH execution
 backend that bypasses the desktop adapter.
+
+For desktop SSH projects, run `gateway ssh register --codex ORIGINAL_PATH` on
+the remote Mac. Then add its existing host alias under the client's SSH connection
+settings. The app's Unix socket and native proxy must reach the gateway adapter;
+the built-in Control other devices connection currently bypasses it. See
+[the adapter setup](app-server.md) for command protection and removal.

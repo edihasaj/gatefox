@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/subscription-gateway",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "type": "module",
   "description": "A small local Responses gateway for subscription and API providers.",
@@ -37,6 +37,13 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.7",
+    "@types/ws": "8.18.2",
     "typescript": "^5.7.3"
-  }
+  },
+  "dependencies": {
+    "ws": "8.22.0"
+  },
+  "bundleDependencies": [
+    "ws"
+  ]
 }

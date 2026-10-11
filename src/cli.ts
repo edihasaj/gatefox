@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { resolve, dirname } from "node:path";
 import { readFile, writeFile, stat, realpath, mkdir } from "node:fs/promises";
 import { spawn, execFile } from "node:child_process";
+import { macSsh } from "./mac-ssh.js";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { loadConfig, gatewayToken, writePrivateJson, type GatewayConfig } from "./config.js";
@@ -29,6 +30,7 @@ const help = `gateway — local subscription and API inference
   gateway setup --client --port PORT --token-file PATH [--config DESTINATION]
   gateway desktop [--config PATH] [--native-home PATH]
   gateway desktop register|unregister|status
+  gateway ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
   gateway uninstall
   gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
@@ -60,13 +62,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
     config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
-    "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" },
+    "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "ssh", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (values.codex && command !== "ssh") throw new Error("--codex is only valid for ssh registration");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
   if ((values["native-home"] || values.app) && command !== "desktop") throw new Error("--native-home and --app are only valid for desktop");
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
@@ -89,6 +92,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(await remoteCodexSettings(values.model, values.endpoint, tokenFile, resolve(values.catalog || `${dirname(tokenFile)}/codex-models.json`))); return;
   }
   const path = await configPath(values.config);
+  if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }
   if (command === "uninstall") { process.stdout.write(JSON.stringify(await uninstallGateway(path), null, 2) + "\n"); return; }
   if (command === "setup") {
     if (!values["from-config"]) throw new Error("setup requires --from-config; use gateway init for a new registration");
