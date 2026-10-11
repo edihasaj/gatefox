@@ -24,16 +24,20 @@ Include the selection when loading again; an unrestricted `--load` loads the
 provider's full offered catalog.
 
 The desktop and SSH adapters fetch this shared selection. Each device can also
-generate an opt-in CLI profile with its installed command:
+generate an opt-in CLI configuration in a separate home:
 
 ```sh
+gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
+mkdir -p "$gateway_cli_home"
 gateway codex-config --model codex/gpt-6.1-sol \
-  > ~/.codex/subscription-gateway.config.toml
-codex --profile subscription-gateway
+  > "$gateway_cli_home/config.toml"
+CODEX_HOME="$gateway_cli_home" codex
 ```
 
-Regenerate the CLI snapshot after changing the host's selection. This profile
-uses the secondary subscription routes; the primary `config.toml` stays unchanged.
+Regenerate the CLI snapshot after changing the host's selection. This separate
+home uses the secondary subscription routes and has its own settings and history.
+The generated file is a complete configuration, not a named profile. The primary
+`config.toml` stays unchanged.
 An obsolete repo-local `gateway.local.json` overrides the installed configuration
 when running development commands. Retire that file after migrating to the
 installed configuration to keep one model-selection source.

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Set up Subscription Gateway for Claude, a second Codex account, and local models in Codex desktop.">
+  <title>Subscription Gateway · Field guide</title>
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#guide">Skip to guide</a>
+  <aside class="sidebar" aria-label="Guide navigation">
+    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Subscription Gateway fox"><span>Subscription<br>Gateway</span></a>
+    <div class="edition">FIELD GUIDE <span>v0.2.7</span></div>
+    <label class="search-label" for="search">Find in this guide</label>
+    <input id="search" type="search" placeholder="Models, agents, recovery…" autocomplete="off">
+    <nav>
+      <a href="#overview">01 <span>Overview</span></a>
+      <a href="#install">02 <span>Install</span></a>
+      <a href="#accounts">03 <span>Connect accounts</span></a>
+      <a href="#desktop">04 <span>Use in Codex</span></a>
+      <a href="#models">05 <span>Choose models</span></a>
+      <a href="#machines">06 <span>Share across Macs</span></a>
+      <a href="#agents">07 <span>Set up agents</span></a>
+      <a href="#service">08 <span>Keep it running</span></a>
+      <a href="#troubleshooting">09 <span>Fix a problem</span></a>
+      <a href="#cli">10 <span>Optional CLI</span></a>
+    </nav>
+    <p class="sidebar-note">Your coding app.<br>Your accounts.<br>One model list.</p>
+    <a class="source" href="https://github.com/edihasaj/subscription-gateway">Private source ↗</a>
+  </aside>
+
+  <main id="guide">
+    <header class="hero" id="overview" data-section>
+      <div class="eyebrow">A SMALL BRIDGE FOR YOUR AI ACCOUNTS</div>
+      <img class="hero-fox" src="assets/logo.png" width="192" height="192" alt="" aria-hidden="true">
+      <h1>One place<br>to do the work.</h1>
+      <p class="lead">Bring Claude, a second Codex subscription, and local models into the Codex app you already use.</p>
+      <a class="primary" href="#install">Set up your gateway <span aria-hidden="true">↓</span></a>
+      <div class="route" aria-label="Codex connects to the gateway, which routes to your configured models">
+        <span>Codex app</span><b aria-hidden="true">→</b><span>Gateway</span><b aria-hidden="true">→</b><span>Your models</span>
+      </div>
+      <p>The gateway adds models after your native model list. Your primary ChatGPT account stays signed in. Each added subscription has its own registration, and the computer that owns the workspace still executes tools and approvals.</p>
+      <p class="notice"><strong>Desktop adapter in testing.</strong> The native connected-machine relay is tied to the tested Codex build. Check each device after an app update. See <a href="native-remote.md">native transport requirements</a> and <a href="verification.md">verification status</a>.</p>
+    </header>
+
+    <p id="search-status" role="status" aria-live="polite" hidden></p>
+
+    <section id="install" data-section>
+      <div class="section-number">02 / GET STARTED</div>
+      <h2>Install once on each Mac.</h2>
+      <p>The Apple Silicon installer includes its Node runtime. It needs no repository checkout or administrator access. You need GitHub access to the private release and the signed Codex desktop app.</p>
+      <p>Run these commands inside a new, empty download folder:</p>
+      <pre><code>gh release download v0.2.7 -R edihasaj/subscription-gateway \
+  --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
+shasum -a 256 -c SHA256SUMS
+tar -xzf subscription-gateway-0.2.7-macos-arm64.tar.gz
+./subscription-gateway-0.2.7-macos-arm64/install
+gateway --version</code></pre>
+      <p>The installer keeps versioned releases under your user installation prefix. Upgrades preserve gateway registrations. They refuse an unrelated command named <code>gateway</code>.</p>
+      <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory:</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre><p>This refuses to overwrite an existing destination. Native Codex authentication and settings are not copied. Retire an obsolete local configuration after a successful migration; it can otherwise take precedence over the installed configuration.</p></details>
+    </section>
+
+    <section id="accounts" data-section>
+      <div class="section-number">03 / INFERENCE HOST</div>
+      <h2>Connect your subscriptions.</h2>
+      <p>Choose one Mac to run inference. Install the official Claude Code CLI there for Claude subscription use. The gateway registers the extra Codex account through its own Sign in with ChatGPT flow.</p>
+      <pre><code>gateway init
+gateway login claude
+gateway login codex
+gateway discover claude --load
+gateway discover codex --load
+gateway doctor
+gateway service install
+gateway desktop register</code></pre>
+      <p>Complete each sign-in with the account you want that provider to use. For <code>codex</code>, choose your secondary account. The gateway keeps its Codex credentials in its own state directory. Claude uses the official CLI subscription login.</p>
+      <p>Native Codex settings, including an Obsidian-managed configuration, stay in place. No provider or billing fallback occurs when a request fails.</p>
+      <details><summary>Adding Copilot or an API provider</summary><p>Add a provider to the gateway JSON with a unique ID, label, adapter type, and model alias map. Copilot uses <code>copilot-subscription</code>; ordinary API adapters include <code>responses-api</code> and <code>chat-completions-api</code>. Read <a href="architecture.md">provider configuration</a> before editing it. Copilot requires its native CLI subscription login and SDK protocol 3.</p><pre><code>gateway login copilot
+gateway discover copilot --load
+gateway doctor</code></pre></details>
+    </section>
+
+    <section id="desktop" data-section>
+      <div class="section-number">04 / DAILY USE</div>
+      <h2>Pick a model. Start a chat.</h2>
+      <p>After first registration, finish active work and quit the app normally once. Launch it with the installed command:</p>
+      <pre><code>gateway desktop
+gateway desktop status</code></pre>
+      <ol>
+        <li>Start a new chat and select the computer and project where the work belongs.</li>
+        <li>Open the model list. Added models have labels such as <strong>Claude · Opus 5.5</strong> and <strong>Codex 2 · GPT-6.1-Sol</strong>.</li>
+        <li>Choose a supported reasoning level, then send your task.</li>
+      </ol>
+      <p>The app owns chat naming. Agents use <code>gateway_chat_title</code> only for an explicit title read or rename request. A routine task should not produce a generic “Gateway chat” title.</p>
+      <div class="table-wrap"><table><caption>What to expect in a gateway chat</caption><thead><tr><th>Control</th><th>Behavior</th></tr></thead><tbody>
+        <tr><td>Files and instructions</td><td>The native executor reads the selected project's AGENTS.md and executes tools in that workspace.</td></tr>
+        <tr><td>Follow-ups and model changes</td><td>History carries through supported gateway model changes. Start a new chat to cross between a loaded native account and the gateway provider.</td></tr>
+        <tr><td>Images</td><td>Claude and Codex 2 accept supported image attachments. The current Qwen route accepts text only.</td></tr>
+        <tr><td>Stop and resume</td><td>Stop cancels the active request. Resume by sending another turn or reopening the saved chat. There is no provider-level pause that freezes inference.</td></tr>
+        <tr><td>Access and steering</td><td>The native executor owns permissions and approvals. The router carries native steering and goal messages; remaining rendered checks are tracked separately.</td></tr>
+      </tbody></table></div>
+      <p>The backend advertises supported reasoning efforts. The app can filter which levels it displays. A backend Max or Ultra check does not prove the visible picker exposes that level.</p>
+    </section>
+
+    <section id="models" data-section>
+      <div class="section-number">05 / MODEL CATALOG</div>
+      <h2>Load the models your account offers.</h2>
+      <p>Discovery reads the provider's current catalog. With <code>--load</code>, it saves those routes. Omit <code>--select</code> to load every offered model; use it to keep a smaller list.</p>
+      <pre><code>gateway discover claude --load
+gateway discover codex --load
+gateway catalog</code></pre>
+      <p>For the four-model Copilot selection used in this setup:</p>
+      <pre><code>gateway discover copilot \
+  --select gpt-6.1-sol,gpt-5.6-terra,claude-sonnet-5,claude-opus-5.5 --load</code></pre>
+      <p>These IDs must exist in your account's discovery result. Repeat discovery without <code>--load</code> to inspect newer offerings. An unrestricted load replaces the selection with the full offered list.</p>
+      <p>The provider's <code>label</code> sets the name before the middle dot. Providers follow configuration order; model metadata <code>priority</code> controls order within a provider. There is no recent-use sorter.</p>
+      <p>Saved routes reload on the next inference request. Desktop adapters fetch current metadata when the app requests its catalog; a picker already open may need to close and reopen. The optional CLI uses a startup snapshot.</p>
+    </section>
+
+    <section id="machines" data-section>
+      <div class="section-number">06 / SHARED CATALOG</div>
+      <h2>One host. The same models on your Macs.</h2>
+      <p>Keep provider registrations on the inference host. Each client needs the installed gateway and a private authenticated connection to that host. Transfer only the gateway client token through SSH:</p>
+      <pre><code>umask 077
+mkdir -p "$HOME/.local/state/subscription-gateway-client"
+ssh user@inference-host 'gateway token' \
+  &gt; "$HOME/.local/state/subscription-gateway-client/client-token"
+gateway setup --client --port 3459 \
+  --token-file "$HOME/.local/state/subscription-gateway-client/client-token"
+gateway tunnel install --tunnel-id host --host user@inference-host \
+  --port 3459 --remote-port 3457
+gateway doctor
+gateway desktop register</code></pre>
+      <p>The client token grants access to all configured gateway accounts. Keep it owner-only and give it only to trusted devices. Provider credentials stay on the host; workspace files stay on the execution computer.</p>
+      <details><summary>Use an existing Control other devices connection</summary><p>The experimental native relay reuses that machine's existing registration. It adds no separate computer or SSH entry in the app. Install a release with the matching relay, finish local and remote work, then quit ChatGPT normally on that machine before activation.</p><pre><code>gateway native install
+gateway desktop register
+gateway desktop
+gateway native status</code></pre><p>If a managed native relay already exists, use the service consolidation procedure below to replace an older test path. Keep working SSH connections until the original native connection passes its real desktop checks. Read <a href="native-remote.md">the SDK and account requirements</a>.</p></details>
+      <p>Each execution backend must be registered. A synced chat alone cannot make an unconfigured machine recognize <code>subscription_gateway</code>.</p>
+    </section>
+
+    <section id="agents" data-section>
+      <div class="section-number">07 / DELEGATION</div>
+      <h2>Give each agent a job.</h2>
+      <p>Start the parent chat with a gateway model. Configure these roles on each execution machine:</p>
+      <pre><code>gateway agents setup \
+  --coordinator codex/gpt-6.1-sol \
+  --verifier codex/gpt-6-astra \
+  --worker qwen/qwen3.8-flash-next
+gateway agents status</code></pre>
+      <p>The worker becomes the default for delegated implementation. The coordinator and verifier use their named models. All aliases must be present in the gateway catalog.</p>
+      <blockquote>Coordinate this task. Delegate implementation to worker, then use verifier for an independent review and checks. Give each worker explicit file ownership. Review their evidence and resolve defects before reporting completion.</blockquote>
+      <p>New executors load the generated profiles. Start a new chat or close and resume one after changing them. Children inherit the parent's gateway provider and permissions; a native primary-account parent cannot acquire a gateway child through a model name alone.</p>
+      <p>Codex's native concurrency limit still applies. The configured Macs use a limit of 30. See <a href="agents.md">agent profiles</a> for role scope and inheritance.</p>
+    </section>
+
+    <section id="service" data-section>
+      <div class="section-number">08 / OPERATIONS</div>
+      <h2>Keep one managed service.</h2>
+      <p>The daemon must be up for gateway inference. A macOS user LaunchAgent starts it at login and restarts it after a crash. The supervisor retries failed components without replacing healthy ones. The inference host must stay awake and reachable.</p>
+      <pre><code>gateway service status
+gateway native status
+gateway doctor</code></pre>
+      <p>Preview consolidating gateway jobs. Apply only after local and remote chats finish and ChatGPT is closed on that machine:</p>
+      <pre><code>gateway service consolidate
+gateway service consolidate --apply</code></pre>
+      <p>One supervisor owns inference, required SSH tunnels, the native relay, and login setup. Provider CLIs and chat executors still run as children. Consolidation saves rollback copies and excludes unrelated jobs, including the GitHub Actions runner.</p>
+      <p>Restart also requires a maintenance window. Uninstall stops owned components and moves installed files to Trash; it preserves credentials and native configuration.</p>
+      <pre><code>gateway service restart
+# Remove the gateway installation when you intend to stop using it:
+gateway uninstall</code></pre>
+      <p>See <a href="services.md">service ownership and rollback</a> and <a href="RELEASING.md">upgrade checks</a>. A crash restart does not promise that an interrupted turn completes automatically.</p>
+    </section>
+
+    <section id="troubleshooting" data-section>
+      <div class="section-number">09 / RECOVERY</div>
+      <h2>Find where the route stopped.</h2>
+      <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
+        <tr><td>Model not supported with a ChatGPT account</td><td>Start a new chat with the gateway model selected. A model name alone cannot switch a loaded native provider.</td></tr>
+        <tr><td>Model provider <code>subscription_gateway</code> not found</td><td>Register the adapter on the computer that owns the chat's workspace, then reopen that chat.</td></tr>
+        <tr><td>Added models missing</td><td>Run <code>gateway doctor</code> on that execution machine. Check the host, tunnel, desktop registration, and current catalog.</td></tr>
+        <tr><td>Streaming closes before completion</td><td>Check daemon and connection status. Keep the failed chat and logs for diagnosis; do not silently retry on another account.</td></tr>
+        <tr><td>Max or Ultra disappears</td><td>Check the model's advertised efforts and the app's enabled effort controls. Verify the active adapter version.</td></tr>
+        <tr><td>Every title says “Gateway chat”</td><td>An older adapter may still be loaded. Finish work and perform a normal relaunch with the installed release.</td></tr>
+        <tr><td>Consolidation refuses to run</td><td>Finish local and remote chats, close ChatGPT normally, and check that inference is healthy and idle.</td></tr>
+      </tbody></table></div>
+      <pre><code>gateway --version
+gateway doctor
+gateway desktop status
+gateway service status</code></pre>
+      <p>For diagnostics, keep method names, timestamps, versions, and errors. Do not share client tokens, account tokens, request bodies, or tool arguments.</p>
+    </section>
+
+    <section id="cli" data-section>
+      <div class="section-number">10 / OPTIONAL</div>
+      <h2>Use a separate Codex CLI home.</h2>
+      <p><code>gateway codex-config</code> generates a complete configuration, not a named profile. Save it in a separate home to preserve your primary settings:</p>
+      <pre><code>gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
+mkdir -p "$gateway_cli_home"
+gateway codex-config --model codex/gpt-6.1-sol \
+  &gt; "$gateway_cli_home/config.toml"
+CODEX_HOME="$gateway_cli_home" codex</code></pre>
+      <p>This CLI home has its own history and settings. It does not inherit all native customizations. Regenerate the snapshot after changing the gateway's model selection.</p>
+    </section>
+    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Subscription Gateway · Field guide<br><small>Own your setup. Keep the work moving.</small></span><a href="#overview">Back to top ↑</a></footer>
+  </main>
+</body>
+</html>

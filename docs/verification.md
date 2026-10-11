@@ -182,9 +182,17 @@ The installed v0.2.7 adapter also passed ordinary first turns and follow-ups wit
 Claude Sonnet 5.5 and Codex 2 Sol without calling the title helper. Titles set
 through the app-server naming API stayed unchanged until an explicit agent rename
 request. Title reads, name notifications, and saved-chat resume still passed.
-The test used separate native and gateway state directories. MacBook Pro 2's
-running preflight adapter still contains the earlier automatic-title instruction;
-it needs a reload to pick up the installed behavior.
+The test used separate native and gateway state directories.
+
+On 11 October 2026, MacBook Pro 2's original connection was migrated to the
+installed v0.2.7 relay. Its native and desktop login jobs now run under one
+supervisor. The original environment and installation IDs were retained, and
+both native and gateway configuration digests were unchanged. The fresh
+connection returned 36 models. A user-driven Claude chat read the image-only code
+and wrote the exact release-check seed plus `CLAUDE_NATIVE_OK` on the remote
+machine. The Codex 2 follow-up, saved-chat recovery, rendered Max, and model-list
+refresh selection still need verification. The user reports that refresh can
+select native GPT.
 
 Qwen runs on the existing DGX Spark vLLM server. Its managed SSH tunnel uses the
 existing NVIDIA Sync identity without copying the private key. The real Codex

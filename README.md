@@ -1,6 +1,13 @@
+<img src="docs/assets/logo.png" width="88" height="88" alt="Subscription Gateway fox">
+
 # Subscription Gateway
 
 A local gateway for subscription and API providers. The project name is provisional.
+
+Start with the [illustrated setup and usage guide](docs/index.html). It covers
+installation, separate account registration, desktop models, shared Macs,
+agent profiles, and service recovery. Open `docs/index.html` in a browser, or
+serve the `docs/` folder with any static web server.
 
 Clients send OpenAI Responses requests. A provider adapter handles authentication
 and inference. The client executes tools and returns their results to the gateway.
@@ -26,11 +33,11 @@ inference hosts also need the native CLI for each configured provider. Clients
 need the signed Codex desktop app and an authenticated SSH connection to the host.
 
 ```sh
-gh release download v0.2.2 -R edihasaj/subscription-gateway \
+gh release download v0.2.7 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.2-macos-arm64.tar.gz
-./subscription-gateway-0.2.2-macos-arm64/install
+tar -xzf subscription-gateway-0.2.7-macos-arm64.tar.gz
+./subscription-gateway-0.2.7-macos-arm64/install
 gateway --version
 ```
 
@@ -61,15 +68,18 @@ login. Quit the app normally once after initial registration. Run `gateway deskt
 to launch immediately with the adapter. The launcher refuses to stop a running app.
 `gateway desktop status` checks registration; `gateway desktop unregister` removes it.
 
-In another terminal, generate optional Codex CLI settings:
+For an optional Codex CLI installation, generate settings in a separate home:
 
 ```sh
-gateway codex-config --model codex/gpt-6.1-sol > gateway.codex.toml
+gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
+mkdir -p "$gateway_cli_home"
+gateway codex-config --model codex/gpt-6.1-sol > "$gateway_cli_home/config.toml"
+CODEX_HOME="$gateway_cli_home" codex
 ```
 
-Keep the native account’s base configuration unchanged. Save the generated file
-as `~/.codex/subscription-gateway.config.toml`, then launch the CLI with
-`codex --profile subscription-gateway`. The generated catalog exposes account
+Keep the native account’s base configuration unchanged. The generated file is
+a complete configuration, not a named profile. This separate CLI home has its own
+history and settings. The generated catalog exposes account
 labels and reasoning controls. It also configures a credential helper so the
 gateway token does not need to appear in the TOML file. The daemon reloads saved
 model routes on the next request. A model name alone cannot switch an existing

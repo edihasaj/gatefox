@@ -1,0 +1,42 @@
+{
+  "generator": "Codex built-in image_gen.imagegen",
+  "account": "Current Codex session; account identifier omitted",
+  "generatedAt": "2026-10-11",
+  "prompt": "Create a finished premium mascot LOGO for a developer tool called Subscription Gateway, a small bridge that lets people use different AI subscriptions and local models in one coding app. Asset: a single centered square app/documentation logo mark, actual transparent background. Character: a compact friendly orange fox courier HEAD ONLY, front-facing, with two softly pointed rounded ears, warm ivory cheeks and muzzle, tiny charcoal matte dot eyes, a small dark nose and subtle calm smile. Distinctive detail: the ivory muzzle/cheek silhouette forms a simple rounded gateway arch, with a tiny flat moss-green accent at its base suggesting the connection through the gateway. Keep the fox recognizable, elegant and understated, not cartoonishly wide-eyed. Bold rounded silhouette that remains legible at 24px; fills about 85% of the canvas with comfortable margin. Style: exceptionally polished soft matte 3D illustration, subtly brushed fleece texture, restrained studio lighting, minimal surface detail, no glossy bead eyes, no eyelashes, no gender cues, no glow, no floor shadow, no background tile. Palette: vermilion orange #DE542D, parchment ivory #F6F3EB, charcoal #18201B, restrained moss #55756C. Logo must read as one coherent fox face, not a collection of clip art or an abstract geometric mark. No words, lettering, watermark, props, hardware, real devices, operating system elements, or provider logos. Transparent PNG-style cutout with clean alpha edges.",
+  "references": [],
+  "rejectedDrafts": [],
+  "master": {
+    "path": "assets/brand/fox-master.png",
+    "width": 1254,
+    "height": 1254,
+    "sha256": "296846fb0ae02a1a5c7fd5f0cbdb2511a15b52f3fcfbec8af886250038b2429f"
+  },
+  "alpha": {
+    "method": "Native transparent output, preserved without additional matting",
+    "verification": "sips hasAlpha=yes; visual inspection on magenta and light/dark size sheet"
+  },
+  "derivatives": [
+    {
+      "path": "docs/assets/logo.png",
+      "width": 256,
+      "height": 256,
+      "command": "sips -Z 256 assets/brand/fox-master.png --out docs/assets/logo.png",
+      "sha256": "d5e8e3ff5830a04e6ac0e9b8388c2acea824f0e1e773effd9ac14947505a9eb1"
+    },
+    {
+      "path": "docs/assets/favicon.png",
+      "width": 32,
+      "height": 32,
+      "command": "sips -Z 32 assets/brand/fox-master.png --out docs/assets/favicon.png",
+      "sha256": "8988d0acca05c97cb1c4c218f20d32997dc7fd0974e09528a21d78f806c939d8"
+    },
+    {
+      "path": "docs/assets/favicon-16.png",
+      "width": 16,
+      "height": 16,
+      "command": "magick assets/brand/fox-master.png -resize 16x16 docs/assets/favicon-16.png",
+      "sha256": "a8a8054d985ff67b60dcc248636e73ad90b45225ba4cbb7821f3bf7ae785dd54"
+    }
+  ],
+  "surfaces": ["README.md", "docs/index.html"]
+}
