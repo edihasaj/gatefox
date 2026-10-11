@@ -10,6 +10,34 @@ Run `gateway serve` on the inference host. Keep its provider registrations and
 native Claude account directories there. Use one authoritative host when you
 want every client to see the same configured models.
 
+Keep model selection on that authoritative host. For example, load only these
+four Copilot models while preserving the other providers:
+
+```sh
+gateway discover copilot \
+  --select gpt-6.1-sol,gpt-5.6-terra,claude-sonnet-5,claude-opus-5.5 --load
+```
+
+GPT-5.6-Terra was the latest Terra offered by the registered Copilot account on
+11 October 2026. Discovery without `--load` does not change the selection.
+Include the selection when loading again; an unrestricted `--load` loads the
+provider's full offered catalog.
+
+The desktop and SSH adapters fetch this shared selection. Each device can also
+generate an opt-in CLI profile with its installed command:
+
+```sh
+gateway codex-config --model codex/gpt-6.1-sol \
+  > ~/.codex/subscription-gateway.config.toml
+codex --profile subscription-gateway
+```
+
+Regenerate the CLI snapshot after changing the host's selection. This profile
+uses the secondary subscription routes; the primary `config.toml` stays unchanged.
+An obsolete repo-local `gateway.local.json` overrides the installed configuration
+when running development commands. Retire that file after migrating to the
+installed configuration to keep one model-selection source.
+
 Open an SSH forward from the client:
 
 ```sh
