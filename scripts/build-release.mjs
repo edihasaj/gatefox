@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, statSync, chmodSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { nativeSourceDigest } from './native-source.mjs';
 
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !process.argv.includes('--allow-dirty')) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
@@ -20,7 +21,7 @@ cpSync('scripts/install.sh', join(directory, 'install')); chmodSync(join(directo
 const nativeArtifact = resolve('.state/native-relay-build/artifact');
 if (process.argv.includes('--with-native')) {
   const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
-  if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74') throw new Error('Native relay artifact does not match this release');
+  if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74' || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
   cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
 }
 writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }, null, 2));

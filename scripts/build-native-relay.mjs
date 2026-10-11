@@ -3,6 +3,7 @@ import {mkdirSync,readFileSync,writeFileSync,cpSync,existsSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
+import {nativeSourceDigest} from './native-source.mjs';
 
 const revision='740e5af33c71225640e0c1c1555c514c2c93ab74';
 const archiveDigest='25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83';
@@ -51,6 +52,6 @@ if(!values.test){
   cpSync('native-relay/NOTICE',join(output,'NOTICE'));
   const metadata=JSON.parse(execFileSync('cargo',['metadata','--format-version','1','--manifest-path',join(build,'Cargo.toml')],{encoding:'utf8',maxBuffer:32*1024*1024}));
   writeFileSync(join(output,'dependencies.json'),JSON.stringify(metadata.packages.map(({name,version,license,repository})=>({name,version,license,repository})),null,2));
-  writeFileSync(join(output,'build.json'),JSON.stringify({version,codexVersion:'0.162.0-alpha.17.2',revision,archiveSha256:archiveDigest,profile:values.dev?'dev':'release'},null,2));
+  writeFileSync(join(output,'build.json'),JSON.stringify({version,codexVersion:'0.162.0-alpha.17.2',revision,archiveSha256:archiveDigest,profile:values.dev?'dev':'release',sourceSha256:nativeSourceDigest()},null,2));
   console.log(JSON.stringify({artifact:output,version,revision}));
 }

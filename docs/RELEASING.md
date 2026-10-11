@@ -30,6 +30,12 @@ belongs in the release archive.
 The build refuses dirty source unless the preflight flag is explicit. It does not
 download credentials or publish automatically.
 
+For a release containing the native connected-machine adapter, build and test
+the matching relay first, then use `node scripts/build-release.mjs --with-native`.
+The relay's source digest, package version, pinned SDK revision, and release
+profile must match the archive. Verify the original machine registration and
+model picker before publishing. See [native transport checks](native-remote.md).
+
 # Upgrade and recovery
 
 The installer verifies file checksums before changing the current release link.

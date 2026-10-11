@@ -47,8 +47,10 @@ own daemon socket is not replaced. A live gateway listener is reused; a crashed
 socket is recovered only when its private ownership record matches.
 Add the host under Settings, Connections, SSH, then select its workspace.
 The built-in Control other devices connection reaches the native engine directly
-and bypasses this adapter. Registering a desktop or SSH wrapper does not make
-gateway models work through that separate connection.
+and bypasses a desktop or SSH wrapper. The separate
+[native transport adapter](native-remote.md) reuses the machine's original
+registration and routes that connection through the same gateway router. Its
+rendered checks are still in progress on the test Mac.
 
 On startup, a bounded native app-server process refreshes its own model metadata.
 The adapter copies only public model rows from that engine's configured catalog
