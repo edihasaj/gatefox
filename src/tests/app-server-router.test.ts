@@ -67,6 +67,32 @@ test("native chat never receives a gateway alias and persisted gateway chats ret
   assert.equal(calls.at(-1)!.params.model, "codex/model");
 });
 
+test("live settings keep provider boundaries and forward thread controls unchanged", async () => {
+  const { router, calls } = await fixture();
+  await router.request("thread/start", { model: "native" });
+  const count = calls.length;
+  for (const method of ["thread/settings/update", "turn/settings/update"]) {
+    await assert.rejects(router.request(method, { threadId: "test", turnId: "active", model: "claude/model" }), /Start a new chat/);
+  }
+  assert.equal(calls.length, count);
+  await router.request("thread/start", { model: "claude/model" });
+  const params = { threadId: "test", model: "codex/model", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" }, effort: "high" };
+  await router.request("thread/settings/update", params);
+  assert.deepEqual(calls.at(-1)!.params, params);
+  await router.request("thread/resume", { threadId: "test" });
+  assert.equal(calls.at(-1)!.params.model, "codex/model");
+  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "native" }), /Start a new chat/);
+});
+
+test("steering and goal operations retain their active-turn and authorization fields", async () => {
+  const { router, calls } = await fixture();
+  await router.request("thread/start", { model: "claude/model" });
+  const steer = { threadId: "test", expectedTurnId: "active", input: [{ type: "text", text: "changed direction" }], clientUserMessageId: "client-message" };
+  await router.request("turn/steer", steer); assert.deepEqual(calls.at(-1)!.params, steer);
+  const goal = { threadId: "test", objective: "fixture objective", status: "paused", origin: "user", tokenBudget: 10000 };
+  await router.request("thread/goal/set", goal); assert.deepEqual(calls.at(-1)!.params, goal);
+});
+
 test("desktop config overrides select the gateway before its first turn", async () => {
   const { router, calls } = await fixture();
   await router.request("thread/start", { model: null, modelProvider: "openai", config: { model: "claude/model" } });

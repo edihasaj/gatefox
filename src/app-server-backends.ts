@@ -86,6 +86,7 @@ export class AppServerBackends {
         if (!this.args[index].startsWith("--profile=")) forwarded.push(this.args[index]);
       }
       const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", model_catalog_json: path,
+        "features.step_model_switching": true,
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
       const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
       if (this.closing) throw new Error("Codex desktop connection is closing");

@@ -119,7 +119,7 @@ export class AppServerRouter {
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
-    if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start"].includes(method)) {
+    if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
       const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
       this.extraModels = (await this.source.refresh(strict)).models;
@@ -142,10 +142,10 @@ export class AppServerRouter {
       const model = requestedModel(params) ?? this.preferences.model;
       if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model);
       else if (typeof model === "string") forwarded = { ...params, model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
-    } else if (["thread/resume", "thread/fork", "turn/start"].includes(method) && typeof params.threadId === "string") {
+    } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       const route = await this.route(params.threadId);
       this.assertSameProvider(route.provider, requestedModel(params));
-      if (method !== "turn/start" && route.provider === gatewayProvider) {
+      if (["thread/resume", "thread/fork"].includes(method) && route.provider === gatewayProvider) {
         const model = requestedModel(params) ?? route.model;
         if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
         forwarded = this.modelRequest(params, model);
@@ -157,7 +157,7 @@ export class AppServerRouter {
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     const selected = requestedModel(params);
-    if (method === "turn/start" && typeof selected === "string" && typeof params.threadId === "string") {
+    if (["turn/start", "thread/settings/update"].includes(method) && typeof selected === "string" && typeof params.threadId === "string") {
       const route = this.routes.get(params.threadId); if (route) route.model = selected;
     }
     if (method === "config/read") {

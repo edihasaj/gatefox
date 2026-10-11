@@ -114,6 +114,17 @@ because they share the gateway provider and its account-scoped replay handling.
 Native return from gateway history is not supported: a real probe failed on
 foreign item IDs. The adapter does not rewrite stored native history to bypass it.
 
+Gateway executors enable Codex's active-step model switching. The adapter forwards
+`thread/settings/update`, `turn/settings/update`, `turn/steer`, and goal operations
+with their original turn IDs and authorization fields. A thread-level model
+selection remains the default after a saved chat resumes. An active-turn model
+update applies at the next inference step. A captured tool step keeps its approval
+requirements; changing thread access updates subsequent turns.
+
+These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol.
+Goal creation, reads, updates, notifications, and clearing were tested. Automatic
+goal continuation and every rendered control remain separate desktop checks.
+
 The launch procedure and real Claude/Codex 2 conversations have been verified
 in the rendered desktop on MacBook Pro 2. Initial activation requires a fresh
 app launch with these environment variables. Test on another machine before

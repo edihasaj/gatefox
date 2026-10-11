@@ -36,6 +36,8 @@ test("live additions use a new gateway catalog while native and loaded gateway c
     const oldEngine = await c.rpc("engine/info", { threadId: old.thread.id });
     assert.notEqual(nativeEngine.pid, oldEngine.pid);
     assert.equal(oldEngine.primaryAuthPresent, false);
+    assert.equal(nativeEngine.stepModelSwitching, false);
+    assert.equal(oldEngine.stepModelSwitching, true);
     c.value.providers[0].models["claude/new"] = "new";
     c.value.providers[0].modelMetadata = { "claude/new": { contextWindow: 1000000, reasoningEfforts: ["high"] } };
     c.setCatalog(modelCatalog(c.value));
