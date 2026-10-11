@@ -89,6 +89,9 @@ period to the recovery marker; the checker now accepts terminal punctuation and
 its full loop passed again. Copilot CLI 1.0.91 repeated its entire model catalog.
 Discovery removes identical repetitions and rejects conflicting metadata for the
 same ID. The account is not switched and its CLI is not updated automatically.
+That CLI also omits the optional assistant `providerId`. The adapter accepts its
+response only after subscription usage reports `isByok: false` and the returned
+model matches the request. Explicit provider changes and BYOK still fail closed.
 
 Earlier bundled-engine checks on the inference host verified the primary account
 and the combined 28-model catalog. A separate Haiku 4.5 request verified its

@@ -85,7 +85,9 @@ export class CopilotSubscription implements Provider {
           usage = { input_tokens: input, output_tokens: output, total_tokens: input + output };
         }
         if (event.type === "assistant.message") {
-          if (data.providerId !== "copilot") throw new ProviderError("provider_route", "Copilot changed the requested subscription route");
+          // Protocol 3 in CLI 1.0.91 omits this optional field. Its preceding
+          // isByok:false usage and exact model still attest the subscription route.
+          if (data.providerId !== undefined && data.providerId !== "copilot") throw new ProviderError("provider_route", "Copilot changed the requested subscription route");
           if (data.model !== request.model) {
             const actual = typeof data.model === "string" && Object.values(this.config.models).includes(data.model) ? data.model : "an unexpected model";
             throw new ProviderError("model_route", `Copilot returned ${actual} instead of the requested model`);

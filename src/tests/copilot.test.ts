@@ -67,6 +67,8 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     const last = normal.at(-1); assert.equal(last?.type === "done" && last.usage.total_tokens, 13);
     const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
     assert.deepEqual(receipt.availableTools, []); assert.deepEqual(receipt.allowedModels, ["fixture"]); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");
+    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "provider-absent";
+    assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "tool";
     const custom = await collect(adapter.infer({ ...request, tools: [{ type: "custom", name: "patch" }], tool_choice: "required" }, new AbortController().signal));
     assert.equal(custom.find(event => event.type === "tool")?.call.responseTool?.type, "custom");

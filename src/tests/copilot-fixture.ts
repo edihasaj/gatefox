@@ -23,7 +23,7 @@ for await (const message of copilotFrames(process.stdin)) {
     const tool = mode === "tool" || mode === "foreign-tool";
     const text = tool ? "" : "fixture-proof";
     if (text) event("assistant.message_delta", { deltaContent: text });
-    event("assistant.message", { content: mode === "inconsistent" ? "different" : text, model: mode === "model-switch" ? "other" : config.model, providerId: mode === "provider-switch" ? "byok" : "copilot", toolRequests: tool ? [{ toolCallId: "call_fixture", name: mode === "foreign-tool" ? "shell" : "gateway_tool_0", arguments: { input: "patch-proof" }, type: "function" }] : [] });
+    event("assistant.message", { content: mode === "inconsistent" ? "different" : text, model: mode === "model-switch" ? "other" : config.model, ...(mode === "provider-absent" ? {} : { providerId: mode === "provider-switch" ? "byok" : "copilot" }), toolRequests: tool ? [{ toolCallId: "call_fixture", name: mode === "foreign-tool" ? "shell" : "gateway_tool_0", arguments: { input: "patch-proof" }, type: "function" }] : [] });
     event("assistant.idle");
   } else if (message.method === "session.delete") send({ jsonrpc: "2.0", id: message.id, result: { success: true } });
   else send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "private-token diagnostic" } });
