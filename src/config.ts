@@ -17,6 +17,7 @@ export interface ProviderConfig {
   modelMetadata?: Record<string, ModelMetadata>;
 }
 export interface ModelMetadata {
+  inputModalities?: Array<"text" | "image">;
   displayName?: string;
   contextWindow?: number;
   reasoningEfforts?: string[];
@@ -56,6 +57,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.contextWindow !== undefined && (!Number.isInteger(metadata.contextWindow) || metadata.contextWindow < 1024)) throw new Error("contextWindow must be at least 1024 tokens");
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
+      if (metadata.inputModalities !== undefined && (!Array.isArray(metadata.inputModalities) || !metadata.inputModalities.includes("text") || metadata.inputModalities.some(modality => !["text", "image"].includes(modality)) || new Set(metadata.inputModalities).size !== metadata.inputModalities.length)) throw new Error("Input modalities must contain text and optionally image");
     }
     if (provider.type === "responses-api" || provider.type === "anthropic-api") {
       if (!provider.baseUrl || !provider.apiKeyEnv || !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) throw new Error(`${provider.id}: baseUrl and apiKeyEnv are required`);

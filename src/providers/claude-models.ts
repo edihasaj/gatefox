@@ -24,6 +24,7 @@ export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
     const efforts = item.supportedEffortLevels;
     if (efforts !== undefined && (!Array.isArray(efforts) || efforts.some(effort => !["low", "medium", "high", "xhigh", "max"].includes(effort)))) throw new Error("Claude returned invalid reasoning levels");
     models.push({ model, metadata: { displayName: item.displayName,
+      inputModalities: item.supportsVision === false ? ["text"] : ["text", "image"],
       ...(millionTokenModels.has(model) ? { contextWindow: 1000000 } : {}),
       reasoningEfforts: item.supportsEffort === true && Array.isArray(efforts) ? efforts : [], priority: models.length,
     } });

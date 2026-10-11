@@ -16,6 +16,7 @@ export type OpenAIToolCall = {
 };
 export type OpenAIChatMessage = {
   content: string | null;
+  parts?: MessagePart[];
   role: MessageRole | "tool";
   name?: string;
   tool_call_id?: string;
@@ -28,7 +29,9 @@ export type OpenAIChatRequest = {
   tool_choice?: ChatToolSelection;
   tools?: OpenAITool[];
 };
-export type ResponsesContentPart = { text: string; type: "input_text" | "output_text" };
+export type ImageDetail = "auto" | "low" | "high" | "original";
+export type MessagePart = { type: "text"; text: string } | { type: "image"; mediaType: string; data: string; detail?: ImageDetail };
+export type ResponsesContentPart = { text: string; type: "input_text" | "output_text" } | { type: "input_image"; image_url: string; detail?: ImageDetail };
 export type ResponsesMessageItem = { role: MessageRole; content: string | ResponsesContentPart[]; type?: "message" };
 export type ResponsesInputCall = {
   name: string;

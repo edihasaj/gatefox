@@ -1,4 +1,5 @@
-import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesRequest, ResponsesTool, ResponseToolIdentity } from "./types.js";
+import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
+import { inlineImage } from "./images.js";
 
 type Data = Record<string, unknown>;
 export class ResponsesTranslationError extends Error {}
@@ -15,16 +16,18 @@ function named(value: Data): string {
   const local = name(value.name);
   return value.namespace === undefined ? local : `${name(value.namespace)}.${local}`;
 }
-function content(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (!Array.isArray(value)) reject("Only string or text-part content is supported");
+function content(value: unknown, allowImages = false): Pick<OpenAIChatMessage, "content" | "parts"> {
+  if (typeof value === "string") return { content: value };
+  if (!Array.isArray(value)) reject("Only string or content-part arrays are supported");
   const paragraphs: string[] = [];
+  const parts: MessagePart[] = []; let images = 0;
   for (const entry of value) {
     const part = record(entry);
+    if (part.type === "input_image" && allowImages) { parts.push(inlineImage(part.image_url, part.detail)); paragraphs.push(`[Image ${++images} attached]`); continue; }
     if ((part.type !== "input_text" && part.type !== "output_text") || typeof part.text !== "string") reject("Only text content is supported by this adapter");
-    paragraphs.push(part.text);
+    paragraphs.push(part.text); parts.push({ type: "text", text: part.text });
   }
-  return paragraphs.join("\n");
+  return { content: paragraphs.join("\n"), ...(images ? { parts } : {}) };
 }
 
 /** Replay is compiled in order; opaque reasoning is never treated as text. */
@@ -47,7 +50,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       }
       case "function_call_output": case "custom_tool_call_output": {
         const id = name(item.call_id);
-        replay.push({ content: content(item.output), role: "tool", tool_call_id: id, name: item.name === undefined ? issued.get(id) : named(item) });
+        replay.push({ ...content(item.output, true), role: "tool", tool_call_id: id, name: item.name === undefined ? issued.get(id) : named(item) });
         break;
       }
       case "reasoning": {
@@ -63,7 +66,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       }
       case undefined: case "message": {
         if (!["user", "assistant", "system", "developer"].includes(String(item.role))) reject("Unsupported message role");
-        replay.push({ content: content(item.content), role: item.role as OpenAIChatMessage["role"] });
+        replay.push({ ...content(item.content, item.role === "user"), role: item.role as OpenAIChatMessage["role"] });
         break;
       }
       default: reject("Unsupported Responses input item type");

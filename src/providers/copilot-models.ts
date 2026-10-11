@@ -22,7 +22,8 @@ export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
     // CLI 1.0.95 advertises "none" for Sol 6.1, but the actual Copilot
     // subscription endpoint rejects it. Preserve only its verified wire levels.
     const supported = model.id === "gpt-6.1-sol" ? efforts.filter(effort => effort !== "none") : efforts;
-    return [{ model: model.id, metadata: { displayName: model.name, ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[] } }];
+    const vision = record(record(model.capabilities).supports).vision === true;
+    return [{ model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[] } }];
   });
 }
 

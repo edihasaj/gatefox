@@ -26,7 +26,7 @@ test("Copilot RPC handles split UTF-8 frames and rejects unbounded, ambiguous, o
 test("Copilot discovery respects policy and default context limits without guessing reasoning levels", () => {
   const model = { id: "test", name: "Test", policy: { state: "enabled" }, capabilities: { limits: { max_context_window_tokens: 1000000, max_prompt_tokens: 936000 } }, billing: { tokenPrices: { contextMax: 200000 } }, supportedReasoningEfforts: ["low", "high", "max"] };
   const entries = nativeCopilotModels([model, { id: "auto" }, { ...model, id: "disabled", policy: { state: "disabled" } }]);
-  assert.deepEqual(entries, [{ model: "test", metadata: { displayName: "Test", contextWindow: 200000, reasoningEfforts: ["low", "high", "max"] } }]);
+  assert.deepEqual(entries, [{ model: "test", metadata: { displayName: "Test", inputModalities: ["text"], contextWindow: 200000, reasoningEfforts: ["low", "high", "max"] } }]);
   assert.throws(() => nativeCopilotModels([model, model]), /duplicate/);
   assert.throws(() => nativeCopilotModels([{ ...model, supportedReasoningEfforts: ["ultra"] }]), /reasoning/);
   assert.deepEqual(nativeCopilotModels([{ ...model, id: "gpt-6.1-sol", supportedReasoningEfforts: ["none", "low", "max"] }])[0].metadata.reasoningEfforts, ["low", "max"]);
@@ -65,7 +65,7 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     assert.deepEqual(normal.map(event => event.type), ["reasoning", "text", "done"]);
     const last = normal.at(-1); assert.equal(last?.type === "done" && last.usage.total_tokens, 13);
     const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
-    assert.deepEqual(receipt.availableTools, []); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");
+    assert.deepEqual(receipt.availableTools, []); assert.deepEqual(receipt.allowedModels, ["fixture"]); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "tool";
     const custom = await collect(adapter.infer({ ...request, tools: [{ type: "custom", name: "patch" }], tool_choice: "required" }, new AbortController().signal));
     assert.equal(custom.find(event => event.type === "tool")?.call.responseTool?.type, "custom");

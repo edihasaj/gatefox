@@ -86,7 +86,7 @@ export class AppServerRouter {
       id: model.slug, model: model.slug, displayName: model.display_name, description: model.description,
       upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
       supportedReasoningEfforts: (model.supported_reasoning_levels as Array<{ effort: string; description: string }>).map(level => ({ reasoningEffort: level.effort, description: level.description })),
-      defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: ["text"], supportsPersonality: false,
+      defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
       multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: false,
     }));
     const models = [...native, ...extra];

@@ -18,7 +18,8 @@ Copilot uses the installed GitHub Copilot CLI's [SDK protocol](https://docs.gith
 login. Per-request sessions expose only caller tools, disable local instruction
 discovery, and are deleted after inference. Inherited BYOK settings and GitHub
 token overrides are removed. The adapter verifies the reported subscription
-route and exact model before completing a response. It adds no SDK dependency.
+route and exact model before completing a response. The SDK's allowed-model list
+also restricts each session to the requested model. It adds no SDK dependency.
 
 Requires Node 22+ and the native CLI for each configured subscription provider.
 
@@ -93,6 +94,11 @@ Changing the listener port or state directory requires a daemon restart.
 Development gate: `npm run build && npm run check && npm test`.
 Adapters also exist for ordinary APIs; the current delivery
 focus is Claude, Codex, and Copilot subscriptions.
+
+Inline image attachments and image tool results use native provider image inputs.
+The verified formats are PNG, JPEG, GIF, and WebP. See [Responses support](docs/responses.md)
+for payload limits and provider preprocessing. Stop/continue and saved-chat image
+history have passed through the real Codex engine on the test Mac.
 
 See [architecture](docs/architecture.md), [Responses support](docs/responses.md),
 [verification](docs/verification.md), [desktop adapter](docs/app-server.md), [remote clients](docs/remote.md).

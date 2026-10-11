@@ -58,6 +58,8 @@ export class DesktopCatalog {
       if (typeof model.slug !== "string" || !model.slug || typeof model.display_name !== "string" || ids.has(model.slug) || native.has(model.slug)) throw new Error("Gateway model aliases are invalid, duplicated, or collide with native models");
       const levels = model.supported_reasoning_levels;
       if (!Array.isArray(levels) || levels.some(level => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(String(object(level).effort)))) throw new Error("Gateway returned invalid reasoning metadata");
+      const modalities = model.input_modalities;
+      if (modalities !== undefined && (!Array.isArray(modalities) || !modalities.includes("text") || modalities.some(modality => !["text", "image"].includes(String(modality))))) throw new Error("Gateway returned invalid input-modality metadata");
       ids.add(model.slug);
     }
     const next = this.snapshot(models);

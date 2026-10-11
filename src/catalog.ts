@@ -21,7 +21,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       model_messages: { instructions_template: "You are a coding agent. Follow user instructions and repository guidance. Use the supplied tools for file access, commands and edits. Never claim a tool action succeeded without its result. Preserve working code, verify changes, and report outcomes clearly." },
       include_skills_usage_instructions: true, include_plugin_usage_instructions: true, include_apps_usage_instructions: true,
       support_verbosity: false, default_verbosity: null,
-      truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: ["text"],
+      truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
       context_window: metadata?.contextWindow || 32768, effective_context_window_percent: 90,
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true,
     };
@@ -51,6 +51,7 @@ export async function discoverModels(provider: ProviderConfig): Promise<Discover
       ...(typeof model.context_window === "number" ? { contextWindow: model.context_window } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),
       ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : {}),
+      ...(Array.isArray(model.input_modalities) ? { inputModalities: ["text" as const, ...(model.input_modalities.includes("image") ? ["image" as const] : [])] } : {}),
     } };
   });
 }

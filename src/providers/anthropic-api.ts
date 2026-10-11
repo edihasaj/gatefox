@@ -3,6 +3,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
+import { anthropicParts } from "../protocol/images.js";
 
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -22,9 +23,9 @@ export class AnthropicAPI implements Provider {
       if (message.role === "system" || message.role === "developer") { if (message.content) system.push(message.content); continue; }
       const role = message.role === "assistant" ? "assistant" : "user";
       const content: Array<Record<string, unknown>> = [];
-      if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.content || "" });
+      if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.parts ? anthropicParts(message) : message.content || "" });
       else {
-        if (message.content) content.push({ type: "text", text: message.content });
+        content.push(...anthropicParts(message));
         for (const call of message.tool_calls || []) content.push({ type: "tool_use", id: call.id, name: nativeName(call.function.name), input: JSON.parse(call.function.arguments) });
       }
       if (!content.length) continue;

@@ -28,7 +28,7 @@ const nativeConfig = resolve(process.env.CODEX_HOME || resolve(homedir(), '.code
 const configDigest = () => createHash('sha256').update(readFileSync(nativeConfig)).digest('hex');
 const beforeConfig = values.shim ? configDigest() : null;
 const results = []; const output = resolve(values.output);
-const save = () => writeFileSync(output, JSON.stringify({ checkedDate: '2026-10-10', model: values.model, fixture, results }, null, 2));
+const save = () => writeFileSync(output, JSON.stringify({ checkedAt: new Date().toISOString(), model: values.model, fixture, results }, null, 2));
 const record = (name, data) => { results.push({ name, ...data }); save(); console.log(JSON.stringify(name === 'native-model-list' ? { name, passed: data.passed, count: data.models.length } : { name, ...data })); };
 const child = values.shim
   ? spawn(process.execPath, [cli, 'codex-shim', '--config', resolve(values.config), '--codex', resolve(values.codex), '--', 'app-server', '--listen', 'stdio://'], { cwd: workspace, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] })
@@ -120,10 +120,14 @@ try {
   assert.equal(readFileSync(resolve(fixture, 'sample.txt'), 'utf8'), `proof=${proof}\nquantity=11\nstatus=pending\n`);
   const follow = await turn(id, 'What proof value did you read earlier? Reply only with that value; do not use tools.', 'follow-up');
   assert.equal(follow.final.status, 'completed'); assert.ok(follow.text.includes(proof)); assert.equal(follow.items.some(item => item.type === 'commandExecution'), false);
-  const thought = await turn(id, 'Work out 1234567 squared carefully, then give the number and a short check. Do not use tools.', 'reasoning', { effort: 'high' });
-  assert.equal(thought.final.status, 'completed');
-  let reasoningExposed = thought.reasoning.length > 0;
-  if (!reasoningExposed) {
+  const supportedEfforts = listed.find(model => model.model === values.model || model.id === values.model)?.supportedReasoningEfforts || [];
+  const supportsReasoning = supportedEfforts.some(level => !['none'].includes(level.reasoningEffort));
+  let reasoningExposed = false;
+  if (supportsReasoning) {
+    const thought = await turn(id, 'Work out 1234567 squared carefully, then give the number and a short check. Do not use tools.', 'reasoning', { effort: 'high' });
+    assert.equal(thought.final.status, 'completed'); reasoningExposed = thought.reasoning.length > 0;
+  } else record('reasoning', { verified: false, supported: false, reason: 'The model catalog exposes no reasoning effort' });
+  if (supportsReasoning && !reasoningExposed) {
     const probe = await turn(id, 'Find all positive integers n such that n squared plus 1 divides n factorial. Think carefully about necessity and sufficiency. Do not use tools.', 'reasoning-stream-and-interrupt', { effort: 'high', cancel: 'reasoning' });
     assert.equal(probe.final.status, 'interrupted'); assert.ok(probe.reasoning.length > 0);
     reasoningExposed = true;

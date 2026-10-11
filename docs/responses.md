@@ -6,7 +6,7 @@ read_when:
 
 # Responses support
 
-The Claude adapter accepts text messages, function calls and outputs, custom tool
+The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
 the older nested function definition format for existing Chat Completions clients.
 
@@ -16,7 +16,7 @@ as a string rather than JSON-encoded function arguments. The caller validates an
 executes the tool; the gateway does not execute it or enforce grammar constraints.
 
 Replayed reasoning summaries are treated as text. Encrypted reasoning transport
-state is not exposed to the Claude model. Image input and hosted tools are outside
+state is not exposed to the Claude model. Hosted tools are outside
 the current Claude adapter's scope. Unsupported item and tool types return a
 client error instead of an internal crash.
 
@@ -43,7 +43,7 @@ Failures after streaming begins emit `response.failed`; they never emit a succes
 completion. Disconnects abort inference and release capacity. Codex stream retries
 are disabled to avoid repeating partially completed actions.
 
-The current adapters support text and caller-dispatched tools. Image/audio input,
+The current adapters support text, inline images, and caller-dispatched tools. Audio input,
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
 
@@ -54,3 +54,23 @@ BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
 Cancellation stops the request's CLI process and waits for it to exit. The next
 request starts a separate session and replays caller-supplied history.
+
+## Images
+
+User messages and caller tool results accept `input_image` with an inline base64
+`image_url`. PNG, JPEG, GIF, and WebP signatures and encoding are validated before
+inference. An image is limited to 8 MiB encoded; the whole request remains limited
+to 10 MiB. Remote URLs and uploaded file IDs are rejected. The gateway does not
+fetch image URLs or borrow the primary account's file access.
+
+Claude receives native image blocks through the official CLI's streamed input.
+Copilot receives private SDK image attachments, deleted with the request session.
+Their text conversation contains labels for image ownership and order, never the
+image bytes. Each native harness controls its own image preprocessing. Codex and
+ordinary Responses upstreams retain the original image parts and detail setting.
+Anthropic API requests retain ordered native image blocks, including tool results.
+
+Model metadata carries `inputModalities`. The desktop adapter preserves those
+capabilities rather than declaring every added model text-only. Updating an older
+adapter executable requires a fresh launch; later catalog capability changes use
+the normal live refresh path.

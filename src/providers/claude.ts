@@ -10,6 +10,7 @@ import { ProviderError, type Provider } from "./provider.js";
 import type { ProviderConfig } from "../config.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 import { claudeEnvironment } from "./claude-environment.js";
+import { imageConversation } from "../protocol/images.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -37,6 +38,7 @@ export class ClaudeSubscription implements Provider {
     const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
     const effort = claudeEffort(this.config, request);
     const summary = (request.reasoning as { summary?: string } | undefined)?.summary;
+    const { conversation, images } = imageConversation(normalized.messages);
     const directory = await mkdtemp(join(tmpdir(), "gateway-claude-"));
     const catalogPath = join(directory, "tools.json"); const mcpPath = join(directory, "mcp.json");
     await writeFile(catalogPath, JSON.stringify(tools.map((tool, index) => ({
@@ -50,6 +52,7 @@ export class ClaudeSubscription implements Provider {
       "--model", request.model, "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
       "--system-prompt", "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.",
       ...(effort ? ["--effort", effort] : []),
+      ...(images.length ? ["--input-format", "stream-json"] : []),
       ...(effort ? ["--settings", '{"alwaysThinkingEnabled":true}'] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
     let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null;
@@ -67,7 +70,9 @@ export class ClaudeSubscription implements Provider {
     try {
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
       const aliases = tools.map((tool, index) => ({ caller: tool.function.name, native: `mcp__gateway__tool_${index}` }));
-      child.stdin.end(`Tool names: ${JSON.stringify(aliases)}\n${typeof choice === "object" || choice === "required" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(normalized.messages)}`);
+      const prompt = `Tool names: ${JSON.stringify(aliases)}\n${typeof choice === "object" || choice === "required" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(conversation)}`;
+      const content = images.flatMap(({ label, image }) => [{ type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
+      child.stdin.end(images.length ? JSON.stringify({ type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content: [...content, { type: "text", text: prompt }] } }) + "\n" : prompt);
       for await (const line of lines) {
         if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;

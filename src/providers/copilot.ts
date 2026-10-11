@@ -5,6 +5,9 @@ import type { ResponsesRequest, InferenceEvent, OpenAITool, OpenAIToolCall, Usag
 import { openCopilot } from "./copilot-client.js";
 import { record } from "./copilot-rpc.js";
 import { ProviderError, type Provider } from "./provider.js";
+import { imageConversation } from "../protocol/images.js";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 
 export function copilotEffort(config: ProviderConfig, request: ResponsesRequest): string | undefined {
   const effort = record(request.reasoning).effort;
@@ -34,12 +37,13 @@ export class CopilotSubscription implements Provider {
     const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
     const effort = copilotEffort(this.config, request);
     const summary = record(request.reasoning).summary;
+    const { conversation, images } = imageConversation(normalized.messages);
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
     let text = ""; let final = false; let subscriptionVerified = false;
     let usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
     try {
       await client.rpc.request("session.create", {
-        sessionId, model: request.model, streaming: true, ...(effort ? { reasoningEffort: effort } : {}),
+        sessionId, model: request.model, allowedModels: [request.model], streaming: true, ...(effort ? { reasoningEffort: effort } : {}),
         reasoningSummary: summary === "none" ? "none" : summary === "detailed" ? "detailed" : "concise",
         tools: tools.map((tool, index) => ({ name: `gateway_tool_${index}`, description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`, parameters: tool.function.parameters || { type: "object", properties: {} } })),
         availableTools: tools.map((_, index) => `gateway_tool_${index}`),
@@ -50,7 +54,13 @@ export class CopilotSubscription implements Provider {
         memory: { enabled: false }, requestPermission: true, requestUserInput: false,
       });
       const aliases = tools.map((tool, index) => ({ caller: tool.function.name, native: `gateway_tool_${index}` }));
-      await client.rpc.request("session.send", { sessionId, prompt: `Tool names: ${JSON.stringify(aliases)}\n${choice === "required" || typeof choice === "object" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(normalized.messages)}` });
+      const attachments = await Promise.all(images.map(async ({ label, image }) => {
+        const extension = image.mediaType === "image/jpeg" ? "jpg" : image.mediaType.split("/")[1];
+        const path = join(client.directory, `${label}.${extension}`);
+        await writeFile(path, Buffer.from(image.data, "base64"), { mode: 0o600 });
+        return { type: "file", path, displayName: label };
+      }));
+      await client.rpc.request("session.send", { sessionId, ...(attachments.length ? { attachments } : {}), prompt: `Tool names: ${JSON.stringify(aliases)}\n${choice === "required" || typeof choice === "object" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(conversation)}` });
       for await (const message of client.rpc.notifications()) {
         const params = record(message.params); if (params.sessionId !== sessionId) continue;
         const event = record(params.event); const data = record(event.data);

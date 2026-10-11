@@ -62,10 +62,31 @@ catalog also advertised `none`, which its endpoint rejected; discovery now omits
 that unsupported effort. These sweeps do not prove images or every model's tool
 loop. Run `node scripts/e2e-models.mjs --config PATH --output PATH` to repeat them.
 
+All 20 Claude/Codex 2 routes passed a real PNG check whose random eight-digit code
+appeared only in pixels. Sonnet 5.5 and Codex 2 Sol also passed JPEG, WebP, and GIF
+checks with follow-ups and image tool-result replay. Copilot Sonnet 5.5 and Luna
+passed PNG input, follow-up, and tool-result checks.
+
+The bundled Codex engine on MacBook Pro 2 passed four operations for each of the
+20 Claude/Codex 2 models: local image attachment, turn interruption, saved-chat
+resume after restarting the engine, and real `view_image` execution. Each model
+read the correct picture code. This verifies the engine and transport, not the
+rendered attachment UI. Codex's tested pause behavior interrupts a turn and starts
+a new turn from saved history; it does not suspend and continue the same token stream.
+
+`scripts/e2e-images.mjs` runs direct image checks. Its fixture directory contains
+`fixture.png` and any selected `fixture.jpg`, `fixture.gif`, or `fixture.webp`, plus
+`expected.json` with `code`, `colors`, and `shapes`. `scripts/e2e-agent-images.mjs`
+runs attachment, stop/resume, and viewer checks through the real bundled engine.
+`scripts/e2e-all-tools.mjs` repeats the file-read/edit, follow-up, reasoning,
+cancellation, and recovery loop for every configured alias. Models without a
+reasoning capability report that case unsupported rather than inventing reasoning.
+
 Earlier bundled-engine checks on the inference host verified the primary account
 and the combined 28-model catalog. A separate Haiku 4.5 request verified its
 no-reasoning route. Listing a model does not prove inference access or inclusion
-without usage credits. The remaining catalog models have not all been inferred.
+without usage credits. Native inference has not been tested for every native
+account model.
 
 ## Desktop and configuration limits
 
