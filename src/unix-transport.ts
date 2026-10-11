@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import { once } from "node:events";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Message } from "./app-server-connection.js";
+import { writePrivateJson } from "./config.js";
 
 export function unixSocketPath(listen: string): string {
   if (!listen.startsWith("unix://")) throw new Error("Choose stdio:// or a private unix:// socket");
@@ -29,7 +30,7 @@ export async function serveUnix(path: string, signal: AbortSignal,
   const server = createServer((_req, res) => { res.writeHead(404); res.end(); });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false });
   const active = new Set<Promise<unknown>>(); const controllers = new Set<AbortController>();
-  let retiring = false; let leaseTimer: NodeJS.Timeout | undefined; let inode: number | undefined;
+  let retiring = false; let leaseTimer: NodeJS.Timeout | undefined; let inode: string | undefined; let device: string | undefined;
   server.on("upgrade", (req, socket, head) => {
     if (retiring || signal.aborted || active.size >= 8 || req.headers.origin || !["/", "/rpc"].includes(req.url || "")) { socket.destroy(); return; }
     sockets.handleUpgrade(req, socket, head, ws => {
@@ -54,10 +55,11 @@ export async function serveUnix(path: string, signal: AbortSignal,
   const close = () => { for (const controller of controllers) controller.abort(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
   try {
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
-    inode = (await lstat(boundPath)).ino;
+    const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
     await link(boundPath, path);
+    await writePrivateJson(path + ".gateway-lease", { inode, device, boundPath });
     leaseTimer = setInterval(() => {
-      void lstat(path).then(info => info.ino === inode, () => false).then(owned => {
+      void lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false).then(owned => {
         if (!owned) { retiring = true; if (!active.size) close(); }
       });
     }, 1000).unref();
@@ -67,6 +69,6 @@ export async function serveUnix(path: string, signal: AbortSignal,
   } finally {
     clearInterval(leaseTimer); signal.removeEventListener("abort", close); close();
     await Promise.allSettled([...active]); sockets.close();
-    if (inode !== undefined && await lstat(path).then(info => info.ino === inode, () => false)) await unlink(path).catch(() => {});
+    if (inode !== undefined && await lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false)) await unlink(path).catch(() => {});
   }
 }

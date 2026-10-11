@@ -39,8 +39,13 @@ command. `gateway ssh unregister` moves only its own command to Trash. Native
 configuration and authentication files are unchanged.
 
 The app prepends `~/.local/bin` to the remote command search path and starts a
-Unix listener. Its original `app-server proxy` command forwards bytes to that
-socket. Add the host under Settings, Connections, SSH, then select its workspace.
+Unix listener. The managed command uses a gateway-owned control home under
+`~/.local/state/gw-ssh`, scoped to the gateway configuration and native home.
+It redirects only the original `app-server proxy` child's control home to that
+socket. Inference and account discovery retain the original native home. Codex's
+own daemon socket is not replaced. A live gateway listener is reused; a crashed
+socket is recovered only when its private ownership record matches.
+Add the host under Settings, Connections, SSH, then select its workspace.
 The built-in Control other devices connection reaches the native engine directly
 and bypasses this adapter. Registering a desktop or SSH wrapper does not make
 gateway models work through that separate connection.

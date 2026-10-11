@@ -9,6 +9,7 @@ import { emitMessage } from "./app-server-connection.js";
 import { gatewayCommand } from "./command.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
+import { sshControlHome, reuseSshSocket } from "./ssh-socket.js";
 
 export function appServerIndex(args: string[]): number {
   const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
@@ -27,21 +28,26 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (options.includes("--help")) {
     process.stdout.write("gateway codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS\n\nExperimental stdio/private Unix app-server adapter. Other Codex commands pass through unchanged.\nUse an executable wrapper as CODEX_CLI_PATH; do not replace the native binary.\n"); return;
   }
-  const { values } = parseArgs({ args: options, options: { config: { type: "string" }, codex: { type: "string" } }, strict: true });
+  const { values } = parseArgs({ args: options, options: { config: { type: "string" }, codex: { type: "string" }, ssh: { type: "boolean" }, "ssh-home": { type: "string" } }, strict: true });
   if (!values.config || !values.codex || !forwarded.length) throw new Error("codex-shim requires --config, --codex and -- followed by Codex arguments");
+  if (values["ssh-home"] && !values.ssh) throw new Error("--ssh-home requires --ssh");
+  const controlHome = values.ssh ? resolve(values["ssh-home"] || sshControlHome(values.config)) : undefined;
   const executable = resolve(values.codex);
   if (executable === fileURLToPath(import.meta.url)) throw new Error("--codex must point to the original Codex executable");
   const appIndex = appServerIndex(forwarded);
   const command = appIndex >= 0 ? forwarded[appIndex + 1] : undefined;
   const decorate = appIndex >= 0 && (!command || command.startsWith("-"));
   if (!decorate) {
-    const child = spawn(executable, forwarded, { stdio: "inherit" });
+    const child = spawn(executable, forwarded, { stdio: "inherit", ...(command === "proxy" && controlHome ? { env: { ...process.env, CODEX_HOME: controlHome } } : {}) });
     child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
     const [code, signal] = await once(child, "exit"); process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
   }
   const listenIndex = forwarded.findIndex(arg => arg === "--listen" || arg.startsWith("--listen="));
   const listen = listenIndex < 0 ? "stdio://" : forwarded[listenIndex].includes("=") ? forwarded[listenIndex].split("=")[1] : forwarded[listenIndex + 1];
-  if (listen !== "stdio://" && !listen.startsWith("unix://")) throw new Error("codex-shim supports stdio:// and private unix:// transports only");
+  if (typeof listen !== "string" || (listen !== "stdio://" && !listen.startsWith("unix://"))) throw new Error("codex-shim supports stdio:// and private unix:// transports only");
+  if (controlHome && listen.startsWith("unix://") && listen !== "unix://") throw new Error("The SSH adapter uses its managed Unix socket; omit a custom listen path");
+  const socketPath = listen.startsWith("unix://") ? unixSocketPath(controlHome ? "unix://" + resolve(controlHome, "app-server-control/app-server-control.sock") : listen) : undefined;
+  if (controlHome && socketPath && await reuseSshSocket(socketPath)) return;
   const nativeArgs = [...forwarded];
   if (listenIndex >= 0) {
     if (nativeArgs[listenIndex].includes("=")) nativeArgs[listenIndex] = "--listen=stdio://";
@@ -61,7 +67,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   try {
     const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
       shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal);
-    if (listen.startsWith("unix://")) await serveUnix(unixSocketPath(listen), controller.signal, session);
+    if (socketPath) await serveUnix(socketPath, controller.signal, session);
     else process.exitCode = await session(process.stdin, emitMessage, controller.signal);
   }
   finally {

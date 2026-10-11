@@ -13,14 +13,15 @@ const {values:v}=parseArgs({options:{gateway:{type:'string'},package:{type:'stri
 for(const key of ['gateway','package','config','codex','native-home','workspace','image','expected','output'])assert.ok(v[key],`Required --${key}`);
 const {WebSocket}=createRequire(join(resolve(v.package),'package.json'))('ws');
 const home=resolve(v['native-home']);const workspace=resolve(v.workspace);await mkdir(workspace,{recursive:true});
+const proxyHome=join(home,'../proxy');
 const configFile=join(home,'config.toml');const digest=async()=>createHash('sha256').update(await readFile(configFile)).digest('hex');const before=await digest();
 const env={...process.env,CODEX_HOME:home};for(const key of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])delete env[key];
 const results=[];const save=async row=>{results.push(row);await writeFile(resolve(v.output),JSON.stringify({checkedAt:new Date().toISOString(),results},null,2),{mode:0o600});console.log(JSON.stringify(row));};
-const listener=spawn(resolve(v.gateway),['codex-shim','--config',resolve(v.config),'--codex',resolve(v.codex),'--','app-server','--listen','unix://'],{env,stdio:'ignore'});
+const listener=spawn(resolve(v.gateway),['codex-shim','--ssh','--ssh-home',proxyHome,'--config',resolve(v.config),'--codex',resolve(v.codex),'--','app-server','--listen','unix://'],{env,stdio:'ignore'});
 const exited=once(listener,'close');let connection;
 async function waitFor(check,timeout=120000){const end=Date.now()+timeout;while(Date.now()<end){const result=await check();if(result)return result;await delay(50);}throw Error('Unix verification timed out');}
 async function connect(){
- const proxy=spawn(resolve(v.codex),['app-server','proxy'],{env,stdio:['pipe','pipe','ignore']});const proxyExited=once(proxy,'close');
+ const proxy=spawn(resolve(v.codex),['app-server','proxy'],{env:{...env,CODEX_HOME:proxyHome},stdio:['pipe','pipe','ignore']});const proxyExited=once(proxy,'close');
  const pipe=Duplex.from({readable:proxy.stdout,writable:proxy.stdin});
  const ws=new WebSocket('ws://codex-app-server/rpc',{createConnection:()=>pipe});
  const pending=new Map();const events=[];let id=0;
@@ -49,9 +50,9 @@ async function turn(id,model,input,effort='low',cancel=false){
 }
 const text=message=>[{type:'text',text:message}];const expected=JSON.parse(await readFile(resolve(v.expected),'utf8')).code;
 try{
- await waitFor(()=>lstat(join(home,'app-server-control/app-server-control.sock')).then(()=>true,()=>false),20000);
+ await waitFor(()=>lstat(join(proxyHome,'app-server-control/app-server-control.sock')).then(()=>true,()=>false),20000);
  connection=await connect();const models=await connection.rpc('model/list',{limit:100});assert.ok(models.data.some(m=>m.model===v.models.split(',')[0]));
- await save({phase:'native-desktop-proxy',passed:true,models:models.data.length,socketPrivate:(await lstat(join(home,'app-server-control/app-server-control.sock'))).mode%512===384});
+ await save({phase:'native-desktop-proxy',passed:true,models:models.data.length,socketPrivate:(await lstat(join(proxyHome,'app-server-control/app-server-control.sock'))).mode%512===384,nativeControlSocketSeparated:true});
  let previous;
  for(const model of v.models.split(',')){
   const marker=randomUUID();const proof=randomUUID();const title='Unix test '+randomUUID().slice(0,8);

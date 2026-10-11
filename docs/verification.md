@@ -242,3 +242,9 @@ an older listener closed. The adapter now binds a private socket and exposes an
 inode-checked hard link. A replaced listener keeps its connected clients until
 they disconnect, then retires. Tests prove that old clients continue working and
 closing the old listener leaves the new socket and client usable.
+
+SSH listener startup and proxy lookup use a separate gateway-owned control home.
+Regressions cover repeated startup, live-listener reuse, recovery after abrupt
+termination, refusal of an unrecorded path, and preservation of native IPC and
+configuration. Only the proxy child's home changes; inference keeps the native
+account home and does not copy its authentication file.
