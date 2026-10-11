@@ -27,7 +27,8 @@ test("Copilot discovery respects policy and default context limits without guess
   const model = { id: "test", name: "Test", policy: { state: "enabled" }, capabilities: { limits: { max_context_window_tokens: 1000000, max_prompt_tokens: 936000 } }, billing: { tokenPrices: { contextMax: 200000 } }, supportedReasoningEfforts: ["low", "high", "max"] };
   const entries = nativeCopilotModels([model, { id: "auto" }, { ...model, id: "disabled", policy: { state: "disabled" } }]);
   assert.deepEqual(entries, [{ model: "test", metadata: { displayName: "Test", inputModalities: ["text"], contextWindow: 200000, reasoningEfforts: ["low", "high", "max"] } }]);
-  assert.throws(() => nativeCopilotModels([model, model]), /duplicate/);
+  assert.equal(nativeCopilotModels([model, model]).length, 1);
+  assert.throws(() => nativeCopilotModels([model, { ...model, name: "Conflicting" }]), /conflicting duplicate/);
   assert.throws(() => nativeCopilotModels([{ ...model, supportedReasoningEfforts: ["ultra"] }]), /reasoning/);
   assert.deepEqual(nativeCopilotModels([{ ...model, id: "gpt-6.1-sol", supportedReasoningEfforts: ["none", "low", "max"] }])[0].metadata.reasoningEfforts, ["low", "max"]);
   assert.equal(copilotEffort(provider, { model: "fixture", input: "", reasoning: { effort: "max" } }), "max");

@@ -82,6 +82,14 @@ runs attachment, stop/resume, and viewer checks through the real bundled engine.
 cancellation, and recovery loop for every configured alias. Models without a
 reasoning capability report that case unsupported rather than inventing reasoning.
 
+The complete file/tool sweep passed all 20 Claude/Codex 2 aliases: streamed text,
+random file proof, native patch and verification, follow-up replay, supported
+reasoning, interruption, worker cleanup, and recovery. Daybreak added a final
+period to the recovery marker; the checker now accepts terminal punctuation and
+its full loop passed again. Copilot CLI 1.0.91 repeated its entire model catalog.
+Discovery removes identical repetitions and rejects conflicting metadata for the
+same ID. The account is not switched and its CLI is not updated automatically.
+
 Earlier bundled-engine checks on the inference host verified the primary account
 and the combined 28-model catalog. A separate Haiku 4.5 request verified its
 no-reasoning route. Listing a model does not prove inference access or inclusion

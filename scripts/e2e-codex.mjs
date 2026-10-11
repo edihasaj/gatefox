@@ -146,7 +146,7 @@ try {
   const health = await (await fetch(`http://127.0.0.1:${config.port}/health`)).json();
   assert.equal(health.active, 0); record('cancelled-worker-cleanup', { passed: true, active: health.active });
   const recovered = await turn(id, 'Reply exactly: recovery-ok. Do not use tools.', 'recovery');
-  assert.equal(recovered.final.status, 'completed'); assert.equal(recovered.text.trim(), 'recovery-ok');
+  assert.equal(recovered.final.status, 'completed'); assert.match(recovered.text.trim(), /^recovery-ok[.!]?$/);
   if (values.shim) { assert.equal(configDigest(), beforeConfig); record('native-config-unchanged', { passed: true }); }
   record('verification', { passed: true, reasoningExposed });
 } catch (error) { record('verification', { passed: false, error: error.message }); process.exitCode = 1; }

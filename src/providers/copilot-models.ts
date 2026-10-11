@@ -6,12 +6,11 @@ import { record } from "./copilot-rpc.js";
 /** Keep explicitly selectable models; never advertise automatic account routing. */
 export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
   if (!Array.isArray(value)) throw new Error("Copilot returned an invalid model catalog");
-  const ids = new Set<string>();
+  const ids = new Map<string, string>();
   return value.flatMap(raw => {
     const model = record(raw); const policy = record(model.policy);
     if (model.id === "auto" || (policy.state && policy.state !== "enabled")) return [];
-    if (typeof model.id !== "string" || !model.id || ids.has(model.id) || typeof model.name !== "string") throw new Error("Copilot returned an invalid or duplicate model");
-    ids.add(model.id);
+    if (typeof model.id !== "string" || !model.id || typeof model.name !== "string") throw new Error("Copilot returned an invalid model");
     const limits = record(record(model.capabilities).limits);
     const billing = record(record(model.billing).tokenPrices);
     // SDK sessions use the default context tier. Do not advertise long-context
@@ -23,7 +22,10 @@ export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
     // subscription endpoint rejects it. Preserve only its verified wire levels.
     const supported = model.id === "gpt-6.1-sol" ? efforts.filter(effort => effort !== "none") : efforts;
     const vision = record(record(model.capabilities).supports).vision === true;
-    return [{ model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[] } }];
+    const entry: DiscoveredModel = { model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[] } };
+    const signature = JSON.stringify(entry);
+    if (ids.has(model.id)) { if (ids.get(model.id) !== signature) throw new Error("Copilot returned conflicting duplicate model metadata"); return []; }
+    ids.set(model.id, signature); return [entry];
   });
 }
 
