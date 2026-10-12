@@ -7,20 +7,119 @@ read_when:
 
 # Verification
 
+The installed v0.2.8 adapter has passed backend settings and subscription checks.
+MacBook Pro 2's original Control other devices connection is active through its
+native relay. Full desktop parity through that connection remains unverified.
+SSH, Unix proxy, and local engine results do not prove the cloud connection.
+
+## Current release evidence
+
+The audited catalog contains 36 models: 11 native models and 25 added routes.
+The added routes comprise 12 Claude models, eight Codex 2 models, four Copilot
+models, and one local Qwen model. Qwen advertises text input only. Discovery and
+catalog presence do not establish inference access for every model.
+The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
+
+MacBook Pro 2 runs the installed v0.2.8 native relay under one supervised gateway
+service. It retains the machine's original environment and installation IDs.
+Studio and the primary Mac still need native relay activation and checks through
+their original connections. Do not remove a working SSH connection before its
+native replacement passes those checks.
+
+The primary Mac's native `config.toml` still matches the digest recorded before
+activation. Gateway preferences are stored separately. Native Codex and user
+actions can change settings on the other Macs, including project trust; their
+current files do not establish byte-for-byte identity with earlier snapshots.
+The isolated backend tests below check that the adapter leaves their native
+configuration unchanged during each run.
+
+The remaining desktop checks are:
+
+| Check | Evidence | Gap |
+| --- | --- | --- |
+| Model selection and refresh | The native connection returns the combined catalog. Backend config and catalog defaults agree. | Confirm Refresh preserves the selected gateway model and effort in the primary Mac's UI. |
+| Claude files and images | User-driven Claude checks wrote the release-check seed and `CLAUDE_NATIVE_OK` on MacBook Pro 2 and read a code supplied only in an attached image. | Repeat follow-up and saved-chat recovery through the original connection. |
+| Codex 2 follow-up | Backend and Unix proxy checks passed file edits and retained image history. | The native release-check proof has no Codex 2 completion marker. |
+| Stop and recovery | Backend checks passed interruption and recovery. The native relay logged interruption requests. | Establish which provider handled each interrupted cloud turn and verify its recovery. |
+| Qwen | The real backend tool loop passed and the model appears in the combined catalog. | Verify text, file tools, follow-up, and interruption through the original connection. |
+| Reasoning controls | v0.2.8 persists all six display efforts. MacBook Pro 2's local rendered Claude menu showed Max. The user also confirmed that all levels now appear on the primary Mac. | Capture the primary Mac's menu and verify refresh persistence when using the connected computer. |
+
+Shared execution ownership is being developed for v0.2.9. The signed SDK checks
+below prove gateway ownership across several adapter clients in an isolated
+development fixture. v0.2.9 has not been released or deployed. Native executors
+still have separate ownership in each adapter, and the installed release's cloud
+connections have not passed the corresponding checks.
+
+## Development and desktop settings checks
+
 Run the development gate:
 
 ```sh
 npm run build && npm run check && npm test
 ```
 
+The current v0.2.9 development gate passed 160 tests. The installed v0.2.8 release's
+earlier gate passed 109 tests. Neither count proves the remaining desktop checks.
+
+### Shared gateway execution in v0.2.9 development
+
+The real signed Codex SDK, `0.162.0-alpha.17.2`, passed the shared gateway
+execution checks in `scripts/e2e-shared-execution.mjs`. Two adapters reached the
+same loaded chat in one engine process. A replacement adapter resumed that chat
+after the first disconnected. A third connected adapter also reached the original
+owner after the catalog changed. The loaded engine's PID stayed unchanged.
+Separate unit tests verified that different native settings key orders reuse
+the same generation rather than create another writer.
+The mode without inference verifies metadata and live ownership, but does not
+claim saved-chat resume. The SDK writes durable history after a real first turn;
+the inference mode supplied that turn before its resume checks.
+
+The fixture filled its four-generation limit and refused a fifth generation
+without replacing the original loaded owner. After a chat unsubscribed, the
+gateway waited for the SDK to unload it naturally. The SDK retained it for about
+60 seconds. Only then did the gateway retire that unused generation and accept
+its replacement. This check did not force an unload or rewrite saved history.
+
+Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol passed real inference through these shared
+clients. Repository `AGENTS.md` supplied a hidden marker absent from the user
+prompt; each provider read a seed file and wrote the required proof. A fresh
+adapter resumed the chat and edited the proof while retaining its contents.
+One adapter then interrupted a stream started by another, and a recovery turn
+completed with the proof intact. Both providers read a code supplied only in an
+image and recalled that code after another adapter reconnect.
+
+Qwen's first file/tool check in the combined run failed because its existing
+managed SSH tunnel had been unloaded. Restoring that LaunchAgent restored the
+transport. A focused Qwen run then passed hidden `AGENTS.md` instructions, file
+reads and edits, history across adapter reconnects, cross-adapter interruption,
+and recovery. Its final checks confirmed unchanged isolated native configuration
+and no copied native authentication, with 11 inference calls. The investigation
+recorded transport status and check results, without inference bodies.
+The earlier combined run ended before its final invariants; the focused Qwen
+result supplies that evidence for its own run.
+
+The macOS sandbox check in `scripts/e2e-execution-sandbox.mjs` passed against the
+signed SDK. The control socket was reachable outside the sandbox. Inside it,
+both the socket alias and its physical path were denied, even with an explicit
+Unix socket grant for `/`. This check sent no inference requests.
+
+These results cover the gateway's shared engine and private Unix control socket.
+They do not prove shared native executor ownership or the built-in cloud
+transport. The primary Mac's reasoning display is user-confirmed, without a
+matching menu capture. The original connected-machine checks in the table above
+remain pending.
+
+### Installed v0.2.8 desktop settings
+
 The installed v0.2.8 preflight passed the real signed Codex app-server's desktop
 settings protocol on MacBook Pro 2. Six display efforts, including Max and Ultra,
 were saved before choosing any model. They survived a fresh adapter connection.
 Concurrent theme and font edits merged, and a batch mixing a display change with
 native sandbox configuration was rejected without partial writes. Native desktop
-defaults and the native configuration digest stayed unchanged. These checks prove
-persistence through the backend; a rendered picker after a normal app relaunch
-remains a separate check.
+defaults and the isolated native configuration digest stayed unchanged. These
+checks prove persistence through the backend. The rendered Claude picker on
+MacBook Pro 2 later showed Max; the corresponding client-side refresh check
+remains separate.
 
 Run `scripts/e2e-desktop-settings.mjs` against an installed command with a fresh
 client-only fixture, isolated native home, workspace, and gateway state. The
@@ -64,15 +163,16 @@ inference host.
 Copilot CLI 1.0.95 passed the real bundled Codex loop on MacBook Pro 2 through
 SDK protocol 3: incremental text, file proof, custom patch and verification,
 follow-up replay, provider-exposed reasoning, interruption, worker cleanup, and
-recovery. Interruption was acknowledged in 3 ms. Discovery returned 13 explicitly
-selectable models after removing Auto. This proves one model's full loop, not
-every discovered model's inference access. Copilot's 13 routes are now loaded in
-the deployed host catalog. Rendered Copilot selection remains unverified.
+recovery. Interruption was acknowledged in 3 ms. Earlier discovery returned 13
+explicitly selectable models after removing Auto. The current catalog exposes
+only the four requested Copilot models. This test proves one model's full loop,
+not every discovered model's inference access. Rendered Copilot selection remains
+unverified.
 
 A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
 a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
-13 selectable routes. Its Opus 5 request returned Opus 4.8, so the gateway rejected
-the substitution. That route is not verified as usable. The Copilot Sol 6.1
+13 routes in that earlier catalog. Its Opus 5 request returned Opus 4.8, so the
+gateway rejected the substitution. That route is not verified as usable. The Copilot Sol 6.1
 catalog also advertised `none`, which its endpoint rejected; discovery now omits
 that unsupported effort. These sweeps do not prove images or every model's tool
 loop. Run `node scripts/e2e-models.mjs --config PATH --output PATH` to repeat them.
@@ -109,16 +209,15 @@ response only after subscription usage reports `isByok: false` and the returned
 model matches the request. Explicit provider changes and BYOK still fail closed.
 
 Earlier bundled-engine checks on the inference host verified the primary account
-and the combined 28-model catalog. A separate Haiku 4.5 request verified its
+and the then-current 28-model catalog. A separate Haiku 4.5 request verified its
 no-reasoning route. Listing a model does not prove inference access or inclusion
 without usage credits. Native inference has not been tested for every native
 account model.
 
 ## Desktop and configuration limits
 
-The deployed daemon exposes 33 extra routes, all with image metadata. Live checks
-through the permanent SSH forward passed attachment reading, interruption,
-saved-image history after engine restart, and native `view_image` for Claude,
+Live checks through the permanent SSH forward passed attachment reading,
+interruption, saved-image history after engine restart, and native `view_image` for Claude,
 Codex 2, and Copilot Luna. The main native configuration digest and client token
 were unchanged during activation. Temporary verification listeners and their
 extra SSH forward were stopped afterward.
@@ -136,21 +235,24 @@ explicitly omitted because that test home has no native subscription login.
 The direct launcher has been verified on the test Mac. Process inspection
 confirmed the override environment and wrapper children. The rendered desktop
 then completed real Claude Opus 5.5 and Codex 2 GPT-6-Luna conversations and a
-provider switch. The working Mac's app has not been relaunched.
+provider switch. The primary Mac has since relaunched with the installed v0.2.8
+desktop adapter. Its rendered refresh behavior still needs verification.
 
 On 11 October 2026, the updated adapter launched on MacBook Pro 2. The rendered
 Claude Opus 5.5 chat accepted a PNG attachment and correctly described its red
 circle, green square, and blue triangle. The picture code was also supplied as
 text, so this desktop check does not prove image-only code reading. The separate
-bundled-engine tests above provide that proof. The desktop label still showed
-Extra High; visible Max and Ultra selections remain unverified.
+bundled-engine tests above provide that proof. At that point, the desktop label
+still showed Extra High. The later v0.2.8 local picker check showed Max; it does
+not prove effort persistence in a remote chat on the primary Mac.
 
 That investigation reproduced a separate preference bug: two adapter connections
 cached their own defaults, so one could return High after the other saved Max.
 The fix rereads preferences and locks updates across processes. Regression checks
 cover stale reads, new-chat effort, concurrent edits from separate processes,
-abandoned locks, and cleanup after a failed update. The rendered reasoning picker
-still needs to be checked after activating this fix.
+abandoned locks, and cleanup after a failed update. v0.2.8 also fixes display-only
+settings that were lost before a model preference existed. The current release
+evidence above separates these backend checks from the remaining rendered checks.
 
 A separate staging daemon passed a live catalog addition while an older gateway
 chat ran a command. The new chat used the new context-window metadata. The
@@ -200,14 +302,14 @@ request. Title reads, name notifications, and saved-chat resume still passed.
 The test used separate native and gateway state directories.
 
 On 11 October 2026, MacBook Pro 2's original connection was migrated to the
-installed v0.2.7 relay. Its native and desktop login jobs now run under one
+installed v0.2.7 relay. Its native and desktop login jobs run under one
 supervisor. The original environment and installation IDs were retained, and
-both native and gateway configuration digests were unchanged. The fresh
-connection returned 36 models. A user-driven Claude chat read the image-only code
-and wrote the exact release-check seed plus `CLAUDE_NATIVE_OK` on the remote
-machine. The Codex 2 follow-up, saved-chat recovery, rendered Max, and model-list
-refresh selection still need verification. The user reports that refresh can
-select native GPT.
+the fresh connection returned 36 models. User-driven Claude checks read the
+image-only code and wrote the exact release-check seed plus `CLAUDE_NATIVE_OK` on the remote
+machine. That connection has since upgraded to v0.2.8. The Codex 2 follow-up,
+saved-chat recovery, and model-list refresh selection still need verification.
+The user reported that refresh could select native GPT; backend defaults now
+agree, but that change has not yet passed the matching client UI check.
 
 Qwen runs on the existing DGX Spark vLLM server. Its managed SSH tunnel uses the
 existing NVIDIA Sync identity without copying the private key. The real Codex
@@ -260,18 +362,16 @@ The installed v0.2.3 package also passed this full loop on Studio through its
 permanent SSH inference forward. Claude Opus 5.5 at Max and Codex 2 GPT-6.1-Sol
 at Ultra passed all 15 checks in an isolated workspace and native home.
 Interruption acknowledgements took 10 ms and 17 ms. The isolated configuration
-digest was unchanged, and Studio's original configuration matched the separate
-digest recorded during the run. A direct SSH connection to Studio's production
-adapter returned all 42 catalog entries, including local Qwen. These checks
+digest was unchanged during that test. A direct SSH connection to Studio's
+production adapter returned all 42 catalog entries, including local Qwen. These checks
 prove the native proxy and backend; the rendered Studio SSH picker remains
 unverified until the connection is enabled in the client app.
 
-The rendered picker inspected on the working Mac was a Studio Control other
-devices connection. That connection reaches the native engine directly, so the
-stdio adapter's combined catalog does not establish model availability there.
-The same limitation applies to the old, offline MacBook Pro 2 remote connection.
-Use the managed SSH adapter for gateway routing to a remote workspace. The newly
-rendered SSH picker still requires verification after adding that connection.
+Earlier Studio Control other devices checks reached the native engine directly.
+The SSH adapter's combined catalog did not establish model availability through
+that connection. MacBook Pro 2's original connection now uses the installed
+native relay. Studio still needs that activation and the matching desktop checks.
+Keep the proven SSH path available until its native replacement passes.
 
 Run `scripts/e2e-unix.mjs` with the installed gateway and package paths, an isolated
 native home with public model metadata, a client-only gateway configuration, and

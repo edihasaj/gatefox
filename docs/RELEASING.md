@@ -22,6 +22,13 @@ belongs in the release archive.
    command on the test Mac. Use isolated native and gateway state directories.
    The title check refuses shared state or a copied native auth file. Record configuration
    digests, provider registration, saved titles, and resume results.
+   For shared execution changes, run `scripts/e2e-shared-execution.mjs` with the
+   installed command, isolated native home, and isolated client configuration.
+   Start without `--inference`, then enable real provider turns and image history.
+   The zero-inference run proves process ownership rather than durable chat resume.
+   A first real turn is required before the SDK can resume an empty chat.
+   Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
+   unreachable inside the actual macOS sandbox, including through its alias.
 5. Commit and push the final source. Wait for green CI.
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
    the archive's file list and verify `SHA256SUMS`.

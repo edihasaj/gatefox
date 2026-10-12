@@ -64,3 +64,72 @@ service and registering the required components again before reconsolidation.
 
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.
+
+# Shared chat executors
+
+Shared executors let local and remote clients resume the same gateway chat through
+one signed Codex app-server. Each catalog and settings generation owns one
+app-server with a private Unix socket. Disconnecting an adapter closes its client
+connection; the service keeps the shared app-server and its loaded chats.
+
+Existing plans keep their earlier executor behavior until this explicit migration:
+
+```sh
+gateway service shared-executors
+gateway service shared-executors --apply
+gateway service status
+gateway doctor
+```
+
+Consolidate first if the installation still has separate jobs. Finish local and
+remote chats, then quit ChatGPT normally on the machine being migrated. The
+command checks the existing SDK version, saves the previous plan, and restarts
+the unified service during that maintenance window. It checks the execution
+host's actual control socket, component readiness, and a fresh native relay
+connection before reporting success. A refused idle restart keeps the old process.
+Preview also lists gateway adapters and catalog executors outside the supervisor.
+Application refuses those processes. Close their SSH or desktop connections
+normally before migrating. The inventory uses known gateway configuration and
+catalog arguments; it does not inspect or stop unrelated native Codex sessions.
+
+The service reads the signed SDK and native home from its existing native relay
+component. A desktop-only plan uses its registered app's SDK and the original
+native home. The service starts the execution host before launching transports.
+Installing a release leaves `sharedExecutors` absent in an existing plan; it does
+not enable this migration or restart an open app.
+
+The execution host writes each private configuration snapshot once. It shares
+chat storage and the SDK's native writer-lock directory, so another generation
+cannot write the same saved chat at the same time. It does not copy authentication
+or replace native configuration and IPC sockets. Adapter lookups find the live
+owning generation before attempting a new executor.
+
+At most four generations can remain live. A connected adapter lease or loaded
+chat keeps its generation. The host retires a generation only after all leases
+close and the signed SDK reports no loaded chats. Unknown sockets and live
+processes survive recovery checks. A stopped ownership receipt remains in place;
+clients report an unavailable managed host instead of starting a competing writer.
+
+The execution host runs inside the supervisor process. Its SDK workers are owned,
+non-detached children in the same launchd process group. Service shutdown stops
+those workers with a bounded TERM/KILL sequence. Idle restart first checks leases
+and loaded SDK chats, then freezes new acquisitions while the HTTP daemon checks
+its own idle guard. A refusal resumes the host and keeps its workers. A finished
+turn can leave a chat loaded; close or unsubscribe it and allow SDK idle unload
+before retrying the restart.
+
+A failed migration restores the previous service plan. To restore legacy writers,
+rollback first stops its own replacement daemon and proves every recorded SDK
+writer is dead. It archives only the matching stopped ownership receipt before
+starting the old transports. Unrelated, live, or unproven ownership stays in place
+and blocks fallback. The command reports incomplete recovery in that case.
+
+For an isolated foreground test, supply an isolated gateway config and native home:
+
+```sh
+gateway executor-host --config /absolute/test/gateway.json \
+  --codex /absolute/path/to/matching-codex --native-home /absolute/test/native
+```
+
+The command requires both explicit paths and the pinned SDK version. Ctrl-C stops
+its owned host and workers. Use the unified service for normal desktop work.

@@ -6,28 +6,35 @@ import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { titleTool, withTitleTool, handleTitleCall } from "./chat-titles.js";
 import { agentExecutorSettings, readAgentPolicy } from "./agent-profiles.js";
+import { ExecutionHostClient } from "./execution-host-client.js";
+import { SocketAppServerConnection } from "./socket-app-server-connection.js";
+import type { ExecutionRecord } from "./execution-host-engine.js";
+import { canonicalJson } from "./execution-host-engine.js";
+import { homedir } from "node:os";
 
-interface Engine { connection: AppServerConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string> }
+type RpcConnection = AppServerConnection | SocketAppServerConnection;
+interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean }
 
 /** A stable native connection plus bounded gateway generations pinned to loaded chats. */
 export class AppServerBackends {
   readonly native: AppServerConnection;
   private readonly engines: Engine[] = [];
   private readonly bindings = new Map<string, Engine>();
-  private readonly approvals = new Map<string, { connection: AppServerConnection; id: Id }>();
-  private readonly reverse = new Map<AppServerConnection, Map<Id, string>>();
+  private readonly approvals = new Map<string, { connection: RpcConnection; id: Id }>();
+  private readonly reverse = new Map<RpcConnection, Map<Id, string>>();
   private serverSequence = 0;
   private initialized?: Message;
   private closing = false;
   private creating: Promise<unknown> = Promise.resolve();
+  private poolPending?: Promise<ExecutionHostClient | undefined>;
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
-    private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void) {
+    private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void, private readonly configPath?: string) {
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     const registration = Object.entries(overrides).map(([key, value]) => [`-c`, `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`]).flat();
     this.native = new AppServerConnection(executable, [...args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
   }
-  private async forward(connection: AppServerConnection, message: Message): Promise<void> {
+  private async forward(connection: RpcConnection, message: Message): Promise<void> {
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
     if (engine) {
       const thread = object(params.thread); const threadId = typeof params.threadId === "string" ? params.threadId : typeof thread.id === "string" ? thread.id : undefined;
@@ -62,21 +69,99 @@ export class AppServerBackends {
     this.approvals.delete(message.id); approval.connection.send({ ...message, id: approval.id }); return true;
   }
   notify(message: Message): void { this.native.send(message); }
+  private async pool(): Promise<ExecutionHostClient | undefined> {
+    if (!this.configPath) return;
+    if (this.poolPending) {
+      const existing = await this.poolPending.catch(() => undefined);
+      if (existing && !existing.closed) return existing;
+      this.poolPending = undefined;
+    }
+    const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable);
+    this.poolPending = pending;
+    const client = await pending;
+    if (!client && this.poolPending === pending) this.poolPending = undefined;
+    return client;
+  }
+  private async releaseIdleShared(keepRevision: string): Promise<void> {
+    const operation = this.creating.then(async () => {
+      for (let index = this.engines.length - 1; index >= 0; index--) {
+        const old = this.engines[index];
+        if (!old.shared || old.revision === keepRevision || old.requests || old.threads.size || old.active.size) continue;
+        old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1);
+        await (await this.pool())?.release(old.revision);
+      }
+    });
+    this.creating = operation.catch(() => undefined); await operation;
+  }
+  private async shared(record: ExecutionRecord): Promise<Engine> {
+    const ready = this.engines.find(engine => engine.shared && engine.revision === record.revision && !engine.connection.closed);
+    if (ready) { ready.requests++; return ready; }
+    const operation = this.creating.then(async () => {
+      if (this.closing || !this.initialized) throw new Error("Initialize an open adapter before attaching a gateway executor");
+      const existing = this.engines.find(engine => engine.shared && engine.revision === record.revision && !engine.connection.closed);
+      if (existing) { existing.requests++; return existing; }
+      for (let index = this.engines.length - 1; index >= 0; index--) {
+        const old = this.engines[index];
+        if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) {
+          old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1);
+          if (old.shared && old.revision !== record.revision) await (await this.pool())?.release(old.revision);
+        }
+      }
+      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true };
+      const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
+        for (const [id, approval] of this.approvals) if (approval.connection === connection) this.approvals.delete(id);
+        this.reverse.delete(connection);
+        if (!this.closing) for (const [threadId, id] of engine.active) void this.emit({ method: "turn/completed", params: { threadId, turn: { id, items: [], status: "failed", error: { message: "Gateway executor connection closed. Resume this chat to reconnect to its saved or running session.", codexErrorInfo: "internalServerError", additionalDetails: null } } } });
+        engine.active.clear();
+      });
+      engine.connection = connection; this.engines.push(engine);
+      try {
+        await connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } });
+        connection.send({ method: "initialized", params: {} }); return engine;
+      } catch (error) { connection.stop(); throw error; }
+    });
+    this.creating = operation.catch(() => undefined); return operation;
+  }
+  private async owner(threadId: string): Promise<Engine | undefined> {
+    const record = await (await this.pool())?.find(threadId);
+    return record ? this.shared(record) : undefined;
+  }
   private async gateway(): Promise<Engine> {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     const snapshot = this.catalog.current();
     const revision = createHash("sha256").update(snapshot.revision + JSON.stringify(await readAgentPolicy(this.config.stateDirectory) || null)).digest("hex");
+    const pool = await this.pool();
+    if (pool) {
+      if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
+      const latest = object((await this.native.request("config/read", {})).config);
+      const agents = await agentExecutorSettings(this.config, { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) });
+      const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
+      const settings = Object.fromEntries(Object.entries(agents.settings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null));
+      const forwarded: string[] = [];
+      for (let index = 0; index < this.args.length; index++) {
+        if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
+        if (!this.args[index].startsWith("--profile=") && !this.args[index].startsWith("--listen=") && this.args[index] !== "--stdio") forwarded.push(this.args[index]);
+      }
+      const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true,
+        ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
+      const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
+      const combined = this.catalog.combined(snapshot);
+      const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, agentsDirectory: agents.directory || null })).digest("hex");
+      await this.releaseIdleShared(sharedRevision);
+      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), agentsDirectory: agents.directory });
+      return this.shared(record);
+    }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
     const ready = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
-    if (ready) return ready;
+    if (ready) { ready.requests++; return ready; }
     const operation = this.creating.then(async () => {
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const existing = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
-      if (existing) return existing;
+      if (existing) { existing.requests++; return existing; }
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
-        if (old.connection.closed || (!old.threads.size && !old.active.size)) { old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1); }
+        if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) { old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1); }
       }
       if (this.engines.filter(engine => !engine.connection.closed).length >= 4) throw new Error("Four gateway catalog versions still have loaded chats. Close an older gateway chat before selecting a newly added model; native chats remain available.");
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
@@ -96,7 +181,7 @@ export class AppServerBackends {
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
       const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
       if (this.closing) throw new Error("Codex desktop connection is closing");
-      const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map() };
+      const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
       engine.connection = new AppServerConnection(this.executable, args, message => this.forward(engine.connection, message), () => {
         for (const [id, approval] of this.approvals) if (approval.connection === engine.connection) this.approvals.delete(id);
         this.reverse.delete(engine.connection);
@@ -115,35 +200,51 @@ export class AppServerBackends {
       const result = await this.native.request(method, params); this.initialized = params; return result;
     }
     // Saved metadata is shared locally and needs no inference connection or model discovery.
-    if (method === "thread/read" && typeof params.threadId === "string" && !this.bindings.has(params.threadId)) return this.native.request(method, params);
-    let engine: Engine | undefined;
-    if (method === "thread/start" && params.modelProvider === "subscription_gateway") engine = await this.gateway();
+    if (method === "thread/read" && typeof params.threadId === "string" && !this.bindings.has(params.threadId)) {
+      try { return await this.native.request(method, params); }
+      catch (error) {
+        // A newly loaded SDK chat may have no rollout file until its first turn.
+        const owner = await this.owner(params.threadId); if (!owner) throw error;
+        try { return await owner.connection.request(method, params); }
+        finally { owner.requests--; }
+      }
+    }
+    let engine: Engine | undefined; let reserved = false;
+    if (method === "thread/start" && params.modelProvider === "subscription_gateway") { engine = await this.gateway(); reserved = true; }
     else if (typeof params.threadId === "string") {
       engine = this.bindings.get(params.threadId);
       if (!engine) {
-        const thread = object((await this.native.request("thread/read", { threadId: params.threadId, includeTurns: false })).thread);
-        if (thread.modelProvider === "subscription_gateway") engine = await this.gateway();
+        engine = await this.owner(params.threadId); reserved = !!engine;
+        if (!engine) {
+          const thread = object((await this.native.request("thread/read", { threadId: params.threadId, includeTurns: false })).thread);
+          if (thread.modelProvider === "subscription_gateway") { engine = await this.gateway(); reserved = true; }
+        }
       }
     }
     if (!engine) return this.native.request(method, params);
     if (engine.connection.closed) {
+      if (reserved) engine.requests--;
       if (method !== "thread/resume") throw new Error("The gateway executor exited; resume this chat before continuing. Ephemeral chats must be started again.");
-      engine = await this.gateway();
+      engine = await this.owner(String(params.threadId)) || await this.gateway(); reserved = true;
     }
-    const model = object(object(params.collaborationMode).settings).model ?? params.model;
-    if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
-    const result = await engine.connection.request(method, method === "thread/start" ? withTitleTool(params) : params);
-    if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
-      const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
-    }
-    if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
-      engine.threads.delete(params.threadId); this.bindings.delete(params.threadId);
-    }
-    return result;
+    if (!reserved) engine.requests++;
+    try {
+      const model = object(object(params.collaborationMode).settings).model ?? params.model;
+      if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
+      const result = await engine.connection.request(method, method === "thread/start" ? withTitleTool(params) : params);
+      if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
+        const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
+      }
+      if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
+        engine.threads.delete(params.threadId); this.bindings.delete(params.threadId);
+      }
+      return result;
+    } finally { engine.requests--; }
   }
   async stop(): Promise<void> {
     this.closing = true; this.native.stop(); for (const engine of this.engines) engine.connection.stop();
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
+    (await this.poolPending?.catch(() => undefined))?.close();
   }
 }

@@ -1,0 +1,143 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { chmod, lstat, readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { type GatewayConfig, writePrivateJson } from "./config.js";
+import { object, isId, type Message } from "./app-server-connection.js";
+import { SocketAppServerConnection } from "./socket-app-server-connection.js";
+import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
+import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
+
+export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; agentsDirectory?: string }
+export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[] }
+export function executionDescriptor(value: unknown): ExecutionDescriptor {
+  const input = object(value); const catalog = object(input.catalog);
+  if (typeof input.revision !== "string" || !/^[a-f0-9]{64}$/.test(input.revision) || !Array.isArray(input.args) || input.args.length > 256 || !input.args.every(arg => typeof arg === "string" && !arg.includes("\0") && Buffer.byteLength(arg) < 65536)
+    || !input.args.includes("app-server") || input.args.includes("proxy") || !input.settings || Array.isArray(input.settings) || typeof input.settings !== "object"
+    || !Array.isArray(catalog.models) || !catalog.models.length || catalog.models.length > 256 || catalog.models.some(model => !model || typeof model !== "object" || Array.isArray(model))
+    || !Array.isArray(input.aliases) || !input.aliases.length || input.aliases.length > 256 || input.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024 || alias.includes("\0")) || new Set(input.aliases).size !== input.aliases.length
+    || (input.agentsDirectory !== undefined && (typeof input.agentsDirectory !== "string" || !input.agentsDirectory.startsWith("/") || input.agentsDirectory.includes("\0")))) throw new Error("Invalid execution generation descriptor");
+  const descriptor = { revision: input.revision, args: input.args, settings: input.settings, catalog: { models: catalog.models }, aliases: input.aliases, ...(input.agentsDirectory ? { agentsDirectory: input.agentsDirectory } : {}) } as ExecutionDescriptor;
+  if (Buffer.byteLength(JSON.stringify(descriptor)) > 4 * 1024 * 1024) throw new Error("Execution descriptor exceeds 4 MiB");
+  return descriptor;
+}
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item);
+}
+export function descriptorFingerprint(descriptor: ExecutionDescriptor): string { return createHash("sha256").update(canonicalJson(descriptor)).digest("hex"); }
+export function executionArgs(args: string[], socket: string, catalog: string): string[] {
+  const forwarded: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (arg === "--listen") { index++; continue; }
+    if (arg.startsWith("--listen=")) continue;
+    if (["-c", "--config"].includes(arg) && args[index + 1]?.startsWith("model_catalog_json=")) { index++; continue; }
+    if (arg.startsWith("--config=model_catalog_json=")) continue;
+    forwarded.push(arg);
+  }
+  return [...forwarded, "--listen", `unix://${socket}`, "-c", `model_catalog_json=${JSON.stringify(catalog)}`];
+}
+export async function validateExecutionSdk(codex: string): Promise<void> {
+  const child = spawn(codex, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
+  let output = ""; child.stdout.on("data", chunk => { output += String(chunk); if (output.length > 4096) child.kill("SIGTERM"); });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+  try {
+    await new Promise<void>((resolve, reject) => { child.once("error", () => reject(new Error("Execution host SDK is unavailable"))); child.once("close", code => code === 0 ? resolve() : reject(new Error("Execution host SDK version check failed"))); });
+    if (output.trim() !== "codex-cli 0.162.0-alpha.17.2") throw new Error("Execution host requires the pinned Codex SDK version");
+  } finally { clearTimeout(timer); }
+}
+
+export class ExecutionEngine {
+  private child?: ChildProcess;
+  private admin?: SocketAppServerConnection;
+  private exited: Promise<void> = Promise.resolve();
+  private stopped = false;
+  private stopDone?: Promise<void>;
+  readonly record: ExecutionRecord;
+  readonly owner: EngineOwner;
+  readonly fingerprint: string;
+  closed = false;
+  constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string) {
+    this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases] };
+    this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
+    this.fingerprint = descriptorFingerprint(descriptor);
+  }
+  async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
+    const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
+    await privateDirectory(directory);
+    const metadata = resolve(directory, "execution-generation.json");
+    const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: this.identity.sdkSha256 };
+    const saved = await lstat(metadata).catch(error => { if (error.code === "ENOENT") return; throw error; });
+    if (saved) {
+      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
+    } else await writePrivateJson(metadata, expected);
+    const home = await gatewayEngineHome(directory, descriptor.settings, descriptor.agentsDirectory, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
+    const catalog = resolve(directory, "catalog.json");
+    try {
+      const existing = JSON.parse(await readFile(catalog, "utf8"));
+      if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writePrivateJson(catalog, descriptor.catalog); }
+    const sdk = await sdkIdentity(this.identity.codex);
+    if (sdk.sdkSha256 !== this.identity.sdkSha256) throw new Error("Execution host SDK changed; restart during a maintenance window");
+    if (this.stopped) throw new Error("Execution host is closing");
+    const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
+    if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
+    const child = spawn(this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
+    this.child = child;
+    this.exited = new Promise(resolve => {
+      child.once("error", () => { this.closed = true; });
+      child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); void changed().catch(() => {}); resolve(); });
+    });
+    this.owner.pid = child.pid || 0; await changed();
+    const deadline = Date.now() + 10000;
+    for (;;) {
+      if (this.closed || this.stopped) throw new Error("Execution SDK exited before initialization");
+      const info = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
+      if (info) {
+        // Real SDK listeners publish a symlink to their protected physical socket.
+        // Only direct owned sockets may be chmodded; validate SDK links without mutation.
+        if (info.isSocket() && info.uid === process.getuid?.()) await chmod(this.record.socketPath, 0o600);
+        this.owner.socket = await socketIdentity(this.record.socketPath);
+        if (!this.owner.socket) throw new Error("Execution SDK socket disappeared during startup");
+        await changed(); break;
+      }
+      if (Date.now() >= deadline) throw new Error("Execution SDK socket startup timed out");
+      await delay(25);
+    }
+    const admin = new SocketAppServerConnection(this.record.socketPath, async message => {
+      // The administrative connection never subscribes to chat tools or approvals.
+      if (isId(message.id)) admin.send({ id: message.id, error: { code: -32601, message: "Execution administration does not handle server requests" } });
+    }); this.admin = admin;
+    await admin.ready;
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([admin.request("initialize", { clientInfo: { name: "subscription-gateway-execution-host", version: "1" }, capabilities: { experimentalApi: true } }), new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("Execution SDK initialization timed out")), 10000).unref(); })]);
+    } finally { clearTimeout(timeout); }
+    admin.send({ method: "initialized", params: {} });
+  }
+  async loadedThreads(): Promise<Set<string>> {
+    if (this.closed) return new Set();
+    if (!this.admin || this.admin.closed) throw new Error("Execution generation administration is unavailable; loaded chats were preserved");
+    const threads = new Set<string>(); const cursors = new Set<string>(); let cursor: string | undefined;
+    for (let page = 0; page < 128; page++) {
+      const result = await this.admin.request("thread/loaded/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(result.data) || result.data.some(id => typeof id !== "string")) throw new Error("Execution SDK returned invalid loaded-chat metadata");
+      for (const id of result.data) threads.add(id as string);
+      if (result.nextCursor == null) return threads;
+      if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor)) throw new Error("Execution SDK returned invalid loaded-chat pagination");
+      cursor = result.nextCursor; cursors.add(cursor);
+    }
+    throw new Error("Execution SDK loaded-chat pagination exceeded its bound");
+  }
+  stop(): Promise<void> { return this.stopDone ||= this.stopOwned(); }
+  private async stopOwned(): Promise<void> {
+    this.stopped = true; this.admin?.stop(); this.child?.kill("SIGTERM");
+    await Promise.race([this.exited, delay(1500)]);
+    if (!this.closed) this.child?.kill("SIGKILL");
+    await Promise.race([this.exited, delay(1000)]);
+    if (this.child && !this.closed) throw new Error("Execution SDK did not stop; ownership was preserved");
+    if (this.owner.socket) await removeOwnedSocket(this.record.socketPath, this.owner.socket);
+  }
+}

@@ -21,7 +21,9 @@ request IDs for approvals, bounds frames to 16 MiB, and stops its child on exit.
 Non-server commands, including `--version`, pass through unchanged. The adapter
 accepts `stdio://` and private `unix://` listeners. A Unix listener serves the
 WebSocket protocol used by desktop SSH connections. It gives each connection its
-own native and gateway executors. It refuses occupied sockets, requires a
+own native connection. Gateway executors are shared when the unified service has
+shared execution enabled; legacy installations keep per-connection executors.
+It refuses occupied sockets, requires a
 user-owned directory without group/world write access, and sets the socket to
 mode 0600. Network WebSocket listeners are rejected.
 

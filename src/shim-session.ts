@@ -9,12 +9,12 @@ import { NativeControl, nativeRegistration } from "./native-control.js";
 /** One transport connection owns its executors, approvals, and cancellation. */
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
-  input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal): Promise<number> {
+  input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
   let closing = false;
   const registration = await nativeRegistration(config);
   const control = registration ? new NativeControl(registration.home, emit) : undefined;
-  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, message => control && message.method === "remoteControl/status/changed" ? Promise.resolve() : emit(message), () => input.destroy());
+  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, message => control && message.method === "remoteControl/status/changed" ? Promise.resolve() : emit(message), () => input.destroy(), configPath);
   const router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const stop = () => { closing = true; input.destroy(); void backends.stop(); };

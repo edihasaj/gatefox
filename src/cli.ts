@@ -27,6 +27,8 @@ import { readAgentPolicy, setupAgents } from "./agent-profiles.js";
 import { consolidateService } from "./mac-consolidate.js";
 import { readServicePlan } from "./service-plan.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
+import { enableSharedExecutors } from "./mac-shared-executors.js";
+import { runExecutionHostCommand } from "./execution-host-command.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -44,6 +46,8 @@ const help = `gateway — local subscription and API inference
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service consolidate [--apply] [--config PATH]
+  gateway service shared-executors [--apply] [--config PATH]
+  gateway executor-host --config PATH --codex PATH --native-home PATH
   gateway providers [--config PATH] [--json]
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
@@ -78,12 +82,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } });
   const [command, id, ...extra] = positionals;
   if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "agents"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "ssh", "native", "agents", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
-  if (values.apply && (command !== "service" || id !== "consolidate")) throw new Error("--apply is only valid for service consolidate");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "agents", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (values.apply && (command !== "service" || !["consolidate", "shared-executors"].includes(id))) throw new Error("--apply is only valid for service consolidate or shared-executors");
   if (command !== "agents" && [values.coordinator, values.verifier, values.worker].some(Boolean)) throw new Error("Agent model options are only valid for agents setup");
-  if (values.codex && !["ssh", "native"].includes(command)) throw new Error("--codex is only valid for ssh or native registration");
+  if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
-  if (values["native-home"] && !["desktop", "native"].includes(command)) throw new Error("--native-home is only valid for desktop or native registration");
+  if (values["native-home"] && !["desktop", "native", "executor-host"].includes(command)) throw new Error("--native-home is only valid for desktop, native, or executor-host");
   if (values.app && !["desktop", "desktop-restore"].includes(command)) throw new Error("--app is only valid for desktop");
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
@@ -106,6 +110,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
   const path = await configPath(values.config);
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }
+  if (command === "executor-host") { await runExecutionHostCommand(path, values.codex, values["native-home"]); return; }
   if (command === "daemon") {
     const config = await loadConfig(path); const plan = await readServicePlan(config.stateDirectory);
     if (!plan || plan.config !== resolve(path)) throw new Error("Unified service plan is missing or uses another configuration");
@@ -124,7 +129,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else process.stdout.write(JSON.stringify(await launchDesktop(path, values["native-home"], values.app)) + "\n");
     return;
   }
-  if (command === "service") { process.stdout.write(JSON.stringify(id === "consolidate" ? await consolidateService(path, values.apply) : await macService(id, path), null, 2) + "\n"); return; }
+  if (command === "service") { process.stdout.write(JSON.stringify(id === "consolidate" ? await consolidateService(path, values.apply) : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : await macService(id, path), null, 2) + "\n"); return; }
   if (command === "init") {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, JSON.stringify(defaults, null, 2) + "\n", { flag: "wx", mode: 0o600 });

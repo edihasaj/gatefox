@@ -68,7 +68,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   try {
     const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
-      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal);
+      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path);
     if (socketPath) {
       try { await serveUnix(socketPath, controller.signal, session); }
       catch (error) {
