@@ -9,6 +9,8 @@ import { loadConfig, gatewayToken } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { readServicePlan, servicePlanPath } from "./service-plan.js";
 import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
+import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
+import { withLoginRegistrationLock } from "./login-registration-lock.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway";
@@ -26,13 +28,20 @@ async function status(target: string): Promise<{ installed: boolean; state?: str
   } catch { return { installed: false }; }
 }
 export async function macService(action: string | undefined, configPath: string): Promise<Record<string, unknown>> {
+  if (action === "status") return serviceOperation(action, configPath);
+  const config = await loadConfig(configPath);
+  return withLoginRegistrationLock(config.stateDirectory, () => serviceOperation(action, configPath));
+}
+async function serviceOperation(action: string | undefined, configPath: string): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("User service setup currently supports macOS; use gateway serve on other systems");
   if (!["install", "status", "restart", "uninstall"].includes(action || "")) throw new Error("Choose gateway service install, status, restart, or uninstall");
   const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const path = resolve(homedir(), "Library/LaunchAgents", `${label}.plist`);
   const configured = await loadConfig(configPath);
   const plan = await readServicePlan(configured.stateDirectory);
-  if (action === "status") return plan ? consolidatedStatus(configured.stateDirectory) : { service: label, ...await status(target) };
+  const pending = await readPendingLoginConsolidation(configured.stateDirectory);
+  if (action === "status") return plan ? consolidatedStatus(configured.stateDirectory) : { service: label, ...await status(target), ...(pending ? { consolidationPending: "next_login", startupJobs: 1, components: pending.plan.components.map(component => ({ id: component.id, kind: component.kind })) } : {}) };
+  if (pending) throw new Error("Gateway startup consolidation is staged for next login; the running service was not changed");
   let existing: string | undefined;
   try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Cannot read the gateway LaunchAgent"); }
   if (existing !== undefined && !existing.includes(marker)) throw new Error("An unmanaged LaunchAgent uses this name; refusing to replace it");

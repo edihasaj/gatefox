@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
+import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
 
 const exec = promisify(execFile);
@@ -73,6 +74,11 @@ export async function consolidatedStatus(state: string): Promise<Record<string, 
 export async function consolidateService(configPath: string, apply = false): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Service consolidation currently supports macOS");
   const config = await loadConfig(configPath); const existing = await readServicePlan(config.stateDirectory);
+  const pending = await readPendingLoginConsolidation(config.stateDirectory);
+  if (pending) {
+    if (apply) throw new Error("Gateway consolidation is already staged for next login; no running job was stopped");
+    return { applied: false, consolidationPending: "next_login", jobsAfter: 1, activeChatsPreserved: true, components: pending.plan.components.map(component => ({ id: component.id, kind: component.kind })) };
+  }
   if (existing) return consolidatedStatus(config.stateDirectory);
   const { plan, jobs } = await collectServicePlan(configPath);
   const preview = { jobsBefore: jobs.length, jobsAfter: 1, components: plan.components.map(({ id, kind }) => ({ id, kind })), activeChatsPreserved: !apply };

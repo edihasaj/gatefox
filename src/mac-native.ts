@@ -10,6 +10,8 @@ import { nativeRelayHome } from "./native-control.js";
 import { gatewayCommand } from "./command.js";
 import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
+import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
+import { withLoginRegistrationLock } from "./login-registration-lock.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway.native";
@@ -45,6 +47,11 @@ async function enable(binary: string, args: string[]): Promise<void> {
 }
 
 export async function macNative(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string } = {}): Promise<Record<string, unknown>> {
+  if (action === "status") return nativeOperation(action, configPath, options);
+  const config = await loadConfig(configPath);
+  return withLoginRegistrationLock(config.stateDirectory, () => nativeOperation(action, configPath, options));
+}
+async function nativeOperation(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string }): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose gateway native install, status, or uninstall on macOS");
   const config = await loadConfig(configPath);
   const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || resolve(homedir(), ".codex"));
@@ -58,6 +65,7 @@ export async function macNative(action: string | undefined, configPath: string, 
     return plan ? { service: "com.edihasaj.subscription-gateway", mode: "supervised", component: "native", ...await consolidatedStatus(config.stateDirectory), relay } : { service: label, ...await status(target), relay };
   }
   if (plan) throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
+  if (await readPendingLoginConsolidation(config.stateDirectory)) throw new Error("Native transport startup is staged under the unified service at next login; its separate registration was not changed");
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to replace an unmanaged native relay service");
   if (action === "uninstall") {

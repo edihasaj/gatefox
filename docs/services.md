@@ -65,6 +65,28 @@ service and registering the required components again before reconsolidation.
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.
 
+To keep current work running and consolidate the next login instead:
+
+```sh
+gateway service consolidate --next-login
+```
+
+This saves the original jobs and a private pending plan, prepares one gateway
+LaunchAgent, and moves its superseded owned startup files to Trash. It does not
+unload or stop their currently running services. Native and SSH connections keep
+their processes until logout. The one remaining entry starts desktop setup,
+inference, native relay, and required tunnels as applicable to that machine.
+Unrelated apps and CI jobs remain registered.
+
+The new daemon promotes the pending plan only when launchd identifies it as the
+primary gateway job and every retired gateway job is unloaded. This prevents a
+manual start from creating competing relays or inference listeners. Activation
+uses the same configuration, native home, relay home, and connected-machine
+registration. Pending consolidation blocks separate registration changes that
+could recreate duplicate startup jobs. Repeating staging is safe after its file
+checks pass. Startup-file count and macOS's cached Login Items display are
+separate checks; historical records can remain visible after registration ends.
+
 Explicit tunnel installation and desktop registration enable their managed
 LaunchAgent before loading it. This repairs a disabled registration without
 restarting an already loaded job. New tunnel jobs limit the initial SSH connection

@@ -25,7 +25,7 @@ import { macDesktop } from "./mac-desktop.js";
 import { macNative } from "./mac-native.js";
 import { readAgentPolicy, setupAgents } from "./agent-profiles.js";
 import { consolidateService } from "./mac-consolidate.js";
-import { readServicePlan } from "./service-plan.js";
+import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
@@ -45,7 +45,7 @@ const help = `gateway — local subscription and API inference
   gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
-  gateway service consolidate [--apply] [--config PATH]
+  gateway service consolidate [--apply | --next-login] [--config PATH]
   gateway service shared-executors [--apply] [--config PATH]
   gateway executor-host --config PATH --codex PATH --native-home PATH
   gateway providers [--config PATH] [--json]
@@ -78,12 +78,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" }, coordinator: { type: "string" }, verifier: { type: "string" }, worker: { type: "string" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
-    apply: { type: "boolean" },
+    apply: { type: "boolean" }, "next-login": { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
   if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "agents"].includes(command))) throw new Error("Choose one command; run gateway --help");
   if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "agents", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors"].includes(id))) throw new Error("--apply is only valid for service consolidate or shared-executors");
+  if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
   if (command !== "agents" && [values.coordinator, values.verifier, values.worker].some(Boolean)) throw new Error("Agent model options are only valid for agents setup");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
@@ -113,7 +114,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }
   if (command === "executor-host") { await runExecutionHostCommand(path, values.codex, values["native-home"]); return; }
   if (command === "daemon") {
-    const config = await loadConfig(path); const plan = await readServicePlan(config.stateDirectory);
+    const config = await loadConfig(path); const plan = await activatePendingLoginConsolidation(path);
     if (!plan || plan.config !== resolve(path)) throw new Error("Unified service plan is missing or uses another configuration");
     await runServiceSupervisor(plan, config.stateDirectory); return;
   }
@@ -130,7 +131,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     else process.stdout.write(JSON.stringify(await launchDesktop(path, values["native-home"], values.app)) + "\n");
     return;
   }
-  if (command === "service") { process.stdout.write(JSON.stringify(id === "consolidate" ? await consolidateService(path, values.apply) : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : await macService(id, path), null, 2) + "\n"); return; }
+  if (command === "service") {
+    const result = id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
+      : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : await macService(id, path);
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
+  }
   if (command === "init") {
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     await writeFile(path, JSON.stringify(defaults, null, 2) + "\n", { flag: "wx", mode: 0o600 });

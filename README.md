@@ -136,6 +136,12 @@ gateway service uninstall
 Uninstall moves the managed LaunchAgent to Trash and preserves credentials.
 Changing the listener port or state directory requires a daemon restart.
 
+Use `gateway service consolidate --next-login` to keep one gateway startup entry
+without stopping current chats. Existing services keep running until logout; the
+single entry restores their duties at the next login. The command preserves the
+native account and saves the original startup files for recovery. See
+[service consolidation](docs/services.md) for activation checks.
+
 Use `gateway service consolidate` to preview replacing the gateway's individual
 jobs with one supervisor. Apply with `--apply` after local and remote chats finish.
 The migration preserves endpoints and saves rollback copies. See

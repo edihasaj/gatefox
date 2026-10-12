@@ -68,6 +68,11 @@ Test an isolated supervisor under real launchd with
 `node scripts/e2e-service-supervisor.mjs /absolute/installed/bin/gateway`.
 The fixture exercises HTTP streaming, child and supervisor crashes, login setup,
 and shutdown. Its relay child is a mock; it preserves the working native relay.
+For next-login cleanup changes, run
+`node scripts/e2e-login-consolidation.mjs /absolute/installed/bin/gateway`.
+It uses uniquely named launchd fixtures to verify live-PID preservation, refused
+manual promotion, and actual primary-job activation. It stops only those fixtures
+and uses no provider inference or native authentication.
 
 To remove the installation, run `gateway uninstall`. The installation and managed
 LaunchAgents move to Trash. Credentials and native Codex configuration remain.

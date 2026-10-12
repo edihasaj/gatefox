@@ -14,6 +14,21 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The v0.2.16 installed preflight passed 260 tests and a real launchd cleanup
+fixture. Staging one future startup entry preserved the old PIDs. Manual
+promotion and promotion with an old relay still loaded were refused. The actual
+primary launchd process then promoted the plan after the fixture jobs unloaded.
+Responsibilities and native configuration, installation, enrollment metadata,
+and signed app identity were unchanged. All fixture jobs were removed afterward;
+no provider inference or native authentication was used.
+
+The October 12 login audit found five gateway-owned startup files on the primary
+Mac (desktop setup, inference, and three required tunnels), two on Studio
+(desktop setup and native relay), and one unified job on MacBook Pro 2. The two
+primary-Mac Login Items named `gateway` corresponded to desktop setup and
+inference. Next-login consolidation preserves both duties in one registration.
+macOS's cached background-item history is distinct from scheduled startup files.
+
 The audited catalog contains 36 models: 11 native models and 25 added routes.
 The added routes comprise 12 Claude models, eight Codex 2 models, four Copilot
 models, and one local Qwen model. Qwen advertises text input only. Discovery and

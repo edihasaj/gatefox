@@ -4,6 +4,8 @@ import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { readServicePlan } from "./service-plan.js";
+import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
+import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
 
@@ -17,9 +19,14 @@ export function tunnelArguments(options: TunnelOptions): string[] {
     ...(options.sshConfig ? ["-F", resolve(options.sshConfig)] : []), options.reverse ? "-R" : "-L", `127.0.0.1:${options.port}:127.0.0.1:${options.remotePort}`, options.host];
 }
 export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
+  if (action === "status") return tunnelOperation(action, options, state);
+  return withLoginRegistrationLock(state, () => tunnelOperation(action, options, state));
+}
+async function tunnelOperation(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Managed SSH tunnels currently support macOS");
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(options.id) || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose tunnel install/status/uninstall and a lowercase --tunnel-id");
   const plan = await readServicePlan(state);
+  if (action !== "status" && await readPendingLoginConsolidation(state)) throw new Error("Tunnel startup is staged under the unified service at next login; its separate registration was not changed");
   if (plan) {
     if (action === "status") return { ...await consolidatedStatus(state), component: plan.components.find(component => component.id === "tunnel-" + options.id)?.id || null };
     throw new Error("Tunnels are owned by the unified service. Finish chats and uninstall that service before changing its tunnel configuration");
