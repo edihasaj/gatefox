@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
-import { serviceExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
+import { serviceExecutionPaths, serviceNativeExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
 import { executionHostHome, startExecutionHost } from "./execution-host.js";
 import { serviceTunnelArguments } from "./service-tunnel.js";
 
@@ -19,10 +19,10 @@ export class ServiceSupervisor {
   private stopDone?: Promise<void>;
   private restarting = false;
   private executionStarting?: ReturnType<typeof startExecutionHost>;
-  private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number };
+  private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number; sharedNativeExecutor: boolean; sharedGatewayExecutors: boolean };
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
-  constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000) {
+  constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, private readonly startHost: typeof startExecutionHost = startExecutionHost) {
     this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0 }));
   }
   private publish(): Promise<void> {
@@ -32,14 +32,17 @@ export class ServiceSupervisor {
   }
   async start(): Promise<void> {
     if (this.stopping) return;
-    if (this.plan.sharedExecutors) {
-      const config = await loadConfig(this.plan.config); const paths = serviceExecutionPaths(this.plan);
+    if (this.plan.sharedExecutors || this.plan.sharedNativeExecutor) {
+      const config = await loadConfig(this.plan.config); const paths = this.plan.sharedNativeExecutor ? serviceNativeExecutionPaths(this.plan) : serviceExecutionPaths(this.plan);
       if (this.stopping) return;
       if (resolve(config.stateDirectory) !== resolve(this.state)) throw new Error("Shared executor state does not match the service plan");
-      this.executionState = { state: "starting", home: executionHostHome(this.plan.config, paths.nativeHome), pid: process.pid };
+      this.executionState = { state: "starting", home: executionHostHome(this.plan.config, paths.nativeHome), pid: process.pid,
+        sharedNativeExecutor: this.plan.sharedNativeExecutor === true, sharedGatewayExecutors: this.plan.sharedExecutors === true };
       await this.publish();
       if (this.stopping) return;
-      this.executionStarting = startExecutionHost({ config, configPath: this.plan.config, ...paths });
+      this.executionStarting = this.startHost({ config, configPath: this.plan.config, ...paths,
+        capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
+        nativeRelayOwnsRegistration: this.plan.sharedNativeExecutor === true });
       try { await this.executionStarting; this.executionState.state = "running"; }
       catch (error) { this.executionState.state = "failed"; await this.publish(); throw error; }
       if (this.stopping) return;

@@ -7,7 +7,7 @@ import { isId, jsonLines, object, type Message } from "./app-server-connection.j
 import { NativeControl, nativeRegistration } from "./native-control.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
-/** One transport connection owns its executors, approvals, and cancellation. */
+/** One transport owns its RPC clients, approvals, and cancellation routing. */
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args): Promise<number> {
@@ -18,10 +18,13 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const control = registration ? new NativeControl(registration.home, emit) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
   let router: AppServerRouter | undefined;
-  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, async message => {
-    await router?.observeNotification(message);
-    if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
-  }, () => input.destroy(), configPath);
+  let backends: AppServerBackends;
+  try {
+    backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async message => {
+      await router?.observeNotification(message);
+      if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
+    }, () => input.destroy(), configPath);
+  } catch (error) { control?.close(); throw error; }
   router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {

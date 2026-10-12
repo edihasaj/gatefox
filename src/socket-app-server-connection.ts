@@ -29,7 +29,8 @@ export class SocketAppServerConnection {
   readonly exited: Promise<Exit>;
   closed = false;
 
-  constructor(socketPath: string, private readonly onMessage: (message: Message) => Promise<void>, private readonly onExit: (connection: SocketAppServerConnection) => void = () => {}) {
+  constructor(socketPath: string, private readonly onMessage: (message: Message) => Promise<void>, private readonly onExit: (connection: SocketAppServerConnection) => void = () => {},
+    private readonly options: { drainOnClose?: boolean } = {}) {
     if (!isAbsolute(socketPath) || /[:\0]/u.test(socketPath)) throw new Error("Codex app-server socket path must be absolute and contain no colon or NUL");
     this.ready = new Promise((resolve, reject) => { this.resolveReady = resolve; this.rejectReady = reject; });
     // A caller may use request() without awaiting ready; transport failure must still be handled.
@@ -54,6 +55,8 @@ export class SocketAppServerConnection {
     this.socket.on("error", () => this.fail("Codex app-server socket failed"));
     this.socket.once("close", code => this.finish(code));
   }
+  /** Natural close may precede forwarding of already-received terminal events. */
+  get drained(): Promise<void> { return this.exited.then(() => this.dispatch).catch(() => {}); }
 
   send(message: Message): void {
     if (this.stopping || this.closed) return;
@@ -79,8 +82,9 @@ export class SocketAppServerConnection {
   }
 
   stop(): void {
-    if (this.stopping || this.closed) return;
+    if (this.stopping) return;
     this.stopping = true;
+    if (this.closed) return;
     this.rejectOutstanding(new Error("Codex app-server is closed"));
     clearTimeout(this.connectTimer);
     if (this.socket.readyState === WebSocket.CONNECTING) this.socket.terminate();
@@ -108,7 +112,7 @@ export class SocketAppServerConnection {
     if (typeof message.method === "string") {
       if (this.incomingCount >= PENDING_LIMIT || this.incomingBytes + buffer.length > FRAME_LIMIT) { this.fail("Codex app-server message queue is full"); return; }
       this.incomingCount++; this.incomingBytes += buffer.length;
-      this.dispatch = this.dispatch.then(async () => { if (!this.stopping && !this.closed) await this.onMessage(message); })
+      this.dispatch = this.dispatch.then(async () => { if (!this.stopping && (!this.closed || this.options.drainOnClose)) await this.onMessage(message); })
         .catch(() => this.fail("Codex app-server message handler failed"))
         .finally(() => { this.incomingCount--; this.incomingBytes -= buffer.length; });
     } else if (isId(message.id)) {

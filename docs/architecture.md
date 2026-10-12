@@ -99,6 +99,15 @@ The coordinator belongs to the unified service and owns its SDK children. There
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 
+Native ownership can also be shared independently of gateway generations. Its
+one original signed SDK keeps the original native home and normal authentication;
+private gateway homes never receive that authentication. A per-native-home lease
+prevents two managed configurations from creating separate native owners. Adapter
+disconnection releases its client, not the SDK. Compatible process arguments,
+actual signed executable identity, private socket identity, and exact launch death
+records govern reconnect and recovery. See [native migration](services.md#shared-native-session-ownership)
+for maintenance requirements and the SDK's Unix capability limits.
+
 Desktop SSH uses a private Unix socket carrying WebSocket JSON-RPC. The socket
 adapter reuses the same session router as stdio and bounds frames to 16 MiB,
 pending requests to 256 per connection, and simultaneous clients to eight.

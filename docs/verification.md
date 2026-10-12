@@ -14,6 +14,22 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The next source candidate has reproduced the separate-process ownership gap with
+the original signed SDK: a second process reads an active native chat as
+interrupted and cannot Stop its real owner. A shared native owner passes 18 mock
+checks through stdio and Unix. Both clients read the actual running turn; Stop,
+owner-client disconnect, reconnect steering, history, warm approval replay, and
+follow-up complete through that same owner. Gateway sharing remains independently
+selectable. No paid requests, copied authentication, or native configuration edits
+occur in those isolated fixtures.
+
+Gateway administration also passes real signed SDK checks. Metadata probes use
+transient non-originating clients, leave frontend identity intact, never answer
+its approval, and permit SDK idle unload after unsubscribe. These tests establish
+backend ownership; they do not establish the reported viewer state or rendered
+cloud behavior. The candidate gateway-only SDK's selected-turn compaction and
+installed release checks are still pending.
+
 The v0.2.20 silent-stop work passes 446 Node tests. Eight native-exit regressions
 verify that real buffered completions drain before exit classification, genuine
 unfinished executor exits emit errors before shutdown, and intentional close
@@ -42,7 +58,7 @@ the compaction ID instead of the later user-turn ID. Backend compaction success
 therefore does not establish desktop association or full UI parity. This remains
 an unresolved desktop integration limitation, separate from the native example.
 
-The v0.2.19 compaction work reproduces the pinned SDK's previous-model downshift
+The v0.2.19 legacy compaction work reproduces the pinned SDK's previous-model downshift
 failure, then verifies recovery with the selected gateway model. Its source gate
 passes 425 tests. The immutable installer passed repeated installation, including
 a prefix containing spaces and quotes, and 38 signed SDK compaction checks across

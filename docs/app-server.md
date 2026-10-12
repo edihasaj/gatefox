@@ -180,7 +180,23 @@ switching to a model with a smaller context window. An unavailable or exhausted
 previous provider can therefore block a model change even after the new selection
 has been saved.
 
-For per-connection gateway executors, the adapter checks public current-window
+Releases containing the verified gateway-only SDK perform ordinary automatic
+compaction with the selected model inside the caller's original turn. The SDK
+uses its actual token estimate, reasoning effort, goal state, cancellation, and
+history replacement. Every compaction item retains that user turn's ID; the
+adapter does not submit a preceding manual turn. Declared compatibility-hash
+changes retain the upstream SDK's compatibility handling. This executable is
+used only in private gateway homes. The original signed native SDK and its
+authentication remain unchanged.
+
+The installer records the pinned SDK revision, exact runtime patch, dependency
+lock repair, and binary checksum. Invalid or mismatched artifacts refuse a new
+gateway executor. A shared generation advertises selected-model compaction only
+after its host verifies the requested binary checksum. Its checksum participates
+in generation identity, so a newer executable cannot replace loaded work.
+
+Legacy packages without that artifact retain the adapter recovery below. For
+those per-connection gateway executors, the adapter checks public current-window
 usage against the selected model's frozen context metadata. It also records real
 failed compaction events. On the next explicit user message, a qualified idle chat
 is compacted with the selected gateway model before that message is submitted.
@@ -204,8 +220,12 @@ An uncertain late SDK start remains guarded until its actual completion. Reconne
 the chat's computer connection if that guard requests it. The adapter never
 fabricates a completion or clears a live writer lock.
 
-These changes require a fresh adapter connection. Installing a release preserves
-an already-loaded older adapter and its active chats.
+These changes require a fresh adapter connection and gateway executor. Installing
+a release preserves an already-loaded older adapter and its active chats. The
+legacy manual recovery can bind the desktop's pending message to the preceding
+compaction turn; backend completion alone does not prove rendered association.
+The selected-turn fixture checks the actual SDK event IDs and replays the tested
+desktop handlers; a rendered check remains a separate release gate.
 
 The launch procedure and real Claude/Codex 2 conversations have been verified
 in the rendered desktop on MacBook Pro 2. Initial activation requires a fresh

@@ -11,6 +11,7 @@ import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+import { selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compaction-selected-turn.mjs';
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, root: { type: 'string' },
   package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string', default: 'automatic' },
@@ -18,10 +19,11 @@ const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, root: 
   codex: { type: 'string', default: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' } } });
 for (const key of ['gateway', 'root']) assert.ok(v[key], 'Missing --' + key);
 const gateway = resolve(v.gateway), root = resolve(v.root), sdk = resolve(v.codex);
-assert.ok(['automatic', 'baseline'].includes(v.expect));
+assert.ok(['automatic', 'baseline', 'selected-turn'].includes(v.expect));
 const transports = v.expect === 'baseline' ? ['stdio'] : v.transports.split(',');
 assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
-const { WebSocket } = createRequire(join(resolve(v.package || join(gateway, '../..')), 'package.json'))('ws');
+const packageDirectory = resolve(v.package || join(gateway, '../..'));
+const { WebSocket } = createRequire(join(packageDirectory, 'package.json'))('ws');
 assert.ok(!root.startsWith(resolve(homedir(), '.codex')));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
@@ -29,14 +31,15 @@ assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
 await mkdir(root, { recursive: true, mode: 0o700 }); const run = await mkdtemp('/tmp/gw-compact-switch-');
 const home = join(run, 'native'), work = join(run, 'work');
 await mkdir(home, { mode: 0o700 }); await mkdir(work, { mode: 0o700 });
-const proof = 'PROOF_' + randomUUID();
+const proof = 'PROOF_' + randomUUID(), steerProof = 'STEER_' + randomUUID();
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
 env.GATEWAY_COMPACTION_SWITCH_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 const results = [], requests = [], events = [], children = new Set(), timers = new Set(), clients = new Set();
+const pausedResponses = new Set(); let gatewaySdkReceipt;
 let phase = 'setup', mode = 'normal', blockedModel = 'mock-large';
 const save = async row => {
   results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway,
-    fixture: run, primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0,
+    fixture: run, gatewaySdkReceipt, primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0,
     results, requests, tokenUsageEvents: events.filter(e => e.method === 'thread/tokenUsage/updated').map(e => e.params),
     notificationMetadata: events.map(e => ({ method: e.method, emittedAtMs: e.emittedAtMs, threadId: e.params?.threadId, turnId: e.params?.turnId ?? e.params?.turn?.id,
       turnStatus: e.params?.turn?.status, itemType: e.params?.item?.type,
@@ -48,6 +51,7 @@ const upstream = createServer(async (req, res) => {
   const body = JSON.parse(Buffer.concat(parts).toString()); parts.length = 0;
   const request = { phase, model: body.model, inputItems: body.input.length, inputBytes: Buffer.byteLength(JSON.stringify(body.input)),
     containsProof: JSON.stringify(body.input).includes(proof),
+    ...(v.expect === 'selected-turn' ? { containsSteer: JSON.stringify(body.input).includes(steerProof) } : {}),
     reasoningEffort: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(body.reasoning?.effort) ? body.reasoning.effort : null,
     outcome: 'completed' }; requests.push(request);
   if (mode === 'blocked-old' && body.model === blockedModel || mode === 'failed-manual') {
@@ -60,10 +64,22 @@ const upstream = createServer(async (req, res) => {
     const timer = setTimeout(() => { timers.delete(timer); if (!res.destroyed) res.end(); }, 15000);
     timers.add(timer); res.once('close', () => { clearTimeout(timer); timers.delete(timer); request.outcome = 'interrupted'; }); return;
   }
+  if (mode === 'pause-selected-compact') {
+    request.outcome = 'waiting';
+    const proceed = await new Promise(resolve => {
+      const cleanup = () => { clearTimeout(timer); timers.delete(timer); pausedResponses.delete(release); res.off('close', abort); };
+      const release = () => { cleanup(); resolve(true); };
+      const abort = () => { cleanup(); request.outcome = 'interrupted'; resolve(false); };
+      const timer = setTimeout(() => { res.end(); abort(); }, 15000);
+      timers.add(timer); pausedResponses.add(release); res.once('close', abort);
+    });
+    if (!proceed || res.destroyed) return;
+    request.outcome = 'completed';
+  }
   // Only a seeded turn can create the marker; later responses require its replay.
   const recalled = mode.startsWith('seed-') || request.containsProof ? proof : 'NO_PRIOR_PROOF';
   const text = mode.startsWith('seed-') ? recalled : phase.includes('manual') ? 'COMPACTED ' + recalled : 'TARGET_OK ' + recalled;
-  const count = mode === 'seed-high' ? 40000 : 20;
+  const count = mode === 'seed-high' ? 40000 : mode === 'seed-overflow' ? 60000 : 20;
   res.write('data: ' + JSON.stringify({ type: 'response.output_text.delta', delta: text }) + '\n\n');
   res.end('data: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: count, output_tokens: 10, total_tokens: count + 10 } } }) + '\n\n');
 });
@@ -145,7 +161,7 @@ async function turn(id, model, text, expected = 'completed', effort = 'low') { c
   const done = await until(() => events.slice(offset).find(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id), phase);
   assert.equal(done.params.turn.status, expected);
   return { text: events.slice(offset).filter(e => e.method === 'item/agentMessage/delta' && e.params.turnId === started.turn.id).map(e => e.params.delta).join(''), offset,
-    turnId: started.turn.id, status: done.params.turn.status };
+    turnId: started.turn.id, status: done.params.turn.status, terminal: done.params.turn };
 }
 async function manual(id, expected) { const offset = events.length; await rpc('thread/compact/start', { threadId: id });
   const started = await until(() => events.slice(offset).find(e => e.method === 'turn/started' && e.params.threadId === id), 'Manual compact turn start');
@@ -253,7 +269,12 @@ async function sharedCheck() {
   await save({ phase, passed: true, unsupportedSharedRecoveryRefused: true, noHiddenCompaction: true, proofPreserved: true });
   await closeAdapter(); await stop(host); host = undefined;
 }
+const selectedContext = { requests, events, timers, proof, steerProof, rpc, start, turn, until, save,
+  open, closeAdapter, transcriptHasProof, compactItems, selectedRequests,
+  setPhaseMode: (nextPhase, nextMode, oldModel = 'mock-large') => { phase = nextPhase; mode = nextMode; blockedModel = oldModel; },
+  releasePausedResponses: (nextMode = 'normal', oldModel = blockedModel) => { mode = nextMode; blockedModel = oldModel; for (const release of [...pausedResponses]) release(); } };
 try {
+  if (v.expect === 'selected-turn') gatewaySdkReceipt = await verifySelectedTurnRuntime(packageDirectory);
   await until(() => fetch('http://127.0.0.1:' + port + '/health').then(r => r.ok).catch(() => false), 'Fixture server');
   const cat = JSON.parse(execFileSync(gateway.endsWith('.js') ? process.execPath : gateway, [...(gateway.endsWith('.js') ? [gateway] : []), 'catalog', '--config', configPath], { env, encoding: 'utf8' }));
   await writeFile(join(home, 'models.json'), JSON.stringify({ models: [{ ...cat.models[0], slug: 'native-fixture' }] }), { mode: 0o600 });
@@ -304,6 +325,16 @@ try {
   assert.ok((await turn(reverse.thread.id, 'fixture/large', 'Switch to the larger healthy fixture.')).text.includes(proof));
   assert.ok(requests.slice(reverseAt).every(row => row.model === 'mock-large')); await save({ phase, passed: true, oldSmallProviderNotCalled: true });
   await closeAdapter();
+  } else if (v.expect === 'selected-turn') {
+    for (const transport of transports) await selectedTurnScenarios({ ...selectedContext, transport });
+    if (v.shared) {
+      host = command(['executor-host', '--config', configPath, '--codex', sdk, '--native-home', home], { cwd: work, stdio: ['ignore', 'pipe', 'ignore'] });
+      let ready = false; const lines = createInterface({ input: host.stdout });
+      lines.on('line', line => { if (JSON.parse(line).executionHome) ready = true; });
+      await until(() => ready, 'Selected-turn shared execution host'); lines.close();
+      await selectedTurnScenarios({ ...selectedContext, transport: 'stdio', label: 'shared-stdio' });
+      await stop(host); host = undefined;
+    }
   } else {
     for (const transport of transports) await automatic(transport);
     if (v.shared) await sharedCheck();
@@ -311,14 +342,16 @@ try {
   assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), originalConfig);
   assert.equal(await access(join(home, 'auth.json')).then(() => true, () => false), false);
   await save({ phase: 'verification', passed: true, expectation: v.expect, transports, actualSignedSdk: true, primaryConfigRead: false, nativeConfigIsolated: true,
-    nativeAuthCopied: false, paidInferenceRequests: 0, renderedDesktopUiTested: false, builtInCloudTransportTested: false });
+    nativeAuthCopied: false, paidInferenceRequests: 0, renderedDesktopUiTested: false, builtInCloudTransportTested: false,
+    ...(v.expect === 'selected-turn' ? { verifiedGatewaySdk: true, sameUserTurnCompaction: true } : {}) });
 } catch (error) { await save({ phase: 'verification', passed: false, failedDuring: phase, errorClass: error?.name || 'Error', code: error?.code,
   recoveryReason: error?.recoveryReason, check: error?.message?.startsWith('Expected') ? 'Assertion failed' : error?.message }); process.exitCode = 1;
 } finally {
   await Promise.allSettled([...clients].map(client => client.close()));
   const cleanup = await Promise.allSettled([...children].map(stop)); for (const timer of timers) clearTimeout(timer); timers.clear();
   upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve));
-  const clean = cleanup.every(row => row.status === 'fulfilled') && children.size === 0;
-  await save({ phase: 'fixture-cleanup', passed: clean, ownedProcessGroups: children.size, providerTimers: timers.size });
+  const clean = cleanup.every(row => row.status === 'fulfilled') && children.size === 0 && pausedResponses.size === 0;
+  await save({ phase: 'fixture-cleanup', passed: clean, ownedProcessGroups: children.size, providerTimers: timers.size,
+    ...(v.expect === 'selected-turn' ? { pausedProviderResponses: pausedResponses.size } : {}) });
   if (!clean) process.exitCode = 1;
 }

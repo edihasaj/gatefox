@@ -1,8 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, statSync, chmodSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { nativeSourceDigest } from './native-source.mjs';
+import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
+  gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
+import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256 } from './gateway-sdk-source.mjs';
 
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !process.argv.includes('--allow-dirty')) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
@@ -23,6 +26,24 @@ if (process.argv.includes('--with-native')) {
   const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
   if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74' || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
   cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
+}
+const gatewayArtifact = resolve('.state/gateway-sdk-build/artifact');
+if (process.argv.includes('--with-gateway-sdk')) {
+  const metadata = JSON.parse(readFileSync(join(gatewayArtifact, 'build.json'), 'utf8'));
+  if (metadata.schemaVersion !== 1 || metadata.version !== version || metadata.profile !== 'release' ||
+      metadata.platform !== 'darwin' || metadata.arch !== 'arm64' || metadata.codexVersion !== gatewaySdkCodexVersion ||
+      metadata.revision !== gatewaySdkRevision || metadata.archiveSha256 !== gatewaySdkArchiveSha256 ||
+      metadata.patchSha256 !== gatewaySdkPatchDigest() || metadata.lockfileRepairSha256 !== gatewaySdkLockRepairDigest() ||
+      metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.sourceSha256 !== gatewaySdkSourceDigest() ||
+      metadata.capabilities?.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability ||
+      metadata.binarySha256 !== createHash('sha256').update(readFileSync(join(gatewayArtifact, 'gateway-codex'))).digest('hex')) {
+    throw new Error('Gateway SDK artifact does not match this release source');
+  }
+  const expectedFiles = ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', 'gateway-codex'];
+  if (JSON.stringify(readdirSync(gatewayArtifact).sort()) !== JSON.stringify(expectedFiles.sort())) throw new Error('Unexpected gateway SDK artifact files');
+  cpSync(gatewayArtifact, join(directory, 'package/gateway-sdk'), { recursive: true });
+} else if (existsSync(join(directory, 'package/gateway-sdk'))) {
+  throw new Error('Release stage already contains a gateway SDK; select --with-gateway-sdk or use a fresh stage');
 }
 writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }, null, 2));
 const files = [];

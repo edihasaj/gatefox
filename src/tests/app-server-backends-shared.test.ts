@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -10,10 +10,13 @@ import { startExecutionHost, executionHostHome } from "../execution-host.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import type { Message } from "../app-server-connection.js";
 import type { GatewayConfig } from "../config.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { spawn } from "node:child_process";
+import { SharedNativeConnection } from "../shared-native-connection.js";
 
 const alias = "claude/fixture";
 type FeatureVariant = "legacy" | "canonical";
-async function fixture(featureVariant?: FeatureVariant, priority?: boolean) {
+async function fixture(featureVariant?: FeatureVariant, priority?: boolean, sharedNative = false) {
   const directory = await mkdtemp(join(tmpdir(), "gw-backends-"));
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   const nativeConfig = 'model = "native-original"\n' + (priority === undefined ? "" : "[features]\nfast_mode = false\n");
@@ -25,7 +28,7 @@ import {readFileSync,writeFileSync,existsSync,chmodSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)};
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
-const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const loaded=new Set();
+const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const loaded=new Set();const turns=new Map();
 const cliFeatures={};for(let i=0;i<args.length;i++)if(args[i]==='-c'){const value=args[++i];const equal=value.indexOf('=');const key=value.slice(0,equal);if(key.startsWith('features.')){try{cliFeatures[key]=JSON.parse(value.slice(equal+1));}catch{}}}
 for(let i=0;i<args.length;i++){const arg=args[i];if((arg==='--enable'||arg==='--disable')&&args[i+1]==='fast_mode'){cliFeatures['features.fast_mode']=arg==='--enable';i++;}else if(arg==='--enable=fast_mode'||arg==='--disable=fast_mode')cliFeatures['features.fast_mode']=arg.startsWith('--enable');}
 function metadata(){return existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};}
@@ -33,7 +36,9 @@ async function rpc(m,send,drop){if(m.id==null)return;let result={};
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
 if(m.method==='fixture/features')result={cliFeatures};
 if(m.method==='turn/start')result={wireServiceTier:cliFeatures['features.fast_mode']===false?null:m.params.serviceTier??null,effort:m.params.effort,approvalPolicy:m.params.approvalPolicy,sandboxPolicy:m.params.sandboxPolicy};
-if(m.method==='thread/read')result={thread:metadata()[m.params.threadId]||{id:m.params.threadId,modelProvider:'openai'}};
+if(m.method==='turn/start'&&m.params.fixtureActive){const turn={id:'fixture-active-turn',status:'inProgress'};turns.set(m.params.threadId,turn);result.turn=turn;send({method:'turn/started',params:{threadId:m.params.threadId,turn}});}
+if(m.method==='turn/interrupt'){const turn=turns.get(m.params.threadId);if(turn?.id!==m.params.turnId){send({id:m.id,error:{code:-32600,message:'Wrong active fixture turn'}});return;}turn.status='interrupted';send({method:'turn/completed',params:{threadId:m.params.threadId,turn}});}
+if(m.method==='thread/read'){const thread=metadata()[m.params.threadId];const live=listen.startsWith('unix://')&&loaded.has(m.params.threadId);const turn=turns.get(m.params.threadId);result={executorPid:process.pid,thread:thread?{...thread,status:live?{type:turn?.status==='inProgress'?'active':'idle',activeFlags:[]}:{type:'notLoaded'},turns:live?(turn?[turn]:[]):[{id:'stale-file-turn',status:'interrupted'}]}:{id:m.params.threadId,modelProvider:'openai'}};}
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'){
 if(m.params.delayMs)await new Promise(r=>setTimeout(r,m.params.delayMs));
@@ -56,11 +61,22 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
   const host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk });
+  const nativeSocket = join(directory, "original-native.sock");
+  const nativeOwner = sharedNative ? spawn(sdk, ["app-server", "--listen", "unix://" + nativeSocket, "--fixture-root", directory], { stdio: "ignore" }) : undefined;
+  const nativeOwnerExited = nativeOwner && new Promise<void>(resolve => nativeOwner.once("close", () => resolve()));
+  if (nativeOwner) {
+    for (let attempt = 0; ; attempt++) {
+      if (await access(nativeSocket).then(() => true, () => false)) break;
+      if (attempt >= 200) throw new Error("Shared native fixture socket did not start");
+      await delay(5);
+    }
+  }
   const control = new SocketAppServerConnection(join(executionHostHome(configPath, nativeHome), "host.sock"), async () => {}); await control.ready;
   let generation = 0;
   const snapshot = () => ({ revision: String(generation).repeat(64), models: [{ slug: alias, display_name: "Fixture " + generation, ...(priority ? { service_tiers: [{ id: "priority", name: "Fast", description: "Priority route" }], default_service_tier: null } : {}) }] });
   const catalog = { current: snapshot, refresh: async () => snapshot(), combined: (value: ReturnType<typeof snapshot>) => ({ models: value.models }) } as unknown as DesktopCatalog;
   const events: Message[] = [];
+  let nativeExits = 0;
   const adapters = new Set<AppServerBackends>();
   const createBackend = (reverse = false, variant = featureVariant) => {
     const entries: [string, unknown][] = [["agents", { max_concurrent_threads_per_session: 30 }], ["web_search", "disabled"], ["sandbox_mode", "read-only"]];
@@ -73,15 +89,16 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
     }
     const settings = Object.fromEntries(reverse ? entries.reverse() : entries);
     if (priority !== undefined) { settings.features = { ...(settings.features as Message || {}), fast_mode: false }; featureArgs.push("-c", "features.fast_mode=false", "--disable=fast_mode"); }
-    const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs], config, settings, {}, catalog, async message => { events.push(message); }, () => {}, configPath);
+    const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs], config, settings, {}, catalog, async message => { events.push(message); }, () => { nativeExits++; }, configPath,
+      sharedNative ? (_args, onMessage, onExit) => new SharedNativeConnection(nativeSocket, onMessage, onExit) : undefined);
     adapters.add(adapter); return adapter;
   };
   const backends = createBackend();
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
-  return { config, directory, nativeHome, nativeConfig, backends, control, events, next: () => { generation++; },
+  return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; },
     async another(variant?: FeatureVariant) { const adapter = createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
-    async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
+    async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); nativeOwner?.kill("SIGTERM"); await nativeOwnerExited; process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
   };
 }
 
@@ -95,6 +112,85 @@ test("adapter releases a closed chat's generation before acquiring a fifth catal
     const status = await f.control.request("execution/status", {}); assert.equal((status.generations as unknown[]).length, 4);
     assert.deepEqual(await f.control.request("execution/find", { threadId: "chat-0" }), { found: false });
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
+  } finally { await f.clean(); }
+});
+
+test("a second adapter reads and stops a shared active gateway chat before consulting stale native metadata", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    const started = await f.start("shared-active-chat");
+    const turn = (await f.backends.request("turn/start", { threadId: "shared-active-chat", fixtureActive: true })).turn as Message;
+    const second = await f.another();
+    const stale = await second.native.request("thread/read", { threadId: "shared-active-chat", includeTurns: true });
+    assert.equal(((stale.thread as Message).status as Message).type, "notLoaded");
+    assert.equal((((stale.thread as Message).turns as Message[])[0]).status, "interrupted");
+    const live = await second.request("thread/read", { threadId: "shared-active-chat", includeTurns: true });
+    assert.equal(live.executorPid, started.executorPid); assert.equal(((live.thread as Message).status as Message).type, "active");
+    assert.equal((((live.thread as Message).turns as Message[])[0]).id, turn.id);
+    await second.request("turn/interrupt", { threadId: "shared-active-chat", turnId: turn.id });
+    const stopped = await second.request("thread/read", { threadId: "shared-active-chat", includeTurns: true });
+    assert.equal(stopped.executorPid, started.executorPid); assert.equal((((stopped.thread as Message).turns as Message[])[0]).status, "interrupted");
+    const unknown = await second.request("thread/read", { threadId: "ordinary-native-chat" });
+    assert.notEqual(unknown.executorPid, started.executorPid); assert.equal((unknown.thread as Message).modelProvider, "openai");
+    assert.equal(((await f.control.request("execution/status", {})).generations as Message[]).length, 1);
+  } finally { await f.clean(); }
+});
+
+test("shared gateway socket loss leaves legacy native work alive and never invents gateway completion", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    const started = await f.start("shared-loss-chat");
+    await f.backends.request("turn/start", { threadId: "shared-loss-chat", fixtureActive: true });
+    await assert.rejects(f.backends.request("fixture/disconnect", { threadId: "shared-loss-chat" }), /socket closed/);
+    for (let attempt = 0; attempt < 100 && !f.events.some(message => message.method === "error"); attempt++) await delay(5);
+    assert.equal(f.events.some(message => message.method === "error"), true);
+    assert.equal(f.events.some(message => message.method === "turn/completed"), false);
+    assert.equal(f.nativeExits(), 0); assert.equal(f.backends.native.closed, false);
+    await f.backends.native.request("fixture/features", {});
+    const second = await f.another(); const live = await second.request("thread/read", { threadId: "shared-loss-chat", includeTurns: true });
+    assert.equal(live.executorPid, started.executorPid); assert.equal(((live.thread as Message).status as Message).type, "active");
+  } finally { await f.clean(); }
+});
+
+test("intentional idle gateway retirement keeps a shared-native frontend connected", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, true);
+  try {
+    const first = await f.start("retired-idle-chat"); await f.backends.request("thread/unsubscribe", { threadId: "retired-idle-chat" });
+    f.next(); const second = await f.start("new-catalog-chat"); await delay(20);
+    assert.notEqual(second.executorPid, first.executorPid); assert.equal(f.nativeExits(), 0);
+    assert.equal(f.backends.native.closed, false); await f.backends.native.request("fixture/features", {});
+  } finally { await f.clean(); }
+});
+
+test("unexpected shared gateway loss closes only frontend transport when native also is shared", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, true);
+  try {
+    const started = await f.start("both-shared-loss-chat"); await f.backends.request("turn/start", { threadId: "both-shared-loss-chat", fixtureActive: true });
+    await assert.rejects(f.backends.request("fixture/disconnect", { threadId: "both-shared-loss-chat" }), /socket closed/);
+    for (let attempt = 0; attempt < 100 && !f.nativeExits(); attempt++) await delay(5);
+    assert.equal(f.nativeExits(), 1); assert.equal(f.backends.native.closed, false);
+    assert.equal(f.events.some(message => message.method === "error" || message.method === "turn/completed"), false);
+    await f.backends.native.request("fixture/features", {});
+    const second = await f.another(); const live = await second.request("thread/read", { threadId: "both-shared-loss-chat", includeTurns: true });
+    assert.equal(live.executorPid, started.executorPid); assert.equal(((live.thread as Message).status as Message).type, "active");
+  } finally { await f.clean(); }
+});
+
+test("gateway ownership lookup outage preserves verified native reads and fails closed for gateway history", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("gateway-lookup-outage"); const second = await f.another(); await f.control.request("execution/find", { threadId: "gateway-lookup-outage" });
+    await f.control.request("execution/release", { revision: (await f.control.request("execution/find", { threadId: "gateway-lookup-outage" })).revision });
+    // Fresh discovery cannot use this isolated coordinator; native children stay alive.
+    const state = second as unknown as { pool: () => Promise<unknown> }; await state.pool();
+    const ownerPath = join(executionHostHome(join(f.directory, "gateway.json"), f.nativeHome), "owner.json");
+    const owner = JSON.parse(await readFile(ownerPath, "utf8")); await writeFile(ownerPath, JSON.stringify({ ...owner, state: "stopped" }), { mode: 0o600 });
+    // An already-open control connection can still respond; force rediscovery.
+    const holder = second as unknown as { poolPending?: Promise<{ close(): void }> }; (await holder.poolPending)?.close(); await delay(5);
+    const native = await second.request("thread/read", { threadId: "ordinary-native-chat" }); assert.equal((native.thread as Message).modelProvider, "openai");
+    await assert.rejects(second.request("thread/read", { threadId: "gateway-lookup-outage" }), /unavailable/);
+    assert.equal(second.native.closed, false);
+    await writeFile(ownerPath, JSON.stringify(owner), { mode: 0o600 });
   } finally { await f.clean(); }
 });
 

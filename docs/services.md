@@ -168,3 +168,50 @@ gateway executor-host --config /absolute/test/gateway.json \
 
 The command requires both explicit paths and the pinned SDK version. Ctrl-C stops
 its owned host and workers. Use the unified service for normal desktop work.
+
+# Shared native session ownership
+
+Native sharing has a separate `sharedNativeExecutor` setting. It does not enable
+`sharedExecutors` for gateway chats. One original signed SDK owns the original
+native home, while local and connected-machine adapters attach as independent
+Unix clients. A second client can read the actual running turn and Stop it,
+rather than reading a saved rollout through an unrelated SDK process.
+
+Preview and apply migration through the existing unified service:
+
+```sh
+gateway service shared-native
+gateway service shared-native --apply
+```
+
+Migration requires the existing native relay registration. A desktop-only plan
+cannot take over the primary app's remote registration through this command.
+Finish local and remote work, close the app normally on the execution machine,
+and close remaining connections. The migration refuses pending startup cleanup,
+an unrelated LaunchAgent, or any remaining native or gateway writer. It verifies
+the actual OpenAI-signed Mach-O before changing the service plan. Authentication,
+native configuration, registration IDs, and saved chats stay in their original
+locations. No additional LaunchAgent is installed.
+
+The SDK starts lazily from a real adapter's compatible process arguments. The
+host uses the native home's parent as its stable launch directory; a new chat
+without an explicit workspace keeps the requesting client's original directory.
+Resume and fork preserve the saved workspace. Different process profiles or
+configuration arguments are refused instead of creating a second native owner.
+Administrative reads use short-lived, non-originating SDK connections and never
+answer frontend approvals. Identical pending approvals replay with their original
+mapped client ID after resume.
+
+A client disconnect leaves the SDK running. Confirmed SDK death has an exact
+launch identity and can report failure for real unfinished turns; losing only a
+socket does not prove a turn failed. A subsequent compatible acquisition can
+recover a proven dead SDK under the same native-home ownership lease. Lost work
+requires an explicit retry from saved history. Unknown or live socket ownership
+blocks recovery. Idle service restart checks native leases and SDK-loaded chats
+as well as gateway work. Rollback proves both host and native-home ownership
+receipts stopped before restoring legacy writers.
+
+The pinned SDK's Unix transport lacks its local-stdio biometric capability.
+Clients receive the SDK's actual capabilities, and the adapter does not bypass
+that restriction. Unix ownership tests do not establish every rendered desktop
+control or the built-in cloud connection.

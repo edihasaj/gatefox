@@ -12,7 +12,7 @@ export interface ServiceComponent {
   environment?: Record<string, string>;
   log: string;
 }
-export interface ServicePlan { version: 1; config: string; components: ServiceComponent[]; sharedExecutors?: boolean }
+export interface ServicePlan { version: 1; config: string; components: ServiceComponent[]; sharedExecutors?: boolean; sharedNativeExecutor?: boolean }
 export const servicePlanPath = (state: string) => resolve(state, "service-plan.json");
 export const serviceStatusPath = (state: string) => resolve(state, "service-status.json");
 
@@ -20,6 +20,7 @@ export function validateServicePlan(value: unknown): ServicePlan {
   const plan = value as ServicePlan;
   if (!plan || plan.version !== 1 || typeof plan.config !== "string" || !isAbsolute(plan.config) || !Array.isArray(plan.components) || !plan.components.length || plan.components.length > 16) throw new Error("Invalid gateway service plan");
   if (plan.sharedExecutors !== undefined && typeof plan.sharedExecutors !== "boolean") throw new Error("sharedExecutors must be boolean");
+  if (plan.sharedNativeExecutor !== undefined && typeof plan.sharedNativeExecutor !== "boolean") throw new Error("sharedNativeExecutor must be boolean");
   const ids = new Set<string>(); const singles = new Set<string>();
   for (const component of plan.components) {
     if (!component || !/^[a-z][a-z0-9-]{0,63}$/.test(component.id) || ids.has(component.id) || !["inference", "desktop", "native", "tunnel"].includes(component.kind)) throw new Error("Invalid or duplicate service component");
@@ -30,7 +31,20 @@ export function validateServicePlan(value: unknown): ServicePlan {
     if (component.environment && (typeof component.environment !== "object" || Array.isArray(component.environment) || Object.entries(component.environment).some(([key, val]) => !["PATH", "SSH_AUTH_SOCK"].includes(key) || typeof val !== "string" || /[\0\r\n]/.test(val)))) throw new Error("Service plans allow only PATH and SSH_AUTH_SOCK environment overrides");
   }
   if (plan.sharedExecutors) serviceExecutionPaths(plan);
+  if (plan.sharedNativeExecutor) serviceNativeExecutionPaths(plan);
   return plan;
+}
+
+/** Native ownership requires this installation's existing remote relay registration. */
+export function serviceNativeExecutionPaths(plan: ServicePlan): { codex: string; nativeHome: string } {
+  const native = plan.components.find(component => component.kind === "native");
+  if (!native) throw new Error("Shared native ownership requires an existing native relay; the desktop-only machine was preserved");
+  const positions = native.args.flatMap((arg, index) => arg === "--relay-home" ? [index] : []);
+  const relayHome = native.args[positions[0] + 1];
+  if (!native.args.includes("--daemon") || positions.length !== 1 || typeof relayHome !== "string" || !isAbsolute(relayHome) || relayHome.includes("\0")) {
+    throw new Error("Shared native ownership requires the existing daemon relay and one absolute --relay-home");
+  }
+  return serviceExecutionPaths(plan);
 }
 
 /** Reuse the SDK and native home already selected by this installation. */

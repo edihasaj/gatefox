@@ -64,6 +64,29 @@ The relay's source digest, package version, pinned SDK revision, and release
 profile must match the archive. Verify the original machine registration and
 model picker before publishing. See [native transport checks](native-remote.md).
 
+Gateway executors can use a separately compiled SDK with selected-model compaction.
+Build and test it from the checksum-pinned upstream archive:
+
+```sh
+node scripts/build-gateway-sdk.mjs --test
+node scripts/build-gateway-sdk.mjs
+node scripts/build-release.mjs --with-native --with-gateway-sdk
+```
+
+The gateway SDK has its own executable, licenses, dependency inventory, and build
+receipt. The release builder verifies its version, SDK revision, archive and patch
+digests, source digest, binary checksum, and capability. It refuses modified cached
+SDK source or unexpected artifact files. The native signed Codex executable and
+desktop bundle remain unchanged. Only a verified gateway executable can enable
+the selected-model compaction capability; older installations retain their existing
+fallback behavior. Run the real SDK mock cases and gateway continuation checks
+before publishing a release with this capability.
+The upstream release archive declares workspace version `0.162.0-alpha.17.2`
+while its lockfile retains `0.0.0`. A guarded helper repairs exactly those 161
+source-less workspace versions. All external package versions, sources, checksums,
+and dependency blocks remain byte-identical. The repaired lockfile and helper are
+hashed in the receipt; Cargo tests and builds still use `--locked`.
+
 # Upgrade and recovery
 
 The installer verifies file checksums before changing the current release link.

@@ -4,22 +4,25 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { type GatewayConfig, writePrivateJson } from "./config.js";
-import { object, isId, type Message } from "./app-server-connection.js";
+import { object, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
+import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 
-export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; agentsDirectory?: string }
-export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[] }
+export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; agentsDirectory?: string; gatewaySdkSha256?: string }
+export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
 export function executionDescriptor(value: unknown): ExecutionDescriptor {
   const input = object(value); const catalog = object(input.catalog);
   if (typeof input.revision !== "string" || !/^[a-f0-9]{64}$/.test(input.revision) || !Array.isArray(input.args) || input.args.length > 256 || !input.args.every(arg => typeof arg === "string" && !arg.includes("\0") && Buffer.byteLength(arg) < 65536)
     || !input.args.includes("app-server") || input.args.includes("proxy") || !input.settings || Array.isArray(input.settings) || typeof input.settings !== "object"
     || !Array.isArray(catalog.models) || !catalog.models.length || catalog.models.length > 256 || catalog.models.some(model => !model || typeof model !== "object" || Array.isArray(model))
     || !Array.isArray(input.aliases) || !input.aliases.length || input.aliases.length > 256 || input.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024 || alias.includes("\0")) || new Set(input.aliases).size !== input.aliases.length
-    || (input.agentsDirectory !== undefined && (typeof input.agentsDirectory !== "string" || !input.agentsDirectory.startsWith("/") || input.agentsDirectory.includes("\0")))) throw new Error("Invalid execution generation descriptor");
-  const descriptor = { revision: input.revision, args: input.args, settings: input.settings, catalog: { models: catalog.models }, aliases: input.aliases, ...(input.agentsDirectory ? { agentsDirectory: input.agentsDirectory } : {}) } as ExecutionDescriptor;
+    || (input.agentsDirectory !== undefined && (typeof input.agentsDirectory !== "string" || !input.agentsDirectory.startsWith("/") || input.agentsDirectory.includes("\0")))
+    || (input.gatewaySdkSha256 !== undefined && (typeof input.gatewaySdkSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.gatewaySdkSha256)))) throw new Error("Invalid execution generation descriptor");
+  const descriptor = { revision: input.revision, args: input.args, settings: input.settings, catalog: { models: catalog.models }, aliases: input.aliases,
+    ...(input.agentsDirectory ? { agentsDirectory: input.agentsDirectory } : {}), ...(input.gatewaySdkSha256 ? { gatewaySdkSha256: input.gatewaySdkSha256 } : {}) } as ExecutionDescriptor;
   if (Buffer.byteLength(JSON.stringify(descriptor)) > 4 * 1024 * 1024) throw new Error("Execution descriptor exceeds 4 MiB");
   return descriptor;
 }
@@ -55,6 +58,7 @@ export async function validateExecutionSdk(codex: string): Promise<void> {
 export class ExecutionEngine {
   private child?: ChildProcess;
   private admin?: SocketAppServerConnection;
+  private adminProbe?: Promise<Set<string>>;
   private exited: Promise<void> = Promise.resolve();
   private stopped = false;
   private stopDone?: Promise<void>;
@@ -69,6 +73,9 @@ export class ExecutionEngine {
   }
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
     const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
+    const runtime = descriptor.gatewaySdkSha256 ? await gatewaySdkRuntime() : undefined;
+    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    if (runtime) this.record.selectedModelCompaction = true;
     await privateDirectory(directory);
     const metadata = resolve(directory, "execution-generation.json");
     const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: this.identity.sdkSha256 };
@@ -87,7 +94,7 @@ export class ExecutionEngine {
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
-    const child = spawn(this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
+    const child = spawn(runtime?.executable || this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
     this.child = child;
     this.exited = new Promise(resolve => {
       child.once("error", () => { this.closed = true; });
@@ -109,30 +116,38 @@ export class ExecutionEngine {
       if (Date.now() >= deadline) throw new Error("Execution SDK socket startup timed out");
       await delay(25);
     }
-    const admin = new SocketAppServerConnection(this.record.socketPath, async message => {
-      // The administrative connection never subscribes to chat tools or approvals.
-      if (isId(message.id)) admin.send({ id: message.id, error: { code: -32601, message: "Execution administration does not handle server requests" } });
-    }); this.admin = admin;
-    await admin.ready;
-    let timeout: NodeJS.Timeout | undefined;
-    try {
-      await Promise.race([admin.request("initialize", { clientInfo: { name: "subscription-gateway-execution-host", version: "1" }, capabilities: { experimentalApi: true } }), new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("Execution SDK initialization timed out")), 10000).unref(); })]);
-    } finally { clearTimeout(timeout); }
-    admin.send({ method: "initialized", params: {} });
+    await this.loadedThreads();
   }
   async loadedThreads(): Promise<Set<string>> {
     if (this.closed) return new Set();
-    if (!this.admin || this.admin.closed) throw new Error("Execution generation administration is unavailable; loaded chats were preserved");
-    const threads = new Set<string>(); const cursors = new Set<string>(); let cursor: string | undefined;
-    for (let page = 0; page < 128; page++) {
-      const result = await this.admin.request("thread/loaded/list", { limit: 100, ...(cursor ? { cursor } : {}) });
-      if (!Array.isArray(result.data) || result.data.some(id => typeof id !== "string")) throw new Error("Execution SDK returned invalid loaded-chat metadata");
-      for (const id of result.data) threads.add(id as string);
-      if (result.nextCursor == null) return threads;
-      if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor)) throw new Error("Execution SDK returned invalid loaded-chat pagination");
-      cursor = result.nextCursor; cursors.add(cursor);
+    if (this.stopped) throw new Error("Execution host is closing");
+    return this.adminProbe ||= this.inspectLoadedThreads().finally(() => { this.adminProbe = undefined; });
+  }
+  private async inspectLoadedThreads(): Promise<Set<string>> {
+    // The SDK can auto-subscribe initialized clients to broadcast-created chats.
+    // Probe transiently; never answer callbacks because ordinary first response wins.
+    const admin = new SocketAppServerConnection(this.record.socketPath, async () => {}); this.admin = admin;
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([(async () => {
+        await admin.ready;
+        await admin.request("initialize", { clientInfo: { name: "codex_app_server_daemon", version: "1" }, capabilities: { experimentalApi: true } });
+        admin.send({ method: "initialized", params: {} });
+        const threads = new Set<string>(); const cursors = new Set<string>(); let cursor: string | undefined;
+        for (let page = 0; page < 128; page++) {
+          const result = await admin.request("thread/loaded/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+          if (!Array.isArray(result.data) || result.data.some(id => typeof id !== "string")) throw new Error("Execution SDK returned invalid loaded-chat metadata");
+          for (const id of result.data) threads.add(id as string);
+          if (result.nextCursor == null) return threads;
+          if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor)) throw new Error("Execution SDK returned invalid loaded-chat pagination");
+          cursor = result.nextCursor; cursors.add(cursor);
+        }
+        throw new Error("Execution SDK loaded-chat pagination exceeded its bound");
+      })(), new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error("Execution SDK loaded-chat inspection timed out")), 10000).unref(); })]);
+    } finally {
+      clearTimeout(timeout); admin.stop(); await admin.exited;
+      if (this.admin === admin) this.admin = undefined;
     }
-    throw new Error("Execution SDK loaded-chat pagination exceeded its bound");
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopOwned(); }
   private async stopOwned(): Promise<void> {
@@ -141,6 +156,7 @@ export class ExecutionEngine {
     if (!this.closed) this.child?.kill("SIGKILL");
     await Promise.race([this.exited, delay(1000)]);
     if (this.child && !this.closed) throw new Error("Execution SDK did not stop; ownership was preserved");
+    await this.adminProbe?.catch(() => {});
     if (this.owner.socket) await removeOwnedSocket(this.record.socketPath, this.owner.socket);
   }
 }

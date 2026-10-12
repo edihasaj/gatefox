@@ -6,11 +6,14 @@ import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
 import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
-import { claimHost, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketIdentity, type HostOwner } from "./execution-host-storage.js";
+import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
+import { NativeExecutionEngine, nativeDescriptor, nativeDescriptorFingerprint, type NativeExecutionRecord } from "./native-execution-host-engine.js";
+import { claimNativeHome, type NativeHomeLease } from "./native-execution-host-storage.js";
+import { verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
-export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string }
+export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier }
 const maxFrame = 4 * 1024 * 1024;
 
 /** One owned SDK writer per gateway generation, independent of adapter clients. */
@@ -18,15 +21,23 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
   const sdk = await sdkIdentity(options.codex); await validateExecutionSdk(sdk.codex);
-  const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath });
+  const capabilities = executionCapabilities(options.capabilities);
+  const nativeSdk = capabilities.includes("native") ? await (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex) : {};
+  if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !capabilities.includes("native")) throw new Error("Execution host native relay ownership is invalid");
+  const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath,
+    capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration: options.nativeRelayOwnsRegistration === true } : {}) });
+  let native: NativeExecutionEngine | undefined; let nativeLease: NativeHomeLease | undefined;
   const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
   let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let pending = 0;
   const publish = () => {
-    const snapshot: HostOwner = { ...owner, generations: [...engines.values()].map(engine => ({ ...engine.owner })) };
-    writes = writes.catch(() => undefined).then(() => publishOwner(home, snapshot)); return writes;
+    if (native?.death && !owner.nativeDeaths?.some(death => death.instanceId === native!.death!.instanceId)) owner.nativeDeaths = [...(owner.nativeDeaths || []), native.death].slice(-32);
+    const snapshot: HostOwner = { ...owner, generations: [...engines.values()].map(engine => ({ ...engine.owner })), ...(native ? { native: { ...native.owner } } : {}) };
+    const sdkState = native ? native.closed ? "exited" : native.owner.pid > 0 ? "running" : "starting" : "idle";
+    writes = writes.catch(() => undefined).then(async () => { await nativeLease?.publish(snapshot.native, snapshot.state === "stopped", sdkState); await publishOwner(home, snapshot); }); return writes;
   };
   const remove = async (engine: ExecutionEngine) => { await engine.stop(); engines.delete(engine.record.revision); await publish(); };
   const acquire = async (params: Message): Promise<ExecutionRecord> => {
+    if (!capabilities.includes("gateway")) throw new Error("Execution host does not offer gateway ownership");
     const descriptor = executionDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
     const existing = engines.get(descriptor.revision);
     if (existing && !existing.closed) {
@@ -43,15 +54,45 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); throw error; }
   };
+  const acquireNative = async (params: Message): Promise<NativeExecutionRecord> => {
+    if (!capabilities.includes("native") || !nativeLease) throw new Error("Execution host does not offer native ownership");
+    const descriptor = nativeDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
+    if (native) {
+      if (native.fingerprint !== nativeDescriptorFingerprint(descriptor)) throw new Error("Native execution startup settings differ; existing ownership was preserved");
+      if (!native.closed) return { ...native.record };
+      // Only confirmed process death permits replacement. Socket disconnect is
+      // never sufficient, and stop validates/removes only its own dead socket.
+      if (!native.death) throw new Error("Native execution launch is unconfirmed; existing ownership was preserved");
+      await native.stop();
+    }
+    if (stopping) throw new Error("Execution host is closing");
+    native = new NativeExecutionEngine(descriptor, owner, home, options.nativeRelayOwnsRegistration === true);
+    // Persist launch intent before spawn: a killed host cannot claim an unknown
+    // child was never started merely because its PID publication was interrupted.
+    try { await publish(); await native.start(publish); await publish(); return { ...native.record }; }
+    catch (error) { await native.stop(); await publish(); throw error; }
+  };
   const dispatch = async (method: string, params: Message, held: Set<string>): Promise<unknown> => {
     if (stopping) throw new Error("Execution host is closing");
-    if (quiescing && ["execution/acquire", "execution/find"].includes(method)) throw new Error("Execution host is quiescing for an idle restart");
+    if (quiescing && ["execution/acquire", "execution/find", "native/acquire"].includes(method)) throw new Error("Execution host is quiescing for an idle restart");
     if (method === "execution/acquire") return acquire(params);
+    if (method === "native/acquire") return acquireNative(params);
+    if (method === "native/death") {
+      if (typeof params.revision !== "string" || !/^[a-f0-9]{64}$/.test(params.revision) || !Number.isSafeInteger(params.pid) || Number(params.pid) < 1 ||
+        typeof params.instanceId !== "string" || !/^[a-f0-9-]{36}$/.test(params.instanceId)) throw new Error("Invalid native execution death lookup");
+      const death = owner.nativeDeaths?.find(value => value.pid === params.pid && value.revision === params.revision && value.instanceId === params.instanceId);
+      return { confirmed: !!death, ...(death ? { exitedAtMs: death.exitedAtMs, intentional: death.intentional } : {}) };
+    }
+    if (method === "native/release") {
+      if (typeof params.revision !== "string" || !/^[a-f0-9]{64}$/.test(params.revision)) throw new Error("Invalid native execution release");
+      return { released: held.delete(`native:${params.revision}`) };
+    }
     if (method === "execution/release") {
       if (typeof params.revision !== "string" || !/^[a-f0-9]{64}$/.test(params.revision)) throw new Error("Invalid execution generation release");
       return { released: held.delete(params.revision) };
     }
     if (method === "execution/find") {
+      if (!capabilities.includes("gateway")) throw new Error("Execution host does not offer gateway ownership");
       if (typeof params.threadId !== "string" || !params.threadId || params.threadId.length > 128) throw new Error("Invalid loaded-chat lookup");
       let record: ExecutionRecord | null = null;
       for (const engine of engines.values()) if ((await engine.loadedThreads()).has(params.threadId)) {
@@ -60,7 +101,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       }
       return record ?? { found: false };
     }
-    if (method === "execution/status") return { version: 1, pid: process.pid, quiescing, generations: [...engines.values()].map(engine => ({ ...engine.record, pid: engine.owner.pid, state: engine.closed ? "exited" : "running" })) };
+    if (method === "execution/status") return { version: 1, pid: process.pid, quiescing, capabilities,
+      native: native ? { ...native.record, state: native.closed ? "exited" : "running" } : null,
+      generations: [...engines.values()].map(engine => ({ ...engine.record, pid: engine.owner.pid, state: engine.closed ? "exited" : "running" })) };
     throw new Error("Unknown execution host method");
   };
   const server = createServer((_req, response) => { response.writeHead(404); response.end(); });
@@ -80,10 +123,11 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         const operation = serial.then(async () => {
           const result = await dispatch(message.method as string, object(message.params), held);
           if (["execution/acquire", "execution/find"].includes(message.method as string) && typeof object(result).revision === "string") held.add((result as ExecutionRecord).revision);
+          if (message.method === "native/acquire") held.add(`native:${(result as NativeExecutionRecord).revision}`);
           return result;
         });
         serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host is (closing|quiescing)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch is unconfirmed|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -98,7 +142,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       if (stopping) return false;
       if (quiescing) return true;
       if ([...leases.values()].some(held => held.size)) return false;
-      try { for (const engine of engines.values()) if ((await engine.loadedThreads()).size) return false; }
+      try { if (native && (await native.loadedThreads()).size) return false; for (const engine of engines.values()) if ((await engine.loadedThreads()).size) return false; }
       catch { return false; }
       // All queued acquires/finds execute after this gate closes; no owner can
       // appear between this idle check and the supervisor's inference guard.
@@ -110,13 +154,14 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     stopping = true; for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
-    const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()));
+    const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
     engines.clear(); await removeOwnedSocket(socketPath, owner.socket);
     owner.pid = 0; owner.state = "stopped"; await publish();
   })();
   try {
+    if (capabilities.includes("native")) nativeLease = await claimNativeHome(owner, home);
     // Codex sandboxes always hide this SDK-reserved physical directory, including
     // access through links. The generation-control API must share that boundary.
     const physicalPath = await sdkSocketTarget(socketPath);

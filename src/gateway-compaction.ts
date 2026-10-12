@@ -12,6 +12,8 @@ export interface GatewayCompactionOptions {
   args: string[];
   aliases: ReadonlySet<string>;
   shared?: boolean;
+  /** A verified gateway-only SDK compacts within the caller's original turn. */
+  selectedModelCompaction?: boolean;
   isActive: (threadId: string) => boolean;
   request: (method: string, params: Message) => Promise<Message>;
 }
@@ -65,6 +67,9 @@ export class GatewayCompactionSession {
   }
 
   async before(method: string, params: Message): Promise<{ intercepted: boolean; result?: Message }> {
+    // The patched core uses its own current token estimate and selected turn
+    // context. Sending a separate compact turn here breaks desktop association.
+    if (this.options.selectedModelCompaction) return { intercepted: false };
     const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
     if (!threadId) return { intercepted: false };
     if (method === "turn/interrupt") {
