@@ -25,6 +25,16 @@ therefore retain each binding. Replayed call/result names use those same native
 names without altering arguments, IDs, results, or message content. Native tool
 events can also use an exact caller alias or an unambiguous caller-local name;
 ambiguous names, stale numeric aliases, and foreign tools are rejected.
+Native Claude `assistant.error` discriminants identify subscription rate limits,
+authentication, billing, and server failures before an opaque result is handled.
+In particular, `is_error: true` with `subtype: success` is not successful inference.
+Rate limits produce a clear usage-limit failure and are not retried or routed to
+another account automatically. Unknown result subtypes remain bounded diagnostic
+metadata; private error text is never returned or logged.
+The native `rate_limit_event` supplies the affected five-hour or weekly window
+and reset timestamp. A rate-limit failure includes that provider-reported time
+in the inference host's local timezone and UTC. Missing metadata remains unknown;
+the gateway does not guess a reset or retry across a subscription limit.
 
 Replayed reasoning summaries are treated as text. Encrypted reasoning transport
 state is not exposed to the Claude model. Hosted tools are outside

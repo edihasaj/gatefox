@@ -60,9 +60,10 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (input.abortCause === "timeout" || input.abortCause === "cancelled") result.abortCause = input.abortCause;
   const upstream = input.failure.upstream;
   if (upstream) {
-    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool", "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing"]);
+    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool", "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing"]);
     if (codes.has(upstream.code || "")) result.upstreamCode = upstream.code!;
-    if (["error", "response.failed", "response.incomplete", "unknown", "http", "claude.tool_use", "claude.result"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
+    if (["error", "response.failed", "response.incomplete", "unknown", "http", "claude.tool_use", "claude.assistant", "claude.result"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
+    if (["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(upstream.subtype || "")) result.upstreamSubtype = upstream.subtype!;
     if (upstream.requestId && /^[a-z0-9_-]{1,128}$/i.test(upstream.requestId)) result.upstreamRequestId = upstream.requestId;
   }
   return result;

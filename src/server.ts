@@ -14,6 +14,8 @@ import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic } from "./provider-failure.js";
 import { Admission } from "./admission.js";
+import { ProviderUsageStore } from "./provider-usage.js";
+import type { ClaudeLimit } from "./providers/claude-usage.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -21,8 +23,8 @@ const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<v
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
   if (!res.writableNeedDrain || res.destroyed || signal.aborted) finished();
 });
-export function createProvider(config: ProviderConfig): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>): Provider {
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;
@@ -43,8 +45,9 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
   const token = await gatewayToken(config.stateDirectory);
+  const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
-    const adapter = factory(provider);
+    const adapter = factory(provider, limit => providerUsage.record(provider, limit));
     return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const);
   }));
   let current = config; let routes = buildRoutes(config);
@@ -74,6 +77,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     catch { send(res, 503, { error: { code: "configuration_error", message: "Gateway configuration is invalid; fix it before retrying" } }); return; }
     if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { send(res, 200, modelCatalog(state.config)); return; }
+    if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
     if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
     if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
     const controller = new AbortController(); active.add(controller);

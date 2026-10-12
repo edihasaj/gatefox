@@ -20,11 +20,23 @@ models, and one local Qwen model. Qwen advertises text input only. Discovery and
 catalog presence do not establish inference access for every model.
 The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
 
-MacBook Pro 2's running desktop adapter and native relay remain on v0.2.8 under
-one supervised gateway service. A v0.2.10 CLI candidate is installed there, but its
-shared executors have not been activated. The running relay retains the machine's
-original environment and installation IDs. The primary Mac's gateway command and
-inference process were upgraded to v0.2.12 during the stream-failure investigation.
+The October 12 audit found MacBook Pro 2's running desktop adapter and native
+relay on v0.2.8 under one supervised gateway service, with the v0.2.14 command
+installed. Shared executors had not been activated. The running relay retained
+the machine's original environment and installation IDs. The primary Mac's
+inference process was upgraded to v0.2.14 during the stream-failure investigation.
+
+The real Claude CLI then reported a rejected `five_hour` window with reset
+`2026-10-12T17:10:00Z`, followed by `assistant.error: rate_limit` and an erroneous
+result with `subtype: success`. This established a subscription limit for that
+failure, rather than a tool or transport failure. v0.2.15 preserves those native
+discriminants and reports the window and provider reset time. Its installed
+preflight passed 244 tests and a signed SDK fixture: precise quota failure,
+reset timestamp in the SDK error, and successful continuation in the same chat
+after simulated provider recovery. No real provider requests or copied native
+authentication were used in that fixture. Tests also cover persisted observations,
+authenticated remote reads, expired data, and preservation of the primary usage
+response. Rendering the added Claude usage row remains a separate desktop check.
 
 Studio's v0.2.11 relay is connected using its original environment and installation
 IDs. Its fresh app-server catalog includes Claude, Codex 2, Copilot, and Qwen.

@@ -11,6 +11,23 @@ The experimental adapter keeps the original Codex executable and native login.
 It adds configured gateway models after the native models and starts new gateway
 chats with `modelProvider: subscription_gateway`. Native chats keep their provider.
 
+Claude subscription usage observations are available at the authenticated
+`GET /v1/provider-usage` endpoint. They contain only provider route IDs, recognized
+window/status enums, reset seconds, and observation seconds. Private error prose,
+credentials, and account identities are excluded. The daemon saves these
+observations privately across restart; a changed authentication-directory route
+or removed provider does not inherit an old row.
+
+When the desktop reads `account/rateLimits/read`, the adapter adds known rejected
+Claude windows to `rateLimitsByLimitId` with separate `gateway:` IDs. A rejected
+window establishes 100% usage. Allowed events do not establish a percentage and
+are not rendered as invented zero usage. Expired or day-old observations are
+omitted until new provider data arrives. Native `rateLimits`, account identity,
+usage permission, credits, upsell fields, and native map entries retain their
+values. A gateway outage leaves the native response usable. The installed app's
+rendering of additional usage rows still requires a desktop check. Usage updates
+never modify the model catalog or create another executor generation.
+
 ```sh
 gateway codex-shim --config /absolute/path/gateway.local.json \
   --codex /absolute/path/original-codex -- app-server --listen stdio://

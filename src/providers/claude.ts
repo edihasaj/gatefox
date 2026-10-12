@@ -13,6 +13,8 @@ import { claudeEnvironment } from "./claude-environment.js";
 import { imageConversation } from "../protocol/images.js";
 import { claudeContextFailure } from "./context-errors.js";
 import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claude-tool-names.js";
+import { claudeFailure } from "./claude-errors.js";
+import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -33,7 +35,7 @@ export function claudeEffort(config: ProviderConfig | undefined, request: Respon
 }
 
 export class ClaudeSubscription implements Provider {
-  constructor(private readonly config?: ProviderConfig) {}
+  constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
     const normalized = responsesToChatRequest(request);
     const choice = normalized.tool_choice;
@@ -62,6 +64,7 @@ export class ClaudeSubscription implements Provider {
       ...(effort ? ["--settings", '{"alwaysThinkingEnabled":true}'] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
     let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null;
+    let limit: ClaudeLimit | undefined;
     const stop = () => {
       if (child.exitCode === null) {
         child.kill("SIGTERM");
@@ -83,7 +86,14 @@ export class ClaudeSubscription implements Provider {
         if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;
         try { message = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        const observed = claudeUsageEvent(message);
+        if (observed) {
+          limit = observed;
+          // Usage persistence is supplementary; a disk error cannot replace an inference outcome.
+          await this.onUsage?.(observed).catch(() => {});
+        }
         const context = claudeContextFailure(message); if (context) throw context;
+        const nativeFailure = message.type === "assistant" && claudeFailure(message, limit); if (nativeFailure) throw nativeFailure;
         if (message.type === "stream_event") {
           const event = message.event as { type?: string; delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number } };
           if (event?.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) { raw += event.delta.text; yield { type: "text", text: event.delta.text }; }
@@ -103,9 +113,9 @@ export class ClaudeSubscription implements Provider {
       if (failure || !result) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
       if (result.is_error || result.subtype !== "success") {
         const diagnosis = String(result.result || "");
-        if (/rate.?limit|usage.?limit/i.test(diagnosis)) throw new ProviderError("usage_limit", "Claude subscription usage limit reached", 429);
+        if (/rate.?limit|usage.?limit/i.test(diagnosis)) throw new ProviderError("usage_limit", claudeLimitMessage(limit), 429);
         if (/auth|log.?in|oauth/i.test(diagnosis)) throw new ProviderError("authentication", "Claude subscription requires login", 401);
-        throw new ProviderError("inference_failed", "Claude inference did not complete");
+        throw claudeFailure(result, limit) || new ProviderError("inference_failed", "Claude inference did not complete");
       }
       if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call", 502, { code: "required_tool_missing", event: "claude.result" });
       const text = typeof result.result === "string" ? result.result : raw;

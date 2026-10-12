@@ -6,6 +6,7 @@ import { writePrivateJson, type GatewayConfig } from "./config.js";
 import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
+import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -166,6 +167,10 @@ export class AppServerRouter {
       }
     }
     const result = await this.backend(method, forwarded);
+    if (method === "account/rateLimits/read") {
+      try { return mergeGatewayUsage(result, await gatewayUsage(this.config)); }
+      catch { return result; }
+    }
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
       this.remember(result);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
