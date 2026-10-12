@@ -6,6 +6,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
+import { readNativeHomeOwner } from "./native-execution-host-storage.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
 
 /** One control connection keeps its generation leases until the adapter closes. */
@@ -13,16 +14,25 @@ export class ExecutionHostClient {
   private readonly connection: SocketAppServerConnection;
   private constructor(private readonly home: string, socketPath: string, readonly capabilities: readonly ExecutionCapability[]) { this.connection = new SocketAppServerConnection(socketPath, async () => {}); }
   get closed(): boolean { return this.connection.closed; }
+  static async assertNativeUnowned(configPath: string | undefined, nativeHome: string): Promise<void> {
+    const homeOwner = await readNativeHomeOwner(nativeHome);
+    const blocked = () => { throw Object.assign(new Error("A managed shared native executor still owns this native home. Finish the sharing-mode migration before reconnecting; its chats were preserved."), { code: -32001 }); };
+    if (homeOwner && (livePid(homeOwner.hostPid) || livePid(homeOwner.pid) || (homeOwner.state === "running" && homeOwner.sdkState === "starting"))) blocked();
+    if (!configPath) return;
+    const owner = await readOwner(resolve(executionHostHome(configPath, nativeHome), "owner.json"));
+    if (owner && owner.configPath === resolve(configPath) && owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.capabilities).includes("native")
+      && (livePid(owner.pid) || livePid(owner.native?.pid || 0))) blocked();
+  }
   static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false): Promise<ExecutionHostClient | undefined> {
     const home = executionHostHome(configPath, nativeHome);
     const owner = await readOwner(resolve(home, "owner.json"));
     if (!owner) {
-      if (required) throw new Error("Shared native executor host is unavailable; check gateway service status");
+      if (required) throw new Error(`Shared ${capability} executor host is unavailable; check gateway service status`);
       return;
     }
     const capabilities = executionCapabilities(owner.capabilities);
     if (!capabilities.includes(capability)) {
-      if (required) throw new Error("Shared native executor is not enabled in the configured host");
+      if (required) throw new Error(`Shared ${capability} executor is not enabled in the configured host`);
       return;
     }
     const socketPath = resolve(home, "host.sock");

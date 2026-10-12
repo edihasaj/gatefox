@@ -9,14 +9,14 @@ import { DesktopCatalog } from "../desktop-catalog.js";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import type { Message } from "../app-server-connection.js";
-import type { GatewayConfig } from "../config.js";
+import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { SharedNativeConnection } from "../shared-native-connection.js";
 
 const alias = "claude/fixture";
 type FeatureVariant = "legacy" | "canonical";
-async function fixture(featureVariant?: FeatureVariant, priority?: boolean, sharedNative = false) {
+async function fixture(featureVariant?: FeatureVariant, priority?: boolean, sharedNative = false, gatewayIntent?: boolean) {
   const directory = await mkdtemp(join(tmpdir(), "gw-backends-"));
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   const nativeConfig = 'model = "native-original"\n' + (priority === undefined ? "" : "[features]\nfast_mode = false\n");
@@ -59,6 +59,8 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
 `, { mode: 0o700 });
   const configPath = join(directory, "gateway.json");
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
+  if (gatewayIntent !== undefined) await writePrivateJson(join(config.stateDirectory, "service-plan.json"), { version: 1, config: configPath, sharedExecutors: gatewayIntent,
+    components: [{ id: "native", kind: "native", command: sdk, args: ["--codex", sdk, "--native-home", nativeHome], log: join(config.stateDirectory, "native.log") }] });
   const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
   const host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk });
   const nativeSocket = join(directory, "original-native.sock");
@@ -78,7 +80,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const events: Message[] = [];
   let nativeExits = 0;
   const adapters = new Set<AppServerBackends>();
-  const createBackend = (reverse = false, variant = featureVariant) => {
+  const createBackend = async (reverse = false, variant = featureVariant) => {
     const entries: [string, unknown][] = [["agents", { max_concurrent_threads_per_session: 30 }], ["web_search", "disabled"], ["sandbox_mode", "read-only"]];
     const featureArgs: string[] = [];
     if (variant) {
@@ -89,14 +91,17 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
     }
     const settings = Object.fromEntries(reverse ? entries.reverse() : entries);
     if (priority !== undefined) { settings.features = { ...(settings.features as Message || {}), fast_mode: false }; featureArgs.push("-c", "features.fast_mode=false", "--disable=fast_mode"); }
-    const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs], config, settings, {}, catalog, async message => { events.push(message); }, () => { nativeExits++; }, configPath,
-      sharedNative ? (_args, onMessage, onExit) => new SharedNativeConnection(nativeSocket, onMessage, onExit) : undefined);
+    const args = ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs];
+    const emit = async (message: Message) => { events.push(message); }; const exited = () => { nativeExits++; };
+    const adapter = gatewayIntent === undefined ? new AppServerBackends(sdk, args, config, settings, {}, catalog, emit, exited, configPath,
+      sharedNative ? (_args, onMessage, onExit) => new SharedNativeConnection(nativeSocket, onMessage, onExit) : undefined)
+      : await AppServerBackends.create(sdk, args, config, settings, {}, catalog, emit, exited, configPath);
     adapters.add(adapter); return adapter;
   };
-  const backends = createBackend();
+  const backends = await createBackend();
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
   return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; },
-    async another(variant?: FeatureVariant) { const adapter = createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
+    async another(variant?: FeatureVariant) { const adapter = await createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
     async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); nativeOwner?.kill("SIGTERM"); await nativeOwnerExited; process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
   };
@@ -113,6 +118,30 @@ test("adapter releases a closed chat's generation before acquiring a fifth catal
     assert.deepEqual(await f.control.request("execution/find", { threadId: "chat-0" }), { found: false });
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await f.clean(); }
+});
+
+test("a per-connection factory plan does not inherit an older gateway-only host", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, false, false);
+  try {
+    const started = await f.start("per-connection-intent-chat");
+    assert.equal(((await f.control.request("execution/status", {})).generations as Message[]).length, 0);
+    assert.notEqual(started.executorPid, (await f.backends.native.request("thread/read", { threadId: "ordinary-native-chat" })).executorPid);
+    assert.equal(f.backends.native.closed, false); assert.equal(f.backends.native.shared, undefined);
+  } finally { await f.clean(); }
+});
+
+test("required gateway sharing refuses fallback during host outage while native chats stay usable", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, false, true);
+  const ownerPath = join(executionHostHome(join(f.directory, "gateway.json"), f.nativeHome), "owner.json");
+  const owner = JSON.parse(await readFile(ownerPath, "utf8"));
+  try {
+    await writePrivateJson(ownerPath, { ...owner, state: "stopped", pid: 0 });
+    await assert.rejects(f.start("must-not-fallback"), (error: Error & { code?: number }) => error.code === -32001 && /unavailable/.test(error.message));
+    assert.equal(((await f.control.request("execution/status", {})).generations as Message[]).length, 0);
+    await assert.rejects(access(join(f.config.stateDirectory, "desktop-generations")), { code: "ENOENT" });
+    const native = await f.backends.request("thread/read", { threadId: "ordinary-native-chat" });
+    assert.equal((native.thread as Message).modelProvider, "openai"); assert.equal(f.backends.native.closed, false);
+  } finally { await writePrivateJson(ownerPath, owner); await f.clean(); }
 });
 
 test("a second adapter reads and stops a shared active gateway chat before consulting stale native metadata", { timeout: 20000 }, async () => {

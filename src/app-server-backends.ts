@@ -57,6 +57,7 @@ export class AppServerBackends {
   private creating: Promise<unknown> = Promise.resolve();
   private poolPending?: Promise<ExecutionHostClient | undefined>;
   private nativeHost?: { client: ExecutionHostClient; record: NativeLaunchRecord };
+  private sharedGateway?: boolean;
   private readonly compaction: GatewayCompaction;
   private readonly nativeActive = new Map<string, NativeTurn>();
   private readonly nativeCompleted = new Set<string>();
@@ -67,17 +68,21 @@ export class AppServerBackends {
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
     catalog: DesktopCatalog, emit: (message: Message) => Promise<void>, onNativeExit: () => void, configPath?: string): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
-    if (object(plan).sharedNativeExecutor !== true) return new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath);
+    const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
+    if (object(plan).sharedNativeExecutor !== true) {
+      await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
+      const backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath);
+      backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined; return backend;
+    }
     let client: ExecutionHostClient | undefined; let backend: AppServerBackends | undefined;
     try {
       if (!configPath || plan?.config !== resolve(configPath)) throw new Error("Shared native executor configuration does not match this adapter");
-      const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
       client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true);
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
       const record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));
       backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath,
         (_args, onMessage, onExit) => new SharedNativeConnection(record.socketPath, onMessage, onExit, process.cwd()));
-      backend.nativeHost = { client: client!, record };
+      backend.nativeHost = { client: client!, record }; backend.sharedGateway = plan.sharedExecutors === true;
       await backend.native.ready; return backend;
     } catch (error) {
       await backend?.stop(); client?.close();
@@ -216,19 +221,23 @@ export class AppServerBackends {
   }
   notify(message: Message): void { this.native.send(message); }
   private async pool(): Promise<ExecutionHostClient | undefined> {
-    if (this.closing) return;
+    if (this.closing || this.sharedGateway === false) return;
     if (this.nativeHost) {
       if (!this.nativeHost.client.capabilities.includes("gateway")) return;
       if (this.nativeHost.client.closed) throw Object.assign(new Error("Shared executor host connection was lost; reconnect this chat's computer connection"), { code: -32001 });
       return this.nativeHost.client;
     }
-    if (!this.configPath) return;
+    if (!this.configPath) {
+      if (this.sharedGateway === true) throw Object.assign(new Error("Shared gateway execution requires this adapter's configuration path"), { code: -32001 });
+      return;
+    }
     if (this.poolPending) {
       const existing = await this.poolPending.catch(() => undefined);
       if (existing && !existing.closed) return existing;
       this.poolPending = undefined;
     }
-    const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable);
+    const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable, "gateway", this.sharedGateway === true)
+      .catch(error => { if (this.sharedGateway === true) Object.assign(error, { code: -32001 }); throw error; });
     this.poolPending = pending;
     const client = await pending;
     if (!client && this.poolPending === pending) this.poolPending = undefined;

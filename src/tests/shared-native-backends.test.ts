@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket, WebSocketServer } from "ws";
@@ -13,6 +13,7 @@ import type { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { executionHostHome, executionHostMarker, sdkIdentity, socketIdentity } from "../execution-host-storage.js";
 import type { ExecutionHostClient } from "../execution-host-client.js";
+import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 
 async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 400; attempt++) { if (check()) return; await delay(5); }
@@ -34,7 +35,7 @@ async function fixture() {
   const configText = 'model = "native-original"\n'; const authText = '{"fixtureOnly":"original-primary-secret"}\n';
   await writeFile(join(nativeHome, "config.toml"), configText, { mode: 0o600 }); await writeFile(join(nativeHome, "auth.json"), authText, { mode: 0o600 });
   const sdk = join(directory, "codex"); const spawnMarker = join(directory, "spawned");
-  await writeFile(sdk, `#!${process.execPath}\nrequire('node:fs').writeFileSync(${JSON.stringify(spawnMarker)}, 'unexpected-native-owner');\n`, { mode: 0o700 });
+  await writeFile(sdk, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(spawnMarker)},JSON.stringify({home:process.env.CODEX_HOME,authPresent:fs.existsSync(process.env.CODEX_HOME+'/auth.json')}));\n`, { mode: 0o700 });
   const configPath = join(directory, "gateway.json");
   const config: GatewayConfig = { version: 1, port: 3457, clientOnly: true, providers: [], stateDirectory: state };
   await writePrivateJson(configPath, config);
@@ -99,7 +100,8 @@ async function fixture() {
     socket: await socketIdentity(controlPath), pid: process.pid, state: "running", generations: [], capabilities: ["native"] };
   await writePrivateJson(join(home, "owner.json"), owner);
   const previous = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
-  const adapters = new Set<AppServerBackends>(); const catalog = { current: () => ({ models: [], revision: "fixture" }) } as unknown as DesktopCatalog;
+  const adapters = new Set<AppServerBackends>(); const snapshot = { models: [] as Message[], revision: "fixture" };
+  const catalog = { current: () => snapshot, refresh: async () => snapshot, combined: (value: typeof snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog;
   async function create() {
     const events: Message[] = []; let exits = 0;
     const adapter = await AppServerBackends.create(sdk, ["app-server", "--listen", "stdio://"], config, { features: { hooks: false } }, {}, catalog,
@@ -108,7 +110,7 @@ async function fixture() {
     adapter.notify({ method: "initialized" });
     return { adapter, events, exits: () => exits };
   }
-  return { directory, nativeHome, config, configPath, home, sdk, create, calls, nativeCalls, threads, initializations, replies, owner, hooks,
+  return { directory, nativeHome, config, configPath, home, sdk, create, calls, nativeCalls, threads, initializations, replies, owner, hooks, snapshot, spawnMarker,
     disconnectControl() { for (const client of control.sockets.clients) client.terminate(); },
     nativeMessages(messages: Message[]) { for (const client of native.sockets.clients) for (const message of messages) send(client, message); },
     nativeDeath(observationDelayMs = 0) { hooks.nativeState = "exited"; hooks.deathObservedAt = Date.now() + observationDelayMs; for (const client of native.sockets.clients) client.terminate(); },
@@ -138,6 +140,53 @@ test("two native adapters retain original account and shared session after eithe
     assert.equal(f.calls.some(message => String(message.method).startsWith("execution/")), false);
     await f.noSpawn();
   } finally { await f.clean(); }
+});
+
+test("native-only adapter intent does not inherit gateway sharing from an older both-capability host", { timeout: 10000 }, async () => {
+  const f = await fixture();
+  try {
+    await writePrivateJson(join(f.home, "owner.json"), { ...f.owner, capabilities: ["native", "gateway"] });
+    const planPath = join(f.config.stateDirectory, "service-plan.json");
+    const plan = JSON.parse(await readFile(planPath, "utf8")); await writePrivateJson(planPath, { ...plan, sharedExecutors: false });
+    f.snapshot.models.push({ slug: "claude/fixture", display_name: "Claude fixture" });
+    const first = await f.create(); assert.equal(first.adapter.native.shared, true);
+    // The fixture CLI exits after recording its private gateway home. A shared
+    // route would instead call the host's forbidden execution/acquire method.
+    await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture", modelProvider: "subscription_gateway" }), /exited/);
+    const spawned = JSON.parse(await readFile(f.spawnMarker, "utf8"));
+    assert.notEqual(spawned.home, f.nativeHome); assert.ok(spawned.home.startsWith(join(f.config.stateDirectory, "desktop-generations") + "/"));
+    assert.equal(spawned.authPresent, false); assert.equal(f.calls.some(message => String(message.method).startsWith("execution/")), false);
+    assert.deepEqual(await first.adapter.request("account/read", {}), { account: { type: "chatgpt", email: "fixture-primary@example.test" } });
+    assert.equal(first.adapter.native.closed, false);
+  } finally { await f.clean(); }
+});
+
+test("turning off native sharing refuses a second original-native SDK while the old host owns it", { timeout: 10000 }, async () => {
+  const f = await fixture();
+  try {
+    const first = await f.create();
+    const planPath = join(f.config.stateDirectory, "service-plan.json");
+    const plan = JSON.parse(await readFile(planPath, "utf8")); await writePrivateJson(planPath, { ...plan, sharedNativeExecutor: false });
+    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /still owns/.test(error.message));
+    assert.equal(f.calls.filter(message => message.method === "native/acquire").length, 1); await f.noSpawn();
+    assert.equal(first.adapter.native.closed, false); await first.adapter.request("account/read", {});
+  } finally { await f.clean(); }
+});
+
+test("a global live or unconfirmed native-home lease blocks legacy native spawn without a local host receipt", { timeout: 10000 }, async () => {
+  const f = await fixture(); const globalPath = nativeHomeOwnerPath(f.nativeHome);
+  try {
+    const planPath = join(f.config.stateDirectory, "service-plan.json");
+    const plan = JSON.parse(await readFile(planPath, "utf8")); await writePrivateJson(planPath, { ...plan, sharedNativeExecutor: false });
+    await rm(join(f.home, "owner.json"));
+    for (const state of [{ hostPid: process.pid, pid: 0, sdkState: "idle" }, { hostPid: 0, pid: 0, sdkState: "starting" }]) {
+      await writePrivateJson(globalPath, { version: 1, managed: "subscription-gateway-native-execution-owner", configPath: join(f.directory, "other.json"),
+        nativeHome: f.nativeHome, codex: f.owner.codex, sdkSha256: f.owner.sdkSha256, socketPath: join(f.home, "native.sock"), state: "running", ...state });
+      await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001);
+      await f.noSpawn();
+    }
+    assert.equal(f.calls.length, 0);
+  } finally { await rm(dirname(globalPath), { recursive: true, force: true }); await f.clean(); }
 });
 
 test("native adapter shutdown rejects a stalled host control operation before waiting for creation", { timeout: 10000 }, async () => {
