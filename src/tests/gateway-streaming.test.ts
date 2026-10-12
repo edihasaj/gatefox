@@ -212,6 +212,9 @@ test("deadline releases blocked terminal frames after true provider completion w
   const gateway = await setup({ async *infer(): AsyncGenerator<InferenceEvent> {
     try {
       yield { type: "text", text: "x".repeat(512 * 1024) };
+      // The added frame is small; opaque state is delivered only in the
+      // terminal frames. Exceed varying loopback TCP buffers on CI as well.
+      yield { type: "reasoning-state", item: { type: "reasoning", id: "rs_terminal_fixture", summary: [], encrypted_content: "x".repeat(8 * 1024 * 1024) } };
       completed = true; yield { type: "done", usage };
     } finally { stopped = true; }
   } }, 100);
