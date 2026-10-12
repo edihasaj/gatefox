@@ -165,6 +165,14 @@ chats. Loaded native and gateway chats keep their connections. To select a newly
 added model in an older loaded gateway chat, close and resume that saved chat, or
 start a new one. Ephemeral chats cannot be resumed after their executor exits.
 
+Gateway model names remain listed during a connection outage, including after
+an adapter restarts. A private cache stores the last valid public model rows,
+scoped to the local gateway port and a hash of its client token. Selecting a
+gateway model still requires fresh discovery. An unavailable gateway returns
+application error `-32001` before creating a chat or using the native account.
+When the connection recovers, normal discovery reloads the catalog without an
+app restart. Invalid or differently scoped caches leave native models usable.
+
 The desktop query itself has a five-minute cache and refetches on focus in the
 installed build. Catalog changes require no app restart after initial activation,
 but immediate visible picker updates are not guaranteed. There is no fabricated

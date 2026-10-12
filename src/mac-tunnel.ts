@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
+import { ensureLaunchAgent } from "./mac-launch-agent.js";
 
 const exec = promisify(execFile); const marker = "<!-- Managed by subscription-gateway tunnel -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -12,7 +13,7 @@ export interface TunnelOptions { id: string; host?: string; port?: number; remot
 export function tunnelArguments(options: TunnelOptions): string[] {
   if (!options.host || !/^(?:[a-zA-Z0-9_.-]+@)?[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(options.host)) throw new Error("Tunnel host must be an SSH alias or user@hostname");
   for (const port of [options.port, options.remotePort]) if (!Number.isInteger(port) || Number(port) < 1 || Number(port) > 65535) throw new Error("Tunnel ports must be 1 through 65535");
-  return ["/usr/bin/ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
+  return ["/usr/bin/ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
     ...(options.sshConfig ? ["-F", resolve(options.sshConfig)] : []), options.reverse ? "-R" : "-L", `127.0.0.1:${options.port}:127.0.0.1:${options.remotePort}`, options.host];
 }
 export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
@@ -40,6 +41,6 @@ export async function macTunnel(action: string | undefined, options: TunnelOptio
   const current = await status();
   if (current.installed && existing !== contents) throw new Error("An active tunnel differs; uninstall it before changing its endpoint");
   if (existing !== contents) { await mkdir(dirname(path), { recursive: true }); await mkdir(state, { recursive: true, mode: 0o700 }); const temporary = path + `.${process.pid}.tmp`; await writeFile(temporary, contents, { mode: 0o600 }); await rename(temporary, path); }
-  if (!current.installed) await exec("/bin/launchctl", ["bootstrap", domain, path]);
+  await ensureLaunchAgent(domain, label, path, current.installed);
   return { service: label, ...await status(), port: options.port, reverse: !!options.reverse };
 }

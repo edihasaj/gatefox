@@ -65,6 +65,14 @@ gateway chat before adding another generation at that limit. Idle generations
 without loaded chats are stopped. A gateway executor failure does not stop the
 native connection; saved gateway history can be resumed.
 
+Each adapter keeps a separate private cache of public gateway model rows.
+Startup validates its source against the local port and client-token hash, then
+restores those names even if the inference host is offline. Cache files contain
+no native cache identity, provider authentication, or token values. Discovery
+can retain cached names; gateway work requires a successful fresh fetch and
+returns application error `-32001` during an outage. Successful discovery
+atomically updates the cache. Recovery needs no app restart.
+
 The unified service can own shared gateway executors. This is an explicit
 maintenance migration described in [services](services.md). Each catalog and
 execution-settings generation gets one signed Codex app-server with a private

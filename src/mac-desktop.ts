@@ -7,6 +7,7 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { prepareDesktop } from "./desktop-launch.js";
 import { gatewayCommand } from "./command.js";
 import { readServicePlan } from "./service-plan.js";
+import { ensureLaunchAgent } from "./mac-launch-agent.js";
 
 const exec = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -38,6 +39,7 @@ export async function macDesktop(action: string, configPath: string, app = "/App
   await exec("/bin/launchctl", ["setenv", "CODEX_CLI_PATH", wrapper]); await exec("/bin/launchctl", ["setenv", "CODEX_APP_SERVER_FORCE_CLI", "1"]);
   if (restoreOnly || unified) return { registered: true, activeForFutureLaunches: true, nativeConfigUntouched: true, loginHook: "unified service" };
   if (existing !== contents) { if (existing) await exec("/bin/launchctl", ["bootout", target]).catch(() => undefined); await mkdir(dirname(path), { recursive: true }); await writeFile(path, contents, { mode: 0o600 }); }
-  try { await exec("/bin/launchctl", ["print", target]); } catch { await exec("/bin/launchctl", ["bootstrap", domain, path]); }
+  let loaded = false; try { await exec("/bin/launchctl", ["print", target]); loaded = true; } catch { /* Restore an explicitly registered login hook. */ }
+  await ensureLaunchAgent(domain, label, path, loaded);
   return { registered: true, activeForFutureLaunches: true, freshAppLaunchRequired: true, nativeConfigUntouched: true };
 }

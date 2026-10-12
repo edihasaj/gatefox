@@ -20,8 +20,12 @@ models, and one local Qwen model. Qwen advertises text input only. Discovery and
 catalog presence do not establish inference access for every model.
 The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
 
-MacBook Pro 2 runs the installed v0.2.8 native relay under one supervised gateway
-service. It retains the machine's original environment and installation IDs.
+MacBook Pro 2's running desktop adapter and native relay remain on v0.2.8 under
+one supervised gateway service. A v0.2.9 CLI candidate is installed there, but its
+shared executors have not been activated. The running relay retains the machine's
+original environment and installation IDs. The primary Mac's gateway command is
+v0.2.8; its existing inference process remains on v0.2.6.
+
 Studio and the primary Mac still need native relay activation and checks through
 their original connections. Do not remove a working SSH connection before its
 native replacement passes those checks.
@@ -44,11 +48,31 @@ The remaining desktop checks are:
 | Qwen | The real backend tool loop passed and the model appears in the combined catalog. | Verify text, file tools, follow-up, and interruption through the original connection. |
 | Reasoning controls | v0.2.8 persists all six display efforts. MacBook Pro 2's local rendered Claude menu showed Max. The user also confirmed that all levels now appear on the primary Mac. | Capture the primary Mac's menu and verify refresh persistence when using the connected computer. |
 
-Shared execution ownership is being developed for v0.2.9. The signed SDK checks
-below prove gateway ownership across several adapter clients in an isolated
-development fixture. v0.2.9 has not been released or deployed. Native executors
-still have separate ownership in each adapter, and the installed release's cloud
-connections have not passed the corresponding checks.
+Shared execution ownership and outage recovery are being developed for v0.2.10.
+The signed SDK checks below prove gateway ownership across several adapter clients
+in an isolated development fixture. v0.2.10 has not been installed, published, or
+activated. Native executors still have separate ownership in each adapter, and
+the installed release's cloud connections have not passed the corresponding checks.
+
+## Observed transport outage
+
+During the 12 October outage, the primary Mac's inference process remained healthy
+with no active requests. Its reverse-forward LaunchAgents for MacBook Pro 2 and
+Studio were unloaded, but not disabled. Tailscale had also stopped. Restoring
+those jobs and bringing Tailscale up made both remote `gateway doctor` checks
+report ready with 25 added models. The earlier Qwen tunnel was restored separately.
+
+The primary Mac's kernel boot time was 5 October. These observations do not show
+an outage reboot or an automatic-start failure. Why the jobs were unloaded is
+unknown. Edi reopened the affected original connected-computer model list and
+confirmed that Claude, Codex 2, Copilot, and Qwen returned without an app restart.
+
+The development code enables a disabled gateway job when the user explicitly
+registers it, without restarting an already loaded process. Newly owned SSH
+children use a ten-second connection timeout and one connection attempt before
+their supervisor retries. The supervisor also supplies these defaults when it
+starts a child from an older plan; it preserves explicit values and running jobs.
+These changes are not yet active on the deployed devices.
 
 ## Development and desktop settings checks
 
@@ -58,10 +82,10 @@ Run the development gate:
 npm run build && npm run check && npm test
 ```
 
-The current v0.2.9 development gate passed 160 tests. The installed v0.2.8 release's
+The current v0.2.10 development gate passed 186 tests. The installed v0.2.8 release's
 earlier gate passed 109 tests. Neither count proves the remaining desktop checks.
 
-### Shared gateway execution in v0.2.9 development
+### Shared gateway execution in v0.2.10 development
 
 The real signed Codex SDK, `0.162.0-alpha.17.2`, passed the shared gateway
 execution checks in `scripts/e2e-shared-execution.mjs`. Two adapters reached the
@@ -80,13 +104,15 @@ gateway waited for the SDK to unload it naturally. The SDK retained it for about
 60 seconds. Only then did the gateway retire that unused generation and accept
 its replacement. This check did not force an unload or rewrite saved history.
 
-Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol passed real inference through these shared
-clients. Repository `AGENTS.md` supplied a hidden marker absent from the user
-prompt; each provider read a seed file and wrote the required proof. A fresh
+Claude Sonnet 5.5, Codex 2 GPT-6.1-Sol, and Qwen passed the final real inference
+run through these shared clients. Repository `AGENTS.md` supplied a hidden marker
+absent from the user prompt; each provider read a seed file and wrote the required proof. A fresh
 adapter resumed the chat and edited the proof while retaining its contents.
 One adapter then interrupted a stream started by another, and a recovery turn
-completed with the proof intact. Both providers read a code supplied only in an
-image and recalled that code after another adapter reconnect.
+completed with the proof intact. Claude and Codex 2 also read a code supplied only
+in an image and recalled that code after another adapter reconnect. The completed
+run made 28 inference calls and confirmed unchanged isolated native configuration
+and no copied native authentication.
 
 Qwen's first file/tool check in the combined run failed because its existing
 managed SSH tunnel had been unloaded. Restoring that LaunchAgent restored the
@@ -95,8 +121,27 @@ reads and edits, history across adapter reconnects, cross-adapter interruption,
 and recovery. Its final checks confirmed unchanged isolated native configuration
 and no copied native authentication, with 11 inference calls. The investigation
 recorded transport status and check results, without inference bodies.
-The earlier combined run ended before its final invariants; the focused Qwen
-result supplies that evidence for its own run.
+The earlier combined run ended before its final invariants. The focused Qwen
+result and the later completed three-provider run each supply that evidence for
+their own runs.
+
+### Model discovery during an outage
+
+The development adapter keeps a private cache of sanitized public metadata for
+the 25 added routes. Its source identity includes the loopback port and a hash
+derived from the client token. Provider credentials are excluded, and a cache
+from a different source is refused.
+
+The signed SDK check deliberately made discovery return HTTP 503, then opened a
+fresh adapter. It retained all 33 names in that isolated SDK catalog. Starting
+the explicitly selected cached gateway alias returned application error
+`-32001`; the test recorded no inference requests, no new executor, and no native
+fallback. After discovery recovered, the same adapter started a gateway chat in
+the original engine process without an app restart. This proves the backend
+recovery path. The v0.2.10 cache behavior still needs the matching desktop check
+after activation; the existing adapter's transport recovery was user-confirmed.
+
+### Control socket isolation
 
 The macOS sandbox check in `scripts/e2e-execution-sandbox.mjs` passed against the
 signed SDK. The control socket was reachable outside the sandbox. Inside it,

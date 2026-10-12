@@ -65,6 +65,19 @@ service and registering the required components again before reconsolidation.
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.
 
+Explicit tunnel installation and desktop registration enable their managed
+LaunchAgent before loading it. This repairs a disabled registration without
+restarting an already loaded job. New tunnel jobs limit the initial SSH connection
+to one ten-second attempt; launchd or the unified supervisor retries after failure.
+Existing active tunnel arguments stay unchanged until a maintenance update.
+The unified supervisor also adds these defaults when it starts a newly owned SSH
+child from an older plan. Explicit command-line timeout and attempt values,
+forwarding endpoints, and SSH profile paths remain unchanged. It does not rewrite
+the stored plan or replace a running tunnel to add defaults.
+Network loss can interrupt forwarding, but a loaded KeepAlive job keeps retrying.
+An unloaded job needs registration again; its plist alone does not start a process
+in the current login session.
+
 # Shared chat executors
 
 Shared executors let local and remote clients resume the same gateway chat through

@@ -30,7 +30,7 @@ if(process.platform==='darwin')await promisify(execFile)('/usr/bin/codesign',['-
 const version=(await promisify(execFile)(sdk,['--version'])).stdout.trim();assert.equal(version,'codex-cli 0.162.0-alpha.17.2');
 const token=await readClientToken(resolve(sourceConfig.stateDirectory,'client-token'));
 const origin=`http://127.0.0.1:${sourceConfig.port}`;
-let catalogGeneration=0;let inferenceRequests=0;const inferenceStatuses=[];const results=[];let phase='setup';
+let catalogGeneration=0;let catalogAvailable=true;let inferenceRequests=0;const inferenceStatuses=[];const results=[];let phase='setup';
 const record=data=>{results.push(data);return writeFile(output,JSON.stringify({checkedAt:new Date().toISOString(),sdkVersion:version,inferenceEnabled:v.inference,results},null,2)+'\n',{mode:0o600}).then(()=>console.log(JSON.stringify(data)));};
 const proxy=createServer((request,response)=>{
   void(async()=>{
@@ -38,6 +38,7 @@ const proxy=createServer((request,response)=>{
     if(supplied.length!==expected.length||!timingSafeEqual(supplied,expected)){response.writeHead(401);response.end();return;}
     const url=new URL(request.url||'/',origin);
     if(url.origin!==origin||!['/v1/model-catalog','/v1/models','/v1/responses'].includes(url.pathname)||url.search){response.writeHead(404);response.end();return;}
+    if(url.pathname==='/v1/model-catalog'&&!catalogAvailable){response.writeHead(503);response.end();return;}
     if(url.pathname==='/v1/responses'){inferenceRequests++;if(!v.inference){response.writeHead(503);response.end();return;}}
     const abort=new AbortController();request.on('aborted',()=>abort.abort());response.on('close',()=>{if(!response.writableEnded)abort.abort();});
     const upstream=await fetch(url,{method:request.method,headers:{Authorization:`Bearer ${token}`,...(request.headers['content-type']?{'content-type':request.headers['content-type']}:{})},...(request.method==='POST'?{body:request,duplex:'half'}:{}),redirect:'error',signal:abort.signal});
@@ -114,6 +115,16 @@ try{
   else{const independent=await second.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'});assert.equal((await owner(independent.thread.id)).revision,original.revision);await second.rpc('thread/settings/update',{threadId:id,effort:'low'});}
   assert.equal((await owner(id)).socketPath,original.socketPath);assert.equal(generation(await status(),original.revision).pid,originalPid);
   await record({phase:'two-adapters-one-loaded-chat',passed:true,sameEnginePid:true,sameGeneration:true,resumeTested:v.inference});
+  phase='offline-catalog-new-adapter';catalogAvailable=false;const outage=connect();await initialize(outage);
+  const offlineModels=await outage.rpc('model/list',{limit:100});assert.deepEqual(new Set(offlineModels.data.map(value=>value.model)),offered);
+  const beforeNative=await outage.rpc('thread/loaded/list',{});const beforeAccount=await outage.rpc('account/read',{});const beforeEngines=await status();const beforeResponses=inferenceRequests;
+  await assert.rejects(outage.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'}),error=>error.code===-32001);
+  assert.equal(inferenceRequests,beforeResponses);assert.deepEqual((await status()).generations,beforeEngines.generations);
+  assert.deepEqual(await outage.rpc('thread/loaded/list',{}),beforeNative);assert.deepEqual(await outage.rpc('account/read',{}),beforeAccount);
+  await record({phase:'offline-new-adapter-catalog',passed:true,modelsRetained:offered.size,applicationErrorCode:-32001,noInferenceRequests:true,noNewExecutor:true,noNativeFallback:true});
+  phase='catalog-recovery';catalogAvailable=true;const recovered=await outage.rpc('model/list',{limit:100});assert.deepEqual(new Set(recovered.data.map(value=>value.model)),offered);
+  const recoveredChat=await outage.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'});assert.equal(recoveredChat.modelProvider,'subscription_gateway');assert.equal((await owner(recoveredChat.thread.id)).revision,original.revision);assert.equal(generation(await status(),original.revision).pid,originalPid);await outage.close();
+  await record({phase:'catalog-recovery-without-app-restart',passed:true,modelsRetained:offered.size,sameExecutorPid:true});
   phase='adapter-disconnect';await first.close();assert.equal(generation(await status(),original.revision).pid,originalPid);
   const third=connect();await initialize(third);phase='reconnect-loaded-owner';
   if(v.inference)assert.equal((await resume(third,id,model)).thread.id,id);else{await third.rpc('thread/start',{model,cwd:workspace,approvalPolicy:'never',sandbox:'read-only'});await third.rpc('thread/settings/update',{threadId:id,effort:'low'});}

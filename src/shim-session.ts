@@ -11,6 +11,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
+  await source.initialize();
   let closing = false;
   const registration = await nativeRegistration(config);
   const control = registration ? new NativeControl(registration.home, emit) : undefined;

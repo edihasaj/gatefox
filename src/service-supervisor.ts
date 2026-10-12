@@ -7,6 +7,7 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { serviceExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
 import { executionHostHome, startExecutionHost } from "./execution-host.js";
+import { serviceTunnelArguments } from "./service-tunnel.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; failures: number; startedAt: number }
@@ -57,7 +58,8 @@ export class ServiceSupervisor {
       const info = await log.stat();
       if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077)) throw new Error("Service component log must be private");
       if (this.stopping) return;
-      const child = spawn(component.command, component.args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment } });
+      const args = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? serviceTunnelArguments(component.args) : component.args;
+      const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment } });
       slot.child = child; slot.startedAt = Date.now();
       slot.exited = new Promise(resolve => child.once("close", () => resolve()));
       let handled = false;
