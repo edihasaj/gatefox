@@ -32,6 +32,12 @@ belongs in the release archive.
    It proves requested and returned tiers, settings changes, saved-history resume,
    and native isolation; it sends no subscription inference and does not prove
    rendered desktop controls or the built-in cloud transport.
+   For compaction changes, run `scripts/e2e-compaction-switch.mjs --gateway
+   INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
+   --shared`. It reproduces the previous-model failure with `--expect baseline`
+   and verifies selected-model recovery, Stop, failures, and reconnect through
+   stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
+   checked for safe refusal of automatic compaction, not seamless recovery.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

@@ -13,9 +13,11 @@ import { canonicalJson } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
+import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-compaction.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection;
-interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean }
+interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; compaction?: GatewayCompactionSession }
+interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
 
 function offersPriority(models: Message[]): boolean {
   return models.some(model => readPublicServiceTierMetadata(model).serviceTiers?.some(tier => tier.id === "priority"));
@@ -46,11 +48,13 @@ export class AppServerBackends {
   private closing = false;
   private creating: Promise<unknown> = Promise.resolve();
   private poolPending?: Promise<ExecutionHostClient | undefined>;
+  private readonly compaction: GatewayCompaction;
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
     private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void, private readonly configPath?: string) {
     this.args = normalizeCodexFeatureArgs(args, settings);
     this.settings = normalizeCodexFeatureConfig(settings);
+    this.compaction = new GatewayCompaction(config.stateDirectory);
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     const registration = Object.entries(overrides).map(([key, value]) => [`-c`, `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`]).flat();
     this.native = new AppServerConnection(executable, [...this.args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
@@ -58,11 +62,13 @@ export class AppServerBackends {
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
     if (engine) {
+      engine.compaction?.observe(message);
+      await this.compaction.observe(message);
       const thread = object(params.thread); const threadId = typeof params.threadId === "string" ? params.threadId : typeof thread.id === "string" ? thread.id : undefined;
       if (message.method === "thread/started" && threadId) { engine.threads.add(threadId); this.bindings.set(threadId, engine); }
       if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
       if (message.method === "turn/started" && threadId && typeof object(params.turn).id === "string") engine.active.set(threadId, String(object(params.turn).id));
-      if (message.method === "turn/completed" && threadId) engine.active.delete(threadId);
+      if (message.method === "turn/completed" && threadId && engine.active.get(threadId) === object(params.turn).id) engine.active.delete(threadId);
       // Executor account discovery is not the desktop's primary account state.
       if (!isId(message.id) && !threadId && message.method !== "serverRequest/resolved") return;
     }
@@ -114,7 +120,7 @@ export class AppServerBackends {
     });
     this.creating = operation.catch(() => undefined); await operation;
   }
-  private async shared(record: ExecutionRecord): Promise<Engine> {
+  private async shared(record: ExecutionRecord, snapshot?: CompactionSnapshot): Promise<Engine> {
     const ready = this.engines.find(engine => engine.shared && engine.revision === record.revision && !engine.connection.closed);
     if (ready) { ready.requests++; return ready; }
     const operation = this.creating.then(async () => {
@@ -130,12 +136,16 @@ export class AppServerBackends {
       }
       const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true };
       const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
+        void engine.compaction?.close();
         for (const [id, approval] of this.approvals) if (approval.connection === connection) this.approvals.delete(id);
         this.reverse.delete(connection);
         if (!this.closing) for (const [threadId, id] of engine.active) void this.emit({ method: "turn/completed", params: { threadId, turn: { id, items: [], status: "failed", error: { message: "Gateway executor connection closed. Resume this chat to reconnect to its saved or running session.", codexErrorInfo: "internalServerError", additionalDetails: null } } } });
         engine.active.clear();
       });
-      engine.connection = connection; this.engines.push(engine);
+      engine.connection = connection;
+      engine.compaction = this.compaction.session({ models: snapshot?.models || [], settings: snapshot?.settings || {}, args: snapshot?.args || [], aliases: engine.aliases,
+        shared: true, isActive: id => engine.active.has(id), request: (method, params) => connection.request(method, params) });
+      this.engines.push(engine);
       try {
         await connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } });
         connection.send({ method: "initialized", params: {} }); return engine;
@@ -172,7 +182,7 @@ export class AppServerBackends {
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, agentsDirectory: agents.directory || null })).digest("hex");
       await this.releaseIdleShared(sharedRevision);
       const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), agentsDirectory: agents.directory });
-      return this.shared(record);
+      return this.shared(record, { models: combined.models, settings, args });
     }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
     const ready = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
@@ -205,11 +215,14 @@ export class AppServerBackends {
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
       engine.connection = new AppServerConnection(this.executable, args, message => this.forward(engine.connection, message), () => {
+        void engine.compaction?.close();
         for (const [id, approval] of this.approvals) if (approval.connection === engine.connection) this.approvals.delete(id);
         this.reverse.delete(engine.connection);
         if (!this.closing) for (const [threadId, id] of engine.active) void this.emit({ method: "turn/completed", params: { threadId, turn: { id, items: [], status: "failed", error: { message: "Gateway executor exited. Resume this chat to recover its saved history.", codexErrorInfo: "internalServerError", additionalDetails: null } } } });
         engine.active.clear();
       }, gatewayEnvironment(home));
+      engine.compaction = this.compaction.session({ models: snapshot.models, settings: agents.settings, args, aliases: engine.aliases,
+        isActive: id => engine.active.has(id), request: (method, params) => engine.connection.request(method, params) });
       this.engines.push(engine);
       try { await engine.connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } }); engine.connection.send({ method: "initialized", params: {} }); }
       catch (error) { engine.connection.stop(); throw error; }
@@ -253,9 +266,14 @@ export class AppServerBackends {
     try {
       const model = object(object(params.collaborationMode).settings).model ?? params.model;
       if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
+      const compaction = await engine.compaction?.before(method, params);
+      if (compaction?.intercepted) return compaction.result || {};
+      const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
       const result = await engine.connection.request(method, method === "thread/start" ? withTitleTool(params) : params);
+      await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
         const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
+        if (method !== "thread/resume" || !loaded) engine.compaction?.remember(id, params);
       }
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
         engine.threads.delete(params.threadId); this.bindings.delete(params.threadId);
@@ -264,7 +282,9 @@ export class AppServerBackends {
     } finally { engine.requests--; }
   }
   async stop(): Promise<void> {
-    this.closing = true; this.native.stop(); for (const engine of this.engines) engine.connection.stop();
+    this.closing = true; this.native.stop();
+    await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));
+    for (const engine of this.engines) engine.connection.stop();
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
     (await this.poolPending?.catch(() => undefined))?.close();

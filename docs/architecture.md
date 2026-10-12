@@ -65,6 +65,13 @@ gateway chat before adding another generation at that limit. Idle generations
 without loaded chats are stopped. A gateway executor failure does not stop the
 native connection; saved gateway history can be resumed.
 
+Gateway-owned compaction metadata contains only current-window counters and SDK
+compaction lifecycle events, scoped to the native storage home. Recovery uses
+the loaded executor's frozen model limits and the next explicit user request.
+It preserves active steering, goals, native account ownership, and original
+rollouts. See [compaction and model changes](app-server.md#compaction-and-model-changes)
+for completion, cancellation, and shared-ownership limits.
+
 Each adapter keeps a separate private cache of public gateway model rows.
 Startup validates its source against the local port and client-token hash, then
 restores those names even if the inference host is offline. Cache files contain

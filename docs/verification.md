@@ -14,6 +14,24 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The v0.2.19 compaction work reproduces the pinned SDK's previous-model downshift
+failure, then verifies recovery with the selected gateway model. Its source gate
+passes 425 tests. The immutable installer passed repeated installation, including
+a prefix containing spaces and quotes, and 38 signed SDK compaction checks across
+stdio and Unix/WebSocket. The checks cover short and long switches, reasoning
+effort, real completion ordering, two interruptions, selected-provider failure,
+persisted failed-state recovery after reconnect, proof replay, and safe shared
+ownership refusals. They use 67 mock requests and zero paid inference; fixture
+process groups and provider timers finish at zero.
+
+The same installer passed all 41 existing signed SDK Fast checks with 36 mock
+requests. These fixtures preserve native configuration and copy no authentication.
+They do not establish rendered controls, live subscription compaction, or the
+built-in cloud transport. Recovery requires an idle per-connection executor with
+no active goal. Shared execution requires explicit compaction because the SDK
+has no atomic idle admission operation. Installation preserves running apps and
+older loaded adapters; existing connections need activation before using the fix.
+
 The v0.2.18 speed work retains the secondary account's declared Fast capabilities
 for seven of its eight models; Daybreak offers none. All eight aliases retain
 their routes and Standard defaults. The four selected Copilot models expose no

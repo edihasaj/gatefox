@@ -173,6 +173,40 @@ These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol.
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
 goal continuation and every rendered control remain separate desktop checks.
 
+## Compaction and model changes
+
+The pinned SDK normally compacts a long chat with its previous model before
+switching to a model with a smaller context window. An unavailable or exhausted
+previous provider can therefore block a model change even after the new selection
+has been saved.
+
+For per-connection gateway executors, the adapter checks public current-window
+usage against the selected model's frozen context metadata. It also records real
+failed compaction events. On the next explicit user message, a qualified idle chat
+is compacted with the selected gateway model before that message is submitted.
+The adapter waits for the actual compaction item and successful turn completion;
+an empty RPC acknowledgement alone does not establish success. Stop cancels only
+the observed compaction turn and prevents submission of the waiting message.
+Failure returns one application error and requires another explicit retry.
+
+Active turns retain normal SDK steering. Recovery never pauses an active goal;
+pause or finish that goal first. Shared executors require explicit compaction
+because the SDK cannot atomically check idle state and start compaction across
+independent clients. Unknown context metadata is not replaced with cumulative
+billing totals. A confirmed rollback clears the recovery metadata. Known non-null
+compaction hashes are rejected because the SDK does not expose the previous-turn
+hash needed to prove format compatibility.
+
+The SDK owns history replacement and retains its original rollout. Summaries are
+lossy, and the SDK can trim the request copy to fit the selected model; this does
+not guarantee exact preservation of every detail in a smaller context window.
+An uncertain late SDK start remains guarded until its actual completion. Reconnect
+the chat's computer connection if that guard requests it. The adapter never
+fabricates a completion or clears a live writer lock.
+
+These changes require a fresh adapter connection. Installing a release preserves
+an already-loaded older adapter and its active chats.
+
 The launch procedure and real Claude/Codex 2 conversations have been verified
 in the rendered desktop on MacBook Pro 2. Initial activation requires a fresh
 app launch with these environment variables. Test on another machine before
