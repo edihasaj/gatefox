@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { nativeSourceDigest } from './native-source.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
-import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256 } from './gateway-sdk-source.mjs';
+import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !process.argv.includes('--allow-dirty')) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
@@ -35,6 +35,7 @@ if (process.argv.includes('--with-gateway-sdk')) {
       metadata.revision !== gatewaySdkRevision || metadata.archiveSha256 !== gatewaySdkArchiveSha256 ||
       metadata.patchSha256 !== gatewaySdkPatchDigest() || metadata.lockfileRepairSha256 !== gatewaySdkLockRepairDigest() ||
       metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.sourceSha256 !== gatewaySdkSourceDigest() ||
+      metadata.testRunnerSha256 !== gatewaySdkTestRunnerDigest() ||
       metadata.capabilities?.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability ||
       metadata.binarySha256 !== createHash('sha256').update(readFileSync(join(gatewayArtifact, 'gateway-codex'))).digest('hex')) {
     throw new Error('Gateway SDK artifact does not match this release source');

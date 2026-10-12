@@ -164,7 +164,8 @@ export class NativeExecutionEngine {
       return await this.bounded(probe(admin));
     } finally {
       admin.stop();
-      // Keep retiring sockets in the bound until their close has actually completed.
+      // Bound our retiring sockets through local transport closure. SDK-side
+      // subscription cleanup can finish after that local close notification.
       await this.bounded(admin.exited);
     }
   }

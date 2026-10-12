@@ -13,14 +13,17 @@ Each job has a ten-minute limit, read-only repository permissions, pinned offici
 actions, and an npm download cache.
 
 The `verify` job uses Ubuntu 24.04 ARM and runs the unchanged source gate:
-`npm ci`, `npm run build`, `npm run check`, and `npm test`. Five existing tests
-require macOS and retain their explicit platform guards. The `macos-native` job
-runs their four complete test files on GitHub's macOS 15 Apple Silicon runner:
+`npm ci`, `npm run build`, `npm run check`, and `npm test`. Six tests require macOS
+and retain their explicit platform guards. The `macos-native` job runs their
+complete test files and native ownership regressions on GitHub's macOS 15
+Apple Silicon runner:
 
 - `mac-service.test.ts`: native plist parsing.
 - `service-plan.test.ts`: managed service inventory.
 - `service-tunnel.test.ts`: native SSH parsing and supervisor arguments.
 - `service-shared-executors.test.ts`: shared service migration and lifecycle.
+- `service-shared-native.test.ts`: native migration and verified artifact guards.
+- `native-execution-host.test.ts`: shared native ownership and recovery.
 
 Keep any additional macOS-only test files in that job. Both jobs must pass; the
 Linux suite alone does not establish macOS coverage. Fixtures use temporary

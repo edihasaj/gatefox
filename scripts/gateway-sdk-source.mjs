@@ -16,9 +16,14 @@ export function gatewaySdkLockRepairDigest() {
   return createHash('sha256').update(readFileSync('scripts/gateway-sdk-lock.mjs')).digest('hex');
 }
 
+export function gatewaySdkTestRunnerDigest() {
+  return createHash('sha256').update(readFileSync('scripts/gateway-sdk-test-runner.mjs')).digest('hex');
+}
+
 export function gatewaySdkSourceDigest() {
   const hash = createHash('sha256');
-  for (const path of ['scripts/build-gateway-sdk.mjs', 'scripts/gateway-sdk-source.mjs', gatewaySdkPatch, 'scripts/gateway-sdk-lock.mjs']) {
+  for (const path of ['scripts/build-gateway-sdk.mjs', 'scripts/gateway-sdk-source.mjs', gatewaySdkPatch,
+    'scripts/gateway-sdk-lock.mjs', 'scripts/gateway-sdk-test-runner.mjs']) {
     hash.update(path).update('\0').update(readFileSync(path)).update('\0');
   }
   return hash.digest('hex');

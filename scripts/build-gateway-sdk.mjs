@@ -5,8 +5,9 @@ import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatch, gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
-import { gatewaySdkLockRepairDigest } from './gateway-sdk-source.mjs';
+import { gatewaySdkLockRepairDigest, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockSha256, repairGatewaySdkLock } from './gateway-sdk-lock.mjs';
+import { withGatewaySdkCompactionTests } from './gateway-sdk-test-runner.mjs';
 
 const { values } = parseArgs({ options: { archive: { type: 'string' }, 'target-dir': { type: 'string' },
   dev: { type: 'boolean' }, test: { type: 'boolean' }, version: { type: 'string' } } });
@@ -69,14 +70,16 @@ const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' };
 const profile = values.dev ? [] : ['--release'];
 if (values.test) {
   if (cargoEnvironment.CODEX_SANDBOX_NETWORK_DISABLED !== undefined) throw Error('Gateway SDK tests require the local mock server network');
-  const output = execFileSync('cargo', ['test', '--locked', ...profile, '--manifest-path', manifest,
+  const output = withGatewaySdkCompactionTests(sdk, () => execFileSync('cargo', ['test', '--locked', ...profile, '--manifest-path', manifest,
     '--target-dir', target, '-p', 'codex-core', '--test', 'all',
     'gateway_pre_sampling_compaction_stays_in_selected_user_turn', '--', '--nocapture'],
     { cwd: join(sdk, 'codex-rs'), env: cargoEnvironment, encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024 });
+      stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024 }));
   const result = /test result: ok\. (\d+) passed; 0 failed;/.exec(output);
   if (!result || Number(result[1]) !== 4 || output.includes('Skipping test')) throw Error('Gateway SDK regression gate did not execute all four cases');
-  console.log(JSON.stringify({ tests: 4, revision: gatewaySdkRevision, patchSha256, sourceSha256 }));
+  if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
+  console.log(JSON.stringify({ tests: 4, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+    testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],
     { cwd: join(sdk, 'codex-rs'), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 }));
@@ -114,7 +117,8 @@ if (values.test) {
   writeFileSync(join(artifact, 'build.json'), JSON.stringify({ schemaVersion: 1, version,
     codexVersion: gatewaySdkCodexVersion, revision: gatewaySdkRevision, archiveSha256: gatewaySdkArchiveSha256,
     patchSha256, lockfileRepairSha256, lockfileSha256: gatewaySdkLockSha256,
-    sourceSha256, patchedSdkSha256: input.patchedSdkSha256, binarySha256: digest(executable),
+    sourceSha256, testRunnerSha256: gatewaySdkTestRunnerDigest(),
+    patchedSdkSha256: input.patchedSdkSha256, binarySha256: digest(executable),
     profile: values.dev ? 'dev' : 'release', platform: process.platform, arch: process.arch,
     capabilities: [gatewaySdkCapability] }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ artifact, version, revision: gatewaySdkRevision, patchSha256, sourceSha256 }));

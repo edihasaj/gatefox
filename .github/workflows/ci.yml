@@ -41,3 +41,5 @@ jobs:
           dist/tests/service-plan.test.js
           dist/tests/service-tunnel.test.js
           dist/tests/service-shared-executors.test.js
+          dist/tests/service-shared-native.test.js
+          dist/tests/native-execution-host.test.js

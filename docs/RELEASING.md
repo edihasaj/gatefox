@@ -86,6 +86,11 @@ while its lockfile retains `0.0.0`. A guarded helper repairs exactly those 161
 source-less workspace versions. All external package versions, sources, checksums,
 and dependency blocks remain byte-identical. The repaired lockfile and helper are
 hashed in the receipt; Cargo tests and builds still use `--locked`.
+The four compaction cases use the upstream compact suite with its original test
+aliases and constructor. The runner temporarily narrows the suite aggregator to
+that module, avoiding unrelated upstream test compilation errors, then restores
+the exact original bytes. Its digest joins the receipt; the verified SDK source
+tree must match again before building the executable.
 
 # Upgrade and recovery
 

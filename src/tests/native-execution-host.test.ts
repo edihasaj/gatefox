@@ -83,6 +83,9 @@ test("native leases and loaded chats prevent quiescence; transient inspection do
     assert.equal(await host.prepareStop(), false);
     client = await f.initialize(record.socketPath, "frontend"); await client.request("thread/start", { threadId: "loaded" });
     await control.request("native/release", { revision: record.revision }); assert.equal(await host.prepareStop(), false);
+    // Local WS close can precede the SDK peer's close bookkeeping. Prove that
+    // the transient inspection leaves only the actual frontend connected.
+    await until(async () => (await client!.request("fixture/info", {})).clients === 1);
     assert.equal((await client.request("fixture/info", {})).clients, 1);
     await client.request("thread/unsubscribe", { threadId: "loaded" }); assert.equal(await host.prepareStop(), true);
     await assert.rejects(control.request("native/acquire", { args: f.args, cwd: f.cwd }), /quiescing/); host.resume();
