@@ -93,6 +93,12 @@ layer returns application error `-32001` before applying the alias. It removes
 which the pinned SDK ignores. Code Mode, other Guardian settings, and reasoning
 choices keep their values. Equivalent legacy and current settings share the same
 executor identity. Already loaded sessions keep their settings until they reload.
+Metadata discovery also drops those retired CLI keys before starting its SDK
+preflight. It removes the legacy hooks alias without overriding the native
+`hooks` setting while reading that base. Normal inference arguments then apply
+the compatible alias only when no explicit current setting exists. Shared
+execution hosts enforce the same normalization before spawning their SDK,
+including requests from older adapters. Native configuration files are unchanged.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
 the gateway state directory. Model, effort, summary, and service-tier writes are

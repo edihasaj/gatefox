@@ -8,6 +8,7 @@ import { object, isId, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
+import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; agentsDirectory?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[] }
@@ -27,7 +28,9 @@ export function canonicalJson(value: unknown): string {
     ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item);
 }
 export function descriptorFingerprint(descriptor: ExecutionDescriptor): string { return createHash("sha256").update(canonicalJson(descriptor)).digest("hex"); }
-export function executionArgs(args: string[], socket: string, catalog: string): string[] {
+export function executionArgs(input: string[], socket: string, catalog: string, settings: Message = {}): string[] {
+  // Older connected adapters can still supply legacy flags to a newer host.
+  const args = normalizeCodexFeatureArgs(input, settings);
   const forwarded: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -84,7 +87,7 @@ export class ExecutionEngine {
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
-    const child = spawn(this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
+    const child = spawn(this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
     this.child = child;
     this.exited = new Promise(resolve => {
       child.once("error", () => { this.closed = true; });

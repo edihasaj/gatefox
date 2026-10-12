@@ -103,22 +103,21 @@ function normalizeInline(value: string, guardian: boolean, explicitHooks: boolea
   return changed ? `{ ${parts.join(", ")} }` : value;
 }
 
-function normalizeOverride(value: string, canonical: Set<string>): string | undefined {
+function normalizeOverride(value: string, canonical: Set<string>, omitLegacyHooks: boolean): string | undefined {
   const index = value.indexOf("="); if (index < 0) return value;
   const key = value.slice(0, index).trim(); const raw = value.slice(index + 1); const path = featurePath(key);
   if (path && removed.has(path.name)) return;
-  if (path?.name === "codex_hooks") return canonical.has(featureScope(path.prefix)) ? undefined : key.slice(0, -"codex_hooks".length) + "hooks=" + raw;
+  if (path?.name === "codex_hooks") return omitLegacyHooks || canonical.has(featureScope(path.prefix)) ? undefined : key.slice(0, -"codex_hooks".length) + "hooks=" + raw;
   if (!featureContainer(key) && path?.name !== "guardianv2") return value;
   let parsed: unknown;
-  try { parsed = JSON.parse(raw); } catch { return key + "=" + normalizeInline(raw, path?.name === "guardianv2", canonical.has(featureScope(key))); }
+  try { parsed = JSON.parse(raw); } catch { return key + "=" + normalizeInline(raw, path?.name === "guardianv2", omitLegacyHooks || canonical.has(featureScope(key))); }
   if (!record(parsed)) return value;
-  const normalized = path?.name === "guardianv2" ? { ...parsed } : normalizeFeatures(parsed, canonical.has(featureScope(key)));
+  const normalized = path?.name === "guardianv2" ? { ...parsed } : normalizeFeatures(parsed, omitLegacyHooks || canonical.has(featureScope(key)));
   if (path?.name === "guardianv2") delete normalized.thread_context;
   return JSON.stringify(normalized) === JSON.stringify(parsed) ? value : key + "=" + JSON.stringify(normalized);
 }
 
-/** Apply the same feature compatibility to known app-server CLI override forms. */
-export function normalizeCodexFeatureArgs(input: string[], base: Message = {}): string[] {
+function normalizeArgs(input: string[], base: Message, omitLegacyHooks: boolean): string[] {
   const canonical = canonicalHooks(base);
   const override = (arg: string, next?: string) => ["-c", "--config"].includes(arg) ? next : arg.startsWith("--config=") ? arg.slice(9) : undefined;
   const feature = (arg: string, next?: string) => ["--enable", "--disable"].includes(arg) ? next : /^(--enable|--disable)=/.test(arg) ? arg.slice(arg.indexOf("=") + 1) : undefined;
@@ -136,17 +135,23 @@ export function normalizeCodexFeatureArgs(input: string[], base: Message = {}): 
   for (let index = 0; index < input.length; index++) {
     const arg = input[index]; const value = override(arg, input[index + 1]); const flags = feature(arg, input[index + 1]);
     if (value !== undefined) {
-      const normalized = normalizeOverride(value, canonical);
+      const normalized = normalizeOverride(value, canonical, omitLegacyHooks);
       if (["-c", "--config"].includes(arg)) { index++; if (normalized !== undefined) result.push(arg, normalized); }
       else if (normalized !== undefined) result.push("--config=" + normalized);
     } else if (flags !== undefined) {
-      const name = removed.has(flags) || flags === "codex_hooks" && canonical.has("features") ? undefined : flags === "codex_hooks" ? "hooks" : flags;
+      const name = removed.has(flags) || flags === "codex_hooks" && (omitLegacyHooks || canonical.has("features")) ? undefined : flags === "codex_hooks" ? "hooks" : flags;
       if (["--enable", "--disable"].includes(arg)) { index++; if (name !== undefined) result.push(arg, name); }
       else if (name !== undefined) result.push(arg.slice(0, arg.indexOf("=") + 1) + name);
     } else result.push(arg);
   }
   return result;
 }
+
+/** Apply the same feature compatibility to known app-server CLI override forms. */
+export function normalizeCodexFeatureArgs(input: string[], base: Message = {}): string[] { return normalizeArgs(input, base, false); }
+
+/** Read native settings without a legacy CLI alias creating synthetic canonical hooks. */
+export function preflightCodexFeatureArgs(input: string[]): string[] { return normalizeArgs(input, {}, true); }
 
 function hookValues(input: Message, legacy: boolean, base = "", result = new Map<string, unknown>()): Map<string, unknown> {
   const name = legacy ? "codex_hooks" : "hooks";

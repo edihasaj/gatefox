@@ -14,6 +14,20 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The October 12 retired-feature audit found none of the three obsolete settings
+in the primary Mac, MacBook Pro 2, or Studio native configuration, including
+profiles. MacBook Pro 2's five gateway engine snapshots and Studio's one snapshot
+were also clean. No configuration edits were required. Historical warning records
+remain historical; Guardian feedback telemetry is not deprecated configuration.
+
+v0.2.17 closes two remaining argument paths: metadata SDK preflight and shared
+execution requests from older adapters. Its gate passed 264 tests. A signed SDK
+metadata proof supplied all three retired CLI flags with native `hooks=false`
+and `hooks=true`. Neither SDK spawn received a retired key, neither emitted a
+matching warning, and both returned their original hooks value. The proof used
+only initialization, configuration reads, and model listing; no inference or
+copied authentication. Native and isolated configuration bytes were unchanged.
+
 The v0.2.16 installed preflight passed 260 tests and a real launchd cleanup
 fixture. Staging one future startup entry preserved the old PIDs. Manual
 promotion and promotion with an old relay still loaded were refused. The actual

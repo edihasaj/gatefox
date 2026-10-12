@@ -32,7 +32,7 @@ if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'||m.method==='thread/resume'){const id=m.params.threadId||'fixture-thread';loaded.add(id);result={thread:{id}};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
 client.send(JSON.stringify({id:m.id,result}));}));
-server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME})));
+server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
 process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close(()=>process.exit(0));});
 `, { mode: 0o700 });
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
@@ -57,6 +57,26 @@ async function control(path: string) {
 test("execution descriptors bound metadata and replace only host-owned socket/catalog arguments", () => {
   assert.throws(() => executionDescriptor({ revision: "a".repeat(64), args: ["app-server"], settings: {}, catalog: { models: [] }, aliases: [] }), /Invalid execution/);
   assert.deepEqual(executionArgs(["app-server", "--listen", "stdio://", "-c", 'model_catalog_json="old"', "-c", "features.step_model_switching=true"], "/private.sock", "/private.json"), ["app-server", "-c", "features.step_model_switching=true", "--listen", "unix:///private.sock", "-c", 'model_catalog_json="/private.json"']);
+});
+
+test("a shared host cleans flags from an older adapter before its SDK starts", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    host = await startExecutionHost({ config: f.config, configPath: f.configPath, nativeHome: f.nativeHome, codex: f.codex });
+    client = await control(join(f.hostHome, "host.sock"));
+    const descriptor = f.descriptor();
+    descriptor.args.push("-c", "features.code_mode_tool_description_first=true", "-c", "features.guardianv2.thread_context=false", "--disable", "codex_hooks", "-c", "features.code_mode.enabled=true");
+    descriptor.settings.features = { hooks: true, code_mode: { enabled: true }, guardianv2: { enabled: false } };
+    const original = JSON.stringify(descriptor);
+    await client.request("execution/acquire", { descriptor });
+    const observed = JSON.parse(await readFile(join(f.directory, "engine-a.json"), "utf8")) as { args: string[]; home: string };
+    assert.ok(!observed.args.some(arg => /code_mode_tool_description_first|codex_hooks|guardianv2\.thread_context/.test(arg)));
+    assert.ok(observed.args.includes("features.code_mode.enabled=true"));
+    const settings = await readFile(join(observed.home, "config.toml"), "utf8");
+    assert.match(settings, /"hooks"\s*=\s*true/);
+    assert.equal(JSON.stringify(descriptor), original);
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
 test("shared execution survives adapter disconnect, finds loaded owners, and preserves native files", { timeout: 30000 }, async () => {
