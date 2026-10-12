@@ -1,15 +1,21 @@
 name: CI
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   verify:
-    runs-on: [self-hosted, macOS, ARM64, subscription-gateway]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
           cache: npm
@@ -17,3 +23,21 @@ jobs:
       - run: npm run build
       - run: npm run check
       - run: npm test
+  macos-native:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Verify macOS service and SSH behavior
+        run: >-
+          node --test
+          dist/tests/mac-service.test.js
+          dist/tests/service-plan.test.js
+          dist/tests/service-tunnel.test.js
+          dist/tests/service-shared-executors.test.js
