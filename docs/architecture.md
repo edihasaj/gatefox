@@ -18,6 +18,9 @@ instructions, or execute caller tools. The client owns orchestration, permission
 chat naming, and conversation lifecycle. The desktop adapter forwards those client
 operations and isolates account configuration; its session ownership machinery
 prevents competing writers rather than deciding what work an agent performs.
+Added gateway model rows ignore task prompt text from older hosts and offline
+caches. The original native model catalog and explicit client instructions remain
+unchanged.
 
 An inference keeps the configuration snapshot with which it began. New requests
 load atomically replaced configuration. Invalid configuration fails closed until

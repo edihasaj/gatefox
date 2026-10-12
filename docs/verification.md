@@ -17,7 +17,7 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 ## Current release evidence
 
 The v0.2.23 gateway removes generated agent roles, worker defaults, role CLI
-commands, task prompt text, and the injected title tool. All 527 source tests
+commands, task prompt text, and the injected title tool. All 528 source tests
 pass. Client agent settings and user-authored role files survive unchanged even
 when an obsolete gateway policy exists. Native naming and caller tools remain
 ordinary client operations. The real signed SDK passes eight Responses cases

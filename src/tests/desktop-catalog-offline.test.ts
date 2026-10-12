@@ -15,7 +15,7 @@ async function fixture() {
   await writePrivateJson(files.config, files.value);
   const path = join(files.directory, "combined.json");
   const cachePath = join(files.value.stateDirectory, "desktop-public-models.json");
-  const native = [{ slug: "native", priority: 1, identity: "not-public-cache-identity" }];
+  const native = [{ slug: "native", priority: 1, identity: "not-public-cache-identity", model_messages: { instructions_template: "original client instructions" } }];
   const create = () => new DesktopCatalog(files.value, native, path);
   return { ...files, path, cachePath, native, create };
 }
@@ -75,11 +75,43 @@ test("offline cache contains only extra public rows and an opaque source identit
     assert.equal(cache.version, 1); assert.match(cache.source, /^[a-f0-9]{64}$/);
     assert.equal(text.includes(token.trim()), false); assert.equal(text.includes("excluded-"), false); assert.equal(text.includes("not-public-cache-identity"), false);
     assert.deepEqual(cache.models.map((row: { slug: string }) => row.slug), ["claude/model"]);
-    assert.deepEqual(cache.models[0].model_messages, { instructions_template: "public instructions" });
+    assert.deepEqual(cache.models[0].model_messages, { instructions_template: "" });
     assert.equal((await lstat(f.cachePath)).mode & 0o777, 0o600);
     f.close(); const restored = f.create(); await restored.initialize();
     assert.deepEqual(restored.current().models[0].input_modalities, ["text", "image"]);
     assert.deepEqual(restored.current().models[0].supported_reasoning_levels, [{ effort: "max", description: "Max" }]);
+  } finally { f.close(); }
+});
+
+test("older live catalogs and offline caches cannot restore gateway agent instructions", async () => {
+  const f = await fixture();
+  const gateway = { slug: "claude/model", display_name: "Claude · Updated", supported_reasoning_levels: [{ effort: "max", description: "Max" }], input_modalities: ["text", "image"],
+    service_tiers: [{ id: "priority", name: "Fast", description: "Priority routing" }], default_service_tier: null };
+  const originalNative = structuredClone(f.native);
+  try {
+    f.setCatalog({ models: [{ ...gateway, model_messages: { instructions_template: "Old gateway policy: coordinate workers and call gateway_chat_title.", token: "exclude-message-secret" } }] });
+    const live = f.create(); const first = await live.refresh(true);
+    assert.deepEqual(first.models[0].model_messages, { instructions_template: "" });
+    assert.deepEqual(live.combined().models[0], originalNative[0]);
+    assert.deepEqual(f.native, originalNative);
+    for (const model_messages of [{ instructions_template: "Another obsolete policy" }, { instructions_template: 42 }, undefined]) {
+      f.setCatalog({ models: [{ ...gateway, ...(model_messages ? { model_messages } : {}) }] });
+      assert.equal((await live.refresh(true)).revision, first.revision);
+    }
+    const cache = JSON.parse(await readFile(f.cachePath, "utf8"));
+    cache.models[0].model_messages = { instructions_template: "Cached gateway worker policy", token: "exclude-cache-message-secret" };
+    await writePrivateJson(f.cachePath, cache); f.close();
+    const restored = f.create(); await restored.initialize();
+    assert.equal(restored.current().revision, first.revision);
+    assert.deepEqual(restored.current().models[0].model_messages, { instructions_template: "" });
+    assert.deepEqual(restored.current().models[0].input_modalities, gateway.input_modalities);
+    assert.deepEqual(restored.current().models[0].service_tiers, gateway.service_tiers);
+    assert.equal(restored.current().models[0].display_name, gateway.display_name);
+    const combined = JSON.parse(await readFile(f.path, "utf8"));
+    assert.deepEqual(combined.models[0], originalNative[0]);
+    assert.deepEqual(combined.models[1].model_messages, { instructions_template: "" });
+    assert.equal(JSON.stringify(combined).includes("Cached gateway worker policy"), false);
+    assert.equal(JSON.stringify(combined).includes("exclude-cache-message-secret"), false);
   } finally { f.close(); }
 });
 

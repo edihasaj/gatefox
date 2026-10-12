@@ -38,8 +38,9 @@ function publicModels(value: unknown, native: Message[]): Message[] {
       return { effort: metadata.effort, ...(typeof metadata.description === "string" ? { description: metadata.description } : {}) };
     });
     if (modalities !== undefined) result.input_modalities = modalities;
-    const messages = object(model.model_messages);
-    if (typeof messages.instructions_template === "string") result.model_messages = { instructions_template: messages.instructions_template };
+    // Codex requires this schema, but inference hosts and old caches must not
+    // supply an agent policy. Client instructions remain in the native catalog.
+    result.model_messages = { instructions_template: "" };
     const policy = object(model.truncation_policy);
     if (typeof policy.mode === "string" && typeof policy.limit === "number") result.truncation_policy = { mode: policy.mode, limit: policy.limit };
     if (Array.isArray(model.experimental_supported_tools) && model.experimental_supported_tools.every(tool => typeof tool === "string")) result.experimental_supported_tools = model.experimental_supported_tools;
