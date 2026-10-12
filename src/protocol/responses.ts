@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ResponsesTranslationError } from "./request.js";
-import { publicServiceTier, type PublicServiceTier, type InferenceEvent, type OpenAIToolCall, type Usage, type WireEvent } from "./types.js";
+import { publicServiceTier, type AssistantMessagePhase, type PublicServiceTier, type InferenceEvent, type OpenAIToolCall, type Usage, type WireEvent } from "./types.js";
 
 type Item = Record<string, unknown> & { type: string; id: string };
 const identifier = (kind: string) => `${kind}_${randomUUID().replaceAll("-", "")}`;
@@ -35,7 +35,7 @@ export function responseToolFrames(calls: OpenAIToolCall[], offset: number): str
 }
 
 type Thought = { item: Item; position: number; parts: Map<number, string> };
-type Message = { id: string; position: number; value: string };
+type Message = { id: string; position: number; value: string; providerId?: string; phase?: AssistantMessagePhase; closed?: boolean };
 
 /** A single response ledger drives both streamed events and the final JSON body. */
 export class ResponsesWriter {
@@ -44,18 +44,22 @@ export class ResponsesWriter {
   private readonly ledger: Item[] = [];
   private readonly thoughts = new Map<string, Thought>();
   private message?: Message;
+  private readonly messages = new Map<string, Message>();
+  private readonly providerMessages = new Map<string, Message>();
   private serial = 0;
   private status: "in_progress" | "completed" | "failed" = "in_progress";
   private answer = "";
   private tokens: Usage = { total_tokens: 0, input_tokens: 0, output_tokens: 0 };
   private serviceTier?: PublicServiceTier;
+  private endTurn?: boolean;
   constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void) {}
   get completed(): boolean { return this.status === "completed"; }
   private publish(frame: WireEvent): void { this.emit({ ...frame, sequence_number: this.serial++ }); }
   private snapshot(status: string): Record<string, unknown> {
     return { object: "response", id: this.responseId, created_at: this.created, model: this.model,
       status, usage: { ...this.tokens }, output_text: this.answer, output: structuredClone(this.ledger),
-      ...(this.serviceTier === undefined ? {} : { service_tier: this.serviceTier }) };
+      ...(this.serviceTier === undefined ? {} : { service_tier: this.serviceTier }),
+      ...(this.endTurn === undefined ? {} : { end_turn: this.endTurn }) };
   }
   begin(): void { this.publish({ type: "response.created", response: this.snapshot("in_progress") }); }
   progress(): void { if (this.status === "in_progress") this.publish({ type: "response.in_progress", response: this.snapshot("in_progress") }); }
@@ -64,27 +68,35 @@ export class ResponsesWriter {
     const position = this.ledger.push(item) - 1;
     this.publish({ type: "response.output_item.added", output_index: position, item }); return position;
   }
-  private closeMessage(): void {
-    const message = this.message; if (!message) return;
+  private closeMessage(message = this.message): void {
+    if (!message || message.closed) return;
     const part = { type: "output_text", text: message.value, annotations: [] };
-    const item: Item = { type: "message", id: message.id, role: "assistant", status: "completed", content: [part] };
+    const item: Item = { type: "message", id: message.id, role: "assistant", status: "completed", content: [part],
+      ...(message.phase === undefined ? {} : { phase: message.phase }) };
     const coordinates = { item_id: message.id, output_index: message.position, content_index: 0 };
     this.publish({ type: "response.output_text.done", ...coordinates, text: message.value });
     this.publish({ type: "response.content_part.done", ...coordinates, part });
     this.ledger[message.position] = item;
-    this.publish({ type: "response.output_item.done", output_index: message.position, item }); this.message = undefined;
+    this.publish({ type: "response.output_item.done", output_index: message.position, item }); message.closed = true;
+    if (this.message === message) this.message = undefined;
   }
-  private text(value: string): void {
+  private text(event: Extract<InferenceEvent, { type: "text" }>): void {
+    const value = event.text;
     if (!value) return;
-    if (!this.message) {
+    let message = event.messageId === undefined ? this.message?.providerId === undefined ? this.message : undefined : this.providerMessages.get(event.messageId);
+    if (message?.closed) throw new Error("Provider emitted text after its message ended");
+    if (!message) {
       const id = identifier("msg");
-      const position = this.append({ type: "message", id, role: "assistant", status: "in_progress", content: [] });
-      this.message = { id, position, value: "" };
+      const position = this.append({ type: "message", id, role: "assistant", status: "in_progress", content: [],
+        ...(event.phase === undefined ? {} : { phase: event.phase }) });
+      message = { id, position, value: "", ...(event.messageId === undefined ? {} : { providerId: event.messageId }), ...(event.phase === undefined ? {} : { phase: event.phase }) };
+      this.messages.set(id, message); if (event.messageId !== undefined) this.providerMessages.set(event.messageId, message);
       this.publish({ type: "response.content_part.added", item_id: id, output_index: position, content_index: 0,
         part: { type: "output_text", text: "", annotations: [] } });
     }
-    this.answer += value; this.message.value += value;
-    this.publish({ type: "response.output_text.delta", item_id: this.message.id, output_index: this.message.position, content_index: 0, delta: value });
+    this.message = message; if (event.phase !== undefined) message.phase = event.phase;
+    this.answer += value; message.value += value;
+    this.publish({ type: "response.output_text.delta", item_id: message.id, output_index: message.position, content_index: 0, delta: value });
   }
   private thought(key: string): Thought {
     let state = this.thoughts.get(key);
@@ -122,7 +134,12 @@ export class ResponsesWriter {
   accept(event: InferenceEvent): void {
     if (this.status !== "in_progress") throw new Error("Provider emitted after the response ended");
     switch (event.type) {
-      case "text": this.text(event.text); return;
+      case "text": this.text(event); return;
+      case "message-done": {
+        const message = event.messageId === undefined ? this.message : this.providerMessages.get(event.messageId);
+        if (message) { if (event.phase !== undefined) message.phase = event.phase; this.closeMessage(message); }
+        return;
+      }
       case "reasoning": this.reason(event); return;
       case "reasoning-state": {
         if (event.item.type !== "reasoning" || typeof event.item.id !== "string") throw new Error("Invalid reasoning state");
@@ -130,12 +147,17 @@ export class ResponsesWriter {
         this.ledger[state.position] = state.item; return;
       }
       case "tool": {
-        this.closeMessage(); const item = outputCall(event.call); const position = this.ledger.length;
+        // Explicit provider messages close at their actual output-item boundary.
+        // Legacy text-only providers close before their next caller tool.
+        if (this.message?.providerId === undefined) this.closeMessage();
+        const item = outputCall(event.call); const position = this.ledger.length;
         for (const frame of callFrames(item, position)) this.publish(frame); this.ledger.push(item); return;
       }
       case "done": {
-        this.closeMessage(); this.closeThoughts(); this.tokens = event.usage;
+        for (const message of this.messages.values()) this.closeMessage(message);
+        this.closeThoughts(); this.tokens = event.usage;
         this.serviceTier = publicServiceTier(event.serviceTier); this.status = "completed";
+        this.endTurn = typeof event.endTurn === "boolean" ? event.endTurn : undefined;
         this.publish({ type: "response.completed", response: this.snapshot(this.status) }); return;
       }
     }

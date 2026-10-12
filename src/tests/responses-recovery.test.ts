@@ -30,7 +30,11 @@ const collect = async (provider: ResponsesAPI, signal = new AbortController().si
 
 test("transient failure before output retries once and returns only the successful output", async () => {
   const f = await fixture(attempt => attempt === 1 ? [failed("server_error")] : complete);
-  try { assert.deepEqual((await collect(f.provider)).map(event => event.type), ["text", "done"]); assert.equal(f.attempts(), 2); }
+  try {
+    const events = await collect(f.provider);
+    assert.deepEqual(events.filter(event => event.type === "text").map(event => event.text), ["recovered"]);
+    assert.equal(events.filter(event => event.type === "done").length, 1); assert.equal(f.attempts(), 2);
+  }
   finally { await f.close(); }
 });
 test("persistent transient errors exhaust one retry, while quota and unknown failures never retry", async () => {

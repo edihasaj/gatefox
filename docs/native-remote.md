@@ -59,6 +59,29 @@ state. A fresh normal app launch restores the original remote transport. Explici
 uninstall cancels remote work. A changed running registration is refused until
 the old service is stopped after active chats finish.
 
+## Session diagnostics
+
+The relay records timestamped, fixed lifecycle causes in its existing private
+managed stderr log. Records cover session start/end, queue saturation, auth scope
+changes, frame failures, child exit, and task panic. Real queued SDK lifecycle
+events may include canonical thread and turn IDs. Queue acceptance does not prove
+that the frontend received or rendered an event.
+
+Child stderr is drained with bounded buffers. Only aggregate byte/chunk counts
+and whether draining finished are recorded; raw errors, prompt text, tool
+arguments, credentials, environment values, paths, and labels are excluded.
+Thirty-second activity records distinguish quiet active work from an ended
+session. Reconnect cleanup checks task identity before cancelling a connection;
+an older task cannot cancel its replacement. Separate limits bound active and
+retiring sessions. Fair event selection keeps Stop and steering requests from
+being starved by continuous child output.
+
+The adapter reports a genuine unfinished native executor exit as an error and
+failed turn before shutting its client down. Buffered SDK completion events are
+drained first, and intentional shutdown does not manufacture a failure. A relay
+disconnect alone does not establish whether shared work stopped, so the relay
+does not manufacture a completed or failed task from that observation.
+
 ## Build and checks
 
 The relay links the Apache-2.0 Codex SDK from the exact upstream commit documented

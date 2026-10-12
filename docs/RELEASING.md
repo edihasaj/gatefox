@@ -38,6 +38,14 @@ belongs in the release archive.
    and verifies selected-model recovery, Stop, failures, and reconnect through
    stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
    checked for safe refusal of automatic compaction, not seamless recovery.
+   For Responses continuation changes, run
+   `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
+   SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies actual
+   continuation flags, message phases, nested text, and one dispatched tool with
+   the pinned signed SDK and a mock upstream. Pass the signed Mach-O under
+   `CodexCLI.app/Contents/MacOS/codex`, not its unsigned `bin/codex` shell launcher.
+   The fixture requires fresh isolated state, rejects native homes, and uses no
+   copied authentication or paid inference.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

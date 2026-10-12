@@ -37,6 +37,8 @@ export class AppServerConnection {
   private killTimer?: NodeJS.Timeout;
   private readonly requests = new Map<Id, { resolve: (value: Message) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
+  /** Child close can precede forwarding of buffered terminal notifications. */
+  readonly drained: Promise<void>;
   closed = false;
   constructor(executable: string, args: string[], onMessage: (message: Message) => Promise<void>, onExit: (connection: AppServerConnection) => void, env = process.env) {
     const child = spawn(executable, args, { stdio: ["pipe", "pipe", "pipe"], env }); this.child = child;
@@ -48,7 +50,7 @@ export class AppServerConnection {
     }));
     this.child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); this.stop(); });
     this.child.stdin.on("error", () => this.stop());
-    void (async () => {
+    this.drained = (async () => {
       try {
         for await (const line of jsonLines(child.stdout)) {
           let message: Message; try { message = object(JSON.parse(line)); } catch { throw new Error("Codex app-server returned invalid JSON"); }
@@ -59,7 +61,7 @@ export class AppServerConnection {
             else pending.resolve(object(message.result));
           }
         }
-      } catch (error) { process.stderr.write(`gateway: ${error instanceof Error ? error.message : "App-server stream failed"}\n`); this.stop(); }
+      } catch (error) { if (!this.stopping) process.stderr.write(`gateway: ${error instanceof Error ? error.message : "App-server stream failed"}\n`); this.stop(); }
     })();
   }
   send(message: Message): void { if (!this.stopping && !this.closed) this.child.stdin.write(JSON.stringify(message) + "\n"); }
@@ -74,7 +76,10 @@ export class AppServerConnection {
   }
   stop(): void {
     if (this.stopping || this.closed) return; this.stopping = true;
-    this.child.stdin.end(); this.child.kill("SIGTERM"); this.killTimer = setTimeout(() => this.child.kill("SIGKILL"), 1500).unref();
+    this.child.stdin.end(); this.child.kill("SIGTERM");
+    // Closing an owned child must not wait for an unconsumed stdout pipe while
+    // the client is already gone or forwarding is blocked on backpressure.
+    this.child.stdout.destroy(); this.killTimer = setTimeout(() => this.child.kill("SIGKILL"), 1500).unref();
   }
 }
 

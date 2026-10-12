@@ -14,6 +14,34 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The v0.2.20 silent-stop work passes 446 Node tests. Eight native-exit regressions
+verify that real buffered completions drain before exit classification, genuine
+unfinished executor exits emit errors before shutdown, and intentional close
+remains bounded. The signed SDK continuation fixture verifies actual `end_turn`
+values, assistant phases, nested final output, and exactly-once tool dispatch.
+It uses a mock upstream, unchanged isolated native configuration, and no copied
+authentication or paid inference.
+
+The immutable v0.2.20 preflight installer passed repeated installation and all
+four continuation scenarios with the signed SDK. Its existing Fast fixture also
+passes all 41 checks. Native relay tests pass 15 cases in the release profile,
+including continuous-output fairness, reconnect ownership, bounded teardown,
+stderr privacy, and failed diagnostic writes. Installation and tests do not
+activate the new code in older running components.
+
+The supplied native MacBook 2 example continued producing reasoning events
+without renderable summaries during a five-minute quiet period. Its original
+turn later interrupted, another completed, and a new turn started. The reported
+idle-looking viewer has not been captured on that exact chat, so its cause is
+unverified. Native execution bypasses the gateway's Responses translator; the
+continuation fix is not attributed to that native incident.
+
+An isolated replay of the installed desktop's actual observer handlers also
+shows that an inserted manual compaction turn can bind a pending user bubble to
+the compaction ID instead of the later user-turn ID. Backend compaction success
+therefore does not establish desktop association or full UI parity. This remains
+an unresolved desktop integration limitation, separate from the native example.
+
 The v0.2.19 compaction work reproduces the pinned SDK's previous-model downshift
 failure, then verifies recovery with the selected gateway model. Its source gate
 passes 425 tests. The immutable installer passed repeated installation, including

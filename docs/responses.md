@@ -41,6 +41,15 @@ state is not exposed to the Claude model. Hosted tools are outside
 the current Claude adapter's scope. Unsupported item and tool types return a
 client error instead of an internal crash.
 
+Responses upstream completion retains an actual boolean `end_turn` when present.
+An absent value remains absent. This lets the SDK distinguish a continuation
+from the end of a turn, including a response containing only caller tools.
+Assistant message boundaries and supplied `commentary`, `final_answer`, or
+`partial_answer` phases are retained. Actual text found in an output-item or
+final snapshot fills only a confirmed unstreamed suffix; repeated snapshots
+cannot duplicate text or execute a tool twice. Conflicting identities, phases,
+or text prefixes fail explicitly instead of silently discarding content.
+
 Text streams through Responses SSE as the provider emits it. Tool arguments are
 returned when the native call is complete. Claude's thinking events and Codex's
 reasoning summaries use Responses reasoning-summary events. An effort setting

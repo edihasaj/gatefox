@@ -1,15 +1,19 @@
 mod control;
+mod diagnostics;
+#[cfg(test)]
+mod diagnostics_tests;
 mod frames;
 mod lease;
 mod registration;
 mod session;
+mod session_events;
 #[cfg(test)]
 mod tests;
 
 use codex_app_server_transport::{
-    ConnectionId, ConnectionOrigin, OutgoingMessage, QueuedOutgoingMessage, DaemonShutdownAccess, app_server_control_socket_path, start_control_socket_acceptor,
+    ConnectionId, ConnectionOrigin, DaemonShutdownAccess, OutgoingMessage, QueuedOutgoingMessage,
     RemoteControlPolicy, RemoteControlStartConfig, RemoteControlStartupMode, TransportEvent,
-    start_remote_control,
+    app_server_control_socket_path, start_control_socket_acceptor, start_remote_control,
 };
 use codex_core::config::ConfigBuilder;
 use codex_login::AuthManager;
@@ -22,6 +26,60 @@ use tokio::{
     sync::mpsc,
 };
 use tokio_util::sync::CancellationToken;
+
+struct SessionEntry {
+    writer: mpsc::Sender<Value>,
+    stop: CancellationToken,
+    task: tokio::task::Id,
+}
+
+fn session_admission(
+    current_auth: bool,
+    sessions: usize,
+    tasks: usize,
+    replacement: bool,
+) -> Option<diagnostics::Cause> {
+    if !current_auth {
+        Some(diagnostics::Cause::AuthScopeChanged)
+    } else if tasks >= 16 {
+        Some(diagnostics::Cause::SessionTaskLimit)
+    } else if sessions >= 8 && !replacement {
+        Some(diagnostics::Cause::SessionLimit)
+    } else {
+        None
+    }
+}
+
+fn finish_session(
+    sessions: &mut HashMap<ConnectionId, SessionEntry>,
+    connection: ConnectionId,
+    task: tokio::task::Id,
+) {
+    if sessions
+        .get(&connection)
+        .is_some_and(|session| session.task == task)
+    {
+        if let Some(session) = sessions.remove(&connection) {
+            session.stop.cancel();
+        }
+    }
+}
+
+fn cancel_queue_error<T>(
+    connection: ConnectionId,
+    event: &'static str,
+    result: Result<(), mpsc::error::TrySendError<T>>,
+    token: &CancellationToken,
+) {
+    if let Err(error) = result {
+        let cause = match error {
+            mpsc::error::TrySendError::Full(_) => diagnostics::Cause::QueueFull,
+            mpsc::error::TrySendError::Closed(_) => diagnostics::Cause::QueueClosed,
+        };
+        diagnostics::emit(&diagnostics::record(event, connection.0, cause));
+        token.cancel();
+    }
+}
 
 #[derive(Clone)]
 pub struct Options {
@@ -51,7 +109,10 @@ impl Options {
                 enable = true;
                 continue;
             }
-            if key == "--check" { check = true; continue; }
+            if key == "--check" {
+                check = true;
+                continue;
+            }
             if ![
                 "--native-home",
                 "--relay-home",
@@ -89,6 +150,7 @@ impl Options {
 
 #[tokio::main]
 async fn main() {
+    diagnostics::install_panic_hook();
     if run().await.is_err() {
         eprintln!("gateway: Native relay stopped; private state retained");
         std::process::exit(1);
@@ -97,12 +159,21 @@ async fn main() {
 
 async fn run() -> io::Result<()> {
     let options = Options::parse()?;
-    let cli = tokio::process::Command::new(&options.codex).arg("--version").output().await?;
-    if !cli.status.success() || String::from_utf8_lossy(&cli.stdout).trim() != "codex-cli 0.162.0-alpha.17.2" {
-        return Err(io::Error::other("Native relay requires the matching Codex CLI build"));
+    let cli = tokio::process::Command::new(&options.codex)
+        .arg("--version")
+        .output()
+        .await?;
+    if !cli.status.success()
+        || String::from_utf8_lossy(&cli.stdout).trim() != "codex-cli 0.162.0-alpha.17.2"
+    {
+        return Err(io::Error::other(
+            "Native relay requires the matching Codex CLI build",
+        ));
     }
     if std::path::Path::new(&options.relay_home) == std::path::Path::new(&options.native_home) {
-        return Err(io::Error::other("Relay state must be separate from the native home"));
+        return Err(io::Error::other(
+            "Relay state must be separate from the native home",
+        ));
     }
     let _lease = lease::acquire(std::path::Path::new(&options.relay_home))?;
     let config = ConfigBuilder::default()
@@ -138,19 +209,40 @@ async fn run() -> io::Result<()> {
         ));
     }
     eprintln!("gateway: Native relay host authenticated");
-    let account = auth.auth_cached().and_then(|value| value.get_account_id()).ok_or_else(|| io::Error::other("Native host account is unavailable"))?;
-    let registration = registration::read(&config.sqlite.state_db_path(), &account, &config.chatgpt_base_url).await?;
-    let installation_id = tokio::fs::read_to_string(config.codex_home.join("installation_id")).await?.trim().to_string();
-    uuid::Uuid::parse_str(&installation_id).map_err(|_| io::Error::other("Invalid original machine installation ID"))?;
+    let account = auth
+        .auth_cached()
+        .and_then(|value| value.get_account_id())
+        .ok_or_else(|| io::Error::other("Native host account is unavailable"))?;
+    let registration = registration::read(
+        &config.sqlite.state_db_path(),
+        &account,
+        &config.chatgpt_base_url,
+    )
+    .await?;
+    let installation_id = tokio::fs::read_to_string(config.codex_home.join("installation_id"))
+        .await?
+        .trim()
+        .to_string();
+    uuid::Uuid::parse_str(&installation_id)
+        .map_err(|_| io::Error::other("Invalid original machine installation ID"))?;
     let expected_environment = registration.environment_id.clone();
     let client_name = registration.app_server_client_name.clone().unwrap();
     let home = AbsolutePathBuf::from_absolute_path(&options.relay_home)?;
-    let state = StateRuntime::init(SqliteConfig::from_sqlite_home(home.clone()), "openai".into())
+    let state = StateRuntime::init(
+        SqliteConfig::from_sqlite_home(home.clone()),
+        "openai".into(),
+    )
+    .await
+    .map_err(io::Error::other)?;
+    state
+        .upsert_remote_control_enrollment(&registration)
         .await
         .map_err(io::Error::other)?;
-    state.upsert_remote_control_enrollment(&registration).await.map_err(io::Error::other)?;
     if options.check {
-        println!("{}", json!({"ready":true,"existingMachine":true,"environmentId":expected_environment,"installationId":installation_id}));
+        println!(
+            "{}",
+            json!({"ready":true,"existingMachine":true,"environmentId":expected_environment,"installationId":installation_id})
+        );
         return Ok(());
     }
     let stop = CancellationToken::new();
@@ -171,19 +263,31 @@ async fn run() -> io::Result<()> {
         RemoteControlStartupMode::ResolvePersisted,
     )
     .await?;
-    let control_task = start_control_socket_acceptor(app_server_control_socket_path(&home)?, events_tx, stop.clone(), DaemonShutdownAccess::Disabled).await?;
-    client_name_tx.send(client_name.clone()).map_err(|_| io::Error::other("Native registration scope closed"))?;
+    let control_task = start_control_socket_acceptor(
+        app_server_control_socket_path(&home)?,
+        events_tx,
+        stop.clone(),
+        DaemonShutdownAccess::Disabled,
+    )
+    .await?;
+    client_name_tx
+        .send(client_name.clone())
+        .map_err(|_| io::Error::other("Native registration scope closed"))?;
     if options.enable {
         handle.enable(Some(&client_name)).await?;
     } else {
-        handle.resolve_persisted_preference(Some(&client_name)).await?;
+        handle
+            .resolve_persisted_preference(Some(&client_name))
+            .await?;
     }
     let mut status = handle.status_receiver();
     let mut input = frames::FrameReader::new(BufReader::new(tokio::io::stdin()));
     let mut output = tokio::io::stdout();
-    let mut sessions = HashMap::<_, (mpsc::Sender<Value>, CancellationToken)>::new();
-    let mut controllers = HashMap::<ConnectionId, (mpsc::Sender<QueuedOutgoingMessage>, CancellationToken)>::new();
+    let mut sessions = HashMap::<ConnectionId, SessionEntry>::new();
+    let mut controllers =
+        HashMap::<ConnectionId, (mpsc::Sender<QueuedOutgoingMessage>, CancellationToken)>::new();
     let mut tasks = tokio::task::JoinSet::new();
+    let mut task_connections = HashMap::<tokio::task::Id, ConnectionId>::new();
     let mut auth_poll = tokio::time::interval(std::time::Duration::from_secs(5));
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -197,44 +301,68 @@ async fn run() -> io::Result<()> {
             },
             event = events.recv() => match event {
                 Some(TransportEvent::ConnectionOpened { connection_id, origin: _, auth: Some(auth), writer, disconnect_sender }) => {
-                    if sessions.len() >= 8 || !auth.is_current() { if let Some(token) = disconnect_sender { token.cancel(); } continue; }
+                    let cause = session_admission(auth.is_current(), sessions.len(), tasks.len(), sessions.contains_key(&connection_id));
+                    if let Some(cause) = cause {
+                        diagnostics::emit(&diagnostics::record("session_rejected", connection_id.0, cause));
+                        if let Some(token) = disconnect_sender { token.cancel(); }
+                        continue;
+                    }
                     let token = disconnect_sender.unwrap_or_else(|| stop.child_token());
-                    let (tx, rx) = mpsc::channel(128); sessions.insert(connection_id, (tx, token.clone()));
+                    let (tx, rx) = mpsc::channel(128);
                     let options = options.clone(); let handle = handle.clone();
-                    tasks.spawn(async move { let _ = session::run(options, rx, writer, auth, token, handle).await; connection_id });
+                    let task_token = token.clone();
+                    let task = tasks.spawn(async move { session::run(connection_id.0, options, rx, writer, auth, task_token, handle).await });
+                    task_connections.insert(task.id(), connection_id);
+                    if let Some(old) = sessions.insert(connection_id, SessionEntry { writer:tx, stop:token, task:task.id() }) {
+                        diagnostics::emit(&diagnostics::record("session_replaced", connection_id.0, diagnostics::Cause::Cancelled));
+                        old.stop.cancel();
+                    }
                     output.write_all(b"{\"event\":\"remote-client-connected\"}\n").await?;
                 },
                 Some(TransportEvent::ConnectionClosed { connection_id }) => {
-                    if let Some((_, token)) = sessions.remove(&connection_id) { token.cancel(); }
+                    if let Some(session) = sessions.remove(&connection_id) { session.stop.cancel(); }
                     if let Some((_, token)) = controllers.remove(&connection_id) { token.cancel(); }
                 },
                 Some(TransportEvent::IncomingMessage { connection_id, message }) => {
                     let value = serde_json::to_value(message).map_err(io::Error::other)?;
                     if let Some((writer, token)) = controllers.get(&connection_id) {
                         if let Some(reply) = control::response(&handle, &value).await {
-                            if writer.try_send(QueuedOutgoingMessage::new(OutgoingMessage::Passthrough(reply))).is_err() { token.cancel(); }
+                            cancel_queue_error(connection_id, "controller_queue_failed", writer.try_send(QueuedOutgoingMessage::new(OutgoingMessage::Passthrough(reply))), token);
                         }
                         continue;
                     }
-                    if let Some((tx, token)) = sessions.get(&connection_id) {
-                        if tx.try_send(value).is_err() { token.cancel(); }
+                    if let Some(session) = sessions.get(&connection_id) {
+                        cancel_queue_error(connection_id, "session_queue_failed", session.writer.try_send(value), &session.stop);
                     }
                 },
                 Some(TransportEvent::ConnectionOpened { connection_id, origin: ConnectionOrigin::WebSocket, auth: None, writer, disconnect_sender }) => {
                     let token = disconnect_sender.unwrap_or_else(|| stop.child_token());
-                    if controllers.len() >= 8 { token.cancel(); } else { controllers.insert(connection_id, (writer, token)); }
+                    if controllers.len() >= 8 && !controllers.contains_key(&connection_id) {
+                        diagnostics::emit(&diagnostics::record("controller_rejected", connection_id.0, diagnostics::Cause::SessionLimit));
+                        token.cancel();
+                    } else if let Some((_, old)) = controllers.insert(connection_id, (writer, token)) { old.cancel(); }
                 },
                 Some(TransportEvent::ConnectionOpened { disconnect_sender: Some(token), .. }) => token.cancel(),
                 None => break,
                 _ => {},
             },
-            result = tasks.join_next(), if !tasks.is_empty() => { if let Some(Ok(id)) = result { if let Some((_, token)) = sessions.remove(&id) { token.cancel(); } } },
+            result = tasks.join_next_with_id(), if !tasks.is_empty() => {
+                let Some(result) = result else { continue; };
+                let (task, cause) = match result {
+                    Ok((task, cause)) => (task, cause),
+                    Err(error) => (error.id(), if error.is_panic() { diagnostics::Cause::TaskPanic } else { diagnostics::Cause::TaskCancelled }),
+                };
+                if let Some(connection) = task_connections.remove(&task) {
+                    diagnostics::emit(&diagnostics::record("session_task_finished", connection.0, cause));
+                    finish_session(&mut sessions, connection, task);
+                }
+            },
             changed = status.changed() => {
                 if changed.is_err() { break; }
                 if status.borrow().environment_id.as_ref().is_some_and(|id| id != &expected_environment) { break; }
                 let notification = json!({"method": "remoteControl/status/changed", "params": status.borrow_and_update().clone()});
-                for (writer, token) in controllers.values() {
-                    if writer.try_send(QueuedOutgoingMessage::new(OutgoingMessage::Passthrough(notification.clone()))).is_err() { token.cancel(); }
+                for (connection, (writer, token)) in &controllers {
+                    cancel_queue_error(*connection, "controller_queue_failed", writer.try_send(QueuedOutgoingMessage::new(OutgoingMessage::Passthrough(notification.clone()))), token);
                 }
                 let mut frame = serde_json::to_vec(&notification).map_err(io::Error::other)?;
                 frame.push(b'\n'); output.write_all(&frame).await?;
@@ -254,11 +382,32 @@ async fn run() -> io::Result<()> {
         }
     }
     stop.cancel();
-    for (_, (_, token)) in sessions {
+    for (_, session) in sessions {
+        session.stop.cancel();
+    }
+    for (_, (_, token)) in controllers {
         token.cancel();
     }
-    for (_, (_, token)) in controllers { token.cancel(); }
-    while tasks.join_next().await.is_some() {}
+    while let Some(result) = tasks.join_next_with_id().await {
+        let (task, cause) = match result {
+            Ok((task, cause)) => (task, cause),
+            Err(error) => (
+                error.id(),
+                if error.is_panic() {
+                    diagnostics::Cause::TaskPanic
+                } else {
+                    diagnostics::Cause::TaskCancelled
+                },
+            ),
+        };
+        if let Some(connection) = task_connections.remove(&task) {
+            diagnostics::emit(&diagnostics::record(
+                "session_task_finished",
+                connection.0,
+                cause,
+            ));
+        }
+    }
     let _ = remote_task.await;
     let _ = control_task.await;
     Ok(())

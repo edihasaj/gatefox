@@ -18,6 +18,8 @@ import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-comp
 type RpcConnection = AppServerConnection | SocketAppServerConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; compaction?: GatewayCompactionSession }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
+interface NativeTurn { id: string; rootTurnId: string | null; startedAt: number | null }
+const nativeId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 1024 && !value.includes("\0");
 
 function offersPriority(models: Message[]): boolean {
   return models.some(model => readPublicServiceTierMetadata(model).serviceTiers?.some(tier => tier.id === "priority"));
@@ -49,6 +51,11 @@ export class AppServerBackends {
   private creating: Promise<unknown> = Promise.resolve();
   private poolPending?: Promise<ExecutionHostClient | undefined>;
   private readonly compaction: GatewayCompaction;
+  private readonly nativeActive = new Map<string, NativeTurn>();
+  private readonly nativeCompleted = new Set<string>();
+  private nativeExitPending?: Promise<void>;
+  private finishNativeClosing!: () => void;
+  private readonly nativeClosing = new Promise<void>(resolve => { this.finishNativeClosing = resolve; });
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
     private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void, private readonly configPath?: string) {
@@ -57,9 +64,46 @@ export class AppServerBackends {
     this.compaction = new GatewayCompaction(config.stateDirectory);
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     const registration = Object.entries(overrides).map(([key, value]) => [`-c`, `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`]).flat();
-    this.native = new AppServerConnection(executable, [...this.args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
+    this.native = new AppServerConnection(executable, [...this.args, ...registration], message => this.forward(this.native, message), () => {
+      this.nativeExitPending = this.nativeExited().finally(() => { onNativeExit(); });
+    });
+  }
+  private observeNative(message: Message): void {
+    if (this.closing || isId(message.id)) return;
+    const params = object(message.params); const turn = object(params.turn);
+    if (!nativeId(params.threadId) || !nativeId(turn.id)) return;
+    const key = JSON.stringify([params.threadId, turn.id]);
+    if (message.method === "turn/started" && turn.status === "inProgress") {
+      if (this.nativeCompleted.has(key)) return;
+      if (!this.nativeActive.has(params.threadId) && this.nativeActive.size >= 256) throw new Error("Too many active native Codex turns");
+      this.nativeActive.set(params.threadId, { id: turn.id, rootTurnId: nativeId(turn.rootTurnId) ? turn.rootTurnId : null,
+        startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : null });
+    }
+    if (message.method === "turn/completed" && ["completed", "failed", "interrupted"].includes(String(turn.status))) {
+      if (this.nativeActive.get(params.threadId)?.id === turn.id) this.nativeActive.delete(params.threadId);
+      this.nativeCompleted.add(key);
+      if (this.nativeCompleted.size > 512) this.nativeCompleted.delete(this.nativeCompleted.values().next().value!);
+    }
+  }
+  private async nativeExited(): Promise<void> {
+    // Drain before deciding which tasks lost their terminal event. Pending SDK
+    // RPCs are already rejected at child close, so forwarding can finish.
+    await Promise.race([this.native.drained, this.nativeClosing]);
+    for (const [id, approval] of this.approvals) if (approval.connection === this.native) this.approvals.delete(id);
+    this.reverse.delete(this.native);
+    const active = [...this.nativeActive]; this.nativeActive.clear(); this.nativeCompleted.clear();
+    if (this.closing) return;
+    const error = { message: "Native Codex executor exited while this turn was running. Reconnect this chat's computer connection to continue from its saved history.", codexErrorInfo: "internalServerError", additionalDetails: null };
+    for (const [threadId, turn] of active) {
+      if (this.closing) break;
+      try { await Promise.race([this.emit({ method: "error", params: { threadId, turnId: turn.id, error, willRetry: false } }), this.nativeClosing]); } catch { /* The client may already be gone. */ }
+      if (this.closing) break;
+      try { await Promise.race([this.emit({ method: "turn/completed", params: { threadId, turn: { ...turn, items: [], itemsView: "notLoaded", status: "failed", error,
+        completedAt: null, durationMs: null } } }), this.nativeClosing]); } catch { /* Shutdown still follows the attempted terminal delivery. */ }
+    }
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
+    if (connection === this.native) this.observeNative(message);
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
     if (engine) {
       engine.compaction?.observe(message);
@@ -282,11 +326,12 @@ export class AppServerBackends {
     } finally { engine.requests--; }
   }
   async stop(): Promise<void> {
-    this.closing = true; this.native.stop();
+    this.closing = true; this.finishNativeClosing(); this.native.stop();
     await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));
     for (const engine of this.engines) engine.connection.stop();
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
+    await this.nativeExitPending;
     (await this.poolPending?.catch(() => undefined))?.close();
   }
 }
