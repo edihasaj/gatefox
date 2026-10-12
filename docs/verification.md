@@ -67,6 +67,22 @@ rejections remains unconfirmed; the new categories preserve evidence for another
 occurrence. These results do not replace rendered desktop or prolonged stability
 checks through the original connection.
 
+After v0.2.13 activation, Edi's affected connected chat still failed. Its safe
+diagnostic classified the Claude call as `unknown_tool`, rather than duplicate
+IDs or malformed input. Small live file loops therefore did not reproduce that
+remaining failure. The v0.2.14 candidate replaces per-request numbered MCP names
+with stable caller identities, translates replayed call/result names, and accepts
+only exact or unambiguous current-catalog aliases. It canonicalizes Codex's plain
+tools and explicit `functions` namespace using the pinned SDK's default namespace.
+Foreign tools and stale numeric bindings remain invalid.
+
+Tests cover reordered and filtered catalogs, namespace defaults, ambiguous local
+names, and preservation of arguments, call IDs, results, and input messages. A
+live Claude test retained a real caller result across reordered catalogs and
+different forced tool choices without executing any caller action. The exact
+rejected name from the original failure was not logged, so the affected native
+chat still needs its own confirmation after activation.
+
 The primary Mac's native `config.toml` still matches the digest recorded before
 activation. Gateway preferences are stored separately. Native Codex and user
 actions can change settings on the other Macs, including project trust; their

@@ -19,6 +19,12 @@ nonblocking startup and marks its catalog `alwaysLoad`, keeping the caller actio
 surface available at startup. Rejected Claude calls log fixed categories for
 unknown tools, internal search/wait helpers, duplicate IDs, malformed input, or a
 missing required call. Names and arguments are never included in those logs.
+Claude's private MCP names derive from the caller identity rather than its index
+in a particular request. Reordering, deferred tools, and forced-tool filtering
+therefore retain each binding. Replayed call/result names use those same native
+names without altering arguments, IDs, results, or message content. Native tool
+events can also use an exact caller alias or an unambiguous caller-local name;
+ambiguous names, stale numeric aliases, and foreign tools are rejected.
 
 Replayed reasoning summaries are treated as text. Encrypted reasoning transport
 state is not exposed to the Claude model. Hosted tools are outside

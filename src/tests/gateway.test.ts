@@ -10,6 +10,7 @@ import { ProviderError, type Provider } from "../providers/provider.js";
 import { readEvents } from "../protocol/sse.js";
 import { ResponsesWriter } from "../protocol/responses.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "../providers/claude-calls.js";
+import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { remoteCodexSettings, readClientToken, endpointURL } from "../codex-config.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "../protocol/reasoning-state.js";
@@ -138,7 +139,7 @@ test("SSE parsing handles split UTF-8, CRLF, comments, and rejects truncated fra
 
 test("tool frames never leak as text and tool-only responses have no empty message", () => {
   const request = responsesToChatRequest({ model: "x", input: "Read", tools: [{ type: "function", name: "read_file" }] });
-  const calls = nativeClaudeCalls([{ id: "toolu_read", name: "mcp__gateway__tool_0", input: {} }], request.tools!); const events: WireEvent[] = [];
+  const calls = nativeClaudeCalls([{ id: "toolu_read", name: claudeNativeToolName(request.tools![0]), input: {} }], request.tools!); const events: WireEvent[] = [];
   const writer = new ResponsesWriter("x", event => events.push(event)); writer.begin(); writer.accept({ type: "tool", call: calls[0] }); writer.accept({ type: "done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
   assert.equal((writer.result().output as Array<{ type: string }>)[0].type, "function_call");
   assert.equal(events.some(e => e.type === "response.output_text.delta"), false);

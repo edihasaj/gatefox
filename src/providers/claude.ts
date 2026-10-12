@@ -12,6 +12,7 @@ import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 import { claudeEnvironment } from "./claude-environment.js";
 import { imageConversation } from "../protocol/images.js";
 import { claudeContextFailure } from "./context-errors.js";
+import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claude-tool-names.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -37,13 +38,14 @@ export class ClaudeSubscription implements Provider {
     const normalized = responsesToChatRequest(request);
     const choice = normalized.tool_choice;
     const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
+    if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
     const effort = claudeEffort(this.config, request);
     const summary = (request.reasoning as { summary?: string } | undefined)?.summary;
-    const { conversation, images } = imageConversation(normalized.messages);
+    const { conversation, images } = imageConversation(claudeToolHistory(normalized.messages, normalized.tools || []));
     const directory = await mkdtemp(join(tmpdir(), "gateway-claude-"));
     const catalogPath = join(directory, "tools.json"); const mcpPath = join(directory, "mcp.json");
-    await writeFile(catalogPath, JSON.stringify(tools.map((tool, index) => ({
-      name: `tool_${index}`, description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
+    await writeFile(catalogPath, JSON.stringify(tools.map(tool => ({
+      name: claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
       inputSchema: tool.function.parameters || { type: "object", properties: {} },
     }))), { mode: 0o600 });
     await writeFile(mcpPath, JSON.stringify({ mcpServers: tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
@@ -73,7 +75,7 @@ export class ClaudeSubscription implements Provider {
     const lines = createInterface({ input: child.stdout });
     try {
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
-      const aliases = tools.map((tool, index) => ({ caller: tool.function.name, native: `mcp__gateway__tool_${index}` }));
+      const aliases = tools.map(tool => ({ caller: tool.function.name, native: claudeNativeToolName(tool) }));
       const prompt = `Tool names: ${JSON.stringify(aliases)}\n${typeof choice === "object" || choice === "required" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(conversation)}`;
       const content = images.flatMap(({ label, image }) => [{ type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
       child.stdin.end(images.length ? JSON.stringify({ type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content: [...content, { type: "text", text: prompt }] } }) + "\n" : prompt);

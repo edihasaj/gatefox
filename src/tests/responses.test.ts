@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { responsesToChatRequest, ResponsesTranslationError } from "../protocol/request.js";
 import { responseToolItems, responseToolFrames, ResponsesWriter } from "../protocol/responses.js";
 import { nativeClaudeCalls } from "../providers/claude-calls.js";
+import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { ProviderError } from "../providers/provider.js";
 import type { ResponsesRequest, ResponsesTool, WireEvent } from "../protocol/types.js";
 
@@ -10,7 +11,7 @@ for (const tool of [{ type: "function", name: "fetch", parameters: { type: "obje
   test(`caller-dispatched ${tool.type} tools keep their original identity`, () => {
     const compiled = responsesToChatRequest({ model: "test", input: "execute", tools: [tool], tool_choice: "required" });
     const custom = tool.type === "custom"; const payload = custom ? { input: "raw\npatch" } : { path: "one" };
-    const calls = nativeClaudeCalls([{ id: "native-call", name: "mcp__gateway__tool_0", input: payload }], compiled.tools!);
+    const calls = nativeClaudeCalls([{ id: "native-call", name: claudeNativeToolName(compiled.tools![0]), input: payload }], compiled.tools!);
     const item = responseToolItems(calls)[0];
     assert.equal(item.type, custom ? "custom_tool_call" : "function_call");
     assert.equal(item.call_id, "native-call"); assert.equal(item.name, "name" in tool ? tool.name : undefined);
@@ -26,7 +27,7 @@ test("namespace compilation and forced selection retain a reversible caller iden
   const request: ResponsesRequest = { model: "test", input: "run", tools: [{ type: "namespace", name: "storage", tools: [{ type: "function", name: "fetch" }] }], tool_choice: { type: "function", namespace: "storage", name: "fetch" } };
   const compiled = responsesToChatRequest(request);
   assert.deepEqual(compiled.tool_choice, { type: "function", function: { name: "storage.fetch" } });
-  const call = nativeClaudeCalls([{ id: "c", name: "mcp__gateway__tool_0", input: {} }], compiled.tools!);
+  const call = nativeClaudeCalls([{ id: "c", name: claudeNativeToolName(compiled.tools![0]), input: {} }], compiled.tools!);
   assert.equal(responseToolItems(call)[0].namespace, "storage"); assert.equal(responseToolItems(call)[0].name, "fetch");
 });
 
@@ -62,7 +63,7 @@ test("invalid roles, unsupported capabilities, duplicate definitions and unavail
 
 test("native calls must belong to the supplied catalog and carry distinct IDs and valid raw inputs", () => {
   const compiled = responsesToChatRequest({ model: "test", input: "hello", tools: [{ type: "custom", name: "patch" }] });
-  const valid = { id: "one", name: "mcp__gateway__tool_0", input: { input: "raw" } };
+  const valid = { id: "one", name: claudeNativeToolName(compiled.tools![0]), input: { input: "raw" } };
   assert.throws(() => nativeClaudeCalls([valid, valid], compiled.tools!), ProviderError);
   assert.throws(() => nativeClaudeCalls([{ ...valid, name: "Bash" }], compiled.tools!), ProviderError);
   assert.throws(() => nativeClaudeCalls([{ ...valid, input: { input: {} } }], compiled.tools!), ProviderError);
@@ -70,7 +71,7 @@ test("native calls must belong to the supplied catalog and carry distinct IDs an
 
 test("Claude tool rejections distinguish internal helpers from malformed caller calls without exposing inputs", () => {
   const compiled = responsesToChatRequest({ model: "test", input: "hello", tools: [{ type: "custom", name: "patch" }] });
-  const valid = { id: "one", name: "mcp__gateway__tool_0", input: { input: "raw" } };
+  const valid = { id: "one", name: claudeNativeToolName(compiled.tools![0]), input: { input: "raw" } };
   for (const [blocks, reason] of [
     [[{ ...valid, name: "ToolSearch" }], "native_tool_search"],
     [[{ ...valid, name: "WaitForMcpServers" }], "native_mcp_wait"],
