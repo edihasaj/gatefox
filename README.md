@@ -6,7 +6,7 @@ A local gateway for subscription and API providers. The project name is provisio
 
 Start with the [illustrated setup and usage guide](docs/index.html). It covers
 installation, separate account registration, desktop models, shared Macs,
-agent profiles, and service recovery. Open `docs/index.html` in a browser, or
+and service recovery. Open `docs/index.html` in a browser, or
 serve the `docs/` folder with any static web server.
 
 Clients send OpenAI Responses requests. A provider adapter handles authentication
@@ -36,11 +36,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.2.18 -R edihasaj/subscription-gateway \
+gh release download v0.2.23 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.18-macos-arm64.tar.gz
-./subscription-gateway-0.2.18-macos-arm64/install
+tar -xzf subscription-gateway-0.2.23-macos-arm64.tar.gz
+./subscription-gateway-0.2.23-macos-arm64/install
 gateway --version
 ```
 
@@ -163,15 +163,11 @@ Spark through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
 streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
 Its current gateway route supports text only.
 
-Gateway agents can read and rename their current chat with `gateway_chat_title`.
-Names use native saved metadata and live name-update events. Saved gateway chats
-remain readable before model discovery and resume through the registered provider.
-
-Named gateway agents can use separate models for coordination, verification, and
-implementation. `gateway agents setup` creates gateway-only role files and a
-default worker. Codex 2 Sol coordinating local Qwen with Astra verification passed
-a live delegated file test. See [agent profiles](docs/agents.md) for setup and the
-parent-provider boundary.
+The gateway translates subscription and API inference into the caller's Responses
+protocol. The client owns agent roles, delegation, model selection, permissions,
+tool execution, and chat names. The gateway adds no role instructions, default
+worker, or agent-only tools. Saved gateway chats remain readable before model
+discovery and resume through the registered provider.
 
 `gateway uninstall` moves the installed files to Trash, removes managed services
 and desktop registration, and preserves the data directory and credentials.

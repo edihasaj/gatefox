@@ -16,16 +16,11 @@ function toml(value: unknown): string {
 export interface GatewayHomeOptions { nativeHome?: string; sharedWriterLocks?: boolean; preserveConfig?: boolean }
 
 /** Share chat storage; isolate every automatic config write and all provider auth. */
-export async function gatewayEngineHome(state: string, settings: Message, agentsDirectory?: string, options: GatewayHomeOptions = {}): Promise<string> {
+export async function gatewayEngineHome(state: string, settings: Message, options: GatewayHomeOptions = {}): Promise<string> {
   const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || join(homedir(), ".codex"));
   const home = resolve(state, "desktop-engine");
   if (home === nativeHome) throw new Error("The gateway executor home must be separate from native Codex");
   await mkdir(home, { recursive: true, mode: 0o700 });
-  if (agentsDirectory) {
-    const path = join(home, "agents"); const target = resolve(agentsDirectory);
-    try { if (!(await lstat(path)).isSymbolicLink() || resolve(home, await readlink(path)) !== target) throw new Error("Gateway agent profiles point to another source"); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path, "dir"); }
-  }
   for (const name of ["sessions", "archived_sessions", ...(options.sharedWriterLocks ? ["thread-writer-locks"] : [])]) {
     const target = join(nativeHome, name); const path = join(home, name);
     await mkdir(target, { recursive: true, mode: 0o700 });
@@ -37,8 +32,9 @@ export async function gatewayEngineHome(state: string, settings: Message, agents
       await symlink(target, path, "dir");
     }
   }
-  // Keep one source of user instructions and installed skills. Never link auth or config.
-  for (const name of ["AGENTS.md", "skills", "plugins"]) {
+  // Keep client instructions, roles, and installed skills at their original source.
+  // Never link authentication or configuration.
+  for (const name of ["AGENTS.md", "agents", "skills", "plugins"]) {
     const target = join(nativeHome, name); const path = join(home, name);
     if (name !== "AGENTS.md") try { await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     try {

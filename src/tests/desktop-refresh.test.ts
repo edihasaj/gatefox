@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, mkdir, readlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 import { modelCatalog } from "../catalog.js";
@@ -66,6 +67,33 @@ test("new gateway executors inherit agent limits changed after adapter initializ
     const engine = await c.rpc("engine/info", { threadId: started.thread.id });
     const settings = await readFile(join(engine.home, "config.toml"), "utf8");
     assert.ok(settings.includes('"max_concurrent_threads_per_session" = 30'));
+    assert.equal(await readFile(join(c.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
+    assert.equal(engine.primaryAuthPresent, false);
+  } finally { await c.stop(); }
+});
+
+test("client agent choices survive obsolete gateway role policy", { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    const clientAgents = { max_concurrent_threads_per_session: 30, default_subagent_model: "claude/model", default_subagent_reasoning_effort: "low" };
+    await writeFile(join(c.nativeHome, "agent-policy.json"), JSON.stringify({ agents: clientAgents }));
+    const roles = join(c.nativeHome, "agents"); await mkdir(roles);
+    const role = 'name = "reviewer"\nmodel = "claude/model"\nmodel_reasoning_effort = "low"\n';
+    await writeFile(join(roles, "reviewer.toml"), role);
+    const legacy = { version: 1, coordinator: "codex/obsolete", verifier: "codex/obsolete-review", worker: "qwen/obsolete-worker", effort: "high" };
+    await writeFile(join(c.value.stateDirectory, "agent-policy.json"), JSON.stringify(legacy));
+    const legacyProfiles = join(c.value.stateDirectory, "agent-profiles", createHash("sha256").update(JSON.stringify(legacy)).digest("hex").slice(0, 16));
+    await mkdir(legacyProfiles, { recursive: true });
+    await writeFile(join(legacyProfiles, "worker.toml"), 'model = "qwen/obsolete-worker"\n');
+    const started = await c.rpc("thread/start", { model: "claude/model" });
+    const engine = await c.rpc("engine/info", { threadId: started.thread.id });
+    const settings = await readFile(join(engine.home, "config.toml"), "utf8");
+    assert.match(settings, /"default_subagent_model" = "claude\/model"/);
+    assert.match(settings, /"default_subagent_reasoning_effort" = "low"/);
+    assert.match(settings, /"max_concurrent_threads_per_session" = 30/);
+    assert.equal(settings.includes("obsolete"), false);
+    assert.equal(await readlink(join(engine.home, "agents")), roles);
+    assert.equal(await readFile(join(engine.home, "agents/reviewer.toml"), "utf8"), role);
     assert.equal(await readFile(join(c.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
     assert.equal(engine.primaryAuthPresent, false);
   } finally { await c.stop(); }

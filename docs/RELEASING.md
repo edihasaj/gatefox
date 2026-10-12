@@ -18,10 +18,9 @@ belongs in the release archive.
 3. Run `node scripts/build-release.mjs --allow-dirty` only for preflight testing.
    Test the extracted installer on an isolated prefix, including a repeated
    install, paths containing spaces/quotes, and a conflicting command.
-4. Run real model tool loops and `scripts/e2e-chat-titles.mjs` against the installed
-   command on the test Mac. Use isolated native and gateway state directories.
-   The title check refuses shared state or a copied native auth file. Record configuration
-   digests, provider registration, saved titles, and resume results.
+4. Run real model tool loops against the installed command on the test Mac. Use
+   isolated native and gateway state directories. Record configuration digests,
+   provider registration, client-requested chat names, and resume results.
    For shared execution changes, run `scripts/e2e-shared-execution.mjs` with the
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.

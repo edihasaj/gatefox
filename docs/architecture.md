@@ -13,6 +13,12 @@ Provider adapters own authentication and inference. The Responses translator
 owns request compilation, replay, and streamed output. Codex executes file and
 command tools; providers receive their results through replay.
 
+The gateway does not assign agent jobs, select worker models, inject task
+instructions, or execute caller tools. The client owns orchestration, permissions,
+chat naming, and conversation lifecycle. The desktop adapter forwards those client
+operations and isolates account configuration; its session ownership machinery
+prevents competing writers rather than deciding what work an agent performs.
+
 An inference keeps the configuration snapshot with which it began. New requests
 load atomically replaced configuration. Invalid configuration fails closed until
 repaired. Existing aliases cannot change account, provider, credential source, or
@@ -46,10 +52,10 @@ settings for a private snapshot, excludes native provider authentication setting
 and never copies the primary auth file. Automatic project-trust writes therefore
 land in the gateway executor's private configuration.
 
-Before creating a gateway executor, the adapter rereads the native agent policy.
-Changes such as `agents.max_concurrent_threads_per_session = 30` therefore reach
-new executors instead of being replaced by the startup snapshot. Existing work
-keeps its loaded settings until its session reloads.
+Before creating a gateway executor, the adapter rereads client settings. Native
+agent limits and user-authored roles pass through unchanged. The gateway does not
+generate agent profiles or replace the user's default worker or reasoning effort.
+Existing work keeps its loaded settings until its session reloads.
 
 Executors share native chat storage and SQLite metadata so saved gateway chats
 remain discoverable through the desktop's normal thread list. User instructions,
@@ -90,12 +96,12 @@ starting another executor.
 
 Shared generation homes use the native home's writer-lock directory as well as
 its rollout storage. An unrelated writer therefore remains protected even across
-catalog generations. The coordinator retains at most four generations and only
+catalog generations. The execution host retains at most four generations and only
 retires an engine with no client leases and no SDK-loaded chats. A missing or
 changed managed owner fails closed. It never deletes live locks or takes over an
 old executor. Existing per-connection executors must finish before migration.
 
-The coordinator belongs to the unified service and owns its SDK children. There
+The execution host belongs to the unified service and owns its SDK children. There
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 

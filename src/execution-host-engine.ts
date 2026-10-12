@@ -11,7 +11,7 @@ import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type 
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 
-export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; agentsDirectory?: string; gatewaySdkSha256?: string }
+export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
 export function executionDescriptor(value: unknown): ExecutionDescriptor {
   const input = object(value); const catalog = object(input.catalog);
@@ -19,10 +19,9 @@ export function executionDescriptor(value: unknown): ExecutionDescriptor {
     || !input.args.includes("app-server") || input.args.includes("proxy") || !input.settings || Array.isArray(input.settings) || typeof input.settings !== "object"
     || !Array.isArray(catalog.models) || !catalog.models.length || catalog.models.length > 256 || catalog.models.some(model => !model || typeof model !== "object" || Array.isArray(model))
     || !Array.isArray(input.aliases) || !input.aliases.length || input.aliases.length > 256 || input.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024 || alias.includes("\0")) || new Set(input.aliases).size !== input.aliases.length
-    || (input.agentsDirectory !== undefined && (typeof input.agentsDirectory !== "string" || !input.agentsDirectory.startsWith("/") || input.agentsDirectory.includes("\0")))
     || (input.gatewaySdkSha256 !== undefined && (typeof input.gatewaySdkSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.gatewaySdkSha256)))) throw new Error("Invalid execution generation descriptor");
   const descriptor = { revision: input.revision, args: input.args, settings: input.settings, catalog: { models: catalog.models }, aliases: input.aliases,
-    ...(input.agentsDirectory ? { agentsDirectory: input.agentsDirectory } : {}), ...(input.gatewaySdkSha256 ? { gatewaySdkSha256: input.gatewaySdkSha256 } : {}) } as ExecutionDescriptor;
+    ...(input.gatewaySdkSha256 ? { gatewaySdkSha256: input.gatewaySdkSha256 } : {}) } as ExecutionDescriptor;
   if (Buffer.byteLength(JSON.stringify(descriptor)) > 4 * 1024 * 1024) throw new Error("Execution descriptor exceeds 4 MiB");
   return descriptor;
 }
@@ -83,7 +82,7 @@ export class ExecutionEngine {
     if (saved) {
       if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
     } else await writePrivateJson(metadata, expected);
-    const home = await gatewayEngineHome(directory, descriptor.settings, descriptor.agentsDirectory, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
+    const home = await gatewayEngineHome(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
     const catalog = resolve(directory, "catalog.json");
     try {
       const existing = JSON.parse(await readFile(catalog, "utf8"));

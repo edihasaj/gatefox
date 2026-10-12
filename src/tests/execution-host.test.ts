@@ -57,6 +57,8 @@ async function control(path: string) {
 test("execution descriptors bound metadata and replace only host-owned socket/catalog arguments", () => {
   assert.throws(() => executionDescriptor({ revision: "a".repeat(64), args: ["app-server"], settings: {}, catalog: { models: [] }, aliases: [] }), /Invalid execution/);
   assert.deepEqual(executionArgs(["app-server", "--listen", "stdio://", "-c", 'model_catalog_json="old"', "-c", "features.step_model_switching=true"], "/private.sock", "/private.json"), ["app-server", "-c", "features.step_model_switching=true", "--listen", "unix:///private.sock", "-c", 'model_catalog_json="/private.json"']);
+  const descriptor = { revision: "a".repeat(64), args: ["app-server"], settings: { agents: { default_subagent_model: "client-choice" } }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"] };
+  assert.deepEqual(executionDescriptor({ ...descriptor, agentsDirectory: "/obsolete/gateway-profiles" }), descriptor);
 });
 
 test("a shared host cleans flags from an older adapter before its SDK starts", { timeout: 30000 }, async () => {

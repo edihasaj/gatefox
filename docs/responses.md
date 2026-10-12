@@ -6,6 +6,12 @@ read_when:
 
 # Responses support
 
+The gateway translates the caller's instructions and tool catalog. It does not
+assign agent roles, choose workers, add task instructions, or provide agent-only
+tools. The Codex catalog contains the empty instruction-template string required
+by its SDK schema. Explicit and resumed client instructions remain authoritative;
+the gateway supplies no model-specific base prompt for a fresh caller without one.
+
 The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
 the older nested function definition format for existing Chat Completions clients.

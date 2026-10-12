@@ -239,7 +239,7 @@ test("gateway ownership lookup outage preserves verified native reads and fails 
   try {
     await f.start("gateway-lookup-outage"); const second = await f.another(); await f.control.request("execution/find", { threadId: "gateway-lookup-outage" });
     await f.control.request("execution/release", { revision: (await f.control.request("execution/find", { threadId: "gateway-lookup-outage" })).revision });
-    // Fresh discovery cannot use this isolated coordinator; native children stay alive.
+    // Fresh discovery cannot use this isolated execution host; native children stay alive.
     const state = second as unknown as { pool: () => Promise<unknown> }; await state.pool();
     const ownerPath = join(executionHostHome(join(f.directory, "gateway.json"), f.nativeHome), "owner.json");
     const owner = JSON.parse(await readFile(ownerPath, "utf8")); await writeFile(ownerPath, JSON.stringify({ ...owner, state: "stopped" }), { mode: 0o600 });

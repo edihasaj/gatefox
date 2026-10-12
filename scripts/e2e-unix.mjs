@@ -67,8 +67,8 @@ try{
   await save({phase:'image-input',model,passed:true,codeOnlyInPixels:true});
   const follow=await turn(id,model,text('Repeat the file proof and picture code from this chat. Do not use tools.'));assert.ok(follow.text.includes(proof));assert.ok(follow.text.includes(expected));
   await save({phase:'follow-up',model,passed:true});
-  await turn(id,model,text(`Use gateway_chat_title to rename this chat to exactly "${title}", then read it back.`));assert.equal((await connection.rpc('thread/read',{threadId:id,includeTurns:false})).thread.name,title);
-  await save({phase:'agent-title',model,passed:true});
+  await connection.rpc('thread/name/set',{threadId:id,name:title});assert.equal((await connection.rpc('thread/read',{threadId:id,includeTurns:false})).thread.name,title);
+  await save({phase:'client-title',model,passed:true});
   const cancelled=await turn(id,model,text('Write 1000 numbered paragraphs about trees. Start immediately. Do not use tools.'),'low',true);
   await save({phase:'cancel',model,passed:true,acknowledgementMs:cancelled.cancellationMs});
   await connection.close();connection=await connect();await connection.rpc('thread/resume',{threadId:id,model,cwd:workspace,approvalPolicy:'never',sandbox:'workspace-write'});

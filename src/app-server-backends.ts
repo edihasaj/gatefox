@@ -4,8 +4,6 @@ import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
-import { titleTool, withTitleTool, handleTitleCall } from "./chat-titles.js";
-import { agentExecutorSettings, readAgentPolicy } from "./agent-profiles.js";
 import { ExecutionHostClient, type NativeLaunchRecord } from "./execution-host-client.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
@@ -186,14 +184,6 @@ export class AppServerBackends {
       if (!isId(message.id) && !threadId && message.method !== "serverRequest/resolved") return;
     }
     if (isId(message.id)) {
-      if (engine && message.method === "item/tool/call" && params.tool === titleTool && params.namespace == null) {
-        const bound = typeof params.threadId === "string" && engine.threads.has(params.threadId);
-        // Keep draining this connection while its title RPC waits for a reply.
-        const operation = bound ? handleTitleCall(params, (method, args) => connection.request(method, args))
-          : Promise.reject(new Error("Chat title request belongs to another chat"));
-        void operation.catch(() => ({ success: false, contentItems: [{ type: "inputText", text: "The current chat title could not be read or updated." }] }))
-          .then(result => connection.send({ id: message.id, result })); return;
-      }
       let ids = this.reverse.get(connection); if (!ids) { ids = new Map(); this.reverse.set(connection, ids); }
       const fingerprint = createHash("sha256").update(canonicalJson(message)).digest("hex");
       const existing = ids.get(message.id);
@@ -305,14 +295,14 @@ export class AppServerBackends {
     const snapshot = this.catalog.current();
     const priority = offersPriority(snapshot.models);
     const runtime = await gatewaySdkRuntime();
-    const revision = createHash("sha256").update(snapshot.revision + JSON.stringify(await readAgentPolicy(this.config.stateDirectory) || null) + (runtime?.binarySha256 || "")).digest("hex");
+    const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "")).digest("hex");
     const pool = await this.pool();
     if (pool) {
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
       const latest = object((await this.native.request("config/read", {})).config);
-      const agents = await agentExecutorSettings(this.config, { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) });
+      const clientSettings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
       const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
-      const settings = normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(agents.settings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null)));
+      const settings = normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(clientSettings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null)));
       const forwarded: string[] = [];
       for (let index = 0; index < this.args.length; index++) {
         if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
@@ -323,9 +313,9 @@ export class AppServerBackends {
       const args = normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings);
       const combined = this.catalog.combined(snapshot);
       const sdk = runtime ? { gatewaySdkSha256: runtime.binarySha256 } : {};
-      const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, agentsDirectory: agents.directory || null, ...sdk })).digest("hex");
+      const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
       await this.releaseIdleShared(sharedRevision);
-      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), agentsDirectory: agents.directory, ...sdk });
+      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk });
       return this.shared(record, { models: combined.models, settings, args });
     }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
@@ -343,8 +333,7 @@ export class AppServerBackends {
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
       const latest = object((await this.native.request("config/read", {})).config);
       const settings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
-      const agents = await agentExecutorSettings(this.config, settings);
-      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", revision), agents.settings, agents.directory);
+      const home = await gatewayEngineHome(resolve(this.config.stateDirectory, "desktop-generations", revision), settings);
       const path = resolve(this.config.stateDirectory, `desktop-catalog-${snapshot.revision}.json`);
       await writePrivateJson(path, this.catalog.combined(snapshot));
       const forwarded: string[] = [];
@@ -364,7 +353,7 @@ export class AppServerBackends {
         if (!this.closing) for (const [threadId, id] of engine.active) void this.emit({ method: "turn/completed", params: { threadId, turn: { id, items: [], status: "failed", error: { message: "Gateway executor exited. Resume this chat to recover its saved history.", codexErrorInfo: "internalServerError", additionalDetails: null } } } });
         engine.active.clear();
       }, gatewayEnvironment(home));
-      engine.compaction = this.compaction.session({ models: snapshot.models, settings: agents.settings, args, aliases: engine.aliases,
+      engine.compaction = this.compaction.session({ models: snapshot.models, settings, args, aliases: engine.aliases,
         selectedModelCompaction: runtime?.selectedModelCompaction,
         isActive: id => engine.active.has(id), request: (method, params) => engine.connection.request(method, params) });
       this.engines.push(engine);
@@ -384,7 +373,7 @@ export class AppServerBackends {
       let owner: Engine | undefined;
       try { owner = await this.owner(params.threadId); }
       catch (error) {
-        // An unavailable optional gateway coordinator must not block an original
+        // An unavailable optional gateway execution host must not block an original
         // native chat. Only explicit non-gateway metadata permits this fallback.
         const result = await this.nativeRequest(method, params).catch(() => undefined);
         const provider = object(result?.thread).modelProvider;
@@ -422,7 +411,7 @@ export class AppServerBackends {
       const compaction = await engine.compaction?.before(method, params);
       if (compaction?.intercepted) return compaction.result || {};
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
-      const result = await engine.connection.request(method, method === "thread/start" ? withTitleTool(params) : params);
+      const result = await engine.connection.request(method, params);
       await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
         const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);

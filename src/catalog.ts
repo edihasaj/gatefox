@@ -20,7 +20,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       default_reasoning_level: efforts.includes("medium") ? "medium" : efforts[0] || null,
       default_reasoning_summary: efforts.length ? "auto" : "none", supports_reasoning_summary_parameter: efforts.length > 0,
       shell_type: "unified_exec", apply_patch_tool_type: "freeform", tool_mode: "direct",
-      model_messages: { instructions_template: "You are a coding agent. Follow user instructions and repository guidance. Use the supplied tools for file access, commands and edits. Never claim a tool action succeeded without its result. Preserve working code, verify changes, and report outcomes clearly. The desktop app owns automatic chat naming. Use gateway_chat_title only when the user explicitly requests reading or changing this chat's title. Preserve deliberate user titles." },
+      // The SDK requires a string template; empty adds no gateway instructions.
+      model_messages: { instructions_template: "" },
       include_skills_usage_instructions: true, include_plugin_usage_instructions: true, include_apps_usage_instructions: true,
       support_verbosity: false, default_verbosity: null,
       truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],

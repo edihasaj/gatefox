@@ -23,7 +23,6 @@ import { macTunnel } from "./mac-tunnel.js";
 import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
 import { macNative } from "./mac-native.js";
-import { readAgentPolicy, setupAgents } from "./agent-profiles.js";
 import { consolidateService } from "./mac-consolidate.js";
 import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
@@ -40,8 +39,6 @@ const help = `gateway — local subscription and API inference
   gateway desktop register|unregister|status
   gateway ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
   gateway native install|status|uninstall [--codex MATCHING_CLI_PATH]
-  gateway agents setup --coordinator ALIAS --verifier ALIAS --worker ALIAS
-  gateway agents status
   gateway uninstall
   gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
@@ -78,16 +75,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
-    client: { type: "boolean" }, coordinator: { type: "string" }, verifier: { type: "string" }, worker: { type: "string" },
+    client: { type: "boolean" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
     apply: { type: "boolean" }, "next-login": { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "agents"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "agents", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
-  if (command !== "agents" && [values.coordinator, values.verifier, values.worker].some(Boolean)) throw new Error("Agent model options are only valid for agents setup");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
   if (values["native-home"] && !["desktop", "native", "executor-host"].includes(command)) throw new Error("--native-home is only valid for desktop, native, or executor-host");
@@ -144,12 +140,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(`${path}\n`); return;
   }
   const config = await loadConfig(path);
-  if (command === "agents") {
-    if (id === "status") process.stdout.write(JSON.stringify({ policy: await readAgentPolicy(config.stateDirectory) || null, scope: "gateway chats" }, null, 2) + "\n");
-    else if (id === "setup") process.stdout.write(JSON.stringify(await setupAgents(config, (config.clientOnly ? await remoteCatalog(config) : modelCatalog(config)).models, { coordinator: values.coordinator, verifier: values.verifier, worker: values.worker }), null, 2) + "\n");
-    else throw new Error("Choose gateway agents setup or status");
-    return;
-  }
   if (command === "tunnel") { process.stdout.write(JSON.stringify(await macTunnel(id, { id: values["tunnel-id"] || "", host: values.host, port: Number(values.port), remotePort: Number(values["remote-port"]), reverse: values.reverse, sshConfig: values["ssh-config"] }, config.stateDirectory), null, 2) + "\n"); return; }
   if (command === "catalog") {
     const catalog = config.clientOnly ? await remoteCatalog(config) : modelCatalog(config);

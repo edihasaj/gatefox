@@ -7,13 +7,26 @@ read_when:
 
 # Verification
 
-The v0.2.22 candidate has passed installed Responses terminal checks. The
-preceding v0.2.21 candidate passed isolated backend ownership and compaction checks.
+The v0.2.23 source passes the reduced gateway scope checks. The v0.2.22 candidate
+passed installed Responses terminal checks, and v0.2.21 passed isolated backend
+ownership and compaction checks.
 MacBook Pro 2's original Control other devices connection is active through its
 native relay. Full desktop parity through that connection remains unverified.
 SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
+
+The v0.2.23 gateway removes generated agent roles, worker defaults, role CLI
+commands, task prompt text, and the injected title tool. All 527 source tests
+pass. Client agent settings and user-authored role files survive unchanged even
+when an obsolete gateway policy exists. Native naming and caller tools remain
+ordinary client operations. The real signed SDK passes eight Responses cases
+with 13 mock requests and no paid inference. A caller base-instruction marker
+reaches the upstream in the same developer message bytes on every request.
+The SDK requires a string instruction-template field in custom model metadata;
+the gateway supplies an empty string. Missing or null templates are rejected
+before inference. Existing executors retain loaded settings until normal
+retirement; their role files must remain available until they finish.
 
 The v0.2.22 installed fixture passes eight cases using the original signed SDK
 and 13 mock upstream requests. Genuine interrupted responses preserve incomplete
