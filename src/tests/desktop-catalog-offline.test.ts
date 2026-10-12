@@ -145,3 +145,35 @@ test("successful recovery atomically replaces the offline public catalog", async
     assert.equal((await lstat(f.cachePath)).mode & 0o777, 0o600);
   } finally { f.close(); }
 });
+
+test("remote tier metadata survives offline restoration and model/list without private fields", async () => {
+  const f = await fixture(); let live; let restarted;
+  const tier = { id: "priority", name: "Fast", description: "Priority routing" };
+  try {
+    f.setCatalog({ models: [{ slug: "codex/sol", display_name: "Codex 2 · Sol", supported_reasoning_levels: [], service_tiers: [{ ...tier, auth: "excluded-tier-auth" }], additional_speed_tiers: ["fast"], default_service_tier: "priority" }] });
+    live = await adapter(f);
+    const model = (await live.rpc("model/list")).data.find((row: { model: string }) => row.model === "codex/sol");
+    assert.deepEqual(model.serviceTiers, [tier]); assert.deepEqual(model.additionalSpeedTiers, ["fast"]); assert.equal(model.defaultServiceTier, "priority");
+    await live.stop(); live = undefined; f.close();
+    const cache = await readFile(f.cachePath, "utf8"); assert.equal(cache.includes("excluded-tier-auth"), false);
+    restarted = await adapter(f);
+    const restored = (await restarted.rpc("model/list")).data.find((row: { model: string }) => row.model === "codex/sol");
+    assert.deepEqual(restored.serviceTiers, [tier]); assert.deepEqual(restored.additionalSpeedTiers, ["fast"]); assert.equal(restored.defaultServiceTier, "priority");
+  } finally { await live?.stop(); await restarted?.stop(); f.close(); }
+});
+
+test("malformed remote service tiers cannot replace a validated catalog", async t => {
+  const tier = { id: "priority", name: "Fast", description: "Priority routing" };
+  for (const metadata of [
+    { service_tiers: "priority" }, { service_tiers: [tier, tier] }, { service_tiers: [{ ...tier, name: false }] },
+    { additional_speed_tiers: ["fast", "fast"] }, { service_tiers: [tier], default_service_tier: "unadvertised" },
+  ]) await t.test(JSON.stringify(metadata), async () => {
+    const f = await fixture();
+    try {
+      const catalog = f.create(); await catalog.refresh(true); const previous = await readFile(f.cachePath, "utf8");
+      f.setCatalog({ models: [{ slug: "codex/sol", display_name: "Sol", supported_reasoning_levels: [], ...metadata }] });
+      await assert.rejects(catalog.refresh(true), /Gateway model discovery is unavailable/);
+      assert.equal(await readFile(f.cachePath, "utf8"), previous); assert.equal(catalog.current().models[0].slug, "claude/model");
+    } finally { f.close(); }
+  });
+});

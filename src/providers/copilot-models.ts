@@ -22,7 +22,9 @@ export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
     // subscription endpoint rejects it. Preserve only its verified wire levels.
     const supported = model.id === "gpt-6.1-sol" ? efforts.filter(effort => effort !== "none") : efforts;
     const vision = record(record(model.capabilities).supports).vision === true;
-    const entry: DiscoveredModel = { model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[] } };
+    // CLI 1.0.91 has no selected-model priority tier. Its integrator-only Auto
+    // profile is different routing, not faster execution of the selected model.
+    const entry: DiscoveredModel = { model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[], serviceTiers: [], additionalSpeedTiers: [], defaultServiceTier: null } };
     const signature = JSON.stringify(entry);
     if (ids.has(model.id)) { if (ids.get(model.id) !== signature) throw new Error("Copilot returned conflicting duplicate model metadata"); return []; }
     ids.set(model.id, signature); return [entry];

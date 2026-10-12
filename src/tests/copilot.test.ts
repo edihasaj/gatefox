@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { copilotFrames } from "../providers/copilot-rpc.js";
 import { copilotEnvironment } from "../providers/copilot-client.js";
 import { nativeCopilotModels } from "../providers/copilot-models.js";
-import { CopilotSubscription, copilotEffort, nativeCopilotCalls } from "../providers/copilot.js";
+import { CopilotSubscription, copilotEffort, nativeCopilotCalls, validateCopilotServiceTier } from "../providers/copilot.js";
 import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import { ProviderError } from "../providers/provider.js";
@@ -27,13 +27,22 @@ test("Copilot RPC handles split UTF-8 frames and rejects unbounded, ambiguous, o
 test("Copilot discovery respects policy and default context limits without guessing reasoning levels", () => {
   const model = { id: "test", name: "Test", policy: { state: "enabled" }, capabilities: { limits: { max_context_window_tokens: 1000000, max_prompt_tokens: 936000 } }, billing: { tokenPrices: { contextMax: 200000 } }, supportedReasoningEfforts: ["low", "high", "max"] };
   const entries = nativeCopilotModels([model, { id: "auto" }, { ...model, id: "disabled", policy: { state: "disabled" } }]);
-  assert.deepEqual(entries, [{ model: "test", metadata: { displayName: "Test", inputModalities: ["text"], contextWindow: 200000, reasoningEfforts: ["low", "high", "max"] } }]);
+  assert.deepEqual(entries, [{ model: "test", metadata: { displayName: "Test", inputModalities: ["text"], contextWindow: 200000, reasoningEfforts: ["low", "high", "max"], serviceTiers: [], additionalSpeedTiers: [], defaultServiceTier: null } }]);
   assert.equal(nativeCopilotModels([model, model]).length, 1);
   assert.throws(() => nativeCopilotModels([model, { ...model, name: "Conflicting" }]), /conflicting duplicate/);
   assert.throws(() => nativeCopilotModels([{ ...model, supportedReasoningEfforts: ["ultra"] }]), /reasoning/);
   assert.deepEqual(nativeCopilotModels([{ ...model, id: "gpt-6.1-sol", supportedReasoningEfforts: ["none", "low", "max"] }])[0].metadata.reasoningEfforts, ["low", "max"]);
   assert.equal(copilotEffort(provider, { model: "fixture", input: "", reasoning: { effort: "max" } }), "max");
   assert.throws(() => copilotEffort(provider, { model: "fixture", input: "", reasoning: { effort: "medium" } }), /reasoning/);
+});
+
+test("Copilot rejects unsupported service tiers and preserves ordinary defaults", () => {
+  const request: ResponsesRequest = { model: "fixture", input: "hello", reasoning: { effort: "high" } };
+  for (const service_tier of [undefined, null, "auto", "default"]) assert.doesNotThrow(() => validateCopilotServiceTier({ ...request, service_tier }));
+  for (const service_tier of ["priority", "fast"]) {
+    assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400 && /Copilot Fast mode is unavailable/.test(error.message));
+  }
+  for (const service_tier of ["flex", "scale", "unknown", false, {}]) assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
 });
 
 test("Copilot native calls preserve custom-tool identities and reject native actions or duplicate IDs", () => {
@@ -68,6 +77,17 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     const last = normal.at(-1); assert.equal(last?.type === "done" && last.usage.total_tokens, 13);
     const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
     assert.deepEqual(receipt.availableTools, []); assert.deepEqual(receipt.allowedModels, ["fixture"]); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");
+    for (const service_tier of ["priority", "fast"]) {
+      await writeFile(join(directory, "receipt.json"), "worker-not-started");
+      await assert.rejects(collect(adapter.infer({ ...request, service_tier }, new AbortController().signal)), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
+      assert.equal(await readFile(join(directory, "receipt.json"), "utf8"), "worker-not-started");
+    }
+    for (const service_tier of ["auto", "default"]) {
+      assert.equal((await collect(adapter.infer({ ...request, service_tier }, new AbortController().signal))).at(-1)?.type, "done");
+      const ordinary = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
+      assert.equal(ordinary.reasoningEffort, "high"); assert.deepEqual(ordinary.allowedModels, ["fixture"]);
+      assert.equal(ordinary.serviceTier, undefined); assert.equal(ordinary.capi, undefined);
+    }
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "provider-absent";
     assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "tool";

@@ -13,10 +13,11 @@ import type { GatewayConfig } from "../config.js";
 
 const alias = "claude/fixture";
 type FeatureVariant = "legacy" | "canonical";
-async function fixture(featureVariant?: FeatureVariant) {
+async function fixture(featureVariant?: FeatureVariant, priority?: boolean) {
   const directory = await mkdtemp(join(tmpdir(), "gw-backends-"));
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
-  await writeFile(join(nativeHome, "config.toml"), 'model = "native-original"\n', { mode: 0o600 });
+  const nativeConfig = 'model = "native-original"\n' + (priority === undefined ? "" : "[features]\nfast_mode = false\n");
+  await writeFile(join(nativeHome, "config.toml"), nativeConfig, { mode: 0o600 });
   const sdk = join(directory, "codex");
   await writeFile(sdk, `#!${process.execPath}
 import {createServer} from 'node:http';
@@ -26,16 +27,18 @@ import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modul
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const loaded=new Set();
 const cliFeatures={};for(let i=0;i<args.length;i++)if(args[i]==='-c'){const value=args[++i];const equal=value.indexOf('=');const key=value.slice(0,equal);if(key.startsWith('features.')){try{cliFeatures[key]=JSON.parse(value.slice(equal+1));}catch{}}}
+for(let i=0;i<args.length;i++){const arg=args[i];if((arg==='--enable'||arg==='--disable')&&args[i+1]==='fast_mode'){cliFeatures['features.fast_mode']=arg==='--enable';i++;}else if(arg==='--enable=fast_mode'||arg==='--disable=fast_mode')cliFeatures['features.fast_mode']=arg.startsWith('--enable');}
 function metadata(){return existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};}
 async function rpc(m,send,drop){if(m.id==null)return;let result={};
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
 if(m.method==='fixture/features')result={cliFeatures};
+if(m.method==='turn/start')result={wireServiceTier:cliFeatures['features.fast_mode']===false?null:m.params.serviceTier??null,effort:m.params.effort,approvalPolicy:m.params.approvalPolicy,sandboxPolicy:m.params.sandboxPolicy};
 if(m.method==='thread/read')result={thread:metadata()[m.params.threadId]||{id:m.params.threadId,modelProvider:'openai'}};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'){
 if(m.params.delayMs)await new Promise(r=>setTimeout(r,m.params.delayMs));
 const id=m.params.fixtureId;const thread={id,modelProvider:'subscription_gateway',model:m.params.model};
-const all=metadata();all[id]=thread;writeFileSync(saved,JSON.stringify(all));loaded.add(id);result={thread,model:m.params.model,modelProvider:'subscription_gateway',executorPid:process.pid};
+const all=metadata();all[id]=thread;writeFileSync(saved,JSON.stringify(all));loaded.add(id);result={thread,model:m.params.model,modelProvider:'subscription_gateway',executorPid:process.pid,serviceTier:m.params.serviceTier??null};
 }
 if(m.method==='thread/resume'){const thread=metadata()[m.params.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}loaded.add(thread.id);result={thread,model:thread.model,modelProvider:'subscription_gateway',executorPid:process.pid};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
@@ -55,7 +58,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk });
   const control = new SocketAppServerConnection(join(executionHostHome(configPath, nativeHome), "host.sock"), async () => {}); await control.ready;
   let generation = 0;
-  const snapshot = () => ({ revision: String(generation).repeat(64), models: [{ slug: alias, display_name: "Fixture " + generation }] });
+  const snapshot = () => ({ revision: String(generation).repeat(64), models: [{ slug: alias, display_name: "Fixture " + generation, ...(priority ? { service_tiers: [{ id: "priority", name: "Fast", description: "Priority route" }], default_service_tier: null } : {}) }] });
   const catalog = { current: snapshot, refresh: async () => snapshot(), combined: (value: ReturnType<typeof snapshot>) => ({ models: value.models }) } as unknown as DesktopCatalog;
   const events: Message[] = [];
   const adapters = new Set<AppServerBackends>();
@@ -69,12 +72,13 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
       if (variant === "legacy") featureArgs.push("-c", "features.code_mode_tool_description_first=true", "-c", "features.guardianv2.thread_context=false");
     }
     const settings = Object.fromEntries(reverse ? entries.reverse() : entries);
+    if (priority !== undefined) { settings.features = { ...(settings.features as Message || {}), fast_mode: false }; featureArgs.push("-c", "features.fast_mode=false", "--disable=fast_mode"); }
     const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs], config, settings, {}, catalog, async message => { events.push(message); }, () => {}, configPath);
     adapters.add(adapter); return adapter;
   };
   const backends = createBackend();
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
-  return { config, directory, nativeHome, backends, control, events, next: () => { generation++; },
+  return { config, directory, nativeHome, nativeConfig, backends, control, events, next: () => { generation++; },
     async another(variant?: FeatureVariant) { const adapter = createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
     async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
@@ -126,6 +130,34 @@ test("legacy and canonical feature settings share one writer and retain current 
     assert.match(snapshot, /"code_mode" = \{ "enabled" = true, "default_exec_yield_time_ms" = 1500, "experimental_show_cell_overhead" = true \}/);
     assert.match(snapshot, /"guardianv2" = \{ "enabled" = true, "persist_scores" = false, "review_threshold" = 0\.6 \}/);
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
+  } finally { await f.clean(); }
+});
+
+test("shared priority-capable executors enable fast mode while native flags and standard default remain intact", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, true);
+  try {
+    assert.equal(((await f.backends.native.request("fixture/features", {})).cliFeatures as Message)["features.fast_mode"], false);
+    const standard = await f.start("priority-capable-standard-chat"); assert.equal(standard.serviceTier, null);
+    const gateway = (await f.backends.request("fixture/features", { threadId: "priority-capable-standard-chat" })).cliFeatures as Message;
+    assert.equal(gateway["features.fast_mode"], true);
+    const request = { threadId: "priority-capable-standard-chat", serviceTier: "priority", effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "readOnly" } };
+    assert.deepEqual(await f.backends.request("turn/start", request), { wireServiceTier: "priority", effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "readOnly" } });
+    assert.equal((await f.backends.request("turn/start", { ...request, serviceTier: null })).wireServiceTier, null);
+    assert.equal(((await f.backends.native.request("fixture/features", {})).cliFeatures as Message)["features.fast_mode"], false);
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), f.nativeConfig);
+    const owner = await f.control.request("execution/find", { threadId: "priority-capable-standard-chat" });
+    const snapshot = await readFile(join(f.config.stateDirectory, "desktop-generations", "shared-v1-" + owner.revision, "desktop-engine", "config.toml"), "utf8");
+    assert.match(snapshot, /"fast_mode" = false/); assert.equal(snapshot.includes('"service_tier" = "priority"'), false);
+  } finally { await f.clean(); }
+});
+
+test("shared executors without priority metadata do not override the native fast-mode setting", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, false);
+  try {
+    const standard = await f.start("ordinary-chat"); assert.equal(standard.serviceTier, null);
+    const gateway = (await f.backends.request("fixture/features", { threadId: "ordinary-chat" })).cliFeatures as Message;
+    assert.equal(gateway["features.fast_mode"], false);
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), f.nativeConfig);
   } finally { await f.clean(); }
 });
 

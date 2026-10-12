@@ -10,6 +10,14 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { copilotContextFailure } from "./context-errors.js";
 
+/** Protocol 3 supports Auto routing profiles, but no selected-model service tier. */
+export function validateCopilotServiceTier(request: ResponsesRequest): void {
+  const tier = request.service_tier;
+  if (tier === undefined || tier === null || tier === "auto" || tier === "default") return;
+  if (tier === "priority" || tier === "fast") throw new ProviderError("invalid_request", "Copilot Fast mode is unavailable: its CLI does not support a priority tier for the selected model", 400);
+  throw new ProviderError("invalid_request", "Copilot does not support the requested service tier", 400);
+}
+
 export function copilotEffort(config: ProviderConfig, request: ResponsesRequest): string | undefined {
   const effort = record(request.reasoning).effort;
   const alias = Object.entries(config.models).find(([, model]) => model === request.model)?.[0];
@@ -34,6 +42,7 @@ export function nativeCopilotCalls(value: unknown, tools: OpenAITool[]): OpenAIT
 export class CopilotSubscription implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+    validateCopilotServiceTier(request);
     const normalized = responsesToChatRequest(request); const choice = normalized.tool_choice;
     const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
     const effort = copilotEffort(this.config, request);

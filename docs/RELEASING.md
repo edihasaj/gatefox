@@ -26,6 +26,12 @@ belongs in the release archive.
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.
    The zero-inference run proves process ownership rather than durable chat resume.
+   For speed controls, run `scripts/e2e-fast-mode.mjs --gateway INSTALLED_COMMAND
+   --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. It uses the
+   real signed SDK with a mock upstream through stdio and a private Unix socket.
+   It proves requested and returned tiers, settings changes, saved-history resume,
+   and native isolation; it sends no subscription inference and does not prove
+   rendered desktop controls or the built-in cloud transport.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

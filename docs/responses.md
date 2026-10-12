@@ -99,6 +99,15 @@ The current adapters support text, inline images, and caller-dispatched tools. A
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
 
+Responses upstreams retain `service_tier`. For Codex subscription requests, the
+`fast` alias becomes `priority`, as required by the tested subscription resource
+endpoint. Declared model capabilities reject unsupported tiers before inference.
+Standard requests omit a null tier; explicit `default` and `auto` keep their wire
+values. A successful completion reports the upstream's actual `service_tier`
+only when it is a recognized public value. It never reports the requested tier
+as proof of the tier served. An upstream may return `default` after a priority
+request; the gateway preserves that result and does not retry to chase Fast.
+
 Copilot uses the same normalized text and replay contract. It registers native
 SDK custom tools and returns their real calls before any execution. SDK reasoning
 summaries stream separately; `auto` requests a concise summary. The adapter rejects
@@ -106,6 +115,9 @@ BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
 Cancellation stops the request's CLI process and waits for it to exit. The next
 request starts a separate session and replays caller-supplied history.
+The current Copilot CLI exposes no selected-model priority tier. Direct
+`priority` or `fast` requests return `invalid_request` before opening a session.
+Normal requests retain the selected model, reasoning, and subscription route.
 
 ## Ordinary Anthropic API
 

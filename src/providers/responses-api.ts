@@ -5,15 +5,27 @@ import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
+import { publicServiceTier } from "../protocol/types.js";
 import { setTimeout as delay } from "node:timers/promises";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+    const requestedTier = request.service_tier;
+    if (requestedTier !== undefined && requestedTier !== null && !publicServiceTier(requestedTier)) throw new ProviderError("invalid_request", "Invalid Responses service tier", 400);
+    const tier = requestedTier === "fast" && this.config.type === "codex-subscription" ? "priority" : requestedTier;
+    if (this.config.type === "codex-subscription" && tier && !["auto", "default"].includes(String(tier))) {
+      const metadata = Object.entries(this.config.models).filter(([, model]) => model === request.model).map(([alias]) => this.config.modelMetadata?.[alias]);
+      const declared = metadata.filter(entry => entry?.serviceTiers !== undefined);
+      if (declared.length && !declared.some(entry => entry?.serviceTiers?.some(option => option.id === tier))) throw new ProviderError("invalid_request", "Selected Codex model does not offer this service tier", 400);
+    }
+    const normalized = { ...request };
+    if (tier === undefined || tier === null) delete normalized.service_tier;
+    else normalized.service_tier = tier;
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
-        for await (const event of this.attempt(request, signal)) { published = true; yield event; }
+        for await (const event of this.attempt(normalized, signal)) { published = true; yield event; }
         return;
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
@@ -88,11 +100,12 @@ export class ResponsesAPI implements Provider {
       }
       if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
       if (event.type === "response.completed") {
-        const completed = event.response as { status?: string; output_text?: string; usage?: Usage };
+        const completed = event.response as { status?: string; output_text?: string; usage?: Usage; service_tier?: unknown };
         if (completed.status !== "completed") throw new ProviderError("incomplete", "Provider did not complete the response");
         if (!textSeen && completed.output_text) yield { type: "text", text: completed.output_text };
         done = true;
-        yield { type: "done", usage: completed.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+        const serviceTier = publicServiceTier(completed.service_tier);
+        yield { type: "done", usage: completed.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, ...(serviceTier ? { serviceTier } : {}) };
         break;
       }
     }

@@ -17,8 +17,12 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const registration = await nativeRegistration(config);
   const control = registration ? new NativeControl(registration.home, emit) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
-  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, message => control && message.method === "remoteControl/status/changed" ? Promise.resolve() : emit(message), () => input.destroy(), configPath);
-  const router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
+  let router: AppServerRouter | undefined;
+  const backends = new AppServerBackends(executable, args, config, prepared.settings, overrides, source, async message => {
+    await router?.observeNotification(message);
+    if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
+  }, () => input.destroy(), configPath);
+  router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {
     const threadConfig = ["thread/start", "thread/resume", "thread/fork"].includes(method);
@@ -46,7 +50,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
       catch { await emit({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
       if (typeof message.method === "string" && isId(message.id)) {
         if (tasks.size >= 256) { await emit({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
-        const task = compatible(message.method, object(message.params)).then(params => router.request(message.method as string, params)).then(result => emit({ id: message.id, result }), error => {
+        const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(result => emit({ id: message.id, result }), error => {
           const failure = error as Error & { code?: number; data?: unknown };
           return emit({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
         });

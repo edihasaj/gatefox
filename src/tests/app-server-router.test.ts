@@ -9,6 +9,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 type ObjectValue = Record<string, unknown>;
+let notificationTimestamp = Date.now();
+const appliedSettings = (router: AppServerRouter, threadId: string, model: string, serviceTier: string | null) => router.observeNotification({
+  method: "thread/settings/updated", emittedAtMs: notificationTimestamp = Math.max(notificationTimestamp + 1, Date.now()), params: { threadId, threadSettings: { modelProvider: "subscription_gateway", model, serviceTier } },
+});
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-app-server-"));
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: directory, providers: [
@@ -20,9 +24,11 @@ async function fixture() {
     calls.push({ method, params });
     if (method === "model/list") return { data: [{ id: "native", model: "native", displayName: "Native", hidden: false }], nextCursor: null };
     if (method === "config/read") return { config: { model: "native", model_provider: "openai" }, origins: {}, layers: null };
-    if (method === "thread/start") return { thread: { id: "test" }, modelProvider: params.modelProvider || "openai", model: params.model || "native" };
+    if (method === "thread/start") return { thread: { id: "test" }, modelProvider: params.modelProvider || "openai", model: params.model || "native", serviceTier: params.serviceTier ?? null };
     if (method === "thread/read") return { thread: { id: "persisted", modelProvider: "subscription_gateway", model: "codex/model" } };
-    if (method === "thread/resume") return { thread: { id: "persisted" }, modelProvider: params.modelProvider, model: params.model };
+    if (method === "thread/resume" || method === "thread/fork") return { thread: { id: "persisted" }, modelProvider: params.modelProvider, model: params.model, serviceTier: params.serviceTier ?? null };
+    if (method === "turn/start") return { turn: { id: "active" } };
+    if (method === "turn/settings/update") return { status: "applied" };
     return { status: "ok" };
   };
   const router = new AppServerRouter(config, backend); await router.initialize();
@@ -79,6 +85,7 @@ test("live settings keep provider boundaries and forward thread controls unchang
   const params = { threadId: "test", model: "codex/model", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" }, effort: "high" };
   await router.request("thread/settings/update", params);
   assert.deepEqual(calls.at(-1)!.params, params);
+  await appliedSettings(router, "test", "codex/model", null);
   await router.request("thread/resume", { threadId: "test" });
   assert.equal(calls.at(-1)!.params.model, "codex/model");
   await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "native" }), /Start a new chat/);
@@ -242,4 +249,201 @@ test("provider switch refusals are application errors rather than config validat
   await assert.rejects(router.request("thread/settings/update", { threadId: "test", model: "native", effort: "high" }),
     error => error instanceof Error && (error as { code?: number }).code === -32002);
   assert.equal(calls.length, before);
+});
+
+async function fastFixture() {
+  const f = await fixture();
+  const tier = { id: "priority", name: "Fast", description: "Priority routing" };
+  f.config.providers[1].modelMetadata = { "codex/model": { serviceTiers: [tier], additionalSpeedTiers: ["fast"] } };
+  const router = new AppServerRouter(f.config, f.backend); await router.initialize();
+  return { ...f, router, tier };
+}
+
+test("model/list advertises exact SDK service tiers while standard models have none", async () => {
+  const { router, tier } = await fastFixture();
+  const rows = (await router.request("model/list", {})).data as ObjectValue[];
+  assert.deepEqual(rows[2].serviceTiers, [tier]); assert.deepEqual(rows[2].additionalSpeedTiers, ["fast"]); assert.equal(rows[2].defaultServiceTier, null);
+  assert.deepEqual(rows[1].serviceTiers, []); assert.deepEqual(rows[1].additionalSpeedTiers, []);
+  const capabilities = await router.request("modelProvider/capabilities/read", {});
+  assert.deepEqual(capabilities, { status: "ok" });
+});
+
+test("private Fast preferences survive connections and preserve explicit chat request overrides", async () => {
+  const { router, config, backend, calls, directory } = await fastFixture();
+  await router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" },
+    { keyPath: "service_tier", value: "fast", mergeStrategy: "upsert" },
+    { keyPath: "model_reasoning_summary", value: "detailed", mergeStrategy: "upsert" },
+  ] });
+  const second = new AppServerRouter(config, backend); await second.initialize();
+  const params = { cwd: directory, config: { trusted: true, model_reasoning_effort: "none", model_reasoning_summary: "concise" } };
+  await second.request("thread/start", params);
+  const started = calls.at(-1)!.params;
+  assert.equal(started.serviceTier, "fast"); assert.equal(started.cwd, directory);
+  assert.equal((started.config as ObjectValue).model_reasoning_effort, "none");
+  assert.equal((started.config as ObjectValue).model_reasoning_summary, "concise");
+  assert.equal((started.config as ObjectValue).trusted, true);
+  await second.request("thread/resume", { threadId: "persisted" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await second.request("thread/fork", { threadId: "persisted", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
+  await second.request("thread/start", { model: "codex/model", serviceTier: "default" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
+  await second.request("thread/start", { model: "codex/model", config: { service_tier: null } });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false); assert.equal((calls.at(-1)!.params.config as ObjectValue).service_tier, null);
+  await second.request("thread/start", { model: "claude/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await second.request("thread/start", { model: "native", serviceTier: "flex", config: { service_tier: "default" } });
+  assert.equal(calls.at(-1)!.params.serviceTier, "flex"); assert.equal((calls.at(-1)!.params.config as ObjectValue).service_tier, "default");
+});
+
+test("declared gateway defaults apply only to new gateway chats and never override explicit Standard", async () => {
+  const { config, backend, calls } = await fastFixture();
+  config.providers[1].modelMetadata!["codex/model"].defaultServiceTier = "priority";
+  const router = new AppServerRouter(config, backend); await router.initialize();
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+  await router.request("thread/start", { model: "codex/model", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
+  await router.request("thread/resume", { threadId: "persisted" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await router.request("thread/start", { model: "native" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "default", mergeStrategy: "upsert" },
+  ] });
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
+});
+
+test("a Fast chat cannot silently switch to a model without that tier", async () => {
+  const { router, calls } = await fastFixture();
+  await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
+  const before = calls.length;
+  for (const method of ["turn/start", "thread/settings/update", "turn/settings/update", "thread/resume", "thread/fork"]) {
+    await assert.rejects(router.request(method, { threadId: "test", turnId: "active", model: "claude/model" }), error => (error as { code: number }).code === -32002);
+  }
+  assert.equal(calls.length, before);
+  await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: null });
+  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
+  await appliedSettings(router, "test", "claude/model", null);
+  await router.request("turn/start", { threadId: "test", input: [] });
+  const after = calls.length;
+  await assert.rejects(router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] }), /does not support/);
+  await assert.rejects(router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
+  ] }), /does not support/);
+  assert.equal(calls.length, after);
+});
+
+test("changing the saved default model does not transfer the previous model's Fast preference", async () => {
+  const { router, config, backend, calls } = await fastFixture();
+  await router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
+  ] });
+  const other = new AppServerRouter(config, backend); await other.initialize();
+  await other.request("config/value/write", { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" });
+  assert.equal(Object.hasOwn((await router.request("config/read", {})).config as ObjectValue, "service_tier"), false);
+  await router.request("thread/start", {}); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+});
+
+test("an explicit standard tier for one turn overrides Fast without changing the thread's saved tier", async () => {
+  const { router, calls } = await fastFixture();
+  await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
+  await router.request("turn/start", { threadId: "test", model: "claude/model", serviceTierForTurn: "default", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTierForTurn, "default");
+  await assert.rejects(router.request("turn/start", { threadId: "test", input: [] }), /does not support/);
+  await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
+  await appliedSettings(router, "test", "claude/model", null);
+  await router.request("turn/start", { threadId: "test", input: [] });
+});
+
+test("active turn tiers remain separate from future thread settings during model switches", async () => {
+  const { router, calls } = await fastFixture();
+  await router.request("thread/start", { model: "codex/model" });
+  await router.request("turn/start", { threadId: "test", input: [] });
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
+  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  await router.request("turn/start", { threadId: "test", model: "codex/model", input: [] });
+  assert.equal(calls.at(-1)!.params.model, "codex/model"); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await router.request("thread/settings/update", { threadId: "test", serviceTier: "priority" });
+  await appliedSettings(router, "test", "codex/model", "priority");
+  await router.request("turn/start", { threadId: "test", input: [] });
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  await assert.rejects(router.request("turn/start", { threadId: "test", model: "claude/model", input: [] }), /does not support/);
+});
+
+test("one-turn Fast aliases normalize before reaching the SDK and targetUnavailable changes stay unapplied", async () => {
+  const { config, backend, calls } = await fastFixture();
+  let unavailable = false;
+  const router = new AppServerRouter(config, (method, params) => method === "turn/settings/update" && unavailable ? Promise.resolve({ status: "targetUnavailable" }) : backend(method, params));
+  await router.initialize(); await router.request("thread/start", { model: "codex/model" });
+  await router.request("turn/start", { threadId: "test", serviceTierForTurn: "fast", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTierForTurn, "priority");
+  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  unavailable = true;
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
+  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+});
+
+test("a freshly attached gateway chat requires an explicit tier before switching an unread tier", async () => {
+  const { config, backend } = await fastFixture();
+  const router = new AppServerRouter(config, backend); await router.initialize();
+  await assert.rejects(router.request("thread/settings/update", { threadId: "persisted", model: "claude/model" }), /current service tier is unavailable/);
+  await router.request("thread/settings/update", { threadId: "persisted", model: "claude/model", serviceTier: null });
+});
+
+test("steering an existing turn preserves its active model and temporary tier", async () => {
+  const { router } = await fastFixture();
+  await router.request("thread/start", { model: "codex/model" });
+  await router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] });
+  // The SDK returns the same turn ID while steering; only future thread settings change.
+  await router.request("turn/start", { threadId: "test", serviceTierForTurn: "default", model: "claude/model", input: [] });
+  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+});
+
+test("loaded resume's authoritative tier takes precedence when the SDK ignores an explicit override", async () => {
+  const { config, backend, calls } = await fastFixture();
+  const router = new AppServerRouter(config, async (method, params) => {
+    const result = await backend(method, params);
+    return method === "thread/resume" ? { ...result, serviceTier: "priority" } : result;
+  });
+  await router.initialize();
+  const resumed = await router.request("thread/resume", { threadId: "persisted", serviceTier: null });
+  assert.equal(calls.at(-1)!.params.serviceTier, null); assert.equal(resumed.serviceTier, "priority");
+  await assert.rejects(router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] }), /does not support/);
+  await router.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
+  await appliedSettings(router, "persisted", "codex/model", null);
+  await router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] });
+});
+
+test("private Fast defaults cannot replace a saved or parent chat's Standard tier on resume or fork", async () => {
+  const { router, config, backend, calls } = await fastFixture();
+  await router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
+  ] });
+  await router.request("thread/start", { model: "codex/model", serviceTier: null });
+  await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
+  await appliedSettings(router, "test", "codex/model", null);
+  const other = new AppServerRouter(config, backend); await other.initialize();
+  for (const method of ["thread/resume", "thread/fork"]) {
+    await other.request(method, { threadId: "persisted" });
+    if (method === "thread/resume") assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+    else assert.equal(calls.at(-1)!.params.serviceTier, null);
+    await other.request(method, { threadId: "persisted", serviceTier: "priority" });
+    assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+    await other.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
+    await appliedSettings(other, "persisted", "codex/model", null);
+  }
+  await other.request("thread/start", {}); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+});
+
+test("gateway forks inherit the authoritative parent tier rather than private or executor defaults", async () => {
+  const { router, config, backend, calls } = await fastFixture();
+  await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
+  await router.request("thread/fork", { threadId: "test" }); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+  await router.request("thread/fork", { threadId: "test", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
+  await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
+  await appliedSettings(router, "test", "codex/model", null);
+  await router.request("thread/fork", { threadId: "test" }); assert.equal(calls.at(-1)!.params.serviceTier, null);
+  const other = new AppServerRouter(config, backend); await other.initialize();
+  await assert.rejects(other.request("thread/fork", { threadId: "unknown-parent" }), /parent chat's service tier is unavailable/);
+  await other.request("thread/fork", { threadId: "unknown-parent", config: { service_tier: "default" } });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
 });

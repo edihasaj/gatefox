@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
+import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -31,6 +32,7 @@ function publicModels(value: unknown, native: Message[]): Message[] {
     if (modalities !== undefined && (!Array.isArray(modalities) || !modalities.includes("text") || modalities.some(modality => !["text", "image"].includes(String(modality))))) throw new Error("Gateway returned invalid input-modality metadata");
     ids.add(model.slug);
     const result = Object.fromEntries(Object.entries(model).filter(([key, field]) => publicFields.has(key) && publicScalar(field)));
+    Object.assign(result, publicServiceTierFields(readPublicServiceTierMetadata(model)));
     result.supported_reasoning_levels = levels.map(level => {
       const metadata = object(level);
       return { effort: metadata.effort, ...(typeof metadata.description === "string" ? { description: metadata.description } : {}) };

@@ -36,11 +36,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.2.11 -R edihasaj/subscription-gateway \
+gh release download v0.2.18 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.11-macos-arm64.tar.gz
-./subscription-gateway-0.2.11-macos-arm64/install
+tar -xzf subscription-gateway-0.2.18-macos-arm64.tar.gz
+./subscription-gateway-0.2.18-macos-arm64/install
 gateway --version
 ```
 
@@ -122,6 +122,11 @@ Provider `label` controls the name before the middle dot, such as `Claude · Opu
 5.5` or `Codex 2 · GPT-6.1-Sol`. Providers appear in configuration order; metadata
 `priority` sorts models within each provider. Use `authDirectory` to isolate
 another Claude account. There is no recent-use tracker.
+
+Standard remains the default speed. Codex 2 discovery retains offered Fast tiers
+for local and connected-machine model lists. Speed is independent of reasoning.
+The current Copilot CLI has no selected-model Fast tier; unsupported requests
+fail before inference. See [speed controls](docs/app-server.md#speed-controls).
 
 On macOS, install an explicit user service to keep the daemon alive independently
 of terminals and the Codex app:

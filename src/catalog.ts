@@ -2,6 +2,7 @@ import { accessToken } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
 import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
+import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -14,6 +15,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName || provider.models[alias]}`,
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       visibility: "list", supported_in_api: true, availability_nux: null, upgrade: null,
+      ...publicServiceTierFields(readServiceTierMetadata(metadata)),
       supported_reasoning_levels: efforts.map(effort => ({ effort, description: `${effort} reasoning effort` })),
       default_reasoning_level: efforts.includes("medium") ? "medium" : efforts[0] || null,
       default_reasoning_summary: efforts.length ? "auto" : "none", supports_reasoning_summary_parameter: efforts.length > 0,
@@ -47,6 +49,7 @@ export async function discoverModels(provider: ProviderConfig): Promise<Discover
     if (typeof id !== "string" || !id) throw new Error("Provider returned an invalid model ID");
     const levels = model.supported_reasoning_levels as Array<{ effort: string }> | undefined;
     return { model: id, metadata: {
+      ...readPublicServiceTierMetadata(model),
       ...(typeof model.display_name === "string" ? { displayName: model.display_name } : {}),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),

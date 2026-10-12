@@ -78,10 +78,15 @@ export type ResponsesRequest = {
   [option: string]: unknown;
 };
 export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number };
+export type PublicServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast";
+const publicServiceTiers = new Set<string>(["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"]);
+export function publicServiceTier(value: unknown): PublicServiceTier | undefined {
+  return typeof value === "string" && publicServiceTiers.has(value) ? value as PublicServiceTier : undefined;
+}
 export type InferenceEvent =
   | { text: string; type: "text" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done" }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier }
   | { item: Record<string, unknown>; type: "reasoning-state" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string };
 export type WireEvent = { type: string; [field: string]: unknown };

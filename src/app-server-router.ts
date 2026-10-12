@@ -7,6 +7,9 @@ import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
+import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
+import { ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
+import { homedir } from "node:os";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -14,6 +17,11 @@ const object = (value: unknown): ObjectValue => value && typeof value === "objec
 const gatewayProvider = "subscription_gateway";
 const preferenceKeys = new Set(["model", "model_reasoning_effort", "model_reasoning_summary", "service_tier"]);
 const requestedModel = (params: ObjectValue): unknown => object(object(params.collaborationMode).settings).model ?? params.model ?? object(params.config).model;
+const tierSelection = (params: ObjectValue): { value: unknown } | undefined => Object.hasOwn(params, "serviceTier") && params.serviceTier !== undefined
+  ? { value: params.serviceTier } : Object.hasOwn(object(params.config), "service_tier") ? { value: object(params.config).service_tier } : undefined;
+const tierId = (value: unknown): unknown => value === "fast" ? "priority" : value;
+const savedTier = (value: string | null): string | null => value === "default" ? null : tierId(value) as string | null;
+type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
 
 export class AppServerRoutingError extends Error {
   constructor(message: string, readonly code: number = -32600) { super(message); }
@@ -22,17 +30,22 @@ export class AppServerRoutingError extends Error {
 /** Adds gateway routes without replacing the native engine's authentication or defaults. */
 export class AppServerRouter {
   private readonly aliases: Set<string>;
-  private readonly routes = new Map<string, { provider: string; model?: string }>();
+  private readonly routes = new Map<string, ThreadRoute>();
+  private readonly activeTurns = new Map<string, { turnId: string; route: ThreadRoute }>();
+  private readonly threadTiers: ThreadServiceTiers;
+  private readonly tierRecords = new Map<string, ThreadServiceTier | undefined>();
+  private readonly settingsVersions = new Map<string, number>();
   private preferences: ObjectValue = {};
   private writes: Promise<unknown> = Promise.resolve();
   private readonly preferencesPath: string;
   readonly catalogPath: string;
   private extraModels: ObjectValue[];
-  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog) {
+  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
     this.extraModels = modelCatalog(config).models;
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
     this.catalogPath = catalogPath || resolve(config.stateDirectory, "codex-models.json");
+    this.threadTiers = new ThreadServiceTiers(config.stateDirectory, nativeHome);
   }
   async initialize(): Promise<void> {
     if (this.catalogPath === resolve(this.config.stateDirectory, "codex-models.json")) await writePrivateJson(this.catalogPath, modelCatalog(this.config));
@@ -50,28 +63,82 @@ export class AppServerRouter {
       if (Object.keys(desktop).length) this.preferences.desktop = desktop;
     } catch { throw new AppServerRoutingError("Gateway desktop display preferences are invalid"); }
   }
-  private remember(result: ObjectValue): void {
+  private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number): Promise<void> {
     const thread = object(result.thread);
     if (typeof thread.id === "string" && typeof result.modelProvider === "string") {
-      this.routes.set(thread.id, { provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}) });
+      const tier = Object.hasOwn(result, "serviceTier") ? result.serviceTier : tierSelection(params)?.value;
+      const route: ThreadRoute = { provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
+        ...(tier === null || typeof tier === "string" ? { serviceTier: tierId(tier) as string | null } : {}) };
+      this.routes.set(thread.id, route);
+      // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
+      if (route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
+        const record = { model: route.model, serviceTier: savedTier(result.serviceTier) };
+        await this.threadTiers.write(thread.id, record, thread.id === params.threadId ? expected ?? null : null, requestStartedAtMs);
+        const current = await this.threadTiers.read(thread.id);
+        this.tierRecords.set(thread.id, current);
+        if (current) { route.model = current.model; route.serviceTier = current.serviceTier; }
+      }
     }
   }
   private async route(threadId: string) {
-    const known = this.routes.get(threadId);
-    if (known) return known;
-    const thread = object((await this.backend("thread/read", { threadId, includeTurns: false })).thread);
-    if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
-    const route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
-    this.routes.set(threadId, route); return route;
+    let route = this.routes.get(threadId);
+    if (!route) {
+      const thread = object((await this.backend("thread/read", { threadId, includeTurns: false })).thread);
+      if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
+      route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
+      this.routes.set(threadId, route);
+    }
+    if (route.provider === gatewayProvider) {
+      const current = await this.threadTiers.read(threadId);
+      if (current && (!this.tierRecords.has(threadId) || JSON.stringify(current) !== JSON.stringify(this.tierRecords.get(threadId)))) {
+        route.model = current.model; route.serviceTier = current.serviceTier;
+      } else if (!current && this.tierRecords.get(threadId)) delete route.serviceTier;
+      this.tierRecords.set(threadId, current);
+    }
+    return route;
   }
-  private modelRequest(params: ObjectValue, model: string): ObjectValue {
+  /** Only applied thread settings are durable; active-turn settings remain connection-local. */
+  async observeNotification(message: ObjectValue): Promise<void> {
+    const params = object(message.params);
+    if (message.method === "thread/settings/updated" && typeof params.threadId === "string") {
+      // The pinned SDK stamps the envelope before fan-out to clients on this host.
+      const emittedAtMs = message.emittedAtMs;
+      if (!Number.isSafeInteger(emittedAtMs) || Number(emittedAtMs) <= 0 || Number(emittedAtMs) > Date.now() + 1000) return;
+      const settings = object(params.threadSettings);
+      if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
+      const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
+      this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
+      // Duplicate notifications from slower shared clients cannot replace newer settings.
+      await this.threadTiers.write(params.threadId, record, this.tierRecords.get(params.threadId) ?? null);
+      const current = await this.threadTiers.read(params.threadId);
+      if (current) this.routes.set(params.threadId, { provider: gatewayProvider, ...current });
+      this.tierRecords.set(params.threadId, current);
+    }
+    if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
+  }
+  private assertServiceTier(model: string, tier: unknown): void {
+    if (tier === null || tier === "default") return;
+    const metadata = this.extraModels.find(entry => entry.slug === model);
+    if (typeof tier !== "string" || !metadata || !readPublicServiceTierMetadata(metadata).serviceTiers?.some(entry => entry.id === tierId(tier))) {
+      throw new AppServerRoutingError("This gateway model does not support the selected service tier. Choose Standard or a model that offers that tier.", -32002);
+    }
+  }
+  private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
+    if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
+    return { ...params, serviceTier: this.preferences.service_tier };
+  }
+  private modelRequest(params: ObjectValue, model: string, newChat = false): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
     const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
     const saved = this.preferences.model === model ? this.preferences.model_reasoning_effort : undefined;
     const effort = typeof saved === "string" && levels.includes(saved) ? saved : levels.includes("medium") ? "medium" : levels[0] || "none";
-    return { ...params, model, modelProvider: gatewayProvider,
-      config: { model_reasoning_effort: effort, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled", model_reasoning_summary: "auto" } };
+    let selected = newChat ? this.preferenceRequest(params, model) : params;
+    if (!tierSelection(selected) && newChat && typeof metadata.default_service_tier === "string") selected = { ...selected, serviceTier: metadata.default_service_tier };
+    const tier = tierSelection(selected); if (tier) this.assertServiceTier(model, tier.value);
+    const summary = this.preferences.model === model && typeof this.preferences.model_reasoning_summary === "string" ? this.preferences.model_reasoning_summary : "auto";
+    return { ...selected, model, modelProvider: gatewayProvider,
+      config: { model_reasoning_effort: effort, model_reasoning_summary: summary, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
   private assertSameProvider(provider: string, model: unknown): void {
     if (typeof model !== "string") return;
@@ -96,7 +163,7 @@ export class AppServerRouter {
       upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
       supportedReasoningEfforts: (model.supported_reasoning_levels as Array<{ effort: string; description: string }>).map(level => ({ reasoningEffort: level.effort, description: level.description })),
       defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
-      multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null, availableAccessPrograms: null, isDefault: false,
+      multiAgentVersion: null, additionalSpeedTiers: model.additional_speed_tiers || [], serviceTiers: model.service_tiers || [], defaultServiceTier: model.default_service_tier ?? null, availableAccessPrograms: null, isDefault: false,
     }));
     let models = [...native, ...extra];
     const preferred = this.preferences.model;
@@ -121,14 +188,16 @@ export class AppServerRouter {
     if (params.expectedVersion !== undefined && params.expectedVersion !== null) throw new AppServerRoutingError("Gateway default writes do not support a native config version guard");
     for (const edit of local) {
       if (!["replace", "upsert"].includes(String(edit.mergeStrategy)) || (edit.value !== null && typeof edit.value !== "string")) throw new AppServerRoutingError("Gateway defaults require string values with replace or upsert merge strategy");
+      if (edit.keyPath === "service_tier" && typeof chosen === "string" && this.aliases.has(chosen)) this.assertServiceTier(chosen, edit.value);
     }
     const remaining = edits.filter(edit => !preferenceKeys.has(String(edit.keyPath)) && !isDesktopPreferenceKey(edit.keyPath));
     if (remaining.length) throw new AppServerRoutingError("Save gateway model preferences separately from native configuration changes");
     let desktop: ObjectValue;
     try { desktop = applyDesktopEdits(object(this.preferences.desktop), desktopEdits); }
     catch { throw new AppServerRoutingError("Gateway desktop display settings contain an unsupported value"); }
-    const preferences = { ...this.preferences, ...Object.fromEntries(local.map(edit => [String(edit.keyPath), edit.value])),
+    const preferences: ObjectValue = { ...this.preferences, ...Object.fromEntries(local.map(edit => [String(edit.keyPath), edit.value])),
       ...(Object.keys(desktop).length ? { desktop } : {}) };
+    if (modelEdit && chosen !== this.preferences.model && !local.some(edit => edit.keyPath === "service_tier")) delete preferences.service_tier;
     await writePrivateJson(this.preferencesPath, preferences); this.preferences = preferences;
     return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
@@ -155,29 +224,65 @@ export class AppServerRouter {
     let forwarded = params;
     if (method === "thread/start") {
       const model = requestedModel(params) ?? this.preferences.model;
-      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model);
-      else if (typeof model === "string") forwarded = { ...params, model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
+      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model, true);
+      else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
-      const route = await this.route(params.threadId);
+      const threadRoute = await this.route(params.threadId);
+      const active = this.activeTurns.get(params.threadId);
+      const route = method === "turn/settings/update" && active && active.turnId === params.turnId ? active.route : threadRoute;
       this.assertSameProvider(route.provider, requestedModel(params));
+      const selectedModel = requestedModel(params) ?? route.model;
+      if (route.provider === gatewayProvider && typeof selectedModel === "string") {
+        const tier = tierSelection(params);
+        const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
+        if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
+        if (tier) this.assertServiceTier(selectedModel, tier.value);
+        else if (turnTier === undefined && typeof route.serviceTier === "string") this.assertServiceTier(selectedModel, route.serviceTier);
+        if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
+        if (turnTier === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
+      }
       if (["thread/resume", "thread/fork"].includes(method) && route.provider === gatewayProvider) {
         const model = requestedModel(params) ?? route.model;
         if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
-        forwarded = this.modelRequest(params, model);
+        if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
+        const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
+        forwarded = this.modelRequest(inherited, model);
       }
     }
+    const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;
+    const settingsVersion = typeof params.threadId === "string" ? this.settingsVersions.get(params.threadId) || 0 : 0;
+    const requestStartedAtMs = Date.now();
     const result = await this.backend(method, forwarded);
     if (method === "account/rateLimits/read") {
       try { return mergeGatewayUsage(result, await gatewayUsage(this.config)); }
       catch { return result; }
     }
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
-      this.remember(result);
+      await this.remember(result, forwarded, expectedTier, requestStartedAtMs);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     const selected = requestedModel(params);
-    if (["turn/start", "thread/settings/update"].includes(method) && typeof selected === "string" && typeof params.threadId === "string") {
+    const settingsUnchanged = typeof params.threadId !== "string" || (this.settingsVersions.get(params.threadId) || 0) === settingsVersion;
+    if (settingsUnchanged && method === "turn/start" && typeof selected === "string" && typeof params.threadId === "string") {
       const route = this.routes.get(params.threadId); if (route) route.model = selected;
+    }
+    if (settingsUnchanged && method === "turn/start" && typeof params.threadId === "string") {
+      const route = this.routes.get(params.threadId); const tier = tierSelection(params);
+      if (route && tier && (tier.value === null || typeof tier.value === "string")) route.serviceTier = tierId(tier.value) as string | null;
+    }
+    if (method === "turn/start" && typeof params.threadId === "string" && typeof object(result.turn).id === "string") {
+      const route = this.routes.get(params.threadId);
+      const turnId = String(object(result.turn).id);
+      if (route && this.activeTurns.get(params.threadId)?.turnId !== turnId) this.activeTurns.set(params.threadId, { turnId, route: { ...route,
+        ...(typeof params.serviceTierForTurn === "string" ? { serviceTier: tierId(params.serviceTierForTurn) as string } : {}) } });
+    }
+    if (method === "turn/settings/update" && result.status === "applied" && typeof params.threadId === "string" && typeof params.turnId === "string") {
+      const active = this.activeTurns.get(params.threadId);
+      const route = active?.turnId === params.turnId ? active.route : this.routes.get(params.threadId);
+      const tier = tierSelection(params);
+      if (route) this.activeTurns.set(params.threadId, { turnId: params.turnId, route: { ...route,
+        ...(typeof selected === "string" ? { model: selected } : {}),
+        ...(tier && (tier.value === null || typeof tier.value === "string") ? { serviceTier: tierId(tier.value) as string | null } : {}) } });
     }
     if (method === "config/read") {
       await this.readPreferences();

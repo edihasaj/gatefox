@@ -185,6 +185,55 @@ picker; enabling them on a remote Mac does not change this Mac's controls.
 The gateway persists these explicit display changes in its private settings and
 does not advertise unsupported provider effort levels.
 
+## Speed controls
+
+Gateway discovery retains the provider's public `service_tiers`,
+`additional_speed_tiers`, and `default_service_tier` fields. The adapter validates
+them through live discovery and its private offline cache, then exposes the same
+capabilities in local and connected-machine `model/list` responses. Native rows
+retain their original capabilities. No speed tier is inferred from a model name.
+
+Standard remains the default in this installation. Choose Fast only for a model
+that advertises it; the pinned SDK identifies Fast as `priority`. Gateway-only
+preferences restore a saved new-chat default for the exact selected model. An explicit
+`serviceTier` or `config.service_tier` takes precedence, including explicit null
+for Standard. A model-only preference change clears the preceding model's tier.
+Resume and fork inherit their chat's tier; new-chat preferences never replace it.
+The pinned SDK does not restore speed from saved history. The gateway therefore
+keeps public per-chat model/tier metadata in its own private state, scoped to the
+original native home. Fresh connections reread this record. Runtime settings are
+recorded from the SDK's applied settings notification, not its queued update ACK.
+SDK source timestamps reject delayed settings events. Private revisions prevent
+an older resume reply from replacing a newer choice. Conflicting events stamped
+in the same millisecond resolve conservatively to Standard; an explicit confirmed
+SDK snapshot can establish the current choice again. Clock uncertainty never
+restores Fast from an uncertain older notification.
+The adapter passes the known parent tier explicitly when forking because the SDK
+otherwise uses executor defaults. If that parent tier is unavailable, resume the
+parent or specify a tier before forking.
+The SDK's returned tier is authoritative. Resuming an already-loaded chat keeps
+its loaded settings even when resume parameters request another tier; change it
+through `thread/settings/update`. A cold resume can apply an explicit override.
+Temporary active-turn tiers remain separate from the chat default.
+Gateway executors enable the SDK's Fast feature when their validated catalog
+offers priority. Native feature flags and configuration files retain their values;
+enabling that private capability does not select Fast automatically.
+
+A loaded Fast chat cannot switch to an unsupported model without explicitly
+choosing Standard. When a connection cannot determine the saved tier, resume the
+chat to read its settings or explicitly choose Standard before changing models.
+These checks return application errors rather than a misleading native-config
+warning. Reasoning effort is independent of speed.
+
+The current Copilot CLI does not offer a selected-model Fast tier. Its four
+configured models expose no speed options. A direct Fast request is rejected
+before starting the CLI. The integrator-only Auto Fast API is a different route
+and is not enabled by this installation.
+
+Installing updated adapter code preserves open apps and running services.
+Already-loaded older adapters need their next normal launch to expose these new
+fields. Catalog updates use the usual live discovery path after activation.
+
 The circular arrow in the model control is **Reset to default**. It chooses a
 default power preset; it does not fetch a fresh model catalog. That preset can
 belong to the native account, so a gateway chat cannot always apply it. Provider

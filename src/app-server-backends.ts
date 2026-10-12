@@ -12,9 +12,27 @@ import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
+import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean }
+
+function offersPriority(models: Message[]): boolean {
+  return models.some(model => readPublicServiceTierMetadata(model).serviceTiers?.some(tier => tier.id === "priority"));
+}
+
+function gatewayFeatureArgs(args: string[], priority: boolean): string[] {
+  if (!priority) return args;
+  const result: string[] = [];
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    // SDK feature toggles are appended after -c overrides, regardless of their CLI position.
+    if (["--enable", "--disable"].includes(arg) && args[index + 1] === "fast_mode") { index++; continue; }
+    if (["--enable=fast_mode", "--disable=fast_mode"].includes(arg)) continue;
+    result.push(arg);
+  }
+  return result;
+}
 
 /** A stable native connection plus bounded gateway generations pinned to loaded chats. */
 export class AppServerBackends {
@@ -133,6 +151,7 @@ export class AppServerBackends {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     const snapshot = this.catalog.current();
+    const priority = offersPriority(snapshot.models);
     const revision = createHash("sha256").update(snapshot.revision + JSON.stringify(await readAgentPolicy(this.config.stateDirectory) || null)).digest("hex");
     const pool = await this.pool();
     if (pool) {
@@ -146,9 +165,9 @@ export class AppServerBackends {
         if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
         if (!this.args[index].startsWith("--profile=") && !this.args[index].startsWith("--listen=") && this.args[index] !== "--stdio") forwarded.push(this.args[index]);
       }
-      const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true,
+      const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
-      const args = normalizeCodexFeatureArgs([...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings);
+      const args = normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings);
       const combined = this.catalog.combined(snapshot);
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, agentsDirectory: agents.directory || null })).digest("hex");
       await this.releaseIdleShared(sharedRevision);
@@ -180,9 +199,9 @@ export class AppServerBackends {
         if (!this.args[index].startsWith("--profile=")) forwarded.push(this.args[index]);
       }
       const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", model_catalog_json: path,
-        "features.step_model_switching": true,
+        "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
-      const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
+      const args = [...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
       engine.connection = new AppServerConnection(this.executable, args, message => this.forward(engine.connection, message), () => {

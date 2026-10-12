@@ -5,7 +5,7 @@ import { responseToolItems, responseToolFrames, ResponsesWriter } from "../proto
 import { nativeClaudeCalls } from "../providers/claude-calls.js";
 import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { ProviderError } from "../providers/provider.js";
-import type { ResponsesRequest, ResponsesTool, WireEvent } from "../protocol/types.js";
+import type { InferenceEvent, PublicServiceTier, ResponsesRequest, ResponsesTool, WireEvent } from "../protocol/types.js";
 
 for (const tool of [{ type: "function", name: "fetch", parameters: { type: "object" } }, { type: "custom", name: "patch" }] as ResponsesTool[]) {
   test(`caller-dispatched ${tool.type} tools keep their original identity`, () => {
@@ -100,4 +100,40 @@ test("one output ledger preserves text/tool/text order and ends exactly once", (
   writer.fail("late", "failure"); assert.equal(events.filter(event => event.type === "response.completed").length, 1);
   assert.equal(events.filter(event => event.type === "response.failed").length, 0);
   assert.throws(() => writer.accept({ type: "text", text: "late" }));
+});
+
+test("completed Responses carry only the provider's actual allowlisted service tier", () => {
+  for (const serviceTier of ["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"] as PublicServiceTier[]) {
+    const events: WireEvent[] = []; const writer = new ResponsesWriter("test", event => events.push(event));
+    writer.begin(); writer.progress(); writer.accept({ type: "text", text: "reply" });
+    assert.equal(writer.result().service_tier, undefined);
+    writer.accept({ type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }, serviceTier });
+    assert.equal(writer.result().service_tier, serviceTier);
+    const completed = events.find(event => event.type === "response.completed")!;
+    assert.equal((completed.response as Record<string, unknown>).service_tier, serviceTier);
+    assert.ok(events.filter(event => ["response.created", "response.in_progress"].includes(event.type))
+      .every(event => !Object.hasOwn(event.response as object, "service_tier")));
+  }
+});
+
+test("a provider that does not report its service tier leaves completion metadata absent", () => {
+  const events: WireEvent[] = []; const writer = new ResponsesWriter("test", event => events.push(event)); writer.begin();
+  writer.accept({ type: "done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } });
+  assert.equal(Object.hasOwn(writer.result(), "service_tier"), false);
+  assert.equal(Object.hasOwn(events.at(-1)!.response as object, "service_tier"), false);
+});
+
+test("unrecognized provider tier values cannot escape through completed Responses", () => {
+  for (const serviceTier of ["private upstream text", "priority ", null, 123, { requested: "priority" }]) {
+    const writer = new ResponsesWriter("test", () => {});
+    writer.accept({ type: "done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, serviceTier } as InferenceEvent);
+    assert.equal(Object.hasOwn(writer.result(), "service_tier"), false);
+  }
+});
+
+test("failed Responses do not invent service-tier metadata before provider completion", () => {
+  const events: WireEvent[] = []; const writer = new ResponsesWriter("test", event => events.push(event)); writer.begin();
+  writer.accept({ type: "text", text: "partial" }); writer.fail("upstream_error", "Provider failed");
+  assert.equal(Object.hasOwn(writer.result(), "service_tier"), false);
+  assert.equal(Object.hasOwn(events.at(-1)!.response as object, "service_tier"), false);
 });

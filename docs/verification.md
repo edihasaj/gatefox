@@ -14,6 +14,34 @@ SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
 
+The v0.2.18 speed work retains the secondary account's declared Fast capabilities
+for seven of its eight models; Daybreak offers none. All eight aliases retain
+their routes and Standard defaults. The four selected Copilot models expose no
+selected-model speed tier. Direct Copilot Fast requests fail before CLI startup.
+
+The real secondary registration completed priority inference through the public
+Responses resource, but the provider reported `service_tier: "default"`. A raw
+`fast` request was rejected, so the Codex adapter normalizes that alias to
+`priority`. The normalized adapter request also completed as Standard. These
+results prove authentication, forwarding, and truthful completion metadata;
+they do not prove accelerated inference for this subscription route.
+
+The signed SDK fixture verifies local stdio and Unix WebSocket speed controls
+against a mock upstream. It covers saved defaults, explicit Standard, temporary
+turn tiers, forks, loaded versus cold resume, and another client choosing Standard.
+The native Fast flag remains false while private gateway executors can request
+priority. No subscription inference, primary configuration, authentication copy,
+rendered desktop control, or built-in cloud transport is involved in that fixture.
+The source gate passes 355 tests, including delayed notifications, timestamp
+ties, stale snapshots, revision ABA, and request-start ordering fences.
+The final immutable v0.2.18 installer passed repeated installation and all 41
+signed SDK checks across both transports, with 36 mock upstream requests and
+zero paid inference. All fixture processes were stopped afterward.
+
+Release installation preserves open apps and services. The running primary
+inference host and older connected-machine adapters need coordinated activation
+before these new speed fields reach their existing desktop connections.
+
 The October 12 retired-feature audit found none of the three obsolete settings
 in the primary Mac, MacBook Pro 2, or Studio native configuration, including
 profiles. MacBook Pro 2's five gateway engine snapshots and Studio's one snapshot

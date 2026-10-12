@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-service-tiers.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api";
 export interface ProviderConfig {
@@ -16,7 +17,7 @@ export interface ProviderConfig {
   label?: string;
   modelMetadata?: Record<string, ModelMetadata>;
 }
-export interface ModelMetadata {
+export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
   displayName?: string;
   contextWindow?: number;
@@ -61,6 +62,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
       if (metadata.inputModalities !== undefined && (!Array.isArray(metadata.inputModalities) || !metadata.inputModalities.includes("text") || metadata.inputModalities.some(modality => !["text", "image"].includes(modality)) || new Set(metadata.inputModalities).size !== metadata.inputModalities.length)) throw new Error("Input modalities must contain text and optionally image");
+      readServiceTierMetadata(metadata);
     }
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
       if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);

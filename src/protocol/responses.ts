@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ResponsesTranslationError } from "./request.js";
-import type { InferenceEvent, OpenAIToolCall, Usage, WireEvent } from "./types.js";
+import { publicServiceTier, type PublicServiceTier, type InferenceEvent, type OpenAIToolCall, type Usage, type WireEvent } from "./types.js";
 
 type Item = Record<string, unknown> & { type: string; id: string };
 const identifier = (kind: string) => `${kind}_${randomUUID().replaceAll("-", "")}`;
@@ -48,12 +48,14 @@ export class ResponsesWriter {
   private status: "in_progress" | "completed" | "failed" = "in_progress";
   private answer = "";
   private tokens: Usage = { total_tokens: 0, input_tokens: 0, output_tokens: 0 };
+  private serviceTier?: PublicServiceTier;
   constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void) {}
   get completed(): boolean { return this.status === "completed"; }
   private publish(frame: WireEvent): void { this.emit({ ...frame, sequence_number: this.serial++ }); }
   private snapshot(status: string): Record<string, unknown> {
     return { object: "response", id: this.responseId, created_at: this.created, model: this.model,
-      status, usage: { ...this.tokens }, output_text: this.answer, output: structuredClone(this.ledger) };
+      status, usage: { ...this.tokens }, output_text: this.answer, output: structuredClone(this.ledger),
+      ...(this.serviceTier === undefined ? {} : { service_tier: this.serviceTier }) };
   }
   begin(): void { this.publish({ type: "response.created", response: this.snapshot("in_progress") }); }
   progress(): void { if (this.status === "in_progress") this.publish({ type: "response.in_progress", response: this.snapshot("in_progress") }); }
@@ -132,7 +134,8 @@ export class ResponsesWriter {
         for (const frame of callFrames(item, position)) this.publish(frame); this.ledger.push(item); return;
       }
       case "done": {
-        this.closeMessage(); this.closeThoughts(); this.tokens = event.usage; this.status = "completed";
+        this.closeMessage(); this.closeThoughts(); this.tokens = event.usage;
+        this.serviceTier = publicServiceTier(event.serviceTier); this.status = "completed";
         this.publish({ type: "response.completed", response: this.snapshot(this.status) }); return;
       }
     }

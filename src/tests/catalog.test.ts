@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { claudeEffort } from "../providers/claude.js";
 import { nativeClaudeModels, readClaudeModels } from "../providers/claude-models.js";
-import { loadDiscoveredModels, modelCatalog } from "../catalog.js";
+import { discoverModels, loadDiscoveredModels, modelCatalog } from "../catalog.js";
 import type { ProviderConfig } from "../config.js";
+import { validateConfig } from "../config.js";
+import { readServiceTierMetadata } from "../model-service-tiers.js";
 
 const native = [
   { value: "default", resolvedModel: "claude-opus-5-5", displayName: "Default" },
@@ -95,4 +97,42 @@ test("discovery preserves multiple public aliases of a retained upstream model",
   loadDiscoveredModels(provider, nativeClaudeModels(native));
   assert.equal(provider.models.old, "claude-opus-5-5");
   assert.equal(provider.models.current, "claude-opus-5-5");
+});
+
+const priority = { id: "priority", name: "Fast", description: "Priority routing" };
+test("only declared model service tiers reach the public native catalog", () => {
+  const catalog = modelCatalog({ version: 1, port: 0, stateDirectory: ".", providers: [
+    { id: "codex", type: "codex-subscription", models: { fast: "sol", standard: "other" }, modelMetadata: { fast: { additionalSpeedTiers: ["fast"], serviceTiers: [priority], defaultServiceTier: "priority" } } },
+    { id: "copilot", type: "copilot-subscription", models: { copilot: "sol" } },
+  ] });
+  assert.deepEqual(catalog.models[0].service_tiers, [priority]);
+  assert.deepEqual(catalog.models[0].additional_speed_tiers, ["fast"]);
+  assert.equal(catalog.models[0].default_service_tier, "priority");
+  for (const model of catalog.models.slice(1)) {
+    assert.deepEqual(model.service_tiers, []); assert.deepEqual(model.additional_speed_tiers, []); assert.equal(model.default_service_tier, null);
+  }
+});
+
+test("configuration validates service tier IDs, structure, duplicates and advertised defaults", () => {
+  const provider: ProviderConfig = { id: "codex", type: "codex-subscription", credentialFile: "unused", models: { sol: "sol" }, modelMetadata: { sol: { serviceTiers: [priority], defaultServiceTier: "priority" } } };
+  assert.equal(validateConfig({ version: 1, port: 0, stateDirectory: ".", providers: [provider] }).providers[0].modelMetadata?.sol.defaultServiceTier, "priority");
+  for (const metadata of [
+    { serviceTiers: "priority" }, { serviceTiers: [priority, priority] }, { serviceTiers: [{ ...priority, name: 1 }] },
+    { serviceTiers: [{ ...priority, id: "default" }] }, { serviceTiers: [{ ...priority, id: "fast" }] },
+    { serviceTiers: [priority], defaultServiceTier: "flex" }, { additionalSpeedTiers: ["fast", "fast"] },
+  ]) assert.throws(() => validateConfig({ version: 1, port: 0, providers: [{ ...provider, modelMetadata: { sol: metadata } }] }), /[Ss]ervice tier|speed tiers/);
+  assert.deepEqual(readServiceTierMetadata({ serviceTiers: [{ ...priority, auth: "not-public" }] }), { serviceTiers: [priority] });
+});
+
+test("Responses discovery carries only validated public tier metadata", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({ data: [{ id: "sol", service_tiers: [{ ...priority, credential: "excluded" }], additional_speed_tiers: ["fast"], default_service_tier: "priority" }] });
+  const provider: ProviderConfig = { id: "api", type: "responses-api", baseUrl: "https://example.test", apiKeyEnv: "GATEWAY_CATALOG_TEST_KEY", models: { sol: "sol" } };
+  process.env.GATEWAY_CATALOG_TEST_KEY = "catalog-fixture";
+  try {
+    const models = await discoverModels(provider);
+    assert.deepEqual(models[0].metadata, { serviceTiers: [priority], additionalSpeedTiers: ["fast"], defaultServiceTier: "priority" });
+    globalThis.fetch = async () => Response.json({ data: [{ id: "sol", service_tiers: [priority], default_service_tier: "unadvertised" }] });
+    await assert.rejects(discoverModels(provider), /Default service tier/);
+  } finally { globalThis.fetch = original; delete process.env.GATEWAY_CATALOG_TEST_KEY; }
 });
