@@ -3,7 +3,7 @@ import type { AssistantMessagePhase, InferenceEvent } from "../protocol/types.js
 import { randomUUID } from "node:crypto";
 
 type Item = Record<string, unknown>;
-type Message = { emissionId: string; phase?: AssistantMessagePhase; parts: Map<number, string>; closed: boolean; providerDone: boolean; emittedDone: boolean; lastEmittedIndex: number };
+type Message = { emissionId: string; phase?: AssistantMessagePhase; parts: Map<number, string>; closed: boolean; providerDone: boolean; emittedDone: boolean; lastEmittedIndex: number; status?: "completed" | "incomplete" };
 const object = (value: unknown): Item => value && typeof value === "object" && !Array.isArray(value) ? value as Item : {};
 const invalid = () => new ProviderError("invalid_output", "Provider returned invalid assistant output");
 function identity(value: unknown): string {
@@ -47,10 +47,16 @@ export class ResponsesOutput {
     const selected = match || this.create(id);
     this.messages.set(id, selected); return selected;
   }
-  private metadata(item: Item, terminal: boolean): Message {
+  private metadata(item: Item, terminal: boolean, interrupted = false): Message {
     if (item.type !== "message" || item.role !== "assistant") throw invalid();
-    if (item.status !== undefined && item.status !== "completed" && (terminal || item.status !== "in_progress")) throw invalid();
+    if (item.status !== undefined && item.status !== "completed" &&
+      !(item.status === "in_progress" && (!terminal || interrupted)) && !(item.status === "incomplete" && terminal && interrupted)) throw invalid();
     const selected = this.message(identity(item.id), terminal ? item : undefined); const actual = phase(item.phase);
+    if (terminal) {
+      const status = interrupted && item.status !== "completed" && (!selected.providerDone || item.status !== undefined) ? "incomplete" : "completed";
+      if (selected.status && selected.status !== status) throw new ProviderError("inconsistent_stream", "Provider changed its assistant message completion status");
+      selected.status = status;
+    }
     if (actual !== undefined) {
       if (selected.phase !== undefined && selected.phase !== actual) throw new ProviderError("inconsistent_stream", "Provider changed its assistant message phase");
       selected.phase = actual;
@@ -72,7 +78,7 @@ export class ResponsesOutput {
   private boundary(message: Message): InferenceEvent[] {
     if (message.emittedDone) return [];
     message.emittedDone = true;
-    return [{ type: "message-done", messageId: message.emissionId, ...(message.phase === undefined ? {} : { phase: message.phase }) }];
+    return [{ type: "message-done", messageId: message.emissionId, ...(message.phase === undefined ? {} : { phase: message.phase }), ...(message.status === undefined ? {} : { status: message.status }) }];
   }
   added(item: Item): void { this.metadata(item, false); }
   delta(event: Item): InferenceEvent[] {
@@ -81,8 +87,8 @@ export class ResponsesOutput {
     if (typeof index !== "number") throw invalid();
     return this.text(this.message(event.item_id === undefined ? undefined : identity(event.item_id)), index, event.delta, true);
   }
-  done(item: Item, final = false): InferenceEvent[] {
-    const selected = this.metadata(item, true); const events: InferenceEvent[] = [];
+  done(item: Item, final = false, interrupted = false): InferenceEvent[] {
+    const selected = this.metadata(item, true, interrupted); const events: InferenceEvent[] = [];
     if (selected.providerDone && !final) throw new ProviderError("inconsistent_stream", "Provider ended its assistant message twice");
     if (!Array.isArray(item.content) || item.content.length > 256) throw invalid();
     if ([...selected.parts.keys()].some(index => index >= (item.content as unknown[]).length)) throw new ProviderError("inconsistent_stream", "Provider omitted streamed assistant content");
@@ -102,8 +108,8 @@ export class ResponsesOutput {
     // internal message for a later snapshot to supply its real identity/phase.
     if (this.anonymous && !new Set(this.messages.values()).has(this.anonymous)) { this.anonymous.closed = true; this.anonymous = undefined; }
   }
-  finish(): InferenceEvent[] {
+  finish(interrupted = false): InferenceEvent[] {
     const all = new Set([...this.messages.values(), ...this.unbound]);
-    return [...all].flatMap(message => { message.closed = true; return this.boundary(message); });
+    return [...all].flatMap(message => { message.closed = true; message.status ||= interrupted ? "incomplete" : "completed"; return this.boundary(message); });
   }
 }

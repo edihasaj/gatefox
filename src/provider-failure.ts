@@ -10,11 +10,28 @@ const networkCodes = new Set([
 const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
   "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
-  "inconsistent_stream", "unsupported_protocol", "invalid_stream", "output_too_large", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
+  "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
+]);
+const upstreamCodes = new Set([
+  "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request",
+  "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens",
+  "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted",
+  "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",
+  "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing",
+]);
+const streamEvents = new Set([
+  "response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
+  "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done",
+  "response.reasoning_summary_part.added", "response.reasoning_summary_part.done", "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done",
+  "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
+  "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", "response.completed", "response.incomplete", "response.failed", "error", "unknown",
 ]);
 function own(value: unknown, key: string): unknown {
   if (!value || (typeof value !== "object" && typeof value !== "function")) return;
   try { return Object.getOwnPropertyDescriptor(value, key)?.value; } catch { return; }
+}
+function recordObject(value: unknown): boolean {
+  try { return value !== null && typeof value === "object" && !Array.isArray(value); } catch { return false; }
 }
 function networkFailure(error: unknown): boolean {
   // Node fetch uses a static outer message even when its cause is unfamiliar.
@@ -48,23 +65,34 @@ export interface ProviderFailureDiagnosticInput {
 }
 /** A bounded metadata record; bodies, messages, stacks, URLs and credentials are absent. */
 export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput): Record<string, string | number> {
+  const failure = own(input, "failure"); const code = own(failure, "code"); const status = own(failure, "status"); const durationMs = own(input, "durationMs");
   const result: Record<string, string | number> = {
-    event: "provider_failure",
-    durationMs: Number.isFinite(input.durationMs) ? Math.max(0, Math.round(input.durationMs)) : 0,
-    code: diagnosticCodes.has(input.failure.code) ? input.failure.code : "provider_failed",
-    status: Number.isInteger(input.failure.status) && input.failure.status >= 400 && input.failure.status <= 599 ? input.failure.status : 502,
+    event: "provider_failure", timestamp: new Date().toISOString(),
+    durationMs: typeof durationMs === "number" && Number.isFinite(durationMs) ? Math.max(0, Math.round(durationMs)) : 0,
+    code: typeof code === "string" && diagnosticCodes.has(code) ? code : "provider_failed",
+    status: typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599 ? status : 502,
   };
-  if (/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.requestId)) result.requestId = input.requestId;
-  if (input.providerId && /^[a-z][a-z0-9_-]{0,63}$/.test(input.providerId)) result.providerId = input.providerId;
-  if (input.modelAlias && /^[a-z0-9][a-z0-9/._:-]{0,127}$/i.test(input.modelAlias)) result.modelAlias = input.modelAlias;
-  if (input.abortCause === "timeout" || input.abortCause === "cancelled") result.abortCause = input.abortCause;
-  const upstream = input.failure.upstream;
+  const requestId = own(input, "requestId"); const providerId = own(input, "providerId"); const modelAlias = own(input, "modelAlias"); const abortCause = own(input, "abortCause");
+  if (typeof requestId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId)) result.requestId = requestId;
+  if (typeof providerId === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(providerId)) result.providerId = providerId;
+  if (typeof modelAlias === "string" && /^[a-z0-9][a-z0-9/._:-]{0,127}$/i.test(modelAlias)) result.modelAlias = modelAlias;
+  if (abortCause === "timeout" || abortCause === "cancelled") result.abortCause = abortCause;
+  const upstream = own(failure, "upstream");
   if (upstream) {
-    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool", "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing"]);
-    if (codes.has(upstream.code || "")) result.upstreamCode = upstream.code!;
-    if (["error", "response.failed", "response.incomplete", "unknown", "http", "claude.tool_use", "claude.assistant", "claude.result"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
-    if (["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(upstream.subtype || "")) result.upstreamSubtype = upstream.subtype!;
-    if (upstream.requestId && /^[a-z0-9_-]{1,128}$/i.test(upstream.requestId)) result.upstreamRequestId = upstream.requestId;
+    const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
+    if (typeof upstreamCode === "string" && upstreamCodes.has(upstreamCode)) result.upstreamCode = upstreamCode;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "claude.tool_use", "claude.assistant", "claude.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof subtype === "string" && ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(subtype)) result.upstreamSubtype = subtype;
+    if (typeof upstreamRequestId === "string" && /^[a-z0-9_-]{1,128}$/i.test(upstreamRequestId)) result.upstreamRequestId = upstreamRequestId;
+    const stream = own(upstream, "stream");
+    if (recordObject(stream)) {
+      for (const [key, field] of [["events", "upstreamEvents"], ["reasoningItems", "upstreamReasoningItems"], ["textDeltas", "upstreamTextDeltas"], ["toolCalls", "upstreamToolCalls"]]) {
+        const count = own(stream, key);
+        if (typeof count === "number" && Number.isInteger(count) && count >= 0 && count <= 1000000) result[field] = count;
+      }
+      const lastEvent = own(stream, "lastEvent");
+      result.upstreamLastEvent = typeof lastEvent === "string" && streamEvents.has(lastEvent) ? lastEvent : "unknown";
+    }
   }
   return result;
 }

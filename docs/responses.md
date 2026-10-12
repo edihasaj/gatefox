@@ -49,6 +49,13 @@ Assistant message boundaries and supplied `commentary`, `final_answer`, or
 final snapshot fills only a confirmed unstreamed suffix; repeated snapshots
 cannot duplicate text or execute a tool twice. Conflicting identities, phases,
 or text prefixes fail explicitly instead of silently discarding content.
+An actual `response.incomplete` with reason `interrupted` retains that terminal,
+its incomplete message statuses, and `end_turn: false`. The SDK can continue the
+same user turn with the supplied history. Unfinished tool arguments are never
+dispatched. A completed terminal cannot discard an unfinished tool call; a
+genuine completed call must resolve it first. Other incomplete reasons remain failures. A minimal actual
+`response.completed` with a valid response ID is accepted when its status field
+is absent, matching the tested SDK contract.
 
 Text streams through Responses SSE as the provider emits it. Tool arguments are
 returned when the native call is complete. Claude's thinking events and Codex's
@@ -82,11 +89,17 @@ compaction recovery can trim history and retry. The gateway does not choose a
 different model or account. Transport failures and deadline expiry have separate
 messages; they do not imply a failed login. Responses upstream server errors retry
 once after one second only before any text, reasoning state, or tool output has
-been published. Cancellation stops that wait. Quota, authentication, unclassified
-stream failures, and partial responses never retry automatically. Private failure logs contain bounded
-request/provider/model identifiers, elapsed time, error code, and status, excluding
-request bodies, exception messages, stacks, and credentials. Failed Responses
-streams retain allowlisted upstream error codes, event types, and request IDs.
+been published. A clean EOF without a terminal event has the same single retry
+only before any inference output has been published. Cancellation stops that
+wait. Quota, authentication, malformed streams, unclassified stream failures, and
+partial responses never retry automatically. EOF and `[DONE]` never substitute
+for a genuine Responses terminal.
+Private failure logs contain a UTC timestamp, bounded request/provider/model
+identifiers, elapsed time, error code, and status, excluding request bodies,
+exception messages, stacks, and credentials. Failed Responses streams retain
+allowlisted upstream error codes, event types, and request IDs. Missing-terminal
+EOF records include only event counts, an allowlisted last event, reasoning
+add/done event counts, text-delta counts, and distinct dispatched tool-call counts.
 HTTP 500/502/503/504 failures have the same single retry before output. An HTTP 429
 retries only when its body identifies a temporary rate limit, honoring
 `Retry-After` between one and 30 seconds. Longer waits and unidentified usage or

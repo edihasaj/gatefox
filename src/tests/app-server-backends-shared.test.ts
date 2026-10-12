@@ -53,7 +53,7 @@ const listen=args.includes('--listen')?args[args.indexOf('--listen')+1]:'stdio:/
 if(listen.startsWith('unix://')){
 const socket=listen.slice(7);const server=createServer();const ws=new WebSocketServer({server});
 ws.on('connection',client=>client.on('message',bytes=>{void rpc(JSON.parse(bytes),m=>client.send(JSON.stringify(m)),()=>client.close(1000));}));
-server.listen(socket,()=>chmodSync(socket,0o600));
+server.listen(socket,()=>{chmodSync(socket,0o600);process.stdout.write('FIXTURE_READY\\n');});
 process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close(()=>process.exit(0));});
 }else{createInterface({input:process.stdin}).on('line',line=>{void rpc(JSON.parse(line),m=>process.stdout.write(JSON.stringify(m)+'\\n'),()=>process.exit(0));});}
 `, { mode: 0o700 });
@@ -64,22 +64,47 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
   const host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk });
   const nativeSocket = join(directory, "original-native.sock");
-  const nativeOwner = sharedNative ? spawn(sdk, ["app-server", "--listen", "unix://" + nativeSocket, "--fixture-root", directory], { stdio: "ignore" }) : undefined;
+  const nativeOwner = sharedNative ? spawn(sdk, ["app-server", "--listen", "unix://" + nativeSocket, "--fixture-root", directory], { stdio: ["ignore", "pipe", "ignore"] }) : undefined;
   const nativeOwnerExited = nativeOwner && new Promise<void>(resolve => nativeOwner.once("close", () => resolve()));
-  if (nativeOwner) {
-    for (let attempt = 0; ; attempt++) {
-      if (await access(nativeSocket).then(() => true, () => false)) break;
-      if (attempt >= 200) throw new Error("Shared native fixture socket did not start");
-      await delay(5);
-    }
-  }
-  const control = new SocketAppServerConnection(join(executionHostHome(configPath, nativeHome), "host.sock"), async () => {}); await control.ready;
+  let control: SocketAppServerConnection | undefined;
+  const adapters = new Set<AppServerBackends>();
+  const clean = async () => {
+    const failures: unknown[] = [];
+    const collect = (results: PromiseSettledResult<unknown>[]) => { for (const result of results) if (result.status === "rejected") failures.push(result.reason); };
+    collect(await Promise.allSettled([...adapters].map(adapter => adapter.stop())));
+    control?.stop();
+    const stopNative = async () => {
+      if (!nativeOwner || !nativeOwnerExited) return;
+      nativeOwner.kill("SIGTERM");
+      const timer = setTimeout(() => nativeOwner.kill("SIGKILL"), 1500);
+      try { await nativeOwnerExited; } finally { clearTimeout(timer); }
+    };
+    collect(await Promise.allSettled([control?.exited, host.close(), stopNative()]));
+    process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME;
+    collect(await Promise.allSettled([rm(directory, { recursive: true, force: true }), rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true })]));
+    if (failures.length) throw new AggregateError(failures, "Shared backend fixture cleanup failed");
+  };
+  try {
+  if (nativeOwner) await new Promise<void>((resolve, reject) => {
+    // A socket directory entry can precede listen readiness on macOS. Wait for
+    // the fake SDK's bound, owner-only listener rather than its path alone.
+    let output = "";
+    const ready = (chunk: Buffer) => { output += chunk.toString(); if (output.includes("FIXTURE_READY\n")) finish(); };
+    const exited = () => finish(new Error("Shared native fixture exited before readiness"));
+    const failed = () => finish(new Error("Shared native fixture failed before readiness"));
+    const timer = setTimeout(() => finish(new Error("Shared native fixture socket did not start")), 5000);
+    const finish = (error?: Error) => {
+      clearTimeout(timer); nativeOwner.stdout?.off("data", ready); nativeOwner.off("close", exited); nativeOwner.off("error", failed);
+      if (error) reject(error); else resolve();
+    };
+    nativeOwner.stdout?.on("data", ready); nativeOwner.once("close", exited); nativeOwner.once("error", failed);
+  });
+  control = new SocketAppServerConnection(join(executionHostHome(configPath, nativeHome), "host.sock"), async () => {}); await control.ready;
   let generation = 0;
   const snapshot = () => ({ revision: String(generation).repeat(64), models: [{ slug: alias, display_name: "Fixture " + generation, ...(priority ? { service_tiers: [{ id: "priority", name: "Fast", description: "Priority route" }], default_service_tier: null } : {}) }] });
   const catalog = { current: snapshot, refresh: async () => snapshot(), combined: (value: ReturnType<typeof snapshot>) => ({ models: value.models }) } as unknown as DesktopCatalog;
   const events: Message[] = [];
   let nativeExits = 0;
-  const adapters = new Set<AppServerBackends>();
   const createBackend = async (reverse = false, variant = featureVariant) => {
     const entries: [string, unknown][] = [["agents", { max_concurrent_threads_per_session: 30 }], ["web_search", "disabled"], ["sandbox_mode", "read-only"]];
     const featureArgs: string[] = [];
@@ -103,8 +128,12 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; },
     async another(variant?: FeatureVariant) { const adapter = await createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
-    async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); nativeOwner?.kill("SIGTERM"); await nativeOwnerExited; process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
+    clean,
   };
+  } catch (error) {
+    try { await clean(); } catch (cleanupError) { throw new AggregateError([error, cleanupError], "Shared backend fixture setup failed"); }
+    throw error;
+  }
 }
 
 test("adapter releases a closed chat's generation before acquiring a fifth catalog", { timeout: 20000 }, async () => {

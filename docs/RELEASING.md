@@ -46,6 +46,13 @@ belongs in the release archive.
    `CodexCLI.app/Contents/MacOS/codex`, not its unsigned `bin/codex` shell launcher.
    The fixture requires fresh isolated state, rejects native homes, and uses no
    copied authentication or paid inference.
+   For interrupted Responses terminals and missing-terminal recovery, run
+   `scripts/e2e-responses-terminals.mjs --package INSTALLED_PACKAGE --codex
+   SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies the
+   original acknowledged SDK turn, actual incomplete terminals, minimal
+   completed terminals, once-only tool execution, safe pre-output EOF retries,
+   and partial-output failure. It uses localhost mocks and isolated state, with
+   no native authentication or paid inference.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

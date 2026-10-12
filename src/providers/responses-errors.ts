@@ -1,10 +1,28 @@
-import { ProviderError } from "./provider.js";
+import { ProviderError, type ProviderStreamDiagnostic } from "./provider.js";
+import type { WireEvent } from "../protocol/types.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 const contextError = () => new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400);
 const errorBodyLimit = 64 * 1024;
 const knownCodes = new Set(["server_error", "server_is_overloaded", "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded"]);
+const streamEventTypes = new Set(["response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
+  "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
+  "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
+  "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", "response.completed", "response.incomplete", "response.failed", "error"]);
+const count = (value: number) => Number.isFinite(value) ? Math.min(1000000, Math.max(0, Math.floor(value))) : 0;
+/** Track protocol shape only. Unknown types may contain private text, so retain no raw value. */
+export function observeResponsesStream(stream: ProviderStreamDiagnostic, event: WireEvent): void {
+  stream.events = count(stream.events + 1); stream.lastEvent = streamEventTypes.has(event.type) ? event.type : "unknown";
+  if (event.type === "response.output_text.delta") stream.textDeltas = count(stream.textDeltas + 1);
+  if (["response.output_item.added", "response.output_item.done"].includes(event.type) && object(event.item).type === "reasoning") stream.reasoningItems = count(stream.reasoningItems + 1);
+}
+export function responsesEOFError(stream: ProviderStreamDiagnostic, requestId?: string): ProviderError {
+  return new ProviderError("incomplete", "Provider stream ended without completion", 502, { code: "missing_terminal", event: "eof",
+    ...(requestId && /^[a-z0-9_-]{1,128}$/i.test(requestId) ? { requestId } : {}),
+    stream: { events: count(stream.events), reasoningItems: count(stream.reasoningItems), textDeltas: count(stream.textDeltas), toolCalls: count(stream.toolCalls),
+      ...(stream.lastEvent === undefined ? {} : { lastEvent: streamEventTypes.has(stream.lastEvent) ? stream.lastEvent : "unknown" }) } });
+}
 
 /** Read only bounded error metadata. Upstream messages may contain caller data. */
 async function httpErrorCode(response: Response): Promise<unknown> {

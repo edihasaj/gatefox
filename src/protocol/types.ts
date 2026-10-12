@@ -86,9 +86,9 @@ export function publicServiceTier(value: unknown): PublicServiceTier | undefined
 }
 export type InferenceEvent =
   | { text: string; type: "text"; messageId?: string; phase?: AssistantMessagePhase }
-  | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase }
+  | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase; status?: "completed" | "incomplete" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true }
   | { item: Record<string, unknown>; type: "reasoning-state" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string };
 export type WireEvent = { type: string; [field: string]: unknown };

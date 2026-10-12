@@ -3,11 +3,12 @@ import { accessToken } from "../auth/chatgpt.js";
 import { normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
-import { ProviderError, type Provider } from "./provider.js";
-import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
+import { ProviderError, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
+import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { ResponsesOutput } from "./responses-output.js";
+import { createHash } from "node:crypto";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -33,7 +34,8 @@ export class ResponsesAPI implements Provider {
         // failure before publishing any output, keeping partial turns intact.
         if (attempt || published || signal.aborted || !(error instanceof ProviderError)) throw error;
         const temporary = ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "") ||
-          (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code));
+          (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code)) ||
+          (error.code === "incomplete" && error.upstream?.code === "missing_terminal" && error.upstream.event === "eof");
         const backoff = error.upstream?.retryAfterMs ?? 1000;
         if (!temporary || backoff > 30000) throw error;
         console.error(JSON.stringify({ event: "provider_retry", attempt: 2, upstreamCode: error.upstream?.code }));
@@ -76,7 +78,10 @@ export class ResponsesAPI implements Provider {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body: JSON.stringify(body) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
-    let done = false; const output = new ResponsesOutput(); const calls = new Map<string, string>();
+    let done = false; const output = new ResponsesOutput();
+    const calls = new Map<string, { signature: string; identity: string; input: string }>();
+    const unfinished = new Map<string, { identity: string; length: number; digest: string }>();
+    const stream: ProviderStreamDiagnostic = { events: 0, reasoningItems: 0, textDeltas: 0, toolCalls: 0 };
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
       const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
       const name = String(item.name); const alias = namespace ? `${namespace}.${name}` : name;
@@ -84,33 +89,66 @@ export class ResponsesAPI implements Provider {
       if (!identity) throw new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
       return identity;
     };
-    const tool = (item: Record<string, unknown>, snapshot: boolean): InferenceEvent[] => {
+    const toolInput = (item: Record<string, unknown>) => {
       const invalid = () => new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call");
       if (typeof item.call_id !== "string" || !item.call_id || item.call_id.length > 1024 || item.call_id.includes("\0") ||
         typeof item.name !== "string" || !item.name || (item.namespace !== undefined && typeof item.namespace !== "string") ||
-        (item.status !== undefined && item.status !== "completed")) throw invalid();
+        (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 1024 || item.id.includes("\0")))) throw invalid();
       const arguments_ = item.type === "custom_tool_call" ? item.input : item.arguments;
       if (typeof arguments_ !== "string") throw invalid();
+      const responseTool = identityFor(item);
+      return { id: item.call_id, name: item.name, input: arguments_, responseTool, identity: JSON.stringify([item.type, responseTool]) };
+    };
+    const matchesPending = (value: ReturnType<typeof toolInput>) => {
+      const pending = unfinished.get(value.id);
+      if (pending && (pending.identity !== value.identity || createHash("sha256").update(value.input.slice(0, pending.length)).digest("hex") !== pending.digest)) throw new ProviderError("invalid_tool_call", "Provider changed an unfinished tool call");
+    };
+    const partialTool = (item: Record<string, unknown>): void => {
+      const value = toolInput(item); matchesPending(value);
+      const completed = calls.get(value.id);
+      if (completed) {
+        if (completed.identity !== value.identity || !completed.input.startsWith(value.input)) throw new ProviderError("invalid_tool_call", "Provider changed a completed tool call");
+        return;
+      }
+      if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw new ProviderError("invalid_tool_call", "Provider returned too many tool calls");
+      unfinished.set(value.id, { identity: value.identity, length: value.input.length, digest: createHash("sha256").update(value.input).digest("hex") });
+    };
+    const tool = (item: Record<string, unknown>, snapshot: boolean): InferenceEvent[] => {
+      const invalid = () => new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call");
+      const value = toolInput(item), arguments_ = value.input;
+      if (item.status !== undefined && item.status !== "completed") throw invalid();
+      if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
+      matchesPending(value);
       const signature = JSON.stringify([item.type, item.name, item.namespace, arguments_]);
-      const previous = calls.get(item.call_id);
+      const previous = calls.get(value.id);
       if (previous !== undefined) {
-        if (snapshot && previous === signature) return [];
+        if (snapshot && previous.signature === signature) return [];
         throw invalid();
       }
-      if (calls.size >= 1024) throw invalid();
-      calls.set(item.call_id, signature);
+      if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw invalid();
+      unfinished.delete(value.id); calls.set(value.id, { signature, identity: value.identity, input: arguments_ }); stream.toolCalls = calls.size;
       output.toolBoundary();
-      return [{ type: "tool", call: { id: item.call_id, type: "function", responseTool: identityFor(item), function: {
-        name: item.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
+      return [{ type: "tool", call: { id: value.id, type: "function", responseTool: value.responseTool, function: {
+        name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
       } } }];
     };
-    const itemDone = (item: Record<string, unknown>, snapshot = false): InferenceEvent[] => {
-      if (item.type === "message") return output.done(item, snapshot);
-      if (item.type === "function_call" || item.type === "custom_tool_call") return tool(item, snapshot);
+    const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
+      if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
+      if (item.type === "function_call" || item.type === "custom_tool_call") {
+        // An interrupted final snapshot can contain an unfinished call. Only a
+        // genuine item.done boundary or explicitly completed snapshot dispatches it.
+        if ((interrupted || item.status === "incomplete" || item.status === "in_progress") && item.status !== "completed") {
+          if (item.status !== undefined && item.status !== "in_progress" && item.status !== "incomplete") throw new ProviderError("invalid_tool_call", "Provider returned invalid tool completion metadata");
+          partialTool(item);
+          return [];
+        }
+        return tool(item, snapshot);
+      }
       if (item.type === "reasoning") return [{ type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item }];
       throw new ProviderError("invalid_output", "Provider returned unsupported response output");
     };
     for await (const event of readEvents(response.body)) {
+      observeResponsesStream(stream, event);
       if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
       if (event.type === "response.output_item.added") {
         const item = event.item as Record<string, unknown>;
@@ -123,10 +161,15 @@ export class ResponsesAPI implements Provider {
         if (!item || typeof item !== "object" || Array.isArray(item)) throw new ProviderError("invalid_output", "Provider returned invalid response output");
         yield* itemDone(item);
       }
-      if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
-      if (event.type === "response.completed") {
-        const completed = event.response as { status?: string; output_text?: unknown; output?: unknown; usage?: Usage; service_tier?: unknown; end_turn?: unknown };
-        if (completed?.status !== "completed") throw new ProviderError("incomplete", "Provider did not complete the response");
+      const terminal = event.type === "response.completed" || event.type === "response.incomplete";
+      const completed = event.response as { id?: unknown; status?: unknown; error?: unknown; incomplete_details?: { reason?: unknown }; output_text?: unknown; output?: unknown; usage?: Usage; service_tier?: unknown; end_turn?: unknown };
+      const interrupted = event.type === "response.incomplete" && completed?.incomplete_details?.reason === "interrupted";
+      if (event.type === "error" || event.type === "response.failed" || (event.type === "response.incomplete" && !interrupted)) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
+      if (terminal) {
+        if (!completed || typeof completed !== "object" || Array.isArray(completed)) throw new ProviderError("invalid_output", "Provider returned invalid response completion metadata");
+        if (completed.error !== undefined && completed.error !== null) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
+        if (completed.status !== undefined && completed.status !== (interrupted ? "incomplete" : "completed")) throw new ProviderError("incomplete", "Provider did not complete the response");
+        if ((interrupted || completed.status === undefined) && (typeof completed.id !== "string" || !completed.id || completed.id.length > 1024 || completed.id.includes("\0"))) throw new ProviderError("invalid_output", "Provider returned invalid response completion identity");
         if (completed.end_turn !== undefined && typeof completed.end_turn !== "boolean") throw new ProviderError("invalid_output", "Provider returned invalid turn completion metadata");
         if (completed.output !== undefined) {
           if (!Array.isArray(completed.output) || completed.output.length > 1024) throw new ProviderError("invalid_output", "Provider returned invalid response output");
@@ -141,21 +184,22 @@ export class ResponsesAPI implements Provider {
               if (typeof item.call_id !== "string" || snapshotCalls.has(item.call_id)) throw new ProviderError("invalid_tool_call", "Provider returned a duplicate tool call");
               snapshotCalls.add(item.call_id);
             }
-            yield* itemDone(item, true);
+            yield* itemDone(item, true, interrupted);
           }
         }
         if (!output.hasText && completed.output_text !== undefined) {
           if (typeof completed.output_text !== "string") throw new ProviderError("invalid_output", "Provider returned invalid assistant output");
           yield* output.legacy(completed.output_text);
         }
-        yield* output.finish();
+        if (!interrupted && unfinished.size) throw new ProviderError("invalid_tool_call", "Provider completed the response with unfinished tool calls");
+        yield* output.finish(interrupted);
         done = true;
         const serviceTier = publicServiceTier(completed.service_tier);
         yield { type: "done", usage: completed.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, ...(serviceTier ? { serviceTier } : {}),
-          ...(completed.end_turn === undefined ? {} : { endTurn: completed.end_turn }) };
+          ...(interrupted ? { interrupted: true, endTurn: false } : completed.end_turn === undefined ? {} : { endTurn: completed.end_turn }) };
         break;
       }
     }
-    if (!done) throw new ProviderError("incomplete", "Provider stream ended without completion");
+    if (!done) throw responsesEOFError(stream, response.headers.get("x-request-id") || undefined);
   }
 }

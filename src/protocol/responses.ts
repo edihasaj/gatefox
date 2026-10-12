@@ -47,18 +47,20 @@ export class ResponsesWriter {
   private readonly messages = new Map<string, Message>();
   private readonly providerMessages = new Map<string, Message>();
   private serial = 0;
-  private status: "in_progress" | "completed" | "failed" = "in_progress";
+  private status: "in_progress" | "completed" | "incomplete" | "failed" = "in_progress";
   private answer = "";
   private tokens: Usage = { total_tokens: 0, input_tokens: 0, output_tokens: 0 };
   private serviceTier?: PublicServiceTier;
   private endTurn?: boolean;
   constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void) {}
-  get completed(): boolean { return this.status === "completed"; }
+  /** The inference has a real terminal event; the user turn may still continue. */
+  get completed(): boolean { return this.status === "completed" || this.status === "incomplete"; }
   private publish(frame: WireEvent): void { this.emit({ ...frame, sequence_number: this.serial++ }); }
   private snapshot(status: string): Record<string, unknown> {
     return { object: "response", id: this.responseId, created_at: this.created, model: this.model,
       status, usage: { ...this.tokens }, output_text: this.answer, output: structuredClone(this.ledger),
       ...(this.serviceTier === undefined ? {} : { service_tier: this.serviceTier }),
+      ...(this.status === "incomplete" ? { incomplete_details: { reason: "interrupted" } } : {}),
       ...(this.endTurn === undefined ? {} : { end_turn: this.endTurn }) };
   }
   begin(): void { this.publish({ type: "response.created", response: this.snapshot("in_progress") }); }
@@ -68,10 +70,10 @@ export class ResponsesWriter {
     const position = this.ledger.push(item) - 1;
     this.publish({ type: "response.output_item.added", output_index: position, item }); return position;
   }
-  private closeMessage(message = this.message): void {
+  private closeMessage(message = this.message, status: "completed" | "incomplete" = "completed"): void {
     if (!message || message.closed) return;
     const part = { type: "output_text", text: message.value, annotations: [] };
-    const item: Item = { type: "message", id: message.id, role: "assistant", status: "completed", content: [part],
+    const item: Item = { type: "message", id: message.id, role: "assistant", status, content: [part],
       ...(message.phase === undefined ? {} : { phase: message.phase }) };
     const coordinates = { item_id: message.id, output_index: message.position, content_index: 0 };
     this.publish({ type: "response.output_text.done", ...coordinates, text: message.value });
@@ -137,7 +139,7 @@ export class ResponsesWriter {
       case "text": this.text(event); return;
       case "message-done": {
         const message = event.messageId === undefined ? this.message : this.providerMessages.get(event.messageId);
-        if (message) { if (event.phase !== undefined) message.phase = event.phase; this.closeMessage(message); }
+        if (message) { if (event.phase !== undefined) message.phase = event.phase; this.closeMessage(message, event.status); }
         return;
       }
       case "reasoning": this.reason(event); return;
@@ -154,11 +156,12 @@ export class ResponsesWriter {
         for (const frame of callFrames(item, position)) this.publish(frame); this.ledger.push(item); return;
       }
       case "done": {
-        for (const message of this.messages.values()) this.closeMessage(message);
+        if (event.interrupted && event.endTurn !== false) throw new Error("Interrupted inference cannot finish the user turn");
+        for (const message of this.messages.values()) this.closeMessage(message, event.interrupted ? "incomplete" : "completed");
         this.closeThoughts(); this.tokens = event.usage;
-        this.serviceTier = publicServiceTier(event.serviceTier); this.status = "completed";
+        this.serviceTier = publicServiceTier(event.serviceTier); this.status = event.interrupted ? "incomplete" : "completed";
         this.endTurn = typeof event.endTurn === "boolean" ? event.endTurn : undefined;
-        this.publish({ type: "response.completed", response: this.snapshot(this.status) }); return;
+        this.publish({ type: event.interrupted ? "response.incomplete" : "response.completed", response: this.snapshot(this.status) }); return;
       }
     }
   }

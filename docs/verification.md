@@ -7,13 +7,27 @@ read_when:
 
 # Verification
 
-The installed v0.2.21 candidate has passed isolated backend ownership and
-compaction checks.
+The v0.2.22 candidate has passed installed Responses terminal checks. The
+preceding v0.2.21 candidate passed isolated backend ownership and compaction checks.
 MacBook Pro 2's original Control other devices connection is active through its
 native relay. Full desktop parity through that connection remains unverified.
 SSH, Unix proxy, and local engine results do not prove the cloud connection.
 
 ## Current release evidence
+
+The v0.2.22 installed fixture passes eight cases using the original signed SDK
+and 13 mock upstream requests. Genuine interrupted responses preserve incomplete
+message status and continue under the original acknowledged user-turn ID.
+A completed caller tool executes once, and its result reaches the continuation
+once. Unfinished tools never dispatch. Minimal completed responses with an ID
+and no status are accepted. Clean pre-output EOF retries once; text or completed
+tool output prevents replay and retains a failed terminal. The SDK can execute
+an already completed caller tool before a later stream failure; the fixture
+records that execution rather than claiming that failure undoes it.
+Isolated configuration remains unchanged, authentication is not copied, and all
+owned SDK processes and RPC timers stop. All 528 source tests pass. There are no paid inference calls.
+These checks establish translation and safe recovery, not the upstream cause
+of the reported live EOF or successful activation in an older running daemon.
 
 The v0.2.21 work reproduces the separate-process ownership gap with
 the original signed SDK: a second process reads an active native chat as
