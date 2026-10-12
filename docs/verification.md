@@ -24,7 +24,7 @@ MacBook Pro 2's running desktop adapter and native relay remain on v0.2.8 under
 one supervised gateway service. A v0.2.10 CLI candidate is installed there, but its
 shared executors have not been activated. The running relay retains the machine's
 original environment and installation IDs. The primary Mac's gateway command and
-inference process were upgraded to v0.2.11 during the stream-failure investigation.
+inference process were upgraded to v0.2.12 during the stream-failure investigation.
 
 Studio's v0.2.11 relay is connected using its original environment and installation
 IDs. Its fresh app-server catalog includes Claude, Codex 2, Copilot, and Qwen.
@@ -47,6 +47,25 @@ verify a 30-request burst, FIFO admission, waiting cancellation and deadlines,
 bounded capacity, and one transient server-error retry before any output. Partial
 responses and quota failures are never retried. These backend checks do not prove
 that every existing connected chat is stable.
+
+A replay with the archived desktop tool catalog reproduced upstream
+`server_is_overloaded` in about four seconds. Later full-catalog replays completed,
+so that catalog is not a deterministic failure trigger. The installed v0.2.12
+daemon passed a 30-request mock burst with four running providers and 26 waiting
+requests. Its signed SDK recovered from a mock transient error with one retry.
+Live MacBook Pro 2 tests through the existing forward to that daemon passed
+Codex 2 reads, edits, follow-ups, reasoning, interruption, and recovery. Shared
+production health contained unrelated chats, so its global active count cannot
+prove cleanup of one particular request.
+
+The v0.2.13 candidate loads Claude's private virtual MCP catalog before inference
+and records fixed categories for rejected calls. Its isolated live Claude Opus 5.5
+test passed streaming, the hidden AGENTS.md marker, file reads and edits,
+follow-ups, reasoning progress, interruption, zero active requests after cleanup,
+and recovery through the signed SDK. The cause of the earlier live Claude call
+rejections remains unconfirmed; the new categories preserve evidence for another
+occurrence. These results do not replace rendered desktop or prolonged stability
+checks through the original connection.
 
 The primary Mac's native `config.toml` still matches the digest recorded before
 activation. Gateway preferences are stored separately. Native Codex and user

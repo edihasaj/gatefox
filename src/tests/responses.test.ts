@@ -68,6 +68,25 @@ test("native calls must belong to the supplied catalog and carry distinct IDs an
   assert.throws(() => nativeClaudeCalls([{ ...valid, input: { input: {} } }], compiled.tools!), ProviderError);
 });
 
+test("Claude tool rejections distinguish internal helpers from malformed caller calls without exposing inputs", () => {
+  const compiled = responsesToChatRequest({ model: "test", input: "hello", tools: [{ type: "custom", name: "patch" }] });
+  const valid = { id: "one", name: "mcp__gateway__tool_0", input: { input: "raw" } };
+  for (const [blocks, reason] of [
+    [[{ ...valid, name: "ToolSearch" }], "native_tool_search"],
+    [[{ ...valid, name: "WaitForMcpServers" }], "native_mcp_wait"],
+    [[{ ...valid, name: "private-caller-data" }], "unknown_tool"],
+    [[valid, valid], "duplicate_tool_id"],
+    [[{ ...valid, input: { input: {} } }], "nontext_custom_input"],
+    [[{ ...valid, id: undefined }], "malformed_tool_call"],
+  ] as const) {
+    assert.throws(() => nativeClaudeCalls([...blocks], compiled.tools!), error => {
+      assert.ok(error instanceof ProviderError); assert.equal(error.code, "invalid_tool_call");
+      assert.deepEqual(error.upstream, { code: reason, event: "claude.tool_use" });
+      assert.ok(!JSON.stringify(error).includes("private-caller-data")); return true;
+    });
+  }
+});
+
 test("one output ledger preserves text/tool/text order and ends exactly once", () => {
   const events: WireEvent[] = []; const writer = new ResponsesWriter("test", event => events.push(event)); writer.begin();
   writer.accept({ type: "text", text: "before" });

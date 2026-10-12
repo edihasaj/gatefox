@@ -60,9 +60,9 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (input.abortCause === "timeout" || input.abortCause === "cancelled") result.abortCause = input.abortCause;
   const upstream = input.failure.upstream;
   if (upstream) {
-    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter"]);
+    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "native_tool_search", "native_mcp_wait", "unknown_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing"]);
     if (codes.has(upstream.code || "")) result.upstreamCode = upstream.code!;
-    if (["error", "response.failed", "response.incomplete", "unknown"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
+    if (["error", "response.failed", "response.incomplete", "unknown", "claude.tool_use", "claude.result"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
     if (upstream.requestId && /^[a-z0-9_-]{1,128}$/i.test(upstream.requestId)) result.upstreamRequestId = upstream.requestId;
   }
   return result;

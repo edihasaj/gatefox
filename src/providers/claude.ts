@@ -46,8 +46,11 @@ export class ClaudeSubscription implements Provider {
       name: `tool_${index}`, description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
       inputSchema: tool.function.parameters || { type: "object", properties: {} },
     }))), { mode: 0o600 });
-    await writeFile(mcpPath, JSON.stringify({ mcpServers: tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath] } } : {} }), { mode: 0o600 });
+    await writeFile(mcpPath, JSON.stringify({ mcpServers: tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
     const env = claudeEnvironment(this.config?.authDirectory);
+    // This virtual catalog is the only action surface. Finish loading it before
+    // inference instead of exposing the CLI's deferred search/wait tools.
+    env.MCP_CONNECTION_NONBLOCKING = "0";
     if ((request.reasoning as { effort?: string } | undefined)?.effort !== undefined) delete env.MAX_THINKING_TOKENS;
     const child = spawn("claude", ["--restricted", "--setting-sources", "", "--disable-slash-commands", "--print", "--tools", "", "--strict-mcp-config", "--mcp-config", mcpPath,
       "--model", request.model, "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
@@ -102,7 +105,7 @@ export class ClaudeSubscription implements Provider {
         if (/auth|log.?in|oauth/i.test(diagnosis)) throw new ProviderError("authentication", "Claude subscription requires login", 401);
         throw new ProviderError("inference_failed", "Claude inference did not complete");
       }
-      if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call");
+      if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call", 502, { code: "required_tool_missing", event: "claude.result" });
       const text = typeof result.result === "string" ? result.result : raw;
       if (!text.startsWith(raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
       if (text.length > raw.length) yield { type: "text", text: text.slice(raw.length) };

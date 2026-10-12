@@ -43,3 +43,11 @@ test("diagnostics retain only caller-owned identifiers and bounded failure metad
     event: "provider_failure", durationMs: 2000, code: "timeout", status: 504, requestId: "12345678-1234-1234-1234-123456789abc", providerId: "codex", modelAlias: "codex/gpt-6.1-sol", abortCause: "timeout",
   });
 });
+
+test("upstream diagnostic enums survive while arbitrary tool names and failure details are discarded", () => {
+  const diagnostic = (code: string, event: string) => providerFailureDiagnostic({ requestId: "invalid", durationMs: 1,
+    failure: new ProviderError("invalid_tool_call", "private data", 502, { code, event, requestId: "private data" }) });
+  assert.equal(diagnostic("native_tool_search", "claude.tool_use").upstreamCode, "native_tool_search");
+  assert.equal(diagnostic("native_tool_search", "claude.tool_use").upstreamEvent, "claude.tool_use");
+  assert.ok(!JSON.stringify(diagnostic("private data", "private data")).includes("private data"));
+});

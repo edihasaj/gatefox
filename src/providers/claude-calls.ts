@@ -16,9 +16,12 @@ export function nativeClaudeCalls(blocks: Array<{ id?: string; name?: string; in
   return blocks.map(call => {
     const match = call.name?.match(/^mcp__gateway__tool_(\d+)$/);
     const definition = match ? tools[Number(match[1])]?.function : undefined;
-    if (!definition || !call.id || ids.has(call.id) || !call.input || typeof call.input !== "object" || Array.isArray(call.input)) throw new ProviderError("invalid_tool_call", "Claude returned an unknown, duplicate, or malformed tool call");
+    const failure = (code: string) => new ProviderError("invalid_tool_call", "Claude returned an unknown, duplicate, or malformed tool call", 502, { code, event: "claude.tool_use" });
+    if (!definition) throw failure(call.name === "ToolSearch" ? "native_tool_search" : call.name === "WaitForMcpServers" ? "native_mcp_wait" : "unknown_tool");
+    if (!call.id || !call.input || typeof call.input !== "object" || Array.isArray(call.input)) throw failure("malformed_tool_call");
+    if (ids.has(call.id)) throw failure("duplicate_tool_id");
     ids.add(call.id);
-    if (definition.responseTool?.type === "custom" && typeof (call.input as { input?: unknown }).input !== "string") throw new ProviderError("invalid_tool_call", "Free-form input must be a string");
+    if (definition.responseTool?.type === "custom" && typeof (call.input as { input?: unknown }).input !== "string") throw new ProviderError("invalid_tool_call", "Free-form input must be a string", 502, { code: "nontext_custom_input", event: "claude.tool_use" });
     return { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(call.input) } };
   });
 }

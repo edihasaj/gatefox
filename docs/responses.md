@@ -14,6 +14,11 @@ Claude tool definitions become native virtual MCP declarations. Native calls
 return with their original name, namespace, and call ID. Custom tool input returns
 as a string rather than JSON-encoded function arguments. The caller validates and
 executes the tool; the gateway does not execute it or enforce grammar constraints.
+The private gateway MCP server loads before Claude begins inference. It disables
+nonblocking startup and marks its catalog `alwaysLoad`, keeping the caller action
+surface available at startup. Rejected Claude calls log fixed categories for
+unknown tools, internal search/wait helpers, duplicate IDs, malformed input, or a
+missing required call. Names and arguments are never included in those logs.
 
 Replayed reasoning summaries are treated as text. Encrypted reasoning transport
 state is not exposed to the Claude model. Hosted tools are outside
