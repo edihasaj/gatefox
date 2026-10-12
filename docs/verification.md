@@ -23,12 +23,30 @@ The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
 MacBook Pro 2's running desktop adapter and native relay remain on v0.2.8 under
 one supervised gateway service. A v0.2.10 CLI candidate is installed there, but its
 shared executors have not been activated. The running relay retains the machine's
-original environment and installation IDs. The primary Mac's gateway command is
-v0.2.8; its existing inference process remains on v0.2.6.
+original environment and installation IDs. The primary Mac's gateway command and
+inference process were upgraded to v0.2.11 during the stream-failure investigation.
 
-Studio and the primary Mac still need native relay activation and checks through
-their original connections. Do not remove a working SSH connection before its
+Studio's v0.2.11 relay is connected using its original environment and installation
+IDs. Its fresh app-server catalog includes Claude, Codex 2, Copilot, and Qwen.
+Its rendered original-connection picker and inference remain unverified. The
+primary Mac still needs native relay activation and checks through its original
+connection. Do not remove a working SSH connection before its
 native replacement passes those checks.
+
+### MacBook Pro 2 stream failures
+
+The primary daemon logged repeated Codex 2 GPT-6.1-Sol failures after roughly
+three to six seconds, well before its ten-minute deadline. The archived 257-item
+conversation replayed successfully against the secondary account with and without
+internal metadata and synthetic item IDs. Those results do not identify the cause
+of the live failures; the older log discarded upstream failure metadata.
+
+The v0.2.12 candidate queues up to 32 waiting requests behind the configured
+provider concurrency and retains safe upstream stream-failure diagnostics. Tests
+verify a 30-request burst, FIFO admission, waiting cancellation and deadlines,
+bounded capacity, and one transient server-error retry before any output. Partial
+responses and quota failures are never retried. These backend checks do not prove
+that every existing connected chat is stable.
 
 The primary Mac's native `config.toml` still matches the digest recorded before
 activation. Gateway preferences are stored separately. Native Codex and user

@@ -50,13 +50,24 @@ output delta. Nonstream requests retain the corresponding HTTP error status.
 Responses upstream `context_length_exceeded` errors keep that code so Codex's
 compaction recovery can trim history and retry. The gateway does not choose a
 different model or account. Transport failures and deadline expiry have separate
-messages; they do not imply a failed login. Private failure logs contain bounded
+messages; they do not imply a failed login. Responses upstream server errors retry
+once after one second only before any text, reasoning state, or tool output has
+been published. Cancellation stops that wait. Quota, authentication, unknown
+failures, and partial responses never retry automatically. Private failure logs contain bounded
 request/provider/model identifiers, elapsed time, error code, and status, excluding
-request bodies, exception messages, stacks, and credentials.
+request bodies, exception messages, stacks, and credentials. Failed Responses
+streams retain allowlisted upstream error codes, event types, and request IDs.
 
 The default total request deadline is ten minutes; explicit `timeoutMs` settings
 remain authoritative. Disconnects abort inference and release capacity. Codex
 stream retries are disabled to avoid repeating partially completed actions.
+
+The daemon runs at most `maxConcurrent` providers (four by default). Up to 32
+additional requests wait in a FIFO queue instead of receiving immediate capacity
+errors. Waiting streams receive the same progress events; their deadline includes
+waiting time. Cancellation removes waiting work without invoking a provider.
+The admission bound includes body uploads. A full queue returns `busy` with HTTP
+429 and `Retry-After: 1`. Health exposes `running` and `queued` counts.
 
 The current adapters support text, inline images, and caller-dispatched tools. Audio input,
 hosted tools, previous-response-ID state, and every provider's full option surface

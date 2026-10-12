@@ -75,6 +75,41 @@ test("quiet inference emits created and genuine progress before provider data, t
   } finally { release(); await gateway.close(); }
 });
 
+test("waiting requests receive SSE progress, cancel without inference, and recover in order", { timeout: 5000 }, async () => {
+  let release!: () => void; let calls = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const gateway = await setup({ async *infer() { if (++calls === 1) await held; yield { type: "text", text: "completed" }; yield { type: "done", usage }; } });
+  try {
+    const first = gateway.post().then(collect);
+    await eventually(() => calls === 1, "first provider must start");
+    const cancelled = new AbortController(); const waiting = await gateway.post(undefined, cancelled.signal);
+    const events = readEvents(waiting.body!);
+    assert.equal((await events.next()).value!.type, "response.created");
+    assert.equal((await events.next()).value!.type, "response.in_progress"); assert.equal(calls, 1);
+    cancelled.abort(); await assert.rejects(events.next());
+    await eventually(async () => (await gateway.health()).active === 1, "cancelled waiter must release ownership");
+    const next = gateway.post().then(collect); await delay(50); assert.equal(calls, 1);
+    assert.equal(gateway.server.restartWhenIdle(() => {}), false);
+    release(); const results = await Promise.all([first, next]);
+    assert.ok(results.every(result => result.at(-1)!.type === "response.completed")); assert.equal(calls, 2);
+    assert.equal((await gateway.health()).active, 0);
+  } finally { release(); await gateway.close(); }
+});
+
+test("queue deadline removes a waiter without invoking or interrupting another provider", { timeout: 5000 }, async () => {
+  let release!: () => void; let calls = 0;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const gateway = await setup({ async *infer() { calls++; await held; yield { type: "text", text: "completed" }; yield { type: "done", usage }; } }, 120);
+  try {
+    const first = gateway.post().then(collect); await eventually(() => calls === 1, "first provider must start");
+    const waiting = await collect(await gateway.post());
+    assert.equal(waiting.at(-1)!.type, "response.failed");
+    assert.equal((response(waiting.at(-1)!).error as { code: string }).code, "timeout"); assert.equal(calls, 1);
+    release(); await first;
+    await eventually(async () => (await gateway.health()).active === 0, "all ownership must release");
+  } finally { release(); await gateway.close(); }
+});
+
 test("deadline classifies a raw AbortError as SSE timeout and releases capacity without leaking request data", { timeout: 5000 }, async () => {
   let stopped = false;
   const gateway = await setup({ async *infer(_request, signal): AsyncGenerator<InferenceEvent> {

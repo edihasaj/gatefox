@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
-import { responsesHttpError } from "../providers/responses-errors.js";
+import { responsesHttpError, responsesStreamError } from "../providers/responses-errors.js";
 
 const privateMessage = "upstream secret or caller prompt must not escape";
 async function failure(status: number, value: unknown): Promise<ProviderError> {
@@ -73,4 +73,12 @@ test("Responses HTTP error parsing stops at its byte budget and releases the bod
 test("Malformed upstream error bodies remain safe HTTP failures", async () => {
   const error = await responsesHttpError(new Response("not-json " + privateMessage, { status: 400 }));
   assert.equal(error.code, "upstream_error"); assert.ok(!error.message.includes(privateMessage));
+});
+
+test("Responses transient failures keep safe upstream diagnostics, excluding private messages", () => {
+  const error = responsesStreamError({ type: "response.failed", response: { error: { code: "server_error", message: privateMessage } } }, "12345678-1234-1234-1234-123456789abc");
+  assert.equal(error.code, "upstream_unavailable"); assert.equal(error.status, 503);
+  assert.deepEqual(error.upstream, { code: "server_error", event: "response.failed", requestId: "12345678-1234-1234-1234-123456789abc" });
+  assert.ok(!JSON.stringify(error).includes(privateMessage));
+  assert.equal(responsesStreamError({ type: "response.failed", response: { error: { code: privateMessage } } }).upstream?.code, "unknown");
 });

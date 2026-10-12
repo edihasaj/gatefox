@@ -58,5 +58,12 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (input.providerId && /^[a-z][a-z0-9_-]{0,63}$/.test(input.providerId)) result.providerId = input.providerId;
   if (input.modelAlias && /^[a-z0-9][a-z0-9/._:-]{0,127}$/i.test(input.modelAlias)) result.modelAlias = input.modelAlias;
   if (input.abortCause === "timeout" || input.abortCause === "cancelled") result.abortCause = input.abortCause;
+  const upstream = input.failure.upstream;
+  if (upstream) {
+    const codes = new Set(["unknown", "server_error", "server_is_overloaded", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter"]);
+    if (codes.has(upstream.code || "")) result.upstreamCode = upstream.code!;
+    if (["error", "response.failed", "response.incomplete", "unknown"].includes(upstream.event || "")) result.upstreamEvent = upstream.event!;
+    if (upstream.requestId && /^[a-z0-9_-]{1,128}$/i.test(upstream.requestId)) result.upstreamRequestId = upstream.requestId;
+  }
   return result;
 }

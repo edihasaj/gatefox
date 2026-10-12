@@ -13,6 +13,7 @@ import type { ResponsesRequest } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic } from "./provider-failure.js";
+import { Admission } from "./admission.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -53,6 +54,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     return { config: current, routes };
   };
   const active = new Set<AbortController>();
+  const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
   const server = createServer(async (req, res) => {
     requests++; let released = false;
@@ -61,7 +63,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, idleRestart: true, idleUpgrade: true }); }
+      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
@@ -73,8 +75,9 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { send(res, 200, modelCatalog(state.config)); return; }
     if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
-    if (active.size >= (state.config.maxConcurrent || 4)) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway is at capacity" } }); return; }
+    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
     const controller = new AbortController(); active.add(controller);
+    let releaseAdmission: (() => void) | undefined;
     let writer: ResponsesWriter | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let abortCause: "timeout" | "cancelled" | undefined;
     let providerId: string | undefined; let model: string | undefined;
@@ -93,6 +96,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
       if (!route) throw new ProviderError("model_not_found", "Unknown model alias", 404);
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
+      admission.setLimit(state.config.maxConcurrent || 4); admission.check();
       const streaming = request.stream === true;
       let lastEventAt = Date.now();
       writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } });
@@ -101,6 +105,8 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
       if (streaming) heartbeat = setInterval(() => {
         if (!controller.signal.aborted && !res.destroyed && !res.writableNeedDrain && Date.now() - lastEventAt >= heartbeatMs) writer?.progress();
       }, heartbeatMs).unref();
+      releaseAdmission = await admission.acquire(controller.signal);
+      controller.signal.throwIfAborted();
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal)) {
         if (controller.signal.aborted || res.destroyed) break;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
@@ -128,7 +134,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
         }
         else send(res, known.status, { error: { code: known.code, message: known.message } });
       }
-    } finally { clearInterval(heartbeat); res.off("close", cancel); controller.abort(); active.delete(controller); }
+    } finally { clearInterval(heartbeat); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); }
   });
   server.requestTimeout = 30000;
   const close = server.close.bind(server);

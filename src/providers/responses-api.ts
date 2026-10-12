@@ -5,10 +5,27 @@ import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+    for (let attempt = 0; ; attempt++) {
+      let published = false;
+      try {
+        for await (const event of this.attempt(request, signal)) { published = true; yield event; }
+        return;
+      } catch (error) {
+        // Caller tools run outside this provider. Retry only a known transient
+        // failure before publishing any output, keeping partial turns intact.
+        if (attempt || published || signal.aborted || !(error instanceof ProviderError) ||
+          !["server_error", "server_is_overloaded"].includes(error.upstream?.code || "")) throw error;
+        console.error(JSON.stringify({ event: "provider_retry", attempt: 2, upstreamCode: error.upstream?.code }));
+        await delay(1000, undefined, { signal });
+      }
+    }
+  }
+  private async *attempt(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
@@ -66,7 +83,7 @@ export class ResponsesAPI implements Provider {
           } } };
         }
       }
-      if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw responsesStreamError(event);
+      if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
       if (event.type === "response.completed") {
         const completed = event.response as { status?: string; output_text?: string; usage?: Usage };
         if (completed.status !== "completed") throw new ProviderError("incomplete", "Provider did not complete the response");
