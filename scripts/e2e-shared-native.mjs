@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
 import { Duplex } from 'node:stream';
-import { mkdir, mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, access, realpath } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
@@ -27,8 +27,9 @@ if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify'
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(); assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
 const { WebSocket } = createRequire(join(packagePath, 'package.json'))('ws');
 const module = name => import(pathToFileURL(join(packagePath, 'dist', name + '.js')));
-const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }] = await Promise.all([
-  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses')]);
+const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }, { gatewaySdkRuntime }] = await Promise.all([
+  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses'), module('gateway-sdk-runtime')]);
+const gatewayRuntime = await gatewaySdkRuntime(packagePath);
 const runtime = await mkdtemp('/tmp/gw-native-'), home = join(runtime, 'native'), work = join(runtime, 'work'), state = join(runtime, 'state');
 await Promise.all([root, home, work, state].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
@@ -39,7 +40,10 @@ const nativeCatalog = modelCatalog({ providers: [{ id: 'native', type: 'response
   modelMetadata: { 'native-fixture': { contextWindow: 50000, reasoningEfforts: ['low'] } } }] });
 const save = async row => { results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion,
   gateway, runtime, primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0,
+  gatewaySdkBundled: !!gatewayRuntime, gatewaySdkBinarySha256: gatewayRuntime?.binarySha256,
   modelGets, mockErrors, results, requests }, null, 2) + '\n', { mode: 0o600 }); console.log(JSON.stringify(row)); };
+async function assertMappedSdk(pid, executable) { const mappings = execFileSync('lsof', ['-p', String(pid), '-a', '-d', 'txt', '-Fn'], { encoding: 'utf8' }).split('\n');
+  assert.ok(mappings.includes('n' + await realpath(executable)), 'Running SDK executable does not match its selected role'); }
 async function until(check, description, timeout = 15000) { const end = Date.now() + timeout;
   while (Date.now() < end) { const value = await check(); if (value) return value; await delay(20); } throw Error(description + ' timed out'); }
 const fake = createServer((req, res) => { void (async () => {
@@ -154,7 +158,8 @@ try {
   control = new SocketAppServerConnection(join(executionHostHome(configPath, home), 'host.sock'), async () => {}); await control.ready;
   for (const transport of transports) {
     phase = transport + '-two-native-adapters'; const owner = await open(transport, transport + '-a'), reader = await open(transport, transport + '-b');
-    const native = await nativeStatus(); const features = (await owner.client.rpc('config/read', { includeLayers: false })).config.features;
+    const native = await nativeStatus(); await assertMappedSdk(native.pid, sdk);
+    const features = (await owner.client.rpc('config/read', { includeLayers: false })).config.features;
     assert.equal(features.fast_mode, false); assert.equal(features.step_model_switching, false);
     const chat = await owner.client.rpc('thread/start', { model: 'native-fixture', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.equal(chat.modelProvider, 'openai');
     mode = 'seed'; await complete(owner.client, chat.thread.id); await reader.client.rpc('thread/resume', { threadId: chat.thread.id });
@@ -182,6 +187,7 @@ try {
     const status = await control.request('execution/status', {});
     if (sharedGateway) {
       assert.ok(status.generations.length === 1 && status.generations[0].pid !== native.pid); sdkPids.add(status.generations[0].pid);
+      await assertMappedSdk(status.generations[0].pid, gatewayRuntime?.executable ?? sdk);
       const inspection = new SocketAppServerConnection(status.generations[0].socketPath, async () => {}); await inspection.ready;
       try { await inspection.request('initialize', { clientInfo: { name: 'gateway_capability_inspection', version: '1' }, capabilities: { experimentalApi: true } }); inspection.send({ method: 'initialized', params: {} });
         const gatewayFeatures = (await inspection.request('config/read', { includeLayers: false })).config.features; assert.equal(gatewayFeatures.fast_mode, true); assert.equal(gatewayFeatures.step_model_switching, true);
@@ -193,11 +199,13 @@ try {
       }).map(pid => ({ pid, args: execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim() }))
         .filter(row => row.args.includes('model_provider=') && row.args.includes('subscription_gateway'));
       assert.equal(children.length, 1); assert.notEqual(children[0].pid, native.pid); sdkPids.add(children[0].pid);
+      await assertMappedSdk(children[0].pid, gatewayRuntime?.executable ?? sdk);
       assert.ok(children[0].args.includes('features.fast_mode=true') && children[0].args.includes('features.step_model_switching=true'));
     }
     const nativeAgain = (await reader.client.rpc('config/read', { includeLayers: false })).config.features;
     assert.equal(nativeAgain.fast_mode, false); assert.equal(nativeAgain.step_model_switching, false);
-    await save({ phase, passed: true, distinctNativeAndGatewaySdkPids: true, nativeFastFalseGatewayFastTrue: true, nativeStepSwitchFalseGatewayTrue: true });
+    await save({ phase, passed: true, distinctNativeAndGatewaySdkPids: true, nativeOriginalSignedSdkMapped: true, gatewaySelectedSdkMapped: true,
+      nativeFastFalseGatewayFastTrue: true, nativeStepSwitchFalseGatewayTrue: true });
     if (sharedGateway) {
       phase = transport + '-shared-gateway-reader-stop'; const gatewayPid = status.generations[0].pid;
       const gatewayHeld = await heldTurn(reader.client, gatewayChat.thread.id, 'fixture/gateway');

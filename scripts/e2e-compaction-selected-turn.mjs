@@ -124,15 +124,18 @@ export async function selectedTurnScenarios(c) {
   assert.equal(steering.turnId, goalTurn.turnId);
   releasePausedResponses('blocked-old', 'mock-large');
   const goalEvidence = await terminal(goalThread, goalTurn, 'completed');
-  assert.ok(selectedRequests(goalTurn.at, 'mock-small', 2).every(r => r.reasoningEffort === 'high' && r.containsProof));
-  assert.ok(requests.slice(goalTurn.at).at(-1).containsSteer, 'SDK lost steering while compacting');
+  // Pinned SDK answers the admitted input before draining steering queued during compaction.
+  const goalRequests = selectedRequests(goalTurn.at, 'mock-small', 3);
+  assert.ok(goalRequests.every(r => r.reasoningEffort === 'high' && r.containsProof));
+  assert.deepEqual(goalRequests.map(r => r.containsSteer), [false, false, true], 'SDK lost or prematurely drained steering while compacting');
   const goal = await until(async () => { const g = (await rpc('thread/goal/get', { threadId: goalThread })).goal; return g?.status !== 'active' && g; }, 'SDK goal budget completion');
   assert.equal(goal.status, 'budgetLimited', 'SDK must apply its normal goal budget accounting');
-  selectedRequests(goalTurn.at, 'mock-small', 2);
+  selectedRequests(goalTurn.at, 'mock-small', 3);
   lifecycle(goalThread, goalTurn);
   const goalTranscript = await transcriptHasProof(goalThread); assert.ok(JSON.stringify(goalTranscript.turns).includes(steerProof));
   await save({ phase: `${label}-goal-active-steer-during-compaction`, passed: true, ...goalEvidence,
-    activeGoalDuringCompaction: true, actualSdkGoalStatus: goal.status, sameTurnSteering: true, steeringPreserved: true, historyPreserved: true });
+    activeGoalDuringCompaction: true, actualSdkGoalStatus: goal.status, sameTurnSteering: true, inferenceRequests: 3,
+    steeringIncludedInRequests: [false, false, true], steeringPreserved: true, historyPreserved: true });
   await completed(goalThread, 'steered-follow-up', 'fixture/small', 'mock-small', 'high', 'high', 1);
   await closeAdapter(); await open(transport);
   await rpc('thread/resume', { threadId: goalThread, model: 'fixture/small' });
