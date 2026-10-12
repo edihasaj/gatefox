@@ -4,6 +4,7 @@ import { normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
+import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -40,11 +41,7 @@ export class ResponsesAPI implements Provider {
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body: JSON.stringify(body) });
-    if (!response.ok) {
-      if (response.status === 429) throw new ProviderError("usage_limit", "Provider usage limit reached", 429);
-      if (response.status === 401 || response.status === 403) throw new ProviderError("authentication", "Provider login is missing or expired", response.status);
-      throw new ProviderError("upstream_error", `Provider returned HTTP ${response.status}`, response.status === 400 ? 400 : 502);
-    }
+    if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     let done = false; let textSeen = false; const calls = new Set<string>();
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
@@ -69,7 +66,7 @@ export class ResponsesAPI implements Provider {
           } } };
         }
       }
-      if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw new ProviderError("inference_failed", "Provider inference did not complete");
+      if (event.type === "error" || event.type === "response.failed" || event.type === "response.incomplete") throw responsesStreamError(event);
       if (event.type === "response.completed") {
         const completed = event.response as { status?: string; output_text?: string; usage?: Usage };
         if (completed.status !== "completed") throw new ProviderError("incomplete", "Provider did not complete the response");

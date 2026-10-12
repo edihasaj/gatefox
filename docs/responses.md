@@ -38,10 +38,25 @@ Some Claude CLI versions expose token progress with empty thinking text. The
 gateway emits a reasoning item and empty summary deltas with an `estimated_tokens`
 extension. It preserves that distinction instead of fabricating a summary.
 
-Authentication and capacity failures before inference return HTTP errors.
-Failures after streaming begins emit `response.failed`; they never emit a successful
-completion. Disconnects abort inference and release capacity. Codex stream retries
-are disabled to avoid repeating partially completed actions.
+Gateway authentication, capacity, and request-validation failures return HTTP
+errors. A validated streaming request emits `response.created` before waiting for
+the provider. During a quiet period, genuine `response.in_progress` data events
+keep the Codex connection alive every fifteen seconds. They retain the response
+identity and sequence and contain no invented text or completion. Heartbeats stop
+on completion, failure, disconnect, or deadline.
+
+Provider failures emit `response.failed`, including failures before the first
+output delta. Nonstream requests retain the corresponding HTTP error status.
+Responses upstream `context_length_exceeded` errors keep that code so Codex's
+compaction recovery can trim history and retry. The gateway does not choose a
+different model or account. Transport failures and deadline expiry have separate
+messages; they do not imply a failed login. Private failure logs contain bounded
+request/provider/model identifiers, elapsed time, error code, and status, excluding
+request bodies, exception messages, stacks, and credentials.
+
+The default total request deadline is ten minutes; explicit `timeoutMs` settings
+remain authoritative. Disconnects abort inference and release capacity. Codex
+stream retries are disabled to avoid repeating partially completed actions.
 
 The current adapters support text, inline images, and caller-dispatched tools. Audio input,
 hosted tools, previous-response-ID state, and every provider's full option surface

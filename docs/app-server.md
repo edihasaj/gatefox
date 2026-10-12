@@ -65,6 +65,18 @@ saved gateway chats can resolve that provider when read or resumed. It does not
 write the native configuration. A mismatched or
 unavailable cache prevents startup.
 
+The adapter normalizes three retired feature keys in app-server CLI flags,
+thread start/resume/fork overrides, runtime enablement maps, and private snapshots.
+It maps `features.codex_hooks` to `features.hooks` after reading the SDK's current
+settings. An explicit current `hooks` value in those settings or the incoming
+request takes precedence over the legacy alias. Workspace settings are resolved
+for the chat's directory; an unavailable required workspace or configuration
+layer returns application error `-32001` before applying the alias. It removes
+`features.code_mode_tool_description_first` and `features.guardianv2.thread_context`,
+which the pinned SDK ignores. Code Mode, other Guardian settings, and reasoning
+choices keep their values. Equivalent legacy and current settings share the same
+executor identity. Already loaded sessions keep their settings until they reload.
+
 Gateway default selections are saved to private `desktop-preferences.json` in
 the gateway state directory. Model, effort, summary, and service-tier writes are
 scoped to that file for both gateway and native model choices. String `replace` and

@@ -12,7 +12,8 @@ import type { Message } from "../app-server-connection.js";
 import type { GatewayConfig } from "../config.js";
 
 const alias = "claude/fixture";
-async function fixture() {
+type FeatureVariant = "legacy" | "canonical";
+async function fixture(featureVariant?: FeatureVariant) {
   const directory = await mkdtemp(join(tmpdir(), "gw-backends-"));
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   await writeFile(join(nativeHome, "config.toml"), 'model = "native-original"\n', { mode: 0o600 });
@@ -24,9 +25,11 @@ import {createInterface} from 'node:readline';
 import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)};
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const loaded=new Set();
+const cliFeatures={};for(let i=0;i<args.length;i++)if(args[i]==='-c'){const value=args[++i];const equal=value.indexOf('=');const key=value.slice(0,equal);if(key.startsWith('features.')){try{cliFeatures[key]=JSON.parse(value.slice(equal+1));}catch{}}}
 function metadata(){return existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};}
 async function rpc(m,send,drop){if(m.id==null)return;let result={};
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
+if(m.method==='fixture/features')result={cliFeatures};
 if(m.method==='thread/read')result={thread:metadata()[m.params.threadId]||{id:m.params.threadId,modelProvider:'openai'}};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'){
@@ -56,16 +59,23 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const catalog = { current: snapshot, refresh: async () => snapshot(), combined: (value: ReturnType<typeof snapshot>) => ({ models: value.models }) } as unknown as DesktopCatalog;
   const events: Message[] = [];
   const adapters = new Set<AppServerBackends>();
-  const createBackend = (reverse = false) => {
+  const createBackend = (reverse = false, variant = featureVariant) => {
     const entries: [string, unknown][] = [["agents", { max_concurrent_threads_per_session: 30 }], ["web_search", "disabled"], ["sandbox_mode", "read-only"]];
+    const featureArgs: string[] = [];
+    if (variant) {
+      const core = { code_mode: { enabled: true, default_exec_yield_time_ms: 1500, experimental_show_cell_overhead: true }, guardianv2: { enabled: true, persist_scores: false, review_threshold: 0.6 } };
+      entries.push(["features", variant === "legacy" ? { ...core, codex_hooks: false, code_mode_tool_description_first: true, guardianv2: { ...core.guardianv2, thread_context: false } } : { ...core, hooks: false }]);
+      featureArgs.push("-c", variant === "legacy" ? "features.codex_hooks=false" : "features.hooks=false", "-c", "features.code_mode.enabled=true");
+      if (variant === "legacy") featureArgs.push("-c", "features.code_mode_tool_description_first=true", "-c", "features.guardianv2.thread_context=false");
+    }
     const settings = Object.fromEntries(reverse ? entries.reverse() : entries);
-    const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory], config, settings, {}, catalog, async message => { events.push(message); }, () => {}, configPath);
+    const adapter = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory, ...featureArgs], config, settings, {}, catalog, async message => { events.push(message); }, () => {}, configPath);
     adapters.add(adapter); return adapter;
   };
   const backends = createBackend();
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
   return { config, directory, nativeHome, backends, control, events, next: () => { generation++; },
-    async another() { const adapter = createBackend(true); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
+    async another(variant?: FeatureVariant) { const adapter = createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
     async clean() { await Promise.all([...adapters].map(adapter => adapter.stop())); control.stop(); await control.exited; await host.close(); process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME; await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); },
   };
@@ -93,6 +103,29 @@ test("independent adapters share one writer despite different native settings ke
     assert.equal(secondStart.executorPid, firstStart.executorPid);
     const status = await f.control.request("execution/status", {}); assert.equal((status.generations as Message[]).length, 1);
     assert.equal((await f.control.request("execution/find", { threadId: "first-adapter" })).revision, (await f.control.request("execution/find", { threadId: "second-adapter" })).revision);
+  } finally { await f.clean(); }
+});
+
+test("legacy and canonical feature settings share one writer and retain current feature values", { timeout: 20000 }, async () => {
+  const f = await fixture("legacy");
+  try {
+    const canonical = await f.another("canonical");
+    const first = await f.start("legacy-feature-chat");
+    const second = await canonical.request("thread/start", { fixtureId: "canonical-feature-chat", model: alias, modelProvider: "subscription_gateway" });
+    assert.equal(first.executorPid, second.executorPid);
+    const oldOwner = await f.control.request("execution/find", { threadId: "legacy-feature-chat" });
+    const newOwner = await f.control.request("execution/find", { threadId: "canonical-feature-chat" });
+    assert.equal(oldOwner.revision, newOwner.revision);
+    assert.equal((await f.control.request("execution/status", {})).generations instanceof Array, true);
+    assert.equal(((await f.control.request("execution/status", {})).generations as Message[]).length, 1);
+    const observed = await f.backends.request("fixture/features", { threadId: "legacy-feature-chat" });
+    assert.deepEqual(observed.cliFeatures, { "features.hooks": false, "features.code_mode.enabled": true, "features.step_model_switching": true });
+    const snapshot = await readFile(join(f.config.stateDirectory, "desktop-generations", "shared-v1-" + oldOwner.revision, "desktop-engine", "config.toml"), "utf8");
+    assert.equal(snapshot.includes("codex_hooks"), false); assert.equal(snapshot.includes("code_mode_tool_description_first"), false); assert.equal(snapshot.includes("thread_context"), false);
+    assert.match(snapshot, /"hooks" = false/);
+    assert.match(snapshot, /"code_mode" = \{ "enabled" = true, "default_exec_yield_time_ms" = 1500, "experimental_show_cell_overhead" = true \}/);
+    assert.match(snapshot, /"guardianv2" = \{ "enabled" = true, "persist_scores" = false, "review_threshold" = 0\.6 \}/);
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await f.clean(); }
 });
 

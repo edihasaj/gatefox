@@ -29,15 +29,18 @@ route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
 
 The Apple Silicon installer bundles a verified Node runtime. Subscription
-inference hosts also need the native CLI for each configured provider. Clients
-need the signed Codex desktop app and an authenticated SSH connection to the host.
+inference hosts also need the native CLI for each configured provider. Desktop
+clients need the signed Codex app and an adapter on the selected execution device.
+The native connected-machine adapter uses the existing Codex connection. An SSH
+forward is required only when that device uses the remote-gateway setup described
+in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.2.10 -R edihasaj/subscription-gateway \
+gh release download v0.2.11 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.10-macos-arm64.tar.gz
-./subscription-gateway-0.2.10-macos-arm64/install
+tar -xzf subscription-gateway-0.2.11-macos-arm64.tar.gz
+./subscription-gateway-0.2.11-macos-arm64/install
 gateway --version
 ```
 
@@ -58,6 +61,11 @@ gateway doctor
 gateway service install
 gateway desktop register
 ```
+
+For a secondary Codex account, use `gateway login codex --account-email EMAIL`.
+The gateway verifies that email in the signed identity token before saving its
+separate registration. A different account is rejected. Browser sign-in waits
+up to fifteen minutes; an expired callback requires a fresh sign-in.
 
 For an existing development setup, `gateway setup --from-config PATH` copies only
 gateway-owned registrations, the client token, and private preferences into the

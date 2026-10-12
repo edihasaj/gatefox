@@ -11,6 +11,7 @@ import { nativeCopilotModels } from "../providers/copilot-models.js";
 import { CopilotSubscription, copilotEffort, nativeCopilotCalls } from "../providers/copilot.js";
 import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
+import { ProviderError } from "../providers/provider.js";
 
 const provider: ProviderConfig = { id: "copilot", type: "copilot-subscription", models: { alias: "fixture" }, modelMetadata: { alias: { reasoningEfforts: ["low", "high", "max"] } } };
 const collect = async (input: AsyncIterable<InferenceEvent>) => { const events = []; for await (const event of input) events.push(event); return events; };
@@ -76,6 +77,10 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
       process.env.GATEWAY_COPILOT_FIXTURE_MODE = mode;
       await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof Error && !error.message.includes("private-token"));
     }
+    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-code";
+    await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "context_length_exceeded" && error.status === 400 && !error.message.includes("private-token"));
+    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-prose";
+    await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "inference_failed");
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "hang";
     const control = new AbortController(); const timer = setTimeout(() => control.abort(), 300);
     try { await assert.rejects(collect(adapter.infer(request, control.signal)), /cancelled/); } finally { clearTimeout(timer); }

@@ -70,12 +70,17 @@ test("stream text matches the completed response and failures never produce comp
   } finally { await gateway.close(); }
 });
 
-test("preflight subscription errors retain HTTP status even when the client requests SSE", async () => {
+test("subscription failures before first output terminate SSE and retain nonstream HTTP status", async () => {
   const gateway = await setup(() => ({ async *infer() { throw new ProviderError("authentication", "Login needed", 401); } }));
   try {
     const response = await fetch(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers, body: JSON.stringify({ model: "alias", input: "Hi", stream: true }) });
-    assert.equal(response.status, 401); assert.match(response.headers.get("content-type")!, /application\/json/);
-    assert.equal((await response.json() as { error: { code: string } }).error.code, "authentication");
+    assert.equal(response.status, 200); assert.match(response.headers.get("content-type")!, /text\/event-stream/);
+    const events: WireEvent[] = []; for await (const event of readEvents(response.body!)) events.push(event);
+    assert.equal(events.at(-1)!.type, "response.failed");
+    assert.equal(((events.at(-1)!.response as Record<string, unknown>).error as { code: string }).code, "authentication");
+    assert.equal(events.some(event => event.type === "response.completed"), false);
+    const plain = await fetch(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers, body: JSON.stringify({ model: "alias", input: "Hi" }) });
+    assert.equal(plain.status, 401); assert.equal((await plain.json() as { error: { code: string } }).error.code, "authentication");
   } finally { await gateway.close(); }
 });
 

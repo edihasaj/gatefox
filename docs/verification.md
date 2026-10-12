@@ -21,7 +21,7 @@ catalog presence do not establish inference access for every model.
 The four Copilot routes are GPT-6.1-Sol, GPT-5.6-Terra, Sonnet 5, and Opus 5.5.
 
 MacBook Pro 2's running desktop adapter and native relay remain on v0.2.8 under
-one supervised gateway service. A v0.2.9 CLI candidate is installed there, but its
+one supervised gateway service. A v0.2.10 CLI candidate is installed there, but its
 shared executors have not been activated. The running relay retains the machine's
 original environment and installation IDs. The primary Mac's gateway command is
 v0.2.8; its existing inference process remains on v0.2.6.
@@ -48,10 +48,11 @@ The remaining desktop checks are:
 | Qwen | The real backend tool loop passed and the model appears in the combined catalog. | Verify text, file tools, follow-up, and interruption through the original connection. |
 | Reasoning controls | v0.2.8 persists all six display efforts. MacBook Pro 2's local rendered Claude menu showed Max. The user also confirmed that all levels now appear on the primary Mac. | Capture the primary Mac's menu and verify refresh persistence when using the connected computer. |
 
-Shared execution ownership and outage recovery are being developed for v0.2.10.
+Shared execution ownership and outage recovery passed the v0.2.10 backend gate.
 The signed SDK checks below prove gateway ownership across several adapter clients
-in an isolated development fixture. v0.2.10 has not been installed, published, or
-activated. Native executors still have separate ownership in each adapter, and
+in an isolated development fixture. The v0.2.10 CLI is installed on the test Mac;
+its GitHub release remains a draft and its adapter changes are not activated.
+Native executors still have separate ownership in each adapter, and
 the installed release's cloud connections have not passed the corresponding checks.
 
 ## Observed transport outage
@@ -74,7 +75,58 @@ their supervisor retries. The supervisor also supplies these defaults when it
 starts a child from an older plan; it preserves explicit values and running jobs.
 These changes are not yet active on the deployed devices.
 
+### Device-local inference
+
+On 12 October, the installed v0.2.10 command on MacBook Pro 2 passed an isolated
+Claude Sonnet 5.5 run using that device's existing subscription login. Its daemon
+configuration contained only a local Claude provider. It used no inference
+forward to the primary Mac. The signed SDK streamed replies and reasoning,
+followed a hidden repository `AGENTS.md` marker, read and patched a file, retained
+follow-up history, acknowledged interruption in 3 ms, cleaned up the interrupted
+request, and completed a recovery turn. Native configuration stayed unchanged,
+and the isolated Codex home contained no copied authentication.
+
+Device-local Codex 2 GPT-6.1-Sol also passed streaming, hidden repository
+instructions, file reads and edits, follow-up history, reasoning, interruption,
+cleanup, and recovery on the test Mac. Its independent gateway registration
+verified the requested secondary email. Native configuration stayed unchanged,
+and no primary authentication was copied.
+
+Configurations retaining the 25 public routes are staged on the test Mac and
+Studio. They are not active. Studio still needs its independent secondary Codex
+registration. Its Copilot CLI is now installed, authenticated, and advertises all
+four selected models. Qwen's HTTPS endpoint returned its configured model with
+authentication. Device credentials and final cutover still need verification
+before removing the working inference forwards. The existing Codex cloud
+connection carries chat transport; it does not provision these registrations.
+
+### Compaction and silent streams in v0.2.11
+
+The signed Codex SDK passed forced compaction recovery through the updated
+gateway. An upstream HTTP 400 context-limit error and an SSE context-limit error
+before the first delta both retained `context_length_exceeded` in a failed
+Responses event. With generic stream retries disabled, Codex trimmed history
+from eight input items to seven, completed compaction, and completed a subsequent
+turn. The isolated native configuration stayed unchanged and contained no copied
+authentication. These controlled checks establish the recovery mechanism;
+the running v0.2.6 daemon has no request failure logs to attribute the reported
+historical failure to a specific cause.
+
+The signed SDK also passed a controlled silent-stream check with a shortened
+500 ms idle timeout. Comment-only heartbeats failed before a 1.5-second reply.
+Genuine Responses progress events kept the same silent request alive until its
+real reply completed. Interrupting during that quiet period produced the SDK's
+actual interrupted status, released gateway capacity, stopped heartbeats, and
+allowed recovery in the same SDK process. This test used mock inference and an
+isolated home, with no primary configuration or authentication access.
+
 ## Development and desktop settings checks
+
+The v0.2.11 development gate passed all 222 tests, including request deadlines,
+silent streams, cancellation, context errors, account-email verification, and
+blocked terminal-output cleanup. The isolated installer passed initial and
+repeat installation using its bundled runtime. These checks complement the
+signed SDK evidence above; they do not replace the remaining desktop checks.
 
 Run the development gate:
 

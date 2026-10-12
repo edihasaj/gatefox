@@ -72,7 +72,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     return { ...provider, models: { ...provider.models }, ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
   });
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
-    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 120000, ...(config.clientOnly ? { clientOnly: true } : {}) };
+    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}) };
 }
 
 export async function loadConfig(path: string): Promise<GatewayConfig> {

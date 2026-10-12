@@ -51,7 +51,7 @@ const help = `gateway — local subscription and API inference
   gateway providers [--config PATH] [--json]
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
-  gateway login PROVIDER [--config PATH] [--no-browser]
+  gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
   gateway codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
@@ -73,7 +73,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
-    config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, select: { type: "string" }, load: { type: "boolean" },
+    config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" }, coordinator: { type: "string" }, verifier: { type: "string" }, worker: { type: "string" },
@@ -95,6 +95,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.model && !["codex-config", "catalog"].includes(command)) throw new Error("--model is only valid for codex-config or catalog");
   if ((values.select || values.load) && command !== "discover") throw new Error("--select and --load are only valid for discover");
   if (values["no-browser"] && command !== "login") throw new Error("--no-browser is only valid for login");
+  if (values["account-email"] !== undefined && command !== "login") throw new Error("--account-email is only valid for Codex subscription login");
   if (values.file) {
     if (command !== "token" || values.config) throw new Error("--file is only valid for token without --config");
     process.stdout.write(await readClientToken(resolve(values.file)) + "\n"); return;
@@ -204,6 +205,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "login") {
     const provider = config.providers.find(p => p.id === id);
     if (!provider) throw new Error("login requires a configured provider ID");
+    if (values["account-email"] !== undefined && provider.type !== "codex-subscription") throw new Error("--account-email is only valid for Codex subscription login");
     if (provider.type === "claude-subscription" || provider.type === "copilot-subscription") {
       const copilot = provider.type === "copilot-subscription";
       const child = spawn(copilot ? "copilot" : "claude", copilot ? ["login"] : ["auth", "login"], { stdio: "inherit", env: copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
@@ -218,7 +220,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           const args = process.platform === "win32" ? ["url.dll,FileProtocolHandler", url] : [url];
           await promisify(execFile)(opener, args, { timeout: 10000 });
         }
-      }, control.signal); } finally { process.off("SIGINT", interrupt); }
+      }, control.signal, values["account-email"]); } finally { process.off("SIGINT", interrupt); }
     } else throw new Error("Configure this API provider's credentialFile or apiKeyEnv instead of subscription login");
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }

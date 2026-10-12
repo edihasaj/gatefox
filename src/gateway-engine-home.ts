@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { resolve, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Message } from "./app-server-connection.js";
+import { normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
 
 function toml(value: unknown): string {
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -45,7 +46,7 @@ export async function gatewayEngineHome(state: string, settings: Message, agents
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path); }
   }
   const excluded = new Set(["model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "openai_api_key", "model_provider", "model_catalog_json"]);
-  const copied = Object.fromEntries(Object.entries(settings).filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined));
+  const copied = Object.fromEntries(Object.entries(normalizeCodexFeatureConfig(settings)).filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined));
   copied.sqlite_home = typeof settings.sqlite_home === "string" ? settings.sqlite_home : nativeHome;
   const content = Object.entries(copied).map(([key, value]) => `${JSON.stringify(key)} = ${toml(value)}\n`).join("");
   if (Buffer.byteLength(content) > 1024 * 1024) throw new Error("Native settings snapshot exceeds 1 MiB");

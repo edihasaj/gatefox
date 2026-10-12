@@ -10,7 +10,7 @@ import { writePrivateJson } from "../config.js";
 const keys = generateKeyPairSync("rsa", { modulusLength: 2048 });
 const jwk = { ...keys.publicKey.export({ format: "jwk" }), kid: "test-key" };
 const claims = { iss: "https://auth.openai.com", aud: "oaiapp_test", exp: Math.floor(Date.now() / 1000) + 3600, nonce: "test-nonce", sub: "test-user" };
-function jwt(payload = claims): string {
+function jwt(payload: typeof claims & { email?: string } = claims): string {
   const header = Buffer.from(JSON.stringify({ alg: "RS256", kid: jwk.kid })).toString("base64url");
   const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
   return `${header}.${body}.${sign("RSA-SHA256", Buffer.from(`${header}.${body}`), keys.privateKey).toString("base64url")}`;
@@ -77,6 +77,67 @@ test("returning sign-in cannot replace an account with a different verified subj
       await original(callback);
     }), /different account/);
     assert.deepEqual(JSON.parse(await readFile(path, "utf8")), prior);
+  } finally { globalThis.fetch = original; }
+});
+
+async function emailSignIn(path: string, expectedEmail: string, returnedEmail?: string): Promise<void> {
+  const original = globalThis.fetch; let nonce = "";
+  globalThis.fetch = async input => {
+    if (String(input) === "https://auth.openai.com/.well-known/jwks.json") return Response.json({ keys: [jwk] });
+    if (String(input) === "https://auth.openai.com/api/accounts/oauth/token") return Response.json({
+      access_token: "email-fixture-access", refresh_token: "email-fixture-refresh", token_type: "Bearer", expires_in: 3600, scope: scopes,
+      id_token: jwt({ ...claims, nonce, ...(returnedEmail === undefined ? {} : { email: returnedEmail }) }),
+    });
+    throw new Error("Unexpected external authentication request");
+  };
+  try {
+    await signIn(path, "Gateway Email Test", async url => {
+      const authorize = new URL(url); nonce = authorize.searchParams.get("nonce")!;
+      const callback = new URL(authorize.searchParams.get("redirect_uri")!);
+      callback.searchParams.set("code", "email-fixture-code");
+      callback.searchParams.set("state", authorize.searchParams.get("state")!);
+      callback.searchParams.set("client_id", claims.aud);
+      assert.equal((await original(callback)).status, 200);
+    }, undefined, expectedEmail);
+  } finally { globalThis.fetch = original; }
+}
+
+test("requested sign-in account accepts a verified email case-insensitively", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-auth-email-")); const path = join(directory, "codex.json");
+  await emailSignIn(path, "  edi@fixture.invalid  ", "EDI@fixture.invalid");
+  const saved = JSON.parse(await readFile(path, "utf8")) as ChatGPTCredentials;
+  assert.equal(saved.email, "EDI@fixture.invalid");
+  assert.equal(saved.subject, claims.sub); assert.equal(saved.access_token, "email-fixture-access");
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+});
+
+test("wrong or missing verified email never creates or replaces credential files", async () => {
+  for (const returnedEmail of ["other@fixture.invalid", undefined]) {
+    for (const existing of [false, true]) {
+      const directory = await mkdtemp(join(tmpdir(), "gateway-auth-email-")); const path = join(directory, "codex.json");
+      const prior: ChatGPTCredentials = { client_id: claims.aud, subject: claims.sub, email: "edi@fixture.invalid",
+        ext_agent_host_id: "urn:uuid:email-test", access_token: "unchanged-access", refresh_token: "unchanged-refresh",
+        id_token: "unchanged-id", scopes: scopes.split(" "), expires_at: Date.now() + 3600000 };
+      if (existing) await writePrivateJson(path, prior);
+      const before = existing ? await readFile(path) : undefined;
+      await assert.rejects(emailSignIn(path, "edi@fixture.invalid", returnedEmail), /different account/);
+      if (existing) assert.deepEqual(await readFile(path), before);
+      else await assert.rejects(stat(path), { code: "ENOENT" });
+    }
+  }
+});
+
+test("invalid requested email is rejected before authorization or network activity", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-auth-email-")); const path = join(directory, "codex.json");
+  const original = globalThis.fetch; let requests = 0; let openings = 0;
+  globalThis.fetch = async () => { requests++; throw new Error("Authentication network must not start"); };
+  try {
+    for (const email of ["", " ", "edi", "edi@localhost", "edi @fixture.invalid", "edi@fixture.invalid\nother@fixture.invalid"]) {
+      await assert.rejects(signIn(path, "Gateway Email Test", () => { openings++; }, undefined, email), /Requested account email is invalid/);
+    }
+    assert.equal(openings, 0); assert.equal(requests, 0);
+    await assert.rejects(stat(path), { code: "ENOENT" });
+    await assert.rejects(stat(join(directory, "host.json")), { code: "ENOENT" });
   } finally { globalThis.fetch = original; }
 });
 

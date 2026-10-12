@@ -68,7 +68,9 @@ function grantedScopes(token: TokenResponse): string[] {
 }
 
 /** Separate registration for this tool; never imports Codex's credentials. */
-export async function signIn(path: string, agentName: string, onAuthorize: (url: string) => void | Promise<void>, signal?: AbortSignal): Promise<void> {
+export async function signIn(path: string, agentName: string, onAuthorize: (url: string) => void | Promise<void>, signal?: AbortSignal, expectedEmail?: string): Promise<void> {
+  const email = expectedEmail?.trim().toLowerCase();
+  if (expectedEmail !== undefined && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) throw new Error("Requested account email is invalid");
   const prior = await readCredentials(path);
   const hostPath = resolve(dirname(path), "host.json");
   let host: { id: string };
@@ -112,7 +114,7 @@ export async function signIn(path: string, agentName: string, onAuthorize: (url:
     ...(!prior ? { agent_name_hint: agentName } : {}),
   };
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, value);
-  const timeout = setTimeout(() => rejectCallback(new Error("Sign-in timed out; run login again")), 5 * 60000);
+  const timeout = setTimeout(() => rejectCallback(new Error("Sign-in timed out; run login again")), 15 * 60000);
   const abort = () => rejectCallback(new Error("Sign-in cancelled"));
   signal?.addEventListener("abort", abort, { once: true });
   try {
@@ -124,6 +126,7 @@ export async function signIn(path: string, agentName: string, onAuthorize: (url:
       body: new URLSearchParams({ grant_type: "authorization_code", client_id: authorization.clientId, code: authorization.code, code_verifier: verifier, redirect_uri: redirect, resource }),
     });
     const identity = await validateIdToken(token.id_token, authorization.clientId, nonce);
+    if (email && identity.email?.trim().toLowerCase() !== email) throw new Error("Sign-in returned a different account; choose the requested account and sign in again");
     if (prior && identity.subject !== prior.subject) throw new Error("Sign-in returned a different account; add it as a separate provider instead");
     const scopes = grantedScopes(token);
     await writePrivateJson(path, { ...identity, client_id: authorization.clientId, ext_agent_host_id: host.id,

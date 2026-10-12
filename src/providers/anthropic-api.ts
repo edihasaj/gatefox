@@ -4,6 +4,7 @@ import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
 import { anthropicParts } from "../protocol/images.js";
+import { anthropicContextFailure, anthropicHttpContextFailure, contextWindowFailure } from "./context-errors.js";
 
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -50,7 +51,10 @@ export class AnthropicAPI implements Provider {
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "tool", name: nativeName(choice.function.name) } : { type: choice === "required" ? "any" : choice } } : {}),
       }),
     });
-    if (!response.ok) throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Anthropic returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
+    if (!response.ok) {
+      const context = await anthropicHttpContextFailure(response); if (context) throw context;
+      throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Anthropic returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
+    }
     if (!response.body) throw new ProviderError("incomplete", "Anthropic returned no stream");
     const blocks = new Map<number, { id: string; name: string; input: unknown; partial: string }>();
     const indices = new Set<number>(); const callIds = new Set<string>();
@@ -95,8 +99,12 @@ export class AnthropicAPI implements Provider {
       } else if (event.type === "message_delta") {
         stopReason = (event.delta as { stop_reason?: string }).stop_reason;
         usage.output_tokens = (event.usage as { output_tokens?: number })?.output_tokens || 0;
-      } else if (event.type === "error") throw new ProviderError("inference_failed", "Anthropic inference failed");
+      } else if (event.type === "error") {
+        const context = anthropicContextFailure(event); if (context) throw context;
+        throw new ProviderError("inference_failed", "Anthropic inference failed");
+      }
       else if (event.type === "message_stop") {
+        if (stopReason === "model_context_window_exceeded") throw contextWindowFailure();
         if (!stopReason || !["end_turn", "stop_sequence", "tool_use"].includes(stopReason) || blocks.size) throw new ProviderError("incomplete", "Anthropic response was incomplete, paused, or refused");
         if (stopReason === "tool_use" && !callIds.size) throw new ProviderError("invalid_tool_call", "Anthropic stopped for a tool without returning one");
         if ((choice === "required" || typeof choice === "object") && !callIds.size) throw new ProviderError("invalid_tool_call", "Anthropic did not return the required tool call");

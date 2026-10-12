@@ -8,6 +8,7 @@ import { ProviderError, type Provider } from "./provider.js";
 import { imageConversation } from "../protocol/images.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { copilotContextFailure } from "./context-errors.js";
 
 export function copilotEffort(config: ProviderConfig, request: ResponsesRequest): string | undefined {
   const effort = record(request.reasoning).effort;
@@ -67,6 +68,7 @@ export class CopilotSubscription implements Provider {
         if (event.agentId) throw new ProviderError("invalid_stream", "Copilot emitted an unexpected sub-agent event");
         if (event.type === "permission.requested" || event.type === "external_tool.requested") throw new ProviderError("invalid_tool_call", "Copilot requested execution beyond caller-dispatched inference");
         if (event.type === "session.error") {
+          const context = copilotContextFailure(data); if (context) throw context;
           const diagnostic = typeof data.message === "string" ? data.message : "";
           if (/unsupported value|invalid value|not supported with|model.+not available/i.test(diagnostic)) throw new ProviderError("invalid_request", "Copilot rejected the requested model or reasoning option", 400);
           if (/rate.?limit|usage.?limit|quota.+exceed/i.test(diagnostic)) throw new ProviderError("usage_limit", "Copilot subscription usage limit reached", 429);

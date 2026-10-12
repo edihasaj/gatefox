@@ -51,10 +51,12 @@ test("chat API preserves custom calls, replay and reasoning, and rejects bad or 
     assert.equal((messages[0]!.tool_calls as Array<{ function: { name: string } }>)[0]!.function.name, "tool_0"); assert.equal(messages[1]!.tool_call_id, "call1");
     for (const failure of ["wrong-model", "truncated", "length", "bad-json", "duplicate"]) {
       mode = failure; const response = await send({ tools, stream: true }); const wire = await response.text();
-      if (failure === "wrong-model") { assert.equal(response.status, 502); assert.ok(wire.includes("model_route")); }
-      else assert.ok(wire.includes("response.failed"), failure);
+      assert.equal(response.status, 200); assert.ok(wire.includes("response.failed"), failure);
+      if (failure === "wrong-model") assert.ok(wire.includes('"code":"model_route"'));
       assert.ok(!wire.includes("response.completed"), failure);
     }
+    mode = "wrong-model"; const nonStreamingFailure = await send({ tools });
+    assert.equal(nonStreamingFailure.status, 502); assert.equal(((await nonStreamingFailure.json()) as { error: { code: string } }).error.code, "model_route");
     mode = "text"; assert.equal((await send({ reasoning: { effort: "max" } })).status, 400);
     assert.equal(((await (await send({})).json()) as Result).status, "completed");
   } finally { delete process.env.GATEWAY_CHAT_FIXTURE_KEY; gateway.closeAllConnections(); await new Promise<void>(resolve => gateway.close(() => resolve())); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }

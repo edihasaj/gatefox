@@ -11,6 +11,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
 import { homedir } from "node:os";
+import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean }
@@ -30,9 +31,11 @@ export class AppServerBackends {
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
     private readonly emit: (message: Message) => Promise<void>, onNativeExit: () => void, private readonly configPath?: string) {
+    this.args = normalizeCodexFeatureArgs(args, settings);
+    this.settings = normalizeCodexFeatureConfig(settings);
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     const registration = Object.entries(overrides).map(([key, value]) => [`-c`, `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`]).flat();
-    this.native = new AppServerConnection(executable, [...args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
+    this.native = new AppServerConnection(executable, [...this.args, ...registration], message => this.forward(this.native, message), () => onNativeExit());
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
@@ -137,7 +140,7 @@ export class AppServerBackends {
       const latest = object((await this.native.request("config/read", {})).config);
       const agents = await agentExecutorSettings(this.config, { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) });
       const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
-      const settings = Object.fromEntries(Object.entries(agents.settings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null));
+      const settings = normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(agents.settings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null)));
       const forwarded: string[] = [];
       for (let index = 0; index < this.args.length; index++) {
         if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
@@ -145,7 +148,7 @@ export class AppServerBackends {
       }
       const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true,
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
-      const args = [...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
+      const args = normalizeCodexFeatureArgs([...forwarded, ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings);
       const combined = this.catalog.combined(snapshot);
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, agentsDirectory: agents.directory || null })).digest("hex");
       await this.releaseIdleShared(sharedRevision);

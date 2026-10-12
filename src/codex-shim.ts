@@ -11,6 +11,7 @@ import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { sshControlHome, reuseSshSocket } from "./ssh-socket.js";
 import { nativeRegistration } from "./native-control.js";
+import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 
 export function appServerIndex(args: string[]): number {
   const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
@@ -49,10 +50,11 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (controlHome && listen.startsWith("unix://") && listen !== "unix://") throw new Error("The SSH adapter uses its managed Unix socket; omit a custom listen path");
   const socketPath = listen.startsWith("unix://") ? unixSocketPath(controlHome ? "unix://" + resolve(controlHome, "app-server-control/app-server-control.sock") : listen) : undefined;
   if (controlHome && socketPath && await reuseSshSocket(socketPath)) return;
-  const nativeArgs = [...forwarded];
-  if (listenIndex >= 0) {
-    if (nativeArgs[listenIndex].includes("=")) nativeArgs[listenIndex] = "--listen=stdio://";
-    else nativeArgs[listenIndex + 1] = "stdio://";
+  const preflightArgs = [...forwarded];
+  const nativeListenIndex = preflightArgs.findIndex(arg => arg === "--listen" || arg.startsWith("--listen="));
+  if (nativeListenIndex >= 0) {
+    if (preflightArgs[nativeListenIndex].includes("=")) preflightArgs[nativeListenIndex] = "--listen=stdio://";
+    else preflightArgs[nativeListenIndex + 1] = "stdio://";
   }
   const path = resolve(values.config); const config = await loadConfig(path);
   if (await nativeRegistration(config)) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
@@ -63,12 +65,13 @@ export async function codexShim(argv: string[]): Promise<void> {
     supports_websockets: false, request_max_retries: 2, stream_max_retries: 0, stream_idle_timeout_ms: config.timeoutMs,
     "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
   };
-  const prepared = await prepareNativeCatalog(executable, nativeArgs, config);
+  const prepared = await prepareNativeCatalog(executable, preflightArgs, config);
+  const nativeArgs = normalizeCodexFeatureArgs(preflightArgs, prepared.settings);
   const controller = new AbortController(); const stop = () => controller.abort();
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   try {
     const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
-      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path);
+      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path, preflightArgs);
     if (socketPath) {
       try { await serveUnix(socketPath, controller.signal, session); }
       catch (error) {

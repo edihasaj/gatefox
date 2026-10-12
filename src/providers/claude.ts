@@ -11,6 +11,7 @@ import type { ProviderConfig } from "../config.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 import { claudeEnvironment } from "./claude-environment.js";
 import { imageConversation } from "../protocol/images.js";
+import { claudeContextFailure } from "./context-errors.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -77,6 +78,7 @@ export class ClaudeSubscription implements Provider {
         if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;
         try { message = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        const context = claudeContextFailure(message); if (context) throw context;
         if (message.type === "stream_event") {
           const event = message.event as { type?: string; delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number } };
           if (event?.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) { raw += event.delta.text; yield { type: "text", text: event.delta.text }; }

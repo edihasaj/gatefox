@@ -3,6 +3,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
+import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
 
 /** Chat Completions transport for local vLLM and compatible API servers. */
 export class ChatCompletionsAPI implements Provider {
@@ -35,13 +36,19 @@ export class ChatCompletionsAPI implements Provider {
         ...(reasoning?.effort !== undefined ? { reasoning_effort: reasoning.effort } : {}),
         ...(request.max_output_tokens !== undefined ? { max_tokens: request.max_output_tokens } : {}),
       }) });
-    if (!response.ok) throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
+    if (!response.ok) {
+      const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded") throw typed;
+      throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
+    }
     if (!response.body) throw new ProviderError("incomplete", "Chat API returned no stream");
     const calls = new Map<number, { id: string; name: string; arguments: string }>();
     let finish: string | undefined; let done = false;
     let usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
     for await (const event of readEvents(response.body, "chat")) {
-      if (event.type === "error") throw new ProviderError("inference_failed", "Chat API inference failed");
+      if (event.type === "error") {
+        const typed = responsesStreamError(event); if (typed.code === "context_length_exceeded") throw typed;
+        throw new ProviderError("inference_failed", "Chat API inference failed");
+      }
       if (event.type === "chat.done") {
         if (!finish || !["stop", "tool_calls"].includes(finish) || ((finish === "tool_calls") !== (calls.size > 0))) throw new ProviderError("incomplete", "Chat API response was incomplete or refused");
         if ((choice === "required" || typeof choice === "object") && !calls.size) throw new ProviderError("invalid_tool_call", "Chat API omitted the required tool");

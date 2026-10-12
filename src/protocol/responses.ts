@@ -56,6 +56,7 @@ export class ResponsesWriter {
       status, usage: { ...this.tokens }, output_text: this.answer, output: structuredClone(this.ledger) };
   }
   begin(): void { this.publish({ type: "response.created", response: this.snapshot("in_progress") }); }
+  progress(): void { if (this.status === "in_progress") this.publish({ type: "response.in_progress", response: this.snapshot("in_progress") }); }
   result(): Record<string, unknown> { return this.snapshot(this.status === "in_progress" ? "incomplete" : this.status); }
   private append(item: Item): number {
     const position = this.ledger.push(item) - 1;

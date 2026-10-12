@@ -17,6 +17,8 @@ for await (const message of copilotFrames(process.stdin)) {
     send({ jsonrpc: "2.0", id: message.id, result: { messageId: "fixture" } });
     if (mode === "hang") continue;
     if (mode === "error") { event("session.error", { message: "private-token diagnostic" }); continue; }
+    if (mode === "context-code") { event("session.error", { errorType: "context_length_exceeded", message: "private-token diagnostic" }); continue; }
+    if (mode === "context-prose") { event("session.error", { errorType: "notification", message: "The user quoted prompt is too long" }); continue; }
     if (mode === "permission") { event("permission.requested", { requestId: "permission" }); continue; }
     event("assistant.reasoning_delta", { deltaContent: "checking", reasoningId: "r1" });
     event("assistant.usage", { isByok: mode === "byok", inputTokens: 11, outputTokens: 2 });
