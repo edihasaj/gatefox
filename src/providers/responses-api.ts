@@ -18,10 +18,13 @@ export class ResponsesAPI implements Provider {
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
         // failure before publishing any output, keeping partial turns intact.
-        if (attempt || published || signal.aborted || !(error instanceof ProviderError) ||
-          !["server_error", "server_is_overloaded"].includes(error.upstream?.code || "")) throw error;
+        if (attempt || published || signal.aborted || !(error instanceof ProviderError)) throw error;
+        const temporary = ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "") ||
+          (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code));
+        const backoff = error.upstream?.retryAfterMs ?? 1000;
+        if (!temporary || backoff > 30000) throw error;
         console.error(JSON.stringify({ event: "provider_retry", attempt: 2, upstreamCode: error.upstream?.code }));
-        await delay(1000, undefined, { signal });
+        await delay(backoff, undefined, { signal });
       }
     }
   }

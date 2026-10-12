@@ -25,13 +25,23 @@ async function httpErrorCode(response: Response): Promise<unknown> {
 
 export async function responsesHttpError(response: Response): Promise<ProviderError> {
   // Status-based authentication and capacity errors remain authoritative.
-  if ([401, 403, 429].includes(response.status)) {
+  if ([401, 403].includes(response.status)) {
     await response.body?.cancel().catch(() => {});
-    return response.status === 429
-      ? new ProviderError("usage_limit", "Provider usage limit reached", 429)
-      : new ProviderError("authentication", "Provider login is missing or expired", response.status);
+    return new ProviderError("authentication", "Provider login is missing or expired", response.status);
   }
-  if (await httpErrorCode(response) === "context_length_exceeded") return contextError();
+  const code = await httpErrorCode(response);
+  if (response.status === 429) {
+    if (["rate_limit_exceeded", "slow_down"].includes(String(code))) {
+      const header = response.headers.get("retry-after");
+      const milliseconds = header && header.length <= 128 ? (/^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : 1000;
+      return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429,
+        { code: String(code), event: "http", retryAfterMs: Number.isFinite(milliseconds) ? Math.max(1000, milliseconds) : 1000 });
+    }
+    return new ProviderError("usage_limit", "Provider usage limit reached", 429);
+  }
+  if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,
+    { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http" });
+  if (code === "context_length_exceeded") return contextError();
   return new ProviderError("upstream_error", `Provider returned HTTP ${response.status}`, response.status === 400 ? 400 : 502);
 }
 

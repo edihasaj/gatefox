@@ -57,11 +57,16 @@ compaction recovery can trim history and retry. The gateway does not choose a
 different model or account. Transport failures and deadline expiry have separate
 messages; they do not imply a failed login. Responses upstream server errors retry
 once after one second only before any text, reasoning state, or tool output has
-been published. Cancellation stops that wait. Quota, authentication, unknown
-failures, and partial responses never retry automatically. Private failure logs contain bounded
+been published. Cancellation stops that wait. Quota, authentication, unclassified
+stream failures, and partial responses never retry automatically. Private failure logs contain bounded
 request/provider/model identifiers, elapsed time, error code, and status, excluding
 request bodies, exception messages, stacks, and credentials. Failed Responses
 streams retain allowlisted upstream error codes, event types, and request IDs.
+HTTP 500/502/503/504 failures have the same single retry before output. An HTTP 429
+retries only when its body identifies a temporary rate limit, honoring
+`Retry-After` between one and 30 seconds. Longer waits and unidentified usage or
+quota limits return immediately. Cancellation and the request deadline bound all
+backoff waits; no quota or account switch is attempted.
 
 The default total request deadline is ten minutes; explicit `timeoutMs` settings
 remain authoritative. Disconnects abort inference and release capacity. Codex
