@@ -8,11 +8,13 @@ export interface FixtureReply {
   thinking?: string;
   text?: string;
   calls?: Array<{ tool: string; input: Record<string, unknown> }>;
-  /** Streams text until interrupted. */
+  /** A text block streamed between the first tool_use block and the next. */
+  between?: string;
+  /** Streams text until interrupted, after the reply's text and then its thinking block. */
   slow?: boolean;
   /** Streams a gateway tool_use block until interrupted. */
   slowTool?: string;
-  /** Starts a tool_use block for this non-gateway tool, then waits. */
+  /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
@@ -68,29 +70,34 @@ async function fixtureMain(): Promise<void> {
   const play = async (reply: Json): Promise<void> => {
     const id = `msg_${process.pid}_${++counter}`;
     event({ type: "message_start", message: { id, usage: usage(1) } });
-    if (reply.foreign) { event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_foreign", name: reply.foreign, input: {} } }); return; }
-    if (reply.slow) {
-      let partial = ""; event({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-      const timer = setInterval(() => { partial += "more "; event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "more " } }); }, 15);
-      active = { interrupt: () => interrupted(id, partial, timer)() }; return;
-    }
     if (reply.slowTool) {
       event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_slow", name: `mcp__gateway__${names.get(reply.slowTool)}`, input: {} } });
       const timer = setInterval(() => event({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: " " } }), 15);
       active = { interrupt: interrupted(id, "", timer) }; return;
     }
     let index = 0;
-    if (reply.thinking) {
+    const thinking = (value: string) => {
       event({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "" } });
-      event({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: reply.thinking } }); event({ type: "content_block_stop", index: index++ });
-    }
-    if (reply.text) {
+      event({ type: "content_block_delta", index, delta: { type: "thinking_delta", thinking: value } }); event({ type: "content_block_stop", index: index++ });
+    };
+    const text = (value: string) => {
       event({ type: "content_block_start", index, content_block: { type: "text", text: "" } });
-      for (const piece of [reply.text.slice(0, 2), reply.text.slice(2)]) if (piece) event({ type: "content_block_delta", index, delta: { type: "text_delta", text: piece } });
-      out({ type: "assistant", message: { id, content: [{ type: "text", text: reply.text }] } }); event({ type: "content_block_stop", index: index++ });
+      for (const piece of [value.slice(0, 2), value.slice(2)]) if (piece) event({ type: "content_block_delta", index, delta: { type: "text_delta", text: piece } });
+      out({ type: "assistant", message: { id, content: [{ type: "text", text: value }] } }); event({ type: "content_block_stop", index: index++ });
+    };
+    if (reply.slow) {
+      if (reply.text) text(reply.text);
+      if (reply.thinking) thinking(reply.thinking);
+      let partial = ""; const slow = index; event({ type: "content_block_start", index: slow, content_block: { type: "text", text: "" } });
+      const timer = setInterval(() => { partial += "more "; event({ type: "content_block_delta", index: slow, delta: { type: "text_delta", text: "more " } }); }, 15);
+      active = { interrupt: () => interrupted(id, partial, timer)() }; return;
     }
+    if (reply.thinking) thinking(reply.thinking);
+    if (reply.text) text(reply.text);
+    if (reply.foreign) { event({ type: "content_block_start", index, content_block: { type: "tool_use", id: "toolu_foreign", name: reply.foreign, input: {} } }); return; }
     const calls = ((reply.calls || []) as Json[]).map((entry, n) => ({ id: `toolu_${process.pid}_${counter}_${n}`, name: `mcp__gateway__${names.get(entry.tool) ?? entry.tool}`, input: entry.input }));
-    for (const entry of calls) {
+    for (const [n, entry] of calls.entries()) {
+      if (n === 1 && reply.between) text(reply.between);
       event({ type: "content_block_start", index, content_block: { type: "tool_use", id: entry.id, name: entry.name, input: {} } });
       event({ type: "content_block_delta", index, delta: { type: "input_json_delta", partial_json: JSON.stringify(entry.input) } });
       out({ type: "assistant", message: { id, content: [{ type: "tool_use", id: entry.id, name: entry.name, input: entry.input }] } }); event({ type: "content_block_stop", index: index++ });

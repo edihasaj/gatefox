@@ -308,3 +308,26 @@ test("a CLI whose MCP child never says hello falls back before any user message 
     assert.ok(await gone(live, 2000));
   } finally { sessionLimits.startMs = previous; await teardown(f); }
 });
+
+test("text between tool calls continues the session: the ledger echoes the text as the caller received it", async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "Checking", calls: [{ tool: "alpha", input: { id: 1 } }, { tool: "beta", input: { id: 2 } }], between: "Then beta" }, { text: "Done" }] });
+  try {
+    const provider = adapter(); const first = [user("Use alpha, then beta")];
+    const a = await turn(provider, first);
+    assert.deepEqual(a.events.filter(event => event.type === "tool").map(kind), ["tool:alpha", "tool:beta"]);
+    assert.ok(a.text.startsWith("Checking") && a.text.endsWith("Then beta"));
+    assert.equal((await turn(provider, [...first, ...a.output, ...outputFor(a.output, "result")])).text, "Done");
+    assert.deepEqual((await sessions()).map(entry => entry.outcome), ["spawned", "continued"]);
+  } finally { await teardown(f); }
+});
+
+test("a kept partial whose text resumed after thinking continues the session", async () => {
+  const { f, sessions } = await setup({ replies: [{ slow: true, text: "Intro", thinking: "pause" }, { text: "After keep" }] });
+  try {
+    const provider = adapter(); const first = [user("long")]; let partial = "";
+    await assert.rejects((async () => { const controller = new AbortController(); for await (const event of provider.infer(restoreReasoning({ model: "fixture", input: first, tools }, "scope"), controller.signal, thread)) { if (event.type === "text") partial += event.text; if (partial.includes("more more")) controller.abort(); } })(), { code: "cancelled" });
+    const b = await turn(provider, [...first, { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] }, user("go on")]);
+    assert.equal(b.text, "After keep");
+    assert.deepEqual((await sessions()).map(entry => entry.outcome), ["interrupted", "continued"]);
+  } finally { await teardown(f); }
+});

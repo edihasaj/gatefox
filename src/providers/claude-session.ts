@@ -47,7 +47,11 @@ export interface SessionTurn {
   onEnd(outcome: "ended" | "interrupted" | "failed", tokens?: ClaudeTokens): void;
 }
 
-interface Attached { turn: SessionTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void }
+interface Attached {
+  turn: SessionTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
+  /** The text this request emitted: Codex replays it, and it can differ from the native text (paragraph breaks). */
+  text: string;
+}
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
@@ -189,7 +193,7 @@ export class ClaudeSession {
 
   /** Attaches one request and starts it. The returned events end with `done`, or throw. */
   run(turn: SessionTurn): AsyncIterable<InferenceEvent> {
-    const attached: Attached = { turn, queue: [], onAbort: () => this.abort(attached) };
+    const attached: Attached = { turn, queue: [], text: "", onAbort: () => this.abort(attached) };
     this.attached = attached; this.state = "generating"; this.messageTool = false; this.onUsage = turn.onUsage;
     turn.signal.addEventListener("abort", attached.onAbort, { once: true });
     if ("user" in turn.begin) this.write(userLine(turn.begin.user)); else this.relay?.deliver(turn.begin.outputs);
@@ -203,7 +207,8 @@ export class ClaudeSession {
         const step = turn.stream.accept(await this.next(attached));
         if (step.limit) void turn.onUsage(step.limit);
         for (const window of step.contextWindows || []) turn.onContextWindow(window.model, window.contextWindow);
-        if (!step.end) { for (const event of step.events) yield event; continue; }
+        if (!step.end) { for (const event of step.events) { if (event.type === "text") attached.text += event.text; yield event; } continue; }
+        for (const event of step.events) if (event.type === "text") attached.text += event.text;
         const final = this.finish(attached, step.end);
         for (const event of [...step.events, ...final]) yield event;
         return;
@@ -233,7 +238,7 @@ export class ClaudeSession {
       throw new ProviderError("invalid_tool_call", "Claude called a tool the gateway did not return", 502, { code: "relay_mismatch", event: "claude.tool_use" });
     }
     this.detach(attached);
-    this.ledger = { items: [...turn.prefix, ...echoDigests(turn.stream.text, calls)] };
+    this.ledger = { items: [...turn.prefix, ...echoDigests(attached.text, calls)] };
     this.pending = calls.map(call => call.id); this.state = calls.length ? "awaiting_outputs" : "turn_done";
     this.endedMessage = this.message; this.messageTool = false;
     turn.onEnd("ended", end.tokens);
@@ -250,7 +255,7 @@ export class ClaudeSession {
     this.detach(attached); attached.error = cancelled(); attached.wake?.();
     attached.turn.onEnd("interrupted");
     if (this.messageTool) { void this.close("closed", "interrupted_tool", true); return; }
-    this.pending = []; this.ledger = { items: attached.turn.prefix, partial: partialDigest(attached.turn.stream.text) };
+    this.pending = []; this.ledger = { items: attached.turn.prefix, partial: partialDigest(attached.text) };
     const rest = attached.queue.splice(0);
     // A turn whose result is already read needs no interrupt: an idle CLI would never answer one with a result.
     if (rest.some(message => message.type === "result")) {
