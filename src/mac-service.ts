@@ -11,7 +11,6 @@ import { readServicePlan, servicePlanPath } from "./service-plan.js";
 import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
-import { serviceStopTimeoutMs } from "./runtime-activity.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway";
@@ -47,7 +46,7 @@ async function serviceOperation(action: string | undefined, configPath: string):
   try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw new Error("Cannot read the gateway LaunchAgent"); }
   if (existing !== undefined && !existing.includes(marker)) throw new Error("An unmanaged LaunchAgent uses this name; refusing to replace it");
   if (action === "uninstall") {
-    if ((await status(target)).installed) await exec("/bin/launchctl", ["bootout", target], { timeout: serviceStopTimeoutMs });
+    if ((await status(target)).installed) await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 });
     if (existing !== undefined) {
       const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true, mode: 0o700 });
       await rename(path, resolve(trash, `${label}.${Date.now()}.plist`));
@@ -119,7 +118,7 @@ async function serviceOperation(action: string | undefined, configPath: string):
       for (let attempt = 0; attempt < 30; attempt++) { await delay(100); const next = await status(target); if (!next.installed) { stopped = true; unloaded = true; break; } if (next.pid && next.pid !== current.pid) throw new Error("Service restarted before migration; retry while idle"); }
       if (!stopped) throw new Error("New gateway work prevented the service upgrade; its settings were not changed");
     }
-    if ((await status(target)).installed) { await exec("/bin/launchctl", ["bootout", target], { timeout: serviceStopTimeoutMs }); unloaded = true; }
+    if ((await status(target)).installed) { await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 }); unloaded = true; }
     await mkdir(dirname(path), { recursive: true });
     const temporary = `${path}.${process.pid}.tmp`; await writeFile(temporary, contents, { mode: 0o600 }); await rename(temporary, path);
     await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); disabled = false;

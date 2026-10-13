@@ -57,7 +57,7 @@ components. `gateway service uninstall` explicitly stops all owned components
 and moves the plan and LaunchAgent to Trash. Provider credentials remain.
 
 On SIGTERM or SIGINT, inference stops listening at once and lets running requests
-finish for `GATEWAY_SHUTDOWN_DRAIN_MS` (default 5000, clamped to 0 to 10000).
+finish for `GATEWAY_SHUTDOWN_DRAIN_MS` (default 4000, clamped to 0 to 5000).
 The LaunchAgent sets only `PATH`, and service plans allow only `PATH` and
 `SSH_AUTH_SOCK`, so the variable applies to a foreground `gateway serve`. A managed
 service uses the default unless launchd's user environment sets it with
@@ -70,9 +70,9 @@ reported to GlitchTip. Codex retries them against the restarted server. The
 supervisor gives inference the drain plus 2.5 seconds before SIGKILL, and closes
 the shared execution host after inference exits, which takes up to 2.5 seconds
 more. A stop with a busy stream therefore takes at most the drain plus 5 seconds:
-10 seconds by default and 15 seconds at the 10-second maximum, inside launchd's
-default 20-second exit timeout. `launchctl bootout` in service install, uninstall
-and consolidation waits up to 18 seconds for that stop. Reverse SSH tunnels and the
+9 seconds by default and 10 seconds at the maximum, within the 10-second timeout
+that service install, uninstall and consolidation give `launchctl bootout`.
+Reverse SSH tunnels and the
 native relay still stop at the same moment as inference, so streams from other
 Macs do not get the drain. The drain deadline in `cli.ts` and the supervisor take
 effect only after a service or inference restart; an in-place upgrade keeps the

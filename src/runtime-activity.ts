@@ -43,19 +43,18 @@ export async function runShutdownHooks(timeoutMs: number): Promise<void> {
   try { await Promise.race([settled, expired]); } finally { clearTimeout(timer); }
 }
 
-/** The longest drain GATEWAY_SHUTDOWN_DRAIN_MS may request. */
-export const maxShutdownDrainMs = 10000;
 /**
- * How long `launchctl bootout` may wait for the managed service to stop. The worst case is
- * the longest drain, the 2.5 s inference grace before SIGKILL, and up to 2.5 s for the shared
- * execution host, which closes only after inference exits: 15 s, inside launchd's default
- * 20 s exit timeout. The rest is margin.
+ * The longest drain GATEWAY_SHUTDOWN_DRAIN_MS may request. A service stop then takes at most
+ * the drain, the 2.5 s inference grace before SIGKILL, and 2.5 s for the shared execution host,
+ * which closes after inference exits: 10 s, the timeout `launchctl bootout` callers use today.
  */
+export const maxShutdownDrainMs = 5000;
+/** A bootout timeout with margin over the worst service stop, for callers that adopt it. */
 export const serviceStopTimeoutMs = maxShutdownDrainMs + 8000;
 
-/** How long a stopping server lets running requests finish: GATEWAY_SHUTDOWN_DRAIN_MS, 0 to 10000, default 5000. */
+/** How long a stopping server lets running requests finish: GATEWAY_SHUTDOWN_DRAIN_MS, 0 to 5000, default 4000. */
 export function shutdownDrainMs(): number {
   const raw = process.env.GATEWAY_SHUTDOWN_DRAIN_MS?.trim();
   const value = raw ? Number(raw) : NaN;
-  return Number.isFinite(value) ? Math.min(maxShutdownDrainMs, Math.max(0, Math.round(value))) : 5000;
+  return Number.isFinite(value) ? Math.min(maxShutdownDrainMs, Math.max(0, Math.round(value))) : 4000;
 }
