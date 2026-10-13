@@ -140,6 +140,21 @@ Codex ends a failed turn without a final answer and does not save the error in
 the chat transcript, so a client that reconnects later sees only the ended turn.
 Claude failures without a native error code record the CLI's allowlisted result
 subtype, such as `error_max_turns`.
+A usage limit is final: Codex receives it as `invalid_prompt` and stops instead of
+retrying five times (verified: one upstream request instead of six). An unnamed
+HTTP 429 that asks for a wait of at most 60 seconds stays a retryable throttle, so
+per-minute API limits still clear by themselves.
+Upstream rejections that would repeat identically (`invalid_prompt`,
+`invalid_encrypted_content`, `cyber_policy`, `bio_policy`,
+`misalignment_policy_violation`, `usage_not_included`), from a stream or an HTTP
+body, become `upstream_rejected` with a fixed message per class. Diagnostics keep
+the exact upstream code and HTTP status. `content_filter`, `max_output_tokens` and
+unknown stream codes stay retryable, as they are in native Codex. A body code such
+as `server_is_overloaded` marks a transient failure only in a stream; an HTTP 4xx
+is never retried for it. Codex receives those rejections as their own code when
+it is one of Codex's final codes, and as `invalid_prompt` otherwise; an HTTP 400,
+404, 413 or 422 from an upstream also becomes `invalid_prompt`. Timeouts,
+`upstream_unavailable` and rate limits stay retryable.
 
 The daemon runs at most `maxConcurrent` providers (four by default). Up to 32
 additional requests wait in a FIFO queue instead of receiving immediate capacity
@@ -159,6 +174,17 @@ endpoint did not reuse its prompt cache: identical 27k-token requests stayed at
 0 cached tokens. With them, repeats were 99.5% cached. Only well-formed
 identifiers of at most 128 characters are forwarded. Other Responses endpoints
 receive only the body key.
+
+The subscription endpoint also returns `x-codex-turn-state` on a new turn (about
+780 characters, verified live), which Codex echoes on the following requests of
+that turn to keep it on the same backend. The gateway returns it to Codex wrapped
+with a per-account scope, and forwards it upstream only when the scope matches the
+same account route. Values from another route, malformed values and upstream
+values over 6000 characters are dropped; none is ever logged. For a streaming
+request to the Codex 2 route, the response head waits for the provider's first
+event (at most 2 seconds after admission) so it can carry the header; a request
+that has to queue opens its head at once. `request_completed` and
+`request_failed` record only whether a turn-state was echoed and returned.
 
 Responses upstreams retain `service_tier`. For Codex subscription requests, the
 `fast` alias becomes `priority`, as required by the tested subscription resource
@@ -216,6 +242,27 @@ grows, so Claude reuses its prompt cache. In a measured three-round loop, the
 second and third rounds were about 98% cached; the former single-string prompt
 was 0% cached after the first change. Claude cache reads are reported as
 `input_tokens_details.cached_tokens`.
+
+Each item block is plain text: a header line such as `<<item 3 user>>`,
+`<<item 4 tool_call NAME ID>>` or `<<item 5 tool_result ID>>`, followed by the raw
+text. A body line that starts with `<<item ` is escaped with a backslash, so item
+boundaries cannot be forged. This replaces the earlier JSON-escaped items, which
+cost 3–13% more characters. The first block is fixed text and no longer lists tool
+names, so a catalog change no longer rewrites it. `claudeSessions.replayFormat:
+"json"` on the Claude provider restores the JSON encoding. The format change means
+each active Claude chat pays one full cache write on its first request after the
+update.
+
+The CLI runs with `--allowedTools` limited to the gateway's MCP tools, so it cannot
+answer a caller call itself. When Claude asks for several tools at once, every
+complete call reaches the caller in one response; the CLI is stopped when the API
+message ends, before it can act on the calls. A message cut short by `max_tokens`
+returns only the calls it completed. Output tokens come from the final
+`message_delta`, so tool turns report what was actually generated. Cancelling a
+request stops the CLI at once instead of waiting 1.5 seconds. A forced
+`tool_choice` keeps the full catalog, so it does not break the prompt cache; a final
+block names the required tool, and one retry with only that tool follows a
+mismatched call when no text was streamed.
 
 Claude receives native image blocks through the official CLI's streamed input.
 Copilot receives private SDK image attachments, deleted with the request session.

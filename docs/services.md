@@ -56,6 +56,21 @@ child must accept its own idle guard before the supervisor stops its other
 components. `gateway service uninstall` explicitly stops all owned components
 and moves the plan and LaunchAgent to Trash. Provider credentials remain.
 
+On SIGTERM or SIGINT, inference stops listening at once and lets running requests
+finish for `GATEWAY_SHUTDOWN_DRAIN_MS` (default 5000, 0 to 30000; set it on the
+service process itself, because service plans allow only `PATH` and
+`SSH_AUTH_SOCK`). Requests not yet admitted (queued, still uploading, or loading
+configuration) fail at once with a retryable `upstream_unavailable` "Gateway is
+restarting; retry shortly", and no provider call is made, so nothing is paid for
+twice. Requests still running at the deadline end the same way and are not
+reported to GlitchTip. Codex retries them against the restarted server. The
+supervisor gives inference the drain plus 2.5 seconds before SIGKILL, and closes
+the shared execution host after inference exits. Reverse SSH tunnels and the
+native relay still stop at the same moment as inference, so streams from other
+Macs do not get the drain. The drain deadline in `cli.ts` and the supervisor take
+effect only after a service or inference restart; an in-place upgrade keeps the
+running process's previous deadline.
+
 After consolidation, the separate native and tunnel installers refuse changes
 that would create competing jobs. Their status commands inspect the unified
 service. Desktop registration can refresh the launch environment without creating

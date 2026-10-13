@@ -286,6 +286,16 @@ Other personal Claude settings are not applied: a fallback model would silently
 change the caller's model, and hooks, MCP servers and permissions must not run
 inside an inference backend.
 
+Codex 2 rows use Codex's native tool-output truncation (10,000 tokens) and window
+share (95%), and keep the upstream's `truncation_policy`, `max_context_window` and
+`auto_compact_token_limit` when discovery returns them. Other provider types keep
+12,000 tokens and 90%. The upstream reports GPT-6.1-Sol at 500K with a maximum of
+872K, against 800K natively, so the usable window is 475K rather than 760K. The
+refresh overwrites a hand-set `truncationPolicy` with the upstream value; an
+`effectiveContextWindowPercent` override lasts while the upstream omits that field.
+After an update the public catalog changes twice: once for the new defaults, then
+about a minute later when the first refresh saves the upstream limits.
+
 Native GPT-6.1-Sol rows also set `use_responses_lite` and
 `supports_reasoning_effort_updates`. Discovery carries both, so Codex sends gateway
 Sol the same lite request as native Sol: `reasoning.context: all_turns`, with tool
