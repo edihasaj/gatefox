@@ -15,6 +15,7 @@ import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reas
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode } from "./provider-failure.js";
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
+import { ObservedContextWindows } from "./model-refresh.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -23,8 +24,8 @@ const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<v
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
   if (!res.writableNeedDrain || res.destroyed || signal.aborted) finished();
 });
-export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;
@@ -46,8 +47,9 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
+  const contextWindows = new ObservedContextWindows(config.stateDirectory);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
-    const adapter = factory(provider, limit => providerUsage.record(provider, limit));
+    const adapter = factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window));
     return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const);
   }));
   let current = config; let routes = buildRoutes(config);

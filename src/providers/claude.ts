@@ -38,7 +38,8 @@ export function claudeEffort(config: ProviderConfig | undefined, request: Respon
 }
 
 export class ClaudeSubscription implements Provider {
-  constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>) {}
+  constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
+    private readonly onContextWindow?: (model: string, contextWindow: number) => void) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
     const normalized = responsesToChatRequest(request);
     const choice = normalized.tool_choice;
@@ -122,7 +123,15 @@ export class ClaudeSubscription implements Provider {
             for (const call of nativeClaudeCalls(calls, tools)) yield { type: "tool", call };
             yield { type: "done", usage: usage(assistant.usage) }; return;
           }
-        } else if (message.type === "result") { result = message; break; }
+        } else if (message.type === "result") {
+          result = message;
+          // The CLI reports the window it actually used; the catalog adopts it on refresh.
+          const used = message.modelUsage;
+          if (used && typeof used === "object") for (const [model, value] of Object.entries(used as Record<string, { contextWindow?: unknown }>)) {
+            if (typeof value?.contextWindow === "number") this.onContextWindow?.(model.replace(/\[1m\]$/, ""), value.contextWindow);
+          }
+          break;
+        }
       }
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
       if (failure || !result) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
