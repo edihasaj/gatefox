@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { connect } from "node:net";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -18,13 +19,13 @@ import type { InferenceEvent, WireEvent } from "../protocol/types.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, total_tokens: 2 };
 delete process.env.GATEWAY_ERROR_REPORTS;
-async function setup(providers: Record<string, Provider>) {
+async function setup(providers: Record<string, Provider>, options: { maxConcurrent?: number; reload?: (config: GatewayConfig) => Promise<GatewayConfig> } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-drain-"));
   configureTelemetry(directory, "server");
-  const config: GatewayConfig = { version: 1, port: 0, stateDirectory: directory, timeoutMs: 10000,
+  const config: GatewayConfig = { version: 1, port: 0, stateDirectory: directory, timeoutMs: 10000, maxConcurrent: options.maxConcurrent,
     providers: Object.keys(providers).map(id => ({ id, type: "claude-subscription" as const, models: { [id]: "upstream" } })) };
-  const failures: GatewayFailure[] = [];
-  const server = await startGateway(config, provider => providers[provider.id], undefined, { heartbeatMs: 5000, onFailure: failure => { failures.push(failure); } });
+  const failures: GatewayFailure[] = []; const reload = options.reload;
+  const server = await startGateway(config, provider => providers[provider.id], reload && (() => reload(config)), { heartbeatMs: 5000, onFailure: failure => { failures.push(failure); } });
   const port = (server.address() as { port: number }).port; const token = await gatewayToken(directory);
   const post = (model: string) => fetch(`http://127.0.0.1:${port}/v1/responses`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model, input: "hello", stream: true }) });
   const telemetry = async (event: string) => { await flushTelemetry(); return (await readTelemetry(directory, Date.now() - 60000)).filter(entry => entry.event === event); };
@@ -119,4 +120,61 @@ test("busy runtime work blocks an idle restart, and shutdown hooks finish before
     await new Promise<void>(resolve => gateway.server.close(() => { ran.push("close"); resolve(); }));
     assert.deepEqual(ran, ["hook", "restart", "close"], "a second close reuses the finished drain");
   } finally { unregisterProbe(); unregisterHook(); await gateway.cleanup(); }
+});
+
+test("a request still queued when the drain begins fails at once and never reaches its provider", { timeout: 10000 }, async () => {
+  let calls = 0; let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  const gateway = await setup({ held: { async *infer() { calls++; await held; yield { type: "text", text: "done" }; yield { type: "done", usage }; } } }, { maxConcurrent: 1 });
+  process.env.GATEWAY_SHUTDOWN_DRAIN_MS = "3000";
+  try {
+    const running = await gateway.post("held"); const queued = await gateway.post("held");
+    const started = Date.now(); const closing = gateway.closed();
+    const events = await collect(queued); const refusedMs = Date.now() - started;
+    assert.deepEqual(failure(events.at(-1)!), { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" });
+    assert.ok(refusedMs < 1000, `the queued request fails before the drain deadline (${refusedMs} ms)`);
+    release(); assert.equal((await collect(running)).at(-1)!.type, "response.completed", "the admitted stream still finishes");
+    assert.ok(await closing < 3000, "the drain ends when the admitted stream does");
+    assert.equal(calls, 1, "the queued request never started provider work");
+    assert.deepEqual(gateway.failures.map(entry => [entry.code, entry.abortCause]), [["upstream_unavailable", "shutdown"]]);
+    const [refused] = await gateway.telemetry("request_failed");
+    assert.equal(refused.abortCause, "shutdown"); assert.equal(refused.queueMs, undefined, "it was never admitted");
+    const [drain] = await gateway.telemetry("server_drain");
+    assert.equal(drain.active, 1); assert.equal(drain.aborted, 0);
+  } finally { delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; release(); await gateway.cleanup(); }
+});
+
+test("a request admitted after the drain began never starts provider work", { timeout: 10000 }, async () => {
+  let calls = 0; let loading = 0; let resume!: () => void; const paused = new Promise<void>(resolve => { resume = resolve; });
+  // The configuration load sits between the drain check and admission, like a slow upload.
+  const gateway = await setup({ endless: { async *infer(_request, signal): AsyncGenerator<InferenceEvent> {
+    calls++; await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error("socket hang up")), { once: true }));
+  } } }, { reload: async config => { loading++; await paused; return config; } });
+  process.env.GATEWAY_SHUTDOWN_DRAIN_MS = "3000";
+  try {
+    const late = gateway.post("endless");
+    for (let attempt = 0; attempt < 100 && !loading; attempt++) await delay(10);
+    assert.equal(loading, 1);
+    const started = Date.now(); const closing = gateway.closed(); resume();
+    const events = await collect(await late);
+    assert.deepEqual(failure(events.at(-1)!), { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" });
+    assert.ok(await closing < 2000 && Date.now() - started < 2000, "it fails without waiting for the drain deadline");
+    assert.equal(calls, 0, "no provider call starts once the drain has begun");
+    assert.equal(gateway.failures.at(-1)?.abortCause, "shutdown");
+  } finally { delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; resume(); await gateway.cleanup(); }
+});
+
+test("an idle restart that exits from its callback still records the drain", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-drain-exit-"));
+  const module = (name: string) => JSON.stringify(new URL(`../${name}.js`, import.meta.url).href);
+  const script = `import { startGateway } from ${module("server")}; import { configureTelemetry } from ${module("telemetry")};
+    configureTelemetry(${JSON.stringify(directory)}, "server");
+    const server = await startGateway({ version: 1, port: 0, stateDirectory: ${JSON.stringify(directory)}, providers: [{ id: "idle", type: "claude-subscription", models: { idle: "upstream" } }] }, () => ({ async *infer() {} }));
+    if (!server.restartWhenIdle(() => process.exit(0))) process.exit(3);`;
+  try {
+    const { GATEWAY_TELEMETRY: _off, ...env } = process.env;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "ignore", "inherit"] });
+    const [code] = await once(child, "exit"); assert.equal(code, 0);
+    const drains = (await readTelemetry(directory, Date.now() - 60000)).filter(entry => entry.event === "server_drain");
+    assert.deepEqual(drains.map(entry => [entry.active, entry.aborted]), [[0, 0]]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -17,7 +17,7 @@ import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, 
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
-import { telemetry } from "./telemetry.js";
+import { flushTelemetry, telemetry } from "./telemetry.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
@@ -63,7 +63,10 @@ export interface GatewayHandler {
   readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean;
   /** Aborts running requests; "shutdown" fails them as retryable. Returns how many it aborted. */
   abortAll(reason?: "shutdown"): number | void;
-  /** New inference gets a retryable 503 from now on; returns how many requests are still running. */
+  /**
+   * New inference gets a retryable 503 from now on, and requests not yet admitted fail
+   * as retryable before any provider work. Returns how many admitted requests still run.
+   */
   beginDrain?(): number;
 }
 type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined> };
@@ -85,6 +88,8 @@ async function drain(target: HandledServer, close: Server["close"]): Promise<Err
   const drainedMs = Date.now() - startedAt; const aborted = total(handlers().map(entry => entry.abortAll("shutdown")));
   await Promise.all([runShutdownHooks(1000), settle(Date.now() + 1000)]);
   telemetry("server_drain", { active, drainedMs, aborted });
+  // An idle restart exits straight from its callback, so the record is written first.
+  await flushTelemetry();
   return closed;
 }
 
@@ -134,7 +139,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     return { config: current, routes };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
-  let draining = false;
+  const admitted = new Set<AbortController>(); let draining = false;
   const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
   // Every response names the release whose code served it; useful during in-place upgrades.
@@ -219,7 +224,10 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const deferred = streaming && route.adapter.emitsTransport === true;
       if (!deferred || admission.running >= limit || admission.queued > 0) open();
       releaseAdmission = await admission.acquire(controller.signal);
-      controller.signal.throwIfAborted(); touch(); admittedAt = Date.now();
+      // Admitted after the drain began (queued, uploading or loading config meanwhile): the
+      // process is going away, so the client retries on the next one before any provider spend.
+      if (draining) active.get(controller)?.("shutdown");
+      controller.signal.throwIfAborted(); touch(); admittedAt = Date.now(); admitted.add(controller);
       if (!opened) headWait = setTimeout(() => open?.(), 2000);
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
         if (controller.signal.aborted || res.destroyed) break;
@@ -264,9 +272,13 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         }
         else send(res, known.status, { error: { code: known.code, message: known.message } });
       }
-    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); }
+    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); }
   };
   return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
-    beginDrain: () => { draining = true; return active.size; } };
+    beginDrain: () => {
+      draining = true; let running = 0;
+      for (const [controller, abort] of active) { if (controller.signal.aborted) continue; if (admitted.has(controller)) running++; else abort("shutdown"); }
+      return running;
+    } };
 }
