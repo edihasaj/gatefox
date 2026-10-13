@@ -4,6 +4,8 @@ const problems = new Set(["turn_error", "turn_empty_completion", "turn_quiet", "
   "execution_host_failed", "adapter_start_failed", "claude_cli_failed"]);
 type Counts = Record<string, number>;
 const bump = (counts: Counts, key: unknown) => { const name = String(key ?? "unknown"); counts[name] = (counts[name] || 0) + 1; };
+const accountEvents = new Set(["account_engine_started", "account_engine_failed", "account_route_refused", "account_route_fallback", "account_usage_merged"]);
+const tokens = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : 0;
 const percentile = (values: number[], p: number) => { if (!values.length) return undefined; const sorted = [...values].sort((a, b) => a - b); return sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]; };
 
 /** Aggregates local telemetry into counts per model and a short list of recent problems. */
@@ -11,6 +13,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const turns: Record<string, Counts> = {}; const turnFailures: Counts = {};
   const requests: Record<string, Counts & { input?: number; cached?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
+  const sessions: Record<string, { count: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
   for (const event of events) {
     const model = String(event.model ?? "unknown");
@@ -33,7 +36,13 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     if (event.event === "rpc_error") bump(rpcErrors, `${event.method} ${event.code} ${event.reason ?? event.errorClass ?? ""}`.trim());
     if (event.event === "component_exit") bump(components, `${event.component} exit ${event.code}`);
     if (event.event.startsWith("execution_host_") || event.event === "native_acquire") bump(host, `${event.event}${event.outcome ? ":" + event.outcome : ""}`);
-    if (event.event === "claude_cli") bump(claude, event.isError ? `error:${event.result}` : event.aborted ? "aborted" : event.result);
+    if (event.event === "claude_cli") bump(claude, event.isError ? `error:${event.result}` : event.interrupted ? "interrupted" : event.aborted ? "aborted" : event.result);
+    // Live Claude sessions: how requests were served and what each outcome cost in cache tokens.
+    if (event.event === "claude_session") {
+      const entry = sessions[`${event.outcome ?? "unknown"}${event.missReason ? ":" + event.missReason : ""}`] ||= { count: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      entry.count++; entry.cacheReadTokens += tokens(event.cacheReadTokens); entry.cacheWriteTokens += tokens(event.cacheWriteTokens);
+    }
+    if (accountEvents.has(event.event)) bump(accounts, `${event.event}${event.reason ? ":" + event.reason : ""}`);
     if (problems.has(event.event) && !(event.event === "request_failed" && event.code === "cancelled")) {
       const { at, host: machine, component, event: name, pid: _pid, ...fields } = event;
       recent.push({ at, machine, component, event: name, ...fields }); if (recent.length > 25) recent.shift();
@@ -45,5 +54,6 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
-    turns, turnFailures, requests: requestSummary, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude, recentProblems: recent };
+    turns, turnFailures, requests: requestSummary, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
+    claudeSessions: sessions, accountEngines: accounts, recentProblems: recent };
 }
