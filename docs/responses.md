@@ -279,7 +279,11 @@ returns only the calls it completed. Output tokens come from the final
 request stops the CLI at once instead of waiting 1.5 seconds. A forced
 `tool_choice` keeps the full catalog, so it does not break the prompt cache; a final
 block names the required tool, and one retry with only that tool follows a
-mismatched call when no text was streamed. After streamed text, a mismatched call
+mismatched call when no text was streamed.
+
+With `claudeSessions.mode: "live"`, the gateway instead keeps one CLI session per
+Codex thread, so history, thinking and the prompt cache stay native; see
+[live Claude sessions](claude-sessions.md). Replay stays the default. After streamed text, a mismatched call
 fails with a code Codex treats as final, because a caller retry would repeat the
 same full-catalog inference.
 
