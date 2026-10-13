@@ -46,7 +46,8 @@ export class ResponsesAPI implements Provider {
         // Caller tools run outside this provider. Retry only a known transient
         // failure before publishing any output, keeping partial turns intact.
         if (attempt || published || signal.aborted || !(error instanceof ProviderError)) throw error;
-        const temporary = ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "") ||
+        // Body codes mark a transient failure only in the stream; HTTP 5xx is covered below.
+        const temporary = (error.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "")) ||
           (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code)) ||
           (error.code === "incomplete" && error.upstream?.code === "missing_terminal" && error.upstream.event === "eof");
         const backoff = error.upstream?.retryAfterMs ?? 1000;

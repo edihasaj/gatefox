@@ -127,3 +127,18 @@ test("Rate, quota, and server HTTP classes are unchanged by rejection codes", as
   const server = await responsesHttpError(new Response(JSON.stringify({ error: { code: "invalid_prompt" } }), { status: 500 }));
   assert.equal(server.code, "upstream_unavailable"); assert.deepEqual(server.upstream, { code: "invalid_prompt", event: "http" });
 });
+
+test("An HTTP 4xx whose body names a server error reaches the upstream once", async () => {
+  let hits = 0;
+  const upstream = createServer((_request, response) => { hits++; response.writeHead(400, { "Content-Type": "application/json" }); response.end(JSON.stringify({ error: { code: "server_is_overloaded", message: privateMessage } })); });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const key = "GATEWAY_RESPONSES_ERROR_FIXTURE_KEY"; const previous = process.env[key]; process.env[key] = "fixture-only";
+  const provider = new ResponsesAPI({ id: "fixture", type: "responses-api", apiKeyEnv: key, baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}`, models: { test: "test" } });
+  try {
+    await assert.rejects(async () => { for await (const _event of provider.infer({ model: "test", input: "fixture" }, new AbortController().signal)) {} }, ProviderError);
+    assert.equal(hits, 1);
+  } finally {
+    if (previous === undefined) delete process.env[key]; else process.env[key] = previous;
+    upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
+  }
+});
