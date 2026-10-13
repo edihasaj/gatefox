@@ -5,7 +5,21 @@ type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 const contextError = () => new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400);
 const errorBodyLimit = 64 * 1024;
-const knownCodes = new Set(["server_error", "server_is_overloaded", "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded"]);
+const knownCodes = new Set(["server_error", "server_is_overloaded", "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
+  "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included"]);
+// The upstream rejected this exact request, so a retry repeats the failure. Each class has a
+// fixed message; upstream prose may quote caller data and is never forwarded.
+const rejections: Record<string, string> = {
+  invalid_prompt: "Provider rejected the request as invalid",
+  invalid_encrypted_content: "Provider rejected the replayed reasoning state",
+  cyber_policy: "Provider flagged the request for possible cybersecurity risk",
+  bio_policy: "Provider flagged the request for possible biological risk",
+  misalignment_policy_violation: "Provider blocked the request under its misalignment policy",
+  usage_not_included: "The provider plan does not include this usage",
+};
+const rejected = (code: unknown, upstream: NonNullable<ProviderError["upstream"]>) => typeof code === "string" && Object.hasOwn(rejections, code) ?
+  new ProviderError("upstream_rejected", rejections[code], 400, { ...upstream, code }) : undefined;
+const requestIdOf = (value: string | null | undefined) => value && /^[a-z0-9_-]{1,128}$/i.test(value) ? { requestId: value } : {};
 const streamEventTypes = new Set(["response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
   "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
   "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
@@ -19,7 +33,7 @@ export function observeResponsesStream(stream: ProviderStreamDiagnostic, event: 
 }
 export function responsesEOFError(stream: ProviderStreamDiagnostic, requestId?: string): ProviderError {
   return new ProviderError("incomplete", "Provider stream ended without completion", 502, { code: "missing_terminal", event: "eof",
-    ...(requestId && /^[a-z0-9_-]{1,128}$/i.test(requestId) ? { requestId } : {}),
+    ...requestIdOf(requestId),
     stream: { events: count(stream.events), reasoningItems: count(stream.reasoningItems), textDeltas: count(stream.textDeltas), toolCalls: count(stream.toolCalls),
       ...(stream.lastEvent === undefined ? {} : { lastEvent: streamEventTypes.has(stream.lastEvent) ? stream.lastEvent : "unknown" }) } });
 }
@@ -60,15 +74,15 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
   if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,
     { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http" });
   if (code === "context_length_exceeded") return contextError();
-  return new ProviderError("upstream_error", `Provider returned HTTP ${response.status}`, response.status === 400 ? 400 : 502);
+  const upstream = { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http", httpStatus: response.status, ...requestIdOf(response.headers.get("x-request-id")) };
+  return rejected(code, upstream) ?? new ProviderError("upstream_error", `Provider returned HTTP ${response.status}`, response.status === 400 ? 400 : 502, upstream);
 }
 
 export function responsesStreamError(event: ObjectValue, requestId?: string): ProviderError {
   const response = object(event.response);
   const code = object(response.error).code ?? object(event.error).code ?? event.code ?? object(response.incomplete_details).reason;
   const upstream = { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown",
-    event: ["error", "response.failed", "response.incomplete"].includes(String(event.type)) ? String(event.type) : "unknown",
-    ...(requestId && /^[a-z0-9_-]{1,128}$/i.test(requestId) ? { requestId } : {}) };
+    event: ["error", "response.failed", "response.incomplete"].includes(String(event.type)) ? String(event.type) : "unknown", ...requestIdOf(requestId) };
   if (code === "server_error" || code === "server_is_overloaded") return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503, upstream);
   if (code === "context_length_exceeded") return contextError();
   if (code === "rate_limit_exceeded" || code === "slow_down") return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429);
@@ -78,5 +92,6 @@ export function responsesStreamError(event: ObjectValue, requestId?: string): Pr
   if (["invalid_api_key", "authentication_error", "token_expired", "unauthorized"].includes(String(code))) {
     return new ProviderError("authentication", "Provider login is missing or expired", 401);
   }
-  return new ProviderError("inference_failed", "Provider inference did not complete", 502, upstream);
+  // content_filter, max_output_tokens and unknown codes keep a class that native Codex also retries.
+  return rejected(code, upstream) ?? new ProviderError("inference_failed", "Provider inference did not complete", 502, upstream);
 }

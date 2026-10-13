@@ -82,3 +82,48 @@ test("Responses transient failures keep safe upstream diagnostics, excluding pri
   assert.ok(!JSON.stringify(error).includes(privateMessage));
   assert.equal(responsesStreamError({ type: "response.failed", response: { error: { code: privateMessage } } }).upstream?.code, "unknown");
 });
+
+const rejectedCodes = ["invalid_prompt", "invalid_encrypted_content", "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included"];
+test("Upstream rejections that would repeat identically become upstream_rejected with the exact code", async () => {
+  const messages = new Set<string>();
+  for (const code of rejectedCodes) {
+    for (const event of [{ type: "response.failed", response: { error: { code, message: privateMessage } } }, { type: "error", code, message: privateMessage }]) {
+      const stream = await failure(200, event);
+      assert.equal(stream.code, "upstream_rejected"); assert.equal(stream.status, 400);
+      assert.deepEqual(stream.upstream, { code, event: event.type }); messages.add(stream.message);
+    }
+    for (const status of [400, 404, 422]) {
+      const http = await failure(status, { error: { code, message: privateMessage } });
+      assert.equal(http.code, "upstream_rejected"); assert.equal(http.status, 400);
+      assert.deepEqual(http.upstream, { code, event: "http", httpStatus: status }); assert.ok(!JSON.stringify(http).includes(privateMessage));
+    }
+  }
+  // Each class keeps its own fixed message, so the caller can tell a policy refusal from a malformed request.
+  assert.equal(messages.size, rejectedCodes.length);
+});
+
+test("Content filter, output limits, and unknown stream codes keep the retryable inference class", async () => {
+  for (const event of [{ type: "response.failed", response: { error: { code: "content_filter", message: privateMessage } } },
+    { type: "response.incomplete", response: { incomplete_details: { reason: "max_output_tokens" } } }, { type: "error", code: "invalid_request_error", message: privateMessage }]) {
+    const error = await failure(200, event); assert.equal(error.code, "inference_failed"); assert.equal(error.status, 502);
+  }
+});
+
+test("Other HTTP errors keep upstream_error and their status, and carry the upstream HTTP status", async () => {
+  for (const [status, code, expected] of [[400, "invalid_request_error", 400], [404, privateMessage, 502], [413, undefined, 502], [422, "content_filter", 502]] as const) {
+    const error = await failure(status, { error: { code, message: privateMessage } });
+    assert.equal(error.code, "upstream_error"); assert.equal(error.status, expected);
+    assert.deepEqual(error.upstream, { code: code === "invalid_request_error" || code === "content_filter" ? code : "unknown", event: "http", httpStatus: status });
+  }
+  const tracked = await responsesHttpError(new Response(JSON.stringify({ error: { code: "invalid_prompt", message: privateMessage } }), { status: 400, headers: { "x-request-id": "req_fixture-1" } }));
+  assert.deepEqual(tracked.upstream, { code: "invalid_prompt", event: "http", httpStatus: 400, requestId: "req_fixture-1" });
+  const untracked = await responsesHttpError(new Response("{}", { status: 404, headers: { "x-request-id": "not a request id" } }));
+  assert.deepEqual(untracked.upstream, { code: "unknown", event: "http", httpStatus: 404 });
+});
+
+test("Rate, quota, and server HTTP classes are unchanged by rejection codes", async () => {
+  assert.equal((await failure(429, { error: { code: "usage_not_included" } })).code, "usage_limit");
+  assert.equal((await failure(403, { error: { code: "cyber_policy" } })).code, "authentication");
+  const server = await responsesHttpError(new Response(JSON.stringify({ error: { code: "invalid_prompt" } }), { status: 500 }));
+  assert.equal(server.code, "upstream_unavailable"); assert.deepEqual(server.upstream, { code: "invalid_prompt", event: "http" });
+});
