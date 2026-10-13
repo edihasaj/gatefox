@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderFailure, providerFailureDiagnostic, translationFailureFields } from "../provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "../provider-failure.js";
 import { ProviderError, type ProviderStreamDiagnostic } from "../providers/provider.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "../protocol/request.js";
 
@@ -22,6 +22,37 @@ test("deadline aborts and user cancellation never become misleading login failur
   const timeout = classifyProviderFailure(aborted, "timeout"); assert.equal(timeout.code, "timeout"); assert.equal(timeout.status, 504);
   const cancelled = classifyProviderFailure(aborted, "cancelled"); assert.equal(cancelled.code, "cancelled"); assert.equal(cancelled.status, 499);
   assert.equal(classifyProviderFailure(new ProviderError("cli_failed", "Worker exited during abort"), "timeout").code, "timeout");
+});
+
+test("a shutdown abort is a retryable 503 whatever the provider raised", () => {
+  for (const error of [new DOMException("private", "AbortError"), new Error("socket hang up"), new ProviderError("cli_failed", "Worker exited"), new ProviderError("cancelled", "Request cancelled or timed out", 504)]) {
+    const failure = classifyProviderFailure(error, "shutdown");
+    assert.equal(failure.code, "upstream_unavailable"); assert.equal(failure.status, 503); assert.equal(failure.message, "Gateway is restarting; retry shortly");
+    assert.equal(streamFailureCode(failure), "upstream_unavailable", "Codex retries it against the restarted gateway");
+  }
+  const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: classifyProviderFailure(new Error("private"), "shutdown"), abortCause: "shutdown" });
+  assert.deepEqual(withoutTimestamp(record), { event: "provider_failure", durationMs: 1, code: "upstream_unavailable", status: 503, abortCause: "shutdown" });
+});
+
+test("stream failures that would repeat go to Codex as one of its final codes", () => {
+  const wire = (code: string, upstream?: ConstructorParameters<typeof ProviderError>[3]) => streamFailureCode(new ProviderError(code, "private", 400, upstream));
+  for (const code of ["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit"]) assert.equal(wire(code), "invalid_prompt", code);
+  for (const code of ["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]) assert.equal(wire("upstream_rejected", { code, httpStatus: 400 }), code, code);
+  for (const upstream of [undefined, { code: "invalid_encrypted_content" }, { code: "content_filter" }, { code: "private data" }]) assert.equal(wire("upstream_rejected", upstream), "invalid_prompt");
+  for (const httpStatus of [400, 404, 413, 422]) assert.equal(wire("upstream_error", { httpStatus }), "invalid_prompt", String(httpStatus));
+  for (const upstream of [undefined, { httpStatus: 409 }, { httpStatus: 429 }, { httpStatus: 500 }, { code: "invalid_prompt" }]) assert.equal(wire("upstream_error", upstream), "upstream_error");
+  for (const code of ["upstream_unavailable", "timeout", "cancelled", "busy", "rate_limit_exceeded", "insufficient_quota", "context_length_exceeded", "inference_failed", "incomplete", "provider_failed", "invalid_tool_call"]) {
+    assert.equal(wire(code, { code: "cyber_policy", httpStatus: 400 }), code, `${code} keeps its own retry behavior`);
+  }
+  let reads = 0; const hostile = { httpStatus: 400 }; Object.defineProperty(hostile, "code", { get() { reads++; throw new Error("private data"); } });
+  assert.equal(wire("upstream_rejected", hostile), "invalid_prompt"); assert.equal(reads, 0);
+});
+
+test("diagnostics keep the rejection class and Codex's final upstream codes", () => {
+  for (const code of ["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none"]) {
+    const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: new ProviderError("upstream_rejected", "private body", 400, { code, event: "response.failed" }) });
+    assert.equal(record.code, "upstream_rejected"); assert.equal(record.status, 400); assert.equal(record.upstreamCode, code); assert.ok(!JSON.stringify(record).includes("private body"));
+  }
 });
 
 test("fetch and recognized nested network failures produce retryable connection errors", () => {

@@ -1,12 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
 import { CopilotSubscription } from "./providers/copilot.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
-import { ProviderError, inferenceContext, type Provider } from "./providers/provider.js";
+import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import type { ResponsesRequest, Usage } from "./protocol/types.js";
@@ -20,6 +21,7 @@ import { telemetry } from "./telemetry.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
+import { runShutdownHooks, runtimeBusy, shutdownDrainMs } from "./runtime-activity.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -47,14 +49,44 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   return value;
 }
 export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean };
+type AbortCause = "timeout" | "cancelled" | "shutdown";
 export interface GatewayFailure {
   event: "request_failed"; requestId: string; providerId?: string; model?: string;
-  durationMs: number; code: string; status: number; abortCause?: "timeout" | "cancelled";
+  durationMs: number; code: string; status: number; abortCause?: AbortCause;
 }
 export interface GatewayStartOptions { heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void }
-/** One generation of request handling; a server can switch generations without closing its socket. */
-export interface GatewayHandler { readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean; abortAll(): void }
-type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"] };
+/**
+ * One generation of request handling; a server can switch generations without closing its socket.
+ * Members added after 0.3 are optional, so a generation adopted by an in-place upgrade still fits.
+ */
+export interface GatewayHandler {
+  readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean;
+  /** Aborts running requests; "shutdown" fails them as retryable. Returns how many it aborted. */
+  abortAll(reason?: "shutdown"): number | void;
+  /** New inference gets a retryable 503 from now on; returns how many requests are still running. */
+  beginDrain?(): number;
+}
+type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined> };
+const total = (values: Array<number | void>) => values.reduce<number>((sum, value) => sum + (typeof value === "number" ? value : 0), 0);
+const sendableTurnState = (value: unknown): value is string => typeof value === "string" && value.length <= maxTurnStateLength && /^[\x21-\x7e]+$/.test(value);
+
+/**
+ * Stops accepting, lets running requests finish for shutdownDrainMs(), fails the rest as
+ * retryable, then runs the process shutdown hooks. Resolves when the listener has closed.
+ */
+async function drain(target: HandledServer, close: Server["close"]): Promise<Error | undefined> {
+  const closed = new Promise<Error | undefined>(resolve => close(error => resolve(error)));
+  const handlers = () => target.gatewayHandlers || [];
+  const idle = () => handlers().every(entry => entry.isIdle());
+  // A finished keep-alive connection would otherwise hold the close open until its idle timeout.
+  const settle = async (until: number) => { while (!idle() && Date.now() < until) { target.closeIdleConnections(); await delay(100); } target.closeIdleConnections(); };
+  const startedAt = Date.now(); const active = total(handlers().map(entry => entry.beginDrain?.()));
+  await settle(startedAt + shutdownDrainMs());
+  const drainedMs = Date.now() - startedAt; const aborted = total(handlers().map(entry => entry.abortAll("shutdown")));
+  await Promise.all([runShutdownHooks(1000), settle(Date.now() + 1000)]);
+  telemetry("server_drain", { active, drainedMs, aborted });
+  return closed;
+}
 
 /**
  * Sends new requests on `server` to `handler`. Requests already running finish on the
@@ -67,10 +99,12 @@ export function adoptGatewayHandler(server: Server, handler: GatewayHandler): Ga
   const close = target.gatewayClose ??= server.close.bind(server);
   target.gatewayHandlers = [...(target.gatewayHandlers || []).filter(previous => !previous.isIdle()), handler];
   server.removeAllListeners("request"); server.on("request", handler.handle);
-  target.isIdle = () => (target.gatewayHandlers || []).every(entry => entry.isIdle());
-  target.close = ((callback?: (error?: Error) => void) => { for (const entry of target.gatewayHandlers || []) entry.abortAll(); close(callback); return target; }) as HandledServer["close"];
-  // Includes body uploads and catalog reads, not only provider inference.
-  target.restartWhenIdle = callback => { if (!target.isIdle()) return false; close(callback); return true; };
+  // Includes body uploads, catalog reads and process-wide work such as live provider sessions.
+  target.isIdle = () => (target.gatewayHandlers || []).every(entry => entry.isIdle()) && !runtimeBusy();
+  // The callback runs after the drain and the shutdown hooks, so an exit cannot cut them short.
+  const closing = () => target.gatewayClosing ??= drain(target, close);
+  target.close = ((callback?: (error?: Error) => void) => { void closing().then(error => callback?.(error)); return target; }) as HandledServer["close"];
+  target.restartWhenIdle = callback => { if (!target.isIdle()) return false; void closing().then(() => callback()); return true; };
   return target;
 }
 
@@ -99,7 +133,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (next !== current) { const updated = buildRoutes(next); routes = updated; current = next; }
     return { config: current, routes };
   };
-  const active = new Set<AbortController>();
+  const active = new Map<AbortController, (cause: "shutdown") => void>();
+  let draining = false;
   const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
   // Every response names the release whose code served it; useful during in-place upgrades.
@@ -118,6 +153,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     }
     if (req.headers.origin) { send(res, 403, { error: { code: "cross_origin", message: "Browser cross-origin requests are disabled" } }); return; }
     if (!validBearer(req.headers.authorization, token)) { send(res, 401, { error: { code: "authentication", message: "Gateway bearer token required" } }); return; }
+    if (draining && req.method === "POST" && path === "/v1/responses") { res.setHeader("Retry-After", "1"); send(res, 503, { error: { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" } }); return; }
     let state: Awaited<ReturnType<typeof snapshot>>;
     try { state = await snapshot(); }
     catch { send(res, 503, { error: { code: "configuration_error", message: "Gateway configuration is invalid; fix it before retrying" } }); return; }
@@ -126,16 +162,17 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
     if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
     if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
-    const controller = new AbortController(); active.add(controller);
+    const controller = new AbortController();
     let releaseAdmission: (() => void) | undefined;
-    let writer: ResponsesWriter | undefined;
-    let heartbeat: NodeJS.Timeout | undefined; let abortCause: "timeout" | "cancelled" | undefined;
-    let providerId: string | undefined; let model: string | undefined;
+    let writer: ResponsesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
+    let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
+    active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
+    let providerId: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
-    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined;
-    const outcome = () => ({ requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let turnStateReturned = false;
+    const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
-      cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!inferenceContext(req.headers).sessionId });
+      cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
     // timeoutMs bounds silence, not total length: it covers the upload and queue
     // wait, then restarts at admission and on every provider event. Long Max or
     // Ultra streams continue while a stalled provider still fails. The whole
@@ -153,7 +190,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
     try {
-      const request = await body(req);
+      const request = await body(req); context = inferenceContext(req.headers, request);
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
@@ -163,20 +200,36 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
-      admission.setLimit(state.config.maxConcurrent || 4); admission.check();
+      const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();
       const streaming = request.stream === true;
-      let lastEventAt = Date.now();
-      writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } });
-      if (streaming) res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
-      writer.begin();
-      if (streaming) heartbeat = setInterval(() => {
-        if (!controller.signal.aborted && !res.destroyed && !res.writableNeedDrain && Date.now() - lastEventAt >= heartbeatMs) writer?.progress();
-      }, heartbeatMs).unref();
+      let lastEventAt = Date.now(); let opened = false;
+      const output = writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } });
+      open = turnState => {
+        if (opened) return; opened = true; clearTimeout(headWait);
+        if (sendableTurnState(turnState) && !res.headersSent) { res.setHeader("X-Codex-Turn-State", turnState); turnStateReturned = true; }
+        if (streaming) res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no" });
+        output.begin();
+        if (streaming) heartbeat = setInterval(() => {
+          if (!controller.signal.aborted && !res.destroyed && !res.writableNeedDrain && Date.now() - lastEventAt >= heartbeatMs) output.progress();
+        }, heartbeatMs).unref();
+      };
+      // Codex reads its turn-state from response headers, so a provider that reports one
+      // gets the SSE head after its first event, at most 2 s after admission. A queued
+      // request still opens at once and shows progress while it waits.
+      const deferred = streaming && route.adapter.emitsTransport === true;
+      if (!deferred || admission.running >= limit || admission.queued > 0) open();
       releaseAdmission = await admission.acquire(controller.signal);
       controller.signal.throwIfAborted(); touch(); admittedAt = Date.now();
-      for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, inferenceContext(req.headers))) {
+      if (!opened) headWait = setTimeout(() => open?.(), 2000);
+      for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
         if (controller.signal.aborted || res.destroyed) break;
-        touch(); events++; if (!firstEventAt) firstEventAt = Date.now();
+        touch();
+        if (event.type === "transport") {
+          if (!opened) open(event.turnState);
+          else if (!streaming && !res.headersSent && sendableTurnState(event.turnState)) { res.setHeader("X-Codex-Turn-State", event.turnState); turnStateReturned = true; }
+          continue;
+        }
+        open(); events++; if (!firstEventAt) firstEventAt = Date.now();
         if (event.type === "tool") tools++; else if (event.type === "done") usage = event.usage;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
@@ -191,6 +244,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         else res.end();
       }
     } catch (error) {
+      // A deferred head still opens, so the failure is a 200 stream with response.failed.
+      if (!res.destroyed) open?.();
       clearInterval(heartbeat);
       const known = classifyProviderFailure(error, abortCause);
       // A rejected Responses request says which fixed class of data it rejected.
@@ -203,13 +258,15 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          writer.fail(streamFailureCode(known.code), known.message);
+          writer.fail(streamFailureCode(known), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }
         else send(res, known.status, { error: { code: known.code, message: known.message } });
       }
-    } finally { clearInterval(heartbeat); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); }
+    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); }
   };
-  return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size, abortAll: () => { for (const controller of active) controller.abort(); } };
+  return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size,
+    abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
+    beginDrain: () => { draining = true; return active.size; } };
 }

@@ -1,7 +1,7 @@
 import { ProviderError } from "./providers/provider.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
-export type ProviderAbortCause = "timeout" | "cancelled" | undefined;
+export type ProviderAbortCause = "timeout" | "cancelled" | "shutdown" | undefined;
 const networkCodes = new Set([
   "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE",
   "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
@@ -11,6 +11,7 @@ const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
   "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
   "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
+  "upstream_rejected",
 ]);
 const upstreamCodes = new Set([
   "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request",
@@ -18,6 +19,7 @@ const upstreamCodes = new Set([
   "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",
   "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing",
+  "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
 ]);
 const streamEvents = new Set([
   "response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
@@ -49,16 +51,26 @@ function networkFailure(error: unknown): boolean {
   return false;
 }
 
-// Codex retries a failed stream up to five times. These failures repeat
-// identically, so the stream reports Codex's non-retryable request error and
+// Codex retries a failed stream up to five times unless its code is one Codex treats
+// as final. These failures repeat identically, so the stream reports such a code and
 // the turn stops at once instead of re-running inference.
-const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication"]);
-export function streamFailureCode(code: string): string { return permanentCodes.has(code) ? "invalid_prompt" : code; }
+const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit"]);
+const finalUpstreamCodes = new Set(["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]);
+const rejectedStatuses = new Set([400, 404, 413, 422]);
+/** The error code a failed stream sends to Codex. */
+export function streamFailureCode(error: ProviderError): string {
+  const upstream = own(error, "upstream"); const upstreamCode = own(upstream, "code"); const httpStatus = own(upstream, "httpStatus");
+  if (permanentCodes.has(error.code)) return "invalid_prompt";
+  if (error.code === "upstream_rejected") return typeof upstreamCode === "string" && finalUpstreamCodes.has(upstreamCode) ? upstreamCode : "invalid_prompt";
+  if (error.code === "upstream_error" && typeof httpStatus === "number" && rejectedStatuses.has(httpStatus)) return "invalid_prompt";
+  return error.code;
+}
 
 /** Forward only trusted typed errors or static transport messages. Never expose a raw exception. */
 export function classifyProviderFailure(error: unknown, cause: ProviderAbortCause): ProviderError {
   if (cause === "timeout") return new ProviderError("timeout", "Provider request exceeded the gateway deadline", 504);
   if (cause === "cancelled") return new ProviderError("cancelled", "Provider request was cancelled", 499);
+  if (cause === "shutdown") return new ProviderError("upstream_unavailable", "Gateway is restarting; retry shortly", 503);
   if (error instanceof ProviderError) return error;
   if (error instanceof ResponsesTranslationError) return new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400);
   if (networkFailure(error)) return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503);
@@ -96,7 +108,7 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (typeof requestId === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(requestId)) result.requestId = requestId;
   if (typeof providerId === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(providerId)) result.providerId = providerId;
   if (typeof modelAlias === "string" && /^[a-z0-9][a-z0-9/._:-]{0,127}$/i.test(modelAlias)) result.modelAlias = modelAlias;
-  if (abortCause === "timeout" || abortCause === "cancelled") result.abortCause = abortCause;
+  if (abortCause === "timeout" || abortCause === "cancelled" || abortCause === "shutdown") result.abortCause = abortCause;
   const reason = allowlisted(own(input, "reason"), translationReasons); const itemType = allowlisted(own(input, "itemType"), translationItemTypes);
   if (reason) result.reason = reason; if (itemType) result.itemType = itemType;
   const upstream = own(failure, "upstream");
