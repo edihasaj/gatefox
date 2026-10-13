@@ -61,6 +61,8 @@ export class ClaudeMessageStream {
   private readonly tools: OpenAITool[]; private readonly summaryVisible: boolean;
   private readonly bindings: Map<string, OpenAITool | undefined>;
   private message?: Message; private last?: ClaudeTokens; private limit?: ClaudeLimit; private raw = "";
+  /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
+  private split = false;
   constructor({ tools, summaryVisible }: { tools: OpenAITool[]; summaryVisible: boolean }) {
     this.tools = tools; this.summaryVisible = summaryVisible; this.bindings = claudeToolBindings(tools);
   }
@@ -89,6 +91,7 @@ export class ClaudeMessageStream {
       this.message = { id: typeof native.id === "string" ? native.id : undefined, base: { ...tokensOf(native.usage), output: 0 }, blocks: new Map() };
     } else if (event.type === "content_block_start") {
       const block = (event.content_block || {}) as { type?: unknown; id?: unknown; name?: unknown };
+      if (block.type !== "text" && this.raw) this.split = true;
       if (block.type !== "tool_use" || !message || message.ended) return;
       // A foreign tool fails at once, before the CLI can act on it.
       if (typeof block.name !== "string" || !this.bindings.get(block.name)) nativeClaudeCalls([{ id: String(block.id), name: block.name as string, input: {} }], this.tools);
@@ -96,9 +99,11 @@ export class ClaudeMessageStream {
     } else if (event.type === "content_block_delta") {
       const delta = (event.delta || {}) as { type?: unknown; text?: unknown; partial_json?: unknown };
       if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text) {
+        // raw stays the native text for the result check; the caller sees one message, so text
+        // that resumes after a tool call or thinking block is set off as its own paragraph.
         this.raw += delta.text;
         if (this.raw.length > maxText) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
-        step.events.push({ type: "text", text: delta.text });
+        step.events.push({ type: "text", text: this.split ? `\n\n${delta.text}` : delta.text }); this.split = false;
       } else if (delta.type === "input_json_delta" && typeof delta.partial_json === "string") {
         const block = message?.blocks.get(Number(event.index));
         if (block) { block.json += delta.partial_json; if (block.json.length > maxText) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB"); }

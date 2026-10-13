@@ -147,3 +147,14 @@ test("a tool message cut short by max_tokens returns its complete call at once i
     assert.throws(() => process.kill(f.pid(), 0), { code: "ESRCH" });
   } finally { await f.restore(); }
 });
+
+test("text that resumes after a tool call starts a new paragraph; adjacent text blocks join as they are", () => {
+  const text = (index: number, value: string) => event({ type: "content_block_delta", index, delta: { type: "text_delta", text: value } });
+  const stream = new ClaudeMessageStream({ tools, summaryVisible: true });
+  const steps = [event(start), event({ type: "content_block_start", index: 0, content_block: { type: "thinking" } }), text(1, "First I will read alpha."), text(2, " Cited."),
+    use(3, "toolu_a", alpha), assistant("toolu_a", alpha, { path: "a" }), text(4, "Then beta."), use(5, "toolu_b", beta), assistant("toolu_b", beta, { path: "b" }), delta("tool_use", 64)]
+    .map(message => stream.accept(message));
+  assert.deepEqual(steps.flatMap(step => step.events).map(item => item.type === "text" ? item.text : item.type), ["First I will read alpha.", " Cited.", "\n\nThen beta."]);
+  const end = steps.at(-1)!.end!; assert.deepEqual(end.kind === "tool_use" && end.calls.map(call => call.function.name), ["alpha", "beta"]);
+  assert.equal(stream.text, "First I will read alpha. Cited.Then beta.", "the native text stays unchanged for the result check");
+});
