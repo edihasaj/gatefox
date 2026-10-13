@@ -13,12 +13,12 @@ import type { InferenceEvent, WireEvent } from "../protocol/types.js";
 
 const usage = { input_tokens: 1, output_tokens: 1, total_tokens: 2 };
 const echoed = "gts1:fixture-echoed-turn-state";
-async function setup(provider: Provider, maxConcurrent = 4) {
+async function setup(provider: Provider, maxConcurrent = 4, heartbeatMs = 5000) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-turn-state-"));
   configureTelemetry(directory, "server");
   const config: GatewayConfig = { version: 1, port: 0, stateDirectory: directory, timeoutMs: 10000, maxConcurrent,
     providers: [{ id: "fixture", type: "codex-subscription", models: { alias: "upstream" } }] };
-  const server = await startGateway(config, () => provider, undefined, { heartbeatMs: 5000, onFailure: () => {} });
+  const server = await startGateway(config, () => provider, undefined, { heartbeatMs, onFailure: () => {} });
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { Authorization: `Bearer ${await gatewayToken(directory)}`, "Content-Type": "application/json" };
   const post = async (body: Record<string, unknown> = {}, extra: Record<string, string> = {}) => {
@@ -52,14 +52,30 @@ test("a transport event puts the turn-state in the SSE head before response.crea
   } finally { await gateway.close(); }
 });
 
-test("without a transport event the head opens 2 s after admission, without a turn-state", { timeout: 10000 }, async () => {
+test("a turn-state that arrives after 2.5 s still reaches the SSE head", { timeout: 10000 }, async () => {
+  // Live upstream heads took 1.5 to 4.7 s; a head opened without the value loses it for the rest of the turn.
   const gateway = await setup({ emitsTransport: true, async *infer(_request, signal) {
-    await delay(3000, undefined, { signal });
-    yield { type: "transport", turnState: "gts1:too-late" }; yield { type: "text", text: "answer" }; yield { type: "done", usage };
+    await delay(2500, undefined, { signal });
+    yield { type: "transport", turnState: "gts1:slow-head" }; yield { type: "text", text: "answer" }; yield { type: "done", usage };
   } });
   try {
     const { response, headMs } = await gateway.post();
-    assert.ok(headMs >= 1950 && headMs < 2900, `the head waited for the 2 s ceiling, not the provider (${headMs} ms)`);
+    assert.ok(headMs >= 2450, `the head waited for the provider (${headMs} ms)`);
+    assert.equal(response.headers.get("x-codex-turn-state"), "gts1:slow-head");
+    assert.equal((await collect(response)).at(-1)!.type, "response.completed");
+    const [completed] = await gateway.telemetry("request_completed");
+    assert.equal(completed.turnStateReturned, true);
+  } finally { await gateway.close(); }
+});
+
+test("without a transport event the head opens one heartbeat interval after admission, without a turn-state", { timeout: 10000 }, async () => {
+  const gateway = await setup({ emitsTransport: true, async *infer(_request, signal) {
+    await delay(4000, undefined, { signal });
+    yield { type: "transport", turnState: "gts1:too-late" }; yield { type: "text", text: "answer" }; yield { type: "done", usage };
+  } }, 4, 3000);
+  try {
+    const { response, headMs } = await gateway.post();
+    assert.ok(headMs >= 2950 && headMs < 3900, `the head waited for the heartbeat ceiling, not the provider (${headMs} ms)`);
     assert.equal(response.headers.get("x-codex-turn-state"), null);
     const events = await collect(response);
     assert.equal(events[0].type, "response.created"); assert.equal(events.at(-1)!.type, "response.completed");

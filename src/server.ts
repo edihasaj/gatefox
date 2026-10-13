@@ -219,7 +219,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         }, heartbeatMs).unref();
       };
       // Codex reads its turn-state from response headers, so a provider that reports one
-      // gets the SSE head after its first event, at most 2 s after admission. A queued
+      // gets the SSE head after its first event. The upstream head often takes over 2 s, and
+      // a head sent without the turn-state cannot add it later, so the wait lasts up to one
+      // heartbeat interval after admission: the same silence an open stream allows. A queued
       // request still opens at once and shows progress while it waits.
       const deferred = streaming && route.adapter.emitsTransport === true;
       if (!deferred || admission.running >= limit || admission.queued > 0) open();
@@ -228,7 +230,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // process is going away, so the client retries on the next one before any provider spend.
       if (draining) active.get(controller)?.("shutdown");
       controller.signal.throwIfAborted(); touch(); admittedAt = Date.now(); admitted.add(controller);
-      if (!opened) headWait = setTimeout(() => open?.(), 2000);
+      if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
         if (controller.signal.aborted || res.destroyed) break;
         touch();

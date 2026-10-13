@@ -182,9 +182,13 @@ with a per-account scope, and forwards it upstream only when the scope matches t
 same account route. Values from another route, malformed values and upstream
 values over 6000 characters are dropped; none is ever logged. For a streaming
 request to the Codex 2 route, the response head waits for the provider's first
-event (at most 2 seconds after admission) so it can carry the header; a request
-that has to queue opens its head at once. `request_completed` and
-`request_failed` record only whether a turn-state was echoed and returned.
+event so it can carry the header, because a streaming response cannot add a
+header later. The provider reports that event as soon as the upstream response
+head arrives, which took between 1.5 and 4.7 seconds in live checks. The wait
+lasts at most one heartbeat interval (15 seconds) after admission, the same
+silence an open stream allows before a progress event; a request that has to
+queue opens its head at once. `request_completed` and `request_failed` record
+only whether a turn-state was echoed and returned.
 
 Responses upstreams retain `service_tier`. For Codex subscription requests, the
 `fast` alias becomes `priority`, as required by the tested subscription resource
