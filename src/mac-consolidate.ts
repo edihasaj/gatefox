@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
+import { serviceStopTimeoutMs } from "./runtime-activity.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
 
@@ -98,7 +99,7 @@ export async function consolidateService(configPath: string, apply = false): Pro
   const checkInterrupted = () => { if (interrupted) throw new Error("Consolidation interrupted; previous jobs will be restored"); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
-    for (const job of jobs) { checkInterrupted(); if (job.loaded) await exec("/bin/launchctl", ["bootout", `${domain()}/${job.label}`], { timeout: 10000 }); }
+    for (const job of jobs) { checkInterrupted(); if (job.loaded) await exec("/bin/launchctl", ["bootout", `${domain()}/${job.label}`], { timeout: serviceStopTimeoutMs }); }
     checkInterrupted();
     await writePrivateJson(servicePlanPath(config.stateDirectory), plan);
     replacementAttempted = true;
@@ -131,7 +132,7 @@ export async function consolidateService(configPath: string, apply = false): Pro
     for (const job of jobs) if (job.label !== serviceLabel) await rename(job.path, resolve(trash, `${job.label}.${Date.now()}.plist`));
     return { ...preview, applied: true, backup, ...await consolidatedStatus(config.stateDirectory) };
   } catch (error) {
-    if (replacementAttempted && await loaded(serviceLabel)) await exec("/bin/launchctl", ["bootout", `${domain()}/${serviceLabel}`], { timeout: 10000 });
+    if (replacementAttempted && await loaded(serviceLabel)) await exec("/bin/launchctl", ["bootout", `${domain()}/${serviceLabel}`], { timeout: serviceStopTimeoutMs });
     const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true });
     await rename(servicePlanPath(config.stateDirectory), resolve(trash, `gateway-service-plan.${Date.now()}.json`)).catch(failure => { if ((failure as NodeJS.ErrnoException).code !== "ENOENT") throw failure; });
     for (const job of jobs) await writeFile(job.path, job.text, { mode: 0o600 });

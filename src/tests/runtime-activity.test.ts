@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { busyActivities, registerActivityProbe, registerShutdownHook, runShutdownHooks, runtimeBusy, shutdownDrainMs } from "../runtime-activity.js";
+import { busyActivities, registerActivityProbe, registerShutdownHook, runShutdownHooks, runtimeBusy, shutdownDrainMs, maxShutdownDrainMs, serviceStopTimeoutMs } from "../runtime-activity.js";
 
 test("activity probes report busy work, a throwing probe counts as idle, and removal works", () => {
   assert.equal(runtimeBusy(), false);
@@ -48,12 +48,16 @@ test("a second module instance shares the same process-wide registry", async () 
   assert.equal(runtimeBusy(), false);
 });
 
-test("the shutdown drain defaults to 8 s and clamps the environment override", () => {
+test("the shutdown drain defaults to 5 s and clamps the environment override", () => {
   const previous = process.env.GATEWAY_SHUTDOWN_DRAIN_MS;
   try {
-    for (const [value, expected] of [[undefined, 5000], ["", 5000], ["soon", 5000], ["200", 200], ["-5", 0], ["0", 0], ["99999", 30000], ["1500.4", 1500]] as const) {
+    for (const [value, expected] of [[undefined, 5000], ["", 5000], ["soon", 5000], ["200", 200], ["-5", 0], ["0", 0], ["30000", 10000], ["99999", 10000], ["1500.4", 1500]] as const) {
       if (value === undefined) delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; else process.env.GATEWAY_SHUTDOWN_DRAIN_MS = value;
       assert.equal(shutdownDrainMs(), expected, String(value));
     }
   } finally { if (previous === undefined) delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; else process.env.GATEWAY_SHUTDOWN_DRAIN_MS = previous; }
+  // The longest stop: drain, 2.5 s inference grace before SIGKILL, 2.5 s execution host close.
+  const worstStop = maxShutdownDrainMs + 2500 + 2500;
+  assert.ok(serviceStopTimeoutMs > worstStop, "launchctl bootout outlasts the longest service stop");
+  assert.ok(serviceStopTimeoutMs <= 20000, "and stays inside launchd's default exit timeout");
 });
