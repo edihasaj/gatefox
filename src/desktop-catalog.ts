@@ -6,6 +6,7 @@ import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
+import { executorRunsCodeMode, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -43,9 +44,11 @@ function publicModels(value: unknown, native: Message[]): Message[] {
       return { effort: metadata.effort, ...(typeof metadata.description === "string" ? { description: metadata.description } : {}) };
     });
     if (modalities !== undefined) result.input_modalities = modalities;
-    // Codex requires this schema, but inference hosts and old caches must not
-    // supply an agent policy. Client instructions remain in the native catalog.
+    // Inference hosts and old caches never supply an agent policy. A Codex 2 row names its
+    // upstream slug instead, and snapshot() copies that model's messages from the native catalog.
     result.model_messages = { instructions_template: "" };
+    const upstream = model[upstreamSlugField];
+    if (typeof upstream === "string" && upstream && upstream.length <= 1024 && !upstream.includes("\0")) result[upstreamSlugField] = upstream;
     const policy = object(model.truncation_policy);
     if (typeof policy.mode === "string" && typeof policy.limit === "number") result.truncation_policy = { mode: policy.mode, limit: policy.limit };
     if (Array.isArray(model.experimental_supported_tools) && model.experimental_supported_tools.every(tool => typeof tool === "string")) result.experimental_supported_tools = model.experimental_supported_tools;
@@ -65,7 +68,9 @@ export class DesktopCatalog {
   private initialized?: Promise<void>;
   private sourceIdentity?: string;
   private checkedAt = 0;
-  constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string) {
+  // prepareNativeCatalog writes the gateway rows without native copies; replace that file once.
+  private written = false;
+  constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private readonly codeMode = executorRunsCodeMode()) {
     this.value = this.snapshot(modelCatalog(config).models);
   }
   initialize(): Promise<void> { return this.initialized ||= this.restore(); }
@@ -85,11 +90,12 @@ export class DesktopCatalog {
       const next = this.snapshot(models);
       // prepareNativeCatalog can overwrite the combined file during every launch.
       await writePrivateJson(this.path, this.combined(next));
-      this.value = next; this.sourceIdentity = source;
+      this.value = next; this.sourceIdentity = source; this.written = true;
     } catch { /* Unavailable, malformed or differently owned caches leave native discovery usable. */ }
     finally { await file?.close(); }
   }
-  private snapshot(models: Message[]): DesktopCatalogSnapshot {
+  private snapshot(published: Message[]): DesktopCatalogSnapshot {
+    const models = published.map(model => withNativeRow(model, this.native, this.codeMode));
     return { models, path: this.path, revision: createHash("sha256").update(JSON.stringify(models)).digest("hex") };
   }
   current(): DesktopCatalogSnapshot { return this.value; }
@@ -137,7 +143,7 @@ export class DesktopCatalog {
     if (Buffer.byteLength(encoded) > maxCatalogBytes || encoded.includes(token)) throw new Error("Gateway public metadata cannot be cached safely");
     const next = this.snapshot(models);
     await writePrivateJson(resolve(this.config.stateDirectory, "desktop-public-models.json"), cache);
-    if (next.revision !== this.value.revision) await writePrivateJson(this.path, this.combined(next));
-    this.value = next; this.sourceIdentity = source; this.checkedAt = Date.now(); return next;
+    if (next.revision !== this.value.revision || !this.written) await writePrivateJson(this.path, this.combined(next));
+    this.value = next; this.sourceIdentity = source; this.checkedAt = Date.now(); this.written = true; return next;
   }
 }

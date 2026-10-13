@@ -3,6 +3,7 @@ import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
 import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
+import { upstreamSlugField } from "./codex-native-rows.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -16,6 +17,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     return {
       slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName || provider.models[alias]}`,
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
+      // The desktop adapter copies the native row for this slug; Codex ignores the extra key.
+      ...(codex ? { [upstreamSlugField]: provider.models[alias] } : {}),
       visibility: "list", supported_in_api: true, availability_nux: null, upgrade: null,
       ...publicServiceTierFields(readServiceTierMetadata(metadata)),
       supported_reasoning_levels: efforts.map(effort => ({ effort, description: `${effort} reasoning effort` })),
