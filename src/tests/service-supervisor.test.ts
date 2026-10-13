@@ -93,3 +93,28 @@ test("an inference child that refuses idle restart keeps the relay and its own p
     assert.ok(before.every((value: { pid: number }) => live(value.pid)));
   } finally { await supervisor.stop(); }
 });
+
+test("a failed shared execution host leaves inference and tunnels running and retries the host", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-host-"));
+  const config = join(directory, "config.json");
+  await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: directory, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_SUPERVISOR_FIXTURE_KEY", models: { fixture: "upstream" } }] });
+  const native = component(directory, "native", "native", "setInterval(()=>{},1000)");
+  native.args = [...native.args, "--codex", join(directory, "codex"), "--native-home", join(directory, "native-home")];
+  let attempts = 0;
+  const host = async () => {
+    attempts++;
+    if (attempts === 1) throw new Error("Bundled SDK version changed");
+    return { close: async () => {}, prepareStop: async () => true, resume: () => {} };
+  };
+  const supervisor = new ServiceSupervisor({ version: 1, config, sharedExecutors: true, components: [
+    component(directory, "inference", "inference", "setInterval(()=>{},1000)"),
+    component(directory, "tunnel", "tunnel", "setInterval(()=>{},1000)"), native,
+  ] }, directory, 5, host as never);
+  const read = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { executionHost?: { state: string }; components: Array<{ state: string }> };
+  try {
+    await supervisor.start();
+    await until(async () => (await read()).components.every(value => value.state === "running"));
+    await until(async () => (await read()).executionHost?.state === "running");
+    assert.equal(attempts, 2, "the host is retried after its first failure");
+  } finally { await supervisor.stop(); }
+});

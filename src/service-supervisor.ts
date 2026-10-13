@@ -19,6 +19,8 @@ export class ServiceSupervisor {
   private stopDone?: Promise<void>;
   private restarting = false;
   private executionStarting?: ReturnType<typeof startExecutionHost>;
+  private hostRetry?: NodeJS.Timeout;
+  private hostFailures = 0;
   private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number; sharedNativeExecutor: boolean; sharedGatewayExecutors: boolean };
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
@@ -40,17 +42,31 @@ export class ServiceSupervisor {
         sharedNativeExecutor: this.plan.sharedNativeExecutor === true, sharedGatewayExecutors: this.plan.sharedExecutors === true };
       await this.publish();
       if (this.stopping) return;
-      this.executionStarting = this.startHost({ config, configPath: this.plan.config, ...paths,
-        capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
-        nativeRelayOwnsRegistration: this.plan.sharedNativeExecutor === true });
-      try { await this.executionStarting; this.executionState.state = "running"; }
-      catch (error) { this.executionState.state = "failed"; await this.publish(); throw error; }
+      // A failed host (for example after an app update changes its SDK) must not
+      // take inference, tunnels, or the relay down with it. Adapters that need the
+      // host fail closed until a retry succeeds.
+      await this.startExecutionHost(config, paths);
       if (this.stopping) return;
     }
     for (const slot of this.slots) await this.startSlot(slot);
     if (this.stopping) return;
     this.heartbeat = setInterval(() => { void this.publish().catch(() => { void this.stop(); }); }, 5000);
     await this.publish();
+  }
+  private async startExecutionHost(config: Awaited<ReturnType<typeof loadConfig>>, paths: ReturnType<typeof serviceExecutionPaths>): Promise<void> {
+    if (this.stopping || !this.executionState) return;
+    const starting = this.startHost({ config, configPath: this.plan.config, ...paths,
+      capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
+      nativeRelayOwnsRegistration: this.plan.sharedNativeExecutor === true });
+    this.executionStarting = starting;
+    try { await starting; this.hostFailures = 0; this.executionState.state = "running"; await this.publish(); }
+    catch {
+      if (this.executionStarting === starting) this.executionStarting = undefined;
+      this.hostFailures++; this.executionState.state = "failed"; await this.publish().catch(() => {});
+      if (this.stopping) return;
+      const wait = Math.min(300000, this.retryBaseMs * 10 * 2 ** Math.min(this.hostFailures - 1, 5));
+      this.hostRetry = setTimeout(() => { this.hostRetry = undefined; void this.startExecutionHost(config, paths); }, wait);
+    }
   }
   private async startSlot(slot: Slot): Promise<void> {
     if (this.stopping) return;
@@ -102,7 +118,7 @@ export class ServiceSupervisor {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat);
+    this.stopping = true; clearInterval(this.heartbeat); clearTimeout(this.hostRetry);
     const executionClose = this.executionStarting?.then(host => host.close());
     // Observe rejection immediately while owned component processes shut down.
     const executionStopped = executionClose?.then(() => undefined, error => error as Error);

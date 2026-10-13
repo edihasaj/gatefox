@@ -91,15 +91,15 @@ test("legacy service plans never start an execution host implicitly", { timeout:
   } finally { await supervisor.stop(); await f.cleanup(); }
 });
 
-test("an incompatible shared SDK fails before starting the service's other children", { timeout: 10000 }, async () => {
+test("an incompatible shared SDK marks the host failed but keeps the service's other children running", { timeout: 10000 }, async () => {
   const f = await setup(); const supervisor = new ServiceSupervisor(f.plan, f.state);
   try {
     await writeFile(f.codex, `#!${process.execPath}\nconsole.log('codex-cli unsupported');\n`, { mode: 0o700 });
-    await assert.rejects(supervisor.start(), /pinned Codex SDK/);
-    const status = JSON.parse(await readFile(serviceStatusPath(f.state), "utf8")); assert.equal(status.executionHost.state, "failed"); assert.equal(status.components[0].pid, undefined);
-    await assert.rejects(readFile(join(f.state, "native.log")), { code: "ENOENT" });
-    await assert.rejects(readFile(join(f.home, "owner.json")), { code: "ENOENT" });
-    await assert.rejects(supervisor.stop(), /pinned Codex SDK/);
+    await supervisor.start();
+    const status = JSON.parse(await readFile(serviceStatusPath(f.state), "utf8")); assert.equal(status.executionHost.state, "failed"); assert.ok(status.components[0].pid > 0);
+    await readFile(join(f.state, "native.log"));
+    await assert.rejects(readFile(join(f.home, "owner.json")), { code: "ENOENT" }, "no ownership is claimed for an unverified SDK");
+    await supervisor.stop();
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model="original"\n');
   } finally { await supervisor.stop().catch(() => {}); await f.cleanup(); }
 });

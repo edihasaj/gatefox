@@ -130,6 +130,10 @@ catalog arguments; it does not inspect or stop unrelated native Codex sessions.
 The service reads the signed SDK and native home from its existing native relay
 component. A desktop-only plan uses its registered app's SDK and the original
 native home. The service starts the execution host before launching transports.
+If the host cannot start, for example after an app update changes the bundled
+SDK, the service still starts inference, tunnels and the relay. It reports the
+host as `failed` and retries with backoff from 10 seconds up to 5 minutes.
+Adapters that need the host fail closed until a retry succeeds.
 Installing a release leaves `sharedExecutors` absent in an existing plan; it does
 not enable this migration or restart an open app.
 
