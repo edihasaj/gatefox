@@ -244,6 +244,15 @@ test("a CLI that exits at spawn falls back to one-shot with spawn_failed", async
   } finally { await teardown(f); }
 });
 
+test("a live CLI that dies before its first event falls back to one-shot with stream_failed", async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], exitAtFirstUser: true });
+  try {
+    assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "oneshot"]);
+    assert.ok((await sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "stream_failed"));
+  } finally { await teardown(f); }
+});
+
 test("compaction requests and requests without a thread run one-shot", async () => {
   const { f } = await setup({ replies: [{ text: "a" }, { text: "b" }] });
   try {

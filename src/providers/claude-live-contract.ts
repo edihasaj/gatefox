@@ -6,7 +6,7 @@ import type { ClaudeConversation, ClaudeImages, ContentBlock } from "./claude-re
 
 /** Why a request used the one-shot path instead of a live session. Fixed values only. */
 export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" |
-  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted";
+  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
 export interface ClaudeLiveInput {

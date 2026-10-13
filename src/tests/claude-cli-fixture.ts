@@ -17,7 +17,7 @@ export interface FixtureReply {
   /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
 }
-export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
+export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
 export interface FixtureEntry {
   pid: number; start?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
   /** Names (never values) of the Claude Code session variables the CLI inherited. */
@@ -135,6 +135,7 @@ async function fixtureMain(): Promise<void> {
     } else if (message.type === "user") {
       const content = message.message.content as Json[];
       log({ user: content.length, heads: content.map(block => block.type === "text" ? String(block.text).split("\n")[0] : block.type) });
+      if (live && scenario.exitAtFirstUser) { mcp?.kill(); process.exit(5); }
       out({ type: "system", subtype: "init", per_turn_effort_active: scenario.perTurnEffort ?? true, fast_mode_state: "off" });
       void play(nextReply());
     }

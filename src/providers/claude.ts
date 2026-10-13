@@ -79,7 +79,16 @@ export class ClaudeSubscription implements Provider {
       format: settings.replayFormat, tools, choice, conversation, images };
     if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
       const outcome = await this.live(run, request, context, settings, signal);
-      if (outcome?.kind === "stream") { yield* outcome.events; return; }
+      if (outcome?.kind === "stream") {
+        let yielded = false;
+        try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
+        catch (error) {
+          // A session that dies before its first event (the CLI or relay exits right after the seed)
+          // falls back to one-shot. Limits, cancellation and caller errors would only repeat.
+          if (yielded || signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
+          telemetry("claude_session", { outcome: "fallback", missReason: "stream_failed" });
+        }
+      }
     }
     let streamed = false;
     try {
