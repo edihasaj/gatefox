@@ -8,6 +8,7 @@ import { NativeControl, nativeRegistration } from "./native-control.js";
 import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
+import { watchForUpgrade } from "./self-update.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
@@ -23,11 +24,11 @@ export async function shimSession(executable: string, args: string[], config: Ga
   let router: AppServerRouter | undefined;
   let backends: AppServerBackends;
   const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
-  const startedAt = Date.now(); let handled = 0;
+  const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
   try {
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async message => {
       await router?.observeNotification(message);
-      if (!isId(message.id)) turns.observe(message);
+      if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
       if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
     }, () => input.destroy(), configPath);
   } catch (error) { control?.close(); turns.close(); reportException(error, "adapter_start"); telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
@@ -50,6 +51,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   };
   const stop = () => { closing = true; input.destroy(); void backends.stop(); };
   signal.addEventListener("abort", stop, { once: true });
+  // After an install, an idle adapter exits; the app starts a new one on the new release.
+  const stopWatching = watchForUpgrade("adapter", () => turns.active === 0 && tasks.size === 0 && Date.now() - lastActivity > 30000, () => { stop(); return true; });
   try {
     if (signal.aborted) return 0;
     await router.initialize();
@@ -57,6 +60,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
       let message: Message;
       try { message = object(JSON.parse(line)); }
       catch { await emit({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
+      lastActivity = Date.now();
       if (typeof message.method === "string" && isId(message.id)) {
         handled++;
         if (message.method === "initialize") { const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
@@ -75,7 +79,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
     }
   } catch (error) { if (!closing && !backends.native.closed) throw error; }
   finally {
-    closing = true; signal.removeEventListener("abort", stop); turns.close();
+    closing = true; signal.removeEventListener("abort", stop); turns.close(); stopWatching();
     telemetry("adapter_session_end", { durationMs: Date.now() - startedAt, requests: handled, nativeClosed: backends.native.closed });
     control?.close();
     await backends.stop(); await Promise.allSettled(tasks);

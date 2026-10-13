@@ -31,6 +31,8 @@ export class TurnTelemetry {
     this.timer = setInterval(() => this.checkQuiet(), 60000); this.timer.unref();
   }
   close(): void { clearInterval(this.timer); }
+  /** Turns started and not yet completed on this connection. */
+  get active(): number { return this.turns.size; }
   private key(params: Message): string | undefined {
     const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
     const turnId = typeof params.turnId === "string" ? params.turnId : typeof object(params.turn).id === "string" ? String(object(params.turn).id) : undefined;

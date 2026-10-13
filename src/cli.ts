@@ -16,6 +16,7 @@ import { refreshModelMetadata } from "./model-refresh.js";
 import { configureTelemetry, readTelemetry, telemetry } from "./telemetry.js";
 import { summarizeTelemetry } from "./diagnostics.js";
 import { startErrorReports } from "./error-report.js";
+import { watchForUpgrade } from "./self-update.js";
 import { LiveConfig } from "./live-config.js";
 import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
@@ -240,6 +241,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const live = new LiveConfig(path, config, values.port ? config.port : undefined);
   const server = await startGateway(config, undefined, () => live.current());
   process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
+  // After an install, the server restarts on the new release at an idle moment; its
+  // supervisor or launchd starts it again.
+  watchForUpgrade("server", () => server.isIdle(), () => server.restartWhenIdle(() => process.exit(0)));
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
   const refresh = () => { void refreshModelMetadata(path).then(updated => { if (updated.length) process.stderr.write(JSON.stringify({ event: "model_metadata_refreshed", providers: updated }) + "\n"); }).catch(() => {}); };
   setTimeout(refresh, 60_000).unref(); setInterval(refresh, 6 * 60 * 60_000).unref();

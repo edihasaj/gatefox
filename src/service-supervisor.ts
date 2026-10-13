@@ -12,6 +12,7 @@ import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { errorClass } from "./turn-telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
+import { watchForUpgrade } from "./self-update.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 const execFileAsync = promisify(execFile);
@@ -26,6 +27,7 @@ export class ServiceSupervisor {
   private executionStarting?: ReturnType<typeof startExecutionHost>;
   private hostRetry?: NodeJS.Timeout;
   private wakeWatch?: NodeJS.Timeout;
+  private stopUpgradeWatch?: () => void;
   private lastTick = Date.now();
   private hostFailures = 0;
   private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number; sharedNativeExecutor: boolean; sharedGatewayExecutors: boolean };
@@ -59,6 +61,9 @@ export class ServiceSupervisor {
     if (this.stopping) return;
     this.heartbeat = setInterval(() => { void this.publish().catch(() => { void this.stop(); }); }, 5000);
     this.lastTick = Date.now(); this.wakeWatch = setInterval(() => this.checkWake(Date.now()), 5000);
+    // The service itself moves to a newly installed release only when fully idle
+    // (no app connected and no chat loaded); until then it keeps the previous one.
+    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting, () => this.restartWhenIdle());
     await this.publish();
   }
   private async startExecutionHost(config: Awaited<ReturnType<typeof loadConfig>>, paths: ReturnType<typeof serviceExecutionPaths>): Promise<void> {
@@ -151,7 +156,7 @@ export class ServiceSupervisor {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearTimeout(this.hostRetry);
+    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); this.stopUpgradeWatch?.(); clearTimeout(this.hostRetry);
     const executionClose = this.executionStarting?.then(host => host.close());
     // Observe rejection immediately while owned component processes shut down.
     const executionStopped = executionClose?.then(() => undefined, error => error as Error);

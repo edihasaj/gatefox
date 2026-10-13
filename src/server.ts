@@ -37,7 +37,7 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
   return value;
 }
-export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean };
+export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean };
 export interface GatewayFailure {
   event: "request_failed"; requestId: string; providerId?: string; model?: string;
   durationMs: number; code: string; status: number; abortCause?: "timeout" | "cancelled";
@@ -166,6 +166,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   const close = server.close.bind(server);
   server.close = callback => { for (const controller of active) controller.abort(); return close(callback); };
   const controlled = server as GatewayServer;
+  controlled.isIdle = () => !requests && !active.size;
   controlled.restartWhenIdle = callback => {
     // Includes body uploads and catalog reads, not only provider inference.
     if (requests || active.size) return false;

@@ -72,6 +72,23 @@ belongs in the release archive.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device.
 
+## Updating without quitting the app
+
+Installing a release only switches the `current` link; nothing is stopped. Each
+long-running process checks once a minute whether `current` points to a different
+release and moves to it at an idle moment:
+
+| Process | Moves when | How |
+| --- | --- | --- |
+| Adapter (one per app connection) | no active turn, no pending request, 30 seconds quiet | exits; the app starts a new adapter on the new release within seconds |
+| Inference server | no request in flight | exits; the supervisor or launchd starts it on the new release |
+| Supervisor, execution host, relay | fully idle: no app connected and no chat loaded | idle restart; launchd starts it on the new release |
+
+Until the supervisor is idle it keeps the previous release, so adapters and the
+host must stay protocol-compatible across one release. Each move is logged as
+`self_upgrade`. Processes started from a checkout never move. Releases before
+0.2.32 do not have this; moving from them needs one service restart.
+
 The installer keeps the current release, the previous one and the newest other
 release. Older releases move to the Trash unless a running process still maps
 their files (checked with `lsof`); nothing is deleted.
