@@ -20,6 +20,8 @@ export interface FixtureReply {
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
 export interface FixtureEntry {
   pid: number; start?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
+  /** Names (never values) of the Claude Code session variables the CLI inherited. */
+  claudeVars?: string[];
   control?: string; effort?: string; user?: number; heads?: string[]; toolResult?: string; exit?: string;
 }
 
@@ -38,7 +40,8 @@ async function fixtureMain(): Promise<void> {
   const log = (entry: Json) => fs.appendFileSync(env.CLAUDE_FIXTURE_CAPTURE!, JSON.stringify({ pid: process.pid, ...entry }) + "\n");
   const out = (message: Json) => { process.stdout.write(JSON.stringify(message) + "\n"); };
   const live = env.DISABLE_AUTO_COMPACT === "1"; const scenario = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json;
-  log({ start: live ? "live" : "oneshot", advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false" });
+  log({ start: live ? "live" : "oneshot", advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false",
+    claudeVars: Object.keys(env).filter(name => /^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_AGENT_SDK_)/.test(name)).sort() });
   if (live && scenario.exitAtSpawn) process.exit(3);
   const nextReply = (): Json => {
     const current = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json; const reply = current.replies.shift() ?? { text: "ok" };

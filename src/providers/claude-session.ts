@@ -10,7 +10,7 @@ import { ProviderError } from "./provider.js";
 import { controlLine, controlResult, userLine, type ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeMessageStream, ClaudeStreamEnd, ClaudeTokens } from "./claude-stream.js";
 import type { ContentBlock } from "./claude-render.js";
-import { validateForcedChoice } from "./claude-calls.js";
+import { nativeClaudeCalls, validateForcedChoice } from "./claude-calls.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 import { claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
@@ -47,6 +47,7 @@ export interface SessionTurn {
   onEnd(outcome: "ended" | "interrupted" | "failed", tokens?: ClaudeTokens): void;
 }
 
+type Block = { type?: unknown; name?: unknown };
 interface Attached {
   turn: SessionTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
   /** The text this request emitted: Codex replays it, and it can differ from the native text (paragraph breaks). */
@@ -57,6 +58,13 @@ const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 export const sessionLimits = { startMs: 15000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
+// Host Claude Code session variables (a gateway started from a Claude Code shell) make the CLI act between requests.
+const hostVariable = (name: string) => name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("CLAUDE_AGENT_SDK_");
+/** The typed failure for a tool the CLI must never run, classified like the one-shot path. */
+function foreignTool(name: unknown): ProviderError {
+  try { nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined }], []); } catch (error) { if (error instanceof ProviderError) return error; }
+  return new ProviderError("invalid_tool_call", "Claude returned an unknown tool call", 502, { code: "unknown_tool", event: "claude.tool_use" });
+}
 
 const sessionsDirectory = () => join(tmpdir(), "gateway-claude");
 // A generation directory is named after the gateway process that owns it, so leftovers of a dead process are recognizable.
@@ -145,8 +153,9 @@ export class ClaudeSession {
     }
     const mcpPath = join(directory, "mcp.json");
     await writeFile(mcpPath, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
-    // Only gateway tools: no server-side advisor and no deferred tool loading.
-    const env = { ...this.options.env, CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", ENABLE_TOOL_SEARCH: "false" };
+    // Only gateway tools: no server-side advisor and no deferred tool loading. Host session variables passed through unchanged are dropped.
+    const env = Object.fromEntries(Object.entries(this.options.env).filter(([name, value]) => !hostVariable(name) || value !== process.env[name]));
+    Object.assign(env, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", ENABLE_TOOL_SEARCH: "false" });
     const child = this.child = spawn("claude", this.options.args(mcpPath), { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.exit = new Promise(resolve => child.once("close", () => resolve()));
     let failed = false;
@@ -261,6 +270,7 @@ export class ClaudeSession {
     if (rest.some(message => message.type === "result")) {
       this.state = "turn_done";
       for (const message of rest) { const limit = claudeUsageEvent(message); if (limit) void this.onUsage?.(limit).catch(() => {}); }
+      if (this.retiring) void this.close("closed", this.retiring);
       return;
     }
     this.write(controlLine("interrupt").line); this.state = "interrupting";
@@ -297,11 +307,17 @@ export class ClaudeSession {
     if (typeof message.fast_mode_state === "string") this.fastState = message.fast_mode_state;
     if (message.type === "system" && message.subtype === "init" && typeof message.per_turn_effort_active === "boolean") this.perTurnEffort = message.per_turn_effort_active;
     if (message.type === "system" && message.subtype === "per_turn_effort_changed") this.perTurnEffort = false;
-    const event = message.type === "stream_event" && message.event && typeof message.event === "object" ? message.event as { type?: unknown; message?: { id?: unknown }; content_block?: { type?: unknown } } : undefined;
+    const event = message.type === "stream_event" && message.event && typeof message.event === "object" ? message.event as { type?: unknown; message?: { id?: unknown }; content_block?: Block } : undefined;
     if (event?.type === "message_start") { this.message = typeof event.message?.id === "string" ? event.message.id : undefined; this.messageTool = false; }
-    if (event?.type === "content_block_start" && event.content_block?.type === "tool_use") this.messageTool = true;
     const content = message.type === "assistant" ? (message.message as { content?: unknown } | undefined)?.content : undefined;
-    if (Array.isArray(content) && content.some(block => (block as { type?: unknown })?.type === "tool_use")) this.messageTool = true;
+    const uses = [...(event?.type === "content_block_start" && event.content_block ? [event.content_block] : []), ...(Array.isArray(content) ? content as Block[] : [])].filter(block => block?.type === "tool_use");
+    if (uses.length) this.messageTool = true;
+    // Backstop to --tools "": any other tool ends the session as soon as it is read, before the CLI could run it, however slowly the caller reads.
+    const foreign = uses.find(block => typeof block.name !== "string" || !block.name.startsWith("mcp__gateway__"));
+    if (foreign) {
+      const error = foreignTool(foreign.name); if (this.attached) this.attached.error = error;
+      void this.close("crashed", error.upstream?.code ?? error.code, true); return;
+    }
     const attached = this.attached;
     if (!attached) { this.detached(message, event?.type); return; }
     attached.queue.push(message);

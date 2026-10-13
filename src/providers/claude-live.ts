@@ -16,6 +16,11 @@ import type { ClaudeLiveInput, ClaudeLiveOutcome, ClaudeMissReason } from "./cla
  * before output falls back to the one-shot path.
  */
 type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected" | "forced_choice";
+/**
+ * A request's own provider settings. The cap counts every live session in the process, so a
+ * provider with a lower cap may evict another provider's idle sessions; park time is per session.
+ */
+type Settings = { max: number; parkMinutes: number };
 type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -27,25 +32,25 @@ const forced = (choice: ChatToolSelection | undefined) => choice === "required" 
 // Session files of a gateway process that died without closing its sessions are removed once per process.
 let swept: Promise<void> | undefined;
 
-export function claudeLive(settings: { max: number; parkMinutes: number }) {
-  const registry = sessionRegistry(); registry.settings = { max: settings.max, parkMinutes: settings.parkMinutes };
+export function claudeLive(settings: Settings) {
+  const registry = sessionRegistry(); const limits = { max: settings.max, parkMinutes: settings.parkMinutes };
   return {
-    attach: (input: ClaudeLiveInput, signal: AbortSignal) => attach(registry, input, signal),
+    attach: (input: ClaudeLiveInput, signal: AbortSignal) => attach(registry, limits, input, signal),
     /** Closes every session at once and forgets how earlier ones ended (tests; shutdown uses the registry hook). */
     stop: async () => { await closeSessions(registry, "stopped", true); registry.ended.clear(); },
     sessions: (): ClaudeSession[] => [...registry.sessions.values()],
   };
 }
 
-async function attach(registry: SessionRegistry, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
+async function attach(registry: SessionRegistry, settings: Settings, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
   if (signal.aborted) throw cancelled();
   const key = sha(`${input.scope}\0${input.threadId}`);
   if (registry.starting.has(key)) return { kind: "fallback", reason: "concurrent" };
   registry.starting.add(key);
-  try { await (swept ??= sweepSessionDirectories()); return await place(registry, key, input, signal); } finally { registry.starting.delete(key); }
+  try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal); } finally { registry.starting.delete(key); }
 }
 
-async function place(registry: SessionRegistry, key: string, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
+async function place(registry: SessionRegistry, settings: Settings, key: string, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
   let session = registry.sessions.get(key);
   if (session?.state === "interrupting") await session.waitIdle(1500);
   if (session?.state === "generating" || session?.state === "interrupting") return { kind: "fallback", reason: "concurrent" };
@@ -78,17 +83,20 @@ async function place(registry: SessionRegistry, key: string, input: ClaudeLiveIn
   }
   if (signal.aborted) throw cancelled();
   if (!session || !plan) {
-    while (registry.sessions.size >= registry.settings.max) {
+    while (registry.sessions.size >= settings.max) {
       const victim = evictable(registry);
       if (!victim) return { kind: "fallback", reason: "capacity" };
       registry.sessions.delete(victim.key); void victim.close("evicted");
     }
+    // While this attach starts the session, the key's starting entry is its own: a failed start removes the thread directory.
+    let booting = true;
     try {
       session = await ClaudeSession.start({
         key, fingerprint, window, effort: input.effort, args: input.spawn.args, env: input.spawn.env, mcpCatalog: input.spawn.mcpCatalog,
-        keyInUse: () => registry.sessions.has(key) || registry.starting.has(key),
+        keyInUse: () => registry.sessions.has(key) || (!booting && registry.starting.has(key)),
         onClose: (closed, outcome, why) => ended(registry, closed, outcome, why),
       }, signal);
+      booting = false;
     } catch (error) {
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };
@@ -96,17 +104,17 @@ async function place(registry: SessionRegistry, key: string, input: ClaudeLiveIn
     registry.sessions.set(key, session); registry.ended.delete(key);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
-  return { kind: "stream", events: start(registry, session, input, entries.map(entry => entry.digest), plan, signal, {
+  return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs,
   }) };
 }
 
-function start(registry: SessionRegistry, session: ClaudeSession, input: ClaudeLiveInput, prefix: string[], plan: Plan, signal: AbortSignal, decision: Record<string, unknown>) {
+function start(registry: SessionRegistry, settings: Settings, session: ClaudeSession, input: ClaudeLiveInput, prefix: string[], plan: Plan, signal: AbortSignal, decision: Record<string, unknown>) {
   const forcedBlock = choiceBlock(input.choice, input.tools);
   const begin = plan.kind === "continue_outputs"
     ? { outputs: new Map<string, RelayContent[]>(plan.outputs.map(entry => [entry.callId!, relayContent(entry.item?.output)])) }
     : { user: [...input.render(plan.kind === "continue_user" ? plan.from : 0), ...(forcedBlock ? [forcedBlock] : [])] };
-  session.park(registry.settings.parkMinutes * 60000);
+  session.park(settings.parkMinutes * 60000);
   return session.run({
     begin, prefix, stream: input.newStream(), tools: input.tools, choice: input.choice, fast: input.fast, signal,
     onUsage: input.onUsage, onContextWindow: input.onContextWindow,

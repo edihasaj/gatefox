@@ -15,7 +15,6 @@ export interface SessionRegistry {
   starting: Set<string>;
   /** How each key's last session ended, so the next spawn reports why it had none. */
   ended: Map<string, string>;
-  settings: { max: number; parkMinutes: number };
 }
 
 const symbol = Symbol.for("harness-gateway/claude-sessions/v1");
@@ -26,7 +25,7 @@ export function sessionRegistry(): SessionRegistry {
   const scope = globalThis as unknown as Record<symbol, Partial<SessionRegistry> | undefined>;
   const existing = scope[symbol];
   if (existing?.interfaceVersion === 1) return existing as SessionRegistry;
-  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map(), settings: { max: 6, parkMinutes: 60 } };
+  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map() };
   scope[symbol] = registry;
   registerActivityProbe("claude_sessions", () => sessionsBusy(registry));
   registerShutdownHook("claude_sessions", () => closeSessions(registry, "shutdown", false));

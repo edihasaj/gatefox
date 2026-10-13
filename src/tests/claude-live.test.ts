@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { ProviderError, type InferenceContext } from "../providers/provider.js";
@@ -53,7 +57,10 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
   try {
     const limits: ClaudeLimit[] = [];
     const provider = adapter({}, async limit => { limits.push(limit); }); const first = [user("Use alpha and beta")];
-    const a = await turn(provider, first);
+    // A gateway started from a Claude Code shell must not hand that session's variables to its CLIs.
+    const host = { CLAUDECODE: process.env.CLAUDECODE, CLAUDE_CODE_ENTRYPOINT: process.env.CLAUDE_CODE_ENTRYPOINT };
+    Object.assign(process.env, { CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
+    const a = await turn(provider, first).finally(() => { for (const [name, value] of Object.entries(host)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
     assert.deepEqual(a.events.map(kind), ["text", "text", "tool:alpha", "tool:beta", "done"]);
     await sleep(100);
     assert.equal(limits.length, 1, "a rate limit printed after the request ended still reaches the provider");
@@ -65,6 +72,7 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
     assert.deepEqual(capture.filter(entry => entry.control).map(entry => entry.control), ["initialize"]);
     const start = capture.find(entry => entry.start)!; const mcp = capture.find(entry => entry.mcpTools)!;
     assert.deepEqual([start.advisorOff, start.toolSearchOff, mcp.mcpTools, mcp.maxResult], [true, true, 2, 2000000], "only gateway tools, with large results allowed");
+    assert.deepEqual(start.claudeVars, ["CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"], "only the gateway's own Claude Code variables");
     const events = await sessions();
     assert.deepEqual(events.map(entry => [entry.outcome, entry.cacheReadTokens, entry.cacheWriteTokens, entry.outputTokens]), [["spawned", 100, 10, 7], ["continued", 100, 10, 7]]);
   } finally { await teardown(f); }
@@ -229,6 +237,8 @@ test("a CLI that exits at spawn falls back to one-shot with spawn_failed", async
     assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
     assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "oneshot"]);
     assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
+    const key = createHash("sha256").update("claude\0\0thread-1").digest("hex").slice(0, 16);
+    assert.equal(existsSync(join(tmpdir(), "gateway-claude", key)), false, "a failed start leaves no thread directory behind");
   } finally { await teardown(f); }
 });
 
@@ -329,5 +339,44 @@ test("a kept partial whose text resumed after thinking continues the session", a
     const b = await turn(provider, [...first, { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] }, user("go on")]);
     assert.equal(b.text, "After keep");
     assert.deepEqual((await sessions()).map(entry => entry.outcome), ["interrupted", "continued"]);
+  } finally { await teardown(f); }
+});
+
+test("a non-gateway tool_use kills the session at once, even while the caller is not reading", async () => {
+  const { f } = await setup({ replies: [{ text: "Looking", foreign: "Bash" }] });
+  try {
+    const iterator = adapter().infer({ model: "fixture", input: [user("run")], tools }, new AbortController().signal, thread)[Symbol.asyncIterator]();
+    const first = await iterator.next().catch((error: unknown) => error);
+    while (!(await pids(f)).length) await sleep(10);
+    const [pid] = await pids(f);
+    assert.ok(await gone(pid, 300), "killed before the consumer pulled the tool_use line");
+    await assert.rejects(async () => { if (first instanceof Error) throw first; for (let next = await iterator.next(); !next.done; next = await iterator.next()); },
+      (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
+  } finally { await teardown(f); }
+});
+
+test("a session retired during a turn closes when that turn is cancelled after its result was read", async () => {
+  const { f } = await setup({ replies: [{ text: "Finished early" }] });
+  try {
+    const controller = new AbortController();
+    const iterator = adapter().infer({ model: "fixture", input: [user("hi")], tools }, controller.signal, thread)[Symbol.asyncIterator]();
+    await iterator.next(); await sleep(150);
+    await runShutdownHooks(3000);
+    const [pid] = await pids(f); assert.equal(alive(pid), true, "the running turn keeps its session");
+    controller.abort();
+    await assert.rejects(iterator.next(), { code: "cancelled" });
+    assert.ok(await gone(pid, 2000), "the retired session closes with the turn");
+  } finally { await teardown(f); }
+});
+
+test("each provider's park time applies to its own sessions, whatever another provider sent since", async () => {
+  const { f } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { calls: [{ tool: "alpha", input: { id: 1 } }] }] });
+  const pidOf = (threadId: string) => claudeLive({ max: 6, parkMinutes: 60 }).sessions().find(session => session.key === createHash("sha256").update(`claude\0\0${threadId}`).digest("hex"))!.pid!;
+  try {
+    // The second provider's request arrives while the first one's process is still starting.
+    const short = turn(adapter({ parkMinutes: 0.004 }), [user("short")]); const long = turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } });
+    await short; const shortPid = pidOf("thread-1"); await long; const longPid = pidOf("thread-2");
+    assert.ok(await gone(shortPid, 3000), "the short park reaps its session");
+    assert.equal(alive(longPid), true, "the long park keeps the other one");
   } finally { await teardown(f); }
 });
