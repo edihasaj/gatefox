@@ -290,7 +290,8 @@ Codex 2 rows use Codex's native tool-output truncation (10,000 tokens) and windo
 share (95%), and keep the upstream's `truncation_policy`, `max_context_window` and
 `auto_compact_token_limit` when discovery returns them. Other provider types keep
 12,000 tokens and 90%. The upstream reports GPT-6.1-Sol at 500K with a maximum of
-872K, against 800K natively, so the usable window is 475K rather than 760K. The
+872K. On the desktop the adapter then applies the native row for the same model
+([below](#codex-2-rows-and-the-native-catalog)). The
 refresh overwrites a hand-set `truncationPolicy` with the upstream value; an
 `effectiveContextWindowPercent` override lasts while the upstream omits that field.
 After an update the public catalog changes twice: once for the new defaults, then
@@ -323,6 +324,69 @@ the 404 five times and ended the turn with nothing.
 Resuming a gateway chat on the same model sends no reasoning override, so the
 chat keeps the level saved with it. A Max chat stays at Max after a restart. A
 resume that switches models still receives a level the new model supports.
+
+## Codex 2 rows and the native catalog
+
+Codex 2 rows serve the same models as native Codex, so the desktop adapter gives
+them the harness half of the native row. Each Codex 2 row in the public catalog
+names its upstream model in `upstream_slug`. The adapter looks that slug up in the
+local native catalog it loaded at startup and copies these fields:
+
+- `model_messages`: the base prompt (`instructions_template`) and Codex's other
+  model messages, together with `include_skills_usage_instructions`,
+  `include_plugin_usage_instructions` and `include_apps_usage_instructions`. Native
+  GPT-6.1-Sol turns all three off because its template already holds that
+  guidance. With the gateway's own `true` values Codex repeated it: with skills
+  alone, 2,554 characters (about 550 input tokens) on every request. Without a
+  native template the gateway values stay;
+- `tool_mode`, `apply_patch_tool_type` and `shell_type`;
+- the `default_reasoning_level`, `default_verbosity` and `default_reasoning_summary`
+  defaults, and `support_verbosity`. A default effort the route does not offer is
+  not copied;
+- `effective_context_window_percent` and `truncation_policy`;
+- `context_window`, but only when the native value is at or below the upstream's
+  `max_context_window`. Otherwise, or when the upstream reports no maximum, the
+  upstream window stays.
+
+Everything else keeps the upstream value: service tiers, multi-agent fields, the
+window maximum, the auto-compaction limit, input modalities and reasoning levels.
+`comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
+web search disabled, because `tool_search` does not pass through the gateway. A
+slug without a native row, and every Claude, Copilot or other row, stays as the
+gateway published it. The rows the adapter builds drop `upstream_slug`. At each
+launch the native-catalog preflight first writes `desktop-models.json` with the
+plain gateway rows, marker included; the adapter replaces that file with the
+copied rows on its first successful cache restore or host refresh, and every
+gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
+ignore the marker, as they do in the plain catalog that CLI and remote clients
+read. Those clients have no native catalog, so they keep the gateway rows
+unchanged.
+
+The inference host still never supplies instructions. The offline cache stores
+only the host's public rows; the adapter rebuilds the copy from the native catalog
+on every start, and a changed native row changes the catalog revision, which starts
+a new executor generation for new chats.
+
+Code mode runs in a separate `codex-code-mode-host` process that Codex starts from
+beside its own executable. The gateway SDK package does not ship that host yet, so
+code mode in its executors fails closed. When the installed package has a gateway
+SDK without the host, the adapter keeps the gateway's `direct` tool mode and still
+copies the other fields. Without a gateway SDK, executors run the desktop's own
+Codex and take the native code mode.
+
+On 13 Oct 2026 a low-effort GPT-6.1-Sol turn through a development gateway sent
+the native 21,769-character base prompt as a developer message (Responses lite has
+no top-level `instructions`). With Codex 0.160.0 the model called the code-mode
+`exec` tool; with the gateway SDK and the copied `direct` mode it called
+`exec_command`. Both turns completed, and the second request of each turn read
+97-98% of its input from the cache. Native and upstream both reported GPT-6.1-Sol
+at 500K that day, so its window did not change.
+
+A resumed chat keeps the base instructions saved with it, as natively; chats
+started before this change keep their empty base prompt. When it starts a new
+gateway chat without a saved preference, the adapter still selects medium effort
+and auto summaries, so the native default shows in the model list but does not
+yet start the chat.
 
 ## Speed controls
 

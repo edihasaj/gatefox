@@ -10,6 +10,8 @@ import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 export interface ClaudeTokens { input: number; cacheRead: number; cacheWrite: number; output: number }
 export type ClaudeStreamEnd =
   | { kind: "tool_use"; calls: OpenAIToolCall[]; usage: Usage; tokens: ClaudeTokens }
+  /** A text turn complete at its message_delta (endTurn streams only). */
+  | { kind: "end_turn"; usage: Usage; tokens: ClaudeTokens }
   | { kind: "result"; result: Record<string, unknown>; usage: Usage; tokens: ClaudeTokens };
 export interface ClaudeStreamStep {
   events: InferenceEvent[];
@@ -45,6 +47,13 @@ export function claudeResultFailure(result: Record<string, unknown>, limit?: Cla
   return claudeFailure(result, limit) || claudeFailure({ ...result, is_error: true }, limit)!;
 }
 
+/** The context windows a CLI result reports it actually used; the catalog adopts them on refresh. */
+export function resultWindows(result: Record<string, unknown>): Array<{ model: string; contextWindow: number }> {
+  const used = result.modelUsage;
+  return used && typeof used === "object" ? Object.entries(used as Record<string, { contextWindow?: unknown }>).flatMap(([model, value]) =>
+    typeof value?.contextWindow === "number" ? [{ model: model.replace(/\[1m\]$/, ""), contextWindow: value.contextWindow }] : []) : [];
+}
+
 interface Block { id: string; name: string; json: string; input?: unknown }
 interface Message { id?: string; base: ClaudeTokens; tokens?: ClaudeTokens; blocks: Map<number, Block>; stop?: string; ending?: "all" | "complete"; ended?: boolean }
 
@@ -54,17 +63,21 @@ interface Message { id?: string; base: ClaudeTokens; tokens?: ClaudeTokens; bloc
  * request only once every call is complete: the CLI emits one `assistant`
  * line per content block, all with the same message id, before message_delta.
  * A message that stops for another reason ends with its complete calls only.
- * Output tokens come only from message_delta. `accept` throws the mapped
- * ProviderError for native failures, foreign tools and inconsistent text.
+ * Output tokens come only from message_delta. With `endTurn`, a message without
+ * calls that stops with end_turn ends the request at its message_delta, since
+ * the CLI can print its result seconds later, after a post-turn summary. Any
+ * other stop still waits for the result and its error classification.
+ * `accept` throws the mapped ProviderError for native failures, foreign tools
+ * and inconsistent text.
  */
 export class ClaudeMessageStream {
-  private readonly tools: OpenAITool[]; private readonly summaryVisible: boolean;
+  private readonly tools: OpenAITool[]; private readonly summaryVisible: boolean; private readonly endTurn: boolean;
   private readonly bindings: Map<string, OpenAITool | undefined>;
   private message?: Message; private last?: ClaudeTokens; private limit?: ClaudeLimit; private raw = "";
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
-  constructor({ tools, summaryVisible }: { tools: OpenAITool[]; summaryVisible: boolean }) {
-    this.tools = tools; this.summaryVisible = summaryVisible; this.bindings = claudeToolBindings(tools);
+  constructor({ tools, summaryVisible, endTurn = false }: { tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean }) {
+    this.tools = tools; this.summaryVisible = summaryVisible; this.endTurn = endTurn; this.bindings = claudeToolBindings(tools);
   }
   /** Text streamed so far, for the final result's consistency check. */
   get text(): string { return this.raw; }
@@ -117,6 +130,7 @@ export class ClaudeMessageStream {
       if (typeof stop === "string") message.stop = stop;
       // Another stop (max_tokens) still makes the CLI run the complete calls on the gateway MCP server and wait forever.
       if (message.stop !== undefined && message.blocks.size) { message.ending = message.stop === "tool_use" ? "all" : "complete"; this.finish(message, step, message.ending); }
+      else if (this.endTurn && message.stop === "end_turn" && !message.ended) { message.ended = true; step.end = { kind: "end_turn", usage: claudeUsage(message.tokens), tokens: message.tokens }; }
     } else if (event.type === "message_stop" && message && message.blocks.size) {
       this.finish(message, step, message.stop === undefined || message.stop === "tool_use" ? "final" : "complete");
     }
@@ -161,13 +175,7 @@ export class ClaudeMessageStream {
   }
 
   private result(result: Record<string, unknown>, step: ClaudeStreamStep): void {
-    // The CLI reports the window it actually used; the catalog adopts it on refresh.
-    const used = result.modelUsage;
-    if (used && typeof used === "object") {
-      const windows = Object.entries(used as Record<string, { contextWindow?: unknown }>).flatMap(([model, value]) =>
-        typeof value?.contextWindow === "number" ? [{ model: model.replace(/\[1m\]$/, ""), contextWindow: value.contextWindow }] : []);
-      if (windows.length) step.contextWindows = windows;
-    }
+    const windows = resultWindows(result); if (windows.length) step.contextWindows = windows;
     if (result.is_error || result.subtype !== "success") throw claudeResultFailure(result, this.limit);
     const text = typeof result.result === "string" ? result.result : this.raw;
     if (!text.startsWith(this.raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");

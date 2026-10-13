@@ -20,6 +20,8 @@ export interface FixtureReply {
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
 export interface FixtureEntry {
   pid: number; start?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
+  /** CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, and the --system-prompt-file content (test data). */
+  descriptionLimit?: string; system?: string;
   /** Names (never values) of the Claude Code session variables the CLI inherited. */
   claudeVars?: string[];
   control?: string; effort?: string; user?: number; heads?: string[]; toolResult?: string; exit?: string;
@@ -40,14 +42,16 @@ async function fixtureMain(): Promise<void> {
   const log = (entry: Json) => fs.appendFileSync(env.CLAUDE_FIXTURE_CAPTURE!, JSON.stringify({ pid: process.pid, ...entry }) + "\n");
   const out = (message: Json) => { process.stdout.write(JSON.stringify(message) + "\n"); };
   const live = env.DISABLE_AUTO_COMPACT === "1"; const scenario = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json;
+  const argv = process.argv.slice(2);
   log({ start: live ? "live" : "oneshot", advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false",
-    claudeVars: Object.keys(env).filter(name => /^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_AGENT_SDK_)/.test(name)).sort() });
+    claudeVars: Object.keys(env).filter(name => /^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_AGENT_SDK_)/.test(name)).sort(),
+    descriptionLimit: env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, system: fs.readFileSync(argv[argv.indexOf("--system-prompt-file") + 1], "utf8") });
   if (live && scenario.exitAtSpawn) process.exit(3);
   const nextReply = (): Json => {
     const current = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json; const reply = current.replies.shift() ?? { text: "ok" };
     fs.writeFileSync(scenarioPath, JSON.stringify(current)); return reply;
   };
-  const argv = process.argv.slice(2); const servers = JSON.parse(fs.readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8")).mcpServers || {};
+  const servers = JSON.parse(fs.readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8")).mcpServers || {};
   const names = new Map<string, string>(); const waiting = new Map<number, (message: Json) => void>(); let rpc = 0;
   let mcp: import("node:child_process").ChildProcessWithoutNullStreams | undefined;
   const call = (method: string, params: Json) => new Promise<Json>(resolve => { const id = ++rpc; waiting.set(id, resolve); mcp!.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); });

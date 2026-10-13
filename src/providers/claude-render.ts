@@ -37,6 +37,16 @@ export function renderItems(conversation: ClaudeConversation, images: ClaudeImag
   });
 }
 
+/**
+ * How many leading messages (the caller's instructions, then system and developer messages
+ * before the first other message) move into the CLI's system prompt. Later developer messages
+ * stay in the history, and a history with nothing else keeps them all.
+ */
+export function leadingInstructions(messages: OpenAIChatMessage[]): number {
+  const count = messages.findIndex(message => message.role !== "system" && message.role !== "developer");
+  return count < 0 ? 0 : count;
+}
+
 /** The final instruction for a forced or required tool choice, if any. */
 export function choiceBlock(choice: ChatToolSelection | undefined, tools: OpenAITool[]): ContentBlock | undefined {
   if (choice === "required") return { type: "text", text: "Use one of the caller tools." };

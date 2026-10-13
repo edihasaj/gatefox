@@ -22,9 +22,11 @@ export class SessionStartFailure extends Error { constructor(readonly reason: "s
 
 export interface SessionOptions {
   key: string; fingerprint: string; window: string; effort?: string;
-  args(mcpPath: string): string[];
+  args(mcpPath: string, systemPath: string): string[];
+  /** The CLI environment, without host Claude Code session variables (claudeEnv live). */
   env: NodeJS.ProcessEnv;
   mcpCatalog: ClaudeMcpTool[];
+  systemPrompt: string;
   /** Whether another session for this key exists or is starting; its directory then stays. */
   keyInUse(): boolean;
   /** Called once when a started session ends, for the registry and telemetry. */
@@ -58,8 +60,6 @@ const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 export const sessionLimits = { startMs: 15000 };
 const eventType = (message: Record<string, unknown>) => message.type === "stream_event" ? (message.event as { type?: unknown } | undefined)?.type : undefined;
-// Host Claude Code session variables (a gateway started from a Claude Code shell) make the CLI act between requests.
-const hostVariable = (name: string) => name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("CLAUDE_AGENT_SDK_");
 /** The typed failure for a tool the CLI must never run, classified like the one-shot path. */
 function foreignTool(name: unknown): ProviderError {
   try { nativeClaudeCalls([{ name: typeof name === "string" ? name : undefined }], []); } catch (error) { if (error instanceof ProviderError) return error; }
@@ -151,12 +151,10 @@ export class ClaudeSession {
       await copyFile(fileURLToPath(new URL("./claude-tools.js", import.meta.url)), script);
       servers = { gateway: { command: process.execPath, args: [script, tools, relay], alwaysLoad: true } };
     }
-    const mcpPath = join(directory, "mcp.json");
+    const mcpPath = join(directory, "mcp.json"), systemPath = join(directory, "system.md");
     await writeFile(mcpPath, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
-    // Only gateway tools: no server-side advisor and no deferred tool loading. Host session variables passed through unchanged are dropped.
-    const env = Object.fromEntries(Object.entries(this.options.env).filter(([name, value]) => !hostVariable(name) || value !== process.env[name]));
-    Object.assign(env, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: "1", ENABLE_TOOL_SEARCH: "false" });
-    const child = this.child = spawn("claude", this.options.args(mcpPath), { cwd: work, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    await writeFile(systemPath, this.options.systemPrompt, { mode: 0o600 });
+    const child = this.child = spawn("claude", this.options.args(mcpPath, systemPath), { cwd: work, env: this.options.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.exit = new Promise(resolve => child.once("close", () => resolve()));
     let failed = false;
     child.on("error", () => { failed = true; for (const done of [...this.controls.values()]) done(false); });

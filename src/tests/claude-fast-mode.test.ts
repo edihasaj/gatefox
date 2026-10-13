@@ -39,19 +39,24 @@ test("Fast maps to Claude fast mode only for models that offer it", () => {
 test("Claude fast mode is enabled through settings and the served tier follows the CLI's state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-fast-"));
   const capture = join(directory, "argv.jsonl"); const state = join(directory, "state");
-  // The fixture reports the fast mode state written to `state`, like the CLI's init and result messages.
+  // The fixture streams a text turn and reports the fast mode states written to `state` ("init result") on its init and
+  // result lines, like the CLI: a refused or throttled fast request drops to standard speed with no line in between.
   const script = `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs';for await(const _ of process.stdin){}appendFileSync(${JSON.stringify(capture)},JSON.stringify(process.argv.slice(2))+'\\n');
-const fast=readFileSync(${JSON.stringify(state)},'utf8');console.log(JSON.stringify({type:'system',subtype:'init',fast_mode_state:fast}));
-console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:fast,usage:{input_tokens:1,output_tokens:1}}));\n`;
+const [init,result=init]=readFileSync(${JSON.stringify(state)},'utf8').split(' ');const out=value=>console.log(JSON.stringify(value));const event=value=>out({type:'stream_event',event:value});
+out({type:'system',subtype:'init',fast_mode_state:init});event({type:'message_start',message:{id:'msg_1',usage:{input_tokens:1,output_tokens:1}}});
+event({type:'content_block_start',index:0,content_block:{type:'text',text:''}});event({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'ok'}});
+event({type:'content_block_stop',index:0});event({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:1}});event({type:'message_stop'});
+out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:result,usage:{input_tokens:1,output_tokens:1}});\n`;
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
   try {
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { opus: "claude-opus-5-5" }, modelMetadata: { opus: { serviceTiers: [claudeFastTier] } } });
     const run = async (fastState: string, request: Record<string, unknown>) => { await writeFile(state, fastState); return (await drain(adapter.infer({ model: "claude-opus-5-5", input: "x", ...request }, new AbortController().signal))).at(-1); };
     assert.equal((await run("on", { service_tier: "priority", reasoning: { effort: "high" } }) as { serviceTier?: string }).serviceTier, "priority");
+    assert.equal((await run("on cooldown", { service_tier: "priority" }) as { serviceTier?: string }).serviceTier, "default", "a fast turn that fell back after init reports Standard");
     assert.equal((await run("cooldown", { service_tier: "priority" }) as { serviceTier?: string }).serviceTier, "default", "a refused fast turn reports Standard");
     assert.equal((await run("off", {}) as { serviceTier?: string }).serviceTier, undefined);
-    const [withEffort, fastOnly, standard] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    const [withEffort, fastOnly, , standard] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
     assert.deepEqual(JSON.parse(withEffort[withEffort.indexOf("--settings") + 1]), { alwaysThinkingEnabled: true, fastMode: true });
     assert.deepEqual(JSON.parse(fastOnly[fastOnly.indexOf("--settings") + 1]), { fastMode: true });
     assert.equal(standard.includes("--settings"), false);
