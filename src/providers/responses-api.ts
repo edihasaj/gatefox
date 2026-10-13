@@ -10,9 +10,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ResponsesOutput } from "./responses-output.js";
 import { createHash } from "node:crypto";
 import { telemetry } from "../telemetry.js";
+import { reasoningScope } from "../protocol/reasoning-state.js";
+import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
 
 export class ResponsesAPI implements Provider {
-  constructor(private readonly config: ProviderConfig) {}
+  /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
+  readonly emitsTransport: boolean;
+  private readonly scope: string;
+  constructor(private readonly config: ProviderConfig) { this.emitsTransport = config.type === "codex-subscription"; this.scope = reasoningScope(config); }
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const requestedTier = request.service_tier;
     if (requestedTier !== undefined && requestedTier !== null && !publicServiceTier(requestedTier)) throw new ProviderError("invalid_request", "Invalid Responses service tier", 400);
@@ -25,10 +30,17 @@ export class ResponsesAPI implements Provider {
     const normalized = { ...request };
     if (tier === undefined || tier === null) delete normalized.service_tier;
     else normalized.service_tier = tier;
+    // The turn-state is opaque and scoped to this account route; a value from another route is dropped.
+    let turnState = this.emitsTransport ? unwrapTurnState(context.turnState, this.scope) : undefined; let transported = false;
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
-        for await (const event of this.attempt(normalized, signal, context)) { published = true; yield event; }
+        for await (const event of this.attempt(normalized, signal, context, turnState)) {
+          // Response headers are not output, so they never prevent the retry. Only the first reaches the
+          // caller, and a retry carries the turn-state it returned, as Codex does for the rest of a turn.
+          if (event.type === "transport") { if (!transported) { transported = true; turnState ??= unwrapTurnState(event.turnState, this.scope); yield event; } continue; }
+          published = true; yield event;
+        }
         return;
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
@@ -45,7 +57,7 @@ export class ResponsesAPI implements Provider {
       }
     }
   }
-  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext): AsyncGenerator<InferenceEvent> {
+  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
@@ -83,11 +95,14 @@ export class ResponsesAPI implements Provider {
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
     // when it sees the caller's own session and thread identifiers.
-    const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}) } : {};
+    const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}),
+      ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(body) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
+    // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
+    if (plan) { const returned = wrapTurnState(response.headers.get("x-codex-turn-state"), this.scope); yield { type: "transport", ...(returned ? { turnState: returned } : {}) }; }
     let done = false; const output = new ResponsesOutput();
     const calls = new Map<string, { signature: string; identity: string; input: string }>();
     const unfinished = new Map<string, { identity: string; length: number; digest: string }>();
