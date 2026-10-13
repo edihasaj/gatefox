@@ -42,6 +42,54 @@ export function nativeDescriptorFingerprint(descriptor: NativeExecutionDescripto
   return createHash("sha256").update(JSON.stringify({ args, cwd: descriptor.cwd })).digest("hex");
 }
 
+const providerSetting = "model_providers.subscription_gateway.";
+const valueFlags = ["-c", "--config", "--enable", "--disable"];
+
+/** Splits launch args into the gateway provider registration and the client's own settings. */
+export function nativeLaunchSettings(args: string[]): { provider: string[]; client: string[] } {
+  const forwarded = nativeTransportArgs(args).filter(arg => arg !== "--analytics-default-enabled");
+  const command = forwarded.indexOf("app-server"); if (command >= 0) forwarded.splice(command, 1);
+  const provider: string[] = []; const client: string[] = [];
+  for (let index = 0; index < forwarded.length; index++) {
+    const arg = forwarded[index]!;
+    if (!valueFlags.includes(arg) || index + 1 >= forwarded.length) { client.push(arg); continue; }
+    const value = forwarded[++index]!;
+    (["-c", "--config"].includes(arg) && value.startsWith(providerSetting) ? provider : client).push(`${arg} ${value}`);
+  }
+  return { provider, client };
+}
+
+function settingMap(client: string[]): { settings: Map<string, string>; other: string[] } | undefined {
+  const settings = new Map<string, string>(); const other: string[] = [];
+  for (const token of client) {
+    const space = token.indexOf(" "); const flag = token.slice(0, space); const value = token.slice(space + 1);
+    if (space < 0 || !valueFlags.includes(flag)) { other.push(token); continue; }
+    const equals = value.indexOf("=");
+    const [key, setting] = ["-c", "--config"].includes(flag) ? (equals > 0 ? [`config:${value.slice(0, equals).trim()}`, value.slice(equals + 1).trim()] : [`config:${value}`, ""]) : [`feature:${value}`, flag];
+    if (settings.has(key) && settings.get(key) !== setting) return;
+    settings.set(key, setting);
+  }
+  return { settings, other };
+}
+
+/**
+ * Compares two launches of the same native home. Clients add settings
+ * (relay: none, SSH: Code Mode, desktop: Code Mode plus bundled plugins), so a
+ * request that only adds keys can enrich the writer. Changing a value, a
+ * profile, or any non-setting flag is a conflict.
+ */
+export function compareNativeLaunch(running: NativeExecutionDescriptor, requested: NativeExecutionDescriptor): "same" | "subset" | "superset" | "conflict" {
+  if (nativeDescriptorFingerprint(running) === nativeDescriptorFingerprint(requested)) return "same";
+  const a = nativeLaunchSettings(running.args); const b = nativeLaunchSettings(requested.args);
+  if (running.cwd !== requested.cwd || JSON.stringify(a.provider) !== JSON.stringify(b.provider)) return "conflict";
+  const has = settingMap(a.client); const wants = settingMap(b.client);
+  if (!has || !wants || JSON.stringify(has.other) !== JSON.stringify(wants.other)) return "conflict";
+  for (const [key, value] of wants.settings) if (has.settings.has(key) && has.settings.get(key) !== value) return "conflict";
+  if ([...wants.settings.keys()].every(key => has.settings.has(key))) return "subset";
+  if ([...has.settings.keys()].every(key => wants.settings.has(key))) return "superset";
+  return "conflict";
+}
+
 export function nativeExecutionArgs(args: string[], socket: string, managedRelay: boolean): string[] {
   if (managedRelay && args.some(arg => arg === "--remote-control" || arg.startsWith("--remote-control="))) throw new Error("Native execution remote-control flag conflicts with managed relay ownership");
   return [...nativeTransportArgs(args), "--listen", `unix://${socket}`];
@@ -148,6 +196,20 @@ export class NativeExecutionEngine {
         cursor = result.nextCursor; cursors.add(cursor);
       }
       throw new Error("Native execution SDK loaded-chat pagination exceeded its bound");
+    });
+  }
+
+  /** Loaded chats whose SDK status is not proven idle; replacement waits for zero. */
+  async busyThreads(): Promise<number> {
+    const threads = await this.loadedThreads();
+    if (!threads.size) return 0;
+    return this.withAdmin(async admin => {
+      let busy = 0;
+      for (const threadId of threads) {
+        const status = object(object((await admin.request("thread/read", { threadId, includeTurns: false })).thread).status).type;
+        if (!["idle", "notLoaded", "systemError"].includes(String(status))) busy++;
+      }
+      return busy;
     });
   }
 

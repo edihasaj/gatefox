@@ -186,3 +186,43 @@ test("confirmed native SDK death is recorded without treating a client disconnec
     assert.equal((await control.request("native/death", { pid: recovered.pid, revision: recovered.revision, instanceId: recovered.instanceId })).confirmed, false);
   } finally { client?.stop(); control.stop(); await host.close(); await f.clean(); }
 });
+
+test("a relay-started writer yields to the desktop's added settings only when its chats are idle", { timeout: 15000 }, async () => {
+  const f = await fixture(); const host = await startExecutionHost(f.options); const control = await f.connection(join(f.home, "host.sock")); let client;
+  // Mirrors the installed desktop: Code Mode plus bundled plugin MCP toggles the relay does not pass.
+  const desktopArgs = [...f.args, "-c", "features.code_mode_host=true", "-c", "plugins.codex-app-tools@openai-bundled.mcp_servers.codex_app.enabled=true",
+    "-c", "plugins.code-review@openai-bundled.mcp_servers.code-review.enabled=true", "--analytics-default-enabled"];
+  const sshArgs = [...f.args, "-c", "features.code_mode_host=true"];
+  try {
+    const relay = await control.request("native/acquire", { args: f.args, cwd: f.cwd }) as unknown as NativeExecutionRecord;
+    client = await f.initialize(relay.socketPath, "relay-frontend");
+    await client.request("thread/start", { threadId: "remote-chat" }); await client.request("fixture/active", { threadId: "remote-chat" });
+    await assert.rejects(control.request("native/acquire", { args: desktopArgs, cwd: f.cwd }), /while a chat is running/);
+    assert.equal(livePid(relay.pid), true);
+    await client.request("thread/unsubscribe", { threadId: "remote-chat" }); client.stop(); await client.exited; client = undefined;
+    const desktop = await control.request("native/acquire", { args: desktopArgs, cwd: f.cwd }) as unknown as NativeExecutionRecord;
+    assert.notEqual(desktop.pid, relay.pid); assert.equal(livePid(relay.pid), false);
+    assert.equal((await control.request("native/death", { pid: relay.pid, revision: relay.revision, instanceId: relay.instanceId })).intentional, true);
+    for (const args of [f.args, sshArgs, desktopArgs]) assert.equal((await control.request("native/acquire", { args, cwd: f.cwd })).pid, desktop.pid);
+    client = await f.initialize(desktop.socketPath, "desktop"); assert.ok(((await client.request("fixture/info", {})).args as string[]).includes("features.code_mode_host=true"));
+    client.stop(); await client.exited; client = undefined;
+    // A relay that restarts the writer reuses the desktop launch, so the desktop attaches without a replacement.
+    process.kill(desktop.pid, "SIGTERM");
+    await until(async () => ((await control.request("execution/status", {})).native as Message).state === "exited");
+    const relaunched = await control.request("native/acquire", { args: f.args, cwd: f.cwd }) as unknown as NativeExecutionRecord;
+    assert.equal((await control.request("native/acquire", { args: desktopArgs, cwd: f.cwd })).pid, relaunched.pid);
+  } finally { client?.stop(); control.stop(); await host.close(); await f.clean(); }
+});
+
+test("native launches never replace a writer for changed values, profiles, or another directory", { timeout: 15000 }, async () => {
+  const f = await fixture(); const host = await startExecutionHost(f.options); const control = await f.connection(join(f.home, "host.sock"));
+  try {
+    const record = await control.request("native/acquire", { args: [...f.args, "-c", "features.code_mode_host=true"], cwd: f.cwd }) as unknown as NativeExecutionRecord;
+    for (const args of [[...f.args, "-c", "features.code_mode_host=false"], [...f.args, "-c", 'model="other"'], [...f.args, "-c", "features.code_mode_host=true", "--profile", "work"],
+      ["app-server", "-c", 'model="native-original"', "-c", "model_providers.subscription_gateway.base_url=\"http://127.0.0.1:1/v1\""]]) {
+      await assert.rejects(control.request("native/acquire", { args, cwd: f.cwd }), /startup settings differ; existing ownership/);
+    }
+    await assert.rejects(control.request("native/acquire", { args: f.args, cwd: f.nativeHome }), /startup settings differ/);
+    assert.equal(livePid(record.pid), true);
+  } finally { control.stop(); await host.close(); await f.clean(); }
+});

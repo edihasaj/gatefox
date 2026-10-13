@@ -128,9 +128,23 @@ wrapper for the first hook. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, an
 
 Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
-appear as an organization-settings error. Shared native ownership accepts the
-desktop's analytics-default flag when attaching to a relay-started SDK. It keeps
-the first SDK's launch policy and rejects different explicit settings or profiles.
+appear as an organization-settings error.
+
+Natively, the desktop is the only launcher of its app-server. With shared native
+ownership, the relay or an SSH client can start the writer first with fewer
+settings. The host compares launches by setting key, not by exact argument list:
+
+| Request compared with the running writer | Result |
+| --- | --- |
+| Same settings, or a subset (relay ⊂ SSH ⊂ desktop) | Attaches to the running writer |
+| Only adds settings, and every loaded chat is idle | Replaces the writer with the richer launch |
+| Only adds settings while a chat is working | Refused; the desktop's Retry succeeds after it finishes |
+| Changes a value, a profile, the directory, or the provider registration | Refused; ownership is preserved |
+
+The desktop adds `features.code_mode_host` and its bundled plugin MCP toggles.
+The analytics-default flag is ignored. A replacement disconnects the old writer's
+clients, as an app restart would. A writer that a settings-free client starts
+later reuses the richest launch the host has seen.
 
 To test a fresh desktop launch, quit the app normally with Command-Q and keep
 the gateway daemon running. The launcher refuses to stop a running app. It starts

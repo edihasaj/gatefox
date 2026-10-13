@@ -115,7 +115,8 @@ export class ClaudeSubscription implements Provider {
         const diagnosis = String(result.result || "");
         if (/rate.?limit|usage.?limit/i.test(diagnosis)) throw new ProviderError("usage_limit", claudeLimitMessage(limit), 429);
         if (/auth|log.?in|oauth/i.test(diagnosis)) throw new ProviderError("authentication", "Claude subscription requires login", 401);
-        throw claudeFailure(result, limit) || new ProviderError("inference_failed", "Claude inference did not complete");
+        // Keep the CLI's allowlisted end reason (for example max turns) so failures stay diagnosable.
+        throw claudeFailure(result, limit) || claudeFailure({ ...result, is_error: true }, limit)!;
       }
       if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call", 502, { code: "required_tool_missing", event: "claude.result" });
       const text = typeof result.result === "string" ? result.result : raw;

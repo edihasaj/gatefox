@@ -7,7 +7,7 @@ import { object, isId, type Id, type Message } from "./app-server-connection.js"
 import type { GatewayConfig } from "./config.js";
 import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
 import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
-import { NativeExecutionEngine, nativeDescriptor, nativeDescriptorFingerprint, type NativeExecutionRecord } from "./native-execution-host-engine.js";
+import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 
@@ -26,7 +26,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !capabilities.includes("native")) throw new Error("Execution host native relay ownership is invalid");
   const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath,
     capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration: options.nativeRelayOwnsRegistration === true } : {}) });
-  let native: NativeExecutionEngine | undefined; let nativeLease: NativeHomeLease | undefined;
+  let native: NativeExecutionEngine | undefined; let richestNative: NativeExecutionDescriptor | undefined; let nativeLease: NativeHomeLease | undefined;
   const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
   let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let pending = 0;
   const publish = () => {
@@ -57,16 +57,28 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const acquireNative = async (params: Message): Promise<NativeExecutionRecord> => {
     if (!capabilities.includes("native") || !nativeLease) throw new Error("Execution host does not offer native ownership");
     const descriptor = nativeDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
+    if (native && !native.closed) {
+      const relation = compareNativeLaunch(native.descriptor, descriptor);
+      if (relation === "same" || relation === "subset") return { ...native.record };
+      if (relation === "conflict") throw new Error("Native execution startup settings differ; existing ownership was preserved");
+      // The desktop is the native launcher. A writer started for a client with
+      // fewer settings yields to it, but never while a loaded chat is working.
+      if (await native.busyThreads()) throw new Error("Native execution startup settings differ while a chat is running; retry after it finishes");
+      if (native.closed || compareNativeLaunch(native.descriptor, descriptor) !== "superset") throw new Error("Native execution launch changed during replacement; retry");
+      await native.stop(); await publish();
+    }
     if (native) {
-      if (native.fingerprint !== nativeDescriptorFingerprint(descriptor)) throw new Error("Native execution startup settings differ; existing ownership was preserved");
-      if (!native.closed) return { ...native.record };
       // Only confirmed process death permits replacement. Socket disconnect is
       // never sufficient, and stop validates/removes only its own dead socket.
       if (!native.death) throw new Error("Native execution launch is unconfirmed; existing ownership was preserved");
       await native.stop();
     }
     if (stopping) throw new Error("Execution host is closing");
-    native = new NativeExecutionEngine(descriptor, owner, home, options.nativeRelayOwnsRegistration === true);
+    // A relay starting the writer first reuses the richest launch this host has seen,
+    // so a returning desktop attaches instead of waiting for an idle replacement.
+    const launch = richestNative && compareNativeLaunch(richestNative, descriptor) === "subset" ? richestNative : descriptor;
+    native = new NativeExecutionEngine(launch, owner, home, options.nativeRelayOwnsRegistration === true);
+    if (launch === descriptor && (!richestNative || compareNativeLaunch(richestNative, descriptor) === "superset")) richestNative = descriptor;
     // Persist launch intent before spawn: a killed host cannot claim an unknown
     // child was never started merely because its PID publication was interrupted.
     try { await publish(); await native.start(publish); await publish(); return { ...native.record }; }
@@ -127,7 +139,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
           return result;
         });
         serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch is unconfirmed|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);

@@ -62,7 +62,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   const helper = gatewayCommand();
   const overrides = {
     name: "Subscription Gateway", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses", requires_openai_auth: false,
-    supports_websockets: false, request_max_retries: 2, stream_max_retries: 0, stream_idle_timeout_ms: config.timeoutMs,
+    supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: config.timeoutMs,
     "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
   };
   const prepared = await prepareNativeCatalog(executable, preflightArgs, config);

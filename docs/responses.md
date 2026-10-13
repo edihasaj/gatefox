@@ -113,8 +113,13 @@ quota limits return immediately. Cancellation and the request deadline bound all
 backoff waits; no quota or account switch is attempted.
 
 The default total request deadline is ten minutes; explicit `timeoutMs` settings
-remain authoritative. Disconnects abort inference and release capacity. Codex
-stream retries are disabled to avoid repeating partially completed actions.
+remain authoritative. Disconnects abort inference and release capacity. The
+gateway leaves Codex's own stream retry policy at its native default, so Codex
+retries a dropped or failed stream exactly as it does for its built-in provider.
+Codex ends a failed turn without a final answer and does not save the error in
+the chat transcript, so a client that reconnects later sees only the ended turn.
+Claude failures without a native error code record the CLI's allowlisted result
+subtype, such as `error_max_turns`.
 
 The daemon runs at most `maxConcurrent` providers (four by default). Up to 32
 additional requests wait in a FIFO queue instead of receiving immediate capacity
