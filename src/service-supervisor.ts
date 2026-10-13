@@ -13,10 +13,16 @@ import { configureTelemetry, telemetry } from "./telemetry.js";
 import { errorClass } from "./turn-telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
+import { shutdownDrainMs } from "./runtime-activity.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 const execFileAsync = promisify(execFile);
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; failures: number; startedAt: number }
+/** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
+function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([done, new Promise<void>(resolve => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+}
 export class ServiceSupervisor {
   private stopping = false;
   private slots: Slot[];
@@ -157,14 +163,23 @@ export class ServiceSupervisor {
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
     this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); this.stopUpgradeWatch?.(); clearTimeout(this.hostRetry);
-    const executionClose = this.executionStarting?.then(host => host.close());
+    // Inference lets running streams finish before it exits, so it gets its drain on top
+    // of the usual grace. Shared executors are its local clients: the host closes only
+    // once inference has exited, or their running streams would end as cancelled.
+    const grace = (slot: Slot) => slot.definition.kind === "inference" ? shutdownDrainMs() + 2500 : 2500;
+    const inference = this.slots.filter(slot => slot.definition.kind === "inference" && slot.child);
+    for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
+    const executionClose = this.executionStarting && Promise.all(inference.map(slot => within(slot.exited, grace(slot))))
+      .then(() => this.executionStarting).then(host => host?.close());
     // Observe rejection immediately while owned component processes shut down.
     const executionStopped = executionClose?.then(() => undefined, error => error as Error);
-    for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
     const exited = Promise.all(this.slots.map(slot => slot.exited));
-    await Promise.race([exited, delay(2500)]);
-    for (const slot of this.slots) { slot.child?.kill("SIGKILL"); slot.state.state = "stopped"; delete slot.state.pid; delete slot.state.nextRestartAt; }
-    await Promise.race([exited, delay(1000)]);
+    await Promise.all(this.slots.map(async slot => {
+      const child = slot.child; if (!child) return;
+      await within(slot.exited, grace(slot)); child.kill("SIGKILL");
+    }));
+    for (const slot of this.slots) { slot.state.state = "stopped"; delete slot.state.pid; delete slot.state.nextRestartAt; }
+    await within(exited, 1000);
     try {
       const failure = await executionStopped;
       if (this.executionState) this.executionState.state = failure ? "failed" : "stopped";

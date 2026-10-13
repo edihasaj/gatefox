@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, readFile, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -135,4 +137,61 @@ test("waking from sleep restarts tunnels at once and leaves other components alo
     await until(async () => { const tunnel = (await read()).components.find(value => value.id === "tunnel"); return !!tunnel?.pid && tunnel.pid !== before.find(value => value.id === "tunnel")?.pid; });
     assert.equal((await read()).components.find(value => value.id === "native")?.pid, before.find(value => value.id === "native")?.pid);
   } finally { await supervisor.stop(); }
+});
+
+test("inference gets its drain on top of the grace while a tunnel is still killed at 2.5 s", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-drain-"));
+  process.env.GATEWAY_SHUTDOWN_DRAIN_MS = "1000";
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
+    component(directory, "inference", "inference", "process.on('SIGTERM',()=>setTimeout(()=>{console.log('DRAINED');process.exit(0)},3000)); console.log('READY'); setInterval(()=>{},1000)"),
+    component(directory, "tunnel", "tunnel", "process.on('SIGTERM',()=>{}); console.log('READY'); setInterval(()=>{},1000)"),
+  ] }, directory, 25);
+  const ready = async (id: string) => (await readFile(join(directory, id + ".log"), "utf8").catch(() => "")).includes("READY");
+  try {
+    await supervisor.start(); await until(async () => await ready("inference") && await ready("tunnel"));
+    const pids = Object.fromEntries((JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components as Array<{ id: string; pid: number }>).map(value => [value.id, value.pid]));
+    const started = Date.now(); const ended: Record<string, number> = {};
+    const watch = setInterval(() => { for (const [id, pid] of Object.entries(pids)) if (!(id in ended) && !live(pid)) ended[id] = Date.now() - started; }, 20);
+    try { await supervisor.stop(); await delay(40); } finally { clearInterval(watch); }
+    assert.ok(ended.tunnel >= 2400 && ended.tunnel < 3200, `a tunnel that ignores SIGTERM is killed at 2.5 s (${ended.tunnel} ms)`);
+    assert.ok(ended.inference >= 2900, `inference was not killed before drain + 2.5 s (${ended.inference} ms)`);
+    assert.match(await readFile(join(directory, "inference.log"), "utf8"), /DRAINED/, "inference exited on its own");
+  } finally { delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; await supervisor.stop(); }
+});
+
+test("the shared execution host closes only after inference has drained", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-order-"));
+  const config = join(directory, "config.json");
+  await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: directory, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_SUPERVISOR_FIXTURE_KEY", models: { fixture: "upstream" } }] });
+  const native = component(directory, "native", "native", "setInterval(()=>{},1000)");
+  native.args = [...native.args, "--codex", join(directory, "codex"), "--native-home", join(directory, "native-home")];
+  let inferencePid = 0; let closed: { atMs: number; inferenceRunning: boolean } | undefined; let started = 0;
+  const host = async () => ({ close: async () => { closed = { atMs: Date.now() - started, inferenceRunning: live(inferencePid) }; }, prepareStop: async () => true, resume: () => {} });
+  const supervisor = new ServiceSupervisor({ version: 1, config, sharedExecutors: true, components: [
+    component(directory, "inference", "inference", "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),600)); console.log('READY'); setInterval(()=>{},1000)"), native,
+  ] }, directory, 5, host as never);
+  const read = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { executionHost?: { state: string }; components: Array<{ id: string; pid?: number; state: string }> };
+  try {
+    await supervisor.start();
+    await until(async () => (await read()).executionHost?.state === "running" && (await readFile(join(directory, "inference.log"), "utf8").catch(() => "")).includes("READY"));
+    inferencePid = (await read()).components.find(value => value.id === "inference")!.pid!;
+    started = Date.now(); await supervisor.stop();
+    assert.ok(closed, "the host was closed");
+    assert.equal(closed.inferenceRunning, false, "inference finished before its local clients were closed");
+    assert.ok(closed.atMs >= 550, `the host waited for the inference drain (${closed.atMs} ms)`);
+  } finally { await supervisor.stop(); }
+});
+
+test("a stopped supervisor exits at once instead of waiting out the inference grace", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-exit-"));
+  const plan = { version: 1, config: join(directory, "config.json"), components: [component(directory, "inference", "inference", "setInterval(()=>{},1000)")] };
+  const script = `import { ServiceSupervisor } from ${JSON.stringify(new URL("../service-supervisor.js", import.meta.url).href)};
+    const supervisor = new ServiceSupervisor(${JSON.stringify(plan)}, ${JSON.stringify(directory)}, 25);
+    await supervisor.start(); await new Promise(resolve => setTimeout(resolve, 300)); await supervisor.stop(); console.log("STOPPED");`;
+  const { GATEWAY_SHUTDOWN_DRAIN_MS: _drain, ...env } = process.env;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "inherit"] });
+  let stoppedAt = 0; child.stdout!.on("data", chunk => { if (String(chunk).includes("STOPPED")) stoppedAt = Date.now(); });
+  const [code] = await once(child, "exit");
+  assert.equal(code, 0); assert.ok(stoppedAt, "the supervisor stopped");
+  assert.ok(Date.now() - stoppedAt < 1500, `no grace timer keeps the stopped service alive (${Date.now() - stoppedAt} ms)`);
 });
