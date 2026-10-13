@@ -14,8 +14,8 @@ function outputCall(call: OpenAIToolCall): Item {
   if (!custom) { item.arguments = call.function.arguments; return item; }
   let input: unknown;
   try { input = (JSON.parse(call.function.arguments) as { input?: unknown }).input; }
-  catch { throw new ResponsesTranslationError("Provider returned invalid custom tool arguments"); }
-  if (typeof input !== "string") throw new ResponsesTranslationError("Provider returned non-text custom tool input");
+  catch { throw new ResponsesTranslationError("Provider returned invalid custom tool arguments", "invalid_provider_output"); }
+  if (typeof input !== "string") throw new ResponsesTranslationError("Provider returned non-text custom tool input", "invalid_provider_output");
   item.input = input; return item;
 }
 export function responseToolItems(calls: OpenAIToolCall[]): Item[] { return calls.map(outputCall); }

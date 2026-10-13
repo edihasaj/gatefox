@@ -23,7 +23,8 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     }
     if (event.event.startsWith("request_")) {
       const entry = requests[model] ||= {};
-      bump(entry, event.event === "request_failed" ? `failed:${event.code}` : event.event.slice(8));
+      // Translation failures also carry their fixed reason, so a 400 is separable per model.
+      bump(entry, event.event === "request_failed" ? `failed:${event.code}${event.reason ? ":" + event.reason : ""}` : event.event.slice(8));
       if (typeof event.inputTokens === "number") entry.input = (entry.input || 0) + event.inputTokens;
       if (typeof event.cachedTokens === "number") entry.cached = (entry.cached || 0) + event.cachedTokens;
       if (typeof event.firstEventMs === "number") (firstEvent[model] ||= []).push(event.firstEventMs);

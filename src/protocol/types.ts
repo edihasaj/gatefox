@@ -66,7 +66,16 @@ export type ResponsesNamespaceTool = {
   name: string;
   description?: string;
 };
-export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem;
+/** Codex multi-agent transcript item: one agent's message to another, with optional encrypted transport state. */
+export type ResponsesAgentMessageItem = {
+  type: "agent_message";
+  id?: string;
+  author?: string;
+  recipient?: string;
+  content: string | Array<Record<string, unknown>>;
+  [key: string]: unknown;
+};
+export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem;
 export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | OpenAITool;
 export type ResponsesRequest = {
   model: string;

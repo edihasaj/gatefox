@@ -47,6 +47,15 @@ state is not exposed to the Claude model. Hosted tools are outside
 the current Claude adapter's scope. Unsupported item and tool types return a
 client error instead of an internal crash.
 
+Codex also replays `agent_message` items: text one agent wrote to another, with its
+encrypted transport state beside it. A Responses upstream receives the item unchanged,
+including its ID, author, recipient, metadata passthrough, and encrypted parts. Every
+translated provider receives one user-role message whose text is the item's
+`input_text` and `output_text` parts joined in order; encrypted parts contribute
+nothing, and an item with no text adds no message. Author and recipient are never
+rendered into the transcript as labels or prose. Any other part type, including an
+image, fails as a client error before a provider is invoked.
+
 Responses upstream completion retains an actual boolean `end_turn` when present.
 An absent value remains absent. This lets the SDK distinguish a continuation
 from the end of a turn, including a response containing only caller tools.

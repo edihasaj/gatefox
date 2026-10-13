@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderFailure, providerFailureDiagnostic } from "../provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, translationFailureFields } from "../provider-failure.js";
 import { ProviderError, type ProviderStreamDiagnostic } from "../providers/provider.js";
-import { ResponsesTranslationError } from "../protocol/request.js";
+import { ResponsesTranslationError, translationItemTypes, translationReasons } from "../protocol/request.js";
 
 function withoutTimestamp(diagnostic: Record<string, string | number>): Record<string, string | number> {
   const { timestamp, ...metadata } = diagnostic;
@@ -12,8 +12,9 @@ function withoutTimestamp(diagnostic: Record<string, string | number>): Record<s
 
 test("known provider failures retain their typed status and code", () => {
   for (const error of [new ProviderError("authentication", "Provider login is missing or expired", 401), new ProviderError("usage_limit", "Provider usage limit reached", 429), new ProviderError("context_length_exceeded", "Provider context limit reached", 400)]) assert.equal(classifyProviderFailure(error, undefined), error);
-  const translated = classifyProviderFailure(new ResponsesTranslationError("invalid fixture input"), undefined);
+  const translated = classifyProviderFailure(new ResponsesTranslationError("invalid fixture input", "unsupported_input_item", "agent_message"), undefined);
   assert.equal(translated.code, "invalid_request"); assert.equal(translated.status, 400);
+  assert.equal(translated.message, "Responses request contains invalid or unsupported data", "the caller-visible text stays fixed whatever the reason");
 });
 
 test("deadline aborts and user cancellation never become misleading login failures", () => {
@@ -38,7 +39,7 @@ test("untrusted error messages, URLs, tokens and getters never reach responses o
   assert.ok(!failure.message.includes("login")); assert.ok(!failure.message.includes(secret));
   const getter = Object.defineProperty({}, "cause", { get() { throw new Error(secret); } });
   assert.equal(classifyProviderFailure(getter, undefined).code, "provider_failed");
-  const translation = classifyProviderFailure(new ResponsesTranslationError(secret), undefined); assert.ok(!translation.message.includes(secret));
+  const translation = classifyProviderFailure(new ResponsesTranslationError(secret, "invalid_shape"), undefined); assert.ok(!translation.message.includes(secret));
   const record = providerFailureDiagnostic({ requestId: secret, providerId: secret, modelAlias: secret, durationMs: 120000.7, failure: new ProviderError(secret, secret, 12345), abortCause: "timeout" });
   assert.equal(record.durationMs, 120001); assert.equal(record.code, "provider_failed"); assert.equal(record.status, 502); assert.equal(record.abortCause, "timeout");
   assert.ok(!JSON.stringify(record).includes(secret)); assert.ok(!Object.hasOwn(record, "message"));
@@ -124,4 +125,45 @@ test("upstream diagnostic enums survive while arbitrary tool names and failure d
   assert.equal(diagnostic("native_tool_search", "claude.tool_use").upstreamCode, "native_tool_search");
   assert.equal(diagnostic("native_tool_search", "claude.tool_use").upstreamEvent, "claude.tool_use");
   assert.ok(!JSON.stringify(diagnostic("private data", "private data")).includes("private data"));
+});
+
+test("every translation reason and item type is a fixed allowlisted value", () => {
+  assert.deepEqual([...translationReasons].sort(), ["duplicate_tool", "invalid_image", "invalid_instructions", "invalid_provider_output", "invalid_reasoning_state", "invalid_shape", "invalid_tool_call", "unsupported_content", "unsupported_input_item", "unsupported_role", "unsupported_tool", "unsupported_tool_choice"]);
+  for (const name of ["message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "reasoning", "additional_tools", "agent_message", "item_reference", "compaction", "web_search_call", "file_search_call", "computer_call", "computer_call_output", "image_generation_call", "code_interpreter_call", "local_shell_call", "local_shell_call_output", "mcp_call", "mcp_list_tools", "mcp_approval_request", "mcp_approval_response", "tool_search_call", "tool_search_output", "function", "custom", "namespace", "web_search", "web_search_preview", "file_search", "computer_use_preview", "computer_use", "image_generation", "code_interpreter", "local_shell", "mcp", "tool_search", "shell", "apply_patch", "other"]) assert.ok(translationItemTypes.has(name), name);
+  assert.ok(![...translationItemTypes].some(name => /\s/.test(name) || name.length > 32), "item types are wire type names, never caller identifiers");
+});
+
+test("a translation failure carries its reason and allowlisted item type into diagnostics", () => {
+  const error = new ResponsesTranslationError("private request detail", "unsupported_input_item", "web_search_call");
+  const fields = translationFailureFields(error);
+  assert.deepEqual(fields, { reason: "unsupported_input_item", itemType: "web_search_call" });
+  const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: classifyProviderFailure(error, undefined), ...fields });
+  assert.equal(record.code, "invalid_request"); assert.equal(record.status, 400);
+  assert.equal(record.reason, "unsupported_input_item"); assert.equal(record.itemType, "web_search_call");
+  assert.ok(!JSON.stringify(record).includes("private request detail"), "the rejection message never reaches the log");
+});
+
+test("reasons and item types outside the fixed sets are dropped, and other errors carry neither", () => {
+  for (const [reason, itemType] of [["unsupported_input_item", "a-tool-named-by-the-caller"], ["not_a_reason", "message"], ["private data", "Bearer sk-fixture"], [undefined, "message"], ["reasoning", undefined], ["invalid_shape", "other"]] as Array<[string | undefined, string | undefined]>) {
+    const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400), ...(reason ? { reason } : {}), ...(itemType ? { itemType } : {}) });
+    assert.equal(record.code, "invalid_request");
+    for (const [field, value, allowed] of [["reason", reason, translationReasons], ["itemType", itemType, translationItemTypes]] as Array<[string, string | undefined, ReadonlySet<string>]>) {
+      if (value && allowed.has(value)) assert.equal(record[field], value, field); else assert.ok(!Object.hasOwn(record, field), `${field} must be dropped`);
+    }
+    assert.ok(!JSON.stringify(record).includes("Bearer sk-fixture") && !JSON.stringify(record).includes("a-tool-named-by-the-caller") && !JSON.stringify(record).includes("not_a_reason"));
+  }
+  assert.deepEqual(translationFailureFields(new TypeError("fetch failed")), {});
+  assert.deepEqual(translationFailureFields(new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400)), {});
+  assert.deepEqual(translationFailureFields(Object.assign(new ResponsesTranslationError("private", "invalid_image"), { itemType: "Bearer sk-fixture" })), { reason: "invalid_image" });
+});
+
+test("translation fields are read without invoking getters or coercing hostile values", () => {
+  let reads = 0;
+  const hostile = { reason: "unsupported_tool", itemType: { toString() { reads++; return "namespace"; }, toJSON() { throw new Error("private data"); } } };
+  Object.defineProperty(hostile, "author", { get() { reads++; throw new Error("private data"); } });
+  const error = Object.setPrototypeOf(hostile, ResponsesTranslationError.prototype) as ResponsesTranslationError;
+  assert.deepEqual(translationFailureFields(error), { reason: "unsupported_tool" });
+  assert.equal(reads, 0);
+  const inherited = Object.create(new ResponsesTranslationError("private", "duplicate_tool"));
+  assert.deepEqual(translationFailureFields(inherited), {}, "an inherited reason is not this failure's metadata");
 });

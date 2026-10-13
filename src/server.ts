@@ -12,7 +12,7 @@ import { responsesToChatRequest } from "./protocol/request.js";
 import type { ResponsesRequest, Usage } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
-import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode } from "./provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "./provider-failure.js";
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
@@ -193,11 +193,13 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     } catch (error) {
       clearInterval(heartbeat);
       const known = classifyProviderFailure(error, abortCause);
+      // A rejected Responses request says which fixed class of data it rejected.
+      const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
       if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
-      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype });
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
-      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause }))); } catch { /* Diagnostics never replace the request outcome. */ }
+      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {

@@ -21,7 +21,7 @@ export function restoreReasoning(request: ResponsesRequest, scope: string): Resp
     if (typeof encrypted === "string" && encrypted.startsWith(`gws1:${scope}:`)) {
       const payload = encrypted.slice(scope.length + 6);
       const original = Buffer.from(payload, "base64url").toString("utf8");
-      if (!payload || Buffer.from(original).toString("base64url") !== payload) throw new ResponsesTranslationError("Malformed gateway reasoning state");
+      if (!payload || Buffer.from(original).toString("base64url") !== payload) throw new ResponsesTranslationError("Malformed gateway reasoning state", "invalid_reasoning_state");
       return [{ ...item, encrypted_content: original }];
     }
     const summary = item.summary?.map(part => part.text).join("\n");

@@ -1,5 +1,5 @@
 import { ProviderError } from "./providers/provider.js";
-import { ResponsesTranslationError } from "./protocol/request.js";
+import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
 export type ProviderAbortCause = "timeout" | "cancelled" | undefined;
 const networkCodes = new Set([
@@ -32,6 +32,10 @@ function own(value: unknown, key: string): unknown {
 }
 function recordObject(value: unknown): boolean {
   try { return value !== null && typeof value === "object" && !Array.isArray(value); } catch { return false; }
+}
+/** A fixed failure class, or nothing. An arbitrary caller string never becomes a diagnostic value. */
+function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | undefined {
+  return typeof value === "string" && allowed.has(value) ? value : undefined;
 }
 function networkFailure(error: unknown): boolean {
   // Node fetch uses a static outer message even when its cause is unfamiliar.
@@ -68,6 +72,16 @@ export interface ProviderFailureDiagnosticInput {
   durationMs: number;
   failure: ProviderError;
   abortCause?: ProviderAbortCause;
+  /** Why a request could not be translated, when the failure was a translation error. */
+  reason?: string;
+  /** Allowlisted Responses item or tool type the translation rejected. */
+  itemType?: string;
+}
+/** The translation classes a failure may carry; empty for every other error. */
+export function translationFailureFields(error: unknown): Record<string, string> {
+  if (!(error instanceof ResponsesTranslationError)) return {};
+  const reason = allowlisted(own(error, "reason"), translationReasons); const itemType = allowlisted(own(error, "itemType"), translationItemTypes);
+  return { ...(reason ? { reason } : {}), ...(itemType ? { itemType } : {}) };
 }
 /** A bounded metadata record; bodies, messages, stacks, URLs and credentials are absent. */
 export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput): Record<string, string | number> {
@@ -83,6 +97,8 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (typeof providerId === "string" && /^[a-z][a-z0-9_-]{0,63}$/.test(providerId)) result.providerId = providerId;
   if (typeof modelAlias === "string" && /^[a-z0-9][a-z0-9/._:-]{0,127}$/i.test(modelAlias)) result.modelAlias = modelAlias;
   if (abortCause === "timeout" || abortCause === "cancelled") result.abortCause = abortCause;
+  const reason = allowlisted(own(input, "reason"), translationReasons); const itemType = allowlisted(own(input, "itemType"), translationItemTypes);
+  if (reason) result.reason = reason; if (itemType) result.itemType = itemType;
   const upstream = own(failure, "upstream");
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");

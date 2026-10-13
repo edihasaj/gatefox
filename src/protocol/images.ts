@@ -3,10 +3,10 @@ import { ResponsesTranslationError } from "./request.js";
 
 /** Inline image data only. No remote fetches, files, or implicit conversion. */
 export function inlineImage(value: unknown, detail?: unknown): Extract<MessagePart, { type: "image" }> {
-  if (typeof value !== "string") throw new ResponsesTranslationError("Image input requires inline image_url data");
+  if (typeof value !== "string") throw new ResponsesTranslationError("Image input requires inline image_url data", "invalid_image");
   const match = value.match(/^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/);
-  if (!match || match[2].length > 8 * 1024 * 1024) throw new ResponsesTranslationError("Image input must be PNG, JPEG, GIF, or WebP base64 data within 8 MiB");
-  if (detail !== undefined && !["auto", "low", "high", "original"].includes(String(detail))) throw new ResponsesTranslationError("Unsupported image detail");
+  if (!match || match[2].length > 8 * 1024 * 1024) throw new ResponsesTranslationError("Image input must be PNG, JPEG, GIF, or WebP base64 data within 8 MiB", "invalid_image");
+  if (detail !== undefined && !["auto", "low", "high", "original"].includes(String(detail))) throw new ResponsesTranslationError("Unsupported image detail", "invalid_image");
   const bytes = Buffer.from(match[2], "base64");
   const signatures: Record<string, boolean> = {
     "image/png": bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])),
@@ -14,7 +14,7 @@ export function inlineImage(value: unknown, detail?: unknown): Extract<MessagePa
     "image/gif": ["GIF87a", "GIF89a"].includes(bytes.subarray(0, 6).toString("ascii")),
     "image/webp": bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP",
   };
-  if (bytes.toString("base64") !== match[2] || !signatures[match[1]]) throw new ResponsesTranslationError("Image encoding or media type is invalid");
+  if (bytes.toString("base64") !== match[2] || !signatures[match[1]]) throw new ResponsesTranslationError("Image encoding or media type is invalid", "invalid_image");
   return { type: "image", mediaType: match[1], data: match[2], ...(detail !== undefined ? { detail: detail as ImageDetail } : {}) };
 }
 

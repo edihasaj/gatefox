@@ -26,6 +26,19 @@ only a fixed class such as `stream_disconnected` or `usage_limit`.
 | Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens), `provider_retry`, `claude_cli`, `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed` |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
+A request the gateway could not translate records the same `request_failed` event plus
+two fixed fields: `reason` is one of `invalid_shape`, `unsupported_input_item`,
+`unsupported_content`, `unsupported_role`, `invalid_tool_call`, `unsupported_tool`,
+`duplicate_tool`, `unsupported_tool_choice`, `invalid_image`, `invalid_reasoning_state`,
+`invalid_instructions`, `invalid_provider_output`; `itemType` names the rejected item or
+tool type, but only from a fixed allowlist of Responses wire types, and as `other` for
+anything the list does not contain. A value outside those sets is dropped rather than
+recorded, so no caller text, tool name, or identifier can ride in on them.
+`gateway diagnostics` groups those failures by code and reason, which separates a
+malformed request from an unsupported item without storing either's contents. The
+message the client receives stays "Responses request contains invalid or unsupported
+data" whatever the reason.
+
 `gateway diagnostics [--since HOURS]` summarizes the log: turn outcomes and
 failure classes per model, request outcomes, cache-hit ratio and first-event
 latency per model, retries, RPC errors, component exits, host events, and the 25
