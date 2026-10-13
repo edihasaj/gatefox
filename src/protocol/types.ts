@@ -77,7 +77,7 @@ export type ResponsesRequest = {
   tools?: ResponsesTool[];
   [option: string]: unknown;
 };
-export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number };
+export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number } };
 export type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
 export type PublicServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast";
 const publicServiceTiers = new Set<string>(["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"]);

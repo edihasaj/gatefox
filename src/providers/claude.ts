@@ -20,7 +20,8 @@ interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_rea
 function usage(tokens?: ClaudeUsage): Usage {
   const input = (tokens?.input_tokens || 0) + (tokens?.cache_read_input_tokens || 0) + (tokens?.cache_creation_input_tokens || 0);
   const output = tokens?.output_tokens || 0;
-  return { input_tokens: input, output_tokens: output, total_tokens: input + output };
+  // Report cache reads the Responses way so callers can see actual cache reuse.
+  return { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: tokens?.cache_read_input_tokens || 0 } };
 }
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
@@ -60,7 +61,7 @@ export class ClaudeSubscription implements Provider {
       "--model", request.model, "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
       "--system-prompt", "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.",
       ...(effort ? ["--effort", effort] : []),
-      ...(images.length ? ["--input-format", "stream-json"] : []),
+      "--input-format", "stream-json",
       ...(effort ? ["--settings", '{"alwaysThinkingEnabled":true}'] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
     let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null;
@@ -79,9 +80,18 @@ export class ClaudeSubscription implements Provider {
     try {
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
       const aliases = tools.map(tool => ({ caller: tool.function.name, native: claudeNativeToolName(tool) }));
-      const prompt = `Tool names: ${JSON.stringify(aliases)}\n${typeof choice === "object" || choice === "required" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(conversation)}`;
-      const content = images.flatMap(({ label, image }) => [{ type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
-      child.stdin.end(images.length ? JSON.stringify({ type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content: [...content, { type: "text", text: prompt }] } }) + "\n" : prompt);
+      // Claude reuses its prompt cache only for unchanged leading content blocks.
+      // One block per conversation item keeps every earlier block identical as a
+      // tool loop grows; per-request instructions go last.
+      const attached = new Map<number, Array<Record<string, unknown>>>();
+      for (const { label, image } of images) {
+        const index = Number(/^conversation-message-(\d+)-part-/.exec(label)?.[1]) - 1;
+        attached.set(index, [...(attached.get(index) || []), { type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
+      }
+      const content: Array<Record<string, unknown>> = [{ type: "text", text: `Tool names: ${JSON.stringify(aliases)}\nConversation items follow, oldest first, one JSON item per block.` }];
+      conversation.forEach((item, index) => { content.push({ type: "text", text: JSON.stringify(item) }, ...(attached.get(index) || [])); });
+      if (typeof choice === "object" || choice === "required") content.push({ type: "text", text: "Use the required caller tool." });
+      child.stdin.end(JSON.stringify({ type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content } }) + "\n");
       for await (const line of lines) {
         if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;

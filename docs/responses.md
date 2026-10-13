@@ -182,6 +182,14 @@ inference. An image is limited to 8 MiB encoded; the whole request remains limit
 to 10 MiB. Remote URLs and uploaded file IDs are rejected. The gateway does not
 fetch image URLs or borrow the primary account's file access.
 
+Each Claude inference starts the official CLI with one user message. The adapter
+sends each conversation item as its own content block, oldest first, and puts
+per-request instructions last. Earlier blocks stay byte-identical as a tool loop
+grows, so Claude reuses its prompt cache. In a measured three-round loop, the
+second and third rounds were about 98% cached; the former single-string prompt
+was 0% cached after the first change. Claude cache reads are reported as
+`input_tokens_details.cached_tokens`.
+
 Claude receives native image blocks through the official CLI's streamed input.
 Copilot receives private SDK image attachments, deleted with the request session.
 Their text conversation contains labels for image ownership and order, never the
