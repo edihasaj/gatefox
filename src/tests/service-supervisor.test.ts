@@ -73,6 +73,8 @@ test("service plans reject duplicates, credential environment overrides, and pub
   const definition = component(directory, "inference", "inference", "");
   assert.throws(() => validateServicePlan({ version: 1, config: join(directory, "config.json"), components: [definition, { ...definition, id: "second" }] }), /Duplicate/);
   assert.throws(() => validateServicePlan({ version: 1, config: join(directory, "config.json"), components: [{ ...definition, environment: { API_KEY: "must-not-be-copied" } }] }), /environment/);
+  // The supervisor sizes the inference grace from its own drain setting, which the child inherits.
+  assert.throws(() => validateServicePlan({ version: 1, config: join(directory, "config.json"), components: [{ ...definition, environment: { GATEWAY_SHUTDOWN_DRAIN_MS: "30000" } }] }), /environment/);
   await writePrivateJson(join(directory, "service-plan.json"), { version: 1, config: join(directory, "config.json"), components: [definition] });
   assert.equal((await readServicePlan(directory))?.components.length, 1);
   const publicState = await mkdtemp(join(tmpdir(), "gateway-plan-public-"));

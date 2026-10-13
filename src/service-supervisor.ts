@@ -165,7 +165,8 @@ export class ServiceSupervisor {
     this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); this.stopUpgradeWatch?.(); clearTimeout(this.hostRetry);
     // Inference lets running streams finish before it exits, so it gets its drain on top
     // of the usual grace. Shared executors are its local clients: the host closes only
-    // once inference has exited, or their running streams would end as cancelled.
+    // once inference has exited, or their running streams would end as cancelled. Plans
+    // override only PATH and SSH_AUTH_SOCK, so inference inherits this drain setting.
     const grace = (slot: Slot) => slot.definition.kind === "inference" ? shutdownDrainMs() + 2500 : 2500;
     const inference = this.slots.filter(slot => slot.definition.kind === "inference" && slot.child);
     for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
