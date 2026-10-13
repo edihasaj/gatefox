@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/harness-gateway",
-  "version": "0.2.36",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription accounts to Codex and other agent harnesses as a Responses API.",
