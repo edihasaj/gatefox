@@ -16,6 +16,14 @@ export interface ProviderConfig {
   authDirectory?: string;
   label?: string;
   modelMetadata?: Record<string, ModelMetadata>;
+  /** Claude subscription only: one-shot replay or a live CLI session per Codex thread. */
+  claudeSessions?: ClaudeSessionConfig;
+}
+export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; replayFormat?: "text" | "json" }
+export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
+export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">): ClaudeSessionSettings {
+  const value = provider.claudeSessions || {};
+  return { mode: value.mode ?? "replay", max: value.max ?? 6, parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
 }
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
@@ -29,7 +37,14 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
   /** Responses lite: tools travel in input items and reasoning spans all turns. */
   useResponsesLite?: boolean;
   supportsReasoningEffortUpdates?: boolean;
+  /** Codex catalog parity: tool-output truncation, usable window share and compaction limits. */
+  truncationPolicy?: { mode: "tokens" | "bytes"; limit: number };
+  effectiveContextWindowPercent?: number;
+  autoCompactTokenLimit?: number;
+  maxContextWindow?: number;
 }
+/** A second Codex account served by its own signed engine; an ID may equal a codex-subscription provider ID. */
+export interface AccountEngineConfig { id: string; label?: string; workspaceId?: string }
 export interface GatewayConfig {
   version: 1;
   port: number;
@@ -38,7 +53,10 @@ export interface GatewayConfig {
   maxConcurrent?: number;
   timeoutMs?: number;
   clientOnly?: boolean;
+  accountEngines?: AccountEngineConfig[];
 }
+
+const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
 
 export function validateConfig(value: unknown, directory = process.cwd()): GatewayConfig {
   if (!value || typeof value !== "object") throw new Error("Configuration must be an object");
@@ -71,6 +89,10 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if ((metadata.useResponsesLite !== undefined && typeof metadata.useResponsesLite !== "boolean") || (metadata.supportsReasoningEffortUpdates !== undefined && typeof metadata.supportsReasoningEffortUpdates !== "boolean")) throw new Error("Responses lite metadata must be boolean");
       if (metadata.multiAgentReasoningEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(metadata.multiAgentReasoningEffort)) throw new Error("Unsupported multi-agent reasoning effort in model metadata");
       if (metadata.inputModalities !== undefined && (!Array.isArray(metadata.inputModalities) || !metadata.inputModalities.includes("text") || metadata.inputModalities.some(modality => !["text", "image"].includes(modality)) || new Set(metadata.inputModalities).size !== metadata.inputModalities.length)) throw new Error("Input modalities must contain text and optionally image");
+      const truncation = metadata.truncationPolicy;
+      if (truncation !== undefined && (!truncation || typeof truncation !== "object" || !["tokens", "bytes"].includes(truncation.mode) || !integerIn(truncation.limit, 1000, 1000000))) throw new Error("truncationPolicy needs mode tokens or bytes and an integer limit from 1000 through 1000000");
+      if (metadata.effectiveContextWindowPercent !== undefined && !integerIn(metadata.effectiveContextWindowPercent, 50, 100)) throw new Error("effectiveContextWindowPercent must be an integer from 50 through 100");
+      if ((metadata.autoCompactTokenLimit !== undefined && !integerIn(metadata.autoCompactTokenLimit, 1024)) || (metadata.maxContextWindow !== undefined && !integerIn(metadata.maxContextWindow, 1024))) throw new Error("autoCompactTokenLimit and maxContextWindow must be at least 1024 tokens");
       readServiceTierMetadata(metadata);
     }
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
@@ -80,10 +102,34 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
     if (provider.type === "codex-subscription" && !provider.credentialFile) throw new Error(`${provider.id}: credentialFile is required`);
-    return { ...provider, models: { ...provider.models }, ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
+    const sessions = provider.claudeSessions;
+    if (sessions !== undefined) {
+      if (provider.type !== "claude-subscription") throw new Error(`${provider.id}: claudeSessions is only valid for claude-subscription providers`);
+      if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) throw new Error(`${provider.id}: claudeSessions must be an object`);
+      if ((sessions.mode !== undefined && !["replay", "live"].includes(sessions.mode)) || (sessions.replayFormat !== undefined && !["text", "json"].includes(sessions.replayFormat))) throw new Error(`${provider.id}: claudeSessions mode must be replay or live and replayFormat text or json`);
+      if (sessions.max !== undefined && !integerIn(sessions.max, 1, 16)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 16`);
+      if (sessions.parkMinutes !== undefined && !integerIn(sessions.parkMinutes, 5, 240)) throw new Error(`${provider.id}: claudeSessions parkMinutes must be 5 through 240`);
+    }
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
   });
+  const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
-    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}) };
+    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}) };
+}
+
+function validateAccountEngines(value: unknown, providers: ProviderConfig[]): AccountEngineConfig[] {
+  if (!Array.isArray(value) || value.length > 4) throw new Error("accountEngines must be a list of at most 4 accounts");
+  const ids = new Set<string>();
+  return value.map((entry: Partial<AccountEngineConfig> | null) => {
+    if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(entry.id)) throw new Error("Account engine IDs must be 1 to 32 lowercase letters, digits, _ or -, starting with a letter");
+    if (ids.has(entry.id)) throw new Error(`Duplicate account engine ID: ${entry.id}`);
+    ids.add(entry.id);
+    const provider = providers.find(candidate => candidate.id === entry.id);
+    if (provider && provider.type !== "codex-subscription") throw new Error(`Account engine ${entry.id} may share an ID only with a codex-subscription provider`);
+    if (entry.label !== undefined && (typeof entry.label !== "string" || !/^[^\p{C}\p{Zl}\p{Zp}]{1,64}$/u.test(entry.label))) throw new Error(`Account engine ${entry.id}: label must be 1 to 64 printable characters`);
+    if (entry.workspaceId !== undefined && (typeof entry.workspaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.workspaceId))) throw new Error(`Account engine ${entry.id}: workspaceId must be 1 to 128 letters, digits, _ or -`);
+    return { id: entry.id, ...(entry.label !== undefined ? { label: entry.label } : {}), ...(entry.workspaceId !== undefined ? { workspaceId: entry.workspaceId } : {}) };
+  });
 }
 
 export async function loadConfig(path: string): Promise<GatewayConfig> {

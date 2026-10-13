@@ -99,5 +99,7 @@ export type InferenceEvent =
   | { call: OpenAIToolCall; type: "tool" }
   | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true }
   | { item: Record<string, unknown>; type: "reasoning-state" }
-  | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string };
+  | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
+  /** Response-header data from the upstream; the server consumes it and never forwards it as output. */
+  | { type: "transport"; turnState?: string };
 export type WireEvent = { type: string; [field: string]: unknown };
