@@ -12,6 +12,11 @@ import { watchForUpgrade } from "./self-update.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
+export function operationalStartFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
+}
+
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args): Promise<number> {
@@ -31,7 +36,12 @@ export async function shimSession(executable: string, args: string[], config: Ga
       if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
       if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
     }, () => input.destroy(), configPath);
-  } catch (error) { control?.close(); turns.close(); reportException(error, "adapter_start"); telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
+  } catch (error) {
+    control?.close(); turns.close();
+    // A host that is restarting, busy or owned elsewhere fails closed by design and the
+    // app retries; only an unexpected start failure is reported as an exception.
+    if (!operationalStartFailure(error)) reportException(error, "adapter_start");
+    telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
   router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {

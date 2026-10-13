@@ -72,3 +72,9 @@ test("a corrupt spool file is discarded without crashing the starting process", 
     assert.equal((await readdir(join(state, "error-spool"))).length, 0);
   } finally { await rm(state, { recursive: true, force: true }); }
 });
+
+test("adapter start failures from a restarting or busy host are not reported as exceptions", async () => {
+  const { operationalStartFailure } = await import("../shim-session.js");
+  for (const message of ["Shared executor host is unavailable; check gateway service status", "ENOENT: no such file or directory, lstat '/x/host.sock'", "Execution host is quiescing for an idle restart", "Native execution startup settings differ while a chat is running; retry after it finishes"]) assert.equal(operationalStartFailure(new Error(message)), true, message);
+  assert.equal(operationalStartFailure(new TypeError("Cannot read properties of undefined (reading 'models')")), false);
+});
