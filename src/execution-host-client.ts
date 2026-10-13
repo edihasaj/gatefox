@@ -60,9 +60,34 @@ export class ExecutionHostClient {
     return result.found === false ? undefined : this.record(result);
   }
   async release(revision: string): Promise<void> { await this.connection.request("execution/release", { revision }); }
+  private async codeModeAlreadyEnabled(): Promise<boolean> {
+    const owner = await readOwner(resolve(this.home, "owner.json")); const native = owner?.native;
+    if (owner?.state !== "running" || !native || !livePid(native.pid) || native.socketPath !== resolve(this.home, "native.sock")) return false;
+    const socket = await socketIdentity(native.socketPath);
+    if (!socket || !native.socket || !sameSocketIdentity(socket, native.socket)) return false;
+    const admin = new SocketAppServerConnection(native.socketPath, async () => {}); let timer: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([(async () => {
+        await admin.ready;
+        await admin.request("initialize", { clientInfo: { name: "codex_app_server_daemon", version: "1" }, capabilities: { experimentalApi: true } });
+        admin.send({ method: "initialized", params: {} });
+        let cursor: string | undefined;
+        for (let page = 0; page < 8; page++) {
+          const result = await admin.request("experimentalFeature/list", { limit: 100, ...(cursor ? { cursor } : {}) });
+          if (!Array.isArray(result.data) || result.data.length > 100) return false;
+          const feature = result.data.find(value => value && typeof value === "object" && value.name === "code_mode_host");
+          if (feature) return feature.enabled === true;
+          if (result.nextCursor == null || typeof result.nextCursor !== "string" || result.nextCursor === cursor) return false;
+          cursor = result.nextCursor;
+        }
+        return false;
+      })(), new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 3000); })]);
+    } catch { return false; }
+    finally { clearTimeout(timer); admin.stop(); }
+  }
   async acquireNative(args: string[], cwd: string): Promise<NativeLaunchRecord> {
     if (!this.capabilities.includes("native")) throw new Error("Shared native execution is not enabled");
-    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd);
+    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd, () => this.codeModeAlreadyEnabled());
     if (value.kind !== "native" || typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, "native.sock") || !Number.isSafeInteger(value.pid) || Number(value.pid) < 1
       || typeof value.instanceId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.instanceId)) throw new Error("Shared native executor returned invalid ownership metadata");
     if (!await socketIdentity(value.socketPath as string)) throw new Error("Shared native executor socket is unavailable");

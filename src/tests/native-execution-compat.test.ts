@@ -48,3 +48,30 @@ test("incompatible settings remain rejected after one bounded default-only retry
   assert.equal(calls.length, 2);
   assert.deepEqual(calls[1], { args: ["app-server", "--profile", "different"], cwd: "/different/home" });
 });
+
+test("the actual desktop Code Mode host flag attaches only when the signed SDK confirms it already enabled", async () => {
+  const calls: Message[] = []; let checks = 0;
+  const args = ["-c", "features.code_mode_host=true", "app-server", flag, "-c", 'model="native"'];
+  const result = await acquireNativeCompatible(async params => {
+    calls.push(params);
+    if (JSON.stringify(params.args) !== JSON.stringify(["app-server", "-c", 'model="native"'])) throw refusal();
+    return record;
+  }, args, "/original/home", async () => { checks++; return true; });
+  assert.equal(result, record); assert.equal(checks, 1); assert.equal(calls.length, 4);
+  assert.deepEqual(args, ["-c", "features.code_mode_host=true", "app-server", flag, "-c", 'model="native"']);
+});
+
+test("disabled or unavailable Code Mode host never loses its requested flag", async () => {
+  const args = ["-c", "features.code_mode_host=true", "app-server", flag]; const calls: Message[] = [];
+  await assert.rejects(acquireNativeCompatible(async params => { calls.push(params); throw refusal(); }, args, "/home", async () => false), /startup settings differ/);
+  assert.equal(calls.length, 2); for (const call of calls) assert.ok((call.args as string[]).includes("features.code_mode_host=true"));
+});
+
+test("explicit false and conflicting Code Mode flags remain untouched and refused", async () => {
+  for (const args of [["-c", "features.code_mode_host=false", "app-server"], ["--disable", "code_mode_host", "app-server"],
+    ["-c", "features.code_mode_host=true", "--config=features.code_mode_host=false", "app-server"]]) {
+    let calls = 0; let checks = 0;
+    await assert.rejects(acquireNativeCompatible(async () => { calls++; throw refusal(); }, args, "/home", async () => { checks++; return true; }), /startup settings differ/);
+    assert.equal(calls, 2); assert.equal(checks, 0);
+  }
+});

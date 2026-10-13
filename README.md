@@ -36,11 +36,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.2.25 -R edihasaj/subscription-gateway \
+gh release download v0.2.26 -R edihasaj/subscription-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.25-macos-arm64.tar.gz
-./subscription-gateway-0.2.25-macos-arm64/install
+tar -xzf subscription-gateway-0.2.26-macos-arm64.tar.gz
+./subscription-gateway-0.2.26-macos-arm64/install
 gateway --version
 ```
 

@@ -205,6 +205,11 @@ An updated adapter can also attach while an older host remains running. On the
 older host's exact startup-settings refusal, it retries ownership acquisition
 once with only the analytics-default flag changed. The host must still accept
 every other setting. No inference is retried, and the existing writer continues.
+Desktop startup also explicitly enables the Code Mode host. An adapter may treat
+that flag as redundant only after the existing signed SDK reports the feature
+enabled. Disabled, unavailable, or conflicting settings remain errors. The
+feature query is read-only and does not answer frontend approvals.
+Compatibility is bounded to four ownership requests, never inference requests.
 Administrative reads use short-lived, non-originating SDK connections and never
 answer frontend approvals. Identical pending approvals replay with their original
 mapped client ID after resume.
