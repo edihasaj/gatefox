@@ -11,7 +11,8 @@ import { signIn } from "./auth/chatgpt.js";
 import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js";
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { codexShim } from "./codex-shim.js";
-import { readTelemetry } from "./telemetry.js";
+import { readTelemetry, telemetry, flushTelemetry } from "./telemetry.js";
+import { shutdownDrainMs } from "./runtime-activity.js";
 import { summarizeTelemetry } from "./diagnostics.js";
 import { startServeRuntime } from "./serve-runtime.js";
 import { macService } from "./mac-service.js";
@@ -238,10 +239,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const { server } = await startServeRuntime(path, values.port ? config.port : undefined);
   process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
   let closing = false;
-  const shutdown = () => {
+  const shutdown = (signal: NodeJS.Signals) => {
     if (closing) return; closing = true;
-    const deadline = setTimeout(() => { server.closeAllConnections(); process.exit(0); }, 2000).unref();
-    server.close(() => { clearTimeout(deadline); process.exit(0); });
+    telemetry("server_shutdown_signal", { signal });
+    // Takes effect after an inference process restart; a hot swap keeps the old handler.
+    const exit = () => { void flushTelemetry().finally(() => process.exit(0)); };
+    const deadline = setTimeout(() => { server.closeAllConnections(); exit(); }, shutdownDrainMs() + 1500).unref();
+    server.close(() => { clearTimeout(deadline); exit(); });
   };
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
   if (process.platform !== "win32") process.on("SIGUSR2", () => {
