@@ -1,8 +1,8 @@
 import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken } from "../auth/chatgpt.js";
-import { declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
+import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
-import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
+import type { ResponsesInputItem, ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
@@ -52,6 +52,8 @@ export class ResponsesAPI implements Provider {
     catch { throw new ProviderError("authentication", "ChatGPT provider requires login", 401); }
     if (!credential) throw new ProviderError("authentication", "API provider credential is missing", 401);
     const body: ResponsesRequest = { ...request, stream: true };
+    // Public Responses endpoints reject agent_message items; send their text as a user message instead.
+    if (Array.isArray(request.input)) body.input = request.input.flatMap((item): ResponsesInputItem[] => { if ((item as { type?: string }).type !== "agent_message") return [item]; const message = agentMessageInput(item as unknown as Record<string, unknown>); return message ? [message] : []; });
     const hideSummary = (request.reasoning as { summary?: string } | undefined)?.summary === "none";
     // Responses wire values omit the summary to disable it. Codex's local
     // setting uses "none", which is not accepted by the upstream endpoint.
@@ -63,7 +65,7 @@ export class ResponsesAPI implements Provider {
       if (unsupported.some(key => body[key] !== undefined)) throw new ProviderError("invalid_request", "ChatGPT plan request contains unsupported options", 400);
       body.store = false;
       body.include = [...new Set([...(Array.isArray(body.include) ? body.include as string[] : []), "reasoning.encrypted_content"])];
-      body.input = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input.map(item =>
+      body.input = typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : (body.input as ResponsesInputItem[]).map(item =>
         "role" in item && item.role === "system" ? { ...item, role: "developer" as const } : { ...item });
       const namespaces = new Set(request.tools?.filter(tool => tool.type === "namespace").map(tool => tool.name));
       defaultNamespace = "gateway";

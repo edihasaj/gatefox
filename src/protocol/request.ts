@@ -1,4 +1,4 @@
-import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
+import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesMessageItem, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
 import { inlineImage } from "./images.js";
 
 type Data = Record<string, unknown>;
@@ -58,6 +58,12 @@ function agentMessageContent(value: unknown): unknown {
   return value.filter(part => !(part !== null && typeof part === "object" && !Array.isArray(part) && (part as Data).type === "encrypted_content"));
 }
 
+/** The one user-text form of an agent_message, shared by translated and Responses routes. Undefined when no text remains. */
+export function agentMessageInput(item: Record<string, unknown>): ResponsesMessageItem | undefined {
+  const text = content(agentMessageContent(item.content)).content;
+  return text ? { type: "message", role: "user", content: [{ type: "input_text", text }] } : undefined;
+}
+
 /** Replay is compiled in order; opaque reasoning is never treated as text. */
 export function responsesInputToMessages(input: ResponsesRequest["input"]): OpenAIChatMessage[] {
   if (typeof input === "string") return [{ content: input, role: "user" }];
@@ -97,8 +103,8 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       // Codex multi-agent replay: an agent's message to another agent. Its text is
       // the whole transcript content; encrypted parts are transport state, never text.
       case "agent_message": {
-        const text = content(agentMessageContent(item.content)).content;
-        if (text) replay.push({ content: text, role: "user" });
+        const message = agentMessageInput(item);
+        if (message) replay.push({ content: (message.content as Array<{ text: string }>)[0].text, role: "user" });
         break;
       }
       case undefined: case "message": {

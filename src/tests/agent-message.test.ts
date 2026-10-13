@@ -85,7 +85,7 @@ test("reasons label every translation rejection the gateway can produce", () => 
   assert.deepEqual(translationItemType("apply_patch"), "apply_patch"); assert.deepEqual(translationItemType(undefined), "other"); assert.deepEqual(translationItemType("Bearer sk-fixture"), "other");
 });
 
-test("the subscription route forwards an agent message byte-for-byte, encrypted parts included", async t => {
+for (const type of ["codex-subscription", "responses-api"]) test(`the ${type} route sends an agent message as one user text message`, async t => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-agent-"));
   const credentialFile = join(directory, "registration.json");
   await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
@@ -96,16 +96,22 @@ test("the subscription route forwards an agent message byte-for-byte, encrypted 
     return new Response(event({ type: "response.completed", response: { id: "r", status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }), { headers: { "Content-Type": "text/event-stream" } });
   });
   try {
-    const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
-    const item = agentMessage([{ type: "input_text", text: "review the diff" }, { type: "encrypted_content", encrypted_content: encrypted }]);
-    const history: ResponsesInputItem[] = [{ type: "reasoning", summary: [{ type: "summary_text", text: "planning" }], encrypted_content: "opaque" }, item, { type: "function_call", call_id: "call_1", name: "exec_command", arguments: "{}" }];
+    const config = type === "codex-subscription" ? { id: "codex", type, credentialFile, models: { "codex/upstream": "upstream" } } : { id: "api", type, baseUrl: "https://upstream.invalid/v1", apiKeyEnv: "AGENT_TEST_KEY", models: { "api/upstream": "upstream" } };
+    process.env.AGENT_TEST_KEY = "fixture-only"; t.after(() => { delete process.env.AGENT_TEST_KEY; });
+    const provider = new ResponsesAPI(config as unknown as ProviderConfig);
+    const reasoning: ResponsesInputItem = { type: "reasoning", summary: [{ type: "summary_text", text: "planning" }], encrypted_content: "opaque" };
+    const call: ResponsesInputItem = { type: "function_call", call_id: "call_1", name: "other_tool", arguments: "{}" };
+    const user: ResponsesInputItem = { type: "message", role: "user", content: "hello" };
+    const history: ResponsesInputItem[] = [reasoning, agentMessage([{ type: "input_text", text: "review the diff" }, { type: "encrypted_content", encrypted_content: encrypted }]), agentMessage([{ type: "encrypted_content", encrypted_content: encrypted }]), call, user];
     const events: InferenceEvent[] = [];
     for await (const event of provider.infer(request(history), new AbortController().signal)) events.push(event);
     assert.equal(events.at(-1)?.type, "done");
     const sent = bodies[0].input as Array<Record<string, unknown>>;
-    const forwarded = sent.find(entry => entry.type === "agent_message");
-    assert.deepEqual(forwarded, item, "the agent message reaches the endpoint unchanged, metadata passthrough and encrypted part included");
-    assert.ok(JSON.stringify(forwarded).includes(encrypted), "the gateway does not strip encrypted state from a Responses upstream request");
+    assert.ok(!sent.some(entry => entry.type === "agent_message"));
+    assert.ok(!JSON.stringify(bodies[0]).includes(encrypted));
+    assert.equal(sent.length, 4, "the encrypted-only message produces no item");
+    assert.deepEqual(sent[1], { type: "message", role: "user", content: [{ type: "input_text", text: "review the diff" }] });
+    assert.deepEqual([sent[0], sent[2], sent[3]], [reasoning, call, user]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
