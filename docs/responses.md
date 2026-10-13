@@ -292,6 +292,54 @@ Codex thread, so history, thinking and the prompt cache stay native; see
 fails with a code Codex treats as final, because a caller retry would repeat the
 same full-catalog inference.
 
+The caller's instructions and the system and developer messages before the first
+other message become the CLI's system prompt, after the gateway's fixed backend
+text, which is where Claude Code keeps its own instructions. The prompt is written
+to a private file and passed with `--system-prompt-file`, so caller text never
+appears in the process list. The rest of the history renders as item blocks,
+numbered from its first message. A later developer message stays an item in the
+history, and a history that holds only system and developer messages keeps them
+all as items. With Codex, its three leading developer messages (about 24,500
+characters) moved from the user message into the system prompt.
+
+Each Claude row's default effort is the CLI's own default for that model. Model
+discovery reads it without inference: after `initialize`, it sets the
+session-scoped model with `apply_flag_settings` and reads the applied effort from
+`get_settings`, because the `initialize` model list carries no default. CLI
+2.1.293 reported medium for Opus 5.5, Sonnet 5.5 and Haiku 5.5; high for Fable
+5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, Opus 4.6 and Sonnet 4.6; and xhigh for
+Opus 4.7. The value is stored as `defaultReasoningEffort` in the model metadata. A
+model for which the CLI reports no level, or a level the row does not offer, keeps
+medium.
+
+One-shot and live CLIs both run with `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` and
+`ENABLE_TOOL_SEARCH=false`, so the CLI declares only the gateway's tools (one-shot
+CLIs used to add two of their own). Neither inherits the host's `CLAUDECODE`,
+`CLAUDE_CODE_*` or `CLAUDE_AGENT_SDK_*` variables. A desktop entrypoint inherited
+from a Claude Code shell made each one-shot CLI send an extra post-turn summary
+request and print its result about 2 seconds after the turn ended. The gateway
+sets `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` to the longest caller tool
+description, and never below the CLI's default of 2,048 characters, so every
+description reaches the model whole. Before, the CLI cut longer ones at 2,048
+characters.
+
+A one-shot text turn ends at the `message_delta` whose stop reason is `end_turn`.
+The request completes with that message's usage and the served tier, without
+waiting for the CLI's result. The gateway then reads the CLI's output for at most
+100 ms, to keep the rate limit the CLI prints right after the turn and the
+context window a prompt result reports, and stops the CLI. Any other stop reason
+still waits for the result and keeps its error classification. Measured with CLI
+2.1.293 on Haiku 5.5 and Sonnet 5.5, the time from `message_delta` to `done` fell
+from 1.6–2.8 seconds to under 2 ms for a gateway started from a Claude Code shell,
+and from 4–8 ms to under 2 ms in the installed service's environment. Live
+sessions already received their result within 7 ms and still end there.
+
+The system prompt, the item numbering, the smaller tool list and the uncut tool
+descriptions all change Claude's cached prefix. They ship in one release, so each
+active Claude chat pays one full cache write on its first request after the
+update. Live sessions reseed once after an inference restart anyway, so they pay
+that same single write.
+
 Claude receives native image blocks through the official CLI's streamed input.
 Copilot receives private SDK image attachments, deleted with the request session.
 Their text conversation contains labels for image ownership and order, never the
