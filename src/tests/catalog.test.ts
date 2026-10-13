@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { claudeEffort } from "../providers/claude.js";
 import { nativeClaudeModels, readClaudeModels } from "../providers/claude-models.js";
 import { discoverModels, loadDiscoveredModels, modelCatalog } from "../catalog.js";
-import type { ProviderConfig } from "../config.js";
+import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { validateConfig } from "../config.js";
 import { readServiceTierMetadata } from "../model-service-tiers.js";
 
@@ -147,4 +150,66 @@ test("discovered Ultra delegation metadata reaches the Codex catalog row", () =>
   const row = modelCatalog(config).models[0];
   assert.equal(row.multi_agent_version, "v2"); assert.equal(row.multi_agent_reasoning_effort, "xhigh");
   assert.deepEqual((row.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort), ["high", "max", "ultra"]);
+});
+
+const parityConfig = (metadata: ProviderConfig["modelMetadata"] = {}): GatewayConfig => ({ version: 1, port: 0, stateDirectory: ".", providers: [
+  { id: "codex", type: "codex-subscription", credentialFile: "unused", label: "Codex 2", models: { "codex/sol": "sol" }, modelMetadata: { "codex/sol": { contextWindow: 500000, ...metadata["codex/sol"] } } },
+  { id: "claude", type: "claude-subscription", models: { "claude/opus": "opus" }, modelMetadata: { "claude/opus": { contextWindow: 1000000, ...metadata["claude/opus"] } } },
+  { id: "copilot", type: "copilot-subscription", models: { "copilot/sol": "sol" } },
+  { id: "api", type: "chat-completions-api", baseUrl: "https://example.test", apiKeyEnv: "UNUSED", models: { "api/model": "model" } },
+] });
+
+test("Codex 2 rows default to native truncation and window share while other rows keep today's values", () => {
+  const [codex, ...others] = modelCatalog(parityConfig()).models;
+  assert.deepEqual(codex.truncation_policy, { mode: "tokens", limit: 10000 }); assert.equal(codex.effective_context_window_percent, 95);
+  assert.equal((codex.context_window as number) * (codex.effective_context_window_percent as number) / 100, 475000, "475K usable of 500K, as native Codex computes it");
+  assert.deepEqual(others.map(row => row.slug), ["claude/opus", "copilot/sol", "api/model"]);
+  for (const row of others) { assert.deepEqual(row.truncation_policy, { mode: "tokens", limit: 12000 }); assert.equal(row.effective_context_window_percent, 90); }
+  for (const row of [codex, ...others]) assert.equal(Object.hasOwn(row, "max_context_window") || Object.hasOwn(row, "auto_compact_token_limit"), false, "absent limits stay absent");
+  // Field order is part of the catalog revision; unchanged rows must serialize as before.
+  assert.deepEqual(Object.keys(others[0]).slice(-8), ["truncation_policy", "experimental_supported_tools", "input_modalities", "context_window",
+    "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled"]);
+});
+
+test("model metadata overrides the catalog parity defaults for any row", () => {
+  const metadata = { truncationPolicy: { mode: "bytes" as const, limit: 20000 }, effectiveContextWindowPercent: 80, autoCompactTokenLimit: 300000, maxContextWindow: 872000 };
+  const [codex, claude] = modelCatalog(parityConfig({ "codex/sol": metadata, "claude/opus": { truncationPolicy: { mode: "tokens", limit: 10000 }, effectiveContextWindowPercent: 95 } })).models;
+  assert.deepEqual(codex.truncation_policy, { mode: "bytes", limit: 20000 }); assert.equal(codex.effective_context_window_percent, 80);
+  assert.equal(codex.auto_compact_token_limit, 300000); assert.equal(codex.max_context_window, 872000);
+  assert.deepEqual(claude.truncation_policy, { mode: "tokens", limit: 10000 }); assert.equal(claude.effective_context_window_percent, 95);
+  assert.equal(Object.hasOwn(claude, "max_context_window"), false);
+  const reverted = modelCatalog(parityConfig({ "codex/sol": { truncationPolicy: { mode: "tokens", limit: 12000 }, effectiveContextWindowPercent: 90 } })).models[0];
+  assert.deepEqual(reverted.truncation_policy, { mode: "tokens", limit: 12000 }); assert.equal(reverted.effective_context_window_percent, 90);
+});
+
+test("Codex 2 discovery copies valid window and truncation fields, never comp_hash, into the catalog row", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "catalog-parity-"));
+  const credentialFile = join(directory, "registration.json");
+  await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
+  const original = globalThis.fetch; let requested = "";
+  globalThis.fetch = async input => {
+    requested = String(input);
+    return Response.json({ data: [
+      { id: "sol", context_window: 500000, truncation_policy: { mode: "tokens", limit: 10000, extra: "dropped" }, effective_context_window_percent: 95,
+        auto_compact_token_limit: 400000, max_context_window: 872000, comp_hash: "upstream-hash" },
+      { id: "invalid", context_window: 500000, truncation_policy: { mode: "chars", limit: 10000 }, effective_context_window_percent: 95.5,
+        auto_compact_token_limit: 512, max_context_window: 400000, comp_hash: null },
+      { id: "bounds", context_window: 272000, truncation_policy: { mode: "bytes", limit: 999 }, effective_context_window_percent: 49, auto_compact_token_limit: "400000", max_context_window: 272000 },
+      { id: "nested", truncation_policy: "tokens", effective_context_window_percent: 101, max_context_window: 2048 },
+    ] });
+  };
+  try {
+    const provider: ProviderConfig = { id: "codex", type: "codex-subscription", credentialFile, label: "Codex 2", models: { "codex/sol": "sol" } };
+    const models = await discoverModels(provider);
+    assert.equal(requested, "https://api.openai.com/v1/models");
+    assert.deepEqual(models[0].metadata, { contextWindow: 500000, truncationPolicy: { mode: "tokens", limit: 10000 }, effectiveContextWindowPercent: 95, autoCompactTokenLimit: 400000, maxContextWindow: 872000 });
+    assert.deepEqual(models[1].metadata, { contextWindow: 500000 }, "invalid mode, fractional percent, tiny limit and a maximum below the window are ignored");
+    assert.deepEqual(models[2].metadata, { contextWindow: 272000, maxContextWindow: 272000 });
+    assert.deepEqual(models[3].metadata, { maxContextWindow: 2048 });
+    assert.equal(JSON.stringify(models).includes("upstream-hash") || JSON.stringify(models).includes("comp_hash") || JSON.stringify(models).includes("compHash"), false);
+    loadDiscoveredModels(provider, models);
+    const row = modelCatalog(validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [provider] })).models[0];
+    assert.deepEqual(row.truncation_policy, { mode: "tokens", limit: 10000 }); assert.equal(row.effective_context_window_percent, 95);
+    assert.equal(row.auto_compact_token_limit, 400000); assert.equal(row.max_context_window, 872000); assert.equal(Object.hasOwn(row, "comp_hash"), false);
+  } finally { globalThis.fetch = original; await rm(directory, { recursive: true, force: true }); }
 });

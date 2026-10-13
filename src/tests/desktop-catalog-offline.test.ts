@@ -209,3 +209,29 @@ test("malformed remote service tiers cannot replace a validated catalog", async 
     } finally { f.close(); }
   });
 });
+
+test("public rows keep numeric window limits and drop other values before caching or combining", async () => {
+  const f = await fixture();
+  const row = { display_name: "Codex 2 · Sol", supported_reasoning_levels: [], context_window: 500000, effective_context_window_percent: 95, truncation_policy: { mode: "tokens", limit: 10000 } };
+  try {
+    f.setCatalog({ models: [
+      { ...row, slug: "codex/sol", max_context_window: 872000, auto_compact_token_limit: 400000, comp_hash: "excluded-hash" },
+      { ...row, slug: "codex/strings", max_context_window: "872000", auto_compact_token_limit: true },
+      { ...row, slug: "codex/invalid", max_context_window: null, auto_compact_token_limit: 1.5 },
+      { ...row, slug: "codex/negative", max_context_window: -1, auto_compact_token_limit: { tokens: 400000 } },
+    ] });
+    const live = f.create(); const snapshot = await live.refresh(true);
+    const [sol, ...dropped] = snapshot.models;
+    assert.equal(sol.max_context_window, 872000); assert.equal(sol.auto_compact_token_limit, 400000);
+    assert.equal(sol.effective_context_window_percent, 95); assert.deepEqual(sol.truncation_policy, { mode: "tokens", limit: 10000 });
+    assert.equal(Object.hasOwn(sol, "comp_hash"), false);
+    for (const model of dropped) assert.equal(Object.hasOwn(model, "max_context_window") || Object.hasOwn(model, "auto_compact_token_limit"), false, String(model.slug));
+    const combined = JSON.parse(await readFile(f.path, "utf8"));
+    assert.deepEqual(combined.models.map((model: { slug: string }) => model.slug), ["native", "codex/sol", "codex/strings", "codex/invalid", "codex/negative"]);
+    assert.equal(combined.models[1].max_context_window, 872000); assert.equal(combined.models[1].auto_compact_token_limit, 400000);
+    assert.equal((await readFile(f.cachePath, "utf8")).includes("excluded-hash"), false);
+    f.close(); const restored = f.create(); await restored.initialize();
+    assert.equal(restored.current().revision, snapshot.revision);
+    assert.equal(restored.current().models[0].max_context_window, 872000);
+  } finally { f.close(); }
+});

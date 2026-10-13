@@ -17,8 +17,12 @@ const publicFields = new Set([
   "include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions", "support_verbosity", "default_verbosity",
   "context_window", "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled",
   "multi_agent_version", "multi_agent_reasoning_effort", "use_responses_lite", "supports_reasoning_effort_updates",
+  "max_context_window", "auto_compact_token_limit",
 ]);
+// Codex reads these as optional integers; anything else would break the combined catalog.
+const integerFields = new Set(["max_context_window", "auto_compact_token_limit"]);
 const publicScalar = (value: unknown) => value === null || ["string", "boolean", "number"].includes(typeof value);
+const publicField = (key: string, value: unknown) => publicFields.has(key) && publicScalar(value) && (!integerFields.has(key) || (Number.isSafeInteger(value) && (value as number) > 0));
 
 function publicModels(value: unknown, native: Message[]): Message[] {
   if (!Array.isArray(value) || !value.length || value.length > 4096) throw new Error("Gateway returned invalid model metadata");
@@ -32,7 +36,7 @@ function publicModels(value: unknown, native: Message[]): Message[] {
     const modalities = model.input_modalities;
     if (modalities !== undefined && (!Array.isArray(modalities) || !modalities.includes("text") || modalities.some(modality => !["text", "image"].includes(String(modality))))) throw new Error("Gateway returned invalid input-modality metadata");
     ids.add(model.slug);
-    const result = Object.fromEntries(Object.entries(model).filter(([key, field]) => publicFields.has(key) && publicScalar(field)));
+    const result = Object.fromEntries(Object.entries(model).filter(([key, field]) => publicField(key, field)));
     Object.assign(result, publicServiceTierFields(readPublicServiceTierMetadata(model)));
     result.supported_reasoning_levels = levels.map(level => {
       const metadata = object(level);

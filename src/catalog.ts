@@ -11,6 +11,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     groups.set(alias, providerIndex);
     const metadata = provider.modelMetadata?.[alias];
     const efforts = metadata?.reasoningEfforts || [];
+    // Codex 2 rows default to native Codex's truncation and usable window share.
+    const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
     return {
       slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName || provider.models[alias]}`,
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
@@ -24,8 +26,11 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       model_messages: { instructions_template: "" },
       include_skills_usage_instructions: true, include_plugin_usage_instructions: true, include_apps_usage_instructions: true,
       support_verbosity: false, default_verbosity: null,
-      truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
-      context_window: metadata?.contextWindow || 32768, effective_context_window_percent: 90,
+      truncation_policy: truncation ? { mode: truncation.mode, limit: truncation.limit } : { mode: "tokens", limit: codex ? 10000 : 12000 },
+      experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
+      context_window: metadata?.contextWindow || 32768, effective_context_window_percent: metadata?.effectiveContextWindowPercent ?? (codex ? 95 : 90),
+      ...(metadata?.maxContextWindow !== undefined ? { max_context_window: metadata.maxContextWindow } : {}),
+      ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true,
       ...(metadata?.multiAgentVersion ? { multi_agent_version: metadata.multiAgentVersion } : {}),
       ...(metadata?.multiAgentReasoningEffort ? { multi_agent_reasoning_effort: metadata.multiAgentReasoningEffort } : {}),
@@ -65,8 +70,22 @@ export async function discoverModels(provider: ProviderConfig): Promise<Discover
       ...(typeof model.supports_reasoning_effort_updates === "boolean" ? { supportsReasoningEffortUpdates: model.supports_reasoning_effort_updates } : {}),
       ...(typeof model.multi_agent_reasoning_effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(model.multi_agent_reasoning_effort) ? { multiAgentReasoningEffort: model.multi_agent_reasoning_effort } : {}),
       ...(Array.isArray(model.input_modalities) ? { inputModalities: ["text" as const, ...(model.input_modalities.includes("image") ? ["image" as const] : [])] } : {}),
+      ...parityMetadata(model),
     } };
   });
+}
+
+const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): value is number => Number.isSafeInteger(value) && (value as number) >= min && (value as number) <= max;
+/** Codex window and truncation fields, within the configuration bounds. comp_hash is never copied: gateway compaction rejects hashed rows. */
+function parityMetadata(model: Record<string, unknown>): ModelMetadata {
+  const policy = model.truncation_policy && typeof model.truncation_policy === "object" ? model.truncation_policy as Record<string, unknown> : {};
+  const window = model.context_window ?? model.max_model_len;
+  return {
+    ...((policy.mode === "tokens" || policy.mode === "bytes") && integerIn(policy.limit, 1000, 1000000) ? { truncationPolicy: { mode: policy.mode, limit: policy.limit } } : {}),
+    ...(integerIn(model.effective_context_window_percent, 50, 100) ? { effectiveContextWindowPercent: model.effective_context_window_percent } : {}),
+    ...(integerIn(model.auto_compact_token_limit, 1024) ? { autoCompactTokenLimit: model.auto_compact_token_limit } : {}),
+    ...(integerIn(model.max_context_window, Math.max(1024, typeof window === "number" ? window : 0)) ? { maxContextWindow: model.max_context_window } : {}),
+  };
 }
 
 /** Retain public aliases so existing chats survive catalog refreshes. */
