@@ -23,7 +23,7 @@ only a fixed class such as `stream_disconnected` or `usage_limit`.
 | Process | Events |
 | --- | --- |
 | Adapter | `turn_started`, `turn_completed`, `turn_empty_completion` (completed with no answer and no tool call), `turn_error`, `turn_quiet` (no events for five minutes), `rpc_error`, `adapter_client`, `adapter_session_end` |
-| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens), `provider_retry`, `claude_cli` |
+| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens), `provider_retry`, `claude_cli`, `model_alias_resolved` |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
 `gateway diagnostics [--since HOURS]` summarizes the log: turn outcomes and

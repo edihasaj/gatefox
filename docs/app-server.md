@@ -299,6 +299,17 @@ switched to Claude) moves the chat to Standard. Only that explicit settings chan
 does this; turn starts, resumes, forks and active-turn updates still refuse a
 missing tier, so a stale peer cannot silently drop another client's Fast setting.
 
+Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
+roles in the native configuration) inherit the gateway provider but take their
+model from the role, often a bare name such as `gpt-5.6-terra`. The server serves
+such a name through its vendor's subscription route when exactly one alias there
+has that upstream model: `gpt-…`, `o…` and `codex-…` names use the Codex
+subscription, `claude-…` names the Claude subscription. Other routes serving the
+same model, such as Copilot, are not used for a bare name. An unknown or ambiguous
+name still fails with `model_not_found`. Each resolution is logged as
+`model_alias_resolved`. Before this, such sub-agents failed silently: Codex retried
+the 404 five times and ended the turn with nothing.
+
 Resuming a gateway chat on the same model sends no reasoning override, so the
 chat keeps the level saved with it. A Max chat stays at Max after a restart. A
 resume that switches models still receives a level the new model supports.

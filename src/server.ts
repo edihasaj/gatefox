@@ -26,6 +26,14 @@ const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<v
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
   if (!res.writableNeedDrain || res.destroyed || signal.aborted) finished();
 });
+/** The one subscription alias that serves a bare vendor model name, if unambiguous. */
+export function nativeModelAlias(config: GatewayConfig, model: string): string | undefined {
+  const vendor = /^claude-/.test(model) ? "claude-subscription" : /^(gpt-|o\d|codex-)/.test(model) ? "codex-subscription" : undefined;
+  if (!vendor) return;
+  const matches = config.providers.filter(provider => provider.type === vendor).flatMap(provider => Object.entries(provider.models).filter(([, upstream]) => upstream === model).map(([alias]) => alias));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
   return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
@@ -112,8 +120,13 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     res.once("close", cancel);
     try {
       const request = await body(req);
-      const route = state.routes.get(request.model);
+      // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
+      // but take a bare model name from the user's agent roles. Serve that same model
+      // through its vendor's subscription route when exactly one alias matches.
+      const alias = state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model);
+      const route = alias ? state.routes.get(alias) : undefined;
       if (!route) throw new ProviderError("model_not_found", "Unknown model alias", 404);
+      if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
       admission.setLimit(state.config.maxConcurrent || 4); admission.check();
