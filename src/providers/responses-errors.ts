@@ -63,12 +63,14 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
   }
   const code = await httpErrorCode(response);
   if (response.status === 429) {
-    if (["rate_limit_exceeded", "slow_down"].includes(String(code))) {
-      const header = response.headers.get("retry-after");
-      const milliseconds = header && header.length <= 128 ? (/^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : 1000;
-      return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429,
-        { code: String(code), event: "http", retryAfterMs: Number.isFinite(milliseconds) ? Math.max(1000, milliseconds) : 1000 });
-    }
+    const header = response.headers.get("retry-after");
+    const milliseconds = header && header.length <= 128 ? (/^\d+(?:\.\d+)?$/.test(header) ? Number(header) * 1000 : Date.parse(header) - Date.now()) : undefined;
+    // A named throttle, or an unnamed 429 that asks for a short wait, clears by itself;
+    // anything else is a usage limit, which Codex treats as final.
+    const throttle = ["rate_limit_exceeded", "slow_down"].includes(String(code)) ||
+      (typeof code !== "string" && milliseconds !== undefined && Number.isFinite(milliseconds) && milliseconds <= 60000);
+    if (throttle) return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429,
+      { code: typeof code === "string" ? code : "rate_limit_exceeded", event: "http", retryAfterMs: milliseconds !== undefined && Number.isFinite(milliseconds) ? Math.max(1000, milliseconds) : 1000 });
     return new ProviderError("usage_limit", "Provider usage limit reached", 429);
   }
   if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,

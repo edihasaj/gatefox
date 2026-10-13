@@ -9,6 +9,7 @@ function historicalArguments(text: string): unknown {
 }
 import { anthropicParts } from "../protocol/images.js";
 import { anthropicContextFailure, anthropicHttpContextFailure, contextWindowFailure } from "./context-errors.js";
+import { responsesHttpError } from "./responses-errors.js";
 
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -57,6 +58,8 @@ export class AnthropicAPI implements Provider {
     });
     if (!response.ok) {
       const context = await anthropicHttpContextFailure(response); if (context) throw context;
+      // Anthropic's per-minute 429s carry Retry-After; they must stay retryable now that usage_limit is final.
+      if (response.status === 429) throw await responsesHttpError(response);
       throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Anthropic returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
     }
     if (!response.body) throw new ProviderError("incomplete", "Anthropic returned no stream");

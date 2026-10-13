@@ -142,3 +142,11 @@ test("An HTTP 4xx whose body names a server error reaches the upstream once", as
     upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
   }
 });
+
+test("An unnamed HTTP 429 with a short Retry-After stays retryable; others are usage limits", async () => {
+  const throttle = await responsesHttpError(new Response(JSON.stringify({ error: { type: "rate_limit_error" } }), { status: 429, headers: { "retry-after": "2" } }));
+  assert.equal(throttle.code, "rate_limit_exceeded"); assert.equal(throttle.upstream?.retryAfterMs, 2000);
+  assert.equal((await responsesHttpError(new Response("{}", { status: 429 }))).code, "usage_limit");
+  assert.equal((await responsesHttpError(new Response("{}", { status: 429, headers: { "retry-after": "3600" } }))).code, "usage_limit");
+  assert.equal((await responsesHttpError(new Response(JSON.stringify({ error: { code: "insufficient_quota" } }), { status: 429, headers: { "retry-after": "2" } }))).code, "usage_limit");
+});

@@ -37,7 +37,7 @@ export class ChatCompletionsAPI implements Provider {
         ...(request.max_output_tokens !== undefined ? { max_tokens: request.max_output_tokens } : {}),
       }) });
     if (!response.ok) {
-      const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded") throw typed;
+      const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
       throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
     }
     if (!response.body) throw new ProviderError("incomplete", "Chat API returned no stream");

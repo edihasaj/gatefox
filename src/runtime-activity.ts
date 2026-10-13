@@ -43,9 +43,9 @@ export async function runShutdownHooks(timeoutMs: number): Promise<void> {
   try { await Promise.race([settled, expired]); } finally { clearTimeout(timer); }
 }
 
-/** How long a stopping server lets running requests finish: GATEWAY_SHUTDOWN_DRAIN_MS, 0 to 30000, default 8000. */
+/** How long a stopping server lets running requests finish: GATEWAY_SHUTDOWN_DRAIN_MS, 0 to 30000, default 5000, so a stop with a busy stream stays inside launchctl's 10 s bootout timeout. */
 export function shutdownDrainMs(): number {
   const raw = process.env.GATEWAY_SHUTDOWN_DRAIN_MS?.trim();
   const value = raw ? Number(raw) : NaN;
-  return Number.isFinite(value) ? Math.min(30000, Math.max(0, Math.round(value))) : 8000;
+  return Number.isFinite(value) ? Math.min(30000, Math.max(0, Math.round(value))) : 5000;
 }

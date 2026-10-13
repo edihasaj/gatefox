@@ -51,7 +51,7 @@ test("a second module instance shares the same process-wide registry", async () 
 test("the shutdown drain defaults to 8 s and clamps the environment override", () => {
   const previous = process.env.GATEWAY_SHUTDOWN_DRAIN_MS;
   try {
-    for (const [value, expected] of [[undefined, 8000], ["", 8000], ["soon", 8000], ["200", 200], ["-5", 0], ["0", 0], ["99999", 30000], ["1500.4", 1500]] as const) {
+    for (const [value, expected] of [[undefined, 5000], ["", 5000], ["soon", 5000], ["200", 200], ["-5", 0], ["0", 0], ["99999", 30000], ["1500.4", 1500]] as const) {
       if (value === undefined) delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; else process.env.GATEWAY_SHUTDOWN_DRAIN_MS = value;
       assert.equal(shutdownDrainMs(), expected, String(value));
     }
