@@ -27,6 +27,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       truncation_policy: { mode: "tokens", limit: 12000 }, experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
       context_window: metadata?.contextWindow || 32768, effective_context_window_percent: 90,
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true,
+      ...(metadata?.multiAgentVersion ? { multi_agent_version: metadata.multiAgentVersion } : {}),
+      ...(metadata?.multiAgentReasoningEffort ? { multi_agent_reasoning_effort: metadata.multiAgentReasoningEffort } : {}),
     };
   }));
   return { models: models.sort((a, b) => groups.get(a.slug)! - groups.get(b.slug)! || a.priority - b.priority || a.slug.localeCompare(b.slug)).map((model, priority) => ({ ...model, priority })) };
@@ -55,6 +57,9 @@ export async function discoverModels(provider: ProviderConfig): Promise<Discover
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),
       ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : {}),
+      // Ultra's delegation comes from these catalog fields; the client runs it.
+      ...(typeof model.multi_agent_version === "string" && /^v[0-9]{1,3}$/.test(model.multi_agent_version) ? { multiAgentVersion: model.multi_agent_version } : {}),
+      ...(typeof model.multi_agent_reasoning_effort === "string" && ["low", "medium", "high", "xhigh", "max"].includes(model.multi_agent_reasoning_effort) ? { multiAgentReasoningEffort: model.multi_agent_reasoning_effort } : {}),
       ...(Array.isArray(model.input_modalities) ? { inputModalities: ["text" as const, ...(model.input_modalities.includes("image") ? ["image" as const] : [])] } : {}),
     } };
   });

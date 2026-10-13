@@ -15,6 +15,7 @@ import { claudeContextFailure } from "./context-errors.js";
 import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claude-tool-names.js";
 import { claudeFailure } from "./claude-errors.js";
 import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
+import { claudeCliModel } from "./claude-models.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -29,10 +30,11 @@ export function claudeEffort(config: ProviderConfig | undefined, request: Respon
   const alias = Object.entries(config?.models || {}).find(([, model]) => model === request.model)?.[0];
   const supported = alias ? config?.modelMetadata?.[alias]?.reasoningEfforts : undefined;
   if (effort === "none" && supported?.length === 0) return;
-  if (effort && (!['low', 'medium', 'high', 'xhigh', 'max'].includes(effort) || (supported && !supported.includes(effort)))) {
+  if (effort && (!['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effort) || (supported && !supported.includes(effort)))) {
     throw new ProviderError("invalid_request", "Selected Claude model does not support this reasoning effort", 400);
   }
-  return effort;
+  // Ultra adds Codex-side delegation; Claude itself runs at its top level.
+  return effort === "ultra" ? "max" : effort;
 }
 
 export class ClaudeSubscription implements Provider {
@@ -58,11 +60,14 @@ export class ClaudeSubscription implements Provider {
     env.MCP_CONNECTION_NONBLOCKING = "0";
     if ((request.reasoning as { effort?: string } | undefined)?.effort !== undefined) delete env.MAX_THINKING_TOKENS;
     const child = spawn("claude", ["--restricted", "--setting-sources", "", "--disable-slash-commands", "--print", "--tools", "", "--strict-mcp-config", "--mcp-config", mcpPath,
-      "--model", request.model, "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
+      "--model", claudeCliModel(request.model), "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
       "--system-prompt", "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.",
       ...(effort ? ["--effort", effort] : []),
       "--input-format", "stream-json",
       ...(effort ? ["--settings", '{"alwaysThinkingEnabled":true}'] : []),
+      // Newer Claude models default to omitting thinking text; ask for summaries
+      // unless the caller turned them off, so long Max turns show progress.
+      ...(effort && summary !== "none" ? ["--thinking-display", "summarized"] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
     let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null;
     let limit: ClaudeLimit | undefined;

@@ -256,6 +256,28 @@ picker; enabling them on a remote Mac does not change this Mac's controls.
 The gateway persists these explicit display changes in its private settings and
 does not advertise unsupported provider effort levels.
 
+Ultra is Codex's top effort plus Codex's own task delegation. Native rows mark
+it with `multi_agent_version` and `multi_agent_reasoning_effort`; with `v2`,
+Codex offers its `collaboration` tools (spawn, follow up, message, wait, list and
+interrupt agents). Model discovery copies both fields from the upstream catalog,
+so gateway Codex models behave like native ones. Claude rows that support `max`
+offer Ultra with `v2` delegation at `xhigh`. Codex sends `max` on the wire for
+Ultra, and the Claude CLI's top level is `max`.
+
+Claude rows report the context window the CLI itself reports for each model
+(`modelUsage.contextWindow`), measured on a subscription on 13 Oct 2026. The 5.x
+models, Opus 4.8 and Opus 4.7 run with 1M under their plain IDs. Opus 4.6 runs
+as the CLI's `claude-opus-4-6[1m]` variant, which the subscription includes; its
+gateway alias keeps the plain ID so saved chats keep working. Sonnet 4.6's 1M
+variant needs paid usage credits and Haiku 4.5 has none, so both report 200K.
+Other personal Claude settings are not applied: a fallback model would silently
+change the caller's model, and hooks, MCP servers and permissions must not run
+inside an inference backend.
+
+Resuming a gateway chat on the same model sends no reasoning override, so the
+chat keeps the level saved with it. A Max chat stays at Max after a restart. A
+resume that switches models still receives a level the new model supports.
+
 ## Speed controls
 
 Gateway discovery retains the provider's public `service_tiers`,

@@ -7,8 +7,15 @@ import type { ProviderConfig } from "../config.js";
 import type { DiscoveredModel } from "../catalog.js";
 import { claudeEnvironment } from "./claude-environment.js";
 
-// Current native 1M models: https://platform.claude.com/docs/en/models/overview.
-const millionTokenModels = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
+// Context windows the Claude CLI reports (result modelUsage.contextWindow) on a
+// subscription, measured 2026-10-13. These run with 1M under their plain IDs.
+const millionTokenModels = new Set(["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5",
+  "claude-fable-5", "claude-opus-5", "claude-sonnet-5", "claude-opus-4-8", "claude-opus-4-7"]);
+// These reach 1M only through the CLI's "[1m]" variant, which the subscription
+// includes. Sonnet 4.6's variant needs paid usage credits and is not used.
+export const longContextVariants = new Set(["claude-opus-4-6"]);
+/** The model ID the CLI runs; aliases keep the plain ID so saved chats survive. */
+export function claudeCliModel(model: string): string { return longContextVariants.has(model) ? `${model}[1m]` : model; }
 
 export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
   if (!Array.isArray(value) || !value.length) throw new Error("Claude returned an invalid model catalog");
@@ -23,10 +30,16 @@ export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
     seen.add(model);
     const efforts = item.supportedEffortLevels;
     if (efforts !== undefined && (!Array.isArray(efforts) || efforts.some(effort => !["low", "medium", "high", "xhigh", "max"].includes(effort)))) throw new Error("Claude returned invalid reasoning levels");
+    const levels: string[] = item.supportsEffort === true && Array.isArray(efforts) ? efforts : [];
     models.push({ model, metadata: { displayName: item.displayName,
       inputModalities: item.supportsVision === false ? ["text"] : ["text", "image"],
-      ...(millionTokenModels.has(model) ? { contextWindow: 1000000 } : {}),
-      reasoningEfforts: item.supportsEffort === true && Array.isArray(efforts) ? efforts : [], priority: models.length,
+      // Every current Claude model has at least a 200K window; unknown rows
+      // otherwise fall back to 32K and compact almost every turn.
+      contextWindow: millionTokenModels.has(model) || longContextVariants.has(model) ? 1000000 : 200000,
+      // Codex Ultra is the top effort plus Codex's own v2 delegation. Claude's top
+      // effort is max, which is what Codex sends for Ultra.
+      reasoningEfforts: levels.includes("max") ? [...levels, "ultra"] : levels, priority: models.length,
+      ...(levels.length ? { multiAgentVersion: "v2", multiAgentReasoningEffort: levels.includes("xhigh") ? "xhigh" : levels.at(-1)! } : {}),
     } });
   }
   if (!models.length) throw new Error("Claude returned no selectable models");

@@ -19,8 +19,12 @@ test("Claude catalog resolves aliases, removes duplicate defaults, and retains n
   const models = nativeClaudeModels(native);
   assert.deepEqual(models.map(m => m.model), ["claude-opus-5-5", "claude-haiku-4-5-20251001"]);
   assert.equal(models[0].metadata.contextWindow, 1000000);
-  assert.deepEqual(models[0].metadata.reasoningEfforts, ["low", "medium", "high", "max"]);
+  // Ultra is Codex's top effort plus its own v2 delegation; Claude runs it at max.
+  assert.deepEqual(models[0].metadata.reasoningEfforts, ["low", "medium", "high", "max", "ultra"]);
+  assert.equal(models[0].metadata.multiAgentVersion, "v2"); assert.equal(models[0].metadata.multiAgentReasoningEffort, "max");
   assert.deepEqual(models[1].metadata.reasoningEfforts, []);
+  assert.equal(models[1].metadata.multiAgentVersion, undefined);
+  assert.equal(models[1].metadata.contextWindow, 200000, "older Claude rows report Claude's real window instead of a 32K fallback");
   assert.throws(() => nativeClaudeModels([{ value: "opus", displayName: "Opus", supportedEffortLevels: ["unsupported"] }]), /reasoning/);
 });
 
@@ -135,4 +139,12 @@ test("Responses discovery carries only validated public tier metadata", async ()
     globalThis.fetch = async () => Response.json({ data: [{ id: "sol", service_tiers: [priority], default_service_tier: "unadvertised" }] });
     await assert.rejects(discoverModels(provider), /Default service tier/);
   } finally { globalThis.fetch = original; delete process.env.GATEWAY_CATALOG_TEST_KEY; }
+});
+
+test("discovered Ultra delegation metadata reaches the Codex catalog row", () => {
+  const config = { version: 1 as const, port: 3457, stateDirectory: "/unused", providers: [{ id: "codex", type: "codex-subscription" as const, credentialFile: "unused",
+    models: { "codex/sol": "sol" }, modelMetadata: { "codex/sol": { reasoningEfforts: ["high", "max", "ultra"], multiAgentVersion: "v2", multiAgentReasoningEffort: "xhigh" } } }] };
+  const row = modelCatalog(config).models[0];
+  assert.equal(row.multi_agent_version, "v2"); assert.equal(row.multi_agent_reasoning_effort, "xhigh");
+  assert.deepEqual((row.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort), ["high", "max", "ultra"]);
 });

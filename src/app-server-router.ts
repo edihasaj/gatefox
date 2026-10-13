@@ -127,7 +127,7 @@ export class AppServerRouter {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
     return { ...params, serviceTier: this.preferences.service_tier };
   }
-  private modelRequest(params: ObjectValue, model: string, newChat = false): ObjectValue {
+  private modelRequest(params: ObjectValue, model: string, newChat = false, keepReasoning = false): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
     const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
@@ -137,8 +137,11 @@ export class AppServerRouter {
     if (!tierSelection(selected) && newChat && typeof metadata.default_service_tier === "string") selected = { ...selected, serviceTier: metadata.default_service_tier };
     const tier = tierSelection(selected); if (tier) this.assertServiceTier(model, tier.value);
     const summary = this.preferences.model === model && typeof this.preferences.model_reasoning_summary === "string" ? this.preferences.model_reasoning_summary : "auto";
+    // A resumed chat keeps the reasoning settings saved with it; injecting a
+    // default here would silently reset a Max chat to Medium on reload.
+    const reasoning = keepReasoning ? {} : { model_reasoning_effort: effort, model_reasoning_summary: summary };
     return { ...selected, model, modelProvider: gatewayProvider,
-      config: { model_reasoning_effort: effort, model_reasoning_summary: summary, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
+      config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
   private assertSameProvider(provider: string, model: unknown): void {
     if (typeof model !== "string") return;
@@ -246,7 +249,7 @@ export class AppServerRouter {
         if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
         if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
         const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
-        forwarded = this.modelRequest(inherited, model);
+        forwarded = this.modelRequest(inherited, model, false, model === route.model);
       }
     }
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;

@@ -16,6 +16,7 @@ const publicFields = new Set([
   "default_reasoning_level", "default_reasoning_summary", "supports_reasoning_summary_parameter", "shell_type", "apply_patch_tool_type", "tool_mode",
   "include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions", "support_verbosity", "default_verbosity",
   "context_window", "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled",
+  "multi_agent_version", "multi_agent_reasoning_effort",
 ]);
 const publicScalar = (value: unknown) => value === null || ["string", "boolean", "number"].includes(typeof value);
 
