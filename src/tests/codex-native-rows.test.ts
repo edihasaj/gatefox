@@ -18,7 +18,9 @@ const nativeSol = {
   context_window: 800000, max_context_window: 900000, auto_compact_token_limit: 123456, comp_hash: "native-hash", supports_search_tool: true,
   web_search_tool_type: "text_and_image", service_tiers: [{ id: "flex", name: "Flex", description: "native tier" }], additional_speed_tiers: ["native"],
   multi_agent_version: "v9", multi_agent_reasoning_effort: "max", experimental_supported_tools: ["clock"], include_skills_usage_instructions: false,
+  include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
 };
+const usageFlags = ["include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions"] as const;
 const codex = (models: Record<string, string>, metadata: ProviderConfig["modelMetadata"] = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", label: "Codex 2", models, modelMetadata: metadata });
 const solMetadata = { displayName: "GPT-6.1-Sol", contextWindow: 500000, maxContextWindow: 872000, reasoningEfforts: ["low", "medium", "high"], serviceTiers: [tier], additionalSpeedTiers: ["fast"], multiAgentVersion: "v2", multiAgentReasoningEffort: "xhigh" };
 const catalog = (...providers: ProviderConfig[]) => modelCatalog({ version: 1, port: 0, stateDirectory: ".", providers } as GatewayConfig).models;
@@ -33,9 +35,9 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": { ...solMetadata, autoCompactTokenLimit: 400000 } }));
   const row = withNativeRow(published, [nativeSol]);
   assert.deepEqual(row.model_messages, messages); assert.notEqual(row.model_messages, messages);
-  for (const key of ["tool_mode", "shell_type", "apply_patch_tool_type", "default_reasoning_level", "default_verbosity", "default_reasoning_summary", "support_verbosity", "effective_context_window_percent", "truncation_policy"] as const) assert.deepEqual(row[key], nativeSol[key], key);
+  for (const key of ["tool_mode", "shell_type", "apply_patch_tool_type", "default_reasoning_level", "default_verbosity", "default_reasoning_summary", "support_verbosity", "effective_context_window_percent", "truncation_policy", ...usageFlags] as const) assert.deepEqual(row[key], nativeSol[key], key);
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
-  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "supports_search_tool", "experimental_supported_tools", "include_skills_usage_instructions", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
+  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "supports_search_tool", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
   assert.equal(row.supports_search_tool, false);
   for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
   (row.model_messages as typeof messages).approvals.on_request = "changed";
@@ -49,7 +51,8 @@ test("native values outside the upstream's limits or offered levels keep the pub
   assert.equal(withNativeRow(unbounded, [nativeSol]).context_window, 500000, "no upstream maximum means the native window cannot be checked");
   assert.equal(withNativeRow(published, [{ ...nativeSol, default_reasoning_level: "minimal" }]).default_reasoning_level, "medium");
   const malformed = withNativeRow(published, [{ ...nativeSol, model_messages: "text", tool_mode: 7, truncation_policy: { mode: "tokens", limit: -1 }, effective_context_window_percent: 140 }]);
-  for (const key of ["model_messages", "tool_mode", "truncation_policy", "effective_context_window_percent"]) assert.deepEqual(malformed[key], published[key], key);
+  for (const key of ["model_messages", "tool_mode", "truncation_policy", "effective_context_window_percent", ...usageFlags]) assert.deepEqual(malformed[key], published[key], key);
+  for (const key of usageFlags) assert.equal(malformed[key], true, `${key} stays with the gateway template it describes`);
 });
 
 test("an executor without the code-mode host keeps the published tool mode and still takes the native prompt", async () => {
@@ -95,6 +98,7 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     const [, sol, next, odd] = combined.models;
     assert.deepEqual(sol.model_messages, messages); assert.equal(sol.tool_mode, "code_mode_only"); assert.equal(sol.context_window, 800000);
     assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, false); assert.deepEqual(sol.service_tiers, [tier]);
+    for (const key of usageFlags) { assert.equal(sol[key], false, key); assert.equal(next[key], true, key); }
     for (const row of [next, odd]) { assert.deepEqual(row.model_messages, { instructions_template: "" }); assert.equal(row.tool_mode, "direct"); assert.equal(row.context_window, 500000); }
     assert.deepEqual(combined.models[0], nativeSol);
     assert.equal(JSON.stringify(combined).includes("upstream_slug"), false);
@@ -106,5 +110,20 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     const hostless = new DesktopCatalog(f.value, native, join(f.directory, "hostless.json"), false); await hostless.initialize();
     assert.equal(hostless.current().models[0].tool_mode, "direct"); assert.notEqual(hostless.current().revision, snapshot.revision);
     assert.deepEqual(native, [before]);
+  } finally { f.close(); }
+});
+
+test("the first host read replaces the plain startup catalog even when the host rows match the local config", async () => {
+  const f = await shimFiles();
+  try {
+    f.value.providers = [codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata })]; f.setCatalog(modelCatalog(f.value));
+    const path = join(f.directory, "desktop-models.json");
+    // A first launch has no offline cache, and prepareNativeCatalog wrote the plain rows.
+    await writePrivateJson(path, { models: [nativeSol, ...modelCatalog(f.value).models] });
+    // The host publishes the same rows as the local config; the first successful read must still replace that file.
+    const live = new DesktopCatalog(f.value, [nativeSol], path, true); await live.refresh(true);
+    const sol = JSON.parse(await readFile(path, "utf8")).models[1];
+    assert.equal(sol.slug, "codex/sol"); assert.deepEqual(sol.model_messages, messages); assert.equal(sol.include_skills_usage_instructions, false);
+    assert.equal(Object.hasOwn(sol, "upstream_slug"), false);
   } finally { f.close(); }
 });

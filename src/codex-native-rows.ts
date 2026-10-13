@@ -6,6 +6,8 @@ type Row = Record<string, unknown>;
 
 /** Codex 2 rows name the upstream model they serve, so the desktop adapter can find that model's row in its own native catalog. */
 export const upstreamSlugField = "upstream_slug";
+// These say whether Codex adds its own skills, plugin and apps guidance; a native template that already holds it turns them off.
+const usageFlags = ["include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions"];
 
 const plain = (value: unknown): Row | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
 const positive = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= max;
@@ -23,10 +25,10 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
 
 /**
  * The client's own native row supplies a Codex 2 row's harness behaviour: its instructions and
- * messages, tool mode (a code mode only where the executor runs it), defaults, window share and
- * truncation. Account capabilities keep the
- * upstream values: service tiers, multi-agent fields, the window maximum and auto-compaction
- * limit, and search, which stays off until tool_search passes through. comp_hash is never copied.
+ * messages with their usage flags, tool mode (a code mode only where the executor runs it),
+ * defaults, window share and truncation. Account capabilities keep the upstream values: service
+ * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
+ * off until tool_search passes through. comp_hash is never copied.
  * Without a marker or a native row for that slug the row stays as the gateway published it.
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
@@ -34,7 +36,9 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
   const copy: Row = {};
-  const messages = plain(source.model_messages); if (messages) copy.model_messages = structuredClone(messages);
+  const messages = plain(source.model_messages);
+  // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
+  if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }
   for (const key of ["shell_type", "default_reasoning_summary"]) if (typeof source[key] === "string") copy[key] = source[key];
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
