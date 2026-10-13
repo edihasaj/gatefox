@@ -115,11 +115,13 @@ setInterval(()=>{},1000);\n`);
   try {
     await until(() => frames.length === 2);
     assert.deepEqual(frames, [{ hello: "secret-key" }, { call: 3, name: "alpha", toolUseId: "toolu_1" }]);
-    const listed = JSON.parse((await readFile(log, "utf8")).split("\n")[1]) as { result: { tools: Array<{ _meta?: Record<string, unknown> }> } };
+    const answered = async () => (await readFile(log, "utf8").catch(() => "")).trim().split("\n").filter(Boolean);
+    while ((await answered()).length < 2) await sleep(5);
+    const listed = JSON.parse((await answered())[1]) as { result: { tools: Array<{ _meta?: Record<string, unknown> }> } };
     assert.equal(listed.result.tools[0]._meta?.["anthropic/maxResultSizeChars"], 2000000);
     socket!.destroy();
     assert.equal(await exited, "SIGKILL");
-    const answers = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { id?: number });
+    const answers = (await answered()).map(line => JSON.parse(line) as { id?: number });
     assert.deepEqual(answers.map(answer => answer.id), [1, 2], "the call was never answered");
   } finally { parent.kill("SIGKILL"); server.close(); await rm(directory, { recursive: true, force: true }); }
 });
