@@ -8,6 +8,7 @@ import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { ProviderError } from "../providers/provider.js";
+import { streamFailureCode } from "../provider-failure.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import type { InferenceEvent, ResponsesInputItem, ResponsesTool } from "../protocol/types.js";
 
@@ -121,9 +122,11 @@ test("a forced choice answered with another tool retries once with only the forc
     assert.deepEqual(events.map(event => event.type === "tool" ? event.call.function.name : event.type), ["write_note", "done"]);
     const [first, retry] = await f.captured();
     assert.equal(JSON.parse(first.catalog).length, 2); assert.equal(JSON.parse(retry.catalog).length, 1, "the retry offers only the forced tool");
-    // Text already streamed cannot be taken back, so that attempt fails instead of retrying.
+    // Text already streamed cannot be taken back, so that attempt fails instead of retrying,
+    // with a code Codex treats as final rather than repeating the full-catalog inference.
     process.env.GATEWAY_FIXTURE_CALL = "wrong-text";
-    await assert.rejects(drain(adapter.infer(request, new AbortController().signal)), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "forced_tool_mismatch");
+    await assert.rejects(drain(adapter.infer(request, new AbortController().signal)), (error: unknown) => error instanceof ProviderError && error.code === "upstream_rejected" &&
+      error.upstream?.code === "forced_tool_mismatch" && streamFailureCode(error) === "invalid_prompt");
     assert.equal((await f.captured()).length, 3);
   } finally { await f.restore(); }
 });

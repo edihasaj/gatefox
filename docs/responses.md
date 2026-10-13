@@ -279,7 +279,9 @@ returns only the calls it completed. Output tokens come from the final
 request stops the CLI at once instead of waiting 1.5 seconds. A forced
 `tool_choice` keeps the full catalog, so it does not break the prompt cache; a final
 block names the required tool, and one retry with only that tool follows a
-mismatched call when no text was streamed.
+mismatched call when no text was streamed. After streamed text, a mismatched call
+fails with a code Codex treats as final, because a caller retry would repeat the
+same full-catalog inference.
 
 Claude receives native image blocks through the official CLI's streamed input.
 Copilot receives private SDK image attachments, deleted with the request session.

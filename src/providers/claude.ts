@@ -85,7 +85,10 @@ export class ClaudeSubscription implements Provider {
     try {
       for await (const event of this.oneShot(run, signal)) { if (event.type === "text") streamed = true; yield event; }
     } catch (error) {
-      if (!(error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") || typeof choice !== "object" || streamed || signal.aborted) throw error;
+      if (!(error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") || typeof choice !== "object" || signal.aborted) throw error;
+      // Text already reached the caller, so a local retry would duplicate it. A caller retry would
+      // repeat the same full-catalog inference, so the failure is final (Codex: invalid_prompt).
+      if (streamed) throw new ProviderError("upstream_rejected", error.message, 502, error.upstream);
       // One retry with only the forced tool: a single cache miss instead of a failed turn.
       yield* this.oneShot({ ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }, signal);
     }
