@@ -140,11 +140,19 @@ shared-native --disable --apply` turn a sharing mode off again. Without `--apply
 they preview the remaining plan. With it, they require the maintenance window,
 stop the service only after its idle guard releases every lease and loaded chat,
 archive the stopped host receipt in `service-backups`, restore the plan without
-that mode, and start the service.
+that mode, and start the service. If any step after the stop fails, the previous
+plan is restored and the service started again; the error names the backup.
 
-On the inference host, the server holds `caffeinate -s` tied to its own process:
-on AC power the Mac stays awake while the server runs, lid closed included; on
-battery macOS sleeps as usual. Set `GATEWAY_KEEP_AWAKE=off` to opt out.
+The service never keeps a Mac awake. While the inference host sleeps, other Macs'
+gateway requests fail and Codex retries them. When the supervisor sees a timer tick
+arrive more than 30 seconds late, the system slept: it logs `system_wake` and
+restarts SSH tunnels at once instead of waiting about 45 seconds for keepalives.
+Before starting a reverse tunnel, it frees the forwarded port on the remote Mac if
+a leftover sshd session of the same user still holds it. Without this, a tunnel
+dropped uncleanly (sleep, network change) can block reconnection until the remote's
+TCP keepalive notices, by default two hours later. Nothing else listening on that
+port is touched.
+
 Installing a release leaves `sharedExecutors` absent in an existing plan; it does
 not enable this migration or restart an open app.
 

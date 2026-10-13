@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { serviceTunnelArguments } from "../service-tunnel.js";
+import { serviceTunnelArguments, staleForwardCleanup } from "../service-tunnel.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -55,4 +55,13 @@ test("unified supervisor applies defaults to a new legacy SSH child without rewr
     assert.match(output, /^connecttimeout 10$/m); assert.match(output, /^connectionattempts 1$/m);
     assert.equal(JSON.stringify(plan), before);
   } finally { await supervisor.stop(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("reverse tunnels derive a cleanup command for a stale remote listener; forward tunnels need none", () => {
+  const reverse = ["-N", "-T", "-o", "BatchMode=yes", "-o", "RemoteCommand=none", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-R", "127.0.0.1:3459:127.0.0.1:3457", "macbook-pro-2"];
+  const cleanup = staleForwardCleanup(reverse)!;
+  assert.deepEqual(cleanup.slice(0, -2), ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "-o", "RemoteCommand=none"]);
+  assert.equal(cleanup.at(-2), "macbook-pro-2");
+  assert.match(cleanup.at(-1)!, /-iTCP@127\.0\.0\.1:3459 -sTCP:LISTEN/); assert.match(cleanup.at(-1)!, /\*sshd\*\) kill/);
+  assert.equal(staleForwardCleanup(["-N", "-L", "127.0.0.1:18301:127.0.0.1:18300", "qwen-spark"]), undefined);
 });

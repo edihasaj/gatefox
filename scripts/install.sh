@@ -73,7 +73,7 @@ fi
 # releases move to the Trash unless a running process still maps their files.
 keep_current=$(readlink "$root/current" | sed 's#^releases/##')
 keep_previous=$(sed 's#^releases/##' "$root/previous-release" 2>/dev/null || true)
-in_use=$(/usr/sbin/lsof -nP -Fn 2>/dev/null | grep -o "$root/releases/[^/]*/" | sort -u || true)
+in_use=$( { /usr/sbin/lsof -nP -Fn 2>/dev/null; cat "$HOME"/Library/LaunchAgents/com.edihasaj.subscription-gateway*.plist 2>/dev/null; } | grep -o "$root/releases/[^/<]*/" | sort -u || true)
 kept_extra=0; pruned=0
 if [ -d "$HOME/.Trash" ]; then
   for name in $(ls -1 "$root/releases" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1nr -k2,2nr -k3,3nr); do

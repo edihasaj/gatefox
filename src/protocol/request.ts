@@ -136,7 +136,8 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
     if (!Array.isArray(item.tools)) reject("additional_tools must contain a tool list");
     return item.tools as ResponsesTool[];
   }) : [];
-  return [...(request.tools || []), ...lifted];
+  if (request.tools !== undefined && request.tools !== null && !Array.isArray(request.tools)) reject("tools must be an array");
+  return [...(request.tools ?? []), ...lifted];
 }
 
 export function responsesToChatRequest(request: ResponsesRequest): OpenAIChatRequest {

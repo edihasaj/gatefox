@@ -23,8 +23,8 @@ only a fixed class such as `stream_disconnected` or `usage_limit`.
 | Process | Events |
 | --- | --- |
 | Adapter | `turn_started`, `turn_completed`, `turn_empty_completion` (completed with no answer and no tool call), `turn_error`, `turn_quiet` (no events for five minutes), `rpc_error`, `adapter_client`, `adapter_session_end` |
-| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens), `provider_retry`, `claude_cli`, `keep_awake` |
-| Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `sharing_disabled` |
+| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens), `provider_retry`, `claude_cli` |
+| Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed` |
 
 `gateway diagnostics [--since HOURS]` summarizes the log: turn outcomes and
 failure classes per model, request outcomes, cache-hit ratio and first-event
@@ -43,8 +43,11 @@ file other users can read is ignored. Without it nothing is sent.
 | Uncaught exception or rejection in the server, adapter or service | `fatal`, written synchronously to `<state>/error-spool/` and sent by the next process start |
 | Untyped provider failure (`provider_failed`), internal adapter RPC failure, adapter start failure, execution host start failure | `error`, sent in the background with a five-second timeout |
 
-Typed provider and protocol failures, cancellations and turn anomalies stay in the
-local log. Events carry the exception type, a scrubbed message (credentials, long
+Typed provider and protocol failures (including malformed stream frames and
+invalid historical tool arguments), cancellations and turn anomalies stay in the
+local log. JSON parser messages are replaced with "JSON parse failed", because
+they quote the text they failed on. Crash reports are written to a temporary file
+and renamed, and a spool file that cannot be read is discarded. Events carry the exception type, a scrubbed message (credentials, long
 secrets, home paths and URL paths removed) and file, function and line frames.
 The machine is a hashed label; no user, request, environment, device or local
 variables are sent. Repeats of one failure within ten minutes are dropped, and a

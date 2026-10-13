@@ -4,11 +4,12 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { readServicePlan, serviceExecutionPaths, serviceNativeExecutionPaths, servicePlanPath, validateServicePlan, type ServicePlan } from "./service-plan.js";
 import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
 import { macService } from "./mac-service.js";
-import { sdkIdentity } from "./execution-host-storage.js";
+import { readOwner, sdkIdentity } from "./execution-host-storage.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js";
 import { sharedServiceRegistration, stopSharedServiceReplacement } from "./mac-shared-native.js";
-import { telemetry } from "./telemetry.js";
+import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
+import { executionHostHome } from "./execution-host.js";
 
 export type SharingMode = "shared-executors" | "shared-native";
 
@@ -20,6 +21,7 @@ export type SharingMode = "shared-executors" | "shared-native";
 export async function disableSharing(configPath: string, mode: SharingMode, apply = false): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Shared service changes currently support macOS");
   const config = await loadConfig(configPath); const plan = await readServicePlan(config.stateDirectory);
+  configureTelemetry(config.stateDirectory, "service");
   if (!plan || plan.config !== resolve(configPath)) throw new Error("No unified service plan for this configuration; nothing is shared");
   const key = mode === "shared-executors" ? "sharedExecutors" : "sharedNativeExecutor";
   const next: ServicePlan = { ...plan }; delete next[key];
@@ -29,7 +31,11 @@ export async function disableSharing(configPath: string, mode: SharingMode, appl
   if (!await sharedServiceRegistration(configPath)) throw new Error("The unified LaunchAgent belongs to another configuration or is unavailable; no service was changed");
   await requireMaintenanceWindow(configPath);
   const paths = plan.sharedNativeExecutor ? serviceNativeExecutionPaths(plan) : serviceExecutionPaths(plan);
-  const sdk = await sdkIdentity(paths.codex);
+  // Archive with the receipt's own SDK identity: after an app update the bundled SDK
+  // differs from the one the host started with, which is often why sharing is turned off.
+  const receipt = await readOwner(resolve(executionHostHome(configPath, paths.nativeHome), "owner.json"));
+  if (receipt && (receipt.configPath !== resolve(configPath) || receipt.nativeHome !== resolve(paths.nativeHome))) throw new Error("The execution host receipt belongs to another configuration; no service was changed");
+  const sdk = receipt ? { codex: receipt.codex, sdkSha256: receipt.sdkSha256 } : await sdkIdentity(paths.codex);
   const path = servicePlanPath(config.stateDirectory);
   return withPrivateFileLock(path, async () => {
     const original = await readFile(path, "utf8");
@@ -38,10 +44,18 @@ export async function disableSharing(configPath: string, mode: SharingMode, appl
     await writeFile(resolve(backup, "service-plan.json"), original, { mode: 0o600, flag: "wx" });
     const status = await consolidatedStatus(config.stateDirectory);
     if (typeof status.pid === "number") await stopSharedServiceReplacement(configPath, config.stateDirectory, status.pid);
-    await archiveStoppedExecutionReceipt({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup);
-    await writePrivateJson(path, validateServicePlan(next));
-    await macService("install", configPath);
-    telemetry("sharing_disabled", { mode });
+    try {
+      await archiveStoppedExecutionReceipt({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup);
+      await writePrivateJson(path, validateServicePlan(next));
+      await macService("install", configPath);
+    } catch (error) {
+      // Never leave inference and tunnels down: restore the previous plan and start it.
+      let restarted = false;
+      try { await writeFile(path, original, { mode: 0o600 }); await macService("install", configPath); restarted = true; } catch { /* Reported below. */ }
+      telemetry("sharing_disable_failed", { mode, restarted }); await flushTelemetry();
+      throw new Error(`Turning off ${mode} failed (${(error as Error).message}). The previous plan is restored from ${backup}${restarted ? " and the service was restarted" : "; start it with gateway service install"}.`);
+    }
+    telemetry("sharing_disabled", { mode }); await flushTelemetry();
     return { ...preview, applied: true, backup, ...await consolidatedStatus(config.stateDirectory) };
   });
 }

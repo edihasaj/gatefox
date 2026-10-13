@@ -52,3 +52,10 @@ test("discovered lite flags reach the Codex catalog row", () => {
     modelMetadata: { "codex/sol": { reasoningEfforts: ["high"], useResponsesLite: true, supportsReasoningEffortUpdates: true } } }] }).models[0];
   assert.equal(row.use_responses_lite, true); assert.equal(row.supports_reasoning_effort_updates, true);
 });
+
+test("malformed tools and stream frames are typed failures, not gateway exceptions", async () => {
+  assert.throws(() => responsesToChatRequest({ model: "m", input: "hi", tools: {} } as unknown as ResponsesRequest), /tools must be an array/);
+  const { readEvents } = await import("../protocol/sse.js");
+  const body = new Response("data: {not json}\n\n").body!;
+  await assert.rejects((async () => { for await (const _ of readEvents(body)) { /* drain */ } })(), { code: "invalid_stream" });
+});

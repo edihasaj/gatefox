@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -7,12 +8,13 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { serviceExecutionPaths, serviceNativeExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
 import { executionHostHome, startExecutionHost } from "./execution-host.js";
-import { serviceTunnelArguments } from "./service-tunnel.js";
+import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { errorClass } from "./turn-telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
+const execFileAsync = promisify(execFile);
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; failures: number; startedAt: number }
 export class ServiceSupervisor {
   private stopping = false;
@@ -23,6 +25,8 @@ export class ServiceSupervisor {
   private restarting = false;
   private executionStarting?: ReturnType<typeof startExecutionHost>;
   private hostRetry?: NodeJS.Timeout;
+  private wakeWatch?: NodeJS.Timeout;
+  private lastTick = Date.now();
   private hostFailures = 0;
   private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number; sharedNativeExecutor: boolean; sharedGatewayExecutors: boolean };
   private stoppedResolve: () => void = () => {};
@@ -54,6 +58,7 @@ export class ServiceSupervisor {
     for (const slot of this.slots) await this.startSlot(slot);
     if (this.stopping) return;
     this.heartbeat = setInterval(() => { void this.publish().catch(() => { void this.stop(); }); }, 5000);
+    this.lastTick = Date.now(); this.wakeWatch = setInterval(() => this.checkWake(Date.now()), 5000);
     await this.publish();
   }
   private async startExecutionHost(config: Awaited<ReturnType<typeof loadConfig>>, paths: ReturnType<typeof serviceExecutionPaths>): Promise<void> {
@@ -73,6 +78,22 @@ export class ServiceSupervisor {
       this.hostRetry = setTimeout(() => { this.hostRetry = undefined; void this.startExecutionHost(config, paths); }, wait);
     }
   }
+  /**
+   * The service never keeps the Mac awake. When a timer tick arrives far later than
+   * scheduled, the system slept; SSH tunnels then restart at once instead of waiting
+   * for their keepalives to time out, so the other Macs reconnect within seconds.
+   */
+  checkWake(now: number): void {
+    const gap = now - this.lastTick; this.lastTick = now;
+    if (this.stopping || gap < 30000) return;
+    telemetry("system_wake", { sleptSeconds: Math.round(gap / 1000) });
+    for (const slot of this.slots) {
+      if (slot.definition.kind !== "tunnel") continue;
+      slot.failures = 0;
+      if (slot.child) slot.child.kill("SIGTERM");
+      else if (slot.timer) { clearTimeout(slot.timer); slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }
+    }
+  }
   private async startSlot(slot: Slot): Promise<void> {
     if (this.stopping) return;
     const component = slot.definition;
@@ -83,6 +104,12 @@ export class ServiceSupervisor {
       if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077)) throw new Error("Service component log must be private");
       if (this.stopping) return;
       const args = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? serviceTunnelArguments(component.args) : component.args;
+      const cleanup = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? staleForwardCleanup(component.args) : undefined;
+      if (cleanup) {
+        const freed = await execFileAsync(component.command, serviceTunnelArguments(cleanup), { timeout: 15000, env: { ...process.env, ...component.environment } }).then(result => Number(result.stdout.trim()) || 0, () => 0);
+        if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
+        if (this.stopping) return;
+      }
       const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment } });
       slot.child = child; slot.startedAt = Date.now();
       slot.exited = new Promise(resolve => child.once("close", () => resolve()));
@@ -124,7 +151,7 @@ export class ServiceSupervisor {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat); clearTimeout(this.hostRetry);
+    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearTimeout(this.hostRetry);
     const executionClose = this.executionStarting?.then(host => host.close());
     // Observe rejection immediately while owned component processes shut down.
     const executionStopped = executionClose?.then(() => undefined, error => error as Error);

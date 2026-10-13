@@ -1,4 +1,4 @@
-import { readFile, readdir, mkdir, rename } from "node:fs/promises";
+import { lstat, readFile, readdir, readlink, mkdir, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { macService } from "./mac-service.js";
@@ -22,6 +22,9 @@ export async function uninstallGateway(configPath: string): Promise<Record<strin
     if (match) await macTunnel("uninstall", { id: match[1] }, dirname(configPath));
   }
   const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true }); const suffix = Date.now();
+  // The product-name alias goes too, but only when it is the installer's own link.
+  const alias = resolve(dirname(command), "harness-gateway");
+  if ((await lstat(alias).catch(() => undefined))?.isSymbolicLink() && await readlink(alias) === "gateway") await rename(alias, resolve(trash, `harness-gateway.${suffix}`));
   await rename(command, resolve(trash, `gateway.${suffix}`)); await rename(root, resolve(trash, `subscription-gateway.${suffix}`));
   return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: true };
 }

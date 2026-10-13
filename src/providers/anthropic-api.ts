@@ -3,6 +3,10 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type Provider } from "./provider.js";
+
+function historicalArguments(text: string): unknown {
+  try { return JSON.parse(text); } catch { throw new ProviderError("invalid_request", "Historical tool arguments are not valid JSON", 400); }
+}
 import { anthropicParts } from "../protocol/images.js";
 import { anthropicContextFailure, anthropicHttpContextFailure, contextWindowFailure } from "./context-errors.js";
 
@@ -33,7 +37,7 @@ export class AnthropicAPI implements Provider {
       if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.parts ? anthropicParts(message) : message.content || "" });
       else {
         content.push(...anthropicParts(message));
-        for (const call of message.tool_calls || []) content.push({ type: "tool_use", id: call.id, name: nativeName(call.function.name), input: JSON.parse(call.function.arguments) });
+        for (const call of message.tool_calls || []) content.push({ type: "tool_use", id: call.id, name: nativeName(call.function.name), input: historicalArguments(call.function.arguments) });
       }
       if (!content.length) continue;
       const last = messages.at(-1);

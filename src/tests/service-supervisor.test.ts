@@ -118,3 +118,21 @@ test("a failed shared execution host leaves inference and tunnels running and re
     assert.equal(attempts, 2, "the host is retried after its first failure");
   } finally { await supervisor.stop(); }
 });
+
+test("waking from sleep restarts tunnels at once and leaves other components alone", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-wake-"));
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
+    component(directory, "tunnel", "tunnel", "setInterval(()=>{},1000)"),
+    component(directory, "native", "native", "setInterval(()=>{},1000)"),
+  ] }, directory, 25);
+  const read = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { components: Array<{ id: string; pid?: number; state: string }> };
+  try {
+    await supervisor.start();
+    await until(async () => (await read()).components.every(value => value.state === "running"));
+    const before = (await read()).components;
+    supervisor.checkWake(Date.now() + 10_000); // an ordinary tick changes nothing
+    supervisor.checkWake(Date.now() + 600_000); // ten minutes of sleep
+    await until(async () => { const tunnel = (await read()).components.find(value => value.id === "tunnel"); return !!tunnel?.pid && tunnel.pid !== before.find(value => value.id === "tunnel")?.pid; });
+    assert.equal((await read()).components.find(value => value.id === "native")?.pid, before.find(value => value.id === "native")?.pid);
+  } finally { await supervisor.stop(); }
+});

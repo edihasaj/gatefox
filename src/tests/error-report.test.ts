@@ -54,3 +54,21 @@ test("handled exceptions post in the background once, and a crash is spooled the
     assert.equal((await readdir(join(state, "error-spool"))).length, 0, "a delivered crash leaves the spool");
   } finally { server.close(); await rm(state, { recursive: true, force: true }); }
 });
+
+test("JSON parser messages never forward the text they failed on", () => {
+  let failure: unknown; try { JSON.parse('{"cmd": rm -rf foo bar}'); } catch (error) { failure = error; }
+  const event = exceptionEvent(failure, "provider") as { exception: { values: Array<{ value: string }> } };
+  assert.equal(event.exception.values[0].value, "JSON parse failed");
+});
+
+test("a corrupt spool file is discarded without crashing the starting process", async () => {
+  const state = await mkdtemp(join(tmpdir(), "gateway-errors-corrupt-"));
+  try {
+    await writeFile(join(state, "glitchtip.dsn"), "http://publickey@127.0.0.1:9/5", { mode: 0o600 });
+    const { mkdir } = await import("node:fs/promises"); await mkdir(join(state, "error-spool"), { recursive: true, mode: 0o700 });
+    await writeFile(join(state, "error-spool", "1-1.json"), '{"event_id": "trunc', { mode: 0o600 });
+    startErrorReports(state, "test");
+    for (let i = 0; i < 100 && (await readdir(join(state, "error-spool"))).length; i++) await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal((await readdir(join(state, "error-spool"))).length, 0);
+  } finally { await rm(state, { recursive: true, force: true }); }
+});

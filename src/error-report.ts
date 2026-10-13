@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, statSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, renameSync, statSync, writeFileSync, mkdirSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { hostname, release as osRelease } from "node:os";
 import { basename, join } from "node:path";
@@ -52,7 +52,8 @@ export function exceptionEvent(error: unknown, where: string, fatal = false): Re
     event_id: randomUUID().replaceAll("-", ""), timestamp: new Date().toISOString(), platform: "node", level: fatal ? "fatal" : "error",
     logger: component, release: `harness-gateway@${version}`, environment: "production", server_name: machine,
     tags: { component, where: scrub(where).slice(0, 80), node: process.version, os: `macOS ${osRelease()}` },
-    exception: { values: [{ type, value: scrub(failure.message || ""), stacktrace: { frames: frames(failure.stack) } }] },
+    // JSON parser messages quote the text they failed on, which can be tool arguments or model output.
+    exception: { values: [{ type, value: failure instanceof SyntaxError || /is not valid JSON|in JSON at position/i.test(failure.message) ? "JSON parse failed" : scrub(failure.message || ""), stacktrace: { frames: frames(failure.stack) } }] },
   };
 }
 
@@ -77,7 +78,11 @@ export function reportException(error: unknown, where: string): void {
 
 function spoolCrash(error: unknown, origin: string): void {
   if (!spool || !target) return;
-  try { mkdirSync(spool, { recursive: true, mode: 0o700 }); writeFileSync(join(spool, `${Date.now()}-${process.pid}.json`), JSON.stringify(exceptionEvent(error, `crash:${origin}`, true)), { mode: 0o600 }); } catch { /* A crash report never masks the crash. */ }
+  try {
+    // Write then rename, so a reader never sees a half-written report.
+    mkdirSync(spool, { recursive: true, mode: 0o700 }); const name = join(spool, `${Date.now()}-${process.pid}`);
+    writeFileSync(`${name}.tmp`, JSON.stringify(exceptionEvent(error, `crash:${origin}`, true)), { mode: 0o600 }); renameSync(`${name}.tmp`, `${name}.json`);
+  } catch { /* A crash report never masks the crash. */ }
 }
 
 async function sendSpooled(): Promise<void> {
@@ -85,7 +90,7 @@ async function sendSpooled(): Promise<void> {
   const names = (await readdir(spool).catch(() => [] as string[])).filter(name => name.endsWith(".json")).sort();
   for (const name of names.slice(0, 20)) {
     const path = join(spool, name);
-    const event = await readFile(path, "utf8").then(text => JSON.parse(text) as Record<string, unknown>, () => undefined);
+    const event = await readFile(path, "utf8").then(text => { try { return JSON.parse(text) as Record<string, unknown>; } catch { return undefined; } }, () => undefined);
     const old = (await stat(path).catch(() => undefined))?.mtimeMs ?? 0;
     if (!event || await post(event) || Date.now() - old > 7 * 86400000) await rm(path, { force: true }).catch(() => {});
   }
@@ -104,5 +109,5 @@ export function startErrorReports(stateDirectory: string, name: string): void {
   } catch { target = undefined; }
   if (!target || process.env.GATEWAY_ERROR_REPORTS === "off") { target = undefined; return; }
   if (!process.listeners("uncaughtExceptionMonitor").includes(spoolCrash)) process.on("uncaughtExceptionMonitor", spoolCrash);
-  void sendSpooled();
+  void sendSpooled().catch(() => {});
 }
