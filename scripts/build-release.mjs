@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { nativeSourceDigest } from './native-source.mjs';
+import { releaseVersionProblem } from './release-version.mjs';
 import { verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
@@ -12,6 +13,7 @@ import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerD
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
   'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' } } });
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+const versionProblem = releaseVersionProblem(version); if (versionProblem) throw new Error(versionProblem);
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !values['allow-dirty']) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
 if (Boolean(values['reuse-components-from']) !== Boolean(values['components-sha256'])) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
 const reused = values['reuse-components-from'] ? verifyReleaseComponents(resolve(values['reuse-components-from']),

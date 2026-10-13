@@ -8,4 +8,5 @@ The gateway owns translation and transport, not agent orchestration or task poli
 Preserve caller instructions, roles, model choices and permissions; do not invent them.
 The client owns tool execution. Inference providers must not execute native tools.
 Never log tokens, request bodies, tool arguments, or environment values.
+Versioning: the patch tops out at 9; after x.y.9 release x.(y+1).0. Use `npm run version:next`.
 Keep this project independently implemented. Record licenses for any added dependencies.

@@ -12,7 +12,12 @@ The runtime archive is pinned to its published SHA-256 digest. Node's license
 travels with it. No provider credentials, test output, or local configuration
 belongs in the release archive.
 
-1. Update the package version and lockfile. Run the development gate.
+1. Choose the next version with `npm run version:next`. The patch tops out at 9: after
+   `x.y.9` the next release is `x.(y+1).0`, and the minor keeps counting, so `0.9.9`
+   becomes `0.10.0`. A legacy patch above 9 such as `0.2.36` moves to `0.3.0`. Set that
+   value in `package.json`, confirm it with `npm run version:next -- --check` (it prints
+   `ok`, or the problem and a non-zero exit when the version is invalid), then update the
+   lockfile. Run the development gate.
 2. Download the official macOS ARM64 runtime into `.state/release-runtime` and
    verify it against Node's published checksums. Extract it in that directory.
 3. Run `node scripts/build-release.mjs --allow-dirty` only for preflight testing.
