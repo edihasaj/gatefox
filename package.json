@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/subscription-gateway",
-  "version": "0.2.30",
+  "version": "0.2.31",
   "private": true,
   "type": "module",
   "description": "A small local Responses gateway for subscription and API providers.",
