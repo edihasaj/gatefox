@@ -474,6 +474,15 @@ no provider credentials or global launchd environment values are changed.
 
 ## Real subscription checks
 
+On October 13 a development gateway on the native-spend build forwarded the Codex 2
+turn-state through a real two-turn Codex CLI 0.160 run (GPT-5.6-Luna, low effort).
+With a 2-second cap on the deferred response head, the second turn lost its
+turn-state: upstream heads took 1.5 to 4.7 seconds, and 6 of 10 eligible requests
+opened their head without the header. With the head waiting up to one heartbeat
+interval, all four head probes (1.9 to 3.2 seconds) carried the header, and each
+turn returned a turn-state on its first request and echoed it on the next. The
+probe recorded only timings, booleans and token counts.
+
 MacBook Pro 2 passed a real Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol loop over an
 authenticated SSH forward. It streamed text and reasoning, read a random file
 proof, applied a dedicated patch, retained follow-up history, switched providers,
