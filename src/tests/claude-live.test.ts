@@ -28,7 +28,10 @@ async function gone(pid: number, withinMs: number): Promise<boolean> {
   return true;
 }
 const user = (text: string): ResponsesInputItem => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
-const adapter = (sessions: Record<string, unknown> = {}, onUsage?: (limit: ClaudeLimit) => Promise<void>) => new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", ...sessions } }, onUsage);
+// Session directories live in the shared temporary directory; a per-process provider id keeps concurrent suites apart.
+const providerId = `claude-${process.pid}`;
+const sessionKey = (threadId: string) => createHash("sha256").update(`${providerId}\0\0${threadId}`).digest("hex");
+const adapter = (sessions: Record<string, unknown> = {}, onUsage?: (limit: ClaudeLimit) => Promise<void>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", ...sessions } }, onUsage);
 
 /** One request as the server runs it, plus the output items Codex would replay next time. */
 async function turn(provider: ClaudeSubscription, input: ResponsesInputItem[], options: { context?: InferenceContext; effort?: string; signal?: AbortSignal; abortAfterTexts?: number; controller?: AbortController } = {}) {
@@ -237,8 +240,7 @@ test("a CLI that exits at spawn falls back to one-shot with spawn_failed", async
     assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
     assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "oneshot"]);
     assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
-    const key = createHash("sha256").update("claude\0\0thread-1").digest("hex").slice(0, 16);
-    assert.equal(existsSync(join(tmpdir(), "gateway-claude", key)), false, "a failed start leaves no thread directory behind");
+    assert.equal(existsSync(join(tmpdir(), "gateway-claude", sessionKey("thread-1").slice(0, 16))), false, "a failed start leaves no thread directory behind");
   } finally { await teardown(f); }
 });
 
@@ -264,9 +266,9 @@ test("a request for a thread that is still generating falls back", async () => {
 });
 
 test("session files of a dead gateway process are swept; a live owner's stay", async () => {
-  const { mkdir, readdir, writeFile, rm } = await import("node:fs/promises"); const { tmpdir } = await import("node:os"); const { join } = await import("node:path");
+  const { mkdir, readdir, writeFile, rm } = await import("node:fs/promises");
   const { sweepSessionDirectories } = await import("../providers/claude-session.js");
-  const key = join(tmpdir(), "gateway-claude", "feedfacefeedface");
+  const key = join(tmpdir(), "gateway-claude", `feedface${process.pid.toString(16).padStart(8, "0")}`);
   const dead = join(key, `${(2 ** 22 + 12345).toString(36)}-0000`), live = join(key, `${process.pid.toString(36)}-0001`), work = join(key, "work");
   try {
     for (const path of [dead, live, work]) { await mkdir(path, { recursive: true }); await writeFile(join(path, "mcp.json"), "{}"); }
@@ -347,8 +349,7 @@ test("a non-gateway tool_use kills the session at once, even while the caller is
   try {
     const iterator = adapter().infer({ model: "fixture", input: [user("run")], tools }, new AbortController().signal, thread)[Symbol.asyncIterator]();
     const first = await iterator.next().catch((error: unknown) => error);
-    while (!(await pids(f)).length) await sleep(10);
-    const [pid] = await pids(f);
+    const [pid] = await pids(f); assert.ok(pid, "a live session served the request");
     assert.ok(await gone(pid, 300), "killed before the consumer pulled the tool_use line");
     await assert.rejects(async () => { if (first instanceof Error) throw first; for (let next = await iterator.next(); !next.done; next = await iterator.next()); },
       (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
@@ -371,7 +372,7 @@ test("a session retired during a turn closes when that turn is cancelled after i
 
 test("each provider's park time applies to its own sessions, whatever another provider sent since", async () => {
   const { f } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { calls: [{ tool: "alpha", input: { id: 1 } }] }] });
-  const pidOf = (threadId: string) => claudeLive({ max: 6, parkMinutes: 60 }).sessions().find(session => session.key === createHash("sha256").update(`claude\0\0${threadId}`).digest("hex"))!.pid!;
+  const pidOf = (threadId: string) => claudeLive({ max: 6, parkMinutes: 60 }).sessions().find(session => session.key === sessionKey(threadId))!.pid!;
   try {
     // The second provider's request arrives while the first one's process is still starting.
     const short = turn(adapter({ parkMinutes: 0.004 }), [user("short")]); const long = turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } });
