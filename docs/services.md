@@ -201,6 +201,10 @@ Resume and fork preserve the saved workspace. The desktop's
 The first SDK launch keeps its analytics default, and explicit analytics settings
 remain authoritative. Different process profiles or configuration arguments are
 refused instead of creating a second native owner.
+An updated adapter can also attach while an older host remains running. On the
+older host's exact startup-settings refusal, it retries ownership acquisition
+once with only the analytics-default flag changed. The host must still accept
+every other setting. No inference is retried, and the existing writer continues.
 Administrative reads use short-lived, non-originating SDK connections and never
 answer frontend approvals. Identical pending approvals replay with their original
 mapped client ID after resume.

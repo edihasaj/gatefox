@@ -7,6 +7,7 @@ import type { Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { readNativeHomeOwner } from "./native-execution-host-storage.js";
+import { acquireNativeCompatible } from "./native-execution-compat.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
 
 /** One control connection keeps its generation leases until the adapter closes. */
@@ -61,7 +62,7 @@ export class ExecutionHostClient {
   async release(revision: string): Promise<void> { await this.connection.request("execution/release", { revision }); }
   async acquireNative(args: string[], cwd: string): Promise<NativeLaunchRecord> {
     if (!this.capabilities.includes("native")) throw new Error("Shared native execution is not enabled");
-    const value = await this.connection.request("native/acquire", { args, cwd });
+    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd);
     if (value.kind !== "native" || typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, "native.sock") || !Number.isSafeInteger(value.pid) || Number(value.pid) < 1
       || typeof value.instanceId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.instanceId)) throw new Error("Shared native executor returned invalid ownership metadata");
     if (!await socketIdentity(value.socketPath as string)) throw new Error("Shared native executor socket is unavailable");
