@@ -85,7 +85,8 @@ Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
   The seed itself is not rewritten. A turn that ends in tool use has no such miss.
 - Each session uses about 240 MB for the CLI and 44 MB for its MCP child.
 - A text turn's result arrives 3–7 ms after its final `message_delta`, so a live
-  request still ends at the result. One-shot requests end at that delta instead.
+  request still ends at the result. One-shot requests end at that delta instead,
+  except Fast ones, which need the result's fast mode state.
 
 ## Restarts and upgrades
 

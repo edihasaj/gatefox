@@ -324,15 +324,18 @@ description reaches the model whole. Before, the CLI cut longer ones at 2,048
 characters.
 
 A one-shot text turn ends at the `message_delta` whose stop reason is `end_turn`.
-The request completes with that message's usage and the served tier, without
-waiting for the CLI's result. The gateway then reads the CLI's output for at most
-100 ms, to keep the rate limit the CLI prints right after the turn and the
-context window a prompt result reports, and stops the CLI. Any other stop reason
-still waits for the result and keeps its error classification. Measured with CLI
-2.1.293 on Haiku 5.5 and Sonnet 5.5, the time from `message_delta` to `done` fell
-from 1.6–2.8 seconds to under 2 ms for a gateway started from a Claude Code shell,
-and from 4–8 ms to under 2 ms in the installed service's environment. Live
-sessions already received their result within 7 ms and still end there.
+The request completes with that message's usage, without waiting for the CLI's
+result. The gateway then reads the CLI's output for at most 100 ms, to keep the
+rate limit the CLI prints right after the turn and the context window a prompt
+result reports, and stops the CLI. Any other stop reason still waits for the
+result and keeps its error classification. Measured with CLI 2.1.293 on Haiku 5.5
+and Sonnet 5.5, the time from `message_delta` to `done` fell from 1.6–2.8 seconds
+to under 2 ms for a gateway started from a Claude Code shell, and from 4–8 ms to
+under 2 ms in the installed service's environment. Live sessions already received
+their result within 7 ms and still end there. A Fast turn also waits for the
+result, because only the result reports the tier served: when Claude refuses or
+throttles a fast request, the CLI retries at standard speed without printing a
+line, so the `on` state from its first line can be stale.
 
 The system prompt, the item numbering, the smaller tool list and the uncut tool
 descriptions all change Claude's cached prefix. They ship in one release, so each

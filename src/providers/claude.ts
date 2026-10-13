@@ -147,7 +147,9 @@ export class ClaudeSubscription implements Provider {
     await writeFile(mcpPath, JSON.stringify({ mcpServers: run.tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
     const child = spawn("claude", claudeCliArgs({ mcpPath, systemPath, model: run.model, effort: run.effort, fast: run.fast, thinkingDisplay: run.summaryVisible }),
       { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env: claudeEnv(this.config?.authDirectory, false, run.requestedEffort, catalog) });
-    const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: true });
+    // Fast waits for the result: only it reports the tier served, since a refused or throttled fast request
+    // drops to standard speed without a stream line. The result follows end_turn within milliseconds.
+    const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible, endTurn: !run.fast });
     let failure: Error | undefined; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false; let settle: NodeJS.Timeout | undefined;
     let end: ClaudeStreamEnd | undefined; let resultSubtype: string | undefined; let resultError = false; let tokens: ClaudeTokens | undefined; const began = Date.now();
     // Report the tier Claude actually served: Fast only while fast mode stayed on.
