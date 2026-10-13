@@ -55,7 +55,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   if (session?.state === "interrupting") await session.waitIdle(1500);
   if (session?.state === "generating" || session?.state === "interrupting") return { kind: "fallback", reason: "concurrent" };
   if (signal.aborted) throw cancelled();
-  const { entries, messages } = ledgerEntries(input.request, input.tools);
+  const { entries, messages } = ledgerEntries(input.request, input.tools, input.leading);
   const fingerprint = sha(JSON.stringify({ model: input.model, thinking: input.effort !== undefined, fast: input.fast, instructions: input.instructionsDigest, tools: input.toolsDigest }));
   const window = input.windowId ?? "";
   let reason: ReseedReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined;
@@ -92,7 +92,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     let booting = true;
     try {
       session = await ClaudeSession.start({
-        key, fingerprint, window, effort: input.effort, args: input.spawn.args, env: input.spawn.env, mcpCatalog: input.spawn.mcpCatalog,
+        key, fingerprint, window, effort: input.effort, args: input.spawn.args, env: input.spawn.env, mcpCatalog: input.spawn.mcpCatalog, systemPrompt: input.spawn.systemPrompt,
         keyInUse: () => registry.sessions.has(key) || (!booting && registry.starting.has(key)),
         onClose: (closed, outcome, why) => ended(registry, closed, outcome, why),
       }, signal);

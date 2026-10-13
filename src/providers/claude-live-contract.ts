@@ -22,8 +22,10 @@ export interface ClaudeLiveInput {
   fast: boolean;
   /** False when the caller asked for no reasoning summary; reasoning is then hidden locally. */
   summaryVisible: boolean;
-  /** sha256 hex of the caller instructions ("" when absent). */
+  /** sha256 hex of spawn.systemPrompt, which carries the caller's leading system and developer content. */
   instructionsDigest: string;
+  /** Translated messages (instructions first) that moved into the system prompt; the ledger skips them. */
+  leading: number;
   /** sha256 hex of JSON.stringify(spawn.mcpCatalog). */
   toolsDigest: string;
   /** The full caller catalog (empty for tool_choice "none"). */
@@ -31,15 +33,17 @@ export interface ClaudeLiveInput {
   choice?: ChatToolSelection;
   /** The restored Responses request. */
   request: ResponsesRequest;
-  /** After claudeToolHistory, markCustomCalls and imageConversation. */
+  /** After claudeToolHistory and markCustomCalls, without the leading messages, then imageConversation. */
   conversation: ClaudeConversation;
   images: ClaudeImages;
   spawn: {
-    /** CLI flags for a live process whose MCP config is at `mcpPath`. */
-    args(mcpPath: string): string[];
+    /** CLI flags for a live process whose MCP config is at `mcpPath` and system prompt file at `systemPath`. */
+    args(mcpPath: string, systemPath: string): string[];
     env: NodeJS.ProcessEnv;
     /** The tools.json content for the gateway MCP server. */
     mcpCatalog: ClaudeMcpTool[];
+    /** The system prompt file content. */
+    systemPrompt: string;
   };
   /** Content blocks from conversation index `from`; `render(0)` includes block 0. */
   render(from: number): ContentBlock[];

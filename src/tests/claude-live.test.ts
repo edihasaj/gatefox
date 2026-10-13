@@ -75,7 +75,7 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
     assert.deepEqual(capture.filter(entry => entry.control).map(entry => entry.control), ["initialize"]);
     const start = capture.find(entry => entry.start)!; const mcp = capture.find(entry => entry.mcpTools)!;
     assert.deepEqual([start.advisorOff, start.toolSearchOff, mcp.mcpTools, mcp.maxResult], [true, true, 2, 2000000], "only gateway tools, with large results allowed");
-    assert.deepEqual(start.claudeVars, ["CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"], "only the gateway's own Claude Code variables");
+    assert.deepEqual(start.claudeVars, ["CLAUDE_CODE_DISABLE_ADVISOR_TOOL", "CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH", "CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT"], "only the gateway's own Claude Code variables");
     const events = await sessions();
     assert.deepEqual(events.map(entry => [entry.outcome, entry.cacheReadTokens, entry.cacheWriteTokens, entry.outputTokens]), [["spawned", 100, 10, 7], ["continued", 100, 10, 7]]);
   } finally { await teardown(f); }

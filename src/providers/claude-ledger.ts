@@ -66,17 +66,21 @@ export function callInput(call: OpenAIToolCall): string {
 const callDigest = (id: string, name: string, input: unknown) => digest(["c", id, name, input]);
 const runDigest = (value: string) => digest(["m", "assistant", [["t", value]]]);
 
-/** Canonical entries of a restored request, plus the number of conversation messages it translates to. */
-export function ledgerEntries(request: ResponsesRequest, tools: OpenAITool[]): { entries: LedgerEntry[]; messages: number } {
+/**
+ * Canonical entries of a restored request, plus the number of conversation messages it translates to.
+ * The first `leading` translated messages are the CLI's system prompt (the fingerprint covers them), so
+ * their items have no entry and indices count from the first message after them.
+ */
+export function ledgerEntries(request: ResponsesRequest, tools: OpenAITool[], leading = 0): { entries: LedgerEntry[]; messages: number } {
   const bindings = claudeToolBindings(tools);
   const input = (typeof request.input === "string" ? [{ type: "message", role: "user", content: request.input }] : request.input) as Array<Record<string, unknown>>;
-  let index = typeof request.instructions === "string" && request.instructions ? 1 : 0;
+  let index = (typeof request.instructions === "string" && request.instructions ? 1 : 0) - leading;
   const entries: LedgerEntry[] = []; let run: { value: string; first: number; count: number } | undefined;
   const close = () => { if (run) entries.push({ digest: runDigest(run.value), kind: "m", assistant: true, first: run.first, count: run.count }); run = undefined; };
   for (const item of input) {
     const count = messageCount(item); const first = index; index += count;
     const type = item.type ?? "message";
-    if (type === "reasoning" || type === "additional_tools" || count === 0) continue;
+    if (type === "reasoning" || type === "additional_tools" || count === 0 || first < 0) continue;
     if (type === "message" && item.role === "assistant") {
       // Restored reasoning summaries are strings; the CLI holds native thinking instead.
       if (typeof item.content === "string") continue;
