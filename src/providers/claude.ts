@@ -112,7 +112,8 @@ export class ClaudeSubscription implements Provider {
         onContextWindow: (name, window) => this.onContextWindow?.(name, window),
       }, signal);
     } catch (error) {
-      if (error instanceof ProviderError || signal.aborted) throw signal.aborted ? cancelled() : error;
+      // Any failure before a stream exists falls back to one-shot; only cancellation propagates.
+      if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
       outcome = { kind: "fallback", reason: "spawn_failed" };
     }
     if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason });

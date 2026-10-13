@@ -44,13 +44,14 @@ export function claudeResultFailure(result: Record<string, unknown>, limit?: Cla
 }
 
 interface Block { id: string; name: string; json: string; input?: unknown }
-interface Message { id?: string; base: ClaudeTokens; tokens?: ClaudeTokens; blocks: Map<number, Block>; stop?: string; ending?: boolean; ended?: boolean }
+interface Message { id?: string; base: ClaudeTokens; tokens?: ClaudeTokens; blocks: Map<number, Block>; stop?: string; ending?: "all" | "complete"; ended?: boolean }
 
 /**
  * Turns the CLI's stream-json lines into inference events for one request.
  * An API message is keyed by its message_start id. Its tool calls end the
  * request only once every call is complete: the CLI emits one `assistant`
  * line per content block, all with the same message id, before message_delta.
+ * A message that stops for another reason ends with its complete calls only.
  * Output tokens come only from message_delta. `accept` throws the mapped
  * ProviderError for native failures, foreign tools and inconsistent text.
  */
@@ -107,9 +108,10 @@ export class ClaudeMessageStream {
       message.tokens = tokensOf(event.usage, message.base); this.last = message.tokens;
       const stop = (event.delta as { stop_reason?: unknown } | undefined)?.stop_reason;
       if (typeof stop === "string") message.stop = stop;
-      if (message.stop === "tool_use" && message.blocks.size) { message.ending = true; this.finish(message, step, false); }
-    } else if (event.type === "message_stop" && message && message.blocks.size && (message.stop === undefined || message.stop === "tool_use")) {
-      this.finish(message, step, true);
+      // Another stop (max_tokens) still makes the CLI run the complete calls on the gateway MCP server and wait forever.
+      if (message.stop !== undefined && message.blocks.size) { message.ending = message.stop === "tool_use" ? "all" : "complete"; this.finish(message, step, message.ending); }
+    } else if (event.type === "message_stop" && message && message.blocks.size) {
+      this.finish(message, step, message.stop === undefined || message.stop === "tool_use" ? "final" : "complete");
     }
   }
 
@@ -126,7 +128,7 @@ export class ClaudeMessageStream {
         message.blocks.set(Math.max(-1, ...message.blocks.keys()) + 1, { id: String(use.id), name: use.name as string, json: "", input: use.input });
       } else orphans.push(use);
     }
-    if (message?.ending && !message.ended) this.finish(message, step, false);
+    if (message?.ending && !message.ended) this.finish(message, step, message.ending);
     // Without partial messages a complete assistant line is all there is, so it ends the request itself.
     if (orphans.length && !step.end) {
       const tokens = tokensOf(value.usage);
@@ -134,10 +136,16 @@ export class ClaudeMessageStream {
     }
   }
 
-  private finish(message: Message, step: ClaudeStreamStep, final: boolean): void {
+  /**
+   * "all" waits until every call has its `assistant` line; "final" takes every call, parsing streamed
+   * input where the line is missing; "complete" takes only the calls with an `assistant` line, which
+   * are the ones the CLI itself runs, and without one leaves the CLI to continue (max_tokens recovery).
+   */
+  private finish(message: Message, step: ClaudeStreamStep, mode: "all" | "final" | "complete"): void {
     if (message.ended) return;
-    const blocks = [...message.blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
-    if (!final && blocks.some(block => block.input === undefined)) return;
+    let blocks = [...message.blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
+    if (mode === "all" && blocks.some(block => block.input === undefined)) return;
+    if (mode === "complete" && !(blocks = blocks.filter(block => block.input !== undefined)).length) return;
     const parse = (json: string) => { try { return json.trim() ? JSON.parse(json) as unknown : {}; } catch { return undefined; } };
     message.ended = true;
     const calls = nativeClaudeCalls(blocks.map(block => ({ id: block.id, name: block.name, input: block.input === undefined ? parse(block.json) : block.input })), this.tools);

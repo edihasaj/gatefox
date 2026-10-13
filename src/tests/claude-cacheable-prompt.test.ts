@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { responsesToChatRequest } from "../protocol/request.js";
@@ -140,5 +141,22 @@ test("live mode without the live module runs one-shot and records the fallback o
     await flushTelemetry();
     const sessions = (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session");
     assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "unavailable"]]);
+  } finally { await f.restore(); }
+});
+
+test("a live attach that throws before streaming falls back to one-shot, except for cancellation", async () => {
+  const f = await catalogFixture();
+  const module = join(f.directory, "live.mjs");
+  await writeFile(module, `import {ProviderError} from ${JSON.stringify(new URL("../providers/provider.js", import.meta.url).href)};
+export function claudeLive(){return{async attach(input){throw input.threadId==='cancel'?new ProviderError('cancelled','Request cancelled',499):new ProviderError('cli_failed','Claude CLI did not start');}};}\n`);
+  configureTelemetry(f.directory, "test"); const since = Date.now();
+  try {
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live" } }, undefined, undefined, pathToFileURL(module).href);
+    assert.equal((await drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, { threadId: "thread-1" }))).at(-1)?.type, "done");
+    await assert.rejects(drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, { threadId: "cancel" })), { code: "cancelled" });
+    assert.equal((await f.captured()).length, 1, "only the failed attach ran one-shot");
+    await flushTelemetry();
+    const sessions = (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session");
+    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
   } finally { await f.restore(); }
 });

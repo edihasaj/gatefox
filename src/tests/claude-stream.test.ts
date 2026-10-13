@@ -71,29 +71,79 @@ test("a text turn takes output tokens from message_delta, not the turn total in 
   assert.throws(() => new ClaudeMessageStream({ tools: [], summaryVisible: true }).accept({ type: "result", subtype: "error_max_turns", is_error: true, result: "private" }), (error: unknown) => error instanceof ProviderError && error.upstream?.subtype === "error_max_turns");
 });
 
-test("the provider forwards every parallel call and stops the CLI before it can post again", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-claude-parallel-"));
-  const posted = join(directory, "posted"); const pidFile = join(directory, "pid");
-  // Like the real CLI, the fixture would continue after message_stop; the marker shows whether it got that far.
-  const script = `#!${process.execPath}\nimport {readFileSync,writeFileSync} from 'node:fs';for await(const _ of process.stdin){}writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
+// Observed with CLI 2.1.293: max_tokens hit after one complete call, in the middle of the next one.
+const cut = [event(start), use(0, "toolu_a", alpha), assistant("toolu_a", alpha, { path: "a" }), event({ type: "content_block_stop", index: 0 }), use(1, "toolu_b", beta),
+  delta("max_tokens", 300), event({ type: "message_stop" }), { type: "system", subtype: "task_summary" }];
+
+test("a message cut short ends with only the calls the CLI runs, and without one the CLI recovers", () => {
+  const stream = new ClaudeMessageStream({ tools, summaryVisible: true });
+  const steps = cut.map(message => stream.accept(message));
+  assert.deepEqual(steps.map(step => !!step.end), [false, false, false, false, false, true, false, false], "the end comes at message_delta");
+  const end = steps[5].end!;
+  assert.deepEqual(end.kind === "tool_use" && end.calls.map(call => [call.id, call.function.name, call.function.arguments]), [["toolu_a", "alpha", "{\"path\":\"a\"}"]]);
+  assert.equal(end.tokens.output, 300);
+  const late = new ClaudeMessageStream({ tools, summaryVisible: true });
+  const order = [cut[0], cut[1], cut[4], cut[5], cut[2], cut[6]];
+  assert.deepEqual(order.map(message => late.accept(message).end?.kind), [undefined, undefined, undefined, undefined, "tool_use", undefined], "a late assistant line ends at once");
+  const partial = new ClaudeMessageStream({ tools, summaryVisible: true });
+  const recovery = [event(start), use(0, "toolu_a", alpha), event({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "{\"path\":\"a\"}" } }),
+    delta("max_tokens", 300), event({ type: "message_stop" }), event({ type: "message_start", message: { id: "msg_2", usage: { input_tokens: 4 } } }),
+    event({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } }), event({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 3 } }),
+    event({ type: "message_stop" }), { type: "result", subtype: "success", is_error: false, result: "ok" }];
+  const ends = recovery.map(message => partial.accept(message).end);
+  assert.deepEqual(ends.map(end => end?.kind), [...Array(9).fill(undefined), "result"], "an incomplete call is not forwarded");
+  assert.equal(ends.at(-1)!.tokens.output, 3);
+});
+
+// A CLI that prints `lines` under the catalog's native names, then stays alive and silent; it ignores SIGTERM.
+async function silentCli(lines: unknown[], after = (_directory: string) => "") {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-claude-stream-"));
+  const pidFile = join(directory, "pid");
+  const script = `#!${process.execPath}\nimport {readFileSync,writeFileSync} from 'node:fs';process.on('SIGTERM',()=>{});for await(const _ of process.stdin){}writeFileSync(${JSON.stringify(pidFile)},String(process.pid));
 const args=process.argv.slice(2);const mcp=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8'));const names=JSON.parse(readFileSync(mcp.mcpServers.gateway.args[1],'utf8')).map(tool=>'mcp__gateway__'+tool.name);
-const lines=${JSON.stringify(parallel)}.map(line=>JSON.stringify(line).replaceAll(${JSON.stringify(alpha)},names[0]).replaceAll(${JSON.stringify(beta)},names[1]));
-for(const line of lines)console.log(line);setTimeout(()=>writeFileSync(${JSON.stringify(posted)},'posted'),150);setInterval(()=>{},1000);\n`;
+const lines=${JSON.stringify(lines)}.map(line=>JSON.stringify(line).replaceAll(${JSON.stringify(alpha)},names[0]).replaceAll(${JSON.stringify(beta)},names[1]));
+for(const line of lines)console.log(line);${after(directory)}setInterval(()=>{},1000);\n`;
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
-  configureTelemetry(directory, "test"); const since = Date.now();
-  try {
+  const infer = async (signal = new AbortController().signal) => {
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } });
     const events: InferenceEvent[] = [];
-    for await (const item of adapter.infer({ model: "fixture", input: "read both", tools: ["alpha", "beta"].map(name => ({ type: "function" as const, name, parameters: { type: "object", properties: { path: { type: "string" } } } })) }, new AbortController().signal)) events.push(item);
+    for await (const item of adapter.infer({ model: "fixture", input: "read both", tools: ["alpha", "beta"].map(name => ({ type: "function" as const, name, parameters: { type: "object", properties: { path: { type: "string" } } } })) }, signal)) events.push(item);
+    return events;
+  };
+  return { directory, infer, pid: () => Number(readFileSync(pidFile, "utf8")),
+    restore: async () => { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); } };
+}
+
+test("the provider forwards every parallel call and stops the CLI before it can post again", async () => {
+  // Like the real CLI, the fixture would continue after message_stop; the marker shows whether it got that far.
+  const f = await silentCli(parallel, directory => `setTimeout(()=>writeFileSync(${JSON.stringify(join(directory, "posted"))},'posted'),150);`);
+  const posted = join(f.directory, "posted");
+  configureTelemetry(f.directory, "test"); const since = Date.now();
+  try {
+    const events = await f.infer();
     assert.deepEqual(events.map(item => item.type === "tool" ? item.call.function.name : item.type), ["alpha", "beta", "done"]);
     assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100 } } });
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(existsSync(posted), false, "the CLI was stopped at message_delta");
-    assert.throws(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0), { code: "ESRCH" });
+    assert.throws(() => process.kill(f.pid(), 0), { code: "ESRCH" });
     await flushTelemetry();
-    const cli = (await readTelemetry(directory, since)).find(entry => entry.event === "claude_cli")!;
+    const cli = (await readTelemetry(f.directory, since)).find(entry => entry.event === "claude_cli")!;
     assert.deepEqual({ mode: cli.mode, result: cli.result, toolCalls: cli.toolCalls, outputTokens: cli.outputTokens, cacheReadTokens: cli.cacheReadTokens, cacheWriteTokens: cli.cacheWriteTokens, inputTokens: cli.inputTokens, interrupted: cli.interrupted },
       { mode: "oneshot", result: "tool_use", toolCalls: 2, outputTokens: 64, cacheReadTokens: 100, cacheWriteTokens: 5, inputTokens: 10, interrupted: false });
-  } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
+  } finally { await f.restore(); }
+});
+
+test("a tool message cut short by max_tokens returns its complete call at once instead of waiting on the silent CLI", async () => {
+  const f = await silentCli(cut);
+  try {
+    // Like the real CLI, the fixture then waits on the gateway MCP server forever; the abort only bounds a regression.
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 2000); const began = Date.now();
+    const events = await f.infer(controller.signal).finally(() => clearTimeout(timer));
+    assert.deepEqual(events.map(item => item.type === "tool" ? item.call.function.name : item.type), ["alpha", "done"]);
+    assert.ok(Date.now() - began < 2000);
+    // The fixture ignores SIGTERM, so only the SIGKILL can have stopped it.
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.throws(() => process.kill(f.pid(), 0), { code: "ESRCH" });
+  } finally { await f.restore(); }
 });

@@ -54,5 +54,12 @@ export type ClaudeLiveOutcome = { kind: "stream"; events: AsyncIterable<Inferenc
 
 /** The shape of dist/providers/claude-live.js, which claude.ts loads lazily. */
 export interface ClaudeLiveModule {
-  claudeLive(settings: { max: number; parkMinutes: number }): { attach(input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> };
+  /**
+   * Called on every live request. Must return the one process-wide registry (memoized), applying
+   * changed settings to it; a fresh registry per call would never reuse a session.
+   */
+  claudeLive(settings: { max: number; parkMinutes: number }): {
+    /** A throw before the stream exists falls back to one-shot (spawn_failed), except cancellation. */
+    attach(input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome>;
+  };
 }
