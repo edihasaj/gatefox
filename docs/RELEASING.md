@@ -72,6 +72,10 @@ belongs in the release archive.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device.
 
+The installer keeps the current release, the previous one and the newest other
+release. Older releases move to the Trash unless a running process still maps
+their files (checked with `lsof`); nothing is deleted.
+
 The build refuses dirty source unless the preflight flag is explicit. It does not
 download credentials or publish automatically.
 

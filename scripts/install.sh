@@ -66,5 +66,21 @@ JS
     ln -s "$launcher" "$legacy_command"
   fi
 fi
+# Keep the current release, the previous one and the newest other one. Older
+# releases move to the Trash unless a running process still maps their files.
+keep_current=$(readlink "$root/current" | sed 's#^releases/##')
+keep_previous=$(sed 's#^releases/##' "$root/previous-release" 2>/dev/null || true)
+in_use=$(/usr/sbin/lsof -nP -Fn 2>/dev/null | grep -o "$root/releases/[^/]*/" | sort -u || true)
+kept_extra=0; pruned=0
+if [ -d "$HOME/.Trash" ]; then
+  for name in $(ls -1 "$root/releases" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1nr -k2,2nr -k3,3nr); do
+    [ "$name" = "$keep_current" ] || [ "$name" = "$keep_previous" ] && continue
+    if [ "$kept_extra" -eq 0 ]; then kept_extra=1; continue; fi
+    case "$in_use" in *"$root/releases/$name/"*) continue ;; esac
+    [ -f "$root/releases/$name/.gateway-release" ] || continue
+    mv "$root/releases/$name" "$HOME/.Trash/subscription-gateway-$name-$(date +%s)" && pruned=$((pruned + 1))
+  done
+fi
+[ "$pruned" -eq 0 ] || echo "Moved $pruned older releases to the Trash."
 echo "Installed gateway $version. Run gateway setup, gateway service install, or gateway desktop."
 echo "Command: $launcher"
