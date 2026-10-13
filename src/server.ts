@@ -17,6 +17,7 @@ import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
+import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 
@@ -51,7 +52,37 @@ export interface GatewayFailure {
   durationMs: number; code: string; status: number; abortCause?: "timeout" | "cancelled";
 }
 export interface GatewayStartOptions { heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void }
+/** One generation of request handling; a server can switch generations without closing its socket. */
+export interface GatewayHandler { readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean; abortAll(): void }
+type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"] };
+
+/**
+ * Sends new requests on `server` to `handler`. Requests already running finish on the
+ * generation that accepted them, so a release can replace the code that serves
+ * requests without refusing a connection. Idle, close and restart cover every
+ * generation still at work.
+ */
+export function adoptGatewayHandler(server: Server, handler: GatewayHandler): GatewayServer {
+  const target = server as HandledServer;
+  const close = target.gatewayClose ??= server.close.bind(server);
+  target.gatewayHandlers = [...(target.gatewayHandlers || []).filter(previous => !previous.isIdle()), handler];
+  server.removeAllListeners("request"); server.on("request", handler.handle);
+  target.isIdle = () => (target.gatewayHandlers || []).every(entry => entry.isIdle());
+  target.close = ((callback?: (error?: Error) => void) => { for (const entry of target.gatewayHandlers || []) entry.abortAll(); close(callback); return target; }) as HandledServer["close"];
+  // Includes body uploads and catalog reads, not only provider inference.
+  target.restartWhenIdle = callback => { if (!target.isIdle()) return false; close(callback); return true; };
+  return target;
+}
+
 export async function startGateway(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>, options: GatewayStartOptions = {}): Promise<GatewayServer> {
+  const handler = await createGatewayHandler(config, factory, reload, options);
+  const server = createServer(); server.requestTimeout = 30000;
+  const controlled = adoptGatewayHandler(server, handler);
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+  return controlled;
+}
+
+export async function createGatewayHandler(config: GatewayConfig, factory = createProvider, reload?: () => Promise<GatewayConfig>, options: GatewayStartOptions = {}): Promise<GatewayHandler> {
   const heartbeatMs = options.heartbeatMs ?? 15000;
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
@@ -71,7 +102,10 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   const active = new Set<AbortController>();
   const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
-  const server = createServer(async (req, res) => {
+  // Every response names the release whose code served it; useful during in-place upgrades.
+  const servingRelease = releaseState()?.running;
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    if (servingRelease) res.setHeader("X-Gateway-Release", servingRelease);
     requests++; let released = false;
     const release = () => { if (!released) { released = true; requests--; } };
     res.once("finish", release); res.once("close", release);
@@ -174,17 +208,6 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
         else send(res, known.status, { error: { code: known.code, message: known.message } });
       }
     } finally { clearInterval(heartbeat); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); }
-  });
-  server.requestTimeout = 30000;
-  const close = server.close.bind(server);
-  server.close = callback => { for (const controller of active) controller.abort(); return close(callback); };
-  const controlled = server as GatewayServer;
-  controlled.isIdle = () => !requests && !active.size;
-  controlled.restartWhenIdle = callback => {
-    // Includes body uploads and catalog reads, not only provider inference.
-    if (requests || active.size) return false;
-    close(callback); return true;
   };
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
-  return controlled;
+  return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size, abortAll: () => { for (const controller of active) controller.abort(); } };
 }

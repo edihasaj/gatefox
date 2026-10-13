@@ -47,7 +47,7 @@ export function watchForUpgrade(component: string, isIdle: () => boolean | Promi
         else { done = false; idleChecks = 0; }
       });
     }).catch(() => { done = false; idleChecks = 0; });
-  }, options.intervalMs ?? 60000);
+  }, options.intervalMs ?? (Number(process.env.GATEWAY_UPGRADE_CHECK_MS) || 60000));
   timer.unref();
   return () => { cancelled = true; clearInterval(timer); };
 }

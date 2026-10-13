@@ -81,13 +81,16 @@ release and moves to it at an idle moment:
 | Process | Moves when | How |
 | --- | --- | --- |
 | Adapter (one per app connection) | no active turn, no pending request, 30 seconds quiet | exits; the app starts a new adapter on the new release within seconds |
-| Inference server | no request in flight | exits; the supervisor or launchd starts it on the new release |
+| Inference server | at its next check, busy or not | the installed release's handler takes over the same socket in the same process: new requests use the new code at once, running requests finish on the old code; no connection is refused. A release whose serve runtime is incompatible falls back to an idle restart |
 | Supervisor, execution host, relay | fully idle: no app connected and no chat loaded | idle restart; launchd starts it on the new release |
 
+Every server response carries `X-Gateway-Release` with the release that served it.
 Until the supervisor is idle it keeps the previous release, so adapters and the
 host must stay protocol-compatible across one release. Each move is logged as
 `self_upgrade`. Processes started from a checkout never move. Releases before
-0.2.32 do not have this; moving from them needs one service restart.
+0.2.32 do not have this; moving from them needs one service restart. In-place
+server takeover starts with 0.2.35; a 0.2.32 to 0.2.34 server needs one restart of
+its inference process to reach it.
 
 The installer keeps the current release, the previous one and the newest other
 release. Older releases move to the Trash unless a running process still maps

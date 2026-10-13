@@ -8,16 +8,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { loadConfig, gatewayToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { signIn } from "./auth/chatgpt.js";
-import { startGateway } from "./server.js";
 import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js";
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { codexShim } from "./codex-shim.js";
-import { refreshModelMetadata } from "./model-refresh.js";
-import { configureTelemetry, readTelemetry, telemetry } from "./telemetry.js";
+import { readTelemetry } from "./telemetry.js";
 import { summarizeTelemetry } from "./diagnostics.js";
-import { startErrorReports } from "./error-report.js";
-import { watchForUpgrade } from "./self-update.js";
-import { LiveConfig } from "./live-config.js";
+import { startServeRuntime } from "./serve-runtime.js";
 import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
 import { configPath } from "./paths.js";
@@ -237,16 +233,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }
   if (values.port) { const port = Number(values.port); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be 1 through 65535"); config.port = port; }
-  configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
-  const live = new LiveConfig(path, config, values.port ? config.port : undefined);
-  const server = await startGateway(config, undefined, () => live.current());
+  // Request handling, timers and in-place upgrades live in the serve runtime; signal
+  // handlers below reach whichever generation currently owns the socket.
+  const { server } = await startServeRuntime(path, values.port ? config.port : undefined);
   process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
-  // After an install, the server restarts on the new release at an idle moment; its
-  // supervisor or launchd starts it again.
-  watchForUpgrade("server", () => server.isIdle(), () => server.restartWhenIdle(() => process.exit(0)));
-  // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
-  const refresh = () => { void refreshModelMetadata(path).then(updated => { if (updated.length) process.stderr.write(JSON.stringify({ event: "model_metadata_refreshed", providers: updated }) + "\n"); }).catch(() => {}); };
-  setTimeout(refresh, 60_000).unref(); setInterval(refresh, 6 * 60 * 60_000).unref();
   let closing = false;
   const shutdown = () => {
     if (closing) return; closing = true;
