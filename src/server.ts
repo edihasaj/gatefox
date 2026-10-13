@@ -12,7 +12,7 @@ import { responsesToChatRequest } from "./protocol/request.js";
 import type { ResponsesRequest } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
-import { classifyProviderFailure, providerFailureDiagnostic } from "./provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode } from "./provider-failure.js";
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
@@ -86,11 +86,19 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     let heartbeat: NodeJS.Timeout | undefined; let abortCause: "timeout" | "cancelled" | undefined;
     let providerId: string | undefined; let model: string | undefined;
     const startedAt = Date.now();
-    const timeout = setTimeout(() => {
+    // timeoutMs bounds silence, not total length: it covers the upload and queue
+    // wait, then restarts at admission and on every provider event. Long Max or
+    // Ultra streams continue while a stalled provider still fails. The whole
+    // request has a one-hour cap.
+    const expire = () => {
       abortCause ||= "timeout"; clearInterval(heartbeat); controller.abort();
       if (res.writableNeedDrain || (res.writableEnded && !res.writableFinished)) res.destroy();
-    }, state.config.timeoutMs || 600000).unref();
-    const clearDeadline = () => { clearTimeout(timeout); res.off("finish", clearDeadline); res.off("close", clearDeadline); };
+    };
+    const idleMs = state.config.timeoutMs || 600000;
+    let timeout = setTimeout(expire, idleMs).unref();
+    const touch = () => { clearTimeout(timeout); timeout = setTimeout(expire, idleMs).unref(); };
+    const absolute = setTimeout(expire, Math.max(idleMs, 3600000)).unref();
+    const clearDeadline = () => { clearTimeout(timeout); clearTimeout(absolute); res.off("finish", clearDeadline); res.off("close", clearDeadline); };
     res.once("finish", clearDeadline); res.once("close", clearDeadline);
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
@@ -110,9 +118,10 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
         if (!controller.signal.aborted && !res.destroyed && !res.writableNeedDrain && Date.now() - lastEventAt >= heartbeatMs) writer?.progress();
       }, heartbeatMs).unref();
       releaseAdmission = await admission.acquire(controller.signal);
-      controller.signal.throwIfAborted();
+      controller.signal.throwIfAborted(); touch();
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, inferenceContext(req.headers))) {
         if (controller.signal.aborted || res.destroyed) break;
+        touch();
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
         if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
@@ -132,7 +141,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          writer.fail(known.code, known.message);
+          writer.fail(streamFailureCode(known.code), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }

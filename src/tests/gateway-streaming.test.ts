@@ -277,3 +277,15 @@ test("deadline covers failure-frame and nonstream JSON delivery until the owned 
     } finally { stream?.destroy(); client?.destroy(); await gateway.close(); }
   }
 });
+
+test("an active stream may outlast timeoutMs because the deadline measures provider silence", { timeout: 10000 }, async () => {
+  const gateway = await setup({ async *infer() {
+    for (let index = 0; index < 12; index++) { await delay(250); yield { type: "text", text: `part ${index} ` }; }
+    yield { type: "done", usage };
+  } }, 1000);
+  try {
+    const events = await collect(await gateway.post());
+    assert.equal(events.at(-1)?.type, "response.completed", "3 seconds of steady output must not hit a 1 second silence deadline");
+    assert.equal(gateway.failures.length, 0);
+  } finally { await gateway.close(); }
+});

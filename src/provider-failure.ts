@@ -45,6 +45,12 @@ function networkFailure(error: unknown): boolean {
   return false;
 }
 
+// Codex retries a failed stream up to five times. These failures repeat
+// identically, so the stream reports Codex's non-retryable request error and
+// the turn stops at once instead of re-running inference.
+const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication"]);
+export function streamFailureCode(code: string): string { return permanentCodes.has(code) ? "invalid_prompt" : code; }
+
 /** Forward only trusted typed errors or static transport messages. Never expose a raw exception. */
 export function classifyProviderFailure(error: unknown, cause: ProviderAbortCause): ProviderError {
   if (cause === "timeout") return new ProviderError("timeout", "Provider request exceeded the gateway deadline", 504);

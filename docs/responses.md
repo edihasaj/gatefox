@@ -77,9 +77,11 @@ Generated Codex settings explicitly request `model_reasoning_summary = "auto"`.
 The client can set it to `none` to hide provider reasoning.
 For Responses upstreams, `none` removes the summary field on the wire and hides
 text summaries locally. Opaque replay state remains available on its account route.
-Some Claude CLI versions expose token progress with empty thinking text. The
-gateway emits a reasoning item and empty summary deltas with an `estimated_tokens`
-extension. It preserves that distinction instead of fabricating a summary.
+Newer Claude models omit thinking text unless asked. When thinking is on and the
+summary is not `none`, the adapter starts the CLI with `--thinking-display
+summarized`, so long Max turns stream readable reasoning. When the CLI still
+reports only token progress, the gateway emits empty summary deltas with an
+`estimated_tokens` extension instead of fabricating a summary.
 
 Gateway authentication, capacity, and request-validation failures return HTTP
 errors. A validated streaming request emits `response.created` before waiting for
@@ -112,10 +114,19 @@ retries only when its body identifies a temporary rate limit, honoring
 quota limits return immediately. Cancellation and the request deadline bound all
 backoff waits; no quota or account switch is attempted.
 
-The default total request deadline is ten minutes; explicit `timeoutMs` settings
-remain authoritative. Disconnects abort inference and release capacity. The
-gateway leaves Codex's own stream retry policy at its native default, so Codex
-retries a dropped or failed stream exactly as it does for its built-in provider.
+`timeoutMs` (ten minutes by default) bounds silence, not total length. It covers
+the upload and queue wait, then restarts at admission and on every provider
+event, so a long Max or Ultra stream continues while a stalled provider still
+fails. Every request also has a one-hour cap. Disconnects abort inference and
+release capacity.
+
+Codex keeps its own stream retry policy. The gateway sets Codex's stream idle
+timeout to 90 seconds, independent of `timeoutMs`, because healthy streams
+receive progress every 15 seconds; a dead path fails in 90 seconds instead of
+freezing the turn. Failures that would repeat identically (invalid request or
+JSON, unknown model, oversized request, unsupported protocol, authentication) are
+reported inside a stream with Codex's non-retryable `invalid_prompt` code and
+the gateway's message, so Codex stops at once instead of retrying five times.
 Codex ends a failed turn without a final answer and does not save the error in
 the chat transcript, so a client that reconnects later sees only the ended turn.
 Claude failures without a native error code record the CLI's allowlisted result

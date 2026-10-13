@@ -197,7 +197,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!config.port) throw new Error("Use a fixed port before generating Codex configuration");
     const catalogPath = resolve(config.stateDirectory, "codex-models.json");
     await writePrivateJson(catalogPath, catalog);
-    process.stdout.write(codexSettings(values.model, catalogPath, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path], config.timeoutMs)); return;
+    process.stdout.write(codexSettings(values.model, catalogPath, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path])); return;
   }
   if (command === "login") {
     const provider = config.providers.find(p => p.id === id);

@@ -10,10 +10,13 @@ export function endpointURL(value: string): string {
   return url.href.replace(/\/$/, "");
 }
 
-export function codexSettings(model: string, catalog: string, endpoint: string, credentialArgs: string[], timeoutMs = 120000): string {
+/** Codex gives up on a silent stream after this long; gateway heartbeats arrive every 15 seconds. */
+export const codexStreamIdleTimeoutMs = 90000;
+
+export function codexSettings(model: string, catalog: string, endpoint: string, credentialArgs: string[]): string {
   const quoted = (value: string) => JSON.stringify(value);
   const helper = gatewayCommand();
-  return `model = ${quoted(model)}\nmodel_provider = "subscription_gateway"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\nweb_search = "disabled"\n\n[model_providers.subscription_gateway]\nname = "Subscription Gateway"\nbase_url = ${quoted(endpointURL(endpoint))}\nwire_api = "responses"\nsupports_websockets = false\nrequest_max_retries = 2\nstream_idle_timeout_ms = ${timeoutMs}\n\n[model_providers.subscription_gateway.auth]\ncommand = ${quoted(helper.command)}\nargs = [${[...helper.args, "token", ...credentialArgs].map(quoted).join(", ")}]\ntimeout_ms = 5000\nrefresh_interval_ms = 300000\n`;
+  return `model = ${quoted(model)}\nmodel_provider = "subscription_gateway"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\nweb_search = "disabled"\n\n[model_providers.subscription_gateway]\nname = "Subscription Gateway"\nbase_url = ${quoted(endpointURL(endpoint))}\nwire_api = "responses"\nsupports_websockets = false\nrequest_max_retries = 2\nstream_idle_timeout_ms = ${codexStreamIdleTimeoutMs}\n\n[model_providers.subscription_gateway.auth]\ncommand = ${quoted(helper.command)}\nargs = [${[...helper.args, "token", ...credentialArgs].map(quoted).join(", ")}]\ntimeout_ms = 5000\nrefresh_interval_ms = 300000\n`;
 }
 
 /** Fetch only the public catalog. The inference host keeps provider credentials. */
