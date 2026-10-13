@@ -3,7 +3,7 @@ import { accessToken } from "../auth/chatgpt.js";
 import { normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
-import { ProviderError, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
+import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
-  async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+  async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const requestedTier = request.service_tier;
     if (requestedTier !== undefined && requestedTier !== null && !publicServiceTier(requestedTier)) throw new ProviderError("invalid_request", "Invalid Responses service tier", 400);
     const tier = requestedTier === "fast" && this.config.type === "codex-subscription" ? "priority" : requestedTier;
@@ -27,7 +27,7 @@ export class ResponsesAPI implements Provider {
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
-        for await (const event of this.attempt(normalized, signal)) { published = true; yield event; }
+        for await (const event of this.attempt(normalized, signal, context)) { published = true; yield event; }
         return;
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
@@ -43,7 +43,7 @@ export class ResponsesAPI implements Provider {
       }
     }
   }
-  private async *attempt(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
@@ -74,8 +74,11 @@ export class ResponsesAPI implements Provider {
     const definitions = normalizeResponsesTools(request.tools);
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
+    // The subscription endpoint keeps a conversation's prompt cache warm only
+    // when it sees the caller's own session and thread identifiers.
+    const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}) } : {};
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body: JSON.stringify(body) });
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(body) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     let done = false; const output = new ResponsesOutput();

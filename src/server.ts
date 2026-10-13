@@ -6,7 +6,7 @@ import { CopilotSubscription } from "./providers/copilot.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
-import { ProviderError, type Provider } from "./providers/provider.js";
+import { ProviderError, inferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import type { ResponsesRequest } from "./protocol/types.js";
@@ -111,7 +111,7 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
       }, heartbeatMs).unref();
       releaseAdmission = await admission.acquire(controller.signal);
       controller.signal.throwIfAborted();
-      for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal)) {
+      for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, inferenceContext(req.headers))) {
         if (controller.signal.aborted || res.destroyed) break;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);

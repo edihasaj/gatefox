@@ -132,6 +132,14 @@ The current adapters support text, inline images, and caller-dispatched tools. A
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
 
+Codex sends a `prompt_cache_key` in the body and `session-id` and `thread-id`
+headers. The body key passes through unchanged. For the ChatGPT subscription
+provider, the gateway also forwards those two headers. Without them, that
+endpoint did not reuse its prompt cache: identical 27k-token requests stayed at
+0 cached tokens. With them, repeats were 99.5% cached. Only well-formed
+identifiers of at most 128 characters are forwarded. Other Responses endpoints
+receive only the body key.
+
 Responses upstreams retain `service_tier`. For Codex subscription requests, the
 `fast` alias becomes `priority`, as required by the tested subscription resource
 endpoint. Declared model capabilities reject unsupported tiers before inference.
