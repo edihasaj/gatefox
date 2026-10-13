@@ -12,6 +12,7 @@ import { CopilotSubscription, copilotEffort, nativeCopilotCalls, validateCopilot
 import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import { ProviderError } from "../providers/provider.js";
+import { streamFailureCode } from "../provider-failure.js";
 
 const provider: ProviderConfig = { id: "copilot", type: "copilot-subscription", models: { alias: "fixture" }, modelMetadata: { alias: { reasoningEfforts: ["low", "high", "max"] } } };
 const collect = async (input: AsyncIterable<InferenceEvent>) => { const events = []; for await (const event of input) events.push(event); return events; };
@@ -99,6 +100,12 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     }
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-code";
     await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "context_length_exceeded" && error.status === 400 && !error.message.includes("private-token"));
+    // A plain rate limit stays retryable for Codex; quota wording is a final usage limit.
+    for (const [mode, code, wire] of [["rate-limit", "rate_limit_exceeded", "rate_limit_exceeded"], ["usage-limit", "usage_limit", "invalid_prompt"]]) {
+      process.env.GATEWAY_COPILOT_FIXTURE_MODE = mode;
+      await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === code && error.status === 429 &&
+        streamFailureCode(error) === wire && !error.message.includes("private-token"));
+    }
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-prose";
     await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "inference_failed");
     process.env.GATEWAY_COPILOT_FIXTURE_MODE = "hang";

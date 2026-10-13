@@ -17,6 +17,8 @@ for await (const message of copilotFrames(process.stdin)) {
     send({ jsonrpc: "2.0", id: message.id, result: { messageId: "fixture" } });
     if (mode === "hang") continue;
     if (mode === "error") { event("session.error", { message: "private-token diagnostic" }); continue; }
+    if (mode === "rate-limit") { event("session.error", { errorType: "rate_limit", statusCode: 429, message: "Sorry, you have hit a rate limit. Please wait a moment (private-token)" }); continue; }
+    if (mode === "usage-limit") { event("session.error", { errorType: "rate_limit", statusCode: 429, message: "You have exceeded your monthly premium request quota (private-token)" }); continue; }
     if (mode === "context-code") { event("session.error", { errorType: "context_length_exceeded", message: "private-token diagnostic" }); continue; }
     if (mode === "context-prose") { event("session.error", { errorType: "notification", message: "The user quoted prompt is too long" }); continue; }
     if (mode === "permission") { event("permission.requested", { requestId: "permission" }); continue; }

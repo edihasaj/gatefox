@@ -80,7 +80,9 @@ export class CopilotSubscription implements Provider {
           const context = copilotContextFailure(data); if (context) throw context;
           const diagnostic = typeof data.message === "string" ? data.message : "";
           if (/unsupported value|invalid value|not supported with|model.+not available/i.test(diagnostic)) throw new ProviderError("invalid_request", "Copilot rejected the requested model or reasoning option", 400);
-          if (/rate.?limit|usage.?limit|quota.+exceed/i.test(diagnostic)) throw new ProviderError("usage_limit", "Copilot subscription usage limit reached", 429);
+          // Usage-limit and quota wording is final for Codex; a plain rate limit clears by itself, so Codex may retry it.
+          if (/usage.?limit|quota/i.test(diagnostic)) throw new ProviderError("usage_limit", "Copilot subscription usage limit reached", 429);
+          if (/rate.?limit/i.test(diagnostic)) throw new ProviderError("rate_limit_exceeded", "Copilot is temporarily limiting requests; retry shortly", 429);
           throw new ProviderError("inference_failed", "Copilot inference did not complete; check its subscription and model access");
         }
         if (event.type === "assistant.message_delta" && typeof data.deltaContent === "string") {

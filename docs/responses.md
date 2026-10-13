@@ -34,9 +34,14 @@ ambiguous names, stale numeric aliases, and foreign tools are rejected.
 Native Claude `assistant.error` discriminants identify subscription rate limits,
 authentication, billing, and server failures before an opaque result is handled.
 In particular, `is_error: true` with `subtype: success` is not successful inference.
-Rate limits produce a clear usage-limit failure and are not retried or routed to
-another account automatically. Unknown result subtypes remain bounded diagnostic
-metadata; private error text is never returned or logged.
+The CLI reports every 429 as `rate_limit`, including a transient subscriber
+capacity throttle ("not your usage limit"). Only a `rate_limit_event` with status
+`rejected` earlier in the same request proves a subscription limit; that becomes
+a clear, final usage-limit failure. Any other Claude rate limit is a retryable
+`rate_limit_exceeded`, so Codex retries it as it did before usage limits became
+final. Neither is routed to another account automatically. Unknown result
+subtypes remain bounded diagnostic metadata; private error text is never returned
+or logged.
 The native `rate_limit_event` supplies the affected five-hour or weekly window
 and reset timestamp. A rate-limit failure includes that provider-reported time
 in the inference host's local timezone and UTC. Missing metadata remains unknown;
@@ -143,7 +148,9 @@ subtype, such as `error_max_turns`.
 A usage limit is final: Codex receives it as `invalid_prompt` and stops instead of
 retrying five times (verified: one upstream request instead of six). An unnamed
 HTTP 429 that asks for a wait of at most 60 seconds stays a retryable throttle, so
-per-minute API limits still clear by themselves.
+per-minute API limits still clear by themselves. A Claude rate limit without a
+rejected `rate_limit_event`, and a Copilot error that names a rate limit without
+usage-limit or quota wording, are retryable throttles too.
 Upstream rejections that would repeat identically (`invalid_prompt`,
 `invalid_encrypted_content`, `cyber_policy`, `bio_policy`,
 `misalignment_policy_violation`, `usage_not_included`), from a stream or an HTTP

@@ -4,12 +4,14 @@ import { chmod, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { delimiter, join } from "node:path";
 import { tmpdir } from "node:os";
 import { claudeFailure } from "../providers/claude-errors.js";
+import { ClaudeMessageStream, claudeResultFailure } from "../providers/claude-stream.js";
+import { streamFailureCode } from "../provider-failure.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { ProviderError } from "../providers/provider.js";
 import { claudeUsageEvent } from "../providers/claude-usage.js";
 
 test("native Claude rate-limit, authentication, billing and server errors survive opaque result text", () => {
-  for (const [code, expected, status] of [["rate_limit", "usage_limit", 429], ["authentication_failed", "authentication", 401], ["billing_error", "insufficient_quota", 429], ["server_error", "upstream_unavailable", 503]] as const) {
+  for (const [code, expected, status] of [["rate_limit", "rate_limit_exceeded", 429], ["authentication_failed", "authentication", 401], ["billing_error", "insufficient_quota", 429], ["server_error", "upstream_unavailable", 503]] as const) {
     const error = claudeFailure({ type: "assistant", error: code, message: { content: [{ type: "text", text: "private account data" }] } })!;
     assert.equal(error.code, expected); assert.equal(error.status, status);
     assert.ok(!JSON.stringify(error).includes("private account data"));
@@ -44,4 +46,38 @@ test("Claude usage metadata accepts native enums and epoch seconds only", () => 
   for (const patch of [{ resetsAt: 1791825000000 }, { resetsAt: "1791825000" }, { status: "secret" }, { rateLimitType: "secret" }]) {
     assert.equal(claudeUsageEvent({ ...event, rate_limit_info: { ...event.rate_limit_info, ...patch } }), undefined);
   }
+});
+
+const allowed = { type: "rate_limit_event", rate_limit_info: { status: "allowed", rateLimitType: "five_hour", resetsAt: 1791825000 } };
+const rejected = { type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour", resetsAt: 1791825000 } };
+const failureOf = (lines: Array<Record<string, unknown>>) => {
+  const stream = new ClaudeMessageStream({ tools: [], summaryVisible: false });
+  try { for (const line of lines) stream.accept(line); } catch (error) { assert.ok(error instanceof ProviderError); return error; }
+  assert.fail("the stream did not fail");
+};
+
+test("a Claude rate_limit is a final usage limit only after a rejected rate_limit_event", () => {
+  // The CLI's subscriber capacity 429: "Server is temporarily limiting requests (not your usage limit)".
+  const throttle = { type: "assistant", error: "rate_limit", apiErrorIsTransient: true, message: { content: [{ type: "text", text: "private account data" }] } };
+  for (const lines of [[throttle], [allowed, throttle], [allowed, { ...throttle, apiErrorIsTransient: undefined }], [rejected, throttle]]) {
+    const error = failureOf(lines);
+    assert.equal(error.code, "rate_limit_exceeded"); assert.equal(error.status, 429); assert.equal(streamFailureCode(error), "rate_limit_exceeded", "Codex retries a throttle");
+    assert.equal(error.upstream?.code, "rate_limit"); assert.ok(!error.message.includes("private account data"));
+  }
+  const limit = failureOf([rejected, { ...throttle, apiErrorIsTransient: undefined }]);
+  assert.equal(limit.code, "usage_limit"); assert.equal(streamFailureCode(limit), "invalid_prompt", "a subscription limit stops Codex at once");
+  assert.match(limit.message, /five-hour usage limit reached/);
+});
+
+test("a Claude result that says it is not the usage limit stays retryable", () => {
+  const limit = { status: "rejected", window: "five_hour", resetsAt: 1791825000 } as const;
+  const transient = { type: "result", subtype: "success", is_error: true, result: "API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited" };
+  for (const value of [undefined, limit]) {
+    const error = claudeResultFailure(transient, value);
+    assert.equal(error.code, "rate_limit_exceeded"); assert.equal(streamFailureCode(error), "rate_limit_exceeded");
+  }
+  const reached = { type: "result", subtype: "success", is_error: true, result: "Claude usage limit reached" };
+  assert.equal(claudeResultFailure(reached).code, "rate_limit_exceeded", "without a rejected event the limit is not proven");
+  assert.equal(claudeResultFailure(reached, limit).code, "usage_limit");
+  assert.equal(failureOf([rejected, reached]).code, "usage_limit");
 });

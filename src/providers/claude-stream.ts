@@ -2,9 +2,9 @@ import type { InferenceEvent, OpenAITool, OpenAIToolCall, Usage } from "../proto
 import { ProviderError } from "./provider.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 import { claudeToolBindings } from "./claude-tool-names.js";
-import { claudeFailure } from "./claude-errors.js";
+import { claudeFailure, claudeRateLimit } from "./claude-errors.js";
 import { claudeContextFailure } from "./context-errors.js";
-import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
+import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 
 /** Native token counts of one API message. */
 export interface ClaudeTokens { input: number; cacheRead: number; cacheWrite: number; output: number }
@@ -37,7 +37,9 @@ export function claudeUsage(tokens: ClaudeTokens): Usage {
 /** Maps an unsuccessful CLI result; private result text is only classified, never returned. */
 export function claudeResultFailure(result: Record<string, unknown>, limit?: ClaudeLimit): ProviderError {
   const diagnosis = String(result.result || "");
-  if (/rate.?limit|usage.?limit/i.test(diagnosis)) return new ProviderError("usage_limit", claudeLimitMessage(limit), 429);
+  // "Server is temporarily limiting requests (not your usage limit)" is the CLI's transient
+  // subscriber 429; it stays a throttle even after a rejected event for another window.
+  if (/rate.?limit|usage.?limit|limiting requests/i.test(diagnosis)) return claudeRateLimit(/not your usage.?limit/i.test(diagnosis) ? undefined : limit);
   if (/auth|log.?in|oauth/i.test(diagnosis)) return new ProviderError("authentication", "Claude subscription requires login", 401);
   // Keep the CLI's allowlisted end reason (for example max turns) so failures stay diagnosable.
   return claudeFailure(result, limit) || claudeFailure({ ...result, is_error: true }, limit)!;

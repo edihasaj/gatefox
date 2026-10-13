@@ -4,6 +4,16 @@ import { claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
 const codes = new Set(["rate_limit", "authentication_failed", "billing_error", "server_error", "invalid_request", "unknown"]);
 const subtypes = new Set(["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries"]);
 
+/**
+ * The CLI reports every 429 as `rate_limit`, including a subscriber capacity throttle it
+ * marks transient. Only a rejected `rate_limit_event` for this request proves a subscription
+ * limit, which is final; anything else is a throttle that Codex may retry.
+ */
+export function claudeRateLimit(limit: ClaudeLimit | undefined, upstream?: ProviderError["upstream"]): ProviderError {
+  if (limit?.status === "rejected") return new ProviderError("usage_limit", claudeLimitMessage(limit), 429, upstream);
+  return new ProviderError("rate_limit_exceeded", "Claude is temporarily limiting requests; retry shortly", 429, upstream);
+}
+
 /** Read native error discriminants; normal prose and private messages never qualify. */
 export function claudeFailure(message: Record<string, unknown>, limit?: ClaudeLimit): ProviderError | undefined {
   const assistant = message.type === "assistant" && typeof message.error === "string";
@@ -12,7 +22,7 @@ export function claudeFailure(message: Record<string, unknown>, limit?: ClaudeLi
   const raw = assistant ? message.error : message.error_code;
   const code = typeof raw === "string" && codes.has(raw) ? raw : "unknown";
   const upstream = { code, event: assistant ? "claude.assistant" : "claude.result" };
-  if (code === "rate_limit") return new ProviderError("usage_limit", claudeLimitMessage(limit), 429, upstream);
+  if (code === "rate_limit") return claudeRateLimit(message.apiErrorIsTransient === true ? undefined : limit, upstream);
   if (code === "authentication_failed") return new ProviderError("authentication", "Claude subscription requires login", 401, upstream);
   if (code === "billing_error") return new ProviderError("insufficient_quota", "Claude provider quota is exhausted", 429, upstream);
   if (code === "server_error") return new ProviderError("upstream_unavailable", "Claude service is temporarily unavailable", 503, upstream);
