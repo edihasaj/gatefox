@@ -1,12 +1,13 @@
 {
-  "name": "@edihasaj/subscription-gateway",
+  "name": "@edihasaj/harness-gateway",
   "version": "0.2.31",
   "private": true,
   "type": "module",
-  "description": "A small local Responses gateway for subscription and API providers.",
+  "description": "A local gateway that serves subscription accounts to Codex and other agent harnesses as a Responses API.",
   "license": "MIT",
   "bin": {
-    "gateway": "dist/cli.js"
+    "gateway": "dist/cli.js",
+    "harness-gateway": "dist/cli.js"
   },
   "exports": {
     ".": "./dist/index.js"

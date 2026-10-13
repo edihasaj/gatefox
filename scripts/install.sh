@@ -54,11 +54,14 @@ chmod 700 "$launcher.new"
 ln -s "releases/$version" "$root/current.new-$$"
 ./runtime/bin/node -e 'require("fs").renameSync(process.argv[1],process.argv[2])' "$root/current.new-$$" "$root/current"
 mv "$launcher.new" "$launcher"
+# The product name as a second command; existing services keep using gateway.
+alias_command="$prefix/bin/harness-gateway"
+if [ ! -e "$alias_command" ] && [ ! -L "$alias_command" ]; then ln -s gateway "$alias_command"; fi
 printf 'subscription-gateway\n' > "$root/.gateway-installation"
 if [ "$prefix" = "$HOME/.local" ] && [ -n "$legacy_command" ] && [ "$legacy_command" != "$launcher" ] && [ -L "$legacy_command" ]; then
   if ./runtime/bin/node - "$legacy_command" <<'JS'
 const fs=require('fs'),path=require('path');
-try { const target=fs.realpathSync(process.argv[2]);const p=JSON.parse(fs.readFileSync(path.resolve(path.dirname(target),'../package.json'),'utf8'));process.exit(path.basename(target)==='cli.js'&&p.name==='@edihasaj/subscription-gateway'?0:1); } catch { process.exit(1); }
+try { const target=fs.realpathSync(process.argv[2]);const p=JSON.parse(fs.readFileSync(path.resolve(path.dirname(target),'../package.json'),'utf8'));process.exit(path.basename(target)==='cli.js'&&['@edihasaj/harness-gateway','@edihasaj/subscription-gateway'].includes(p.name)?0:1); } catch { process.exit(1); }
 JS
   then
     mkdir -p "$HOME/.Trash"

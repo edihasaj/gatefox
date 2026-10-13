@@ -65,7 +65,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();
   const overrides = {
-    name: "Subscription Gateway", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses", requires_openai_auth: false,
+    name: "Harness Gateway", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses", requires_openai_auth: false,
     supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
     "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
   };

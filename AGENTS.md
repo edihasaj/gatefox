@@ -1,6 +1,6 @@
-# Subscription Gateway
+# Harness Gateway
 
-Edi owns this repo. Name provisional.
+Edi owns this repo. Renamed from Subscription Gateway; keep the compatibility names listed in the README.
 Run `docs-list` and read the matching docs before editing.
 Use npm. Run `npm run build` and `npm test` before handoff.
 Keep provider authentication separate from Responses translation and routing.

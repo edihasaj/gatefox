@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Set up Subscription Gateway for Claude, a second Codex account, and local models in Codex desktop.">
-  <title>Subscription Gateway · Field guide</title>
+  <meta name="description" content="Set up Harness Gateway for Claude, a second Codex account, and local models in Codex desktop.">
+  <title>Harness Gateway · Field guide</title>
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png">
   <link rel="stylesheet" href="styles.css">
@@ -13,7 +13,7 @@
 <body>
   <a class="skip" href="#guide">Skip to guide</a>
   <aside class="sidebar" aria-label="Guide navigation">
-    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Subscription Gateway fox"><span>Subscription<br>Gateway</span></a>
+    <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Harness Gateway fox"><span>Subscription<br>Gateway</span></a>
     <div class="edition">FIELD GUIDE <span>v0.2.31</span></div>
     <label class="search-label" for="search">Find in this guide</label>
     <input id="search" type="search" placeholder="Models, streaming, recovery…" autocomplete="off">
@@ -29,7 +29,7 @@
       <a href="#cli">09 <span>Optional CLI</span></a>
     </nav>
     <p class="sidebar-note">Your coding app.<br>Your accounts.<br>One model list.</p>
-    <a class="source" href="https://github.com/edihasaj/subscription-gateway">Private source ↗</a>
+    <a class="source" href="https://github.com/edihasaj/harness-gateway">Private source ↗</a>
   </aside>
 
   <main id="guide">
@@ -54,11 +54,11 @@
       <h2>Install once on each Mac.</h2>
       <p>The Apple Silicon installer includes its Node runtime. It needs no repository checkout or administrator access. You need GitHub access to the private release and the signed Codex desktop app.</p>
       <p>Run these commands inside a new, empty download folder:</p>
-      <pre><code>gh release download v0.2.31 -R edihasaj/subscription-gateway \
+      <pre><code>gh release download v0.2.31 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.31-macos-arm64.tar.gz
-./subscription-gateway-0.2.31-macos-arm64/install
+tar -xzf harness-gateway-0.2.31-macos-arm64.tar.gz
+./harness-gateway-0.2.31-macos-arm64/install
 gateway --version</code></pre>
       <p>The installer keeps versioned releases under your user installation prefix. Upgrades preserve gateway registrations. They refuse an unrelated command named <code>gateway</code>.</p>
       <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory:</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre><p>This refuses to overwrite an existing destination. Native Codex authentication and settings are not copied. Retire an obsolete local configuration after a successful migration; it can otherwise take precedence over the installed configuration.</p></details>
@@ -191,7 +191,7 @@ gateway codex-config --model codex/gpt-6.1-sol \
 CODEX_HOME="$gateway_cli_home" codex</code></pre>
       <p>This CLI home has its own history and settings. It does not inherit all native customizations. Regenerate the snapshot after changing the gateway's model selection.</p>
     </section>
-    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Subscription Gateway · Field guide<br><small>Own your setup. Keep the work moving.</small></span><a href="#overview">Back to top ↑</a></footer>
+    <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Harness Gateway · Field guide<br><small>Own your setup. Keep the work moving.</small></span><a href="#overview">Back to top ↑</a></footer>
   </main>
 </body>
 </html>

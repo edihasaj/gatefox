@@ -16,7 +16,7 @@ if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() 
 if (Boolean(values['reuse-components-from']) !== Boolean(values['components-sha256'])) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
 const reused = values['reuse-components-from'] ? verifyReleaseComponents(resolve(values['reuse-components-from']),
   values['components-sha256'], { native: values['with-native'], gatewaySdk: values['with-gateway-sdk'] }) : undefined;
-const name = `subscription-gateway-${version}-macos-arm64`; const directory = join(root, name);
+const name = `harness-gateway-${version}-macos-arm64`; const directory = join(root, name);
 if (reused && existsSync(directory)) throw new Error('Component reuse requires a fresh release stage; move the previous stage to Trash first');
 const runtimeArchive = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64.tar.gz');
 const runtimeDigest = createHash('sha256').update(readFileSync(runtimeArchive)).digest('hex');

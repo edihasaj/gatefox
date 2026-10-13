@@ -1,6 +1,8 @@
-<img src="docs/assets/logo.png" width="88" height="88" alt="Subscription Gateway fox">
+<img src="docs/assets/logo.png" width="88" height="88" alt="Harness Gateway fox">
 
-# Subscription Gateway
+# Harness Gateway
+
+Formerly Subscription Gateway.
 
 A local gateway for subscription and API providers. The project name is provisional.
 
@@ -36,11 +38,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.2.31 -R edihasaj/subscription-gateway \
+gh release download v0.2.31 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf subscription-gateway-0.2.31-macos-arm64.tar.gz
-./subscription-gateway-0.2.31-macos-arm64/install
+tar -xzf harness-gateway-0.2.31-macos-arm64.tar.gz
+./harness-gateway-0.2.31-macos-arm64/install
 gateway --version
 ```
 
@@ -179,3 +181,14 @@ history have passed through the real Codex engine on the test Mac.
 
 See [architecture](docs/architecture.md), [Responses support](docs/responses.md),
 [verification](docs/verification.md), [desktop adapter](docs/app-server.md), [remote clients](docs/remote.md).
+
+## Compatibility names
+
+The project was renamed from Subscription Gateway. Names that existing installations
+and saved chats depend on keep the old spelling: the Codex provider ID
+`subscription_gateway` (stored in every gateway chat), the LaunchAgent labels
+`com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
+the state folder `~/Library/Application Support/Subscription Gateway`, and the
+ownership markers in service and execution-host receipts. Changing any of them
+needs a migration on every Mac. The `gateway` command remains; the installer also
+adds `harness-gateway`.

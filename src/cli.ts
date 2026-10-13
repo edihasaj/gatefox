@@ -70,7 +70,7 @@ Serve runs in the foreground; Ctrl-C stops requests and children. macOS service 
 `;
 const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".state", providers: [
   { id: "claude", type: "claude-subscription", label: "Claude", models: { "claude-sonnet-4-6": "claude-sonnet-4-6" }, modelMetadata: { "claude-sonnet-4-6": { displayName: "Sonnet 4.6", contextWindow: 200000, reasoningEfforts: ["low", "medium", "high"] } } },
-  { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: ".state/codex.json", agentName: "Subscription Gateway", models: { "codex/gpt-6.1-sol": "gpt-6.1-sol" } },
+  { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: ".state/codex.json", agentName: "Harness Gateway", models: { "codex/gpt-6.1-sol": "gpt-6.1-sol" } },
 ] };
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
@@ -223,7 +223,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${copilot ? "Copilot" : "Claude"} login failed`))); });
     } else if (provider.type === "codex-subscription") {
       const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);
-      try { await signIn(provider.credentialFile!, provider.agentName || "Subscription Gateway", async url => {
+      try { await signIn(provider.credentialFile!, provider.agentName || "Harness Gateway", async url => {
         if (values["no-browser"]) process.stdout.write(`Continue with ChatGPT:\n${url}\n`);
         else {
           process.stderr.write("Continue with ChatGPT in the browser. Waiting for authorization...\n");
