@@ -1,6 +1,8 @@
 // Simulates a power cut during an active goal on a gateway model: the adapter and
 // every SDK child are SIGKILLed mid-turn, then a fresh adapter resumes the chat.
 // Proves the goal survives and the work continues. Isolated native home; real inference.
+// --live-service instead uses this Mac's unified service and native home, and also
+// SIGKILLs the whole service tree (supervisor, shared writer, executors) before launchd restarts it.
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {Readable} from 'node:stream';
@@ -12,14 +14,15 @@ import {join,resolve} from 'node:path';
 import {parseArgs} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
 import {AppServerConnection} from '../dist/app-server-connection.js';
-const {values:options}=parseArgs({options:{gateway:{type:'string'},config:{type:'string'},codex:{type:'string'},catalog:{type:'string'},fixture:{type:'string'},output:{type:'string'},model:{type:'string',default:'claude/claude-opus-5-5'},effort:{type:'string',default:'high'},steps:{type:'string',default:'6'}}});
-for(const key of ['gateway','config','codex','catalog','fixture','output'])if(!options[key])throw Error(`Missing --${key}`);
+const {values:options}=parseArgs({options:{gateway:{type:'string'},config:{type:'string'},codex:{type:'string'},catalog:{type:'string'},fixture:{type:'string'},output:{type:'string'},model:{type:'string',default:'claude/claude-opus-5-5'},effort:{type:'string',default:'high'},steps:{type:'string',default:'6'},'live-service':{type:'boolean',default:false}}});
+const live=options['live-service'];
+for(const key of ['gateway','config','codex','fixture','output',...(live?[]:['catalog'])])if(!options[key])throw Error(`Missing --${key}`);
 const steps=Number(options.steps);const upstream=JSON.parse(await readFile(resolve(options.config),'utf8'));
 const root=resolve(options.fixture);const home=join(root,'native'),state=join(root,'state'),work=join(root,'work');
 for(const p of [home,state,work])await mkdir(p,{recursive:true,mode:0o700});
-await copyFile(resolve(options.catalog),join(home,'models.json'));
+if(!live){await copyFile(resolve(options.catalog),join(home,'models.json'));
 await copyFile(resolve(upstream.stateDirectory,'client-token'),join(state,'client-token'));
-await writeFile(join(home,'config.toml'),`model_catalog_json = "${join(home,'models.json')}"\n`,{mode:0o600});
+await writeFile(join(home,'config.toml'),`model_catalog_json = "${join(home,'models.json')}"\n`,{mode:0o600});}
 let requests=0;
 const server=createServer(async(req,res)=>{
  const control=new AbortController();res.on('close',()=>control.abort());
@@ -30,8 +33,8 @@ const server=createServer(async(req,res)=>{
   if(r.body)await pipeline(Readable.fromWeb(r.body),res);else res.end();
  }catch{if(!res.headersSent)res.writeHead(502);res.end();}
 });server.listen(0,'127.0.0.1');await once(server,'listening');
-const config=join(root,'gateway.json');await writeFile(config,JSON.stringify({version:1,clientOnly:true,port:server.address().port,stateDirectory:state,providers:[]}),{mode:0o600});
-const env={...process.env,CODEX_HOME:home};for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])delete env[k];
+const config=live?resolve(options.config):join(root,'gateway.json');if(!live)await writeFile(config,JSON.stringify({version:1,clientOnly:true,port:server.address().port,stateDirectory:state,providers:[]}),{mode:0o600});
+const env=live?{...process.env}:{...process.env,CODEX_HOME:home};for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])delete env[k];
 const results=[];const record=async row=>{results.push(row);await writeFile(resolve(options.output),JSON.stringify({results},null,2),{mode:0o600});console.log(JSON.stringify(row));};
 const wait=async(check,ms=600000)=>{for(const end=Date.now()+ms;Date.now()<end;){const v=await check();if(v)return v;await delay(250);}return undefined;};
 const done=async()=>{const names=new Set(await readdir(work));return Array.from({length:steps},(_,i)=>`step${i+1}.txt`).filter(n=>names.has(n)).length;};
@@ -42,6 +45,9 @@ async function connect(events){
  await client.request('initialize',{clientInfo:{name:'gateway_outage_e2e',version:'1'},capabilities:{experimentalApi:true}});client.send({method:'initialized',params:{}});
  return client;
 }
+const label=`gui/${process.getuid()}/com.edihasaj.subscription-gateway`;
+const servicePid=()=>{try{return Number(/^\s*pid = (\d+)$/m.exec(execFileSync('/bin/launchctl',['print',label],{encoding:'utf8'}))?.[1])||0;}catch{return 0;}};
+const hostRunning=()=>{try{const s=JSON.parse(execFileSync(resolve(options.gateway),['service','status'],{encoding:'utf8'}));return s.runtime?.executionHost?.state==='running'&&s.statusCurrent;}catch{return false;}};
 function tree(pid){const all=[pid];for(let i=0;i<all.length;i++){try{all.push(...execFileSync('/usr/bin/pgrep',['-P',String(all[i])],{encoding:'utf8'}).split('\n').filter(Boolean).map(Number));}catch{}}return all;}
 let client;
 try{
@@ -53,20 +59,25 @@ try{
  if(!auto)await client.request('turn/start',{threadId:id,input:[{type:'text',text:'Work on the active goal now.'}]});
  await record({phase:'goal-started',passed:true,model:options.model,effort:options.effort,autoStartedTurn:!!auto});
  const progressed=await wait(async()=>(await done())>=2&&(await done())<steps);
- const before=await done();const pids=tree(client.child.pid);
+ const before=await done();const oldService=live?servicePid():0;const pids=[...tree(client.child.pid),...(oldService?tree(oldService):[])];
  for(const pid of pids){try{process.kill(pid,'SIGKILL');}catch{}}
  await delay(1000);const survivors=pids.filter(pid=>{try{process.kill(pid,0);return true;}catch{return false;}});
- await record({phase:'power-cut-mid-goal',passed:!!progressed&&survivors.length===0,filesBeforeCut:before,killedProcesses:pids.length,survivors:survivors.length});
+ let serviceBack=true;if(live){serviceBack=!!await wait(()=>servicePid()&&servicePid()!==oldService&&hostRunning(),120000);}
+ await record({phase:'power-cut-mid-goal',passed:!!progressed&&survivors.length===0&&serviceBack,filesBeforeCut:before,killedProcesses:pids.length,survivors:survivors.length,...(live?{serviceRestartedWithHost:serviceBack}:{})});
  const events2=[];client=await connect(events2);
- const resumed=await client.request('thread/resume',{threadId:id});
+ // The desktop resends its current permissions on resume; a bare resume falls back to read-only.
+ const resumed=await client.request('thread/resume',{threadId:id,approvalPolicy:'never',sandbox:'workspace-write'});
  const goal=(await client.request('thread/goal/get',{threadId:id})).goal;
  await record({phase:'goal-survives-power-cut',passed:goal?.objective===objective&&resumed.model===options.model,goalStatus:goal?.status,model:resumed.model});
  const autoResumed=await wait(()=>events2.find(e=>e.method==='turn/started'),30000);
  if(!autoResumed)await client.request('turn/start',{threadId:id,input:[{type:'text',text:'Continue the active goal from where it stopped.'}]});
- const finished=await wait(async()=>(await done())===steps&&(await client.request('thread/goal/get',{threadId:id})).goal?.status==='complete');
+ // Codex may clear a goal once it completes, so its completion notice also counts.
+ const completedNotice=()=>events2.some(e=>e.method==='thread/goal/updated'&&e.params?.goal?.status==='complete');
+ const finished=await wait(async()=>(await done())===steps&&(completedNotice()||(await client.request('thread/goal/get',{threadId:id})).goal?.status==='complete'));
  const finalGoal=(await client.request('thread/goal/get',{threadId:id})).goal;
  const history=await client.request('thread/read',{threadId:id,includeTurns:true});
- await record({phase:'goal-continues-to-completion',passed:!!finished,autoResumedAfterRestart:!!autoResumed,files:await done(),goalStatus:finalGoal?.status,turns:history.thread?.turns?.length,turnStatuses:(history.thread?.turns||[]).map(t=>t.status),upstreamRequests:requests});
+ await record({phase:'goal-continues-to-completion',passed:!!finished,autoResumedAfterRestart:!!autoResumed,files:await done(),goalStatus:finalGoal?.status??(completedNotice()?'complete (cleared)':undefined),turns:history.thread?.turns?.length,turnStatuses:(history.thread?.turns||[]).map(t=>t.status),upstreamRequests:requests});
 }catch(e){await record({phase:'error',passed:false,error:e.message});}
 finally{client?.stop();server.closeAllConnections();server.close();}
+if(live)console.log('Live test chat left in the native home for inspection; its working folder is '+work);
 const failed=results.filter(r=>!r.passed);if(failed.length)process.exitCode=1;
