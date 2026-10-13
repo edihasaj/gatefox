@@ -76,6 +76,26 @@ test("native capability is separate, original native home is shared once, and ad
   } finally { first?.stop(); second?.stop(); control.stop(); await host.close(); await f.clean(); }
 });
 
+for (const firstClient of ["desktop", "relay"] as const) {
+  test(`${firstClient}-first native ownership accepts the other client's analytics default while preserving the original launch`, { timeout: 15000 }, async () => {
+    const f = await fixture(); const host = await startExecutionHost(f.options); const control = await f.connection(join(f.home, "host.sock")); let client;
+    try {
+      const relayArgs = [...f.args, "-c", "analytics.enabled=false"];
+      const desktopArgs = [...relayArgs, "--analytics-default-enabled"];
+      const firstArgs = firstClient === "desktop" ? desktopArgs : relayArgs;
+      const nextArgs = firstClient === "desktop" ? relayArgs : desktopArgs;
+      const record = await control.request("native/acquire", { args: firstArgs, cwd: f.cwd }) as unknown as NativeExecutionRecord;
+      assert.deepEqual(await control.request("native/acquire", { args: nextArgs, cwd: f.cwd }), record);
+      client = await f.initialize(record.socketPath, "frontend"); const info = await client.request("fixture/info", {});
+      assert.equal((info.args as string[]).includes("--analytics-default-enabled"), firstClient === "desktop");
+      assert.ok((info.args as string[]).includes("analytics.enabled=false"));
+      await assert.rejects(control.request("native/acquire", { args: [...nextArgs, "-c", "analytics.enabled=true"], cwd: f.cwd }), /startup settings differ/);
+      await assert.rejects(control.request("native/acquire", { args: [...nextArgs, "--profile", "other"], cwd: f.cwd }), /startup settings differ/);
+      assert.equal((await control.request("native/acquire", { args: firstArgs, cwd: f.cwd })).pid, record.pid);
+    } finally { client?.stop(); control.stop(); await host.close(); await f.clean(); }
+  });
+}
+
 test("native leases and loaded chats prevent quiescence; transient inspection does not pin an idle owner", { timeout: 15000 }, async () => {
   const f = await fixture(); const host = await startExecutionHost(f.options); const control = await f.connection(join(f.home, "host.sock")); let client;
   try {

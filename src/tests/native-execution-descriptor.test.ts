@@ -71,7 +71,7 @@ test("native descriptors accept exactly 4 MiB and reject one byte more", () => {
   assert.throws(() => nativeDescriptor(larger));
 });
 
-test("native fingerprints ignore only listener and stdio transport arguments", () => {
+test("native fingerprints ignore listener and stdio transport arguments", () => {
   const args = ["app-server", "-c", 'model="native"', "--disable", "remote_control"];
   const fingerprint = nativeDescriptorFingerprint(descriptor(args));
   assert.equal(typeof fingerprint, "string");
@@ -85,6 +85,17 @@ test("native fingerprints ignore only listener and stdio transport arguments", (
   assert.equal(nativeDescriptorFingerprint({ cwd, args }), fingerprint);
 });
 
+test("desktop analytics defaults are compatible in either acquisition order without changing launch arguments", () => {
+  const relay = descriptor(["app-server", "-c", "analytics.enabled=false", "--listen", "stdio://"]);
+  const desktop = descriptor(["app-server", "--analytics-default-enabled", "-c", "analytics.enabled=false", "--listen=stdio://"]);
+  for (const [first, next] of [[relay, desktop], [desktop, relay]]) {
+    assert.equal(nativeDescriptorFingerprint(first!), nativeDescriptorFingerprint(next!));
+    const launch = nativeExecutionArgs(first!.args, "/managed/native.sock", true);
+    assert.equal(launch.includes("--analytics-default-enabled"), first!.args.includes("--analytics-default-enabled"));
+    assert.ok(launch.includes("analytics.enabled=false"));
+  }
+});
+
 test("native fingerprints include cwd and every remaining argv value in order", () => {
   const args = ["app-server", "-c", 'model="native"', "--disable", "remote_control"];
   const fingerprint = nativeDescriptorFingerprint(descriptor(args));
@@ -96,6 +107,9 @@ test("native fingerprints include cwd and every remaining argv value in order", 
     descriptor([...args, "--stdio=false"]),
     descriptor([...args, "--config=features.remote_control=false"]),
     descriptor([...args, "--model", "gpt-6-astra"]),
+    descriptor([...args, "--profile", "different"]),
+    descriptor([...args, "-c", "analytics.enabled=false"]),
+    descriptor([...args, "--analytics-default-enabled=true"]),
   ];
   for (const input of distinct) assert.notEqual(nativeDescriptorFingerprint(input), fingerprint);
   assert.notEqual(nativeDescriptorFingerprint(descriptor(["app-server", "ab", "c"])), nativeDescriptorFingerprint(descriptor(["app-server", "a", "bc"])));

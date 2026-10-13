@@ -2,18 +2,26 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, cpSync, readdirSync, statSync, chmodSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
+import { parseArgs } from 'node:util';
 import { nativeSourceDigest } from './native-source.mjs';
+import { verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 
+const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
+  'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' } } });
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
-if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !process.argv.includes('--allow-dirty')) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
+if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !values['allow-dirty']) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
+if (Boolean(values['reuse-components-from']) !== Boolean(values['components-sha256'])) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
+const reused = values['reuse-components-from'] ? verifyReleaseComponents(resolve(values['reuse-components-from']),
+  values['components-sha256'], { native: values['with-native'], gatewaySdk: values['with-gateway-sdk'] }) : undefined;
 const name = `subscription-gateway-${version}-macos-arm64`; const directory = join(root, name);
+if (reused && existsSync(directory)) throw new Error('Component reuse requires a fresh release stage; move the previous stage to Trash first');
 const runtimeArchive = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64.tar.gz');
 const runtimeDigest = createHash('sha256').update(readFileSync(runtimeArchive)).digest('hex');
 if (runtimeDigest !== 'bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057') throw new Error('Official Node runtime checksum mismatch');
-mkdirSync(directory, { recursive: true });
+mkdirSync(directory, { recursive: true, mode: 0o700 });
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { encoding: 'utf8' }))[0];
 execFileSync('tar', ['-xzf', join(root, packed.filename), '-C', directory]);
 mkdirSync(join(directory, 'runtime/bin'), { recursive: true });
@@ -22,13 +30,14 @@ cpSync(join(runtime, 'bin/node'), join(directory, 'runtime/bin/node'));
 cpSync(join(runtime, 'LICENSE'), join(directory, 'runtime/LICENSE'));
 cpSync('scripts/install.sh', join(directory, 'install')); chmodSync(join(directory, 'install'), 0o700);
 const nativeArtifact = resolve('.state/native-relay-build/artifact');
-if (process.argv.includes('--with-native')) {
+if (reused) copyReleaseComponents(reused, join(directory, 'package'));
+if (values['with-native'] && !reused) {
   const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
   if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74' || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
   cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
 }
 const gatewayArtifact = resolve('.state/gateway-sdk-build/artifact');
-if (process.argv.includes('--with-gateway-sdk')) {
+if (values['with-gateway-sdk'] && !reused) {
   const metadata = JSON.parse(readFileSync(join(gatewayArtifact, 'build.json'), 'utf8'));
   if (metadata.schemaVersion !== 1 || metadata.version !== version || metadata.profile !== 'release' ||
       metadata.platform !== 'darwin' || metadata.arch !== 'arm64' || metadata.codexVersion !== gatewaySdkCodexVersion ||
@@ -43,10 +52,12 @@ if (process.argv.includes('--with-gateway-sdk')) {
   const expectedFiles = ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', 'gateway-codex'];
   if (JSON.stringify(readdirSync(gatewayArtifact).sort()) !== JSON.stringify(expectedFiles.sort())) throw new Error('Unexpected gateway SDK artifact files');
   cpSync(gatewayArtifact, join(directory, 'package/gateway-sdk'), { recursive: true });
-} else if (existsSync(join(directory, 'package/gateway-sdk'))) {
+} else if (!values['with-gateway-sdk'] && existsSync(join(directory, 'package/gateway-sdk'))) {
   throw new Error('Release stage already contains a gateway SDK; select --with-gateway-sdk or use a fresh stage');
 }
-writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest, source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() }, null, 2));
+writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest,
+  source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+  ...(reused ? { reusedComponents: reused.provenance } : {}) }, null, 2));
 const files = [];
 function walk(path, relative = '') { for (const name of readdirSync(path).sort()) { const child = join(path, name); const entry = relative ? `${relative}/${name}` : name; if (statSync(child).isDirectory()) walk(child, entry); else if (entry !== 'checksums.txt') files.push(entry); } }
 walk(directory);

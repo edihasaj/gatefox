@@ -98,6 +98,32 @@ that module, avoiding unrelated upstream test compilation errors, then restores
 the exact original bytes. Its digest joins the receipt; the verified SDK source
 tree must match again before building the executable.
 
+A JavaScript-only fix can explicitly reuse unchanged native components from a
+previous published installer instead of rebuilding Rust. Download the exact
+published asset and use its independently verified archive checksum:
+
+```sh
+node scripts/build-release.mjs --with-native --with-gateway-sdk \
+  --reuse-components-from /absolute/path/to/previous-published-release.tar.gz \
+  --components-sha256 VERIFIED_ARCHIVE_SHA256
+```
+
+Reuse verifies the whole archive checksum, safe tar entries, every payload file
+against its complete manifest, and the selected components' current source hashes,
+upstream pins, release profile, and capabilities before writing a release stage.
+Archive links and path overrides are refused. Validated macOS provenance metadata
+is ignored; only the six allowed files for each selected component are copied.
+Any changed component source requires a fresh build. Without both explicit reuse
+arguments, the usual matching-release artifact checks remain in force.
+Reuse requires a fresh release stage; move any earlier stage for that version to
+Trash before rebuilding it.
+
+Reused build receipts keep their original version and bytes. The new
+`package/release.json` binds that earlier bundle's version and archive checksum to
+each reused file's size and checksum; runtime verification checks this binding.
+The CLI's package version and release commit still identify the new release.
+Run the installed SDK checks for the changed JavaScript path before publishing.
+
 # Upgrade and recovery
 
 The installer verifies file checksums before changing the current release link.

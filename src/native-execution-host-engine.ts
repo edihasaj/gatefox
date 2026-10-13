@@ -35,7 +35,11 @@ function nativeTransportArgs(args: string[]): string[] {
 }
 
 export function nativeDescriptorFingerprint(descriptor: NativeExecutionDescriptor): string {
-  return createHash("sha256").update(JSON.stringify({ args: nativeTransportArgs(descriptor.args), cwd: descriptor.cwd })).digest("hex");
+  // The desktop supplies an analytics default; the relay does not. It is not a
+  // session setting, and explicit analytics configuration still takes priority.
+  // Ignore only this default for compatibility; preserve the first launch argv.
+  const args = nativeTransportArgs(descriptor.args).filter(arg => arg !== "--analytics-default-enabled");
+  return createHash("sha256").update(JSON.stringify({ args, cwd: descriptor.cwd })).digest("hex");
 }
 
 export function nativeExecutionArgs(args: string[], socket: string, managedRelay: boolean): string[] {

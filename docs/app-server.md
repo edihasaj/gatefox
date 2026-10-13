@@ -126,6 +126,12 @@ public desktop integration API. `scripts/codex-desktop-shim` is an executable
 wrapper for the first hook. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
 `GATEWAY_CODEX_PATH` when its defaults do not match the machine.
 
+Desktop startup reads organization requirements and native configuration through
+the adapter before opening the main UI. A backend startup failure can therefore
+appear as an organization-settings error. Shared native ownership accepts the
+desktop's analytics-default flag when attaching to a relay-started SDK. It keeps
+the first SDK's launch policy and rejects different explicit settings or profiles.
+
 To test a fresh desktop launch, quit the app normally with Command-Q and keep
 the gateway daemon running. The launcher refuses to stop a running app. It starts
 the signed binary directly with explicit environment variables and saves a private

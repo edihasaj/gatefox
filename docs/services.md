@@ -196,8 +196,11 @@ locations. No additional LaunchAgent is installed.
 The SDK starts lazily from a real adapter's compatible process arguments. The
 host uses the native home's parent as its stable launch directory; a new chat
 without an explicit workspace keeps the requesting client's original directory.
-Resume and fork preserve the saved workspace. Different process profiles or
-configuration arguments are refused instead of creating a second native owner.
+Resume and fork preserve the saved workspace. The desktop's
+`--analytics-default-enabled` flag is compatible with a relay started without it.
+The first SDK launch keeps its analytics default, and explicit analytics settings
+remain authoritative. Different process profiles or configuration arguments are
+refused instead of creating a second native owner.
 Administrative reads use short-lived, non-originating SDK connections and never
 answer frontend approvals. Identical pending approvals replay with their original
 mapped client ID after resume.
