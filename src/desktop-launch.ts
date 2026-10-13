@@ -15,7 +15,9 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   const quoted = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const helper = gatewayCommand();
   const command = [helper.command, ...helper.args, "codex-shim", "--config", configPath, "--codex", codex, "--"].map(quoted).join(" ");
-  const content = '#!/bin/sh\n# Subscription Gateway desktop adapter.\nexec ' + command + ' "$@"\n';
+  // Only app-server sessions need translation. Every other Codex command, such as
+  // the desktop's exec-server, runs the original CLI with no adapter process.
+  const content = '#!/bin/sh\n# Subscription Gateway desktop adapter.\nfor argument in "$@"; do\n  if [ "$argument" = app-server ]; then exec ' + command + ' "$@"; fi\ndone\nexec ' + quoted(codex) + ' "$@"\n';
   const wrapper = resolve(config.stateDirectory, `desktop-wrapper-${createHash("sha256").update(content).digest("hex").slice(0, 16)}`);
   try { const file = await open(wrapper, "wx", 0o700); try { await file.writeFile(content); await file.sync(); } finally { await file.close(); } }
   catch (error) {
