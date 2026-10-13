@@ -94,6 +94,8 @@ export async function readClaudeModels(child: ChildProcessWithoutNullStreams, ti
     const catalog = await control("gateway-models", { subtype: "initialize", hooks: null });
     if (catalog.subtype !== "success") throw new Error("Claude model discovery failed; run gateway doctor");
     const models = nativeClaudeModels(catalog.response?.models);
+    // Explicitly unset, so a refresh without a level clears an older one and the row returns to medium.
+    for (const { metadata } of models) metadata.defaultReasoningEffort = undefined;
     try {
       for (const [index, { model, metadata }] of models.entries()) {
         if (!metadata.reasoningEfforts?.length || (await control(`gateway-model-${index}`, { subtype: "apply_flag_settings", settings: { model } })).subtype !== "success") continue;

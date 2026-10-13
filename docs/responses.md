@@ -310,7 +310,8 @@ session-scoped model with `apply_flag_settings` and reads the applied effort fro
 5.1, Fable 5, Opus 5, Sonnet 5, Opus 4.8, Opus 4.6 and Sonnet 4.6; and xhigh for
 Opus 4.7. The value is stored as `defaultReasoningEffort` in the model metadata. A
 model for which the CLI reports no level, or a level the row does not offer, keeps
-medium.
+medium. Each discovery replaces the stored value, so a refresh in which the CLI
+reports no level, or `get_settings` fails, returns the row to medium.
 
 One-shot and live CLIs both run with `CLAUDE_CODE_DISABLE_ADVISOR_TOOL=1` and
 `ENABLE_TOOL_SEARCH=false`, so the CLI declares only the gateway's tools (one-shot

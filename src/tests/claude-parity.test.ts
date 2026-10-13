@@ -10,7 +10,8 @@ import { discoverClaudeModels, readClaudeModels } from "../providers/claude-mode
 import { gatewaySystemPrompt } from "../providers/claude-control.js";
 import { ledgerEntries } from "../providers/claude-ledger.js";
 import { loadDiscoveredModels, modelCatalog } from "../catalog.js";
-import { validateConfig, type ProviderConfig } from "../config.js";
+import { loadConfig, validateConfig, writePrivateJson, type ProviderConfig } from "../config.js";
+import { refreshModelMetadata } from "../model-refresh.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture } from "./claude-cli-fixture.js";
 import type { InferenceEvent, ResponsesInputItem } from "../protocol/types.js";
@@ -65,6 +66,20 @@ test("each Claude row defaults to the CLI's own effort for that model, and to me
 test("a CLI without get_settings still yields its catalog, with medium defaults", async () => {
   const models = await readClaudeModels(discoveryWorker({}, false));
   assert.equal(models.length, 4); assert.ok(models.every(entry => entry.metadata.defaultReasoningEffort === undefined));
+});
+
+test("a refresh whose CLI gives no default clears the stored one, so the row returns to medium", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-claude-refresh-")); const path = join(directory, "gateway.json");
+  await writePrivateJson(path, { version: 1, port: 0, stateDirectory: directory, providers: [{ id: "claude", type: "claude-subscription", models: { opus: "claude-opus-5-5" } }] });
+  const saved = async () => ((await loadConfig(path)).providers[0].modelMetadata?.opus.defaultReasoningEffort);
+  try {
+    await refreshModelMetadata(path, () => readClaudeModels(discoveryWorker({ "claude-opus-5-5": "high" })));
+    assert.equal(await saved(), "high");
+    // get_settings fails, as when it times out or a later CLI drops it.
+    assert.deepEqual(await refreshModelMetadata(path, () => readClaudeModels(discoveryWorker({}, false))), ["claude"]);
+    assert.equal(await saved(), undefined);
+    assert.equal(modelCatalog(await loadConfig(path)).models[0].default_reasoning_level, "medium");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("discovery reads the model defaults, not an effort the gateway's host shell exported", async () => {
