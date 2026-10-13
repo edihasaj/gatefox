@@ -1,4 +1,4 @@
-import type { OpenAITool, OpenAIToolCall, InferenceEvent } from "../protocol/types.js";
+import type { ChatToolSelection, OpenAITool, OpenAIToolCall, InferenceEvent } from "../protocol/types.js";
 import { ProviderError } from "./provider.js";
 import { claudeToolBindings } from "./claude-tool-names.js";
 
@@ -25,4 +25,14 @@ export function nativeClaudeCalls(blocks: Array<{ id?: string; name?: string; in
     if (definition.responseTool?.type === "custom" && typeof (call.input as { input?: unknown }).input !== "string") throw new ProviderError("invalid_tool_call", "Free-form input must be a string", 502, { code: "nontext_custom_input", event: "claude.tool_use" });
     return { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(call.input) } };
   });
+}
+
+/** The full catalog is always offered, so a forced choice is checked against the returned calls. */
+export function validateForcedChoice(calls: OpenAIToolCall[], choice: ChatToolSelection | undefined): void {
+  if (typeof choice === "object" && calls.some(call => call.function.name !== choice.function.name)) {
+    throw new ProviderError("invalid_tool_call", "Claude called a tool other than the required one", 502, { code: "forced_tool_mismatch", event: "claude.tool_use" });
+  }
+  if ((choice === "required" || typeof choice === "object") && !calls.length) {
+    throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call", 502, { code: "required_tool_missing", event: "claude.result" });
+  }
 }

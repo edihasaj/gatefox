@@ -4,7 +4,11 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ClaudeSubscription } from "../providers/claude.js";
-import type { InferenceEvent, ResponsesInputItem } from "../protocol/types.js";
+import { claudeNativeToolName } from "../providers/claude-tool-names.js";
+import { responsesToChatRequest } from "../protocol/request.js";
+import { ProviderError } from "../providers/provider.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import type { InferenceEvent, ResponsesInputItem, ResponsesTool } from "../protocol/types.js";
 
 const drain = async (events: AsyncIterable<InferenceEvent>) => { const result: InferenceEvent[] = []; for await (const event of events) result.push(event); return result; };
 
@@ -27,7 +31,7 @@ console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',resul
     const [a, b] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line).message.content as Array<{ type: string; text?: string }>);
     assert.ok(b.length > a.length);
     assert.deepEqual(b.slice(0, a.length), a, "every block of the shorter request is unchanged and in place");
-    assert.ok(b.at(-1)?.text?.includes("required"), "per-request instructions follow the history");
+    assert.equal(b.at(-1)?.text, "Use one of the caller tools.", "per-request instructions follow the history");
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -62,4 +66,79 @@ console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',resul
     assert.equal(legacy[legacy.indexOf("--model") + 1], "claude-opus-4-6[1m]");
     assert.equal(current[current.indexOf("--model") + 1], "claude-opus-5-5");
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
+});
+
+const noteTools: ResponsesTool[] = [{ type: "function", name: "read_note", parameters: { type: "object", properties: { id: { type: "string" } } } }, { type: "function", name: "write_note", parameters: { type: "object", properties: { id: { type: "string" } } } }];
+// Records the private catalog and the prompt it received. With GATEWAY_FIXTURE_CALL set it answers with a tool:
+// the first catalog tool that is not the required one ("wrong") or the required one ("right"), optionally after some text.
+async function catalogFixture() {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-claude-catalog-"));
+  const capture = join(directory, "capture.jsonl");
+  const script = `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs';let input='';for await(const chunk of process.stdin)input+=chunk;
+const args=process.argv.slice(2);const mcp=JSON.parse(readFileSync(args[args.indexOf('--mcp-config')+1],'utf8'));const catalog=mcp.mcpServers.gateway?readFileSync(mcp.mcpServers.gateway.args[1],'utf8'):'';
+const content=JSON.parse(input).message.content;appendFileSync(${JSON.stringify(capture)},JSON.stringify({catalog,content})+'\\n');
+const mode=process.env.GATEWAY_FIXTURE_CALL;const out=value=>console.log(JSON.stringify(value));
+if(!mode){out({type:'result',is_error:false,subtype:'success',result:'ok',usage:{input_tokens:1,output_tokens:1}});process.exit(0);}
+const required=/Use the required caller tool (\\S+)\\.$/.exec(content.at(-1).text)[1];const names=JSON.parse(catalog).map(tool=>'mcp__gateway__'+tool.name);
+const name=mode.startsWith('wrong')&&names.find(name=>name!==required)||required;
+out({type:'stream_event',event:{type:'message_start',message:{id:'msg_1',usage:{input_tokens:1}}}});
+if(mode.endsWith('text'))out({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Calling it.'}}});
+out({type:'stream_event',event:{type:'content_block_start',index:1,content_block:{type:'tool_use',id:'toolu_1',name,input:{}}}});
+out({type:'assistant',message:{id:'msg_1',content:[{type:'tool_use',id:'toolu_1',name,input:{id:'n1'}}]}});
+out({type:'stream_event',event:{type:'message_delta',delta:{stop_reason:'tool_use'},usage:{output_tokens:9}}});setInterval(()=>{},1000);\n`;
+  await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
+  const previous = { path: process.env.PATH, mode: process.env.GATEWAY_FIXTURE_CALL }; process.env.PATH = directory + delimiter + process.env.PATH;
+  return { directory, captured: async () => (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as { catalog: string; content: Array<{ text?: string }> }),
+    restore: async () => { for (const [key, value] of [["PATH", previous.path], ["GATEWAY_FIXTURE_CALL", previous.mode]] as const) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } await rm(directory, { recursive: true, force: true }); } };
+}
+
+test("forced choices keep the whole catalog, and block 0 does not depend on it", async () => {
+  const f = await catalogFixture();
+  try {
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } });
+    const forced = { type: "function" as const, name: "write_note" };
+    await drain(adapter.infer({ model: "fixture", input: "go", tools: noteTools }, new AbortController().signal));
+    for (const tool_choice of ["required", forced] as const) await assert.rejects(drain(adapter.infer({ model: "fixture", input: "go", tools: noteTools, tool_choice }, new AbortController().signal)), { code: "invalid_tool_call" });
+    await drain(adapter.infer({ model: "fixture", input: "go", tools: noteTools.slice(0, 1) }, new AbortController().signal));
+    const [auto, required, object, smaller] = await f.captured();
+    assert.equal(required.catalog, auto.catalog); assert.equal(object.catalog, auto.catalog, "the tools.json bytes are identical for auto and forced choices");
+    assert.notEqual(smaller.catalog, auto.catalog);
+    for (const run of [required, object, smaller]) assert.deepEqual(run.content[0], auto.content[0]);
+    assert.ok(!auto.content.some(block => block.text?.includes("Tool names")));
+    const write = claudeNativeToolName(responsesToChatRequest({ model: "fixture", input: "go", tools: noteTools }).tools![1]);
+    assert.equal(object.content.at(-1)?.text, `Use the required caller tool ${write}.`);
+  } finally { await f.restore(); }
+});
+
+test("a forced choice answered with another tool retries once with only the forced tool", async () => {
+  const f = await catalogFixture();
+  try {
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } });
+    const request = { model: "fixture", input: "go", tools: noteTools, tool_choice: { type: "function" as const, name: "write_note" } };
+    process.env.GATEWAY_FIXTURE_CALL = "wrong";
+    const events = await drain(adapter.infer(request, new AbortController().signal));
+    assert.deepEqual(events.map(event => event.type === "tool" ? event.call.function.name : event.type), ["write_note", "done"]);
+    const [first, retry] = await f.captured();
+    assert.equal(JSON.parse(first.catalog).length, 2); assert.equal(JSON.parse(retry.catalog).length, 1, "the retry offers only the forced tool");
+    // Text already streamed cannot be taken back, so that attempt fails instead of retrying.
+    process.env.GATEWAY_FIXTURE_CALL = "wrong-text";
+    await assert.rejects(drain(adapter.infer(request, new AbortController().signal)), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "forced_tool_mismatch");
+    assert.equal((await f.captured()).length, 3);
+  } finally { await f.restore(); }
+});
+
+test("live mode without the live module runs one-shot and records the fallback once", async () => {
+  const f = await catalogFixture();
+  configureTelemetry(f.directory, "test"); const since = Date.now();
+  try {
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live" } }, undefined, undefined, "./claude-live-missing-fixture.js");
+    for (const context of [{ threadId: "thread-1", requestKind: "compaction" as const }, {}, { threadId: "thread-1", requestKind: "turn" as const }, { threadId: "thread-1" }]) {
+      const events = await drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, context));
+      assert.equal(events.at(-1)?.type, "done");
+    }
+    assert.equal((await f.captured()).length, 4, "every request ran one-shot");
+    await flushTelemetry();
+    const sessions = (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session");
+    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "unavailable"]]);
+  } finally { await f.restore(); }
 });

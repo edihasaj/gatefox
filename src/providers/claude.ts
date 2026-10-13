@@ -1,31 +1,24 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { responsesToChatRequest } from "../protocol/request.js";
-import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
-import { ProviderError, type Provider } from "./provider.js";
-import type { ProviderConfig } from "../config.js";
-import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
-import { claudeEnvironment } from "./claude-environment.js";
+import type { ResponsesRequest, InferenceEvent, OpenAITool, ChatToolSelection, PublicServiceTier } from "../protocol/types.js";
+import { ProviderError, type Provider, type InferenceContext } from "./provider.js";
+import { claudeSessionSettings, type ProviderConfig } from "../config.js";
+import { validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
-import { claudeContextFailure } from "./context-errors.js";
-import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claude-tool-names.js";
-import { claudeFailure } from "./claude-errors.js";
-import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
+import { claudeToolName, claudeToolHistory } from "./claude-tool-names.js";
+import type { ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
-import type { PublicServiceTier } from "../protocol/types.js";
+import { claudeCliArgs, claudeEnv, claudeMcpCatalog, userLine } from "./claude-control.js";
+import { ClaudeMessageStream, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
+import { choiceBlock, markCustomCalls, renderConversation, renderItems, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
+import type { ClaudeLiveModule, ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
-
-interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
-function usage(tokens?: ClaudeUsage): Usage {
-  const input = (tokens?.input_tokens || 0) + (tokens?.cache_read_input_tokens || 0) + (tokens?.cache_creation_input_tokens || 0);
-  const output = tokens?.output_tokens || 0;
-  // Report cache reads the Responses way so callers can see actual cache reuse.
-  return { input_tokens: input, output_tokens: output, total_tokens: input + output, input_tokens_details: { cached_tokens: tokens?.cache_read_input_tokens || 0 } };
-}
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
   const effort = (request.reasoning as { effort?: string } | undefined)?.effort;
@@ -50,125 +43,137 @@ export function claudeFastMode(config: ProviderConfig | undefined, request: Resp
   return true;
 }
 
+interface Run {
+  /** The caller's model alias, for telemetry. */
+  alias: string; model: string; effort?: string; fast: boolean; summaryVisible: boolean; requestedEffort?: unknown; format: ReplayFormat;
+  tools: OpenAITool[]; choice?: ChatToolSelection; conversation: ClaudeConversation; images: ClaudeImages; retry?: boolean;
+}
+const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
+const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+// Codex owns these requests' history shape, so they never join or seed a live session.
+const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
+const liveModules = new Map<string, Promise<ClaudeLiveModule | undefined>>(); const unavailable = new Set<string>();
+/** B2's module ships separately; the variable specifier keeps this build independent of it. */
+function loadLive(specifier: string): Promise<ClaudeLiveModule | undefined> {
+  let module = liveModules.get(specifier);
+  if (!module) {
+    module = import(new URL(specifier, import.meta.url).href).then(value => typeof (value as Partial<ClaudeLiveModule>)?.claudeLive === "function" ? value as ClaudeLiveModule : undefined, () => undefined);
+    liveModules.set(specifier, module);
+  }
+  return module;
+}
+
 export class ClaudeSubscription implements Provider {
   constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
-    private readonly onContextWindow?: (model: string, contextWindow: number) => void) {}
-  async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+    private readonly onContextWindow?: (model: string, contextWindow: number) => void, private readonly liveModule = "./claude-live.js") {}
+  async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const normalized = responsesToChatRequest(request);
     const choice = normalized.tool_choice;
-    const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
+    // The catalog stays whole for forced choices: a changed tool list breaks the prompt cache.
+    const tools = choice === "none" ? [] : normalized.tools || [];
     if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
-    const effort = claudeEffort(this.config, request);
-    const fast = claudeFastMode(this.config, request);
-    const settings = { ...(effort ? { alwaysThinkingEnabled: true } : {}), ...(fast ? { fastMode: true } : {}) };
-    const summary = (request.reasoning as { summary?: string } | undefined)?.summary;
-    const { conversation, images } = imageConversation(claudeToolHistory(normalized.messages, normalized.tools || []));
+    const settings = claudeSessionSettings(this.config || {});
+    const { conversation, images } = imageConversation(markCustomCalls(claudeToolHistory(normalized.messages, normalized.tools || []), normalized.tools || []));
+    const run: Run = { alias: request.model, model: claudeCliModel(request.model), effort: claudeEffort(this.config, request), fast: claudeFastMode(this.config, request),
+      summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
+      format: settings.replayFormat, tools, choice, conversation, images };
+    if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
+      const outcome = await this.live(run, request, context, settings, signal);
+      if (outcome?.kind === "stream") { yield* outcome.events; return; }
+    }
+    let streamed = false;
+    try {
+      for await (const event of this.oneShot(run, signal)) { if (event.type === "text") streamed = true; yield event; }
+    } catch (error) {
+      if (!(error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") || typeof choice !== "object" || streamed || signal.aborted) throw error;
+      // One retry with only the forced tool: a single cache miss instead of a failed turn.
+      yield* this.oneShot({ ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }, signal);
+    }
+  }
+
+  private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number }, signal: AbortSignal): Promise<ClaudeLiveOutcome | undefined> {
+    const module = await loadLive(this.liveModule);
+    if (!module) {
+      if (!unavailable.has(this.liveModule)) { unavailable.add(this.liveModule); telemetry("claude_session", { outcome: "fallback", missReason: "unavailable" }); }
+      return;
+    }
+    const { model, effort, fast, summaryVisible, tools, conversation, images, format } = run; const mcpCatalog = claudeMcpCatalog(tools);
+    let outcome: ClaudeLiveOutcome;
+    try {
+      outcome = await module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes }).attach({
+        scope: `${this.config?.id ?? "claude"}\0${this.config?.authDirectory ?? ""}`, threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
+        model, effort, fast, summaryVisible, instructionsDigest: digest(typeof request.instructions === "string" ? request.instructions : ""),
+        toolsDigest: digest(JSON.stringify(mcpCatalog)), tools, choice: run.choice, request, conversation, images,
+        // Thinking display is fixed for a session's lifetime; summaries are hidden locally instead.
+        spawn: { args: mcpPath => claudeCliArgs({ mcpPath, model, effort, fast, thinkingDisplay: true, live: true }), env: claudeEnv(this.config?.authDirectory, true, run.requestedEffort), mcpCatalog },
+        render: from => from === 0 ? renderConversation(conversation, images, format) : renderItems(conversation, images, from, format),
+        newStream: () => new ClaudeMessageStream({ tools, summaryVisible }),
+        onUsage: async limit => { await this.onUsage?.(limit).catch(() => {}); },
+        onContextWindow: (name, window) => this.onContextWindow?.(name, window),
+      }, signal);
+    } catch (error) {
+      if (error instanceof ProviderError || signal.aborted) throw signal.aborted ? cancelled() : error;
+      outcome = { kind: "fallback", reason: "spawn_failed" };
+    }
+    if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason });
+    return outcome;
+  }
+
+  private async *oneShot(run: Run, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+    if (signal.aborted) throw cancelled();
     const directory = await mkdtemp(join(tmpdir(), "gateway-claude-"));
     const catalogPath = join(directory, "tools.json"); const mcpPath = join(directory, "mcp.json");
-    await writeFile(catalogPath, JSON.stringify(tools.map(tool => ({
-      name: claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
-      inputSchema: tool.function.parameters || { type: "object", properties: {} },
-    }))), { mode: 0o600 });
-    await writeFile(mcpPath, JSON.stringify({ mcpServers: tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
-    const env = claudeEnvironment(this.config?.authDirectory);
-    // This virtual catalog is the only action surface. Finish loading it before
-    // inference instead of exposing the CLI's deferred search/wait tools.
-    env.MCP_CONNECTION_NONBLOCKING = "0";
-    if ((request.reasoning as { effort?: string } | undefined)?.effort !== undefined) delete env.MAX_THINKING_TOKENS;
-    const child = spawn("claude", ["--restricted", "--setting-sources", "", "--disable-slash-commands", "--print", "--tools", "", "--strict-mcp-config", "--mcp-config", mcpPath,
-      "--model", claudeCliModel(request.model), "--no-session-persistence", "--output-format", "stream-json", "--include-partial-messages", "--verbose",
-      "--system-prompt", "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.",
-      ...(effort ? ["--effort", effort] : []),
-      "--input-format", "stream-json",
-      ...(Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : []),
-      // Newer Claude models default to omitting thinking text; ask for summaries
-      // unless the caller turned them off, so long Max turns show progress.
-      ...(effort && summary !== "none" ? ["--thinking-display", "summarized"] : []),
-    ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
-    let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null; const began = Date.now();
-    let limit: ClaudeLimit | undefined; let fastState: string | undefined;
+    await writeFile(catalogPath, JSON.stringify(claudeMcpCatalog(run.tools)), { mode: 0o600 });
+    await writeFile(mcpPath, JSON.stringify({ mcpServers: run.tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
+    const child = spawn("claude", claudeCliArgs({ mcpPath, model: run.model, effort: run.effort, fast: run.fast, thinkingDisplay: run.summaryVisible }),
+      { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env: claudeEnv(this.config?.authDirectory, false, run.requestedEffort) });
+    const stream = new ClaudeMessageStream({ tools: run.tools, summaryVisible: run.summaryVisible });
+    let failure: Error | undefined; let exitCode: number | null = null; let fastState: string | undefined; let interrupted = false;
+    let end: ClaudeStreamEnd | undefined; let resultSubtype: string | undefined; let resultError = false; let tokens: ClaudeTokens | undefined; const began = Date.now();
     // Report the tier Claude actually served: Fast only while fast mode stayed on.
-    const served = (): { serviceTier?: PublicServiceTier } => fast ? { serviceTier: fastState === "on" ? "priority" : "default" } : {};
-    const stop = () => {
-      if (child.exitCode === null) {
-        child.kill("SIGTERM");
-        const hardStop = setTimeout(() => { if (child.exitCode === null) child.kill("SIGKILL"); }, 1500).unref();
-        child.once("exit", () => clearTimeout(hardStop));
-      }
-    };
+    const served = (): { serviceTier?: PublicServiceTier } => run.fast ? { serviceTier: fastState === "on" ? "priority" : "default" } : {};
+    const running = () => child.exitCode === null && child.signalCode === null;
+    // One-shot output has no later use: stop at once. Without a detached group, launchd still reaps a CLI the gateway leaves behind.
+    const kill = () => { if (running()) child.kill("SIGKILL"); };
+    const cancel = () => { if (running()) interrupted = true; kill(); };
     child.on("error", error => { failure = error; }); child.on("exit", code => { exitCode = code; });
     child.stderr.resume(); child.stdin.on("error", error => { failure = error; });
-    signal.addEventListener("abort", stop, { once: true });
+    signal.addEventListener("abort", cancel, { once: true });
     const lines = createInterface({ input: child.stdout });
     try {
-      if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
-      const aliases = tools.map(tool => ({ caller: tool.function.name, native: claudeNativeToolName(tool) }));
-      // Claude reuses its prompt cache only for unchanged leading content blocks.
-      // One block per conversation item keeps every earlier block identical as a
-      // tool loop grows; per-request instructions go last.
-      const attached = new Map<number, Array<Record<string, unknown>>>();
-      for (const { label, image } of images) {
-        const index = Number(/^conversation-message-(\d+)-part-/.exec(label)?.[1]) - 1;
-        attached.set(index, [...(attached.get(index) || []), { type: "text", text: `Attached image ${label}:` }, { type: "image", source: { type: "base64", media_type: image.mediaType, data: image.data } }]);
-      }
-      const content: Array<Record<string, unknown>> = [{ type: "text", text: `Tool names: ${JSON.stringify(aliases)}\nConversation items follow, oldest first, one JSON item per block.` }];
-      conversation.forEach((item, index) => { content.push({ type: "text", text: JSON.stringify(item) }, ...(attached.get(index) || [])); });
-      if (typeof choice === "object" || choice === "required") content.push({ type: "text", text: "Use the required caller tool." });
-      child.stdin.end(JSON.stringify({ type: "user", session_id: "", parent_tool_use_id: null, message: { role: "user", content } }) + "\n");
+      if (signal.aborted) cancel();
+      const forced = choiceBlock(run.choice, run.tools);
+      // One message, then EOF: the CLI answers that turn and exits.
+      child.stdin.end(userLine([...renderConversation(run.conversation, run.images, run.format), ...(forced ? [forced] : [])]));
       for await (const line of lines) {
-        if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
+        if (line.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;
         try { message = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
-        // The CLI falls back to standard speed (cooldown) when fast mode credits are refused.
-        if (typeof message.fast_mode_state === "string" && ["on", "off", "cooldown"].includes(message.fast_mode_state)) fastState = message.fast_mode_state;
-        const observed = claudeUsageEvent(message);
-        if (observed) {
-          limit = observed;
-          // Usage persistence is supplementary; a disk error cannot replace an inference outcome.
-          await this.onUsage?.(observed).catch(() => {});
-        }
-        const context = claudeContextFailure(message); if (context) throw context;
-        const nativeFailure = message.type === "assistant" && claudeFailure(message, limit); if (nativeFailure) throw nativeFailure;
-        if (message.type === "stream_event") {
-          const event = message.event as { type?: string; delta?: { type?: string; text?: string; thinking?: string; estimated_tokens?: number } };
-          if (event?.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) { raw += event.delta.text; yield { type: "text", text: event.delta.text }; }
-          const reasoning = event && nativeClaudeReasoning(event);
-          if (summary !== "none" && reasoning) yield reasoning;
-        } else if (message.type === "assistant") {
-          const assistant = message.message as { content?: Array<{ type: string; id?: string; name?: string; input?: unknown }>; usage?: ClaudeUsage };
-          const calls = assistant.content?.filter(block => block.type === "tool_use") || [];
-          if (calls.length) {
-            stop();
-            for (const call of nativeClaudeCalls(calls, tools)) yield { type: "tool", call };
-            yield { type: "done", usage: usage(assistant.usage), ...served() }; return;
-          }
-        } else if (message.type === "result") {
-          result = message;
-          // The CLI reports the window it actually used; the catalog adopts it on refresh.
-          const used = message.modelUsage;
-          if (used && typeof used === "object") for (const [model, value] of Object.entries(used as Record<string, { contextWindow?: unknown }>)) {
-            if (typeof value?.contextWindow === "number") this.onContextWindow?.(model.replace(/\[1m\]$/, ""), value.contextWindow);
-          }
-          break;
-        }
+        if (message.type === "result") { resultSubtype = String(message.subtype); resultError = message.is_error === true; }
+        const step = stream.accept(message);
+        // Stop before the CLI can act on complete calls; the pending MCP calls never get an answer.
+        if (step.end?.kind === "tool_use") kill();
+        if (step.fastState) fastState = step.fastState;
+        // Usage persistence is supplementary; a disk error cannot replace an inference outcome.
+        if (step.limit) await this.onUsage?.(step.limit).catch(() => {});
+        for (const window of step.contextWindows || []) this.onContextWindow?.(window.model, window.contextWindow);
+        for (const event of step.events) yield event;
+        if (step.end) { end = step.end; break; }
       }
-      telemetry("claude_cli", { model: request.model, effort, fast: fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began, result: result ? String(result.subtype) : "none", isError: result?.is_error === true, exitCode, aborted: signal.aborted, spawnFailed: !!failure });
-      if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
-      if (failure || !result) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
-      if (result.is_error || result.subtype !== "success") {
-        const diagnosis = String(result.result || "");
-        if (/rate.?limit|usage.?limit/i.test(diagnosis)) throw new ProviderError("usage_limit", claudeLimitMessage(limit), 429);
-        if (/auth|log.?in|oauth/i.test(diagnosis)) throw new ProviderError("authentication", "Claude subscription requires login", 401);
-        // Keep the CLI's allowlisted end reason (for example max turns) so failures stay diagnosable.
-        throw claudeFailure(result, limit) || claudeFailure({ ...result, is_error: true }, limit)!;
-      }
-      if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Claude did not return the required tool call", 502, { code: "required_tool_missing", event: "claude.result" });
-      const text = typeof result.result === "string" ? result.result : raw;
-      if (!text.startsWith(raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
-      if (text.length > raw.length) yield { type: "text", text: text.slice(raw.length) };
-      yield { type: "done", usage: usage(result.usage as ClaudeUsage | undefined), ...served() };
+      if (signal.aborted) throw cancelled();
+      if (!end || (end.kind === "result" && failure)) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
+      tokens = end.tokens;
+      const calls = end.kind === "tool_use" ? end.calls : [];
+      validateForcedChoice(calls, run.choice);
+      for (const call of calls) yield { type: "tool", call };
+      yield { type: "done", usage: end.usage, ...served() };
     } finally {
-      signal.removeEventListener("abort", stop); lines.close(); stop();
+      signal.removeEventListener("abort", cancel); lines.close();
+      // After a result the CLI exits on its own; anything else is stopped now.
+      if (resultSubtype && !signal.aborted) { const timer = setTimeout(kill, 500); timer.unref(); child.once("exit", () => clearTimeout(timer)); } else kill();
+      telemetry("claude_cli", { mode: "oneshot", model: run.alias, effort: run.effort, fast: run.fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began,
+        result: end?.kind === "tool_use" ? "tool_use" : resultSubtype ?? "none", isError: resultError, exitCode, aborted: signal.aborted, interrupted, spawnFailed: !!failure, retry: run.retry,
+        toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output });
       await rm(directory, { recursive: true, force: true });
     }
   }
