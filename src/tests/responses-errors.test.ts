@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
 import { responsesHttpError, responsesStreamError } from "../providers/responses-errors.js";
+import { streamFailureCode } from "../provider-failure.js";
 
 const privateMessage = "upstream secret or caller prompt must not escape";
 async function failure(status: number, value: unknown): Promise<ProviderError> {
@@ -149,4 +150,23 @@ test("An unnamed HTTP 429 with a short Retry-After stays retryable; others are u
   assert.equal((await responsesHttpError(new Response("{}", { status: 429 }))).code, "usage_limit");
   assert.equal((await responsesHttpError(new Response("{}", { status: 429, headers: { "retry-after": "3600" } }))).code, "usage_limit");
   assert.equal((await responsesHttpError(new Response(JSON.stringify({ error: { code: "insufficient_quota" } }), { status: 429, headers: { "retry-after": "2" } }))).code, "usage_limit");
+});
+
+test("A named non-OpenAI throttle stays retryable; a named quota class stays final", async () => {
+  const http429 = (error: Record<string, unknown>, headers: Record<string, string> = {}) =>
+    responsesHttpError(new Response(JSON.stringify({ error: { message: privateMessage, ...error } }), { status: 429, headers }));
+  // OpenAI-compatible Chat Completions servers name their per-minute throttles in their own words.
+  for (const [error, headers] of [[{ code: "too_many_requests" }, { "retry-after": "2" }], [{ code: "limit_requests", type: "limit_requests" }, {}],
+    [{ type: "rate_limit_error" }, {}], [{ code: privateMessage }, { "retry-after": "1" }]] as const) {
+    const throttle = await http429(error, headers);
+    assert.equal(throttle.code, "rate_limit_exceeded", JSON.stringify(error)); assert.equal(streamFailureCode(throttle), "rate_limit_exceeded");
+    assert.equal(throttle.upstream?.code, "rate_limit_exceeded", "an unrecognized upstream name is never recorded");
+    assert.ok(!JSON.stringify(throttle).includes(privateMessage));
+  }
+  // The ChatGPT backend names its usage limit in error.type.
+  for (const error of [{ type: "usage_limit_reached" }, { code: "usage_not_included" }, { code: "organization_spend_limit_exceeded" }, { code: "insufficient_quota", type: "rate_limit_error" }]) {
+    const limit = await http429(error, { "retry-after": "2" });
+    assert.equal(limit.code, "usage_limit", JSON.stringify(error)); assert.equal(streamFailureCode(limit), "invalid_prompt");
+  }
+  assert.equal((await http429({ code: "unrecognized_limit" })).code, "usage_limit", "an unknown name without a short wait stays final");
 });

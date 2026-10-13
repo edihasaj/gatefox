@@ -123,10 +123,15 @@ allowlisted upstream error codes, event types, and request IDs. Missing-terminal
 EOF records include only event counts, an allowlisted last event, reasoning
 add/done event counts, text-delta counts, and distinct dispatched tool-call counts.
 HTTP 500/502/503/504 failures have the same single retry before output. An HTTP 429
-retries only when its body identifies a temporary rate limit, honoring
-`Retry-After` between one and 30 seconds. Longer waits and unidentified usage or
-quota limits return immediately. Cancellation and the request deadline bound all
-backoff waits; no quota or account switch is attempted.
+is a throttle when its `error.code` or `error.type` names a temporary rate limit
+(for example `rate_limit_exceeded`, `rate_limit_error` or `limit_requests`), or
+when it names no quota class and asks for a `Retry-After` of at most 60 seconds.
+The gateway retries a throttle once before output when its wait is at most 30
+seconds (one second when no wait is given); a longer wait returns at once and
+stays retryable for Codex. A 429 that names a quota, billing, spend or plan class
+(such as `insufficient_quota` or `usage_limit_reached`), and any other 429, is a
+final usage limit. Cancellation and the request deadline bound all backoff waits;
+no quota or account switch is attempted.
 
 `timeoutMs` (ten minutes by default) bounds silence, not total length. It covers
 the upload and queue wait, then restarts at admission and on every provider
@@ -146,9 +151,10 @@ the chat transcript, so a client that reconnects later sees only the ended turn.
 Claude failures without a native error code record the CLI's allowlisted result
 subtype, such as `error_max_turns`.
 A usage limit is final: Codex receives it as `invalid_prompt` and stops instead of
-retrying five times (verified: one upstream request instead of six). An unnamed
-HTTP 429 that asks for a wait of at most 60 seconds stays a retryable throttle, so
-per-minute API limits still clear by themselves. A Claude rate limit without a
+retrying five times (verified: one upstream request instead of six). An HTTP 429
+throttle, as defined above, stays retryable on every HTTP route, including the
+Anthropic API and Chat Completions servers, so per-minute API limits still clear
+by themselves. A Claude rate limit without a
 rejected `rate_limit_event`, and a Copilot error that names a rate limit without
 usage-limit or quota wording, are retryable throttles too.
 Upstream rejections that would repeat identically (`invalid_prompt`,
