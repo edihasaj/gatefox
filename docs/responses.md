@@ -8,9 +8,14 @@ read_when:
 
 The gateway translates the caller's instructions and tool catalog. It does not
 assign agent roles, choose workers, add task instructions, or provide agent-only
-tools. The Codex catalog contains the empty instruction-template string required
-by its SDK schema. Explicit and resumed client instructions remain authoritative;
-the gateway supplies no model-specific base prompt for a fresh caller without one.
+tools. Its catalog rows carry an empty instruction template, and the desktop
+adapter blanks any template an inference host or old cache supplies. On the
+desktop, Codex 2 rows take the base prompt and model messages from the client's
+own native catalog row for the same upstream model, so Codex sends what it sends
+that native model ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
+Claude, Copilot and other rows, and clients without a native catalog, get no
+model-specific base prompt. Explicit and resumed client instructions remain
+authoritative.
 
 The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
