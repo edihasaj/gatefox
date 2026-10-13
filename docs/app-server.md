@@ -333,7 +333,12 @@ names its upstream model in `upstream_slug`. The adapter looks that slug up in t
 local native catalog it loaded at startup and copies these fields:
 
 - `model_messages`: the base prompt (`instructions_template`) and Codex's other
-  model messages;
+  model messages, together with `include_skills_usage_instructions`,
+  `include_plugin_usage_instructions` and `include_apps_usage_instructions`. Native
+  GPT-6.1-Sol turns all three off because its template already holds that
+  guidance. With the gateway's own `true` values Codex repeated it: with skills
+  alone, 2,554 characters (about 550 input tokens) on every request. Without a
+  native template the gateway values stay;
 - `tool_mode`, `apply_patch_tool_type` and `shell_type`;
 - the `default_reasoning_level`, `default_verbosity` and `default_reasoning_summary`
   defaults, and `support_verbosity`. A default effort the route does not offer is
@@ -348,10 +353,14 @@ window maximum, the auto-compaction limit, input modalities and reasoning levels
 `comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
 web search disabled, because `tool_search` does not pass through the gateway. A
 slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it. The adapter removes `upstream_slug` before it writes the
-combined catalog; Codex 0.160.0 and the gateway SDK both ignore the key in the
-plain catalog that CLI and remote clients read. Those clients have no native
-catalog, so they keep the gateway rows unchanged.
+gateway published it. The rows the adapter builds drop `upstream_slug`. At each
+launch the native-catalog preflight first writes `desktop-models.json` with the
+plain gateway rows, marker included; the adapter replaces that file with the
+copied rows on its first successful cache restore or host refresh, and every
+gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
+ignore the marker, as they do in the plain catalog that CLI and remote clients
+read. Those clients have no native catalog, so they keep the gateway rows
+unchanged.
 
 The inference host still never supplies instructions. The offline cache stores
 only the host's public rows; the adapter rebuilds the copy from the native catalog
