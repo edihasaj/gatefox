@@ -52,6 +52,17 @@ belongs in the release archive.
    completed terminals, once-only tool execution, safe pre-output EOF retries,
    and partial-output failure. It uses localhost mocks and isolated state, with
    no native authentication or paid inference.
+   For reasoning levels, run `scripts/e2e-reasoning-levels.mjs` with the same
+   `--gateway`, `--config`, `--codex` and `--catalog` options plus a fresh
+   `--fixture` and `--output`. Pass the native model cache
+   (`~/.codex/models_cache.json`) as `--catalog`, never the gateway catalog, or
+   gateway aliases are routed as native models. It checks Max and Ultra on Claude
+   Opus and Codex Sol: the effort Codex sends, Ultra's `collaboration` tools, and,
+   for Claude, the CLI's actual `--effort` and `--thinking-display` flags.
+   For goal durability, run `scripts/e2e-goal-outage.mjs` with the same options.
+   It starts an active goal on a gateway model, SIGKILLs the adapter and every
+   SDK child mid-turn like a power cut, then resumes and requires the goal to
+   survive and finish. Both use real inference in an isolated native home.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

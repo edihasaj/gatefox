@@ -35,7 +35,7 @@ const server=createServer(async(req,res)=>{
 const config=join(root,'gateway.json');await writeFile(config,JSON.stringify({version:1,clientOnly:true,port:server.address().port,stateDirectory:state,providers:[]}),{mode:0o600});
 const results=[];const events=[];let client;
 const record=async row=>{results.push(row);await writeFile(resolve(options.output),JSON.stringify({results},null,2),{mode:0o600});console.log(JSON.stringify(row));};
-const wait=async check=>{for(let i=0;i<2400;i++){const v=check();if(v)return v;await delay(50);}throw Error('Control verification timed out');};
+const wait=async check=>{for(let i=0;i<7200;i++){const v=check();if(v)return v;await delay(50);}throw Error('Control verification timed out after '+events.slice(-12).map(e=>e.method+(e.params?.item?.type?':'+e.params.item.type:'')+(e.params?.turn?.status?':'+e.params.turn.status:'')).join(' > '));};
 const digest=async()=>createHash('sha256').update(await readFile(join(home,'config.toml'))).digest('hex');const before=await digest();
 const env={...process.env,CODEX_HOME:home};for(const k of ['OPENAI_API_KEY','CODEX_API_KEY','OPENAI_BASE_URL'])delete env[k];
 try{

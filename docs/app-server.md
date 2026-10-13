@@ -123,7 +123,10 @@ overwrite an unrelated preference change with an older snapshot.
 The installed desktop build recognizes `CODEX_CLI_PATH` and
 `CODEX_APP_SERVER_FORCE_CLI`. These are implementation hooks, not an established
 public desktop integration API. `scripts/codex-desktop-shim` is an executable
-wrapper for the first hook. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
+wrapper for the first hook. The generated desktop wrapper sends only `app-server`
+commands through the adapter; other commands, such as the desktop's exec-server,
+run the original CLI directly with no extra process. The unified service
+re-registers the wrapper when it starts. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
 `GATEWAY_CODEX_PATH` when its defaults do not match the machine.
 
 Desktop startup reads organization requirements and native configuration through
@@ -264,8 +267,17 @@ so gateway Codex models behave like native ones. Claude rows that support `max`
 offer Ultra with `v2` delegation at `xhigh`. Codex sends `max` on the wire for
 Ultra, and the Claude CLI's top level is `max`.
 
-Claude rows report the context window the CLI itself reports for each model
-(`modelUsage.contextWindow`), measured on a subscription on 13 Oct 2026. The 5.x
+Model metadata follows each provider's own catalog. The inference server refreshes
+it a minute after start and every six hours: Codex, Copilot and OpenAI-compatible
+providers from their `/v1/models`, and Claude from the CLI's model list. Only the
+metadata of configured models changes; adding or removing routes stays an explicit
+`gateway discover PROVIDER --load`. A discovery failure keeps the saved metadata.
+Claude also reports the context window the CLI actually used in every response
+(`modelUsage.contextWindow`); the server saves it in `observed-context-windows.json`
+and the next refresh adopts it, so a window never needs a manual table. Clients
+receive the new catalog the next time the app starts its app-server.
+
+The initial Claude windows were measured on a subscription on 13 Oct 2026. The 5.x
 models, Opus 4.8 and Opus 4.7 run with 1M under their plain IDs. Opus 4.6 runs
 as the CLI's `claude-opus-4-6[1m]` variant, which the subscription includes; its
 gateway alias keeps the plain ID so saved chats keep working. Sonnet 4.6's 1M
@@ -273,6 +285,12 @@ variant needs paid usage credits and Haiku 4.5 has none, so both report 200K.
 Other personal Claude settings are not applied: a fallback model would silently
 change the caller's model, and hooks, MCP servers and permissions must not run
 inside an inference backend.
+
+Native GPT-6.1-Sol rows also set `use_responses_lite`, which makes Codex send
+`reasoning.context: all_turns` and move tool definitions into an
+`additional_tools` input item. The gateway does not pass this flag yet: its
+subscription tool namespacing does not handle that item. Gateway Sol still replays
+its encrypted reasoning between turns; it does not use the lite request format.
 
 Resuming a gateway chat on the same model sends no reasoning override, so the
 chat keeps the level saved with it. A Max chat stays at Max after a restart. A
