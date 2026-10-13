@@ -13,6 +13,9 @@ import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { codexShim } from "./codex-shim.js";
 import { refreshModelMetadata } from "./model-refresh.js";
+import { configureTelemetry, readTelemetry, telemetry } from "./telemetry.js";
+import { summarizeTelemetry } from "./diagnostics.js";
+import { startErrorReports } from "./error-report.js";
 import { LiveConfig } from "./live-config.js";
 import { macService } from "./mac-service.js";
 import { openCopilot, copilotEnvironment } from "./providers/copilot-client.js";
@@ -29,6 +32,7 @@ import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./ma
 import { runServiceSupervisor } from "./service-supervisor.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
+import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 
 const help = `gateway — local subscription and API inference
@@ -45,12 +49,13 @@ const help = `gateway — local subscription and API inference
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service consolidate [--apply | --next-login] [--config PATH]
-  gateway service shared-executors [--apply] [--config PATH]
-  gateway service shared-native [--apply] [--config PATH]
+  gateway service shared-executors [--apply] [--disable] [--config PATH]
+  gateway service shared-native [--apply] [--disable] [--config PATH]
   gateway executor-host --config PATH --codex PATH --native-home PATH
   gateway providers [--config PATH] [--json]
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
+  gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
@@ -73,7 +78,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
-    config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
+    config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, since: { type: "string" }, disable: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" },
@@ -82,8 +87,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } });
   const [command, id, ...extra] = positionals;
   if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service", "diagnostics"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
+  if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
@@ -132,6 +138,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
   if (command === "service") {
     const result = id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
+      : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
       : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path);
     process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
@@ -165,6 +172,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       process.stderr.write("Model routes saved. The daemon reloads them on the next request.\n");
     }
     process.stdout.write(JSON.stringify({ provider: provider.id, models }, null, 2) + "\n"); return;
+  }
+  if (command === "diagnostics") {
+    const hours = Number(values.since || "24");
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 24 * 14) throw new Error("--since takes hours from 1 to 336");
+    const since = new Date(Date.now() - hours * 3600000);
+    process.stdout.write(JSON.stringify(summarizeTelemetry(await readTelemetry(config.stateDirectory, since.getTime()), since), null, 2) + "\n"); return;
   }
   if (command === "token") { process.stdout.write(await gatewayToken(config.stateDirectory) + "\n"); return; }
   if (command === "providers") {
@@ -223,9 +236,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(`${provider.id}: signed in\n`); return;
   }
   if (values.port) { const port = Number(values.port); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("--port must be 1 through 65535"); config.port = port; }
+  configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
   const live = new LiveConfig(path, config, values.port ? config.port : undefined);
   const server = await startGateway(config, undefined, () => live.current());
   process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
+  // Other Macs depend on this server. On AC power, keep the system awake while it
+  // runs, lid closed included; on battery macOS sleeps as usual. GATEWAY_KEEP_AWAKE=off opts out.
+  if (process.platform === "darwin" && process.env.GATEWAY_KEEP_AWAKE !== "off") {
+    const awake = spawn("/usr/bin/caffeinate", ["-s", "-w", String(process.pid)], { stdio: "ignore" });
+    awake.on("error", () => {}); awake.unref(); telemetry("keep_awake", { started: true });
+  }
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
   const refresh = () => { void refreshModelMetadata(path).then(updated => { if (updated.length) process.stderr.write(JSON.stringify({ event: "model_metadata_refreshed", providers: updated }) + "\n"); }).catch(() => {}); };
   setTimeout(refresh, 60_000).unref(); setInterval(refresh, 6 * 60 * 60_000).unref();

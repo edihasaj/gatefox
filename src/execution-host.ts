@@ -10,6 +10,7 @@ import { claimHost, executionCapabilities, executionHostHome, executionHostMarke
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
+import { telemetry } from "./telemetry.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
@@ -59,11 +60,13 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const descriptor = nativeDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
     if (native && !native.closed) {
       const relation = compareNativeLaunch(native.descriptor, descriptor);
-      if (relation === "same" || relation === "subset") return { ...native.record };
-      if (relation === "conflict") throw new Error("Native execution startup settings differ; existing ownership was preserved");
+      if (relation === "same" || relation === "subset") { telemetry("native_acquire", { relation, outcome: "attached" }); return { ...native.record }; }
+      if (relation === "conflict") { telemetry("native_acquire", { relation, outcome: "refused" }); throw new Error("Native execution startup settings differ; existing ownership was preserved"); }
       // The desktop is the native launcher. A writer started for a client with
       // fewer settings yields to it, but never while a loaded chat is working.
-      if (await native.busyThreads()) throw new Error("Native execution startup settings differ while a chat is running; retry after it finishes");
+      const busy = await native.busyThreads();
+      telemetry("native_acquire", { relation, outcome: busy ? "refused_busy" : "replaced", busyChats: busy });
+      if (busy) throw new Error("Native execution startup settings differ while a chat is running; retry after it finishes");
       if (native.closed || compareNativeLaunch(native.descriptor, descriptor) !== "superset") throw new Error("Native execution launch changed during replacement; retry");
       await native.stop(); await publish();
     }
@@ -81,6 +84,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (launch === descriptor && (!richestNative || compareNativeLaunch(richestNative, descriptor) === "superset")) richestNative = descriptor;
     // Persist launch intent before spawn: a killed host cannot claim an unknown
     // child was never started merely because its PID publication was interrupted.
+    telemetry("native_acquire", { outcome: "launched", richerLaunchReused: launch !== descriptor });
     try { await publish(); await native.start(publish); await publish(); return { ...native.record }; }
     catch (error) { await native.stop(); await publish(); throw error; }
   };

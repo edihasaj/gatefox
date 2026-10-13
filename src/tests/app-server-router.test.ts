@@ -307,14 +307,19 @@ test("declared gateway defaults apply only to new gateway chats and never overri
   await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
 });
 
-test("a Fast chat cannot silently switch to a model without that tier", async () => {
+test("a Fast chat drops to Standard only when the picker selects a model without that tier", async () => {
   const { router, calls } = await fastFixture();
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   const before = calls.length;
-  for (const method of ["turn/start", "thread/settings/update", "turn/settings/update", "thread/resume", "thread/fork"]) {
+  // Turn starts, active-turn updates, resumes and forks can come from a stale peer.
+  for (const method of ["turn/start", "turn/settings/update", "thread/resume", "thread/fork"]) {
     await assert.rejects(router.request(method, { threadId: "test", turnId: "active", model: "claude/model" }), error => (error as { code: number }).code === -32002);
   }
   assert.equal(calls.length, before);
+  await router.request("thread/settings/update", { threadId: "test", model: "claude/model" });
+  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
+  await router.request("thread/settings/update", { threadId: "test", model: "codex/model", serviceTier: "priority" });
+  await assert.rejects(router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: "priority" }), /does not support/, "an explicit unsupported tier still fails");
   await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: null });
   assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
   await appliedSettings(router, "test", "claude/model", null);

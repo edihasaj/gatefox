@@ -10,6 +10,7 @@ import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
 import { homedir } from "node:os";
+import { telemetry } from "./telemetry.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -97,6 +98,11 @@ export class AppServerRouter {
     }
     return route;
   }
+  /** Provider family and model for diagnostics; no settings or content. */
+  describeThread(threadId: string): { provider?: string; model?: string } {
+    const route = this.routes.get(threadId);
+    return route ? { provider: route.provider === gatewayProvider ? "gateway" : "native", ...(typeof route.model === "string" ? { model: route.model } : {}) } : {};
+  }
   /** Only applied thread settings are durable; active-turn settings remain connection-local. */
   async observeNotification(message: ObjectValue): Promise<void> {
     const params = object(message.params);
@@ -115,6 +121,9 @@ export class AppServerRouter {
       this.tierRecords.set(params.threadId, current);
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
+  }
+  private offersServiceTier(model: string, tier: string): boolean {
+    try { this.assertServiceTier(model, tier); return true; } catch { return false; }
   }
   private assertServiceTier(model: string, tier: unknown): void {
     if (tier === null || tier === "default") return;
@@ -240,7 +249,16 @@ export class AppServerRouter {
         const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
         if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
         if (tier) this.assertServiceTier(selectedModel, tier.value);
-        else if (turnTier === undefined && typeof route.serviceTier === "string") this.assertServiceTier(selectedModel, route.serviceTier);
+        else if (turnTier === undefined && typeof route.serviceTier === "string") {
+          // Picking a model without the chat's tier (a Fast Codex chat to Claude)
+          // switches it to Standard; the picker shows no speed control for that model.
+          // Choosing an unsupported tier explicitly still fails.
+          // Only the picker's explicit settings change qualifies; a turn start from a
+          // stale peer still cannot drop another client's Fast setting.
+          if (method === "thread/settings/update" && selectedModel !== route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
+            forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
+          } else this.assertServiceTier(selectedModel, route.serviceTier);
+        }
         if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
         if (turnTier === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
       }

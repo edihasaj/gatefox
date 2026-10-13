@@ -5,6 +5,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config.js";
+import { configureTelemetry } from "./telemetry.js";
+import { startErrorReports } from "./error-report.js";
 import { prepareNativeCatalog } from "./native-catalog.js";
 import { emitMessage } from "./app-server-connection.js";
 import { gatewayCommand } from "./command.js";
@@ -58,6 +60,7 @@ export async function codexShim(argv: string[]): Promise<void> {
     else preflightArgs[nativeListenIndex + 1] = "stdio://";
   }
   const path = resolve(values.config); const config = await loadConfig(path);
+  configureTelemetry(config.stateDirectory, "adapter"); startErrorReports(config.stateDirectory, "adapter");
   if (await nativeRegistration(config)) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();

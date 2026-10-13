@@ -134,6 +134,17 @@ If the host cannot start, for example after an app update changes the bundled
 SDK, the service still starts inference, tunnels and the relay. It reports the
 host as `failed` and retries with backoff from 10 seconds up to 5 minutes.
 Adapters that need the host fail closed until a retry succeeds.
+
+`gateway service shared-executors --disable --apply` and `gateway service
+shared-native --disable --apply` turn a sharing mode off again. Without `--apply`
+they preview the remaining plan. With it, they require the maintenance window,
+stop the service only after its idle guard releases every lease and loaded chat,
+archive the stopped host receipt in `service-backups`, restore the plan without
+that mode, and start the service.
+
+On the inference host, the server holds `caffeinate -s` tied to its own process:
+on AC power the Mac stays awake while the server runs, lid closed included; on
+battery macOS sleeps as usual. Set `GATEWAY_KEEP_AWAKE=off` to opt out.
 Installing a release leaves `sharedExecutors` absent in an existing plan; it does
 not enable this migration or restart an open app.
 

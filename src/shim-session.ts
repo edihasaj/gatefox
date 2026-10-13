@@ -1,10 +1,13 @@
 import type { Readable } from "node:stream";
 import type { GatewayConfig } from "./config.js";
-import { AppServerRouter } from "./app-server-router.js";
+import { AppServerRouter, AppServerRoutingError } from "./app-server-router.js";
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
 import { NativeControl, nativeRegistration } from "./native-control.js";
+import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
+import { telemetry } from "./telemetry.js";
+import { reportException } from "./error-report.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
@@ -19,12 +22,15 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
   let router: AppServerRouter | undefined;
   let backends: AppServerBackends;
+  const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
+  const startedAt = Date.now(); let handled = 0;
   try {
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async message => {
       await router?.observeNotification(message);
+      if (!isId(message.id)) turns.observe(message);
       if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
     }, () => input.destroy(), configPath);
-  } catch (error) { control?.close(); throw error; }
+  } catch (error) { control?.close(); turns.close(); reportException(error, "adapter_start"); telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
   router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {
@@ -52,9 +58,15 @@ export async function shimSession(executable: string, args: string[], config: Ga
       try { message = object(JSON.parse(line)); }
       catch { await emit({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
       if (typeof message.method === "string" && isId(message.id)) {
+        handled++;
+        if (message.method === "initialize") { const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
         if (tasks.size >= 256) { await emit({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
         const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(result => emit({ id: message.id, result }), error => {
           const failure = error as Error & { code?: number; data?: unknown };
+          // Routing errors carry fixed gateway text; other failures are classified only.
+          const routing = error instanceof AppServerRoutingError;
+          if (failure.code === undefined && !routing) reportException(failure, `rpc:${message.method}`);
+          telemetry("rpc_error", { method: message.method, code: failure.code || -32603, ...(routing ? { reason: failure.message } : { errorClass: errorClass(failure.message) }) });
           return emit({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
         });
         tasks.add(task); void task.finally(() => tasks.delete(task)).catch(stop);
@@ -63,7 +75,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
     }
   } catch (error) { if (!closing && !backends.native.closed) throw error; }
   finally {
-    closing = true; signal.removeEventListener("abort", stop);
+    closing = true; signal.removeEventListener("abort", stop); turns.close();
+    telemetry("adapter_session_end", { durationMs: Date.now() - startedAt, requests: handled, nativeClosed: backends.native.closed });
     control?.close();
     await backends.stop(); await Promise.allSettled(tasks);
   }

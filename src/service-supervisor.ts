@@ -8,6 +8,9 @@ import { withPrivateFileLock } from "./private-file-lock.js";
 import { serviceExecutionPaths, serviceNativeExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
 import { executionHostHome, startExecutionHost } from "./execution-host.js";
 import { serviceTunnelArguments } from "./service-tunnel.js";
+import { configureTelemetry, telemetry } from "./telemetry.js";
+import { errorClass } from "./turn-telemetry.js";
+import { reportException, startErrorReports } from "./error-report.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; failures: number; startedAt: number }
@@ -59,8 +62,10 @@ export class ServiceSupervisor {
       capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
       nativeRelayOwnsRegistration: this.plan.sharedNativeExecutor === true });
     this.executionStarting = starting;
-    try { await starting; this.hostFailures = 0; this.executionState.state = "running"; await this.publish(); }
-    catch {
+    try { await starting; if (this.hostFailures) telemetry("execution_host_recovered", { failures: this.hostFailures }); this.hostFailures = 0; this.executionState.state = "running"; await this.publish(); }
+    catch (error) {
+      telemetry("execution_host_failed", { failures: this.hostFailures + 1, errorClass: errorClass((error as Error)?.message) });
+      reportException(error, "execution_host_start");
       if (this.executionStarting === starting) this.executionStarting = undefined;
       this.hostFailures++; this.executionState.state = "failed"; await this.publish().catch(() => {});
       if (this.stopping) return;
@@ -84,6 +89,7 @@ export class ServiceSupervisor {
       let handled = false;
       const ended = (code: number | null) => {
         if (handled) return; handled = true; slot.child = undefined; delete slot.state.pid;
+        if (!this.stopping && !(component.kind === "desktop" && code === 0)) telemetry("component_exit", { component: component.id, kind: component.kind, code, uptimeMs: Date.now() - slot.startedAt, restarts: slot.state.restarts });
         if (this.stopping) slot.state.state = "stopped";
         else if (component.kind === "desktop" && code === 0) slot.state.state = "complete";
         else if (!this.restarting || component.kind !== "inference") {
@@ -137,6 +143,7 @@ export class ServiceSupervisor {
 
 export async function runServiceSupervisor(plan: ServicePlan, state: string): Promise<void> {
   await mkdir(state, { recursive: true, mode: 0o700 });
+  configureTelemetry(state, "service"); startErrorReports(state, "service");
   await withPrivateFileLock(serviceStatusPath(state), async () => {
     const supervisor = new ServiceSupervisor(plan, state);
     const stop = () => { void supervisor.stop(); };

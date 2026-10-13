@@ -9,13 +9,15 @@ import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
-import type { ResponsesRequest } from "./protocol/types.js";
+import type { ResponsesRequest, Usage } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode } from "./provider-failure.js";
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
+import { telemetry } from "./telemetry.js";
+import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -88,6 +90,10 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     let heartbeat: NodeJS.Timeout | undefined; let abortCause: "timeout" | "cancelled" | undefined;
     let providerId: string | undefined; let model: string | undefined;
     const startedAt = Date.now();
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined;
+    const outcome = () => ({ requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
+      firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
+      cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!inferenceContext(req.headers).sessionId });
     // timeoutMs bounds silence, not total length: it covers the upload and queue
     // wait, then restarts at admission and on every provider event. Long Max or
     // Ultra streams continue while a stalled provider still fails. The whole
@@ -120,16 +126,18 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
         if (!controller.signal.aborted && !res.destroyed && !res.writableNeedDrain && Date.now() - lastEventAt >= heartbeatMs) writer?.progress();
       }, heartbeatMs).unref();
       releaseAdmission = await admission.acquire(controller.signal);
-      controller.signal.throwIfAborted(); touch();
+      controller.signal.throwIfAborted(); touch(); admittedAt = Date.now();
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, inferenceContext(req.headers))) {
         if (controller.signal.aborted || res.destroyed) break;
-        touch();
+        touch(); events++; if (!firstEventAt) firstEventAt = Date.now();
+        if (event.type === "tool") tools++; else if (event.type === "done") usage = event.usage;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
         if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
         if (controller.signal.aborted || res.destroyed) break;
       }
       if (!writer.completed) throw new ProviderError(controller.signal.aborted ? "cancelled" : "incomplete", controller.signal.aborted ? "Request cancelled or timed out" : "Provider did not complete", 504);
+      telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());
       if (!res.destroyed) {
         if (controller.signal.aborted && res.writableNeedDrain) res.destroy();
         else if (!streaming) send(res, 200, writer.result());
@@ -138,6 +146,9 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
     } catch (error) {
       clearInterval(heartbeat);
       const known = classifyProviderFailure(error, abortCause);
+      // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
+      if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype });
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
       try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause }))); } catch { /* Diagnostics never replace the request outcome. */ }
       if (!res.destroyed) {

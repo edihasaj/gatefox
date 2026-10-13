@@ -1,6 +1,6 @@
 import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken } from "../auth/chatgpt.js";
-import { normalizeResponsesTools } from "../protocol/request.js";
+import { declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
@@ -9,6 +9,7 @@ import { publicServiceTier } from "../protocol/types.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { ResponsesOutput } from "./responses-output.js";
 import { createHash } from "node:crypto";
+import { telemetry } from "../telemetry.js";
 
 export class ResponsesAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
@@ -39,6 +40,7 @@ export class ResponsesAPI implements Provider {
         const backoff = error.upstream?.retryAfterMs ?? 1000;
         if (!temporary || backoff > 30000) throw error;
         console.error(JSON.stringify({ event: "provider_retry", attempt: 2, upstreamCode: error.upstream?.code }));
+        telemetry("provider_retry", { provider: this.config.id, attempt: 2, code: error.code, upstreamCode: error.upstream?.code, backoffMs: backoff });
         await delay(backoff, undefined, { signal });
       }
     }
@@ -68,10 +70,13 @@ export class ResponsesAPI implements Provider {
       while (namespaces.has(defaultNamespace)) defaultNamespace += "_";
       const flat = request.tools?.filter(tool => tool.type !== "namespace") || [];
       body.tools = [...(request.tools?.filter(tool => tool.type === "namespace") || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
-      if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace ? { ...item, namespace: defaultNamespace } : item);
+      // Only calls of top-level tools move into the gateway namespace; tools declared
+      // in Responses lite `additional_tools` items keep their own namespace.
+      const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
+      if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace && flatNames.has(String(item.name)) ? { ...item, namespace: defaultNamespace } : item);
       if (typeof body.tool_choice === "object" && "name" in body.tool_choice && !body.tool_choice.namespace) body.tool_choice = { ...body.tool_choice, namespace: defaultNamespace };
     }
-    const definitions = normalizeResponsesTools(request.tools);
+    const definitions = normalizeResponsesTools(declaredResponsesTools(request));
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only

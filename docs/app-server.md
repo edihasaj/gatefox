@@ -286,11 +286,18 @@ Other personal Claude settings are not applied: a fallback model would silently
 change the caller's model, and hooks, MCP servers and permissions must not run
 inside an inference backend.
 
-Native GPT-6.1-Sol rows also set `use_responses_lite`, which makes Codex send
-`reasoning.context: all_turns` and move tool definitions into an
-`additional_tools` input item. The gateway does not pass this flag yet: its
-subscription tool namespacing does not handle that item. Gateway Sol still replays
-its encrypted reasoning between turns; it does not use the lite request format.
+Native GPT-6.1-Sol rows also set `use_responses_lite` and
+`supports_reasoning_effort_updates`. Discovery carries both, so Codex sends gateway
+Sol the same lite request as native Sol: `reasoning.context: all_turns`, with tool
+definitions in an `additional_tools` input item. The gateway reads tools from that
+item for tool-call mapping, passes the item to the ChatGPT endpoint unchanged, and
+applies its own default namespace only to calls of top-level tools. Other
+providers skip the item when building their transcript.
+
+Picking a model in the desktop that lacks the chat's speed tier (a Fast Codex chat
+switched to Claude) moves the chat to Standard. Only that explicit settings change
+does this; turn starts, resumes, forks and active-turn updates still refuse a
+missing tier, so a stale peer cannot silently drop another client's Fast setting.
 
 Resuming a gateway chat on the same model sends no reasoning override, so the
 chat keeps the level saved with it. A Max chat stays at Max after a restart. A

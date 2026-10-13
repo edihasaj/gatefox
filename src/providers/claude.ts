@@ -16,6 +16,7 @@ import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claud
 import { claudeFailure } from "./claude-errors.js";
 import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
+import { telemetry } from "../telemetry.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
 function usage(tokens?: ClaudeUsage): Usage {
@@ -70,7 +71,7 @@ export class ClaudeSubscription implements Provider {
       // unless the caller turned them off, so long Max turns show progress.
       ...(effort && summary !== "none" ? ["--thinking-display", "summarized"] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
-    let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null;
+    let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null; const began = Date.now();
     let limit: ClaudeLimit | undefined;
     const stop = () => {
       if (child.exitCode === null) {
@@ -133,6 +134,7 @@ export class ClaudeSubscription implements Provider {
           break;
         }
       }
+      telemetry("claude_cli", { model: request.model, effort, durationMs: Date.now() - began, result: result ? String(result.subtype) : "none", isError: result?.is_error === true, exitCode, aborted: signal.aborted, spawnFailed: !!failure });
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
       if (failure || !result) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
       if (result.is_error || result.subtype !== "success") {
