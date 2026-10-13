@@ -64,6 +64,8 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
         if (summary) replay.push({ content: summary, role: "assistant" });
         break;
       }
+      // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
+      case "additional_tools": break;
       case undefined: case "message": {
         if (!["user", "assistant", "system", "developer"].includes(String(item.role))) reject("Unsupported message role");
         replay.push({ ...content(item.content, item.role === "user"), role: item.role as OpenAIChatMessage["role"] });
@@ -124,8 +126,19 @@ export function normalizeResponsesToolChoice(choice: ResponsesRequest["tool_choi
   return { type: "function", function: { name: named(selection) } };
 }
 
+/** Tools a request declares, at the top level and in Responses lite `additional_tools` input items. */
+export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool[] {
+  const lifted = Array.isArray(request.input) ? request.input.flatMap(source => {
+    const item = record(source);
+    if (item.type !== "additional_tools") return [];
+    if (!Array.isArray(item.tools)) reject("additional_tools must contain a tool list");
+    return item.tools as ResponsesTool[];
+  }) : [];
+  return [...(request.tools || []), ...lifted];
+}
+
 export function responsesToChatRequest(request: ResponsesRequest): OpenAIChatRequest {
-  const tools = normalizeResponsesTools(request.tools);
+  const tools = normalizeResponsesTools(declaredResponsesTools(request));
   const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
   if (tool_choice === "required" && !tools.length) reject("Required tool is not in the catalog");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog");

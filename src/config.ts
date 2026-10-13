@@ -26,6 +26,9 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
   /** Codex delegation protocol and delegated-agent effort, as the model catalog reports them. */
   multiAgentVersion?: string;
   multiAgentReasoningEffort?: string;
+  /** Responses lite: tools travel in input items and reasoning spans all turns. */
+  useResponsesLite?: boolean;
+  supportsReasoningEffortUpdates?: boolean;
 }
 export interface GatewayConfig {
   version: 1;
@@ -65,6 +68,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
       if (metadata.multiAgentVersion !== undefined && (typeof metadata.multiAgentVersion !== "string" || !/^v[0-9]{1,3}$/.test(metadata.multiAgentVersion))) throw new Error("multiAgentVersion must look like v2");
+      if ((metadata.useResponsesLite !== undefined && typeof metadata.useResponsesLite !== "boolean") || (metadata.supportsReasoningEffortUpdates !== undefined && typeof metadata.supportsReasoningEffortUpdates !== "boolean")) throw new Error("Responses lite metadata must be boolean");
       if (metadata.multiAgentReasoningEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(metadata.multiAgentReasoningEffort)) throw new Error("Unsupported multi-agent reasoning effort in model metadata");
       if (metadata.inputModalities !== undefined && (!Array.isArray(metadata.inputModalities) || !metadata.inputModalities.includes("text") || metadata.inputModalities.some(modality => !["text", "image"].includes(modality)) || new Set(metadata.inputModalities).size !== metadata.inputModalities.length)) throw new Error("Input modalities must contain text and optionally image");
       readServiceTierMetadata(metadata);

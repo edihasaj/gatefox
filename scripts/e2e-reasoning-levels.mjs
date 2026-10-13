@@ -24,7 +24,7 @@ const server=createServer(async(req,res)=>{
  const control=new AbortController();res.on('close',()=>control.abort());
  try{
   const chunks=[];for await(const c of req)chunks.push(c);const body=Buffer.concat(chunks);
-  if(req.url==='/v1/responses'){const json=JSON.parse(body.toString());seen.push({model:json.model,effort:json.reasoning?.effort,summary:json.reasoning?.summary,namespaces:(json.tools||[]).filter(t=>t.type==='namespace'||t.tools).map(t=>t.name)});}
+  if(req.url==='/v1/responses'){const json=JSON.parse(body.toString());const declared=[...(json.tools||[]),...(json.input||[]).filter(i=>i.type==='additional_tools').flatMap(i=>i.tools||[])];seen.push({model:json.model,effort:json.reasoning?.effort,summary:json.reasoning?.summary,context:json.reasoning?.context,lite:(json.input||[]).some(i=>i.type==='additional_tools'),namespaces:declared.filter(t=>t.type==='namespace'||t.tools).map(t=>t.name)});}
   const r=await fetch(`http://127.0.0.1:${upstream.port}`+req.url,{method:req.method,headers:{authorization:req.headers.authorization,'content-type':'application/json',...(req.headers['session-id']?{'session-id':req.headers['session-id']}:{}),...(req.headers['thread-id']?{'thread-id':req.headers['thread-id']}:{})},...(body.length?{body}:{}),signal:control.signal});
   res.writeHead(r.status,{'content-type':r.headers.get('content-type')||'application/json'});
   if(r.body)await pipeline(Readable.fromWeb(r.body),res);else res.end();
@@ -52,7 +52,7 @@ for(const spec of options.cases.split(',')){
   const wire=seen.slice(from);const expected=model.startsWith('claude/')?'max':effort;
   const delegation=wire.some(w=>w.namespaces.includes('collaboration'));
   const passed=completed?.params?.turn?.status==='completed'&&wire.length>0&&(!model.startsWith('claude/')||flags.some(f=>f.effort===expected&&f.display==='summarized'));
-  await record({model,effort,passed,turnStatus:completed?.params?.turn?.status,wireEffort:wire[0]?.effort,wireSummary:wire[0]?.summary,collaborationTools:delegation,cliFlags:flags[0]||null,reasoningSummaryChars:summaryChars});
+  await record({model,effort,passed,turnStatus:completed?.params?.turn?.status,wireEffort:wire[0]?.effort,wireSummary:wire[0]?.summary,wireContext:wire[0]?.context,liteRequest:wire[0]?.lite,collaborationTools:delegation,cliFlags:flags[0]||null,reasoningSummaryChars:summaryChars});
  }catch(e){await record({model,effort,passed:false,error:e.message});}
 }
 client.stop();server.closeAllConnections();server.close();
