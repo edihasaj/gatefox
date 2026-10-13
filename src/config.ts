@@ -30,6 +30,8 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
   displayName?: string;
   contextWindow?: number;
   reasoningEfforts?: string[];
+  /** The provider's own default effort; the catalog row uses it when the model supports it. */
+  defaultReasoningEffort?: string;
   priority?: number;
   /** Codex delegation protocol and delegated-agent effort, as the model catalog reports them. */
   multiAgentVersion?: string;
@@ -84,6 +86,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (!Object.hasOwn(provider.models, alias) || !metadata || typeof metadata !== "object") throw new Error("Model metadata must refer to a configured alias");
       if (metadata.contextWindow !== undefined && (!Number.isInteger(metadata.contextWindow) || metadata.contextWindow < 1024)) throw new Error("contextWindow must be at least 1024 tokens");
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
+      if (metadata.defaultReasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(metadata.defaultReasoningEffort)) throw new Error("Unsupported default reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");
       if (metadata.multiAgentVersion !== undefined && (typeof metadata.multiAgentVersion !== "string" || !/^v[0-9]{1,3}$/.test(metadata.multiAgentVersion))) throw new Error("multiAgentVersion must look like v2");
       if ((metadata.useResponsesLite !== undefined && typeof metadata.useResponsesLite !== "boolean") || (metadata.supportsReasoningEffortUpdates !== undefined && typeof metadata.supportsReasoningEffortUpdates !== "boolean")) throw new Error("Responses lite metadata must be boolean");

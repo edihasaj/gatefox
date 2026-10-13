@@ -50,7 +50,12 @@ export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
   return models;
 }
 
-/** Agent SDK initialize is metadata-only: no user prompt or inference request. */
+/**
+ * Agent SDK initialize is metadata-only: no user prompt or inference request. The
+ * catalog rows carry no default effort, so each model's default is read the way
+ * Claude Code applies it: the session-scoped flag model, then the applied effort
+ * from get_settings. Both are metadata-only too; a model without one keeps medium.
+ */
 export async function readClaudeModels(child: ChildProcessWithoutNullStreams, timeoutMs = 20000): Promise<DiscoveredModel[]> {
   let failure: Error | undefined;
   const exited = new Promise<void>(resolve => child.once("close", () => resolve()));
@@ -71,20 +76,32 @@ export async function readClaudeModels(child: ChildProcessWithoutNullStreams, ti
     lines.close(); child.stdout.destroy(); stop();
   };
   child.stdout.on("data", countOutput);
-  const lines = createInterface({ input: child.stdout });
-  child.stdin.write(JSON.stringify({ type: "control_request", request_id: "gateway-models", request: { subtype: "initialize", hooks: null } }) + "\n");
-  try {
-    for await (const line of lines) {
+  const lines = createInterface({ input: child.stdout }); const reader = lines[Symbol.asyncIterator]();
+  type Response = { subtype?: string; request_id?: string; response?: { models?: unknown; applied?: { model?: unknown; effort?: unknown } } };
+  const control = async (id: string, request: Record<string, unknown>): Promise<Response> => {
+    child.stdin.write(JSON.stringify({ type: "control_request", request_id: id, request }) + "\n");
+    for (let next = await reader.next(); !next.done; next = await reader.next()) {
       if (failure) throw failure;
       let parsed: unknown;
-      try { parsed = JSON.parse(line); }
+      try { parsed = JSON.parse(next.value); }
       catch { throw new Error("Claude model discovery returned invalid JSON"); }
-      const message = parsed as { type?: string; response?: { subtype?: string; request_id?: string; response?: { models?: unknown } } };
-      if (message.type !== "control_response" || message.response?.request_id !== "gateway-models") continue;
-      if (message.response.subtype !== "success") throw new Error("Claude model discovery failed; run gateway doctor");
-      return nativeClaudeModels(message.response.response?.models);
+      const message = parsed as { type?: string; response?: Response };
+      if (message.type === "control_response" && message.response?.request_id === id) return message.response;
     }
     throw failure || new Error("Claude model discovery ended without a catalog");
+  };
+  try {
+    const catalog = await control("gateway-models", { subtype: "initialize", hooks: null });
+    if (catalog.subtype !== "success") throw new Error("Claude model discovery failed; run gateway doctor");
+    const models = nativeClaudeModels(catalog.response?.models);
+    try {
+      for (const [index, { model, metadata }] of models.entries()) {
+        if (!metadata.reasoningEfforts?.length || (await control(`gateway-model-${index}`, { subtype: "apply_flag_settings", settings: { model } })).subtype !== "success") continue;
+        const applied = (await control(`gateway-effort-${index}`, { subtype: "get_settings" })).response?.applied;
+        if (applied?.model === model && typeof applied.effort === "string" && metadata.reasoningEfforts.includes(applied.effort)) metadata.defaultReasoningEffort = applied.effort;
+      }
+    } catch { /* Defaults are optional: the catalog stands without them. */ }
+    return models;
   } finally {
     clearTimeout(timer); child.stdout.off("data", countOutput); lines.close(); child.stdin.end();
     stop(); await exited; clearTimeout(hardStop);

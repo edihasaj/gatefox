@@ -12,6 +12,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     groups.set(alias, providerIndex);
     const metadata = provider.modelMetadata?.[alias];
     const efforts = metadata?.reasoningEfforts || [];
+    // The provider's own default (Claude: the CLI's per-model level); otherwise medium.
+    const preferred = metadata?.defaultReasoningEffort && efforts.includes(metadata.defaultReasoningEffort) ? metadata.defaultReasoningEffort : "medium";
     // Codex 2 rows default to native Codex's truncation and usable window share.
     const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
     return {
@@ -22,7 +24,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       visibility: "list", supported_in_api: true, availability_nux: null, upgrade: null,
       ...publicServiceTierFields(readServiceTierMetadata(metadata)),
       supported_reasoning_levels: efforts.map(effort => ({ effort, description: `${effort} reasoning effort` })),
-      default_reasoning_level: efforts.includes("medium") ? "medium" : efforts[0] || null,
+      default_reasoning_level: efforts.includes(preferred) ? preferred : efforts[0] || null,
       default_reasoning_summary: efforts.length ? "auto" : "none", supports_reasoning_summary_parameter: efforts.length > 0,
       shell_type: "unified_exec", apply_patch_tool_type: "freeform", tool_mode: "direct",
       // The SDK requires a string template; empty adds no gateway instructions.
