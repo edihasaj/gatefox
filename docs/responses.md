@@ -160,6 +160,13 @@ only when it is a recognized public value. It never reports the requested tier
 as proof of the tier served. An upstream may return `default` after a priority
 request; the gateway preserves that result and does not retry to chase Fast.
 
+Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
+setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
+other tiers are rejected before the CLI starts. The CLI reports its fast mode
+state. When fast mode stays on, the completion reports `priority`. When Claude
+refuses it (for example, no usage credits) and falls back to standard speed, the
+turn still completes and reports `default`.
+
 Copilot uses the same normalized text and replay contract. It registers native
 SDK custom tools and returns their real calls before any execution. SDK reasoning
 summaries stream separately; `auto` requests a concise summary. The adapter rejects

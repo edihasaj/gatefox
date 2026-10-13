@@ -16,6 +16,8 @@ const millionTokenModels = new Set(["claude-fable-5-1", "claude-opus-5-5", "clau
 export const longContextVariants = new Set(["claude-opus-4-6"]);
 /** The model ID the CLI runs; aliases keep the plain ID so saved chats survive. */
 export function claudeCliModel(model: string): string { return longContextVariants.has(model) ? `${model}[1m]` : model; }
+/** Claude Code's fast mode, offered under Codex's Fast tier for models whose catalog row supports it. */
+export const claudeFastTier = { id: "priority", name: "Fast", description: "Faster output, billed to Claude usage credits" };
 
 export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
   if (!Array.isArray(value) || !value.length) throw new Error("Claude returned an invalid model catalog");
@@ -40,6 +42,8 @@ export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
       // effort is max, which is what Codex sends for Ultra.
       reasoningEfforts: levels.includes("max") ? [...levels, "ultra"] : levels, priority: models.length,
       ...(levels.length ? { multiAgentVersion: "v2", multiAgentReasoningEffort: levels.includes("xhigh") ? "xhigh" : levels.at(-1)! } : {}),
+      // Explicit empty tiers clear a Fast option the CLI no longer offers on refresh.
+      ...(item.supportsFastMode === true ? { serviceTiers: [claudeFastTier], additionalSpeedTiers: ["fast"] } : { serviceTiers: [], additionalSpeedTiers: [] }), defaultServiceTier: null,
     } });
   }
   if (!models.length) throw new Error("Claude returned no selectable models");

@@ -354,6 +354,12 @@ chat to read its settings or explicitly choose Standard before changing models.
 These checks return application errors rather than a misleading native-config
 warning. Reasoning effort is independent of speed.
 
+Claude rows offer Fast when Claude's own model list marks the model as supporting
+fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for
+that request, which Claude bills to the account's usage credits. Discovery
+refreshes this capability with the rest of the catalog, so every connected
+machine sees the same option.
+
 The current Copilot CLI does not offer a selected-model Fast tier. Its four
 configured models expose no speed options. A direct Fast request is rejected
 before starting the CLI. The integrator-only Auto Fast API is a different route

@@ -16,6 +16,7 @@ import { claudeToolName, claudeNativeToolName, claudeToolHistory } from "./claud
 import { claudeFailure } from "./claude-errors.js";
 import { claudeUsageEvent, claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
+import type { PublicServiceTier } from "../protocol/types.js";
 import { telemetry } from "../telemetry.js";
 
 interface ClaudeUsage { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
@@ -38,6 +39,17 @@ export function claudeEffort(config: ProviderConfig | undefined, request: Respon
   return effort === "ultra" ? "max" : effort;
 }
 
+/** Fast (Codex's priority tier) turns on Claude Code's fast mode; Standard leaves it off. */
+export function claudeFastMode(config: ProviderConfig | undefined, request: ResponsesRequest): boolean {
+  const tier = request.service_tier;
+  if (tier === undefined || tier === null || tier === "auto" || tier === "default") return false;
+  if (tier !== "priority" && tier !== "fast") throw new ProviderError("invalid_request", "Claude does not support the requested service tier", 400);
+  const alias = Object.entries(config?.models || {}).find(([, model]) => model === request.model)?.[0];
+  const tiers = alias ? config?.modelMetadata?.[alias]?.serviceTiers : undefined;
+  if (tiers && !tiers.some(option => option.id === "priority")) throw new ProviderError("invalid_request", "Selected Claude model does not offer Fast mode", 400);
+  return true;
+}
+
 export class ClaudeSubscription implements Provider {
   constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
     private readonly onContextWindow?: (model: string, contextWindow: number) => void) {}
@@ -47,6 +59,8 @@ export class ClaudeSubscription implements Provider {
     const tools = choice === "none" ? [] : (normalized.tools || []).filter(tool => typeof choice !== "object" || tool.function.name === choice.function.name);
     if (new Set(tools.map(claudeToolName)).size !== tools.length) throw new ProviderError("invalid_request", "Caller tool identities collide in Claude's native namespace", 400);
     const effort = claudeEffort(this.config, request);
+    const fast = claudeFastMode(this.config, request);
+    const settings = { ...(effort ? { alwaysThinkingEnabled: true } : {}), ...(fast ? { fastMode: true } : {}) };
     const summary = (request.reasoning as { summary?: string } | undefined)?.summary;
     const { conversation, images } = imageConversation(claudeToolHistory(normalized.messages, normalized.tools || []));
     const directory = await mkdtemp(join(tmpdir(), "gateway-claude-"));
@@ -66,13 +80,15 @@ export class ClaudeSubscription implements Provider {
       "--system-prompt", "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.",
       ...(effort ? ["--effort", effort] : []),
       "--input-format", "stream-json",
-      ...(effort ? ["--settings", '{"alwaysThinkingEnabled":true}'] : []),
+      ...(Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : []),
       // Newer Claude models default to omitting thinking text; ask for summaries
       // unless the caller turned them off, so long Max turns show progress.
       ...(effort && summary !== "none" ? ["--thinking-display", "summarized"] : []),
     ], { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env });
     let failure: Error | undefined; let result: Record<string, unknown> | undefined; let raw = ""; let exitCode: number | null = null; const began = Date.now();
-    let limit: ClaudeLimit | undefined;
+    let limit: ClaudeLimit | undefined; let fastState: string | undefined;
+    // Report the tier Claude actually served: Fast only while fast mode stayed on.
+    const served = (): { serviceTier?: PublicServiceTier } => fast ? { serviceTier: fastState === "on" ? "priority" : "default" } : {};
     const stop = () => {
       if (child.exitCode === null) {
         child.kill("SIGTERM");
@@ -103,6 +119,8 @@ export class ClaudeSubscription implements Provider {
         if (line.length > 8 * 1024 * 1024 || raw.length > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Provider output exceeds 8 MiB");
         let message: Record<string, unknown>;
         try { message = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
+        // The CLI falls back to standard speed (cooldown) when fast mode credits are refused.
+        if (typeof message.fast_mode_state === "string" && ["on", "off", "cooldown"].includes(message.fast_mode_state)) fastState = message.fast_mode_state;
         const observed = claudeUsageEvent(message);
         if (observed) {
           limit = observed;
@@ -122,7 +140,7 @@ export class ClaudeSubscription implements Provider {
           if (calls.length) {
             stop();
             for (const call of nativeClaudeCalls(calls, tools)) yield { type: "tool", call };
-            yield { type: "done", usage: usage(assistant.usage) }; return;
+            yield { type: "done", usage: usage(assistant.usage), ...served() }; return;
           }
         } else if (message.type === "result") {
           result = message;
@@ -134,7 +152,7 @@ export class ClaudeSubscription implements Provider {
           break;
         }
       }
-      telemetry("claude_cli", { model: request.model, effort, durationMs: Date.now() - began, result: result ? String(result.subtype) : "none", isError: result?.is_error === true, exitCode, aborted: signal.aborted, spawnFailed: !!failure });
+      telemetry("claude_cli", { model: request.model, effort, fast: fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began, result: result ? String(result.subtype) : "none", isError: result?.is_error === true, exitCode, aborted: signal.aborted, spawnFailed: !!failure });
       if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
       if (failure || !result) throw new ProviderError("cli_failed", `Claude CLI did not complete${exitCode !== null ? ` (exit ${exitCode})` : ""}; run gateway doctor`);
       if (result.is_error || result.subtype !== "success") {
@@ -148,7 +166,7 @@ export class ClaudeSubscription implements Provider {
       const text = typeof result.result === "string" ? result.result : raw;
       if (!text.startsWith(raw)) throw new ProviderError("inconsistent_stream", "Claude final text differs from streamed text");
       if (text.length > raw.length) yield { type: "text", text: text.slice(raw.length) };
-      yield { type: "done", usage: usage(result.usage as ClaudeUsage | undefined) };
+      yield { type: "done", usage: usage(result.usage as ClaudeUsage | undefined), ...served() };
     } finally {
       signal.removeEventListener("abort", stop); lines.close(); stop();
       await rm(directory, { recursive: true, force: true });
