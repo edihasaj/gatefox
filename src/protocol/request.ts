@@ -112,7 +112,9 @@ export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool
     const group = name(tool.name);
     if (!Array.isArray(tool.tools)) reject("Namespace tools must be a list");
     if (tool.description !== undefined && typeof tool.description !== "string") reject("Namespace description must be text");
-    for (const child of tool.tools) declare(child, group, tool.description as string | undefined);
+    // `functions` is the Responses default namespace: its calls come back without a
+    // namespace, exactly like top-level tools, so its tools are declared unprefixed.
+    for (const child of tool.tools) declare(child, group === "functions" ? undefined : group, tool.description as string | undefined);
   }
   return [...catalog.values()];
 }

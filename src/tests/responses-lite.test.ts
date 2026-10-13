@@ -18,7 +18,7 @@ const lite = (extra: Record<string, unknown>[] = []): ResponsesRequest => ({ mod
 test("Responses lite tools are declared from additional_tools input items, not replayed as messages", () => {
   assert.deepEqual(declaredResponsesTools(lite()).map(tool => (tool as { name: string }).name), ["functions"]);
   const chat = responsesToChatRequest(lite());
-  assert.deepEqual(chat.tools?.map(tool => tool.function.name), ["functions.exec_command"]);
+  assert.deepEqual(chat.tools?.map(tool => tool.function.name), ["exec_command"], "the default functions namespace is implicit");
   assert.deepEqual(chat.messages.map(message => message.role), ["user"]);
 });
 
@@ -27,7 +27,8 @@ test("the subscription endpoint receives lite requests unchanged and their names
   const credentialFile = join(directory, "registration.json");
   await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
   const bodies: Array<Record<string, unknown>> = [];
-  const call = { type: "function_call", id: "fc_1", call_id: "call_2", name: "exec_command", namespace: "functions", arguments: "{\"cmd\":\"ls\"}", status: "completed" };
+  // The endpoint returns calls of the default functions namespace without a namespace.
+  const call = { type: "function_call", id: "fc_1", call_id: "call_2", name: "exec_command", arguments: "{\"cmd\":\"ls\"}", status: "completed" };
   t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => {
     bodies.push(JSON.parse(String(options.body)));
     const event = (data: Record<string, unknown>) => `data: ${JSON.stringify(data)}\n\n`;
@@ -35,14 +36,14 @@ test("the subscription endpoint receives lite requests unchanged and their names
   });
   try {
     const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
-    const history = [{ type: "function_call", call_id: "call_1", name: "exec_command", namespace: "functions", arguments: "{\"cmd\":\"pwd\"}" }, { type: "function_call_output", call_id: "call_1", output: "/tmp" }];
+    const history = [{ type: "function_call", call_id: "call_1", name: "exec_command", arguments: "{\"cmd\":\"pwd\"}" }, { type: "function_call_output", call_id: "call_1", output: "/tmp" }];
     const events: InferenceEvent[] = []; for await (const event of provider.infer(lite(history), new AbortController().signal)) events.push(event);
     const sent = bodies[0] as { input: Array<Record<string, unknown>>; tools: unknown[]; reasoning: Record<string, unknown> };
     assert.equal(sent.input[0].type, "additional_tools", "lite tool declarations reach the upstream untouched");
     assert.deepEqual(sent.tools, []); assert.equal(sent.reasoning.context, "all_turns");
-    assert.equal(sent.input.find(item => item.call_id === "call_1")?.namespace, "functions", "a namespaced call is not moved into the gateway namespace");
+    assert.equal(sent.input.find(item => item.call_id === "call_1")?.namespace, undefined, "a default-namespace call is not moved into the gateway namespace");
     const tool = events.find(event => event.type === "tool") as Extract<InferenceEvent, { type: "tool" }>;
-    assert.deepEqual(tool.call.responseTool, { type: "function", name: "exec_command", namespace: "functions" });
+    assert.deepEqual(tool.call.responseTool, { type: "function", name: "exec_command" });
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
