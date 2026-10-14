@@ -165,10 +165,13 @@ test("Codex 2 rows default to native truncation and window share while other row
   assert.equal((codex.context_window as number) * (codex.effective_context_window_percent as number) / 100, 475000, "475K usable of 500K, as native Codex computes it");
   assert.deepEqual(others.map(row => row.slug), ["claude/opus", "copilot/sol", "api/model"]);
   for (const row of others) { assert.deepEqual(row.truncation_policy, { mode: "tokens", limit: 12000 }); assert.equal(row.effective_context_window_percent, 90); }
-  for (const row of [codex, ...others]) assert.equal(Object.hasOwn(row, "max_context_window") || Object.hasOwn(row, "auto_compact_token_limit"), false, "absent limits stay absent");
-  // Field order is part of the catalog revision; unchanged rows must serialize as before.
-  assert.deepEqual(Object.keys(others[0]).slice(-8), ["truncation_policy", "experimental_supported_tools", "input_modalities", "context_window",
-    "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled"]);
+  for (const row of [codex, ...others]) {
+    assert.equal(Object.hasOwn(row, "auto_compact_token_limit"), false, "an absent compaction limit stays absent");
+    assert.equal(row.max_context_window, row.context_window, "without its own maximum a row's window is its maximum, not Codex's global 872K cap");
+  }
+  // Field order is part of the catalog revision; rows serialize in this stable order.
+  assert.deepEqual(Object.keys(others[0]).slice(-9), ["truncation_policy", "experimental_supported_tools", "input_modalities", "context_window",
+    "effective_context_window_percent", "max_context_window", "supports_search_tool", "supports_experimental_context", "node_repl_disabled"]);
 });
 
 test("model metadata overrides the catalog parity defaults for any row", () => {
@@ -177,7 +180,7 @@ test("model metadata overrides the catalog parity defaults for any row", () => {
   assert.deepEqual(codex.truncation_policy, { mode: "bytes", limit: 20000 }); assert.equal(codex.effective_context_window_percent, 80);
   assert.equal(codex.auto_compact_token_limit, 300000); assert.equal(codex.max_context_window, 872000);
   assert.deepEqual(claude.truncation_policy, { mode: "tokens", limit: 10000 }); assert.equal(claude.effective_context_window_percent, 95);
-  assert.equal(Object.hasOwn(claude, "max_context_window"), false);
+  assert.equal(claude.max_context_window, claude.context_window);
   const reverted = modelCatalog(parityConfig({ "codex/sol": { truncationPolicy: { mode: "tokens", limit: 12000 }, effectiveContextWindowPercent: 90 } })).models[0];
   assert.deepEqual(reverted.truncation_policy, { mode: "tokens", limit: 12000 }); assert.equal(reverted.effective_context_window_percent, 90);
 });

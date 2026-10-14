@@ -34,7 +34,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       truncation_policy: truncation ? { mode: truncation.mode, limit: truncation.limit } : { mode: "tokens", limit: codex ? 10000 : 12000 },
       experimental_supported_tools: [], input_modalities: metadata?.inputModalities || ["text"],
       context_window: metadata?.contextWindow || 32768, effective_context_window_percent: metadata?.effectiveContextWindowPercent ?? (codex ? 95 : 90),
-      ...(metadata?.maxContextWindow !== undefined ? { max_context_window: metadata.maxContextWindow } : {}),
+      // Without its own maximum a row would inherit Codex's global cap (872K), which cuts Claude's 1M.
+      max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true,
       ...(metadata?.multiAgentVersion ? { multi_agent_version: metadata.multiAgentVersion } : {}),
