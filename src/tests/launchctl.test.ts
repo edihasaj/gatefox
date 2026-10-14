@@ -13,9 +13,11 @@ test("a job launchd no longer has counts as already stopped, and any other failu
   await assert.rejects(bootoutJob("gui/501/x", async () => { throw failure("Boot-out failed: 5: Input/output error", 5); }), /Input\/output error/);
 });
 
-test("service install and uninstall stop jobs only through the ESRCH-tolerant helper", async () => {
+test("service install, uninstall and consolidation stop jobs only through the ESRCH-tolerant helper", async () => {
   const { readFile } = await import("node:fs/promises"); const { fileURLToPath } = await import("node:url");
-  const source = await readFile(fileURLToPath(new URL("../../src/mac-service.ts", import.meta.url)), "utf8");
-  assert.doesNotMatch(source, /\["bootout"/);
-  assert.equal(source.match(/bootoutJob\(target\)/g)?.length, 2);
+  const read = (name: string) => readFile(fileURLToPath(new URL(`../../src/${name}`, import.meta.url)), "utf8");
+  const service = await read("mac-service.ts"); const consolidate = await read("mac-consolidate.ts");
+  for (const source of [service, consolidate]) assert.doesNotMatch(source, /["']bootout["']/);
+  assert.equal(service.match(/bootoutJob\(target\)/g)?.length, 2);
+  assert.equal(consolidate.match(/bootoutJob\(`/g)?.length, 2);
 });

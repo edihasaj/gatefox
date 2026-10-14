@@ -8,23 +8,29 @@ export interface RollbackPlan {
   replacementAttempted: boolean; launchctl: RollbackLaunchctl;
 }
 /** Fixed classes of rollback step; failures name the step and job label, never a path or value. */
-export type RollbackStep = "stop_replacement" | "retire_plan" | "restore_plist" | "retire_replacement_plist" | "restart_job";
+export type RollbackStep = "replacement_still_loaded" | "retire_plan" | "restore_plist" | "retire_replacement_plist" | "restart_job";
 export interface RollbackFailure { step: RollbackStep; label?: string }
 
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
-/** Undo a failed consolidation. Every step runs even when an earlier one fails, so one fault cannot leave no job loaded. */
+/** Undo a failed consolidation. Every step runs even when an earlier one fails, so one fault cannot leave no job loaded, unless the replacement is still loaded; then it stays the only service. */
 export async function rollbackConsolidation(plan: RollbackPlan): Promise<RollbackFailure[]> {
   const failures: RollbackFailure[] = [];
   const attempt = async (failure: RollbackFailure, step: () => Promise<unknown>) => { try { await step(); } catch { failures.push(failure); } };
   const { launchctl, jobs } = plan;
-  if (plan.replacementAttempted) await attempt({ step: "stop_replacement" }, async () => { if (await launchctl.isLoaded(plan.serviceLabel)) await launchctl.bootout(plan.serviceLabel); });
+  // A replacement that cannot be proven unloaded stays the one loaded service: retiring its plan or restarting the old jobs would run two writers.
+  let replacementLoaded = false;
+  if (plan.replacementAttempted) {
+    try { if (await launchctl.isLoaded(plan.serviceLabel)) await launchctl.bootout(plan.serviceLabel); } catch { /* the check below decides */ }
+    try { replacementLoaded = await launchctl.isLoaded(plan.serviceLabel); } catch { replacementLoaded = true; }
+    if (replacementLoaded) failures.push({ step: "replacement_still_loaded" });
+  }
   const stamp = Date.now();
   const retire = (path: string, name: string) => mkdir(plan.trash, { recursive: true }).then(() => rename(path, resolve(plan.trash, name))).catch(error => { if (!missing(error)) throw error; });
-  await attempt({ step: "retire_plan" }, () => retire(plan.planPath, `gateway-service-plan.${stamp}.json`));
+  if (!replacementLoaded) await attempt({ step: "retire_plan" }, () => retire(plan.planPath, `gateway-service-plan.${stamp}.json`));
   for (const job of jobs) await attempt({ step: "restore_plist", label: job.label }, () => writeFile(job.path, job.text, { mode: 0o600 }));
-  if (!jobs.some(job => job.label === plan.serviceLabel)) await attempt({ step: "retire_replacement_plist" }, () => retire(plan.targetPath, `gateway-service-failed.${stamp}.plist`));
-  for (const job of jobs) if (job.loaded) await attempt({ step: "restart_job", label: job.label }, async () => { if (!await launchctl.isLoaded(job.label)) await launchctl.bootstrap(job.path); });
+  if (!replacementLoaded && !jobs.some(job => job.label === plan.serviceLabel)) await attempt({ step: "retire_replacement_plist" }, () => retire(plan.targetPath, `gateway-service-failed.${stamp}.plist`));
+  if (!replacementLoaded) for (const job of jobs) if (job.loaded) await attempt({ step: "restart_job", label: job.label }, async () => { if (!await launchctl.isLoaded(job.label)) await launchctl.bootstrap(job.path); });
   return failures;
 }
 
