@@ -18,9 +18,8 @@ The `verify` job uses Ubuntu 24.04 ARM and runs the unchanged source gate:
 `npm test`. Six tests require macOS and retain their explicit platform guards.
 
 `macos-native` uses GitHub's macOS 15 Apple Silicon runner only for an intentional
-native validation: a pull request targeting `production`, a push of the exact
-`production` branch SHA, or a manual dispatch with **Run paid macOS native checks**
-enabled. The manual input defaults to `false`. Main, master, and feature pushes,
+native validation: an explicit dispatch from `production` with
+**Run paid macOS native checks** enabled. Pushes and PRs never allocate a Mac. The manual input defaults to `false`. Main, master, and feature pushes,
 ordinary pull requests, tags, schedules, and merge queues do not spend hosted
 macOS time. A skipped job is not native proof. When selected, it runs the complete
 native files and ownership regressions:

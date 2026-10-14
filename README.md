@@ -1,5 +1,7 @@
 <img src="docs/assets/logo.png" width="88" height="88" alt="Harness Gateway fox">
 
+For paused native builds and explicit production requests, see [CI cost policy](docs/ci-cost-policy.md).
+
 # Harness Gateway
 
 Formerly Subscription Gateway.
@@ -156,9 +158,8 @@ The migration preserves endpoints and saves rollback copies. See
 [service ownership](docs/services.md).
 
 Development gate: `npm run build && npm run check && npm test`.
-Hosted macOS native CI is deliberately opt-in: it runs for production promotion
-(a production PR or push) or a manual dispatch with **Run paid macOS native
-checks** enabled; ordinary development pushes and PRs stay on Ubuntu. The local
+Hosted macOS native CI is manual-only: dispatch from `production` with
+**Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).
 Adapters also exist for ordinary APIs; the current delivery
 focus is Claude, Codex, and Copilot subscriptions.
