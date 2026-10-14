@@ -19,6 +19,15 @@ export const requiredSdkTests = [
   'transport::remote_control::client_tracker::tests::incoming_message_timeout_does_not_advance_seq_id',
   'transport::remote_control::tests::remote_control_transport_manages_virtual_clients_and_routes_messages',
   'transport::remote_control::tests::remote_control_transport_clears_outgoing_buffer_when_backend_acks',
+  'gateway_counters::tests::hash_id_is_stable_short_hex_and_hides_its_input',
+  'gateway_counters::tests::reset_switch_requires_a_regular_file',
+  'gateway_counters::tests::counters_and_outbound_gauge_only_grow_their_maximum',
+  ...['app_side_cancel_drains_writer_then_sends_unknown_pong', 'dropped_writer_is_an_app_side_end',
+    'client_closed_sends_no_unknown_pong', 'idle_sweep_sends_no_unknown_pong', 'tracker_shutdown_sends_no_unknown_pong',
+    'sdk_root_shutdown_sends_no_unknown_pong', 'failed_initialize_forward_sends_no_unknown_pong',
+    'reinitialize_same_stream_keeps_replacement_open', 'stream_end_is_bounded_when_server_queue_full',
+  ].map(name => `transport::remote_control::gateway_stream_end_tests::${name}`),
+  'transport::remote_control::tests::gateway_wire_tests::relay_stream_end_reaches_backend_after_last_reply_and_client_close_does_not',
 ];
 /** libtest filters: the remote-control suite plus the crate-root gateway counters. */
 export const sdkTestFilters = ['transport::remote_control::', 'gateway_counters::'];
