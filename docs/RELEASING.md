@@ -155,6 +155,24 @@ Archive links and path overrides are refused. Validated macOS provenance metadat
 is ignored; only the six allowed files for each selected component are copied.
 Any changed component source requires a fresh build. Without both explicit reuse
 arguments, the usual matching-release artifact checks remain in force.
+
+A native relay fix can ship a freshly built relay while still reusing the gateway
+SDK from that bundle. Build the relay for this version first
+(`node scripts/build-native-relay.mjs --test --dev`, then
+`node scripts/build-native-relay.mjs`), then add `--fresh-native`:
+
+```sh
+node scripts/build-release.mjs --with-native --with-gateway-sdk \
+  --reuse-components-from /absolute/path/to/previous-published-release.tar.gz \
+  --components-sha256 VERIFIED_ARCHIVE_SHA256 --fresh-native
+```
+
+The flag requires both component flags and both reuse arguments. Only the gateway
+SDK is verified and copied from the bundle, so `release.json` lists only that
+component. The relay goes through the normal artifact checks: package version,
+release profile, pinned SDK revision, and the current native source digest. The
+bundle must be the one that built the gateway SDK; a bundle that itself reused
+the component is refused.
 Reuse requires a fresh release stage; move any earlier stage for that version to
 Trash before rebuilding it.
 

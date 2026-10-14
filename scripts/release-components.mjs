@@ -72,6 +72,21 @@ function json(entries, name) {
   try { return JSON.parse(entry.data.toString('utf8')); } catch { throw invalid('invalid release metadata'); }
 }
 
+/** Decide which components come from a previous published bundle and which are built here.
+ * `freshNative` keeps reusing the gateway SDK while the relay comes from the local build.
+ */
+export function releaseComponentPlan({ withNative, withGatewaySdk, reuseFrom, componentsSha256, freshNative }) {
+  if (Boolean(reuseFrom) !== Boolean(componentsSha256)) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
+  if (freshNative && !(reuseFrom && withNative && withGatewaySdk)) {
+    throw new Error('--fresh-native requires --with-native, --with-gateway-sdk and component reuse');
+  }
+  return {
+    reuse: reuseFrom ? { native: Boolean(withNative && !freshNative), gatewaySdk: Boolean(withGatewaySdk) } : undefined,
+    freshNative: Boolean(withNative && (!reuseFrom || freshNative)),
+    freshGatewaySdk: Boolean(withGatewaySdk && !reuseFrom),
+  };
+}
+
 /** Verify the entire published archive before writing any selected component. */
 export function verifyReleaseComponents(archivePath, expectedSha256, selected) {
   if (!/^[a-f0-9]{64}$/.test(expectedSha256 || '')) throw invalid('--components-sha256 must be an exact SHA-256 digest');

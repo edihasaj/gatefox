@@ -5,19 +5,21 @@ import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { nativeSourceDigest } from './native-source.mjs';
 import { releaseVersionProblem } from './release-version.mjs';
-import { verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
+import { releaseComponentPlan, verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
-  'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' } } });
+  'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' },
+  'fresh-native': { type: 'boolean' } } });
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 const versionProblem = releaseVersionProblem(version); if (versionProblem) throw new Error(versionProblem);
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !values['allow-dirty']) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
-if (Boolean(values['reuse-components-from']) !== Boolean(values['components-sha256'])) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
-const reused = values['reuse-components-from'] ? verifyReleaseComponents(resolve(values['reuse-components-from']),
-  values['components-sha256'], { native: values['with-native'], gatewaySdk: values['with-gateway-sdk'] }) : undefined;
+const plan = releaseComponentPlan({ withNative: values['with-native'], withGatewaySdk: values['with-gateway-sdk'],
+  reuseFrom: values['reuse-components-from'], componentsSha256: values['components-sha256'], freshNative: values['fresh-native'] });
+const reused = plan.reuse ? verifyReleaseComponents(resolve(values['reuse-components-from']),
+  values['components-sha256'], plan.reuse) : undefined;
 const name = `harness-gateway-${version}-macos-arm64`; const directory = join(root, name);
 if (reused && existsSync(directory)) throw new Error('Component reuse requires a fresh release stage; move the previous stage to Trash first');
 const runtimeArchive = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64.tar.gz');
@@ -33,13 +35,13 @@ cpSync(join(runtime, 'LICENSE'), join(directory, 'runtime/LICENSE'));
 cpSync('scripts/install.sh', join(directory, 'install')); chmodSync(join(directory, 'install'), 0o700);
 const nativeArtifact = resolve('.state/native-relay-build/artifact');
 if (reused) copyReleaseComponents(reused, join(directory, 'package'));
-if (values['with-native'] && !reused) {
+if (plan.freshNative) {
   const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
   if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74' || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
   cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
 }
 const gatewayArtifact = resolve('.state/gateway-sdk-build/artifact');
-if (values['with-gateway-sdk'] && !reused) {
+if (plan.freshGatewaySdk) {
   const metadata = JSON.parse(readFileSync(join(gatewayArtifact, 'build.json'), 'utf8'));
   if (metadata.schemaVersion !== 1 || metadata.version !== version || metadata.profile !== 'release' ||
       metadata.platform !== 'darwin' || metadata.arch !== 'arm64' || metadata.codexVersion !== gatewaySdkCodexVersion ||
