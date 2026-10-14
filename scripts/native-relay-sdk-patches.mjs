@@ -30,9 +30,16 @@ const testCompatibility = [
     replacement: '    if !cfg!(test) && (enrollment.is_none() || matches!(selection, RemoteControlEnrollmentSelection::ReplaceExisting)) {' },
 ];
 
-// Process-global counters and hashed ids, readable by the relay.
-const counters = [
+// Overlay modules: process-global counters and hashed ids at the crate root (readable by the
+// relay), stream-end and tracker logic plus their tests under remote_control.
+const remoteModules = ['mod gateway_stream_end;'];
+const remoteTestModules = ['gateway_stream_end_tests', 'gateway_observability_tests'];
+const modules = [
   { file: `${transport}lib.rs`, original: 'mod transport;\n', replacement: 'mod transport;\npub mod gateway_counters;\n' },
+  { file: `${remote}mod.rs`, original: 'mod websocket;\n',
+    replacement: ['mod websocket;', ...remoteModules, ...remoteTestModules.flatMap(name => ['#[cfg(test)]', `mod ${name};`]), ''].join('\n') },
+  { file: `${remote}tests.rs`, original: '#[path = "tests/retry_tests.rs"]\nmod retry_tests;\n',
+    replacement: '#[path = "tests/retry_tests.rs"]\nmod retry_tests;\n#[path = "tests/gateway_wire_tests.rs"]\nmod gateway_wire_tests;\n' },
 ];
 
 // F1: an app-side stream end sends Pong { Unknown } after the stream's queued replies.
@@ -79,10 +86,6 @@ const upstreamOutboundBody = [
   '    }',
 ].join('\n');
 const streamEnd = [
-  { file: `${remote}mod.rs`, original: 'mod websocket;\n',
-    replacement: 'mod websocket;\nmod gateway_stream_end;\n#[cfg(test)]\nmod gateway_stream_end_tests;\n' },
-  { file: `${remote}tests.rs`, original: '#[path = "tests/retry_tests.rs"]\nmod retry_tests;\n',
-    replacement: '#[path = "tests/retry_tests.rs"]\nmod retry_tests;\n#[path = "tests/gateway_wire_tests.rs"]\nmod gateway_wire_tests;\n' },
   { file: tracker, original: 'use tracing::warn;\n',
     replacement: 'use tracing::warn;\nuse super::gateway_stream_end;\nuse super::gateway_stream_end::StreamEnd;\n\n#[path = "gateway_tracker_hooks.rs"]\nmod gateway_tracker_hooks;\n' },
   { file: tracker, original: '    last_inbound_seq_id: Option<u64>,\n    status_tx: watch::Sender<PongStatus>,\n}\n',
@@ -103,4 +106,27 @@ const streamEnd = [
     replacement: '        let client = self.clients.remove(client_key)?;\n        client.stream_end.mark_tracker_close();\n' },
 ];
 
-export const sdkPatches = [...existing, ...testCompatibility, ...counters, ...streamEnd];
+// F2: counters for silent SDK drops and the outbound gate, plus disconnect error kinds.
+const websocket = `${remote}websocket.rs`;
+const count = name => `crate::gateway_counters::add(crate::gateway_counters::Counter::${name}, 1);`;
+const unacked = '        crate::gateway_counters::set_outbound_unacked(*self.used_tx.borrow());\n';
+const observability = [
+  { file: websocket, original: '        self.used_tx.send_modify(|used| *used += 1);\n',
+    replacement: `        self.used_tx.send_modify(|used| *used += 1);\n${unacked}` },
+  { file: websocket, original: '        if buffer.is_empty() {\n            self.buffer_by_stream.remove(&key);\n        }\n',
+    replacement: `        if buffer.is_empty() {\n            self.buffer_by_stream.remove(&key);\n        }\n${unacked}` },
+  { file: websocket, original: '                .is_some_and(|last_seq_id| last_seq_id >= seq_id)\n        {\n            return ClientSegmentObservation::Dropped;\n',
+    replacement: `                .is_some_and(|last_seq_id| last_seq_id >= seq_id)\n        {\n            ${count('InboundChunkDedupeDrop')}\n            return ClientSegmentObservation::Dropped;\n` },
+  { file: websocket, original: 'warn!("remote control websocket writer disconnected, err: {err}");',
+    replacement: 'warn!(error_kind = ?err.kind(), "remote control websocket writer disconnected, err: {err}");' },
+  { file: websocket, original: 'warn!("remote control websocket reader disconnected, err: {err}");',
+    replacement: 'warn!(error_kind = ?err.kind(), "remote control websocket reader disconnected, err: {err}");' },
+  { file: tracker, original: '                    && !is_initialize\n                {\n                    return Ok(());\n',
+    replacement: '                    && !is_initialize\n                {\n                    self.gateway_dedupe_dropped(&client_key, seq_id);\n                    return Ok(());\n' },
+  { file: tracker, original: '                if !is_initialize {\n                    return Ok(());\n                }\n',
+    replacement: '                if !is_initialize {\n                    self.gateway_unknown_stream_dropped(&client_key);\n                    return Ok(());\n                }\n' },
+  { file: tracker, original: '                let server_event_tx = self.server_event_tx.clone();\n                tokio::spawn(async move {\n',
+    replacement: `                ${count('UnknownStreamPing')}\n                let server_event_tx = self.server_event_tx.clone();\n                tokio::spawn(async move {\n` },
+];
+
+export const sdkPatches = [...existing, ...testCompatibility, ...modules, ...streamEnd, ...observability];

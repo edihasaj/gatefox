@@ -6,6 +6,10 @@ mod frames;
 mod lease;
 mod registration;
 mod relay_counters;
+mod sdk_log;
+mod sdk_log_labels;
+#[cfg(test)]
+mod sdk_log_tests;
 mod session;
 mod session_events;
 mod shutdown;
@@ -152,6 +156,7 @@ impl Options {
 
 #[tokio::main]
 async fn main() {
+    sdk_log::install();
     diagnostics::install_panic_hook();
     if run().await.is_err() {
         eprintln!("gateway: Native relay stopped; private state retained");

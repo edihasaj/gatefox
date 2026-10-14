@@ -18,6 +18,8 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 url = "2"
 uuid = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 
 [patch.crates-io]
 crossterm = { git = "https://github.com/openai-oss-forks/crossterm", rev = "ed1cdab335221515706178d68495bba2aed1924f" }

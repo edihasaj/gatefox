@@ -3,5 +3,13 @@ The native transport links the OpenAI Codex SDK at commit
 rust-v0.162.0-alpha.17.2, under its Apache-2.0 license.
 
 The build adds raw outgoing JSON envelopes and an optional server name to the
-SDK transport in a private build checkout. SDK license and notice files must
-accompany distributed relay binaries. The gateway's relay implementation is MIT.
+SDK transport in a private build checkout, and refuses to create a new machine
+enrollment. Gateway files added to that checkout (native-relay/sdk-overlay) and
+small string patches (scripts/native-relay-sdk-patches.mjs) also send an unknown
+pong when the relay ends a remote stream, keep a re-initialized stream open,
+count silent inbound drops and sequence gaps, and add disconnect error kinds to
+two existing warnings. SDK license and notice files must accompany distributed
+relay binaries. The gateway's relay implementation is MIT.
+
+The relay also uses tracing and tracing-subscriber (MIT), already part of the
+pinned SDK dependency graph, to record audited SDK transport events.
