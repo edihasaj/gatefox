@@ -18,14 +18,27 @@ export function nativeHomeOwnerPath(nativeHome: string): string {
   const scope = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
   return resolve(homedir(), ".local/state/gw-native", scope, "owner.json");
 }
+/** writePrivateJson replaces the receipt by atomic rename, so a reader can see two inodes across lstat and open. */
+const replacedDuringRead = Symbol("native-owner-replaced");
+const replacementRetries = 8;
 export async function readNativeHomeOwner(nativeHome: string): Promise<NativeHomeOwner | undefined> {
-  const path = nativeHomeOwnerPath(nativeHome); let file;
+  const path = nativeHomeOwnerPath(nativeHome);
+  for (let attempt = 0; attempt < replacementRetries; attempt++) {
+    const owner = await readNativeHomeOwnerOnce(path);
+    if (owner !== replacedDuringRead) return owner;
+    await new Promise(done => setTimeout(done, attempt));
+  }
+  throw new Error("Native execution ownership receipt is invalid");
+}
+async function readNativeHomeOwnerOnce(path: string): Promise<NativeHomeOwner | undefined | typeof replacedDuringRead> {
+  let file;
   try {
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) || info.size > 16384) throw new Error("Native execution ownership receipt is invalid");
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK || 0));
     const opened = await file.stat();
-    if (!opened.isFile() || opened.ino !== info.ino || opened.dev !== info.dev || opened.uid !== process.getuid?.() || (opened.mode & 0o077) || opened.size > 16384) throw new Error("Native execution ownership receipt is invalid");
+    if (opened.isFile() && (opened.ino !== info.ino || opened.dev !== info.dev)) return replacedDuringRead;
+    if (!opened.isFile() || opened.uid !== process.getuid?.() || (opened.mode & 0o077) || opened.size > 16384) throw new Error("Native execution ownership receipt is invalid");
     const bytes = Buffer.alloc(16385); let size = 0;
     while (size < bytes.length) { const part = await file.read(bytes, size, bytes.length - size, null); if (!part.bytesRead) break; size += part.bytesRead; }
     if (size > 16384) throw new Error("Native execution ownership receipt is invalid");
