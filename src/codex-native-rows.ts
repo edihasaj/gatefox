@@ -33,9 +33,12 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
+  // node_repl (browser, Chrome, computer use) runs through the code-mode host; without it the tool stays off.
+  if (!codeMode) row.node_repl_disabled = true;
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
   const copy: Row = {};
+  if (codeMode && typeof source.node_repl_disabled === "boolean") copy.node_repl_disabled = source.node_repl_disabled;
   const messages = plain(source.model_messages);
   // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
   if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }
@@ -52,4 +55,9 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   // A native window applies only within the maximum the upstream itself reports.
   if (positive(source.context_window) && positive(row.max_context_window) && source.context_window <= row.max_context_window) copy.context_window = source.context_window;
   return { ...row, ...copy };
+}
+
+/** A row with no native counterpart (Claude, Copilot, API) enables node_repl only where every native row does and the executor runs code mode. */
+export function nodeReplFallback(native: readonly Row[], codeMode: boolean): boolean {
+  return !codeMode || !native.length || native.some(entry => entry.node_repl_disabled !== false);
 }

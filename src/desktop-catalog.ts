@@ -6,7 +6,7 @@ import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
-import { executorRunsCodeMode, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
+import { executorRunsCodeMode, nodeReplFallback, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -95,7 +95,11 @@ export class DesktopCatalog {
     finally { await file?.close(); }
   }
   private snapshot(published: Message[]): DesktopCatalogSnapshot {
-    const models = published.map(model => withNativeRow(model, this.native, this.codeMode));
+    const disabled = nodeReplFallback(this.native, this.codeMode);
+    const models = published.map(model => {
+      const row = withNativeRow(model, this.native, this.codeMode);
+      return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : { ...row, node_repl_disabled: disabled };
+    });
     return { models, path: this.path, revision: createHash("sha256").update(JSON.stringify(models)).digest("hex") };
   }
   current(): DesktopCatalogSnapshot { return this.value; }

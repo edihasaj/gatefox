@@ -545,3 +545,13 @@ account-change notification to force a refresh.
 Gateway executors use a private configuration home and share native chat storage.
 They do not copy the primary auth file. See [architecture](architecture.md) for
 configuration isolation, catalog generations, and failure recovery.
+
+### node_repl on gateway rows
+
+Gateway rows publish `node_repl_disabled: true`. The desktop adapter copies a
+native row's `node_repl_disabled` onto its Codex 2 row, and a row with no native
+counterpart (Claude, Copilot, API) enables it only when every native row does.
+node_repl (browser, Chrome and computer-use tools) runs through the code-mode
+host, so an executor without `codex-code-mode-host` (the bundled gateway SDK)
+keeps it disabled. Check a combined catalog with
+`node scripts/check-node-repl.mjs catalog.json`.
