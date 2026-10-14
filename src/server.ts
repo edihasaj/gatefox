@@ -10,7 +10,7 @@ import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
-import type { ResponsesRequest, Usage } from "./protocol/types.js";
+import type { ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "./provider-failure.js";
@@ -18,6 +18,7 @@ import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { flushTelemetry, telemetry } from "./telemetry.js";
+import { flushUsageLedger, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
@@ -103,7 +104,7 @@ async function drain(target: HandledServer, close: Server["close"]): Promise<Err
   await Promise.all([runShutdownHooks(1000), settle(Date.now() + 1000)]);
   telemetry("server_drain", { active, drainedMs, aborted });
   // An idle restart exits straight from its callback, so the record is written first.
-  await flushTelemetry();
+  await flushTelemetry(); await flushUsageLedger();
   return closed;
 }
 
@@ -144,7 +145,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
     const adapter = factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window));
-    return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const);
+    return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const);
   }));
   let current = config; let routes = buildRoutes(config);
   const snapshot = async () => {
@@ -186,12 +187,17 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     let writer: ResponsesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
-    let providerId: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
+    let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
-    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let turnStateReturned = false;
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
-      cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
+      cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
+      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
+    // Content-free record of what the request cost, appended once per finished request.
+    const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
+      inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens,
+      reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus }, new Date(), new Map(current.providers.map(entry => [entry.id, entry.type])));
     // timeoutMs bounds silence, not total length: it covers the upload and queue
     // wait, then restarts at admission and on every provider event. Long Max or
     // Ultra streams continue while a stalled provider still fails. The whole
@@ -217,12 +223,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const route = alias ? state.routes.get(alias) : undefined;
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
-      providerId = route.id; model = request.model;
+      providerId = route.id; providerType = route.type; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
       const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();
       const streaming = request.stream === true;
       let lastEventAt = Date.now(); let opened = false;
-      const output = writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } });
+      // A marked id lets a spend tool match this request to the client's own record of the response.
+      responseId = usageLedgerMarks(route.type) ? "resp_gl_" + requestId.replaceAll("-", "") : undefined;
+      const output = writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } }, responseId ? { id: responseId } : {});
       open = turnState => {
         if (opened) return; opened = true; clearTimeout(headWait);
         if (sendableTurnState(turnState) && !res.headersSent) { res.setHeader("X-Codex-Turn-State", turnState); turnStateReturned = true; }
@@ -248,13 +256,15 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
         if (controller.signal.aborted || res.destroyed) break;
         touch();
+        // Running usage is recorded for the ledger and telemetry; it never opens or writes the stream.
+        if (event.type === "usage") { usage = event.usage; accounting = event.accounting ?? accounting; continue; }
         if (event.type === "transport") {
           if (!opened) open(event.turnState);
           else if (!streaming && !res.headersSent && sendableTurnState(event.turnState)) { res.setHeader("X-Codex-Turn-State", event.turnState); turnStateReturned = true; }
           continue;
         }
         open(); events++; if (!firstEventAt) firstEventAt = Date.now();
-        if (event.type === "tool") tools++; else if (event.type === "done") usage = event.usage;
+        if (event.type === "tool") tools++; else if (event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; }
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
         if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
@@ -262,6 +272,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       }
       if (!writer.completed) throw new ProviderError(controller.signal.aborted ? "cancelled" : "incomplete", controller.signal.aborted ? "Request cancelled or timed out" : "Provider did not complete", 504);
       telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());
+      ledger(events <= 1 && !tools ? "empty" : "completed");
       if (!res.destroyed) {
         if (controller.signal.aborted && res.writableNeedDrain) res.destroy();
         else if (!streaming) send(res, 200, writer.result());
@@ -277,6 +288,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
       if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
       telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
+      ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
       try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
       if (!res.destroyed) {

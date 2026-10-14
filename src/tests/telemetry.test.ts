@@ -16,6 +16,17 @@ test("telemetry fields drop secret-shaped keys, objects and unsafe text", () => 
   assert.equal(fields.durationMs, 12.346);
 });
 
+test("billing fields pass the telemetry filter while look-alike fields do not", () => {
+  const fields = telemetryFields({ providerType: "copilot-subscription", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial", promptTokens: "x", authToken: 5 });
+  assert.deepEqual(fields, { providerType: "copilot-subscription", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial" });
+});
+
+test("diagnostics sum Copilot credits per model", () => {
+  const at = new Date().toISOString(); const base = { at, host: "mac", component: "gateway", pid: 1, model: "copilot/x" };
+  const summary = summarizeTelemetry([{ ...base, event: "request_completed", nanoAiu: 2.5e9 }, { ...base, event: "request_failed", code: "x", nanoAiu: 1e9 }], new Date(0)) as { requests: Record<string, { credits?: number }> };
+  assert.equal(summary.requests["copilot/x"].credits, 3.5);
+});
+
 test("events persist privately per day and turn telemetry flags silent completions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-telemetry-"));
   try {

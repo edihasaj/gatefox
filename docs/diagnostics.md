@@ -23,7 +23,7 @@ only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` 
 | Process | Events |
 | --- | --- |
 | Adapter | `turn_started`, `turn_completed`, `turn_empty_completion` (completed with no answer and no tool call), `turn_error`, `turn_quiet` (no events for five minutes), `rpc_error`, `adapter_client`, `adapter_session_end`, `reasoning_restored` (provider, method and source `record`, `rollout` or `thread` of a chat's recovered effort, adjusted), `reasoning_effort_reset` (from, to, model and method when a restored level had to be fitted), `reasoning_unrecovered` (model when no effort could be recovered) |
-| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry, `threadKey` — the same first 8 hex `claude_session` reports, when the request carried a thread id, so one thread's one-shot and live events line up — and `systemPrefixOnly` set when its cache read reached only the system prefix, the same test `claude_session` applies below; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `model_metadata_skipped` (the six-hour metadata refresh left one provider out: `provider` and a fixed `reason`, `refresh_deferred` when serving a Codex login's access token would need a refresh (it has expired, or expires within two minutes unless the issuer's `earliest_refresh_at` is still in the future) and the refresh was left to the next real request, or `discovery_failed` for any other failure; the error text is never recorded), `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
+| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached, cache-write, reasoning and output tokens, `providerType`, Copilot `nanoAiu` credits with `nanoAiuStatus`, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry, `threadKey` — the same first 8 hex `claude_session` reports, when the request carried a thread id, so one thread's one-shot and live events line up — and `systemPrefixOnly` set when its cache read reached only the system prefix, the same test `claude_session` applies below; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `model_metadata_skipped` (the six-hour metadata refresh left one provider out: `provider` and a fixed `reason`, `refresh_deferred` when serving a Codex login's access token would need a refresh (it has expired, or expires within two minutes unless the issuer's `earliest_refresh_at` is still in the future) and the refresh was left to the next real request, or `discovery_failed` for any other failure; the error text is never recorded), `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
 A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403
@@ -70,6 +70,45 @@ write: session lifecycle, `session_activity` and `session_ended` with transport
 counters, `transport_activity`, and audited SDK transport events (`sdk_log`). Client
 and stream IDs appear only as per-process hashes, and SDK message text is never
 printed. See [native connected machines](native-remote.md#reading-the-logs).
+
+## Usage ledger
+
+The gateway also appends one content-free row per finished request to
+`<state>/usage/usage-YYYY-MM.jsonl` (UTC month). The directory is mode 0700 and the
+files 0600. The current month and the previous 12 are kept; older files are removed
+on the first write and whenever the month changes. Set `GATEWAY_USAGE_LEDGER=off` to
+disable it: nothing is created, imported or marked. It is independent of
+`GATEWAY_TELEMETRY`.
+
+A row holds only `v`, `at`, `host`, `requestId`, `responseId` (marked responses
+only), `provider`, `providerType`, `model`, `status` (`completed`, `empty` or
+`failed`), `origin` (`gateway`, or `telemetry` for imported rows), `session`
+(imported rows only), `inputTokens` (gross, including cached), `cachedTokens`,
+`cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `nanoAiu` and `nanoAiuStatus`.
+`nanoAiu` is Copilot's credit amount in billionths of a credit; `null` means none
+was reported, which is not zero. `nanoAiuStatus` is `complete`, `partial` or
+`unavailable` when a request made several Copilot calls and only some were priced.
+A request that fails after a provider reported usage keeps that usage, so a Copilot
+call that is billed and then rejected still shows up. A row with no tokens and no
+credit amount is not written.
+
+Never stored: prompts, instructions, messages, tool names, arguments or outputs,
+images, thread, session or turn ids, account ids, credentials, error text or
+environment values.
+
+**Marker.** For `copilot-subscription` and `claude-subscription` routes, while the
+ledger is on, the Responses id is `resp_gl_<request id without dashes>` instead of a
+random `resp_<hex>`. Codex records that id in its own rollout, so a spend tool counts
+a gateway request once, from the ledger, and skips the matching Codex record.
+
+**Telemetry import.** The first time the ledger is prepared, and
+`<state>/usage/telemetry-import.json` is absent, each `request_*` telemetry event with
+input or output tokens becomes one `origin: "telemetry"` row (no response id, credit
+amount `null`), and the marker file records the count. This keeps request history
+that telemetry would drop after its 14 days. `providerType` is set only for providers
+in the current configuration.
+
+`gateway diagnostics` also sums Copilot credits per model from `nanoAiu`.
 
 ## Exception reports
 

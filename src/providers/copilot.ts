@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
-import type { ResponsesRequest, InferenceEvent, OpenAITool, OpenAIToolCall, Usage } from "../protocol/types.js";
+import type { ResponsesRequest, InferenceEvent, OpenAITool, OpenAIToolCall, Usage, UsageAccounting } from "../protocol/types.js";
 import { openCopilot } from "./copilot-client.js";
 import { record } from "./copilot-rpc.js";
 import { ProviderError, type Provider } from "./provider.js";
@@ -39,6 +39,8 @@ export function nativeCopilotCalls(value: unknown, tools: OpenAITool[]): OpenAIT
   });
 }
 
+const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+
 export class CopilotSubscription implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
@@ -50,7 +52,10 @@ export class CopilotSubscription implements Provider {
     const { conversation, images } = imageConversation(normalized.messages);
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
     let text = ""; let final = false; let subscriptionVerified = false;
+    // One gateway request can contain several model calls; their counts add up.
+    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, nanoAiu: 0, priced: 0, calls: 0 };
     let usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+    let accounting: UsageAccounting = {};
     try {
       await client.rpc.request("session.create", {
         sessionId, model: request.model, allowedModels: [request.model], streaming: true, ...(effort ? { reasoningEffort: effort } : {}),
@@ -94,8 +99,15 @@ export class CopilotSubscription implements Provider {
           if (data.isByok === true) throw new ProviderError("account_route", "Copilot attempted BYOK inference");
           if (data.isByok !== false && data.provider !== "copilot") throw new ProviderError("subscription_unverified", "Copilot did not verify subscription inference");
           subscriptionVerified = true;
-          const input = typeof data.inputTokens === "number" ? data.inputTokens : 0; const output = typeof data.outputTokens === "number" ? data.outputTokens : 0;
-          usage = { input_tokens: input, output_tokens: output, total_tokens: input + output };
+          const nanoAiu = record(data.copilotUsage).totalNanoAiu;
+          totals.input += count(data.inputTokens); totals.output += count(data.outputTokens); totals.cacheRead += count(data.cacheReadTokens);
+          totals.cacheWrite += count(data.cacheWriteTokens); totals.reasoning += count(data.reasoningTokens); totals.calls++;
+          if (typeof nanoAiu === "number" && Number.isFinite(nanoAiu) && nanoAiu >= 0 && data.aiCreditsStatus !== "unavailable") { totals.priced++; totals.nanoAiu += nanoAiu; }
+          usage = { input_tokens: totals.input, output_tokens: totals.output, total_tokens: totals.input + totals.output, input_tokens_details: { cached_tokens: totals.cacheRead } };
+          accounting = { cacheWriteTokens: totals.cacheWrite, reasoningTokens: totals.reasoning, ...(totals.priced ? { nanoAiu: totals.nanoAiu } : {}),
+            nanoAiuStatus: totals.priced === totals.calls ? "complete" : totals.priced ? "partial" : "unavailable" };
+          // The server records this before any later check can reject the call, so spend is never lost.
+          yield { type: "usage", usage, accounting };
         }
         if (event.type === "assistant.message") {
           // Protocol 3 in CLI 1.0.91 omits this optional field. Its preceding
@@ -112,13 +124,13 @@ export class CopilotSubscription implements Provider {
           final = true;
           if (Array.isArray(data.toolRequests) && data.toolRequests.length) {
             for (const call of nativeCopilotCalls(data.toolRequests, tools)) yield { type: "tool", call };
-            yield { type: "done", usage }; return;
+            yield { type: "done", usage, accounting }; return;
           }
           if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Copilot did not return the required tool call");
         }
         if (event.type === "assistant.idle") {
           if (!final) throw new ProviderError("incomplete", "Copilot became idle without a final response");
-          yield { type: "done", usage }; return;
+          yield { type: "done", usage, accounting }; return;
         }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");

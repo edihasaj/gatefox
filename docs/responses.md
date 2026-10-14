@@ -17,6 +17,12 @@ Claude, Copilot and other rows, and clients without a native catalog, get no
 model-specific base prompt. Explicit and resumed client instructions remain
 authoritative.
 
+**Response ids.** Every response id is `resp_<32 hex>`. While the usage ledger is on
+([diagnostics](diagnostics.md#usage-ledger)), responses from Copilot and Claude
+subscription routes use `resp_gl_<request id without dashes>`, the same hex as the
+`X-Request-Id` header. Usage and billing detail (cache writes, reasoning tokens,
+Copilot credits) stay in the local ledger and never appear in the response.
+
 The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
 the older nested function definition format for existing Chat Completions clients.

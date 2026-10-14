@@ -23,7 +23,11 @@ for await (const message of copilotFrames(process.stdin)) {
     if (mode === "context-prose") { event("session.error", { errorType: "notification", message: "The user quoted prompt is too long" }); continue; }
     if (mode === "permission") { event("permission.requested", { requestId: "permission" }); continue; }
     event("assistant.reasoning_delta", { deltaContent: "checking", reasoningId: "r1" });
-    event("assistant.usage", { isByok: mode === "byok", inputTokens: 11, outputTokens: 2 });
+    if (mode === "billing") {
+      event("assistant.usage", { isByok: false, inputTokens: 100, outputTokens: 5, cacheReadTokens: 80, cacheWriteTokens: 10, reasoningTokens: 3, copilotUsage: { totalNanoAiu: 2e9 } });
+      event("assistant.usage", { isByok: false, inputTokens: 50, outputTokens: 2, cacheReadTokens: 40, cacheWriteTokens: 0, reasoningTokens: 1, copilotUsage: { totalNanoAiu: 1e9 } });
+    } else if (mode === "unpriced") event("assistant.usage", { isByok: false, inputTokens: 11, outputTokens: 2, aiCreditsStatus: "unavailable" });
+    else event("assistant.usage", { isByok: mode === "byok", inputTokens: 11, outputTokens: 2 });
     const tool = mode === "tool" || mode === "foreign-tool";
     const text = tool ? "" : "fixture-proof";
     if (text) event("assistant.message_delta", { deltaContent: text });

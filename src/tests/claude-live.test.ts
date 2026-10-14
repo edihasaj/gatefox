@@ -65,6 +65,7 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
     Object.assign(process.env, { CLAUDECODE: "1", CLAUDE_CODE_ENTRYPOINT: "cli" });
     const a = await turn(provider, first).finally(() => { for (const [name, value] of Object.entries(host)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
     assert.deepEqual(a.events.map(kind), ["text", "text", "tool:alpha", "tool:beta", "done"]);
+    const ended = a.events.at(-1); assert.ok(ended?.type === "done" && ended.accounting?.cacheWriteTokens === 10, "a live session reports its cache writes for the usage ledger");
     await sleep(100);
     assert.equal(limits.length, 1, "a rate limit printed after the request ended still reaches the provider");
     const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "result")]);

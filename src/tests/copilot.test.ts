@@ -74,7 +74,7 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
   try {
     const adapter = new CopilotSubscription(provider);
     const normal = await collect(adapter.infer(request, new AbortController().signal));
-    assert.deepEqual(normal.map(event => event.type), ["reasoning", "text", "done"]);
+    assert.deepEqual(normal.map(event => event.type), ["reasoning", "usage", "text", "done"]);
     const last = normal.at(-1); assert.equal(last?.type === "done" && last.usage.total_tokens, 13);
     const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
     assert.deepEqual(receipt.availableTools, []); assert.deepEqual(receipt.allowedModels, ["fixture"]); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");

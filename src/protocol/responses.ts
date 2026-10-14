@@ -39,7 +39,7 @@ type Message = { id: string; position: number; value: string; providerId?: strin
 
 /** A single response ledger drives both streamed events and the final JSON body. */
 export class ResponsesWriter {
-  private readonly responseId = identifier("resp");
+  private readonly responseId: string;
   private readonly created = Math.floor(Date.now() / 1000);
   private readonly ledger: Item[] = [];
   private readonly thoughts = new Map<string, Thought>();
@@ -52,7 +52,7 @@ export class ResponsesWriter {
   private tokens: Usage = { total_tokens: 0, input_tokens: 0, output_tokens: 0 };
   private serviceTier?: PublicServiceTier;
   private endTurn?: boolean;
-  constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void) {}
+  constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void, options: { id?: string } = {}) { this.responseId = options.id ?? identifier("resp"); }
   /** The inference has a real terminal event; the user turn may still continue. */
   get completed(): boolean { return this.status === "completed" || this.status === "incomplete"; }
   private publish(frame: WireEvent): void { this.emit({ ...frame, sequence_number: this.serial++ }); }

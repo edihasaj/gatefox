@@ -11,7 +11,7 @@ const percentile = (values: number[], p: number) => { if (!values.length) return
 /** Aggregates local telemetry into counts per model and a short list of recent problems. */
 export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Record<string, unknown> {
   const turns: Record<string, Counts> = {}; const turnFailures: Counts = {};
-  const requests: Record<string, Counts & { input?: number; cached?: number }> = {}; const firstEvent: Record<string, number[]> = {};
+  const requests: Record<string, Counts & { input?: number; cached?: number; nano?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
   const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
@@ -30,6 +30,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       bump(entry, event.event === "request_failed" ? `failed:${event.code}${event.reason ? ":" + event.reason : ""}` : event.event.slice(8));
       if (typeof event.inputTokens === "number") entry.input = (entry.input || 0) + event.inputTokens;
       if (typeof event.cachedTokens === "number") entry.cached = (entry.cached || 0) + event.cachedTokens;
+      if (typeof event.nanoAiu === "number" && Number.isFinite(event.nanoAiu)) entry.nano = (entry.nano || 0) + event.nanoAiu;
       if (typeof event.firstEventMs === "number") (firstEvent[model] ||= []).push(event.firstEventMs);
     }
     if (event.event === "provider_retry") bump(retries, event.upstreamCode ?? event.code);
@@ -50,8 +51,8 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     }
   }
   const requestSummary = Object.fromEntries(Object.entries(requests).map(([model, entry]) => {
-    const { input, cached, ...counts } = entry;
-    return [model, { ...counts, cacheHit: input ? `${Math.round(100 * (cached || 0) / input)}%` : undefined,
+    const { input, cached, nano, ...counts } = entry;
+    return [model, { ...counts, ...(nano === undefined ? {} : { credits: Math.round(nano / 1e6) / 1000 }), cacheHit: input ? `${Math.round(100 * (cached || 0) / input)}%` : undefined,
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
