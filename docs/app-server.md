@@ -414,6 +414,25 @@ and auto summaries, so the native default shows in the model list but does not
 yet start the chat. Those defaults never replace an existing chat's settings on
 resume; the chat's own reasoning is restored instead, as described above.
 
+## Empty chats and message order
+
+The SDK answers a `thread/start` or `thread/fork` request before it announces the
+new thread. The desktop depends on that order: it hides a prewarmed chat (the empty
+chat behind an unsent draft) only when the reply arrives before `thread/started`.
+The adapter records a gateway chat's tier before it answers, so it holds the new
+thread's notifications until the reply is written and then releases them in SDK
+order. Chats that are already known keep streaming while a start is pending, a
+failed start still releases the held notifications, and a buffer of more than 512
+held messages is written out in order rather than growing. Before this, a gateway
+prewarm showed up in the sidebar as an empty chat, and opening it failed with
+"Failed to resume chat".
+
+A request for a chat that no SDK knows (no rollout, nothing loaded) goes to the
+native SDK unchanged, so the desktop receives the SDK's own answer: an empty
+attachment list, a `notLoaded` unsubscribe, or "no rollout found for thread id",
+which the desktop recognizes when it archives or deletes such a chat. Any other
+failure of the provider lookup still fails closed.
+
 ## Speed controls
 
 Gateway discovery retains the provider's public `service_tiers`,

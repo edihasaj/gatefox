@@ -9,6 +9,8 @@ import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
+import { ThreadStartOrder } from "./thread-start-order.js";
+import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
@@ -27,6 +29,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const control = registration ? new NativeControl(registration.home, emit) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
   let router: AppServerRouter | undefined;
+  const order = new ThreadStartOrder();
   let backends: AppServerBackends;
   const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
   const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
@@ -34,7 +37,10 @@ export async function shimSession(executable: string, args: string[], config: Ga
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async message => {
       await router?.observeNotification(message);
       if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
-      if (!(control && message.method === "remoteControl/status/changed")) await emit(message);
+      if (control && message.method === "remoteControl/status/changed") return;
+      // Server requests keep their own correlation; only notifications wait for a new thread's reply.
+      if (isId(message.id)) { await emit(message); return; }
+      await Promise.all(order.admit(message).map(emit));
     }, () => input.destroy(), configPath);
   } catch (error) {
     control?.close(); turns.close();
@@ -50,7 +56,11 @@ export async function shimSession(executable: string, args: string[], config: Ga
     if (!legacy && !(threadConfig && rewrittenHooks.size)) return normalizeCodexFeatureRequest(method, params);
     let cwd = typeof params.cwd === "string" ? params.cwd : method === "thread/start" ? process.cwd() : undefined;
     if (threadConfig && !cwd && typeof params.threadId === "string") {
-      const thread = object((await backends.request("thread/read", { threadId: params.threadId, includeTurns: false })).thread);
+      const probe = await backends.request("thread/read", { threadId: params.threadId, includeTurns: false })
+        .catch(error => { if (nativeThreadAbsent(error, String(params.threadId))) return undefined; throw error; });
+      // A chat no SDK knows cannot load; the SDK's own reply follows without hook corrections.
+      if (!probe) return normalizeCodexFeatureRequest(method, params);
+      const thread = object(probe.thread);
       if (typeof thread.cwd !== "string") throw Object.assign(new Error("This chat's workspace is unavailable; deprecated hooks settings were not applied."), { code: -32001 });
       cwd = thread.cwd;
     }
@@ -75,13 +85,16 @@ export async function shimSession(executable: string, args: string[], config: Ga
         handled++;
         if (message.method === "initialize") { const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
         if (tasks.size >= 256) { await emit({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
-        const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(result => emit({ id: message.id, result }), error => {
+        const creating = order.begin(message.method, object(message.params));
+        // Writes are queued synchronously, so held notifications follow the reply in SDK order.
+        const answer = (reply: Message, created?: string) => { const written = emit(reply); if (creating) for (const held of order.settle(created)) void emit(held).catch(() => {}); return written; };
+        const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(result => answer({ id: message.id, result }, typeof object(result.thread).id === "string" ? String(object(result.thread).id) : undefined), error => {
           const failure = error as Error & { code?: number; data?: unknown };
           // Routing errors carry fixed gateway text; other failures are classified only.
           const routing = error instanceof AppServerRoutingError;
           if (failure.code === undefined && !routing) reportException(failure, `rpc:${message.method}`);
           telemetry("rpc_error", { method: message.method, code: failure.code || -32603, ...(routing ? { reason: failure.message } : { errorClass: errorClass(failure.message) }) });
-          return emit({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
+          return answer({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
         });
         tasks.add(task); void task.finally(() => tasks.delete(task)).catch(stop);
       } else if (typeof message.method === "string") backends.notify(message);

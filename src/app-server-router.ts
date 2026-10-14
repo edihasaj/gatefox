@@ -13,6 +13,7 @@ import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummar
 import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
 import { homedir } from "node:os";
 import { telemetry } from "./telemetry.js";
+import { nativeThreadAbsent } from "./native-thread-absence.js";
 
 type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
@@ -97,10 +98,13 @@ export class AppServerRouter {
       }
     }
   }
-  private async route(threadId: string) {
+  private async route(threadId: string): Promise<ThreadRoute | undefined> {
     let route = this.routes.get(threadId);
     if (!route) {
-      const thread = object((await this.backend("thread/read", { threadId, includeTurns: false })).thread);
+      let probe: ObjectValue;
+      try { probe = await this.backend("thread/read", { threadId, includeTurns: false }); }
+      catch (error) { if (nativeThreadAbsent(error, threadId)) return undefined; throw error; }
+      const thread = object(probe.thread);
       if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
       route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
       this.routes.set(threadId, route);
@@ -282,6 +286,50 @@ export class AppServerRouter {
     telemetry("reasoning_restored", { provider: "native", method, source: recovered.source, adjusted: false });
     return recovered.effort;
   }
+  /** Provider-specific rewriting for a chat some SDK knows; the SDK still validates the result. */
+  private async routedRequest(method: string, params: ObjectValue, threadRoute: ThreadRoute): Promise<ObjectValue> {
+    let forwarded = params;
+    if (typeof params.threadId !== "string") return forwarded;
+    const active = this.activeTurns.get(params.threadId);
+    const route = method === "turn/settings/update" && active && active.turnId === params.turnId ? active.route : threadRoute;
+    this.assertSameProvider(route.provider, requestedModel(params));
+    const selectedModel = requestedModel(params) ?? route.model;
+    if (route.provider === gatewayProvider && typeof selectedModel === "string") {
+      const tier = tierSelection(params);
+      const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
+      if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
+      if (tier) this.assertServiceTier(selectedModel, tier.value);
+      else if (turnTier === undefined && typeof route.serviceTier === "string") {
+        // Picking a model without the chat's tier (a Fast Codex chat to Claude)
+        // switches it to Standard; the picker shows no speed control for that model.
+        // Choosing an unsupported tier explicitly still fails.
+        // Only the picker's explicit settings change qualifies; a turn start from a
+        // stale peer still cannot drop another client's Fast setting.
+        if (method === "thread/settings/update" && selectedModel !== route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
+          forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
+        } else this.assertServiceTier(selectedModel, route.serviceTier);
+      }
+      if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
+      if (turnTier === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
+    }
+    if (["thread/resume", "thread/fork"].includes(method) && route.provider === gatewayProvider) {
+      const model = requestedModel(params) ?? route.model;
+      const sameModel = model === route.model;
+      if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
+      if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
+      const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
+      // A typed model override disables the engine's persisted-settings restore,
+      // so the gateway supplies the chat's own reasoning for the model it keeps.
+      let restored: ReasoningChoice | null | undefined = null;
+      if (!sameModel) restored = undefined;
+      else if (configEffort(params) === undefined) restored = await this.restoredReasoning(params.threadId, model, method);
+      forwarded = this.modelRequest(inherited, model, false, restored);
+    } else if (["thread/resume", "thread/fork"].includes(method)) {
+      const effort = await this.nativeRestoredEffort(params, method, route);
+      if (effort !== undefined) forwarded = { ...forwarded, config: { ...object(forwarded.config), model_reasoning_effort: effort } };
+    }
+    return forwarded;
+  }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
     if (["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
@@ -308,45 +356,9 @@ export class AppServerRouter {
       if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model, true);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
+      // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.
       const threadRoute = await this.route(params.threadId);
-      const active = this.activeTurns.get(params.threadId);
-      const route = method === "turn/settings/update" && active && active.turnId === params.turnId ? active.route : threadRoute;
-      this.assertSameProvider(route.provider, requestedModel(params));
-      const selectedModel = requestedModel(params) ?? route.model;
-      if (route.provider === gatewayProvider && typeof selectedModel === "string") {
-        const tier = tierSelection(params);
-        const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
-        if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
-        if (tier) this.assertServiceTier(selectedModel, tier.value);
-        else if (turnTier === undefined && typeof route.serviceTier === "string") {
-          // Picking a model without the chat's tier (a Fast Codex chat to Claude)
-          // switches it to Standard; the picker shows no speed control for that model.
-          // Choosing an unsupported tier explicitly still fails.
-          // Only the picker's explicit settings change qualifies; a turn start from a
-          // stale peer still cannot drop another client's Fast setting.
-          if (method === "thread/settings/update" && selectedModel !== route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
-            forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
-          } else this.assertServiceTier(selectedModel, route.serviceTier);
-        }
-        if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
-        if (turnTier === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
-      }
-      if (["thread/resume", "thread/fork"].includes(method) && route.provider === gatewayProvider) {
-        const model = requestedModel(params) ?? route.model;
-        const sameModel = model === route.model;
-        if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
-        if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
-        const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
-        // A typed model override disables the engine's persisted-settings restore,
-        // so the gateway supplies the chat's own reasoning for the model it keeps.
-        let restored: ReasoningChoice | null | undefined = null;
-        if (!sameModel) restored = undefined;
-        else if (configEffort(params) === undefined) restored = await this.restoredReasoning(params.threadId, model, method);
-        forwarded = this.modelRequest(inherited, model, false, restored);
-      } else if (["thread/resume", "thread/fork"].includes(method)) {
-        const effort = await this.nativeRestoredEffort(params, method, route);
-        if (effort !== undefined) forwarded = { ...forwarded, config: { ...object(forwarded.config), model_reasoning_effort: effort } };
-      }
+      if (threadRoute) forwarded = await this.routedRequest(method, params, threadRoute);
     }
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;
     const settingsVersion = typeof params.threadId === "string" ? this.settingsVersions.get(params.threadId) || 0 : 0;

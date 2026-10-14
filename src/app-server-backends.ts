@@ -15,6 +15,7 @@ import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-comp
 import { SharedNativeConnection, type NativeConnectionFactory, type NativeRpcConnection } from "./shared-native-connection.js";
 import { readServicePlan } from "./service-plan.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { nativeThreadAbsent } from "./native-thread-absence.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
@@ -393,8 +394,9 @@ export class AppServerBackends {
       if (!engine) {
         engine = await this.owner(params.threadId); reserved = !!engine;
         if (!engine) {
-          const thread = object((await this.nativeRequest("thread/read", { threadId: params.threadId, includeTurns: false })).thread);
-          if (thread.modelProvider === "subscription_gateway") { engine = await this.gateway(); reserved = true; }
+          const probe = await this.nativeRequest("thread/read", { threadId: params.threadId, includeTurns: false })
+            .catch(error => { if (nativeThreadAbsent(error, String(params.threadId))) return undefined; throw error; });
+          if (object(probe?.thread).modelProvider === "subscription_gateway") { engine = await this.gateway(); reserved = true; }
         }
       }
     }
