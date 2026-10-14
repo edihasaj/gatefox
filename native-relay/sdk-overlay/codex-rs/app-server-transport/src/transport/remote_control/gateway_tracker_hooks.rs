@@ -1,12 +1,17 @@
 //! Gateway: hooks called from small patches in `client_tracker.rs`.
 //! A child module, so it can read the tracker's private state without widening it.
 
+use super::ClientEvent;
 use super::ClientId;
 use super::ClientTracker;
 use super::StreamId;
+use super::gateway_inbound::Action;
+use super::gateway_inbound::Envelope;
+use super::gateway_inbound::Fill;
 use crate::gateway_counters;
 use crate::gateway_counters::Counter;
 use crate::gateway_counters::hash_id;
+use tokio::time::Instant;
 
 const TARGET: &str = "gateway_remote_control";
 
@@ -30,17 +35,87 @@ impl ClientTracker {
         futures::future::pending().await
     }
 
-    /// The SDK dropped a message at or below the stream's delivered high-water mark.
-    pub(super) fn gateway_dedupe_dropped(&self, client_key: &(ClientId, StreamId), seq_id: u64) {
+    /// The SDK dropped a message at or below the stream's delivered high-water mark. When that
+    /// sequence number filled a known hole, the message arrived late and out of order.
+    pub(super) fn gateway_dedupe_dropped(
+        &self,
+        client_key: &(ClientId, StreamId),
+        seq_id: u64,
+        fill: Fill,
+    ) {
         gateway_counters::add(Counter::InboundSeqDedupeDrop, 1);
+        let late = matches!(fill, Fill::FilledHole { .. });
+        if late {
+            gateway_counters::add(Counter::InboundLateFillDeduped, 1);
+        }
         tracing::info!(
             target: TARGET,
-            gateway_event = "inbound_seq_dedupe_drop",
+            gateway_event = if late { "inbound_late_fill_deduped" } else { "inbound_seq_dedupe_drop" },
             connection = self.clients.get(client_key).map(|client| client.connection_id.0),
             client = %hash_id(&client_key.0.0),
             stream = %hash_id(&client_key.1.0),
             seq = seq_id,
+            after_stale = matches!(fill, Fill::FilledHole { stale: true }),
         );
+    }
+
+    /// Records the sequence number of an explicit-stream envelope before the SDK handles it.
+    pub(super) fn gateway_observe(
+        &mut self,
+        client_key: &(ClientId, StreamId),
+        event: &ClientEvent,
+        seq_id: Option<u64>,
+        is_legacy_stream_id: bool,
+        is_initialize: bool,
+    ) -> Fill {
+        if is_legacy_stream_id || is_initialize {
+            return Fill::Untracked;
+        }
+        let envelope = match event {
+            ClientEvent::ClientMessage { .. } => Envelope::Message,
+            ClientEvent::Ping => Envelope::Ping,
+            ClientEvent::ClientClosed => Envelope::Closed,
+            ClientEvent::ClientMessageChunk { .. } | ClientEvent::Ack { .. } => {
+                return Fill::Untracked;
+            }
+        };
+        let now = Instant::now();
+        let fill = self
+            .gateway_inbound
+            .observe(client_key, envelope, seq_id, now);
+        self.gateway_evaluate(client_key, now);
+        fill
+    }
+
+    /// Evaluates every tracked stream; runs on the 30 s idle sweep.
+    pub(super) fn gateway_evaluate_all(&mut self, now: Instant) {
+        for client_key in self.gateway_inbound.keys() {
+            self.gateway_evaluate(&client_key, now);
+        }
+    }
+
+    /// A reset ends the stream from the app side without marking it, so the client gets the
+    /// unknown pong after the stream's queued replies. No JSON-RPC result is synthesized.
+    fn gateway_evaluate(&mut self, client_key: &(ClientId, StreamId), now: Instant) {
+        if self.gateway_inbound.evaluate(client_key, now) == Some(Action::Reset)
+            && let Some(client) = self.clients.get(client_key)
+        {
+            client.disconnect_token.cancel();
+        }
+    }
+
+    /// A chunk of a not yet complete message arrived; its stream's holes are not stale yet.
+    pub(in crate::transport::remote_control) fn gateway_chunk_pending(
+        &mut self,
+        client_message_key: Option<&((ClientId, Option<StreamId>), u64)>,
+    ) {
+        if let Some(((client_id, Some(stream_id)), seq_id)) = client_message_key {
+            self.gateway_inbound.chunk_pending(
+                &(client_id.clone(), stream_id.clone()),
+                *seq_id,
+                Instant::now(),
+            );
+        }
     }
 
     /// The SDK dropped a non-initialize message for a stream it does not know.

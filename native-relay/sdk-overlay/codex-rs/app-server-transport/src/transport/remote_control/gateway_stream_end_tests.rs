@@ -133,12 +133,19 @@ pub(super) fn is_unknown_pong(envelope: &QueuedServerEnvelope, stream: &str) -> 
         && envelope.stream_id.0 == stream
 }
 
+/// Drains the server queue for 100 ms and fails on any unknown pong. Active pongs answer
+/// pings and are expected.
 pub(super) async fn assert_no_pong(harness: &mut Harness) {
     while let Ok(Some(envelope)) = timeout(Duration::from_millis(100), harness.server_rx.recv()).await
     {
         assert!(
-            !matches!(envelope.event, ServerEvent::Pong { .. }),
-            "tracker-side close must not send a pong"
+            !matches!(
+                envelope.event,
+                ServerEvent::Pong {
+                    status: PongStatus::Unknown
+                }
+            ),
+            "this end must not send an unknown pong"
         );
     }
 }

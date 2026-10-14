@@ -30,6 +30,11 @@ export const requiredSdkTests = [
   'transport::remote_control::tests::gateway_wire_tests::relay_stream_end_reaches_backend_after_last_reply_and_client_close_does_not',
   'transport::remote_control::gateway_observability_tests::replayed_seq_is_dropped_and_counted',
   'transport::remote_control::gateway_observability_tests::unknown_stream_message_is_counted',
+  ...['contiguous_messages_pings_and_close_leave_no_hole', 'missing_seq_turns_stale_after_15s',
+    'chunk_assembly_defers_staleness', 'pings_without_seq_are_counted_not_filled', 'late_fill_after_stale_is_reported',
+    'reset_switch_allows_one_reset_per_stream_per_10_minutes', 'late_seq_is_still_deduped_and_counted',
+    'log_only_never_cancels', 'reset_switch_resets_once_via_unknown_pong',
+  ].map(name => `transport::remote_control::gateway_inbound_tests::${name}`),
 ];
 /** libtest filters: the remote-control suite plus the crate-root gateway counters. */
 export const sdkTestFilters = ['transport::remote_control::', 'gateway_counters::'];
