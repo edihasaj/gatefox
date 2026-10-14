@@ -259,8 +259,11 @@ contracts. The gateway does not retry or choose another billing route.
 
 User messages and caller tool results accept `input_image` with an inline base64
 `image_url`. PNG, JPEG, GIF, and WebP signatures and encoding are validated before
-inference. An image is limited to 8 MiB encoded; the whole request remains limited
-to 10 MiB. Remote URLs and uploaded file IDs are rejected. The gateway does not
+inference. An image is limited to 8 MiB encoded. The whole request is limited to
+64 MiB, above what upstreams accept, so a long chat with many screenshots reaches
+the provider as it would natively and the provider's own limit applies. (Before
+0.3.8 the cap was 10 MiB, which refused such chats with a 413.) Remote URLs and
+uploaded file IDs are rejected. The gateway does not
 fetch image URLs or borrow the primary account's file access.
 
 Each Claude inference starts the official CLI with one user message. The adapter

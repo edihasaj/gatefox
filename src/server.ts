@@ -40,9 +40,15 @@ export function nativeModelAlias(config: GatewayConfig, model: string): string |
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
   return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
+/**
+ * Whole-request cap. Native Codex sends long chats with inline screenshots to its upstream with no
+ * client-side byte limit, and upstreams accept tens of megabytes, so this stays above them and lets
+ * the upstream decide. It only bounds gateway memory.
+ */
+export const maxRequestBytes = 64 * 1024 * 1024;
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of req) { size += chunk.length; if (size > 10 * 1024 * 1024) throw new ProviderError("request_too_large", "Request exceeds 10 MiB", 413); chunks.push(chunk); }
+  for await (const chunk of req) { size += chunk.length; if (size > maxRequestBytes) throw new ProviderError("request_too_large", "Request exceeds 64 MiB", 413); chunks.push(chunk); }
   let value: ResponsesRequest;
   try { value = JSON.parse(Buffer.concat(chunks).toString()) as ResponsesRequest; } catch { throw new ProviderError("invalid_json", "Request must be valid JSON", 400); }
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
