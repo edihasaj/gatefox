@@ -5,8 +5,10 @@ mod diagnostics_tests;
 mod frames;
 mod lease;
 mod registration;
+mod relay_counters;
 mod session;
 mod session_events;
+mod shutdown;
 #[cfg(test)]
 mod tests;
 
@@ -381,13 +383,14 @@ async fn run() -> io::Result<()> {
             },
         }
     }
-    stop.cancel();
-    for (_, session) in sessions {
-        session.stop.cancel();
-    }
-    for (_, (_, token)) in controllers {
-        token.cancel();
-    }
+    shutdown::drain_then_stop(
+        &mut sessions,
+        &mut controllers,
+        &mut events,
+        &stop,
+        std::time::Duration::from_secs(1),
+    )
+    .await;
     while let Some(result) = tasks.join_next_with_id().await {
         let (task, cause) = match result {
             Ok((task, cause)) => (task, cause),
