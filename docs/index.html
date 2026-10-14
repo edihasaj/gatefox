@@ -14,7 +14,7 @@
   <a class="skip" href="#guide">Skip to guide</a>
   <aside class="sidebar" aria-label="Guide navigation">
     <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Harness Gateway fox"><span>Subscription<br>Gateway</span></a>
-    <div class="edition">FIELD GUIDE <span>v0.3.4</span></div>
+    <div class="edition">FIELD GUIDE <span>v0.3.5</span></div>
     <label class="search-label" for="search">Find in this guide</label>
     <input id="search" type="search" placeholder="Models, streaming, recovery…" autocomplete="off">
     <nav>
@@ -54,11 +54,11 @@
       <h2>Install once on each Mac.</h2>
       <p>The Apple Silicon installer includes its Node runtime. It needs no repository checkout or administrator access. You need GitHub access to the private release and the signed Codex desktop app.</p>
       <p>Run these commands inside a new, empty download folder:</p>
-      <pre><code>gh release download v0.3.4 -R edihasaj/harness-gateway \
+      <pre><code>gh release download v0.3.5 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf harness-gateway-0.3.4-macos-arm64.tar.gz
-./harness-gateway-0.3.4-macos-arm64/install
+tar -xzf harness-gateway-0.3.5-macos-arm64.tar.gz
+./harness-gateway-0.3.5-macos-arm64/install
 gateway --version</code></pre>
       <p>The installer keeps versioned releases under your user installation prefix. Upgrades preserve gateway registrations. They refuse an unrelated command named <code>gateway</code>.</p>
       <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory:</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre><p>This refuses to overwrite an existing destination. Native Codex authentication and settings are not copied. Retire an obsolete local configuration after a successful migration; it can otherwise take precedence over the installed configuration.</p></details>
