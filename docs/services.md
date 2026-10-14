@@ -62,7 +62,7 @@ plan has no inference component (a Mac moving from client-only to standalone),
 the window skips the inference health check because nothing listens yet. The inference
 child must accept its own idle guard before the supervisor stops its other
 components. `gateway service uninstall` explicitly stops all owned components
-and moves the plan and LaunchAgent to Trash. Provider credentials remain.
+and moves the plan and LaunchAgent to Trash. Provider credentials remain. Install, upgrade and uninstall of the single-job service treat a job launchd has already dropped (`launchctl bootout` reporting `3: No such process`) as stopped and continue.
 
 On SIGTERM or SIGINT, inference stops listening at once and lets running requests
 finish for `GATEWAY_SHUTDOWN_DRAIN_MS` (default 4000, clamped to 0 to 5000).
