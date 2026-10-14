@@ -294,3 +294,77 @@ async fn panic_join_keeps_task_identity_for_owner_cleanup() {
     assert!(sessions.is_empty());
     assert!(token.is_cancelled());
 }
+
+struct CountingWriter {
+    writes: usize,
+    bytes: Vec<u8>,
+}
+
+impl io::Write for CountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.writes += 1;
+        self.bytes.extend_from_slice(buffer);
+        Ok(buffer.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn each_record_is_one_write() {
+    let mut state = SessionDiagnostics::new(21);
+    state.received();
+    for record in [
+        diagnostics::record("session_rejected", 3, Cause::QueueFull),
+        state.snapshot(),
+        state.end(Cause::ChildEof, &Default::default(), Some("success")),
+    ] {
+        let mut writer = CountingWriter {
+            writes: 0,
+            bytes: Vec::new(),
+        };
+        diagnostics::write_record(&mut writer, &record);
+        assert_eq!(writer.writes, 1, "a record must reach the log in one write");
+        let line = String::from_utf8(writer.bytes).unwrap();
+        let json = line.strip_prefix("gateway: ").unwrap().strip_suffix('\n').unwrap();
+        assert_eq!(serde_json::from_str::<Value>(json).unwrap(), record);
+    }
+}
+
+#[test]
+fn session_activity_and_end_carry_transport_counters() {
+    let state = SessionDiagnostics::new(22);
+    for record in [
+        state.snapshot(),
+        state.end(Cause::Cancelled, &Default::default(), None),
+    ] {
+        let transport = record["transport"].as_object().expect("transport counters");
+        for key in [
+            "inboundSeqDedupeDrops",
+            "unknownStreamDrops",
+            "streamEndNotified",
+            "streamEndPongWritten",
+            "holesStale",
+            "inboundGapResets",
+            "outboundUnacked",
+            "outboundUnackedMax",
+            "noSessionDrops",
+            "shutdownRefusedStreams",
+            "inboundGapResetMode",
+        ] {
+            assert!(transport.contains_key(key), "missing {key}");
+        }
+        assert!(
+            transport
+                .values()
+                .all(|value| value.is_u64() || value.is_boolean()),
+            "transport counters hold counts only"
+        );
+    }
+    assert!(state.start().get("transport").is_none(), "turn records stay small");
+    let mut last = Value::Null;
+    let first = crate::relay_counters::activity_record(&mut last).expect("first record");
+    assert_eq!(first["event"], "transport_activity");
+    assert_eq!(first["transport"], last);
+}

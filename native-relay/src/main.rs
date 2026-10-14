@@ -6,6 +6,7 @@ mod frames;
 mod lease;
 mod registration;
 mod relay_counters;
+mod routing;
 mod sdk_log;
 mod sdk_log_labels;
 #[cfg(test)]
@@ -159,7 +160,7 @@ async fn main() {
     sdk_log::install();
     diagnostics::install_panic_hook();
     if run().await.is_err() {
-        eprintln!("gateway: Native relay stopped; private state retained");
+        diagnostics::emit_text("Native relay stopped; private state retained");
         std::process::exit(1);
     }
 }
@@ -187,7 +188,7 @@ async fn run() -> io::Result<()> {
         .codex_home(options.native_home.clone().into())
         .build()
         .await?;
-    eprintln!("gateway: Native relay configuration loaded");
+    diagnostics::emit_text("Native relay configuration loaded");
     let policy = if config
         .config_layer_stack
         .requirements()
@@ -215,7 +216,7 @@ async fn run() -> io::Result<()> {
             "Native relay requires ChatGPT host authentication",
         ));
     }
-    eprintln!("gateway: Native relay host authenticated");
+    diagnostics::emit_text("Native relay host authenticated");
     let account = auth
         .auth_cached()
         .and_then(|value| value.get_account_id())
@@ -252,6 +253,9 @@ async fn run() -> io::Result<()> {
         );
         return Ok(());
     }
+    codex_app_server_transport::gateway_counters::set_inbound_reset_switch(
+        std::path::Path::new(&options.relay_home).join("inbound-gap-reset"),
+    );
     let stop = CancellationToken::new();
     let (events_tx, mut events) = mpsc::channel(128);
     let (client_name_tx, client_name_rx) = tokio::sync::oneshot::channel();
@@ -296,12 +300,18 @@ async fn run() -> io::Result<()> {
     let mut tasks = tokio::task::JoinSet::new();
     let mut task_connections = HashMap::<tokio::task::Id, ConnectionId>::new();
     let mut auth_poll = tokio::time::interval(std::time::Duration::from_secs(5));
+    let mut transport_activity = tokio::time::interval(std::time::Duration::from_secs(30));
+    transport_activity.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_transport = Value::Null;
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             _ = terminate.recv() => break,
+            _ = transport_activity.tick() => {
+                if let Some(record) = relay_counters::activity_record(&mut last_transport) { diagnostics::emit(&record); }
+            },
             _ = auth_poll.tick() => {
                 auth.reload().await;
                 if auth.auth_cached().and_then(|value| value.get_account_id()).as_deref() != Some(&account) { break; }
@@ -316,15 +326,15 @@ async fn run() -> io::Result<()> {
                     }
                     let token = disconnect_sender.unwrap_or_else(|| stop.child_token());
                     let (tx, rx) = mpsc::channel(128);
-                    let options = options.clone(); let handle = handle.clone();
+                    let session_options = options.clone(); let handle = handle.clone();
                     let task_token = token.clone();
-                    let task = tasks.spawn(async move { session::run(connection_id.0, options, rx, writer, auth, task_token, handle).await });
+                    let task = tasks.spawn(async move { session::run(connection_id.0, session_options, rx, writer, auth, task_token, handle).await });
                     task_connections.insert(task.id(), connection_id);
                     if let Some(old) = sessions.insert(connection_id, SessionEntry { writer:tx, stop:token, task:task.id() }) {
                         diagnostics::emit(&diagnostics::record("session_replaced", connection_id.0, diagnostics::Cause::Cancelled));
                         old.stop.cancel();
                     }
-                    output.write_all(b"{\"event\":\"remote-client-connected\"}\n").await?;
+                    if let Some(notice) = routing::connected_notice(options.daemon) { output.write_all(notice).await?; }
                 },
                 Some(TransportEvent::ConnectionClosed { connection_id }) => {
                     if let Some(session) = sessions.remove(&connection_id) { session.stop.cancel(); }
@@ -338,9 +348,7 @@ async fn run() -> io::Result<()> {
                         }
                         continue;
                     }
-                    if let Some(session) = sessions.get(&connection_id) {
-                        cancel_queue_error(connection_id, "session_queue_failed", session.writer.try_send(value), &session.stop);
-                    }
+                    routing::deliver(&sessions, connection_id, value);
                 },
                 Some(TransportEvent::ConnectionOpened { connection_id, origin: ConnectionOrigin::WebSocket, auth: None, writer, disconnect_sender }) => {
                     let token = disconnect_sender.unwrap_or_else(|| stop.child_token());

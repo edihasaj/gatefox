@@ -54,3 +54,24 @@ fn raw_envelopes_preserve_future_fields_and_request_ids() {
     .unwrap();
     assert_eq!(actual, expected);
 }
+
+#[test]
+fn daemon_mode_never_prints_client_connected() {
+    assert_eq!(crate::routing::connected_notice(true), None);
+    assert_eq!(
+        crate::routing::connected_notice(false),
+        Some(&b"{\"event\":\"remote-client-connected\"}\n"[..])
+    );
+}
+
+#[tokio::test]
+async fn incoming_without_session_is_counted() {
+    use std::sync::atomic::Ordering;
+    let before = crate::relay_counters::NO_SESSION_DROPS.load(Ordering::Relaxed);
+    crate::routing::deliver(
+        &std::collections::HashMap::new(),
+        codex_app_server_transport::ConnectionId(41),
+        json!({"id": 1, "method": "thread/list"}),
+    );
+    assert!(crate::relay_counters::NO_SESSION_DROPS.load(Ordering::Relaxed) > before);
+}

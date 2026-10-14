@@ -1,3 +1,4 @@
+use crate::relay_counters;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::{collections::HashSet, io, time::SystemTime};
@@ -76,13 +77,28 @@ pub fn record(event: &'static str, connection: u64, cause: Cause) -> Value {
         "connection":connection, "cause":cause.label()})
 }
 
+pub fn record_line(value: &Value) -> Vec<u8> {
+    let mut line = b"gateway: ".to_vec();
+    let _ = serde_json::to_writer(&mut line, value);
+    line.push(b'\n');
+    line
+}
+
 pub fn write_record<W: Write>(writer: &mut W, value: &Value) {
-    // A closed log pipe must not trigger another panic inside the panic hook.
-    let _ = writeln!(writer, "gateway: {value}");
+    // One write per record, so records from concurrent writers to the shared O_APPEND log
+    // cannot splice. A closed log pipe must not trigger another panic inside the panic hook.
+    let _ = writer.write_all(&record_line(value));
 }
 
 pub fn emit(value: &Value) {
     write_record(&mut io::stderr().lock(), value);
+}
+
+/// A fixed relay message, written as one line in one write.
+pub fn emit_text(text: &'static str) {
+    let _ = io::stderr()
+        .lock()
+        .write_all(format!("gateway: {text}\n").as_bytes());
 }
 
 pub fn install_panic_hook() {
@@ -203,7 +219,9 @@ impl SessionDiagnostics {
             "lastReceivedAtMs":self.last_received, "lastQueuedAtMs":self.last_queued})
     }
     pub fn snapshot(&self) -> Value {
-        self.base("session_activity")
+        let mut value = self.base("session_activity");
+        value["transport"] = relay_counters::transport_json();
+        value
     }
     pub fn start(&self) -> Value {
         self.base("session_started")
@@ -277,6 +295,7 @@ impl SessionDiagnostics {
         value["stderrReadFailed"] = json!(stderr.read_failed);
         value["stderrDrainCompleted"] = json!(stderr.complete);
         value["childExit"] = json!(child_exit);
+        value["transport"] = relay_counters::transport_json();
         value
     }
 }
