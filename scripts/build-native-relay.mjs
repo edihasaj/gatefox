@@ -4,9 +4,8 @@ import {resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {nativeSourceDigest} from './native-source.mjs';
+import {checkSdkTestOutput,materializeSdk,sdkArchiveSha256 as archiveDigest,sdkRevision as revision,sdkTestArguments} from './native-relay-sdk.mjs';
 
-const revision='740e5af33c71225640e0c1c1555c514c2c93ab74';
-const archiveDigest='25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83';
 const {values}=parseArgs({options:{archive:{type:'string'},'target-dir':{type:'string'},dev:{type:'boolean'},test:{type:'boolean'},version:{type:'string'}}});
 const root=resolve('.state/native-relay-build');const sdk=join(root,'sdk');const build=join(root,'build');
 mkdirSync(root,{recursive:true});mkdirSync(build,{recursive:true});
@@ -18,32 +17,26 @@ if(!existsSync(archive)){
   writeFileSync(archive,Buffer.from(await response.arrayBuffer()));
 }
 if(createHash('sha256').update(readFileSync(archive)).digest('hex')!==archiveDigest)throw Error('Pinned Codex SDK archive checksum mismatch');
-if(!existsSync(join(sdk,'.gateway-revision'))){
-  if(existsSync(sdk))throw Error('Refusing an unrecognized SDK checkout');
-  mkdirSync(sdk);execFileSync('tar',['-xzf',archive,'--strip-components=1','-C',sdk]);
-  writeFileSync(join(sdk,'.gateway-revision'),revision);
-}
-if(readFileSync(join(sdk,'.gateway-revision'),'utf8')!==revision)throw Error('Codex SDK revision mismatch');
-function patch(file,original,replacement){
-  const path=join(sdk,file);const text=readFileSync(path,'utf8');
-  if(text.includes(replacement))return;
-  if(!text.includes(original))throw Error(`SDK source no longer matches: ${file}`);
-  writeFileSync(path,text.replace(original,replacement));
-}
-const transport='codex-rs/app-server-transport/src/';
-patch(transport+'outgoing_message.rs','pub enum OutgoingMessage {','pub enum OutgoingMessage {\n    /// Gateway: preserve arbitrary app-server JSON envelopes.\n    Passthrough(serde_json::Value),');
-patch(transport+'transport/remote_control/mod.rs','pub struct RemoteControlStartConfig {','pub struct RemoteControlStartConfig {\n    pub server_name: Option<String>,');
-patch(transport+'transport/remote_control/controller.rs','let server_name = gethostname().to_string_lossy().trim().to_string();','let server_name = self.config.server_name.clone().unwrap_or_else(|| gethostname().to_string_lossy().trim().to_string());');
-patch(transport+'transport/remote_control/controller.rs','server_name: gethostname().to_string_lossy().trim().to_string(),','server_name: config.server_name.clone().unwrap_or_else(|| gethostname().to_string_lossy().trim().to_string()),');
-patch(transport+'transport/remote_control/websocket.rs','    info!(\n        "creating new remote control enrollment:', '    if enrollment.is_none() || matches!(selection, RemoteControlEnrollmentSelection::ReplaceExisting) {\n        return Err(io::Error::new(ErrorKind::NotFound, "Gateway requires the existing native machine registration"));\n    }\n    info!(\n        "creating new remote control enrollment:');
+materializeSdk({archive,sdk,root});
 const version=values.version||JSON.parse(readFileSync('package.json','utf8')).version;
 if(!/^\d+\.\d+\.\d+$/.test(version))throw Error('Invalid relay release version');
 writeFileSync(join(build,'Cargo.toml'),readFileSync('native-relay/Cargo.toml.in','utf8').replaceAll('@SDK@',sdk.replaceAll('\\','/')).replace('@VERSION@',version));
 cpSync('native-relay/src',join(build,'src'),{recursive:true});
 if(!existsSync(join(build,'Cargo.lock')))cpSync(join(sdk,'codex-rs/Cargo.lock'),join(build,'Cargo.lock'));
 const target=resolve(values['target-dir']||join(root,'target'));
+const cargoEnvironment={...process.env,CARGO_BUILD_JOBS:'2'};
 const args=[values.test?'test':'build',...(values.dev?[]:['--release']),'--manifest-path',join(build,'Cargo.toml'),'--target-dir',target];
-execFileSync('cargo',args,{stdio:'inherit',env:{...process.env,CARGO_BUILD_JOBS:'2'}});
+execFileSync('cargo',args,{stdio:'inherit',env:cargoEnvironment});
+if(values.test){
+  // The SDK workspace resolves its own features and lockfile, so it keeps a separate target directory.
+  const sdkTarget=values['target-dir']?`${target}-sdk`:join(root,'sdk-target');
+  let output;
+  try{
+    output=execFileSync('cargo',sdkTestArguments({sdk,target:sdkTarget,dev:values.dev}),{cwd:join(sdk,'codex-rs'),env:cargoEnvironment,encoding:'utf8',stdio:['ignore','pipe','inherit'],maxBuffer:64*1024*1024});
+  }catch(error){process.stdout.write(error.stdout||'');throw error;}
+  process.stdout.write(output);
+  console.log(JSON.stringify({sdkTests:checkSdkTestOutput(output),revision}));
+}
 if(!values.test){
   const output=join(root,'artifact');mkdirSync(output,{recursive:true});
   cpSync(join(target,values.dev?'debug':'release','gateway-native-relay'),join(output,'gateway-native-relay'));
