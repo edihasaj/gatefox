@@ -93,15 +93,22 @@ async fn expect_closed(
     }
 }
 
-#[tokio::test]
-async fn relay_stream_end_reaches_backend_after_last_reply_and_client_close_does_not() {
+struct Backend {
+    websocket: WebSocketStream<TcpStream>,
+    transport_event_rx: mpsc::Receiver<TransportEvent>,
+    shutdown_token: CancellationToken,
+    remote_task: tokio::task::JoinHandle<()>,
+    _codex_home: TempDir,
+}
+
+async fn connected_backend() -> Backend {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("listener should bind");
     let remote_control_url = remote_control_url_for_listener(&listener);
     let codex_home = TempDir::new().expect("temp dir should create");
     let state_db = remote_control_state_runtime(&codex_home).await;
-    let (transport_event_tx, mut transport_event_rx) =
+    let (transport_event_tx, transport_event_rx) =
         mpsc::channel::<TransportEvent>(CHANNEL_CAPACITY);
     let shutdown_token = CancellationToken::new();
     let (remote_task, _remote_handle) = start_remote_control(
@@ -130,7 +137,56 @@ async fn relay_stream_end_reaches_backend_after_last_reply_and_client_close_does
         ),
     )
     .await;
-    let mut websocket = accept_remote_control_connection(&listener).await;
+    let websocket = accept_remote_control_connection(&listener).await;
+    Backend {
+        websocket,
+        transport_event_rx,
+        shutdown_token,
+        remote_task,
+        _codex_home: codex_home,
+    }
+}
+
+fn single_chunk(stream: &str, seq_id: u64, method: &str) -> ClientEnvelope {
+    let bytes = serde_json::to_vec(&json!({"method": method})).expect("chunk json");
+    stream_envelope(
+        ClientEvent::ClientMessageChunk {
+            segment_id: 0,
+            segment_count: 1,
+            message_size_bytes: bytes.len(),
+            message_chunk_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        },
+        stream,
+        seq_id,
+    )
+}
+
+async fn delivered_method(
+    transport_event_rx: &mut mpsc::Receiver<TransportEvent>,
+    wait: Duration,
+) -> Option<(crate::outgoing_message::ConnectionId, serde_json::Value)> {
+    match timeout(wait, transport_event_rx.recv()).await {
+        Err(_) => None,
+        Ok(Some(TransportEvent::IncomingMessage {
+            connection_id,
+            message,
+        })) => Some((
+            connection_id,
+            serde_json::to_value(message).expect("message json")["method"].clone(),
+        )),
+        Ok(other) => panic!("expected an incoming message, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn relay_stream_end_reaches_backend_after_last_reply_and_client_close_does_not() {
+    let Backend {
+        mut websocket,
+        mut transport_event_rx,
+        shutdown_token,
+        remote_task,
+        _codex_home,
+    } = connected_backend().await;
 
     // The app side (the relay) ends stream-1 right after queueing its last reply.
     send_client_event(&mut websocket, stream_initialize("stream-1")).await;
@@ -176,6 +232,44 @@ async fn relay_stream_end_reaches_backend_after_last_reply_and_client_close_does
         next_text_event(&mut websocket, Duration::from_millis(300)).await,
         None,
         "a client close must not produce a pong"
+    );
+
+    shutdown_token.cancel();
+    let _ = remote_task.await;
+}
+
+#[tokio::test]
+async fn reinitialized_stream_accepts_its_chunked_messages_again() {
+    let Backend {
+        mut websocket,
+        mut transport_event_rx,
+        shutdown_token,
+        remote_task,
+        _codex_home,
+    } = connected_backend().await;
+    send_client_event(&mut websocket, stream_initialize("stream-1")).await;
+    let (first, _first_writer, _first_disconnect) = opened_stream(&mut transport_event_rx).await;
+    send_client_event(&mut websocket, single_chunk("stream-1", 1, "gateway/chunk")).await;
+    assert_eq!(
+        delivered_method(&mut transport_event_rx, Duration::from_secs(5)).await,
+        Some((first, json!("gateway/chunk")))
+    );
+
+    // A new initialize on the same stream replaces the session; its numbering starts over.
+    send_client_event(&mut websocket, stream_initialize("stream-1")).await;
+    expect_closed(&mut transport_event_rx, first).await;
+    let (second, _second_writer, _second_disconnect) =
+        opened_stream(&mut transport_event_rx).await;
+    send_client_event(&mut websocket, single_chunk("stream-1", 1, "gateway/chunk")).await;
+    assert_eq!(
+        delivered_method(&mut transport_event_rx, Duration::from_secs(2)).await,
+        Some((second, json!("gateway/chunk"))),
+        "the replacement must not inherit the old stream's chunk dedupe state"
+    );
+    assert_eq!(
+        delivered_method(&mut transport_event_rx, Duration::from_millis(300)).await,
+        None,
+        "the replacement stays open"
     );
 
     shutdown_token.cancel();

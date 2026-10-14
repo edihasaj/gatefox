@@ -44,6 +44,7 @@ const modules = [
 
 // F1: an app-side stream end sends Pong { Unknown } after the stream's queued replies.
 const tracker = `${remote}client_tracker.rs`;
+const websocket = `${remote}websocket.rs`;
 const upstreamOutboundBody = [
   '        loop {',
   '            let (event, write_complete_tx) = tokio::select! {',
@@ -102,12 +103,14 @@ const streamEnd = [
     replacement: '        writer_rx: mpsc::Receiver<QueuedOutgoingMessage>,\n        status_rx: watch::Receiver<PongStatus>,\n        disconnect_token: CancellationToken,\n        stream_end: StreamEnd,\n    ) -> (ClientId, StreamId) {\n' },
   { file: tracker, original: upstreamOutboundBody,
     replacement: '        gateway_stream_end::run_client_outbound(\n            client_id,\n            stream_id,\n            server_event_tx,\n            writer_rx,\n            status_rx,\n            disconnect_token,\n            stream_end,\n        )\n        .await\n    }' },
+  // The predecessor no longer clears a re-initialized stream's chunk state, so do it here.
+  { file: websocket, original: '            let delivered_client_envelope = client_envelope.clone();\n',
+    replacement: '            if let Some((client_id, stream_id)) = client_tracker.gateway_reinitialized_key(&client_envelope) {\n                let mut websocket_state = state.lock().await;\n                websocket_state\n                    .client_segment_reassembler\n                    .invalidate_stream(&client_id, &stream_id);\n                websocket_state.invalidate_client_message_stream(&client_id, &stream_id);\n            }\n            let delivered_client_envelope = client_envelope.clone();\n' },
   { file: tracker, original: '        let client = self.clients.remove(client_key)?;\n',
     replacement: '        let client = self.clients.remove(client_key)?;\n        client.stream_end.mark_tracker_close();\n' },
 ];
 
 // F2: counters for silent SDK drops and the outbound gate, plus disconnect error kinds.
-const websocket = `${remote}websocket.rs`;
 const count = name => `crate::gateway_counters::add(crate::gateway_counters::Counter::${name}, 1);`;
 const unacked = '        crate::gateway_counters::set_outbound_unacked(*self.used_tx.borrow());\n';
 const observability = [

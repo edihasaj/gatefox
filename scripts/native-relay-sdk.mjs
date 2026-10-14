@@ -28,6 +28,7 @@ export const requiredSdkTests = [
     'reinitialize_same_stream_keeps_replacement_open', 'stream_end_is_bounded_when_server_queue_full',
   ].map(name => `transport::remote_control::gateway_stream_end_tests::${name}`),
   'transport::remote_control::tests::gateway_wire_tests::relay_stream_end_reaches_backend_after_last_reply_and_client_close_does_not',
+  'transport::remote_control::tests::gateway_wire_tests::reinitialized_stream_accepts_its_chunked_messages_again',
   'transport::remote_control::gateway_observability_tests::replayed_seq_is_dropped_and_counted',
   'transport::remote_control::gateway_observability_tests::unknown_stream_message_is_counted',
   ...['contiguous_messages_pings_and_close_leave_no_hole', 'missing_seq_turns_stale_after_15s',

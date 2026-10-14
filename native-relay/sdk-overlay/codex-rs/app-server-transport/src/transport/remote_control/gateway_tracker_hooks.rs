@@ -1,6 +1,7 @@
 //! Gateway: hooks called from small patches in `client_tracker.rs`.
 //! A child module, so it can read the tracker's private state without widening it.
 
+use super::ClientEnvelope;
 use super::ClientEvent;
 use super::ClientId;
 use super::ClientTracker;
@@ -33,6 +34,25 @@ impl ClientTracker {
             return Some(client_key);
         }
         futures::future::pending().await
+    }
+
+    /// An `initialize` that will replace a live explicit stream. Its chunk state must be cleared
+    /// as on any other close, because the predecessor's task no longer closes the replacement.
+    pub(in crate::transport::remote_control) fn gateway_reinitialized_key(
+        &self,
+        client_envelope: &ClientEnvelope,
+    ) -> Option<(ClientId, StreamId)> {
+        let ClientEvent::ClientMessage { message } = &client_envelope.event else {
+            return None;
+        };
+        if !super::remote_control_message_starts_connection(message) {
+            return None;
+        }
+        let client_key = (
+            client_envelope.client_id.clone(),
+            client_envelope.stream_id.clone()?,
+        );
+        self.clients.contains_key(&client_key).then_some(client_key)
     }
 
     /// The SDK dropped a message at or below the stream's delivered high-water mark. When that
