@@ -41,7 +41,13 @@ quit ChatGPT or change native account settings.
 The migration saves the original plists in private `service-backups` storage,
 starts the supervisor, and checks its components. The inference HTTP listener
 must respond; the native relay must report a fresh connected status. Failed
-startup restores the previous jobs. Superseded plists move to Trash only after
+startup restores the previous jobs. Each restore step runs on its own, so one
+failing step cannot leave the other jobs stopped, and `launchctl bootout` of a
+job launchd no longer has (`3: No such process`) counts as already stopped. The
+original error is reported, followed by the names of any rollback steps that
+failed, and a startup timeout names which readiness condition never held
+(`status_not_current`, `components_not_running`, `inference_unhealthy` or
+`native_relay_not_connected`). Superseded plists move to Trash only after
 the replacement starts. The installed native binary replaces earlier test paths
 while retaining the original relay home and connected-machine registration.
 

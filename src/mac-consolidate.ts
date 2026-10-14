@@ -8,6 +8,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
+import { bootoutJob } from "./launchctl.js";
+import { rollbackConsolidation, rollbackFailureSummary } from "./mac-consolidate-rollback.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
 
@@ -53,14 +55,34 @@ export async function collectServicePlan(configPath: string, directory = resolve
   return { plan: validateServicePlan({ version: 1, config: resolve(configPath), components }), jobs };
 }
 
-export async function requireMaintenanceWindow(configPath: string): Promise<void> {
-  const { stdout } = await exec("/bin/ps", ["-axo", "comm="], { timeout: 5000 });
+export async function requireMaintenanceWindow(configPath: string, listProcesses: () => Promise<string> = async () => (await exec("/bin/ps", ["-axo", "comm="], { timeout: 5000 })).stdout): Promise<void> {
+  const stdout = await listProcesses();
   if (stdout.split("\n").some(line => line.trim() === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT")) throw new Error("Keep the running service while chats are open. Finish local and remote chats, then quit ChatGPT normally before consolidation");
   const config = await loadConfig(configPath);
   if (!config.clientOnly) {
     const health = await (await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; status?: string };
     if (health.active !== 0 || health.status !== "ok") throw new Error("Gateway inference is busy or unhealthy; consolidation did not stop it");
   }
+}
+
+/** Fixed classes naming the readiness condition that failed; they carry no paths or values. */
+export type ReadinessGap = "status_not_current" | "components_not_running" | "inference_unhealthy" | "native_relay_not_connected";
+async function readinessGap(config: { stateDirectory: string; port: number }, plan: ServicePlan, began: number): Promise<ReadinessGap | undefined> {
+  const status = await consolidatedStatus(config.stateDirectory);
+  const runtime = status.runtime as { components?: Array<{ state: string }> };
+  if (!status.statusCurrent) return "status_not_current";
+  if (runtime.components?.length !== plan.components.length || !runtime.components.every(component => ["running", "complete"].includes(component.state))) return "components_not_running";
+  if (plan.components.some(component => component.kind === "inference")) {
+    try { const response = await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(1000) }); if (!response.ok || (await response.json() as { status?: string }).status !== "ok") return "inference_unhealthy"; } catch { return "inference_unhealthy"; }
+  }
+  const native = plan.components.find(component => component.kind === "native");
+  if (native) {
+    try {
+      const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const relayStatus = resolve(relayHome, "status.json");
+      if ((await stat(relayStatus)).mtimeMs < began || JSON.parse(await readFile(relayStatus, "utf8")).status !== "connected") return "native_relay_not_connected";
+    } catch { return "native_relay_not_connected"; }
+  }
+  return undefined;
 }
 
 export async function consolidatedStatus(state: string): Promise<Record<string, unknown>> {
@@ -98,49 +120,29 @@ export async function consolidateService(configPath: string, apply = false): Pro
   const checkInterrupted = () => { if (interrupted) throw new Error("Consolidation interrupted; previous jobs will be restored"); };
   process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt);
   try {
-    for (const job of jobs) { checkInterrupted(); if (job.loaded) await exec("/bin/launchctl", ["bootout", `${domain()}/${job.label}`], { timeout: 10000 }); }
+    for (const job of jobs) { checkInterrupted(); if (job.loaded) await bootoutJob(`${domain()}/${job.label}`); }
     checkInterrupted();
     await writePrivateJson(servicePlanPath(config.stateDirectory), plan);
     replacementAttempted = true;
     await writeFile(targetPath, contents, { mode: 0o600 });
     await exec("/bin/launchctl", ["enable", `${domain()}/${serviceLabel}`], { timeout: 5000 });
     await exec("/bin/launchctl", ["bootstrap", domain(), targetPath], { timeout: 10000 });
-    let ready = false;
-    let stable = 0;
+    let ready = false; let stable = 0; let gap: ReadinessGap | undefined;
     for (let attempt = 0; attempt < 225; attempt++) {
       checkInterrupted();
       await delay(200);
-      const status = await consolidatedStatus(config.stateDirectory);
-      const runtime = status.runtime as { components?: Array<{ state: string }> };
-      let connected = !!status.statusCurrent && runtime.components?.length === plan.components.length && runtime.components.every(component => ["running", "complete"].includes(component.state));
-      if (connected && plan.components.some(component => component.kind === "inference")) {
-        try { const response = await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(1000) }); connected = response.ok && (await response.json() as { status?: string }).status === "ok"; } catch { connected = false; }
-      }
-      const native = plan.components.find(component => component.kind === "native");
-      if (connected && native) {
-        try {
-          const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const relayStatus = resolve(relayHome, "status.json");
-          connected = (await stat(relayStatus)).mtimeMs >= began && JSON.parse(await readFile(relayStatus, "utf8")).status === "connected";
-        } catch { connected = false; }
-      }
-      stable = connected ? stable + 1 : 0;
+      gap = await readinessGap(config, plan, began);
+      stable = gap ? 0 : stable + 1;
       if (stable >= 5) { ready = true; break; }
     }
-    if (!ready) throw new Error("Consolidated components did not start; previous jobs will be restored");
+    if (!ready) throw new Error(`Consolidated components did not start (${gap ?? "not_stable"}); previous jobs will be restored`);
     const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true });
     for (const job of jobs) if (job.label !== serviceLabel) await rename(job.path, resolve(trash, `${job.label}.${Date.now()}.plist`));
     return { ...preview, applied: true, backup, ...await consolidatedStatus(config.stateDirectory) };
   } catch (error) {
-    if (replacementAttempted && await loaded(serviceLabel)) await exec("/bin/launchctl", ["bootout", `${domain()}/${serviceLabel}`], { timeout: 10000 });
-    const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true });
-    await rename(servicePlanPath(config.stateDirectory), resolve(trash, `gateway-service-plan.${Date.now()}.json`)).catch(failure => { if ((failure as NodeJS.ErrnoException).code !== "ENOENT") throw failure; });
-    for (const job of jobs) await writeFile(job.path, job.text, { mode: 0o600 });
-    if (!jobs.some(job => job.label === serviceLabel)) await rename(targetPath, resolve(trash, `gateway-service-failed.${Date.now()}.plist`)).catch(failure => { if ((failure as NodeJS.ErrnoException).code !== "ENOENT") throw failure; });
-    const failures: string[] = [];
-    for (const job of jobs) if (job.loaded && !await loaded(job.label)) {
-      try { await exec("/bin/launchctl", ["bootstrap", domain(), job.path], { timeout: 10000 }); } catch { failures.push(job.label); }
-    }
-    if (failures.length) throw new Error(`Could not restart ${failures.join(", ")}; original plists are saved in ${backup}`);
+    const failures = await rollbackConsolidation({ jobs, serviceLabel, targetPath, planPath: servicePlanPath(config.stateDirectory), trash: resolve(homedir(), ".Trash"), replacementAttempted,
+      launchctl: { bootout: async label => { await bootoutJob(`${domain()}/${label}`); }, isLoaded: loaded, bootstrap: async path => { await exec("/bin/launchctl", ["bootstrap", domain(), path], { timeout: 10000 }); } } });
+    if (failures.length) throw new Error(`${error instanceof Error ? error.message : "Consolidation failed"}; rollback incomplete (${rollbackFailureSummary(failures)}); original plists are saved in ${backup}`, { cause: error });
     throw error;
   } finally { process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt); }
 }
