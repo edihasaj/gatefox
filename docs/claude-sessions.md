@@ -18,12 +18,13 @@ that carries across tool steps, and a prompt cache that grows by appending.
 ```
 
 The daemon reads the change on its next request. `"replay"` turns it off again;
-running sessions finish their turn and close.
+running sessions finish their turn and close. A provider in replay mode retires its
+own parked sessions on its next request, so they do not wait out the park timer.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `mode` | `replay` | `live` keeps a session per thread |
-| `max` | 6 | Live sessions in the whole process (1–16); the least recently used finished one is evicted |
+| `max` | 10% of RAM | Live sessions in the whole process (1–32). The default is `clamp(floor(0.10 × totalmem / 300 MB), 6, 32)`: 6 up to 20 GiB, 21 on 64 GiB, 32 from about 94 GiB. A session being started counts toward it |
 | `parkMinutes` | 60 | Idle time before a session closes (5–240), per session |
 | `replayFormat` | `text` | Item encoding for one-shot requests and session seeds; `json` restores the old one |
 
@@ -34,13 +35,34 @@ running sessions finish their turn and close.
   (a 0600 Unix socket with a per-session key). The relay carries only the RPC id, the
   tool name and the tool_use id, never arguments. A new user turn is sent as one
   message.
-- **Reseed** (a new process, one cache write): an earlier message was edited; the
-  model, thinking, Fast, system prompt, tool catalog or window changed; an effort
-  change arrived while tools were pending; the history had an unexpected tail; or the
-  session was idle 60 minutes or more (see Context management below).
+- **Reseed** (a new process, one cache write): the model, thinking, Fast, system
+  prompt, tool catalog or window changed (`fingerprint_changed`, `window_changed`), or
+  the session was idle 60 minutes or more (`idle_expired`; see Context management
+  below). The cache of the old session is gone or unusable either way, so the new
+  process costs no more than the next one-shot request would.
+- **Forced downgrade** (no reseed): an earlier message was edited
+  (`prefix_diverged`), the history had an unexpected tail (`unexpected_tail`), a forced
+  tool choice arrived (`forced_choice`), an effort change arrived while tools were
+  pending (`effort_midturn`), or the session died or crashed. A second process would
+  pay the whole cache write again for one turn, so that request is served one-shot and
+  the thread stays on replay (`replayUntil`) for 60 minutes, when a session of its own
+  could keep a cache again. A held request inside that window is served the same way and
+  starts the window over, so a thread that keeps talking is never seeded a process it
+  would have to reseed on its next turn. The old session closes at once.
+- **Capacity** (no eviction): see Admission below.
 - **One-shot fallback:** compaction, prewarm and memory requests; requests without a
   thread id; a second request for a thread that is still generating; and any failure
   before the first event, including a CLI that exits right after the seed.
+
+## Admission
+
+A session is evicted only after it has been idle for 60 minutes, the length of the 1 h
+cache. While every slot holds a warm session, a new thread runs one-shot (`capacity`)
+and stays on replay until a slot frees; nothing is evicted and no warm cache is spent
+on a newcomer. Sessions being started count toward `max`, in arrival order, so
+concurrent attaches can never run more processes than the cap. Telemetry records the
+`capacity` fallback and each replay-hold reason as `claude_session` events with the
+`fallback` outcome and the thread's `threadKey`; see [diagnostics](diagnostics.md).
 
 The system prompt is the gateway's fixed text plus the caller's instructions and
 the system and developer messages before the first other message, as on the
@@ -85,7 +107,15 @@ Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
   character (see the closing line in [responses](responses.md)).
 - A session's second user turn misses 350–430 tokens once, whatever the seed size.
   The seed itself is not rewritten. A turn that ends in tool use has no such miss.
-- Each session uses about 240 MB for the CLI and 44 MB for its MCP child.
+- Each session uses about 240 MB for the CLI and 44 MB for its MCP child, which is
+  why the default pool is sized at 300 MB a slot.
+- Before the admission policy, least-recently-used eviction on a working set larger
+  than the pool evicted the thread needed next. One window with 7 threads against
+  `max` 6 saw 14 evictions after a median 49 s idle (20–160 s, against a 1 h cache), and
+  every evicted thread came back. Its 22 reseeds read 0.686M tokens (only the shared
+  system prefix) and wrote 1.496M, against 0.804M for spawns and 0.241M for continues:
+  reseeds were 59% of all cache writes. Concurrent starts bypassed the cap, so 7
+  sessions ran at `max` 6.
 - A text turn's result arrives 3–7 ms after its final `message_delta`, so a live
   request still ends at the result. One-shot requests end at that delta instead,
   except Fast ones, which need the result's fast mode state.
@@ -93,10 +123,15 @@ Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
 ## Restarts and upgrades
 
 An in-place upgrade keeps the sessions: the registry lives on a versioned global
-symbol, so the new runtime adopts it. An inference restart reseeds each active
-thread once. The release that moved caller instructions into the system prompt
-changes every session's fingerprint, so each thread reseeds once after it even when
-an in-place upgrade adopted its session; that reseed is the chat's one cache write.
+symbol, so the new runtime adopts the one it finds and adds the collections a later
+release introduced (`replayUntil`, `scopes`) to it in place. An adopted session is
+still its thread's session: the next request continues the running process and
+records its provider scope as it goes. A registry reporting another interface
+version is not adopted but replaced, and its sessions are left to their own park
+timers. An inference restart reseeds each active thread once. The release that moved
+caller instructions into the system prompt changes every session's fingerprint, so
+each thread reseeds once after it even when an in-place upgrade adopted its session;
+that reseed is the chat's one cache write.
 On shutdown, idle sessions close at once and a running turn closes when it ends; the
 relay's dead-man check and stdin EOF stop any CLI whose gateway died.
 `claude_session` telemetry records each outcome; see [diagnostics](diagnostics.md).

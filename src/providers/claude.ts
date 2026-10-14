@@ -12,12 +12,13 @@ import { claudeSessionSettings, type ProviderConfig } from "../config.js";
 import { validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
 import { claudeToolName, claudeToolHistory } from "./claude-tool-names.js";
-import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
+import { claudeUsageEvent, systemPrefixOnly, type ClaudeLimit } from "./claude-usage.js";
 import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import type { ClaudeLiveModule, ClaudeLiveOutcome } from "./claude-live-contract.js";
+import { retireScope } from "./claude-session-registry.js";
+import { sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
@@ -49,6 +50,8 @@ interface Run {
   tools: OpenAITool[]; choice?: ChatToolSelection; conversation: ClaudeConversation; images: ClaudeImages; retry?: boolean;
   /** The CLI system prompt, and how many translated messages it took from the history. */
   systemPrompt: string; leading: number;
+  /** The live session key's first 8 hex for this thread, or absent when the request has none. */
+  threadKey?: string;
 }
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -81,7 +84,11 @@ export class ClaudeSubscription implements Provider {
     const { conversation, images } = imageConversation(history.slice(leading));
     const run: Run = { alias: request.model, model: claudeCliModel(request.model), effort: claudeEffort(this.config, request), fast: claudeFastMode(this.config, request),
       summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
-      format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading };
+      format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
+      // The same key the live registry derives, so one thread's one-shot and live events line up.
+      ...(context.threadId ? { threadKey: sessionKey(this.scope(), context.threadId).slice(0, 8) } : {}) };
+    // Switching to replay ends this provider's parked sessions now instead of when their park timers fire.
+    if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
     if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
       const outcome = await this.live(run, request, context, settings, signal);
       if (outcome?.kind === "stream") {
@@ -91,7 +98,7 @@ export class ClaudeSubscription implements Provider {
           // A session that dies before its first event (the CLI or relay exits right after the seed)
           // falls back to one-shot. Limits, cancellation and caller errors would only repeat.
           if (yielded || signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
-          telemetry("claude_session", { outcome: "fallback", missReason: "stream_failed" });
+          telemetry("claude_session", { outcome: "fallback", missReason: "stream_failed", threadKey: run.threadKey });
         }
       }
     }
@@ -108,17 +115,20 @@ export class ClaudeSubscription implements Provider {
     }
   }
 
+  /** The provider half of a live session key; the thread's half is whatever the caller added. */
+  private scope(): string { return `${this.config?.id ?? "claude"}` + `\0` + `${this.config?.authDirectory ?? ""}`; }
+
   private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number }, signal: AbortSignal): Promise<ClaudeLiveOutcome | undefined> {
     const module = await loadLive(this.liveModule);
     if (!module) {
-      if (!unavailable.has(this.liveModule)) { unavailable.add(this.liveModule); telemetry("claude_session", { outcome: "fallback", missReason: "unavailable" }); }
+      if (!unavailable.has(this.liveModule)) { unavailable.add(this.liveModule); telemetry("claude_session", { outcome: "fallback", missReason: "unavailable", threadKey: run.threadKey }); }
       return;
     }
     const { model, effort, fast, summaryVisible, tools, conversation, images, format, systemPrompt, leading } = run; const mcpCatalog = claudeMcpCatalog(tools);
     let outcome: ClaudeLiveOutcome;
     try {
       outcome = await module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes }).attach({
-        scope: `${this.config?.id ?? "claude"}\0${this.config?.authDirectory ?? ""}`, threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
+        scope: this.scope(), threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
         model, effort, fast, summaryVisible, instructionsDigest: digest(systemPrompt), leading,
         toolsDigest: digest(JSON.stringify(mcpCatalog)), tools, choice: run.choice, request, conversation, images,
         // Thinking display is fixed for a session's lifetime; summaries are hidden locally instead.
@@ -134,7 +144,7 @@ export class ClaudeSubscription implements Provider {
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
       outcome = { kind: "fallback", reason: "spawn_failed" };
     }
-    if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason });
+    if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
     return outcome;
   }
 
@@ -208,7 +218,8 @@ export class ClaudeSubscription implements Provider {
       if (resultSubtype && !signal.aborted) { const timer = setTimeout(kill, 500); timer.unref(); child.once("exit", () => clearTimeout(timer)); } else kill();
       telemetry("claude_cli", { mode: "oneshot", model: run.alias, effort: run.effort, fast: run.fast ? fastState || "unknown" : undefined, durationMs: Date.now() - began,
         result: end?.kind === "tool_use" || end?.kind === "end_turn" ? end.kind : resultSubtype ?? "none", isError: resultError, exitCode, aborted: signal.aborted && end?.kind !== "end_turn", interrupted, spawnFailed: !!failure, retry: run.retry,
-        toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output });
+        toolCalls: end?.kind === "tool_use" ? end.calls.length : 0, inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output,
+        threadKey: run.threadKey, systemPrefixOnly: systemPrefixOnly(tokens?.cacheRead, tokens?.cacheWrite) });
       await rm(directory, { recursive: true, force: true });
     }
   }

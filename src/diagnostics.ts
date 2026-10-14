@@ -13,7 +13,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const turns: Record<string, Counts> = {}; const turnFailures: Counts = {};
   const requests: Record<string, Counts & { input?: number; cached?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
-  const sessions: Record<string, { count: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
+  const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
   for (const event of events) {
     const model = String(event.model ?? "unknown");
@@ -39,8 +39,9 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     if (event.event === "claude_cli") bump(claude, event.isError ? `error:${event.result}` : event.interrupted ? "interrupted" : event.aborted ? "aborted" : event.result);
     // Live Claude sessions: how requests were served and what each outcome cost in cache tokens.
     if (event.event === "claude_session") {
-      const entry = sessions[`${event.outcome ?? "unknown"}${event.missReason ? ":" + event.missReason : ""}`] ||= { count: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
-      entry.count++; entry.cacheReadTokens += tokens(event.cacheReadTokens); entry.cacheWriteTokens += tokens(event.cacheWriteTokens);
+      const entry = sessions[`${event.outcome ?? "unknown"}${event.missReason ? ":" + event.missReason : ""}`] ||= { count: 0, rewrites: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+      entry.count++; entry.rewrites += event.systemPrefixOnly === true ? 1 : 0;
+      entry.cacheReadTokens += tokens(event.cacheReadTokens); entry.cacheWriteTokens += tokens(event.cacheWriteTokens);
     }
     if (accountEvents.has(event.event)) bump(accounts, `${event.event}${event.reason ? ":" + event.reason : ""}`);
     if (problems.has(event.event) && !(event.event === "request_failed" && event.code === "cancelled")) {

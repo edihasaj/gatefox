@@ -1,17 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { claudeSessionSettings, validateConfig, type ModelMetadata, type ProviderConfig } from "../config.js";
+import { claudeSessionMax, claudeSessionSettings, validateConfig, type ModelMetadata, type ProviderConfig } from "../config.js";
 
 const claude = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "claude", type: "claude-subscription", models: { sonnet: "claude-sonnet" }, ...extra });
 const codex = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", credentialFile: "codex.json", models: { "codex/sol": "sol" }, ...extra });
 const config = (providers: unknown[], extra: Record<string, unknown> = {}) => validateConfig({ version: 1, port: 1, stateDirectory: "/tmp/state", providers, ...extra }, "/tmp");
 
 test("claudeSessions is optional, defaulted, limited and only valid on Claude subscriptions", () => {
-  assert.deepEqual(claudeSessionSettings(claude()), { mode: "replay", max: 6, parkMinutes: 60, replayFormat: "text" });
+  const gib = 1024 ** 3;
+  // The default cap is a tenth of RAM in 300 MB slots, clamped to 6..32: small Macs keep today's 6.
+  assert.deepEqual(claudeSessionSettings(claude(), 8 * gib), { mode: "replay", max: 6, parkMinutes: 60, replayFormat: "text" });
+  assert.deepEqual([claudeSessionMax(16 * gib), claudeSessionMax(64 * gib), claudeSessionMax(256 * gib), claudeSessionMax(gib)], [6, 21, 32, 6]);
+  assert.deepEqual(claudeSessionSettings(claude(), 64 * gib), { mode: "replay", max: 21, parkMinutes: 60, replayFormat: "text" });
+  assert.equal(claudeSessionSettings(claude({ claudeSessions: { max: 3 } }), 64 * gib).max, 3, "an explicit value wins over the memory default");
+  assert.equal(claudeSessionSettings(claude()).max, claudeSessionMax(), "this machine's default comes from its own memory");
   const live = config([claude({ claudeSessions: { mode: "live", max: 16, parkMinutes: 5, replayFormat: "json" } })]).providers[0];
   assert.deepEqual(claudeSessionSettings(live), { mode: "live", max: 16, parkMinutes: 5, replayFormat: "json" });
   assert.deepEqual(claudeSessionSettings(config([claude({ claudeSessions: { max: 1, parkMinutes: 240 } })]).providers[0]), { mode: "replay", max: 1, parkMinutes: 240, replayFormat: "text" });
-  for (const claudeSessions of [{ mode: "live-ish" }, { max: 0 }, { max: 17 }, { max: 2.5 }, { parkMinutes: 4 }, { parkMinutes: 241 }, { replayFormat: "yaml" }, [], null, "live"]) {
+  for (const claudeSessions of [{ mode: "live-ish" }, { max: 0 }, { max: 33 }, { max: 2.5 }, { parkMinutes: 4 }, { parkMinutes: 241 }, { replayFormat: "yaml" }, [], null, "live"]) {
     assert.throws(() => config([claude({ claudeSessions: claudeSessions as ProviderConfig["claudeSessions"] })]), /claudeSessions/, JSON.stringify(claudeSessions));
   }
   assert.throws(() => config([codex({ claudeSessions: { mode: "live" } })]), /only valid for claude-subscription/);

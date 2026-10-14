@@ -1,12 +1,19 @@
+import { createHash } from "node:crypto";
 import type { ChatToolSelection, InferenceEvent, OpenAITool, ResponsesRequest } from "../protocol/types.js";
 import type { ClaudeLimit } from "./claude-usage.js";
 import type { ClaudeMessageStream } from "./claude-stream.js";
 import type { ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeConversation, ClaudeImages, ContentBlock } from "./claude-render.js";
 
+/**
+ * The live session key for one provider scope and Codex thread. Its first 8 hex are the
+ * log-safe thread identifier telemetry reports as `threadKey`; nothing else about a thread is.
+ */
+export const sessionKey = (scope: string, threadId: string) => createHash("sha256").update(`${scope}\0${threadId}`).digest("hex");
+
 /** Why a request used the one-shot path instead of a live session. Fixed values only. */
 export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" |
-  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
+  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
 export interface ClaudeLiveInput {

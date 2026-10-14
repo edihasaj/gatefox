@@ -23,7 +23,7 @@ only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` 
 | Process | Events |
 | --- | --- |
 | Adapter | `turn_started`, `turn_completed`, `turn_empty_completion` (completed with no answer and no tool call), `turn_error`, `turn_quiet` (no events for five minutes), `rpc_error`, `adapter_client`, `adapter_session_end`, `reasoning_restored` (provider, method and source `record`, `rollout` or `thread` of a chat's recovered effort, adjusted), `reasoning_effort_reset` (from, to, model and method when a restored level had to be fitted), `reasoning_unrecovered` (model when no effort could be recovered) |
-| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason, cache read and write, input and output tokens), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
+| Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
 A request the gateway could not translate records the same `request_failed` event plus
@@ -41,7 +41,8 @@ data" whatever the reason.
 
 `gateway diagnostics [--since HOURS]` summarizes the log: turn outcomes and
 failure classes per model, request outcomes, cache-hit ratio and first-event
-latency per model, retries, RPC errors, component exits, host events, and the 25
+latency per model, retries, RPC errors, component exits, host events, live Claude
+sessions per outcome with their cache reads, writes and rewrite count, and the 25
 most recent problems. Set `GATEWAY_TELEMETRY=off` to disable the log.
 
 ## Exception reports

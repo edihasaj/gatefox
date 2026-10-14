@@ -17,7 +17,9 @@ export interface FixtureReply {
   /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
 }
-export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean }
+export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
+  /** Report cache tokens from what this CLI was actually sent, the way Claude bills a growing prefix; see `cacheModel`. */
+  cache?: boolean }
 export interface FixtureEntry {
   pid: number; start?: string; advisorOff?: boolean; toolSearchOff?: boolean; mcpPid?: number; mcpTools?: number; maxResult?: number;
   /** CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, and the --system-prompt-file content (test data). */
@@ -38,6 +40,7 @@ export interface FixtureEntry {
 async function fixtureMain(): Promise<void> {
   type Json = Record<string, any>; // Fixture input is trusted test data.
   const fs = await import("node:fs"); const { spawn } = await import("node:child_process"); const readline = await import("node:readline");
+  const crypto = await import("node:crypto");
   const env = process.env; const scenarioPath = env.CLAUDE_FIXTURE_SCENARIO!;
   const log = (entry: Json) => fs.appendFileSync(env.CLAUDE_FIXTURE_CAPTURE!, JSON.stringify({ pid: process.pid, ...entry }) + "\n");
   const out = (message: Json) => { process.stdout.write(JSON.stringify(message) + "\n"); };
@@ -49,7 +52,8 @@ async function fixtureMain(): Promise<void> {
   if (live && scenario.exitAtSpawn) process.exit(3);
   const nextReply = (): Json => {
     const current = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json; const reply = current.replies.shift() ?? { text: "ok" };
-    fs.writeFileSync(scenarioPath, JSON.stringify(current)); return reply;
+    // Concurrent CLIs share the scenario file; a rename keeps another one from reading a half-written file.
+    const swap = `${scenarioPath}.${process.pid}`; fs.writeFileSync(swap, JSON.stringify(current)); fs.renameSync(swap, scenarioPath); return reply;
   };
   const servers = JSON.parse(fs.readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8")).mcpServers || {};
   const names = new Map<string, string>(); const waiting = new Map<number, (message: Json) => void>(); let rpc = 0;
@@ -64,7 +68,41 @@ async function fixtureMain(): Promise<void> {
     for (const tool of tools) { const caller = /^Caller tool (\S+)\./.exec(tool.description)?.[1]; if (caller) names.set(caller, tool.name); }
     log({ mcpTools: tools.length, maxResult: tools[0]?._meta?.["anthropic/maxResultSizeChars"] });
   }
-  const usage = (output: number) => ({ input_tokens: 3, cache_read_input_tokens: 100, cache_creation_input_tokens: 10, output_tokens: output });
+  // Models Claude's prompt cache for the cache-write regression tests. A request reads back the longest
+  // block prefix an earlier request wrote, but an entry whose last block trails whitespace is never
+  // reused, so its next request writes everything again. A live CLI is its own cache namespace (so a
+  // reseed pays the whole conversation once, the way a new session does); one-shot CLIs share "replay",
+  // since each replays the whole conversation in one message. Content is billed at four characters a token.
+  const cacheFile = scenarioPath + ".cache";
+  const cacheKey = live ? `live:${process.pid}` : "replay";
+  const tags = (content: Json[]) => content.map(part => {
+    const text = part.type === "text" ? String(part.text ?? "") : "[image]";
+    return [crypto.createHash("sha1").update(text).digest("hex").slice(0, 12), text.length] as [string, number];
+  });
+  const sent: [string, number][] = [];
+  const bill = (blocks: [string, number][], clean: boolean) => {
+    const file = JSON.parse(fs.readFileSync(cacheFile, "utf8").trim() || "{}") as Record<string, { tags: [string, number][]; clean: boolean }[]>;
+    const mine = file[cacheKey] || [];
+    const total = blocks.reduce((sum, [, chars]) => sum + chars, 0);
+    // The first block is the gateway's fixed text, ahead of every conversation: always a hit, and the
+    // floor for a namespace that has not cached anything of this thread yet.
+    let read = blocks[0]?.[1] || 0;
+    for (const entry of mine.filter(entry => entry.clean)) {
+      let matched = 0;
+      for (let index = 0; index < Math.min(entry.tags.length, blocks.length); index++) { if (entry.tags[index][0] !== blocks[index][0]) break; matched += blocks[index][1]; }
+      read = Math.max(read, matched);
+    }
+    mine.push({ tags: blocks, clean }); if (mine.length > 4) mine.shift();
+    file[cacheKey] = mine; fs.writeFileSync(cacheFile, JSON.stringify(file));
+    return { read: read >> 2, write: (total - read) >> 2 };
+  };
+  const cacheUsage = (content: Json[]) => {
+    const blocks = tags(content);
+    if (live) sent.push(...blocks);
+    return bill(live ? [...sent] : blocks, !blocks.length || /\S$/.test(String(content[content.length - 1]?.text ?? "")));
+  };
+  let cache = { read: 100, write: 10 };
+  const usage = (output: number) => ({ input_tokens: 3, cache_read_input_tokens: scenario.cache ? cache.read : 100, cache_creation_input_tokens: scenario.cache ? cache.write : 10, output_tokens: output });
   const event = (value: Json) => out({ type: "stream_event", event: value });
   let counter = 0; let active: { interrupt(): void } | undefined;
   const interrupted = (id: string, partial: string, timer: NodeJS.Timeout) => () => {
@@ -139,6 +177,7 @@ async function fixtureMain(): Promise<void> {
     } else if (message.type === "user") {
       const content = message.message.content as Json[];
       log({ user: content.length, heads: content.map(block => block.type === "text" ? String(block.text).split("\n")[0] : block.type) });
+      if (scenario.cache) cache = cacheUsage(content);
       if (live && scenario.exitAtFirstUser) { mcp?.kill(); process.exit(5); }
       out({ type: "system", subtype: "init", per_turn_effort_active: scenario.perTurnEffort ?? true, fast_mode_state: "off" });
       void play(nextReply());
@@ -159,7 +198,7 @@ export async function installClaudeFixture(scenario: FixtureScenario = { replies
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-live-"));
   const scenarioPath = join(directory, "scenario.json"); const capturePath = join(directory, "capture.jsonl");
   await writeFile(join(directory, "claude"), `#!${process.execPath}\n(${fixtureMain.toString()})();\n`); await chmod(join(directory, "claude"), 0o700);
-  await writeFile(scenarioPath, JSON.stringify(scenario)); await writeFile(capturePath, "");
+  await writeFile(scenarioPath, JSON.stringify(scenario)); await writeFile(capturePath, ""); await writeFile(scenarioPath + ".cache", "{}");
   const previous = { PATH: process.env.PATH, scenario: process.env.CLAUDE_FIXTURE_SCENARIO, capture: process.env.CLAUDE_FIXTURE_CAPTURE };
   process.env.PATH = directory + delimiter + process.env.PATH; process.env.CLAUDE_FIXTURE_SCENARIO = scenarioPath; process.env.CLAUDE_FIXTURE_CAPTURE = capturePath;
   const put = (name: string, value: string | undefined) => { if (value === undefined) delete process.env[name]; else process.env[name] = value; };

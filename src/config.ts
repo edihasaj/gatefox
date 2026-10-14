@@ -2,6 +2,7 @@ import { constants } from "node:fs";
 import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { totalmem } from "node:os";
 import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-service-tiers.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api";
@@ -21,9 +22,18 @@ export interface ProviderConfig {
 }
 export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; replayFormat?: "text" | "json" }
 export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
-export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">): ClaudeSessionSettings {
+/** One parked live Claude session costs about 284 MB (CLI plus its MCP child); this leaves headroom. */
+const sessionSlotBytes = 300 * 1024 * 1024;
+/**
+ * How many live sessions a machine can hold: a tenth of its RAM, one slot each, never below
+ * the 6 that a busy laptop needs and never above the 32 where the cache stops paying for itself.
+ */
+export function claudeSessionMax(memoryBytes = totalmem()): number {
+  return Math.min(32, Math.max(6, Math.floor((memoryBytes * 0.1) / sessionSlotBytes)));
+}
+export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">, memoryBytes = totalmem()): ClaudeSessionSettings {
   const value = provider.claudeSessions || {};
-  return { mode: value.mode ?? "replay", max: value.max ?? 6, parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
+  return { mode: value.mode ?? "replay", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
 }
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
@@ -110,7 +120,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (provider.type !== "claude-subscription") throw new Error(`${provider.id}: claudeSessions is only valid for claude-subscription providers`);
       if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) throw new Error(`${provider.id}: claudeSessions must be an object`);
       if ((sessions.mode !== undefined && !["replay", "live"].includes(sessions.mode)) || (sessions.replayFormat !== undefined && !["text", "json"].includes(sessions.replayFormat))) throw new Error(`${provider.id}: claudeSessions mode must be replay or live and replayFormat text or json`);
-      if (sessions.max !== undefined && !integerIn(sessions.max, 1, 16)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 16`);
+      if (sessions.max !== undefined && !integerIn(sessions.max, 1, 32)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 32`);
       if (sessions.parkMinutes !== undefined && !integerIn(sessions.parkMinutes, 5, 240)) throw new Error(`${provider.id}: claudeSessions parkMinutes must be 5 through 240`);
     }
     return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };

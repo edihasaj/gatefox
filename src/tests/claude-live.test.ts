@@ -100,20 +100,25 @@ test("the next user turn sends only its new items, even after restored reasoning
   } finally { await teardown(f); }
 });
 
-test("editing an earlier message reseeds in a new process and stops the old one", async () => {
+test("editing an earlier message answers one-shot, stops the old process and starts no new one", async () => {
   const { f, sessions } = await setup({ replies: [{ text: "One" }, { text: "Two" }] });
   try {
     const provider = adapter();
     const a = await turn(provider, [user("first")]);
-    await turn(provider, [user("first, edited"), ...a.output, user("second")]);
-    const [old, fresh] = await pids(f);
-    assert.ok(fresh && fresh !== old); assert.ok(await gone(old, 2000), "the old process exits");
-    const reseed = (await sessions()).find(entry => entry.outcome === "reseeded")!;
-    assert.deepEqual([reseed.missReason, reseed.divergedAt], ["prefix_diverged", 0]);
+    const b = await turn(provider, [user("first, edited"), ...a.output, user("second")]);
+    assert.equal(b.text, "Two", "the one-shot path answered");
+    const [old, ...others] = await pids(f);
+    assert.deepEqual(others, [], "a second cache write in a new process would only repeat what the one-shot path already pays");
+    assert.ok(await gone(old, 2000), "the diverged session exits");
+    assert.equal((await pids(f, "oneshot")).length, 1);
+    const events = await sessions();
+    assert.equal(events.filter(entry => entry.outcome === "reseeded").length, 0);
+    const held = events.find(entry => entry.outcome === "fallback")!;
+    assert.deepEqual([held.missReason, typeof held.threadKey], ["prefix_diverged", "string"]);
   } finally { await teardown(f); }
 });
 
-test("an effort change between turns keeps the process; thinking off or a change while tools run reseeds", async () => {
+test("an effort change between turns keeps the process; thinking off reseeds and a change while tools run answers one-shot", async () => {
   const { f, sessions } = await setup({ replies: [{ text: "A" }, { text: "B" }, { text: "C" }, { calls: [{ tool: "alpha", input: { id: 1 } }] }, { text: "D" }] });
   try {
     const provider = adapter(); const first = [user("one")];
@@ -126,8 +131,10 @@ test("an effort change between turns keeps the process; thinking off or a change
     const other = { threadId: "thread-2" }; const start = [user("tools")];
     const d = await turn(provider, start, { context: other, effort: "low" });
     await turn(provider, [...start, ...d.output, ...outputFor(d.output, "r")], { context: other, effort: "high" });
-    assert.deepEqual((await sessions()).filter(entry => entry.outcome === "reseeded").map(entry => entry.missReason), ["fingerprint_changed", "effort_midturn"]);
-    assert.equal((await pids(f)).length, 4);
+    const events = await sessions();
+    assert.deepEqual(events.filter(entry => entry.outcome === "reseeded").map(entry => entry.missReason), ["fingerprint_changed"]);
+    assert.deepEqual(events.filter(entry => entry.outcome === "fallback").map(entry => entry.missReason), ["effort_midturn"], "a forced downgrade serves this request one-shot");
+    assert.equal((await pids(f)).length, 3, "two threads and one reseed; the held thread started no process");
   } finally { await teardown(f); }
 });
 
@@ -188,20 +195,22 @@ test("a CLI tool_use for a non-gateway tool fails the request and kills the sess
   } finally { await teardown(f); }
 });
 
-test("at capacity a finished session is evicted, a generating one never is", async () => {
+test("at capacity a cold session makes room, a generating one never does", async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one" }, { slow: true }, { text: "fallback" }] });
   try {
     const provider = adapter({ max: 1 });
     await turn(provider, [user("first")]);
     const [first] = await pids(f);
+    // A session that still has its cache is not worth taking one from, so only a cold one may be evicted.
+    claudeLive({ max: 1, parkMinutes: 60 }).sessions()[0]!.lastUse = Date.now() - 61 * 60 * 1000;
     const controller = new AbortController(); const events: InferenceEvent[] = [];
     const slow = (async () => { for await (const event of provider.infer({ model: "fixture", input: [user("slow")], tools }, controller.signal, { threadId: "thread-2" })) events.push(event); })();
     while (!events.length) await sleep(10);
-    assert.ok(await gone(first, 2000), "the finished session made room");
+    assert.ok(await gone(first, 2000), "the cold session made room");
     const third = await turn(provider, [user("third")], { context: { threadId: "thread-3" } });
     assert.equal(third.text, "fallback");
     controller.abort(); await assert.rejects(slow, { code: "cancelled" });
-    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "live", "oneshot"]);
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "live", "oneshot"], "the running turn kept its slot and the newcomer replayed");
     assert.ok((await sessions()).some(entry => entry.outcome === "evicted"));
   } finally { await teardown(f); }
 });
