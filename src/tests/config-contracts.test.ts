@@ -40,7 +40,7 @@ test("accountEngines validates IDs, labels, workspaces and provider collisions, 
   assert.deepEqual(remote.accountEngines, [{ id: "codex" }]); assert.equal(remote.clientOnly, true);
   for (const invalid of [
     "codex", {}, [{ id: "Codex" }], [{ id: "1codex" }], [{ id: "a".repeat(33) }], [{ id: "" }], [{}], [null],
-    [{ id: "a" }, { id: "a" }], [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }, { id: "e" }],
+    [{ id: "a" }, { id: "a" }], Array.from({ length: 17 }, (_, index) => ({ id: `a${index}` })), [{ id: "a", type: "claude" }],
     [{ id: "a", label: "" }], [{ id: "a", label: "x".repeat(65) }], [{ id: "a", label: "line\nbreak" }], [{ id: "a", label: "tab\there" }], [{ id: "a", label: 7 }],
     [{ id: "a", workspaceId: "" }], [{ id: "a", workspaceId: "w".repeat(129) }], [{ id: "a", workspaceId: "ws/1" }],
   ]) assert.throws(() => config([codex()], { accountEngines: invalid }), Error, JSON.stringify(invalid));

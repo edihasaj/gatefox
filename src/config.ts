@@ -46,7 +46,7 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
   maxContextWindow?: number;
 }
 /** A second Codex account served by its own signed engine; an ID may equal a codex-subscription provider ID. */
-export interface AccountEngineConfig { id: string; label?: string; workspaceId?: string }
+export interface AccountEngineConfig { id: string; type?: "codex"; label?: string; workspaceId?: string }
 export interface GatewayConfig {
   version: 1;
   port: number;
@@ -121,7 +121,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
 }
 
 function validateAccountEngines(value: unknown, providers: ProviderConfig[]): AccountEngineConfig[] {
-  if (!Array.isArray(value) || value.length > 4) throw new Error("accountEngines must be a list of at most 4 accounts");
+  if (!Array.isArray(value) || value.length > 16) throw new Error("accountEngines must be a list of at most 16 accounts");
   const ids = new Set<string>();
   return value.map((entry: Partial<AccountEngineConfig> | null) => {
     if (!entry || typeof entry !== "object" || typeof entry.id !== "string" || !/^[a-z][a-z0-9_-]{0,31}$/.test(entry.id)) throw new Error("Account engine IDs must be 1 to 32 lowercase letters, digits, _ or -, starting with a letter");
@@ -131,7 +131,8 @@ function validateAccountEngines(value: unknown, providers: ProviderConfig[]): Ac
     if (provider && provider.type !== "codex-subscription") throw new Error(`Account engine ${entry.id} may share an ID only with a codex-subscription provider`);
     if (entry.label !== undefined && (typeof entry.label !== "string" || !/^[^\p{C}\p{Zl}\p{Zp}]{1,64}$/u.test(entry.label))) throw new Error(`Account engine ${entry.id}: label must be 1 to 64 printable characters`);
     if (entry.workspaceId !== undefined && (typeof entry.workspaceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(entry.workspaceId))) throw new Error(`Account engine ${entry.id}: workspaceId must be 1 to 128 letters, digits, _ or -`);
-    return { id: entry.id, ...(entry.label !== undefined ? { label: entry.label } : {}), ...(entry.workspaceId !== undefined ? { workspaceId: entry.workspaceId } : {}) };
+    if (entry.type !== undefined && entry.type !== "codex") throw new Error(`Account engine ${entry.id}: type must be codex`);
+    return { id: entry.id, ...(entry.type ? { type: entry.type } : {}), ...(entry.label !== undefined ? { label: entry.label } : {}), ...(entry.workspaceId !== undefined ? { workspaceId: entry.workspaceId } : {}) };
   });
 }
 
