@@ -79,8 +79,10 @@ than continued, so Claude's history always matches what Codex sent.
 
 Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
 - A continued request reads the whole cached prefix and writes only its new content
-  (74–108 tokens on a tool loop), with 2 uncached input tokens. The one-shot path
-  rewrites at least 350 tokens per request.
+  (74–108 tokens on a tool loop), with 2 uncached input tokens. A one-shot request
+  reads the previous request's prefix and writes its new items plus about 350 tokens
+  of the CLI's trailing reminder, as long as every block ends in a non-space
+  character (see the closing line in [responses](responses.md)).
 - A session's second user turn misses 350–430 tokens once, whatever the seed size.
   The seed itself is not rewritten. A turn that ends in tool use has no such miss.
 - Each session uses about 240 MB for the CLI and 44 MB for its MCP child.

@@ -9,7 +9,7 @@ export type ClaudeImages = ReturnType<typeof imageConversation>["images"];
 type Item = ClaudeConversation[number];
 
 const preamble: Record<ReplayFormat, string> = {
-  text: "Conversation items follow, oldest first, one per block. Each block's first line is its <<item>> header; everything after that line is the item's exact content.",
+  text: "Conversation items follow, oldest first, one per block. Each block's first line is its <<item>> header and its last line is <</item>>; everything between them is the item's exact content.",
   json: "Conversation items follow, oldest first, one JSON item per block.",
 };
 
@@ -66,9 +66,11 @@ export function markCustomCalls(messages: OpenAIChatMessage[], tools: OpenAITool
 
 // Header fields are bounded printable tokens; anything else is JSON-quoted so it cannot add a line.
 const field = (value: unknown) => typeof value === "string" && /^[\x21-\x7e]+$/.test(value) ? value : JSON.stringify(String(value ?? ""));
-// Escaping is reversible: a body line that could read as a header gains one backslash.
-const escape = (text: string) => text.replace(/^(\\*)<<item /gm, "\\$1<<item ");
-const block = (header: string, body: string): ContentBlock => ({ type: "text", text: `<<item ${header}>>\n${escape(body)}` });
+// Escaping is reversible: a body line that could read as a header or a closing line gains one backslash.
+const escape = (text: string) => text.replace(/^(\\*)(<<item |<<\/item>>)/gm, "\\$1$2");
+// The closing line keeps every block ending in a non-space character. Claude never reuses a cached
+// prefix whose last block ends in whitespace once more blocks follow, and tool output ends in "\n".
+const block = (header: string, body: string): ContentBlock => ({ type: "text", text: `<<item ${header}>>\n${escape(body)}\n<</item>>` });
 
 /** An item with images keeps its text once, from its parts, with each image at its place. */
 function body(item: Item): string {

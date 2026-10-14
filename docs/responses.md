@@ -272,9 +272,14 @@ was 0% cached after the first change. Claude cache reads are reported as
 `input_tokens_details.cached_tokens`.
 
 Each item block is plain text: a header line such as `<<item 3 user>>`,
-`<<item 4 tool_call NAME ID>>` or `<<item 5 tool_result ID>>`, followed by the raw
-text. A body line that starts with `<<item ` is escaped with a backslash, so item
-boundaries cannot be forged. This replaces the earlier JSON-escaped items, which
+`<<item 4 tool_call NAME ID>>` or `<<item 5 tool_result ID>>`, the raw text, and a
+closing line `<</item>>`. A body line that starts with `<<item ` or is `<</item>>` is
+escaped with a backslash, so item boundaries cannot be forged. The closing line
+matters for spend: Claude never reuses a cached prefix whose last block ends in
+whitespace once more blocks follow, and tool output usually ends in a newline.
+Without it (0.3.2 to 0.3.5), each one-shot request reused only the system and tool
+prefix and rewrote the whole conversation; measured on Haiku, the cached prefix
+stayed at 921 tokens for five rounds, and grows every round with it. This replaces the earlier JSON-escaped items, which
 cost 3–13% more characters. The first block is fixed text and no longer lists tool
 names, so a catalog change no longer rewrites it. `claudeSessions.replayFormat:
 "json"` on the Claude provider restores the JSON encoding. The format change means

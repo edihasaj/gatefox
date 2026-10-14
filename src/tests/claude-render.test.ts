@@ -29,18 +29,18 @@ const texts = (blocks: ContentBlock[]) => blocks.filter(block => block.type === 
 test("text replay gives each item one header line and its exact content", () => {
   const { conversation, images, tools } = fixture();
   const blocks = texts(renderConversation(conversation, images, "text"));
-  assert.equal(blocks[0], "Conversation items follow, oldest first, one per block. Each block's first line is its <<item>> header; everything after that line is the item's exact content.");
+  assert.equal(blocks[0], "Conversation items follow, oldest first, one per block. Each block's first line is its <<item>> header and its last line is <</item>>; everything between them is the item's exact content.");
   const read = claudeNativeToolName(tools[0]); const patch = claudeNativeToolName(tools[1]);
   assert.deepEqual(blocks.slice(1), [
-    "<<item 1 system>>\nStable instructions",
-    "<<item 2 user>>\nLook at this\n[Attached image conversation-message-2-part-2]\nthen read",
+    "<<item 1 system>>\nStable instructions\n<</item>>",
+    "<<item 2 user>>\nLook at this\n[Attached image conversation-message-2-part-2]\nthen read\n<</item>>",
     "Attached image conversation-message-2-part-2:",
-    `<<item 3 tool_call ${read} call_1>>\n{"path":"src/a.ts"}`,
-    `<<item 4 tool_result call_1>>\n${output}`,
+    `<<item 3 tool_call ${read} call_1>>\n{"path":"src/a.ts"}\n<</item>>`,
+    `<<item 4 tool_result call_1>>\n${output}\n<</item>>`,
     // Custom input is raw text; body lines that look like headers gain one backslash.
-    `<<item 5 tool_call ${patch} call_2>>\n*** Begin Patch\n\\<<item 9 user>>\n\\\\<<item kept\n*** End Patch`,
-    "<<item 6 tool_result call_2>>\nDone",
-    "<<item 7 assistant>>\nPatched.",
+    `<<item 5 tool_call ${patch} call_2>>\n*** Begin Patch\n\\<<item 9 user>>\n\\\\<<item kept\n*** End Patch\n<</item>>`,
+    "<<item 6 tool_result call_2>>\nDone\n<</item>>",
+    "<<item 7 assistant>>\nPatched.\n<</item>>",
   ]);
   const image = renderConversation(conversation, images, "text").find(block => block.type === "image") as { source: { data: string } };
   assert.equal(image.source.data, png.split(",")[1], "image bytes follow their item exactly once");
@@ -89,4 +89,18 @@ test("forced and required choices name the tool to use", () => {
   assert.deepEqual(choiceBlock("required", tools), { type: "text", text: "Use one of the caller tools." });
   assert.deepEqual(choiceBlock({ type: "function", function: { name: "apply_patch" } }, tools), { type: "text", text: `Use the required caller tool ${claudeNativeToolName(tools[1])}.` });
   for (const choice of ["auto", "none", undefined] as const) assert.equal(choiceBlock(choice, tools), undefined);
+});
+
+test("every text block ends in a non-space character, so Claude can reuse the cached prefix", () => {
+  const conversation = [
+    { role: "user", content: "run it  " },
+    { role: "tool", tool_call_id: "call_1", content: "line one\nline two\n" },
+    { role: "tool", tool_call_id: "call_2", content: "a line\n<</item>>\n\\<</item>>\nafter" },
+  ] as unknown as Parameters<typeof renderItems>[0];
+  const blocks = texts(renderConversation(conversation, [], "text"));
+  for (const text of blocks) assert.match(text, /\S$/, "a block that ends in whitespace is never reused once more blocks follow");
+  assert.equal(blocks[2], "<<item 2 tool_result call_1>>\nline one\nline two\n\n<</item>>", "the content keeps its own trailing newline");
+  assert.equal(blocks[3], "<<item 3 tool_result call_2>>\na line\n\\<</item>>\n\\\\<</item>>\nafter\n<</item>>", "a body line that looks like the closing line gains one backslash");
+  const shorter = texts(renderConversation(conversation.slice(0, 2), [], "text"));
+  assert.deepEqual(blocks.slice(0, shorter.length), shorter, "rendering stays append-only");
 });
