@@ -46,6 +46,14 @@ sessions per outcome (and per miss reason) with their cache reads, writes and a 
 count — the spawns and reseeds whose cache read reached only the system prefix — and the 25
 most recent problems. Set `GATEWAY_TELEMETRY=off` to disable the log.
 
+## Native relay records
+
+The native relay writes its own JSON records to its managed log, one record per
+write: session lifecycle, `session_activity` and `session_ended` with transport
+counters, `transport_activity`, and audited SDK transport events (`sdk_log`). Client
+and stream IDs appear only as per-process hashes, and SDK message text is never
+printed. See [native connected machines](native-remote.md#reading-the-logs).
+
 ## Exception reports
 
 Only exceptions go to `errors.applifyer.com`, project `harness-gateway`. The DSN
