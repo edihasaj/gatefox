@@ -19,8 +19,11 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
   }
   if (plan.components.length === 1) throw new Error(`Tunnel ${id} is the only unified service component; uninstall the gateway service instead of removing it`);
   const config = await loadConfig(plan.config);
-  await requireIdleGateway(config);
   const port = tunnelLocalPort(component);
+  // On a remote client, that forwarded port is how the client reaches its gateway: removing this tunnel disconnects it.
+  if (config.clientOnly && port !== undefined && config.port === port) throw new Error(`Tunnel ${id} carries this client's gateway connection on port ${port}; uninstall the remote client instead of removing the tunnel`);
+  // Nothing listens locally unless the plan runs inference, as in requireMaintenanceWindow.
+  if (!config.clientOnly && plan.components.some(candidate => candidate.kind === "inference")) await requireIdleGateway(config);
   const provider = port === undefined ? undefined : config.providers.find(candidate => usesLoopbackPort(candidate.baseUrl, port));
   if (provider) throw new Error(`Provider ${provider.id} uses this tunnel's local port ${port}; remove that provider from the gateway configuration first`);
   const path = servicePlanPath(state);
@@ -33,7 +36,7 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
   return { tunnel: id, removed: true, backup, appliesAt: "next service restart", note: "Removed from the service plan; it stops at the next gateway service restart" };
 }
 
-/** The inference listener must be reachable and idle before any plan is changed. */
+/** The plan's inference listener must be reachable and idle before any plan is changed. */
 async function requireIdleGateway(config: GatewayConfig): Promise<void> {
   let health: { active?: number };
   try { health = await (await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as typeof health; }
@@ -62,7 +65,15 @@ function usesLoopbackPort(baseUrl: string | undefined, port: number): boolean {
   return (url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80) === port;
 }
 
+const regexText = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Matches only a backup of this exact tunnel id. The id is followed by the full
+ * timestamp and extension, so a backup for an id like `spark-2026` cannot make an
+ * unknown `spark` look already removed.
+ */
 async function removalBackedUp(state: string, id: string): Promise<boolean> {
-  try { return (await readdir(resolve(state, "service-backups"))).some(name => new RegExp(`^tunnel-removed-${id}-\\d{4}-`).test(name)); }
+  const name = new RegExp(`^tunnel-removed-${regexText(id)}-\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}\\.\\d{3}Z\\.json$`);
+  try { return (await readdir(resolve(state, "service-backups"))).some(candidate => name.test(candidate)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }

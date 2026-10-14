@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { macTunnel } from "../mac-tunnel.js";
 import { removeTunnelComponent } from "../mac-tunnel-remove.js";
 import { readServicePlan, servicePlanPath, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
@@ -94,4 +95,62 @@ test("busy or unreachable inference blocks a tunnel removal before anything is w
       assert.ok(!(await readdir(f.state)).includes("service-backups"));
     } finally { await f.stop(); }
   }
+});
+
+/** A plan whose tunnels stand alone: no inference component and no local listener to probe. */
+async function transportFixture(port: number, clientOnly: boolean) {
+  const root = await mkdtemp(join(tmpdir(), "gw-tunnel-remove-")); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
+  const config = join(root, "gateway.json");
+  await writeFile(config, JSON.stringify(clientOnly
+    ? { version: 1, port, stateDirectory: state, providers: [], clientOnly: true }
+    : { version: 1, port, stateDirectory: state, providers: [{ id: "claude", type: "claude-subscription", models: { claude: "claude" } }] }));
+  const tunnel = (id: string, args: string[]) => ({ id, kind: "tunnel" as const, command: "/usr/bin/ssh", args, log: join(state, `${id}.log`) });
+  const plan: ServicePlan = { version: 1, config, sharedExecutors: true, components: [
+    { id: "desktop", kind: "desktop", command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", args: ["--app", "/Applications/ChatGPT.app"], log: join(state, "desktop.log") },
+    tunnel("tunnel-spark", ["-N", "-T", "-L", `127.0.0.1:${port}:127.0.0.1:18300`, "qwen-spark"]),
+    tunnel("tunnel-studio", ["-N", "-T", "-R", "3459:127.0.0.1:3457", "mac-studio"]),
+  ] };
+  await writePrivateJson(servicePlanPath(state), plan);
+  return { state, plan };
+}
+
+test("gateway tunnel uninstall edits the unified plan and install still refuses it", { skip: process.platform !== "darwin" }, async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    const result = await macTunnel("uninstall", { id: "spark" }, f.state);
+    assert.equal(result.tunnel, "spark"); assert.equal(result.removed, true);
+    assert.equal(result.appliesAt, "next service restart");
+    assert.deepEqual((await readServicePlan(f.state))!.components.map(component => component.id), ["inference", "desktop", "tunnel-studio"]);
+    await assert.rejects(macTunnel("install", { id: "spark", host: "qwen-spark", port: 18301, remotePort: 18300 }, f.state), /Tunnels are owned by the unified service/);
+  } finally { await f.stop(); }
+});
+
+test("a backup for a longer tunnel id does not excuse an unknown shorter id", async () => {
+  const f = await fixture({ active: 0 });
+  try {
+    // Rename the plan's tunnel to an id that starts with the one under test, so its backup
+    // file begins "tunnel-removed-spark-2026-<year>..." and a shorter id could match it.
+    await writePrivateJson(servicePlanPath(f.state), { ...f.plan, components: f.plan.components.map(component =>
+      component.id === "tunnel-spark" ? { ...component, id: "tunnel-spark-2026" } : component) });
+    assert.equal((await removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "spark-2026")).removed, true);
+    await assert.rejects(removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "spark"), /No tunnel spark in the unified service plan/);
+    assert.deepEqual(await removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "spark-2026"), { tunnel: "spark-2026", removed: false, alreadyRemoved: true });
+  } finally { await f.stop(); }
+});
+
+test("the tunnel carrying a remote client's gateway connection cannot be removed", async () => {
+  const f = await transportFixture(18301, true);
+  await assert.rejects(removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "spark"),
+    /Tunnel spark carries this client's gateway connection on port 18301; uninstall the remote client/);
+  assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+  assert.ok(!(await readdir(f.state)).includes("service-backups"));
+  // Only the tunnel that carries the connection is refused; another one still retires normally.
+  assert.equal((await removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "studio")).removed, true);
+});
+
+test("a plan without inference needs no /health answer before its tunnel is removed", async () => {
+  const f = await transportFixture(await unusedPort(), false);
+  const result = await removeTunnelComponent(f.state, (await readServicePlan(f.state))!, "spark");
+  assert.equal(result.removed, true); assert.equal(result.appliesAt, "next service restart");
+  assert.deepEqual((await readServicePlan(f.state))!.components.map(component => component.id), ["desktop", "tunnel-studio"]);
 });

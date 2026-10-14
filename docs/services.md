@@ -112,12 +112,21 @@ gateway tunnel uninstall --tunnel-id spark
 
 This edits the service plan rather than registering another LaunchAgent. It
 refuses an unknown tunnel name, and repeating a removal it already made reports
-`alreadyRemoved` instead of failing again. Before it writes anything, it requires
-the gateway's `/health` endpoint to answer with no active inference, and it
-refuses when a configured provider still uses that tunnel's own loopback port,
-naming the provider. The provider usually wants a replacement tunnel, so move the
-provider or add its new tunnel first. The plan it replaces is saved first to a
-private `service-backups/tunnel-removed-<id>-<timestamp>.json` file.
+`alreadyRemoved` instead of failing again. A repeat is recognised only by a saved
+backup carrying that exact id followed by a full timestamp, so a tunnel named
+`spark-2026` cannot make an unknown `spark` look already removed.
+
+Before it writes anything, it requires the gateway's `/health` endpoint to answer
+with no active inference. It asks only when the plan has an inference component:
+a plan of tunnels and the desktop, or a remote-client configuration, has nothing
+listening locally to check. It refuses when a configured provider still uses that
+tunnel's own loopback port, naming the provider; the provider usually wants a
+replacement tunnel, so move the provider or add its new tunnel first. On a remote
+client, the tunnel that forwards the configured `port` is how that client reaches
+its gateway, so removing it is refused: uninstall the remote client instead.
+Another tunnel on the same machine still retires normally. The plan it replaces is
+saved first to a private `service-backups/tunnel-removed-<id>-<timestamp>.json`
+file.
 
 Nothing restarts: the result says `appliesAt: next service restart`, and the
 tunnel stops when the supervisor next starts from the shorter plan, after
