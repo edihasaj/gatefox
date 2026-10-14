@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { bootoutJob } from "../launchctl.js";
-import { rollbackConsolidation, type RollbackLaunchctl } from "../mac-consolidate-rollback.js";
+import { consolidationFailureMessage, rollbackConsolidation, type RollbackLaunchctl, type RollbackFailure } from "../mac-consolidate-rollback.js";
 
 const label = "com.edihasaj.subscription-gateway";
 async function fixture() {
@@ -43,13 +43,30 @@ test("a failing bootout of a replacement that is then proven unloaded still rest
 
 test("a replacement that is still loaded stays the only service: no plan retirement and no old job bootstrap", async () => {
   const f = await fixture(); const s = stub({ bootout: async () => { throw new Error("secret /private/path value"); } });
+  // The old inference job shares the supervisor label, so its plist is the file the loaded replacement runs from.
+  f.jobs.push({ path: f.targetPath, label, text: "old daemon", loaded: true });
   const failures = await run(f, s.launchctl);
   assert.deepEqual(failures, [{ step: "replacement_still_loaded" }]);
   assert.deepEqual(s.bootstrapped, []);
   assert.equal(await readFile(f.planPath, "utf8"), "{}");
   assert.equal(await readFile(f.targetPath, "utf8"), "new daemon");
+  for (const job of f.jobs.filter(job => job.label !== label)) assert.equal(await readFile(job.path, "utf8"), job.text);
   await assert.rejects(readdir(f.trash), { code: "ENOENT" });
   assert.doesNotMatch(JSON.stringify(failures), /secret|private/);
+});
+
+test("a rollback that left the replacement loaded reports the new service is still running, not that jobs were restored", () => {
+  const stillLoaded: RollbackFailure[] = [{ step: "replacement_still_loaded" }];
+  const backup = "/state/service-backups/2026-10-14T10-00-00.000Z";
+  const notReady = new Error("Consolidated components did not start (inference_unhealthy); previous jobs will be restored");
+  const message = consolidationFailureMessage(notReady, stillLoaded, backup);
+  assert.doesNotMatch(message, /previous jobs will be restored/);
+  assert.equal(message, "Consolidated components did not start (inference_unhealthy); the new service is still running and the previous jobs were not restarted"
+    + "; rollback incomplete (replacement_still_loaded); original plists are saved in " + backup);
+  assert.match(consolidationFailureMessage(new Error("Consolidation interrupted; previous jobs will be restored"), stillLoaded, backup), /^Consolidation interrupted; the new service is still running/);
+  // When the replacement was proven unloaded the old claim stays: rollback did restart them.
+  const restored: RollbackFailure[] = [{ step: "restart_job", label }];
+  assert.match(consolidationFailureMessage(notReady, restored, backup), /previous jobs will be restored; rollback incomplete \(restart_job:/);
 });
 
 test("an unanswerable loaded check is treated as still loaded", async () => {

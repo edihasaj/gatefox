@@ -40,19 +40,27 @@ quit ChatGPT or change native account settings.
 
 The migration saves the original plists in private `service-backups` storage,
 starts the supervisor, and checks its components. The inference HTTP listener
-must respond; the native relay must report a fresh connected status. Failed
-startup restores the previous jobs. Each restore step runs on its own, so one
-failing step cannot leave the other jobs stopped, and `launchctl bootout` of a
-job launchd no longer has (`3: No such process`) counts as already stopped. If the
-replacement supervisor is still loaded after rollback tries to stop it
-(`replacement_still_loaded`), rollback keeps its plan and plist and does not
-restart the old jobs, so two sets of writers never run together. The
-original error is reported, followed by the names of any rollback steps that
-failed, and a startup timeout names which readiness condition never held
-(`status_not_current`, `components_not_running`, `inference_unhealthy` or
-`native_relay_not_connected`). Superseded plists move to Trash only after
-the replacement starts. The installed native binary replaces earlier test paths
-while retaining the original relay home and connected-machine registration.
+must respond; the native relay must report a fresh connected status. When a
+failed startup proves that the new supervisor is unloaded, rollback restores the
+previous jobs. Each restore step runs on its own, so one failing step cannot
+leave the other jobs stopped, and `launchctl bootout` of a job launchd no longer
+has (`3: No such process`) counts as already stopped. When rollback cannot prove
+the replacement unloaded (`replacement_still_loaded`), the new service stays
+running instead: rollback leaves the supervisor plist and the service plan in
+place, keeps that plist equal to what the loaded supervisor is running (it does
+not overwrite it with the old job that shared its label), and does not restart
+the old jobs, so two sets of writers never run together. Superseded plists move
+to Trash only after the replacement starts, so in that case the old non-service
+plists are still in `~/Library/LaunchAgents`, next to the running supervisor,
+and their text is saved in the backup. Move them aside (for example to Trash)
+and reload, or rerun `gateway service consolidate --apply`, or uninstall the
+service, so a later login never loads a duplicate. The original error is
+reported, followed by the names of any rollback steps that failed, and a startup
+timeout names which readiness condition never held (`status_not_current`,
+`components_not_running`, `inference_unhealthy` or
+`native_relay_not_connected`). The installed native binary replaces earlier
+test paths while retaining the original relay home and connected-machine
+registration.
 
 The supervisor retries failed children with a delay that grows from one second
 to thirty seconds. A child failure does not replace the other children. Desktop

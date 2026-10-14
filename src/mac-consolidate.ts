@@ -9,7 +9,7 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { servicePlist } from "./mac-service.js";
 import { bootoutJob } from "./launchctl.js";
-import { rollbackConsolidation, rollbackFailureSummary } from "./mac-consolidate-rollback.js";
+import { consolidationFailureMessage, rollbackConsolidation } from "./mac-consolidate-rollback.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
 
@@ -145,7 +145,7 @@ export async function consolidateService(configPath: string, apply = false): Pro
   } catch (error) {
     const failures = await rollbackConsolidation({ jobs, serviceLabel, targetPath, planPath: servicePlanPath(config.stateDirectory), trash: resolve(homedir(), ".Trash"), replacementAttempted,
       launchctl: { bootout: async label => { await bootoutJob(`${domain()}/${label}`); }, isLoaded: loaded, bootstrap: async path => { await exec("/bin/launchctl", ["bootstrap", domain(), path], { timeout: 10000 }); } } });
-    if (failures.length) throw new Error(`${error instanceof Error ? error.message : "Consolidation failed"}; rollback incomplete (${rollbackFailureSummary(failures)}); original plists are saved in ${backup}`, { cause: error });
+    if (failures.length) throw new Error(consolidationFailureMessage(error, failures, backup), { cause: error });
     throw error;
   } finally { process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt); }
 }
