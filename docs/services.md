@@ -97,11 +97,34 @@ Macs do not get the drain. The drain deadline in `cli.ts` and the supervisor tak
 effect only after a service or inference restart; an in-place upgrade keeps the
 running process's previous deadline.
 
-After consolidation, the separate native and tunnel installers refuse changes
-that would create competing jobs. Their status commands inspect the unified
+After consolidation, a separate native install or `gateway tunnel install` refuses
+changes that would create competing jobs. Their status commands inspect the unified
 service. Desktop registration can refresh the launch environment without creating
-another login job. Transport changes currently require stopping the unified
-service and registering the required components again before reconsolidation.
+another login job. Transport changes other than tunnel removal currently require
+stopping the unified service and registering the required components again before
+reconsolidation.
+
+Retire one tunnel the unified service owns:
+
+```sh
+gateway tunnel uninstall --tunnel-id spark
+```
+
+This edits the service plan rather than registering another LaunchAgent. It
+refuses an unknown tunnel name, and repeating a removal it already made reports
+`alreadyRemoved` instead of failing again. Before it writes anything, it requires
+the gateway's `/health` endpoint to answer with no active inference, and it
+refuses when a configured provider still uses that tunnel's own loopback port,
+naming the provider. The provider usually wants a replacement tunnel, so move the
+provider or add its new tunnel first. The plan it replaces is saved first to a
+private `service-backups/tunnel-removed-<id>-<timestamp>.json` file.
+
+Nothing restarts: the result says `appliesAt: next service restart`, and the
+tunnel stops when the supervisor next starts from the shorter plan, after
+`gateway service restart` in a maintenance window or at the next login. Restore
+the saved file over `service-plan.json` and restart to bring the tunnel back. A
+tunnel that is the plan's only component is refused instead; that machine has
+nothing left to run, so uninstall the gateway service.
 
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.

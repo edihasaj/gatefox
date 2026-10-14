@@ -8,6 +8,7 @@ import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
+import { removeTunnelComponent } from "./mac-tunnel-remove.js";
 
 const exec = promisify(execFile); const marker = "<!-- Managed by subscription-gateway tunnel -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -29,6 +30,7 @@ async function tunnelOperation(action: string | undefined, options: TunnelOption
   if (action !== "status" && await readPendingLoginConsolidation(state)) throw new Error("Tunnel startup is staged under the unified service at next login; its separate registration was not changed");
   if (plan) {
     if (action === "status") return { ...await consolidatedStatus(state), component: plan.components.find(component => component.id === "tunnel-" + options.id)?.id || null };
+    if (action === "uninstall") return removeTunnelComponent(state, plan, options.id);
     throw new Error("Tunnels are owned by the unified service. Finish chats and uninstall that service before changing its tunnel configuration");
   }
   const label = `com.edihasaj.subscription-gateway.tunnel.${options.id}`; const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
