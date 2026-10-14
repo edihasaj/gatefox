@@ -46,6 +46,14 @@ export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeL
  * the upstream decide. It only bounds gateway memory.
  */
 export const maxRequestBytes = 64 * 1024 * 1024;
+/**
+ * Names the missing alias so a chat left on a removed provider says what to do. Only
+ * alias characters are echoed, and the length is capped.
+ */
+export function unknownModelMessage(model: string): string {
+  const shown = model.replace(/[^A-Za-z0-9._/:@-]/g, "").slice(0, 80);
+  return `Model "${shown}" is not offered by this gateway; it may have been turned off. Choose another model for this chat.`;
+}
 async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of req) { size += chunk.length; if (size > maxRequestBytes) throw new ProviderError("request_too_large", "Request exceeds 64 MiB", 413); chunks.push(chunk); }
@@ -207,7 +215,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // through its vendor's subscription route when exactly one alias matches.
       const alias = state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model);
       const route = alias ? state.routes.get(alias) : undefined;
-      if (!route) throw new ProviderError("model_not_found", "Unknown model alias", 404);
+      if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
