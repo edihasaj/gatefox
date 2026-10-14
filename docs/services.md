@@ -57,7 +57,9 @@ login setup exits after success. Logs and the component status file are private.
 A lease prevents two supervisors from owning the same state directory. Launchd
 restarts the supervisor and retains ownership of its child process group.
 
-`gateway service restart` requires the same maintenance window. The inference
+`gateway service restart` requires the same maintenance window. When the running
+plan has no inference component (a Mac moving from client-only to standalone),
+the window skips the inference health check because nothing listens yet. The inference
 child must accept its own idle guard before the supervisor stops its other
 components. `gateway service uninstall` explicitly stops all owned components
 and moves the plan and LaunchAgent to Trash. Provider credentials remain.

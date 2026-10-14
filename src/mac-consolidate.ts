@@ -59,7 +59,10 @@ export async function requireMaintenanceWindow(configPath: string, listProcesses
   const stdout = await listProcesses();
   if (stdout.split("\n").some(line => line.trim() === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT")) throw new Error("Keep the running service while chats are open. Finish local and remote chats, then quit ChatGPT normally before consolidation");
   const config = await loadConfig(configPath);
-  if (!config.clientOnly) {
+  // A Mac moving from client-only to standalone runs a plan without inference, so nothing listens on the port yet.
+  const running = await readServicePlan(config.stateDirectory);
+  const hasInference = running ? running.components.some(component => component.kind === "inference") : !config.clientOnly;
+  if (hasInference && !config.clientOnly) {
     const health = await (await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; status?: string };
     if (health.active !== 0 || health.status !== "ok") throw new Error("Gateway inference is busy or unhealthy; consolidation did not stop it");
   }
