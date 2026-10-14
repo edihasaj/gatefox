@@ -38,6 +38,16 @@ export class ThreadStartOrder {
     }
     this.remember(id); return [message];
   }
+  /**
+   * Before a server request is written: the notifications this SDK already sent for that same
+   * chat. A request carries its own correlation, so it never waits for a reply; it still must not
+   * overtake the messages that came before it, or the client answers an event it has not seen.
+   */
+  before(message: Message): Message[] {
+    const id = threadOf(message);
+    if (!id || !this.heldThreads.has(id)) return [];
+    return this.release(held => threadOf(held) === id);
+  }
   /** After a begun request's reply or error is written: held notifications to write now, in order. */
   settle(createdThreadId?: string): Message[] {
     this.pending = Math.max(0, this.pending - 1);

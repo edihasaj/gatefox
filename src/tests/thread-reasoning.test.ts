@@ -27,8 +27,10 @@ test("selections persist per chat, newest wins, and nulls never erase a saved le
   await f.store.write("chat", { model: "m", effort: null, summary: null, atMs: at + 2 });
   assert.deepEqual(await f.store.read("chat"), { model: "m", effort: "high", summary: "detailed", atMs: at + 1 }, "an observation carrying no reasoning leaves the record alone");
   assert.equal(await f.store.write("fresh", { model: "m", effort: null, atMs: at + 2 }), false, "a chat without any effort is never created");
-  assert.equal(await f.store.write("chat", { model: "other", effort: "low", atMs: at + 3 }), true);
-  assert.deepEqual(await f.store.read("chat"), { model: "other", effort: "low", summary: "detailed", atMs: at + 3 });
+  assert.equal(await f.store.write("chat", { model: "other", effort: null, summary: "detailed", atMs: at + 3 }), false, "a level saved for another model says nothing about this one");
+  assert.deepEqual(await f.store.read("chat"), { model: "m", effort: "high", summary: "detailed", atMs: at + 1 }, "a model change with no effort of its own leaves the record alone");
+  assert.equal(await f.store.write("chat", { model: "other", effort: "low", atMs: at + 4 }), true);
+  assert.deepEqual(await f.store.read("chat"), { model: "other", effort: "low", atMs: at + 4 }, "an explicit level for the new model replaces both");
   assert.equal((await lstat(f.path)).mode & 0o777, 0o600); assert.equal((await lstat(f.state)).mode & 0o777, 0o700);
 });
 

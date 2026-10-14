@@ -18,7 +18,10 @@ async function fixture() {
   configureTelemetry(state, "test");
   const config: GatewayConfig = { version: 1, port: 1, stateDirectory: state, providers: [
     { id: "claude", type: "claude-subscription", label: "Claude", models: { "claude/model": "model" }, modelMetadata: { "claude/model": { reasoningEfforts: ["low", "high"] } } },
-    { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: "unused", models: { "codex/model": "model" } },
+    // Real Codex 2 rows publish the reasoning levels their native catalog offers; "codex/plain" is a
+    // gateway model without reasoning control at all, so nothing may be restored onto it.
+    { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: "unused", models: { "codex/model": "model", "codex/plain": "plain" },
+      modelMetadata: { "codex/model": { reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] }, "codex/plain": { reasoningEfforts: [] } } },
   ] };
   const thread: ObjectValue = { id: "persisted", modelProvider: "subscription_gateway", model: "codex/model" };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
@@ -145,6 +148,30 @@ test("a chat with nothing to recover receives no reasoning keys", async () => {
   assert.equal(Object.hasOwn(config, "model_reasoning_summary"), false);
 });
 
+test("an effort saved for one model is never carried onto the model that replaced it", async () => {
+  const f = await fixture();
+  await f.store.write("persisted", { model: "claude/model", effort: "max", atMs: old() });
+  // The desktop reported a newer selection for another model without naming an effort at all.
+  assert.equal(await f.store.write("persisted", { model: "codex/model", effort: null, summary: null, atMs: Date.now() }), false);
+  assert.equal((await f.store.read("persisted"))!.model, "claude/model", "the other model's record is never rewritten");
+  const router = await f.router();
+  await router.request("thread/resume", { threadId: "persisted" });
+  assert.equal(Object.hasOwn(f.forwarded().config as ObjectValue, "model_reasoning_effort"), false, "the resumed chat does not run Claude's Max");
+  assert.ok((await f.events()).some(event => event.event === "reasoning_unrecovered" && event.model === "codex/model"));
+});
+
+test("a gateway model that offers no reasoning levels receives nothing back", async () => {
+  const f = await fixture();
+  f.thread.model = "codex/plain";
+  await f.store.write("persisted", { model: "codex/plain", effort: "max", atMs: old() });
+  const router = await f.router();
+  await router.request("thread/resume", { threadId: "persisted" });
+  const config = f.forwarded().config as ObjectValue;
+  assert.equal(Object.hasOwn(config, "model_reasoning_effort"), false);
+  assert.equal(Object.hasOwn(config, "model_reasoning_summary"), false);
+  assert.equal((await f.events()).some(event => event.event === "reasoning_restored"), false, "a model with no reasoning control reports no restore");
+});
+
 test("native resume restores only when a model override blocks the engine", async () => {
   const f = await fixture();
   f.thread.modelProvider = "openai"; f.thread.model = "native";
@@ -154,6 +181,17 @@ test("native resume restores only when a model override blocks the engine", asyn
   assert.equal(Object.hasOwn(f.forwarded(), "config"), false, "without a model override the engine restores its own settings");
   await router.request("thread/resume", { threadId: "persisted", model: "native" });
   assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
+});
+
+test("a native fork restores the effort its own catalog row offers", async () => {
+  const f = await fixture();
+  f.thread.modelProvider = "openai"; f.thread.model = "native";
+  await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
+  const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }] }]));
+  await router.request("thread/fork", { threadId: "persisted" });
+  assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
+  assert.ok((await f.events()).some(event => event.event === "reasoning_restored" && event.provider === "native"
+    && event.method === "thread/fork" && event.source === "record" && event.adjusted === false));
 });
 
 test("native fork restores an effort its catalog row offers, and the caller still wins", async () => {

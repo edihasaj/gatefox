@@ -76,7 +76,7 @@ export class ThreadReasoningStore {
     if (!isModelName(threadId)) throw invalid();
     return (await this.load()).threads[threadId];
   }
-  /** The newest observation wins; an unknown effort or summary never erases a saved one. */
+  /** The newest observation wins; an unknown effort or summary never erases a saved one for the same model. */
   async write(threadId: string, value: ThreadReasoningSelection): Promise<boolean> {
     if (!isModelName(threadId) || !object(value) || !isModelName(value.model) || !integer(value.atMs)) throw invalid();
     if (value.effort !== undefined && value.effort !== null && !isReasoningEffort(value.effort)) throw invalid();
@@ -87,9 +87,11 @@ export class ThreadReasoningStore {
     return withPrivateFileLock(this.path, async () => {
       const saved = await this.load(); const current = saved.threads[threadId];
       if (current && current.atMs >= value.atMs) return false;
-      const keptEffort = effort ?? current?.effort;
+      // A selection for another model says nothing about this one, so nothing carries over.
+      const carried = current && current.model === value.model ? current : undefined;
+      const keptEffort = effort ?? carried?.effort;
       if (!keptEffort) return false;
-      const keptSummary = summary ?? current?.summary;
+      const keptSummary = summary ?? carried?.summary;
       const selected: ThreadReasoning = { model: value.model, effort: keptEffort, ...(keptSummary ? { summary: keptSummary } : {}), atMs: value.atMs };
       if (current && current.model === selected.model && current.effort === selected.effort && current.summary === selected.summary) return true;
       if (!current) {

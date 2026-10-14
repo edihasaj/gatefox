@@ -17,7 +17,9 @@ async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-app-server-"));
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: directory, providers: [
     { id: "claude", type: "claude-subscription", label: "Claude", models: { "claude/model": "model" }, modelMetadata: { "claude/model": { reasoningEfforts: ["low", "high"] } } },
-    { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: "unused", models: { "codex/model": "model" } },
+    // A real Codex 2 row carries the reasoning levels its native catalog publishes.
+    { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: "unused", models: { "codex/model": "model" },
+      modelMetadata: { "codex/model": { reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] } } },
   ] };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
   const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
@@ -254,7 +256,7 @@ test("provider switch refusals are application errors rather than config validat
 async function fastFixture() {
   const f = await fixture();
   const tier = { id: "priority", name: "Fast", description: "Priority routing" };
-  f.config.providers[1].modelMetadata = { "codex/model": { serviceTiers: [tier], additionalSpeedTiers: ["fast"] } };
+  f.config.providers[1].modelMetadata = { "codex/model": { ...f.config.providers[1]?.modelMetadata?.["codex/model"], serviceTiers: [tier], additionalSpeedTiers: ["fast"] } };
   const router = new AppServerRouter(f.config, f.backend); await router.initialize();
   return { ...f, router, tier };
 }

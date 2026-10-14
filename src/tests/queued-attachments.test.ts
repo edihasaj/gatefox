@@ -4,6 +4,9 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, stat, utimes, writeFile } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stageQueuedInput, withStagedQueueInput } from "../queued-attachments.js";
+import { AppServerBackends } from "../app-server-backends.js";
+import type { DesktopCatalog } from "../desktop-catalog.js";
+import type { GatewayConfig } from "../config.js";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "gateway-queued-"));
@@ -69,6 +72,29 @@ test("an error naming a staged copy is mapped back to the file the user attached
   const error = staged.restore(new Error(`image input is invalid: ${copy}`)) as Error;
   assert.equal(error.message, `image input is invalid: ${image}`);
   await staged.release();
+});
+
+test("a queue call forwarded to a shared native SDK is staged and cleaned up by the backend", async () => {
+  const f = await fixture();
+  const image = await f.source("shot.png", "image-bytes");
+  const forwarded: Array<Record<string, unknown>> = [];
+  // A shared original-native SDK is a service-owned process: it is not granted the app's file access.
+  const native = { shared: true, closed: false, exited: new Promise<never>(() => {}), drained: Promise.resolve(), ready: Promise.resolve(),
+    request: async (method: string, params: Record<string, unknown>) => {
+      if (method === "thread/read") return { thread: { id: params.threadId, modelProvider: "openai" } };
+      if (method !== "thread/queue/add") return {};
+      const input = params.input as Array<Record<string, unknown>>; forwarded.push(input[0]);
+      return { readPath: String(input[0].path), size: (await readFile(String(input[0].path))).length };
+    },
+    send() {}, stop() {} };
+  const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: f.state, providers: [] };
+  const backends = new AppServerBackends("codex", ["app-server"], config, {}, {}, {} as DesktopCatalog, async () => {}, () => {}, undefined, () => native);
+  const result = await backends.request("thread/queue/add", { threadId: "native-chat", clientUserMessageId: "m1", input: [{ type: "localImage", path: image }] });
+  assert.match(String(result.readPath), new RegExp(`queued-attachments\\/[0-9a-f-]+\\.png$`));
+  assert.equal(result.size, 11, "the shared SDK read the copy's own bytes");
+  assert.equal(forwarded.length, 1); assert.equal(String(forwarded[0].type), "localImage");
+  assert.equal(await readFile(image, "utf8"), "image-bytes", "the attached file is never moved or edited");
+  assert.deepEqual(await f.copies(), [], "the copy does not outlive the call");
 });
 
 test("copies older than ten minutes left by a crash are removed on the first stage", async () => {

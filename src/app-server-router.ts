@@ -259,6 +259,8 @@ export class AppServerRouter {
     if (!recovered) return null;
     const metadata = this.extraModels.find(entry => entry.slug === model);
     const levels = ((metadata?.supported_reasoning_levels ?? []) as Array<{ effort: string }>).map(level => level.effort);
+    // A model with no reasoning control has nothing to restore to; an effort here would be a guess.
+    if (!levels.length) return null;
     const fitted = fitEffort(recovered.effort, levels, typeof metadata?.default_reasoning_level === "string" ? metadata.default_reasoning_level : undefined);
     if (fitted.adjusted) telemetry("reasoning_effort_reset", { from: enumEffort(recovered.effort), to: enumEffort(fitted.effort), model, method });
     telemetry("reasoning_restored", { provider: "gateway", method, source: recovered.source, adjusted: fitted.adjusted });

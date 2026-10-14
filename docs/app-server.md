@@ -329,7 +329,11 @@ start/resume/fork results; an unknown (null) value never erases a saved level,
 and a chat's record never transfers to another chat. When nothing is recorded
 yet, for example after a gateway restart, the adapter seeds from the chat's own
 rollout file in the executor's sessions directory, reading only records that
-carry reasoning. A restored level the model does not offer is fitted down to
+carry reasoning. A saved level belongs to the model it was saved with: a newer
+observation for another model carries no effort or summary over to it, so
+switching chats never inherits the previous model's Max. A gateway model whose
+row offers no reasoning levels at all receives nothing restored, because there
+is no level to restore to. A restored level the model does not offer is fitted down to
 the closest offered level, or to that model's default when none qualify; the
 adjustment is reported as `reasoning_effort_reset`. A resume that switches
 models still receives a level the new model supports. A caller that sends its
@@ -423,7 +427,10 @@ The adapter records a gateway chat's tier before it answers, so it holds the new
 thread's notifications until the reply is written and then releases them in SDK
 order. Chats that are already known keep streaming while a start is pending, a
 failed start still releases the held notifications, and a buffer of more than 512
-held messages is written out in order rather than growing. Before this, a gateway
+held messages is written out in order rather than growing. A server request (an
+approval or elicitation, which carries its own id and never waits) still follows
+every message already held for its own chat: those held notifications are written
+first, so the desktop is never asked to answer an event it has not seen. Before this, a gateway
 prewarm showed up in the sidebar as an empty chat, and opening it failed with
 "Failed to resume chat".
 

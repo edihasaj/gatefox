@@ -39,7 +39,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
       if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
       if (control && message.method === "remoteControl/status/changed") return;
       // Server requests keep their own correlation; only notifications wait for a new thread's reply.
-      if (isId(message.id)) { await emit(message); return; }
+      if (isId(message.id)) { await Promise.all(order.before(message).map(emit)); await emit(message); return; }
       await Promise.all(order.admit(message).map(emit));
     }, () => input.destroy(), configPath);
   } catch (error) {
