@@ -433,6 +433,25 @@ attachment list, a `notLoaded` unsubscribe, or "no rollout found for thread id",
 which the desktop recognizes when it archives or deletes such a chat. Any other
 failure of the provider lookup still fails closed.
 
+## Queued messages (Cmd+Enter)
+
+`thread/queue/*` goes to the chat's own engine like any other chat request, and the
+SDK owns the queue: it is saved on disk in the shared queue database, the next
+message starts when the running turn completes, and an interrupt pauses the queue.
+The SDK reads every attached local image or audio file while it enqueues a message.
+macOS gives file access to the desktop app, not to the service that owns shared
+executors, so a screenshot from a protected folder failed there with `-32600`
+"local queued attachment is invalid: Operation not permitted". For `thread/queue/add`
+and `thread/queue/update`, the adapter (which runs under the app) now copies each
+attached local file into a private `queued-attachments` directory under the gateway
+state directory, sends the SDK the copy, and removes the copy when the call returns;
+copies older than ten minutes left by a crash are removed. The copy keeps the
+file extension, because the SDK takes the audio type from it, and is cut one byte past
+the SDK's own size limit so oversized files still get the SDK's size error. A file the
+adapter cannot read is sent unchanged, so the SDK reports the same error as before.
+Executors that run under the app (per-connection engines) are not changed. Paths and
+file contents are never logged.
+
 ## Speed controls
 
 Gateway discovery retains the provider's public `service_tiers`,

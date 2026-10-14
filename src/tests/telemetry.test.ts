@@ -48,4 +48,8 @@ test("error classes cover the failures seen in the field", () => {
   assert.equal(errorClass("idle timeout waiting for SSE"), "idle_timeout");
   assert.equal(errorClass("Claude usage limit reached; resets at 5pm"), "usage_limit");
   assert.equal(errorClass(undefined), "none");
+  assert.equal(errorClass("local queued attachment is invalid: Operation not permitted (os error 1)"), "attachment");
+  assert.equal(errorClass("HTTP 503 from upstream"), "overloaded");
+  // Digits inside a thread id are not a status code.
+  assert.equal(errorClass("thread not loaded: 01a135fc-36e4-7c91-8e25-263539a552bd"), "other");
 });

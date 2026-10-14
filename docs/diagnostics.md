@@ -18,7 +18,7 @@ a strict filter: only strings, numbers and booleans; names that could carry
 secrets or content (token, prompt, body, content, text, input, argument, env,
 header, auth) are dropped, except numeric token counts; text is reduced to a safe
 character set and home paths to their last segment. Error text is never stored,
-only a fixed class such as `stream_disconnected` or `usage_limit`.
+only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` (a queued or attached local file the engine could not read). A status code such as 503 counts as `overloaded` only as a standalone number, never as digits inside a chat id.
 
 | Process | Events |
 | --- | --- |

@@ -12,7 +12,9 @@ export function errorClass(message: unknown): string {
     ["stream_disconnected", /stream disconnected|ended without completion|connection (reset|closed)/],
     ["idle_timeout", /idle timeout|timed out waiting/], ["deadline", /deadline|exceeded the gateway/],
     ["usage_limit", /usage limit|rate limit|quota/], ["context_window", /context (window|length)|too long/],
-    ["authentication", /login|unauthori[sz]ed|authentication/], ["overloaded", /overload|server_error|unavailable|5\d\d/],
+    ["attachment", /attachment is invalid|could not read the local/], ["authentication", /login|unauthori[sz]ed|authentication/],
+    // A status code stands alone; digits inside a thread id must not count as one.
+    ["overloaded", /overload|server_error|unavailable|\b5\d\d\b/],
     ["tool_call", /tool call|unknown tool|malformed tool/], ["cancelled", /cancel|interrupt/],
   ] as const) if (pattern.test(text)) return name;
   return "other";

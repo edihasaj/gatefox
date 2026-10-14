@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
@@ -39,6 +39,7 @@ if(m.method==='turn/start')result={wireServiceTier:cliFeatures['features.fast_mo
 if(m.method==='turn/start'&&m.params.fixtureActive){const turn={id:'fixture-active-turn',status:'inProgress'};turns.set(m.params.threadId,turn);result.turn=turn;send({method:'turn/started',params:{threadId:m.params.threadId,turn}});}
 if(m.method==='turn/interrupt'){const turn=turns.get(m.params.threadId);if(turn?.id!==m.params.turnId){send({id:m.id,error:{code:-32600,message:'Wrong active fixture turn'}});return;}turn.status='interrupted';send({method:'turn/completed',params:{threadId:m.params.threadId,turn}});}
 if(m.method==='thread/read'){const thread=metadata()[m.params.threadId];const live=listen.startsWith('unix://')&&loaded.has(m.params.threadId);const turn=turns.get(m.params.threadId);result={executorPid:process.pid,thread:thread?{...thread,status:live?{type:turn?.status==='inProgress'?'active':'idle',activeFlags:[]}:{type:'notLoaded'},turns:live?(turn?[turn]:[]):[{id:'stale-file-turn',status:'interrupted'}]}:{id:m.params.threadId,modelProvider:'openai'}};}
+if(m.method==='thread/queue/add'){const item=(m.params.input||[]).find(i=>i.type==='localImage');if(item){if(item.path.includes('/protected/')){send({id:m.id,error:{code:-32600,message:'local queued attachment is invalid: Operation not permitted (os error 1)'}});return;}let size=0;try{size=readFileSync(item.path).length;}catch(e){send({id:m.id,error:{code:-32600,message:'local queued attachment is invalid: '+e.code+' '+item.path}});return;}result={readPath:item.path,size};}else result={readPath:null};}
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'){
 if(m.params.delayMs)await new Promise(r=>setTimeout(r,m.params.delayMs));
@@ -340,5 +341,44 @@ test("SDK client disconnect resumes through the same live writer and retains its
     const status = await f.control.request("execution/status", {});
     assert.equal((status.generations as Message[]).filter(value => value.revision === original.revision).length, 1);
     assert.equal((status.generations as Message[]).length, 4);
+  } finally { await f.clean(); }
+});
+
+async function queuedImage(f: Awaited<ReturnType<typeof fixture>>, directory: string) {
+  await mkdir(join(f.directory, directory), { recursive: true });
+  const path = join(f.directory, directory, "shot.png"); await writeFile(path, "png-bytes"); return path;
+}
+const queueAdd = (f: Awaited<ReturnType<typeof fixture>>, threadId: string, path: string) =>
+  f.backends.request("thread/queue/add", { threadId, clientUserMessageId: "m1", input: [{ type: "localImage", path }] });
+
+test("a service-owned gateway executor reads queued attachments from a staged copy, which is removed afterwards", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("queue-chat");
+    // The fixture refuses files under protected/, as the service is refused the user's private folders.
+    const original = await queuedImage(f, "protected");
+    const result = await queueAdd(f, "queue-chat", original);
+    assert.match(String(result.readPath), /queued-attachments\/[0-9a-f-]+\.png$/); assert.equal(result.size, 9);
+    assert.deepEqual(await readdir(join(f.config.stateDirectory, "queued-attachments")), [], "the copy does not outlive the call");
+    assert.equal(await readFile(original, "utf8"), "png-bytes");
+  } finally { await f.clean(); }
+});
+
+test("a per-connection gateway executor keeps the attached path as the desktop sent it", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, false, false);
+  try {
+    await f.start("queue-chat");
+    const original = await queuedImage(f, "attachments");
+    assert.equal((await queueAdd(f, "queue-chat", original)).readPath, original);
+    await assert.rejects(access(join(f.config.stateDirectory, "queued-attachments")), { code: "ENOENT" });
+  } finally { await f.clean(); }
+});
+
+test("an attachment the adapter cannot read reaches the SDK unchanged so its own error is reported", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("queue-chat");
+    const missing = join(f.directory, "gone", "shot.png");
+    await assert.rejects(queueAdd(f, "queue-chat", missing), (error: Error & { code?: number }) => error.code === -32600 && error.message === "local queued attachment is invalid: ENOENT " + missing);
   } finally { await f.clean(); }
 });

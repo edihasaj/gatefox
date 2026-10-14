@@ -16,6 +16,7 @@ import { SharedNativeConnection, type NativeConnectionFactory, type NativeRpcCon
 import { readServicePlan } from "./service-plan.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
+import { withStagedQueueInput } from "./queued-attachments.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
@@ -145,7 +146,9 @@ export class AppServerBackends {
   }
   private async nativeRequest(method: string, params: Message): Promise<Message> {
     const revision = this.nativeNotificationRevision;
-    const result = await this.native.request(method, params);
+    // A service-owned SDK lacks the desktop app's file grants, so attachments are staged for it.
+    const native = this.native;
+    const result = native.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => native.request(method, staged)) : await native.request(method, params);
     if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && nativeId(params.threadId)) {
       this.nativeActive.delete(params.threadId); this.nativeNotificationRevision++;
     }
@@ -413,7 +416,8 @@ export class AppServerBackends {
       const compaction = await engine.compaction?.before(method, params);
       if (compaction?.intercepted) return compaction.result || {};
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
-      const result = await engine.connection.request(method, params);
+      const target = engine;
+      const result = target.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => target.connection.request(method, staged)) : await target.connection.request(method, params);
       await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
         const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
