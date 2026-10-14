@@ -321,9 +321,21 @@ name still fails with `model_not_found`. Each resolution is logged as
 `model_alias_resolved`. Before this, such sub-agents failed silently: Codex retried
 the 404 five times and ended the turn with nothing.
 
-Resuming a gateway chat on the same model sends no reasoning override, so the
-chat keeps the level saved with it. A Max chat stays at Max after a restart. A
-resume that switches models still receives a level the new model supports.
+Resuming or forking a gateway chat on the same model restores the chat's own
+reasoning. The adapter records the effort and summary each chat last ran with in
+a private `desktop-thread-reasoning-<scope>.json` under its state directory,
+fed by applied thread settings, turns that carry an effort, and chat
+start/resume/fork results; an unknown (null) value never erases a saved level,
+and a chat's record never transfers to another chat. When nothing is recorded
+yet, for example after a gateway restart, the adapter seeds from the chat's own
+rollout file in the executor's sessions directory, reading only records that
+carry reasoning. A restored level the model does not offer is fitted down to
+the closest offered level, or to that model's default when none qualify; the
+adjustment is reported as `reasoning_effort_reset`. A resume that switches
+models still receives a level the new model supports. A caller that sends its
+own effort always wins over the restored one. Native chats need an override
+only where a typed model blocks the engine's own restore, and only with a
+level the native catalog row offers.
 
 ## Codex 2 rows and the native catalog
 
@@ -399,7 +411,8 @@ A resumed chat keeps the base instructions saved with it, as natively; chats
 started before this change keep their empty base prompt. When it starts a new
 gateway chat without a saved preference, the adapter still selects medium effort
 and auto summaries, so the native default shows in the model list but does not
-yet start the chat.
+yet start the chat. Those defaults never replace an existing chat's settings on
+resume; the chat's own reasoning is restored instead, as described above.
 
 ## Speed controls
 

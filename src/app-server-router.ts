@@ -9,6 +9,8 @@ import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, rea
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
+import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummary, type ThreadReasoningSelection } from "./thread-reasoning.js";
+import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
 import { homedir } from "node:os";
 import { telemetry } from "./telemetry.js";
 
@@ -22,6 +24,10 @@ const tierSelection = (params: ObjectValue): { value: unknown } | undefined => O
   ? { value: params.serviceTier } : Object.hasOwn(object(params.config), "service_tier") ? { value: object(params.config).service_tier } : undefined;
 const tierId = (value: unknown): unknown => value === "fast" ? "priority" : value;
 const savedTier = (value: string | null): string | null => value === "default" ? null : tierId(value) as string | null;
+// An effort can arrive as a turn setting or inside the collaboration mode that carries it.
+const requestedEffort = (params: ObjectValue): unknown => params.effort ?? object(object(params.collaborationMode).settings).reasoning_effort;
+const configEffort = (params: ObjectValue): unknown => object(params.config).model_reasoning_effort;
+const enumEffort = (value: unknown): string | undefined => typeof value === "string" && ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(value) ? value : undefined;
 type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
 
 export class AppServerRoutingError extends Error {
@@ -34,6 +40,9 @@ export class AppServerRouter {
   private readonly routes = new Map<string, ThreadRoute>();
   private readonly activeTurns = new Map<string, { turnId: string; route: ThreadRoute }>();
   private readonly threadTiers: ThreadServiceTiers;
+  private readonly threadReasoning: ThreadReasoningStore;
+  private readonly reasoning: ResumeReasoning;
+  private readonly chatSnapshots = new Map<string, ThreadReasonSnapshot>();
   private readonly tierRecords = new Map<string, ThreadServiceTier | undefined>();
   private readonly settingsVersions = new Map<string, number>();
   private preferences: ObjectValue = {};
@@ -47,6 +56,8 @@ export class AppServerRouter {
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
     this.catalogPath = catalogPath || resolve(config.stateDirectory, "codex-models.json");
     this.threadTiers = new ThreadServiceTiers(config.stateDirectory, nativeHome);
+    this.threadReasoning = new ThreadReasoningStore(config.stateDirectory, nativeHome);
+    this.reasoning = new ResumeReasoning(this.threadReasoning, nativeHome);
   }
   async initialize(): Promise<void> {
     if (this.catalogPath === resolve(this.config.stateDirectory, "codex-models.json")) await writePrivateJson(this.catalogPath, modelCatalog(this.config));
@@ -66,6 +77,11 @@ export class AppServerRouter {
   }
   private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number): Promise<void> {
     const thread = object(result.thread);
+    if (typeof thread.id === "string") {
+      const config = object(params.config);
+      await this.recordReasoning(thread.id, { model: typeof result.model === "string" ? result.model : params.model,
+        effort: result.reasoningEffort ?? config.model_reasoning_effort, summary: result.reasoningSummary ?? config.model_reasoning_summary }, requestStartedAtMs);
+    }
     if (typeof thread.id === "string" && typeof result.modelProvider === "string") {
       const tier = Object.hasOwn(result, "serviceTier") ? result.serviceTier : tierSelection(params)?.value;
       const route: ThreadRoute = { provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
@@ -88,6 +104,7 @@ export class AppServerRouter {
       if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
       route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
       this.routes.set(threadId, route);
+      this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
     }
     if (route.provider === gatewayProvider) {
       const current = await this.threadTiers.read(threadId);
@@ -111,6 +128,7 @@ export class AppServerRouter {
       const emittedAtMs = message.emittedAtMs;
       if (!Number.isSafeInteger(emittedAtMs) || Number(emittedAtMs) <= 0 || Number(emittedAtMs) > Date.now() + 1000) return;
       const settings = object(params.threadSettings);
+      await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
@@ -136,7 +154,7 @@ export class AppServerRouter {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
     return { ...params, serviceTier: this.preferences.service_tier };
   }
-  private modelRequest(params: ObjectValue, model: string, newChat = false, keepReasoning = false): ObjectValue {
+  private modelRequest(params: ObjectValue, model: string, newChat = false, restored?: ReasoningChoice | null): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
     const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
@@ -147,8 +165,9 @@ export class AppServerRouter {
     const tier = tierSelection(selected); if (tier) this.assertServiceTier(model, tier.value);
     const summary = this.preferences.model === model && typeof this.preferences.model_reasoning_summary === "string" ? this.preferences.model_reasoning_summary : "auto";
     // A resumed chat keeps the reasoning settings saved with it; injecting a
-    // default here would silently reset a Max chat to Medium on reload.
-    const reasoning = keepReasoning ? {} : { model_reasoning_effort: effort, model_reasoning_summary: summary };
+    // default here would silently reset a Max chat to Medium on reload. A restored
+    // choice is the chat's own setting, which the engine cannot recover on its own.
+    const reasoning = restored === null ? {} : { model_reasoning_effort: restored?.effort ?? effort, model_reasoning_summary: restored?.summary ?? summary };
     return { ...selected, model, modelProvider: gatewayProvider,
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
@@ -213,6 +232,56 @@ export class AppServerRouter {
     await writePrivateJson(this.preferencesPath, preferences); this.preferences = preferences;
     return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
+  /** The chat read already needed for routing also carries its rollout path and effort. */
+  private async threadSnapshot(threadId: string): Promise<ThreadReasonSnapshot> {
+    const cached = this.chatSnapshots.get(threadId);
+    if (cached) return cached;
+    const thread = object((await this.backend("thread/read", { threadId, includeTurns: false })).thread);
+    const snapshot: ThreadReasonSnapshot = { path: thread.path, effort: thread.reasoningEffort };
+    this.chatSnapshots.set(threadId, snapshot);
+    return snapshot;
+  }
+  /** Best effort: reasoning must never fail the chat operation that records it. */
+  private async recordReasoning(threadId: string, value: { model: unknown; effort?: unknown; summary?: unknown }, atMs: number): Promise<void> {
+    if (!isModelName(threadId) || !isModelName(value.model) || !Number.isSafeInteger(atMs) || atMs < 0) return;
+    const effort = isReasoningEffort(value.effort) ? value.effort : null;
+    const summary = isReasoningSummary(value.summary) ? value.summary : null;
+    if (effort === null && summary === null) return;
+    await this.threadReasoning.write(threadId, { model: value.model, effort, summary, atMs }).then(() => undefined, () => undefined);
+  }
+  /** A gateway chat's own reasoning, fitted to the model it resumes with; null keeps what is loaded. */
+  private async restoredReasoning(threadId: string, model: string, method: string): Promise<ReasoningChoice | null> {
+    const recovered = await this.reasoning.recover(threadId, model, () => this.threadSnapshot(threadId));
+    if (!recovered) return null;
+    const metadata = this.extraModels.find(entry => entry.slug === model);
+    const levels = ((metadata?.supported_reasoning_levels ?? []) as Array<{ effort: string }>).map(level => level.effort);
+    const fitted = fitEffort(recovered.effort, levels, typeof metadata?.default_reasoning_level === "string" ? metadata.default_reasoning_level : undefined);
+    if (fitted.adjusted) telemetry("reasoning_effort_reset", { from: enumEffort(recovered.effort), to: enumEffort(fitted.effort), model, method });
+    telemetry("reasoning_restored", { provider: "gateway", method, source: recovered.source, adjusted: fitted.adjusted });
+    return { effort: fitted.effort, ...(recovered.summary ? { summary: recovered.summary } : {}) };
+  }
+  /** A native chat needs an override only where the caller's typed model blocks the engine's own restore. */
+  private async nativeRestoredEffort(params: ObjectValue, method: string, route: ThreadRoute): Promise<string | undefined> {
+    if (!this.source || typeof params.threadId !== "string") return;
+    const threadId = params.threadId;
+    const override = params.model !== undefined || params.modelProvider !== undefined || object(params.config).model !== undefined;
+    const requested = requestedModel(params);
+    if (method === "thread/fork") {
+      if (configEffort(params) !== undefined) return;
+    } else {
+      if (!override || configEffort(params) !== undefined) return;
+      // A native model change must not carry the previous model's effort.
+      if (typeof requested === "string" && route.model !== undefined && requested !== route.model) return;
+    }
+    const model = typeof requested === "string" ? requested : route.model;
+    if (typeof model !== "string") return;
+    const levels = (((this.source.nativeRow(model) ?? {}).supported_reasoning_levels ?? []) as Array<{ effort: string }>).map(level => level.effort);
+    if (!levels.length) return;
+    const recovered = await this.reasoning.recover(threadId, model, () => this.threadSnapshot(threadId));
+    if (!recovered || !levels.includes(recovered.effort)) return;
+    telemetry("reasoning_restored", { provider: "native", method, source: recovered.source, adjusted: false });
+    return recovered.effort;
+  }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
     if (["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
@@ -264,10 +333,19 @@ export class AppServerRouter {
       }
       if (["thread/resume", "thread/fork"].includes(method) && route.provider === gatewayProvider) {
         const model = requestedModel(params) ?? route.model;
+        const sameModel = model === route.model;
         if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
         if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
         const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
-        forwarded = this.modelRequest(inherited, model, false, model === route.model);
+        // A typed model override disables the engine's persisted-settings restore,
+        // so the gateway supplies the chat's own reasoning for the model it keeps.
+        let restored: ReasoningChoice | null | undefined = null;
+        if (!sameModel) restored = undefined;
+        else if (configEffort(params) === undefined) restored = await this.restoredReasoning(params.threadId, model, method);
+        forwarded = this.modelRequest(inherited, model, false, restored);
+      } else if (["thread/resume", "thread/fork"].includes(method)) {
+        const effort = await this.nativeRestoredEffort(params, method, route);
+        if (effort !== undefined) forwarded = { ...forwarded, config: { ...object(forwarded.config), model_reasoning_effort: effort } };
       }
     }
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;
@@ -281,6 +359,10 @@ export class AppServerRouter {
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
       await this.remember(result, forwarded, expectedTier, requestStartedAtMs);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
+    }
+    // An applied settings change or a turn that carries one is durable from this request on.
+    if (typeof params.threadId === "string" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
+      await this.recordReasoning(params.threadId, { model: requestedModel(params) ?? this.routes.get(params.threadId)?.model, effort: requestedEffort(params), summary: params.summary }, requestStartedAtMs);
     }
     const selected = requestedModel(params);
     const settingsUnchanged = typeof params.threadId !== "string" || (this.settingsVersions.get(params.threadId) || 0) === settingsVersion;

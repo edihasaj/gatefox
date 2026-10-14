@@ -453,12 +453,15 @@ test("gateway forks inherit the authoritative parent tier rather than private or
   assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
 });
 
-test("resuming a gateway chat keeps its saved reasoning level unless the caller changes it", async () => {
+test("resuming a gateway chat keeps the reasoning it last ran with unless the caller changes it", async () => {
   const { router, calls } = await fixture();
+  // The chat's own effort is recorded when a turn carries it, and a resume restores it
+  // instead of resetting a Max chat to a default; the saved summary travels with it.
+  await router.request("turn/start", { threadId: "persisted", input: [], effort: "max", summary: "detailed" });
   await router.request("thread/resume", { threadId: "persisted" });
-  const config = calls.at(-1)!.params.config as ObjectValue;
-  assert.equal(Object.hasOwn(config, "model_reasoning_effort"), false, "a cold resume must not reset Max to a default");
-  assert.equal(Object.hasOwn(config, "model_reasoning_summary"), false);
+  let config = calls.at(-1)!.params.config as ObjectValue;
+  assert.equal(config.model_reasoning_effort, "max");
+  assert.equal(config.model_reasoning_summary, "detailed");
   await router.request("thread/resume", { threadId: "persisted", config: { model_reasoning_effort: "high" } });
   assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "high");
   // Switching models on resume still needs a level the new model supports.
