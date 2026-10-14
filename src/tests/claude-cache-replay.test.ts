@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
-import { evictable, idleMs, pinReplay, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
+import { evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
 import { systemPrefixCacheReadTokens, systemPrefixOnly } from "../providers/claude-usage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
@@ -59,6 +59,22 @@ test("a held thread reports the miss that held it until the cache hour passes", 
   assert.equal(registry.ended.get("held-key"), undefined, "and the reason goes with it");
   pinReplay(registry, "crashed-key", now, "crashed");
   assert.equal(replayPinned(registry, "crashed-key", now + 1), "crashed", "a CLI that died holds its thread too");
+});
+
+test("a hold keeps its reason when the ended log cycles past it", () => {
+  const registry = sessionRegistry(); const now = Date.now();
+  pinReplay(registry, "kept-key", now, "unexpected_tail");
+  for (let n = 0; n < 257; n++) rememberEnd(registry, `other-${n}`, "closed");
+  assert.equal(registry.ended.get("kept-key"), undefined, "the reason would have cycled out of the ended log");
+  assert.equal(replayPinned(registry, "kept-key", now + 1), "unexpected_tail", "but the hold carries it, so the thread keeps replaying");
+  registry.replayUntil.delete("kept-key");
+});
+
+test("a hold an earlier release left on an adopted registry still expires", () => {
+  const registry = sessionRegistry(); const now = Date.now();
+  (registry.replayUntil as Map<string, unknown>).set("legacy-key", now - 1000); rememberEnd(registry, "legacy-key", "crashed");
+  assert.equal(replayPinned(registry, "legacy-key", now), "crashed", "its reason still came from the ended log");
+  assert.equal(replayPinned(registry, "legacy-key", now + idleMs), undefined, "and an hour quiet still frees the thread");
 });
 
 test("a cache read only counts as a prefix rewrite once the request reached the prefix", () => {
@@ -146,14 +162,14 @@ test("a diverged history replays instead of paying for a second cache write", as
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1);
     // A request 59 minutes into the hold is still inside the cache hour, so it stays on replay and
     // restarts the hour: a busy thread never gets a session that would have to reseed it next turn.
-    sessionRegistry().replayUntil.set(keyOf("d1"), Date.now() - 59 * 60 * 1000);
+    sessionRegistry().replayUntil.set(keyOf("d1"), { since: Date.now() - 59 * 60 * 1000, why: "prefix_diverged" });
     assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), user("still")], thread("d1")), "four", "the minute that was left did not buy a reseed");
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "and it started no second process");
-    assert.ok(Date.now() - sessionRegistry().replayUntil.get(keyOf("d1"))! < 60_000, "the request kept the hold, with the hour starting at it");
+    assert.ok(Date.now() - sessionRegistry().replayUntil.get(keyOf("d1"))!.since < 60_000, "the request kept the hold, with the hour starting at it");
     assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), said("four"), user("still going")], thread("d1")), "five", "the next turn is held the same way");
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "still one live process for this thread");
     // An hour quiet later the cache is gone either way, so the thread may hold a session again.
-    sessionRegistry().replayUntil.set(keyOf("d1"), Date.now() - idleMs - 1);
+    sessionRegistry().replayUntil.set(keyOf("d1"), { since: Date.now() - idleMs - 1, why: "prefix_diverged" });
     assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), said("four"), said("five"), user("now")], thread("d1")), "six");
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 2, "and it seeded a live session");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
@@ -169,7 +185,7 @@ test("a crashed session holds its thread; only an idle hour lets a new process s
     assert.equal(await turn(provider, [user("first"), said("one"), user("again")], thread("c1")), "two", "the next request replays: a new process would only die on the same cache write");
     assert.ok((await events()).some(entry => entry.outcome === "fallback" && entry.missReason === "session_dead"), "held by the dead session");
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "starting no live CLI");
-    sessionRegistry().replayUntil.set(keyOf("c1"), Date.now() - idleMs - 1);
+    sessionRegistry().replayUntil.set(keyOf("c1"), { since: Date.now() - idleMs - 1, why: "crashed" });
     assert.equal(await turn(provider, [user("first"), said("one"), said("two"), user("later")], thread("c1")), "three");
     assert.deepEqual((await starts()).filter(entry => entry === "live").length, 2, "a thread quiet for an hour may hold a session again");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }

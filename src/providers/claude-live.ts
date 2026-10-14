@@ -102,7 +102,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     const hold = replayPinned(registry, key);
     // Asking again starts the hour over: a thread that keeps talking has no use for a session that
     // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
-    if (hold !== undefined) { registry.replayUntil.set(key, Date.now()); return { kind: "fallback", reason: heldReason(hold) }; }
+    if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
     const ended = registry.ended.get(key);
     if (ended) reason = ended === "evicted" ? "evicted" : "session_dead";
   }

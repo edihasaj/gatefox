@@ -16,11 +16,17 @@ export interface SessionRegistry {
   starting: Set<string>;
   /** How each key's last session ended, so the next spawn reports why it had none. */
   ended: Map<string, string>;
-  /** Keys held to the one-shot path, with the idle time of the session that gave them up. */
-  replayUntil: Map<string, number>;
+  /** Keys held to the one-shot path, so a hold keeps its reason when the ended log cycles. */
+  replayUntil: Map<string, ReplayHold>;
   /** The provider scope that owns each live session key, so one provider can retire its own. */
   scopes: Map<string, string>;
 }
+
+/**
+ * One thread's hold on the one-shot path: the idle time of the session that gave the thread up, and
+ * the miss that gave it up. The reason rides with the hold so it cannot cycle out from under it.
+ */
+export type ReplayHold = { since: number; why: string };
 
 const symbol = Symbol.for("harness-gateway/claude-sessions/v1");
 const recentToolWait = 10 * 60 * 1000;
@@ -94,16 +100,20 @@ export function rememberEnd(registry: SessionRegistry, key: string, outcome: str
 
 /** Holds a thread to the one-shot path until a session of its own could keep a cache again. */
 export function pinReplay(registry: SessionRegistry, key: string, lastUse: number, why: string): void {
-  registry.replayUntil.set(key, lastUse); rememberEnd(registry, key, why);
+  registry.replayUntil.set(key, { since: lastUse, why }); rememberEnd(registry, key, why);
   if (registry.replayUntil.size > 256) registry.replayUntil.delete(registry.replayUntil.keys().next().value!);
 }
 
-/** Why a thread is still held to the one-shot path, or undefined once a session may start again. */
+/**
+ * Why a thread is still held to the one-shot path, or undefined once a session may start again. A hold
+ * an earlier release left in an adopted registry carried only the idle time and took its reason from
+ * `ended`; such a hold is read the same way, and the next turn rewrites it with its own reason.
+ */
 export function replayPinned(registry: SessionRegistry, key: string, now = Date.now()): string | undefined {
-  const lastUse = registry.replayUntil.get(key);
-  if (lastUse === undefined) return;
-  if (now - lastUse >= idleMs) { registry.replayUntil.delete(key); registry.ended.delete(key); return; }
-  return registry.ended.get(key);
+  const held = registry.replayUntil.get(key) as ReplayHold | number | undefined;
+  if (held === undefined) return;
+  if (now - (typeof held === "number" ? held : held.since) >= idleMs) { registry.replayUntil.delete(key); registry.ended.delete(key); return; }
+  return typeof held === "number" ? registry.ended.get(key) : held.why;
 }
 
 /**
