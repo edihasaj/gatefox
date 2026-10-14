@@ -42,9 +42,11 @@ test("SDK overlays may only add files", () => {
 test("the SDK test gate requires 0 failed and every required test name", () => {
   const required = ["a::one", "a::two"];
   const ok = "test a::one ... ok\ntest a::two ... ok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored;";
-  assert.equal(sdk.checkSdkTestOutput(ok, required), 2);
-  assert.throws(() => sdk.checkSdkTestOutput("test a::one ... ok\n\ntest result: ok. 1 passed; 0 failed;", required), /a::two/);
-  assert.throws(() => sdk.checkSdkTestOutput("test result: FAILED. 1 passed; 1 failed;", required), /0 failed/);
+  assert.equal(sdk.checkSdkTestOutput(ok, required, 2), 2);
+  assert.throws(() => sdk.checkSdkTestOutput(ok, required, 3), /expected at least 3/);
+  assert.throws(() => sdk.checkSdkTestOutput("test a::one ... ok\n\ntest result: ok. 1 passed; 0 failed;", required, 1), /a::two/);
+  assert.throws(() => sdk.checkSdkTestOutput("test result: FAILED. 1 passed; 1 failed;", required, 1), /0 failed/);
+  assert.ok(sdk.minimumSdkTests > sdk.requiredSdkTests.length);
   const args = sdk.sdkTestArguments({ sdk: "/sdk", target: "/target", dev: true });
   assert.deepEqual(args.slice(-3), ["--", ...sdk.sdkTestFilters]);
   assert.ok(args.includes("--locked") && !args.includes("--release"));

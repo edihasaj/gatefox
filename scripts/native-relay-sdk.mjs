@@ -37,6 +37,8 @@ export const requiredSdkTests = [
     'log_only_never_cancels', 'reset_switch_resets_once_via_unknown_pong',
   ].map(name => `transport::remote_control::gateway_inbound_tests::${name}`),
 ];
+/** The pinned upstream remote-control suite has 140 tests; with ours the gate runs at least this many. */
+export const minimumSdkTests = 165;
 /** libtest filters: the remote-control suite plus the crate-root gateway counters. */
 export const sdkTestFilters = ['transport::remote_control::', 'gateway_counters::'];
 
@@ -130,10 +132,11 @@ export function sdkTestArguments({ sdk, target, dev }) {
     '-p', 'codex-app-server-transport', '--lib', '--target-dir', target, '--', ...sdkTestFilters];
 }
 
-/** Require a clean libtest summary and every required test reported as `ok`. */
-export function checkSdkTestOutput(output, required = requiredSdkTests) {
+/** Require a clean libtest summary, a minimum test count and every required test reported as `ok`. */
+export function checkSdkTestOutput(output, required = requiredSdkTests, minimum = minimumSdkTests) {
   const summary = /test result: ok\. (\d+) passed; 0 failed;/.exec(output);
   if (!summary) throw Error('Patched SDK tests did not report 0 failed');
+  if (Number(summary[1]) < minimum) throw Error(`Patched SDK gate ran ${summary[1]} tests, expected at least ${minimum}`);
   const missing = required.filter(name => !output.includes(`test ${name} ... ok`));
   if (missing.length) throw Error(`Required SDK tests did not pass: ${missing.join(', ')}`);
   return Number(summary[1]);
