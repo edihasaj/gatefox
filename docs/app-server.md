@@ -372,7 +372,20 @@ beside its own executable. The gateway SDK package does not ship that host yet, 
 code mode in its executors fails closed. When the installed package has a gateway
 SDK without the host, the adapter keeps the gateway's `direct` tool mode and still
 copies the other fields. Without a gateway SDK, executors run the desktop's own
-Codex and take the native code mode.
+Codex and take the native code mode. The same rule covers the native rows that the
+executor catalog carries for sub-agents naming a model directly (a role's model,
+`default_subagent_model` or Ultra delegation): without the host those rows get
+`direct` tools in executors, so their commands run instead of failing with "failed
+to spawn code-mode host". The native engine keeps its own catalog unchanged.
+
+Every gateway row publishes `max_context_window`: the provider's own maximum when it
+reports one, otherwise the row's window. Without it a row inherited Codex's global
+cap of 872K, which cut Claude's 1M window.
+
+Gateway executor homes link the native `AGENTS.md`, `agents`, `skills`, `plugins`,
+`hooks.json` and `prompts`, so client hooks (for example memory hooks) and saved
+prompts work in gateway chats as in native ones. Authentication and `config.toml`
+are never linked.
 
 On 13 Oct 2026 a low-effort GPT-6.1-Sol turn through a development gateway sent
 the native 21,769-character base prompt as a developer message (Responses lite has

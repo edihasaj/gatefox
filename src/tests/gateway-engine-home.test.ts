@@ -19,3 +19,14 @@ test("private executor follows global AGENTS created later and never links nativ
     await assert.rejects(readlink(join(home, "config.toml"))); await assert.rejects(access(join(home, "auth.json")));
   } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
 });
+
+test("gateway chats share the native hooks and saved prompts, so client hooks fire there too", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gateway-hooks-")); const native = join(root, "native"); await mkdir(join(native, "prompts"), { recursive: true });
+  await writeFile(join(native, "hooks.json"), '{"hooks":{}}'); await writeFile(join(native, "prompts", "review.md"), "Review prompt");
+  const previous = process.env.CODEX_HOME; process.env.CODEX_HOME = native;
+  try {
+    const home = await gatewayEngineHome(join(root, "state"), { model: "native" });
+    assert.equal(await readlink(join(home, "hooks.json")), join(native, "hooks.json"));
+    assert.equal(await readFile(join(home, "prompts", "review.md"), "utf8"), "Review prompt");
+  } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
+});

@@ -34,7 +34,8 @@ export async function gatewayEngineHome(state: string, settings: Message, option
   }
   // Keep client instructions, roles, and installed skills at their original source.
   // Never link authentication or configuration.
-  for (const name of ["AGENTS.md", "agents", "skills", "plugins"]) {
+  // Hooks and saved prompts are client configuration too, so gateway chats run the same hooks.
+  for (const name of ["AGENTS.md", "agents", "skills", "plugins", "hooks.json", "prompts"]) {
     const target = join(nativeHome, name); const path = join(home, name);
     if (name !== "AGENTS.md") try { await lstat(target); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
     try {
