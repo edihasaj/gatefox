@@ -27,8 +27,9 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * The client's own native row supplies a Codex 2 row's harness behaviour: its instructions and
  * messages with their usage flags, tool mode (a code mode only where the executor runs it),
  * defaults, window share and truncation. Account capabilities keep the upstream values: service
- * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
- * off until tool_search passes through. comp_hash is never copied.
+ * tiers, multi-agent fields, the window maximum and auto-compaction limit, the hosted web-search
+ * tool type, and search, whose flag stays off until tool_search passes through. comp_hash is never
+ * copied.
  * Without a marker or a native row for that slug the row stays as the gateway published it.
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
@@ -43,6 +44,8 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
   if (typeof source.support_verbosity === "boolean") copy.support_verbosity = source.support_verbosity;
+  // Which hosted search results the model may ask for; the gateway row is the fallback.
+  if (source.web_search_tool_type === "text" || source.web_search_tool_type === "text_and_image") copy.web_search_tool_type = source.web_search_tool_type;
   // The default must be a level this route offers; Codex would otherwise start chats at an unsupported effort.
   const levels = Array.isArray(row.supported_reasoning_levels) ? row.supported_reasoning_levels.map(level => plain(level)?.effort) : [];
   if (typeof source.default_reasoning_level === "string" && levels.includes(source.default_reasoning_level)) copy.default_reasoning_level = source.default_reasoning_level;

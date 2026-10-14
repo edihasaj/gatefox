@@ -122,7 +122,6 @@ test("malformed or inconsistent final output fails instead of inventing completi
     [itemDone(message("actual", "answer")), itemDone(message("actual", "answer")), complete()],
     [delta("actual", "answer", 0.5), complete()],
     [complete({ end_turn: "false" })],
-    [complete({ end_turn: null })],
     [itemDone(call), complete({ output: [{ ...call, arguments: "changed" }] })],
     [complete({ output: [actual, actual] })],
     [complete({ output: [call, call] })],

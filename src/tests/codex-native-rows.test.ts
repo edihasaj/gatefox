@@ -39,7 +39,8 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
   for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "supports_search_tool", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
   assert.equal(row.supports_search_tool, false);
-  for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
+  for (const key of ["comp_hash", "upstream_slug"]) assert.equal(Object.hasOwn(row, key), false, key);
+  assert.equal(row.web_search_tool_type, "text_and_image", "the hosted search tool type comes from the native row");
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
 });

@@ -170,7 +170,7 @@ test("Codex 2 rows default to native truncation and window share while other row
     assert.equal(row.max_context_window, row.context_window, "without its own maximum a row's window is its maximum, not Codex's global 872K cap");
   }
   // Field order is part of the catalog revision; rows serialize in this stable order.
-  assert.deepEqual(Object.keys(others[0]).slice(-9), ["truncation_policy", "experimental_supported_tools", "input_modalities", "context_window",
+  assert.deepEqual(Object.keys(others[1]).slice(-9), ["truncation_policy", "experimental_supported_tools", "input_modalities", "context_window",
     "effective_context_window_percent", "max_context_window", "supports_search_tool", "supports_experimental_context", "node_repl_disabled"]);
 });
 

@@ -21,6 +21,8 @@ export type OpenAIChatMessage = {
   name?: string;
   tool_call_id?: string;
   tool_calls?: OpenAIToolCall[];
+  /** A replayed hosted web-search call; only produced when the caller asks for hosted replay. */
+  webSearch?: { id: string; status: string; action?: Record<string, unknown> };
 };
 export type ChatToolSelection = "auto" | "none" | "required" | { type: "function"; function: { name: string } };
 export type OpenAIChatRequest = {
@@ -75,8 +77,12 @@ export type ResponsesAgentMessageItem = {
   content: string | Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
-export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem;
-export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | OpenAITool;
+/** A hosted web-search call Codex replays from an earlier turn. */
+export type ResponsesWebSearchCallItem = { type: "web_search_call"; id: string; status: string; action?: Record<string, unknown>; [key: string]: unknown };
+export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem | ResponsesWebSearchCallItem;
+/** OpenAI's hosted web search tool, exactly as Codex declares it. */
+export type ResponsesHostedWebSearchTool = { type: "web_search"; [key: string]: unknown };
+export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | OpenAITool | ResponsesHostedWebSearchTool;
 export type ResponsesRequest = {
   model: string;
   input: string | ResponsesInputItem[];
@@ -99,6 +105,8 @@ export type InferenceEvent =
   | { call: OpenAIToolCall; type: "tool" }
   | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true }
   | { item: Record<string, unknown>; type: "reasoning-state" }
+  /** A hosted web-search call the provider ran itself. `done` false announces it; true carries the final item. */
+  | { type: "hosted-item"; item: Record<string, unknown> & { type: "web_search_call"; id: string }; done: boolean }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
   /** Response-header data from the upstream; the server consumes it and never forwards it as output. */
   | { type: "transport"; turnState?: string };

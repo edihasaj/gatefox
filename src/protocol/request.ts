@@ -1,4 +1,4 @@
-import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesMessageItem, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
+import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesHostedWebSearchTool, ResponsesMessageItem, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
 import { inlineImage } from "./images.js";
 
 type Data = Record<string, unknown>;
@@ -64,8 +64,57 @@ export function agentMessageInput(item: Record<string, unknown>): ResponsesMessa
   return text ? { type: "message", role: "user", content: [{ type: "input_text", text }] } : undefined;
 }
 
+const searchToolKeys = new Set(["type", "external_web_access", "indexed_web_access", "filters", "user_location", "search_context_size", "search_content_types"]);
+const boundedText = (value: unknown, limit = 256) => typeof value === "string" && value.length <= limit && !value.includes("\0");
+/**
+ * Codex's hosted web_search tool, checked key by key. The object itself is forwarded untouched,
+ * so this only decides whether the gateway may carry it; it never rewrites a field.
+ */
+function checkHostedWebSearch(tool: Data): void {
+  const bad = () => reject("Unsupported web_search tool declaration", "unsupported_tool", "web_search");
+  if (Object.keys(tool).some(key => !searchToolKeys.has(key))) bad();
+  for (const key of ["external_web_access", "indexed_web_access"]) if (tool[key] !== undefined && typeof tool[key] !== "boolean") bad();
+  if (tool.search_context_size !== undefined && !["low", "medium", "high"].includes(String(tool.search_context_size))) bad();
+  if (tool.search_content_types !== undefined && (!Array.isArray(tool.search_content_types) || tool.search_content_types.length > 2 ||
+    tool.search_content_types.some(kind => kind !== "text" && kind !== "image"))) bad();
+  if (tool.filters !== undefined) {
+    const filters = tool.filters; if (filters === null || typeof filters !== "object" || Array.isArray(filters)) bad();
+    const { allowed_domains: domains, ...rest } = filters as Data;
+    if (Object.keys(rest).length || (domains !== undefined && (!Array.isArray(domains) || domains.length > 100 || domains.some(entry => !boundedText(entry))))) bad();
+  }
+  if (tool.user_location !== undefined) {
+    const place = tool.user_location; if (place === null || typeof place !== "object" || Array.isArray(place)) bad();
+    for (const [key, value] of Object.entries(place as Data)) if (!["type", "country", "region", "city", "timezone"].includes(key) || !boundedText(value)) bad();
+    if ((place as Data).type !== undefined && (place as Data).type !== "approximate") bad();
+  }
+}
+function isHostedWebSearch(source: unknown): source is ResponsesHostedWebSearchTool {
+  return source !== null && typeof source === "object" && !Array.isArray(source) && (source as Data).type === "web_search";
+}
+/** The hosted web_search declaration of a request, exactly as the caller sent it. At most one is allowed. */
+export function hostedWebSearch(request: ResponsesRequest): ResponsesHostedWebSearchTool | undefined {
+  const found = declaredResponsesTools(request).filter(isHostedWebSearch);
+  if (found.length > 1) reject("Only one web_search tool is allowed", "duplicate_tool", "web_search");
+  return found[0];
+}
+/** A replayed web_search_call item reduced to the fields a translated route can use. */
+function webSearchCall(item: Data): NonNullable<OpenAIChatMessage["webSearch"]> {
+  const id = item.id;
+  if (typeof id !== "string" || !id || id.length > 1024 || id.includes("\0") || typeof item.status !== "string" || item.status.length > 64) reject("Invalid web_search_call item", "unsupported_input_item", "web_search_call");
+  let action: Record<string, unknown> | undefined;
+  if (item.action !== undefined) {
+    if (item.action === null || typeof item.action !== "object" || Array.isArray(item.action) || JSON.stringify(item.action).length > 16 * 1024) reject("Invalid web_search_call action", "unsupported_input_item", "web_search_call");
+    action = item.action as Record<string, unknown>;
+  }
+  return { id: id as string, status: item.status as string, ...(action ? { action } : {}) };
+}
+
+export interface ReplayOptions {
+  /** Keep replayed hosted web_search_call items as neutral messages instead of skipping them. */
+  hostedReplay?: boolean;
+}
 /** Replay is compiled in order; opaque reasoning is never treated as text. */
-export function responsesInputToMessages(input: ResponsesRequest["input"]): OpenAIChatMessage[] {
+export function responsesInputToMessages(input: ResponsesRequest["input"], options: ReplayOptions = {}): OpenAIChatMessage[] {
   if (typeof input === "string") return [{ content: input, role: "user" }];
   if (!Array.isArray(input)) reject("input must be text or a list of Responses items", "invalid_shape");
   const replay: OpenAIChatMessage[] = [];
@@ -100,6 +149,13 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
       case "additional_tools": break;
+      // A hosted search the provider ran earlier. Routes without hosted search skip it; the item is
+      // validated either way so a malformed one still fails before inference.
+      case "web_search_call": {
+        const call = webSearchCall(item);
+        if (options.hostedReplay) replay.push({ role: "assistant", content: null, webSearch: call });
+        break;
+      }
       // Codex multi-agent replay: an agent's message to another agent. Its text is
       // the whole transcript content; encrypted parts are transport state, never text.
       case "agent_message": {
@@ -147,8 +203,11 @@ export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool
     }
     catalog.set(alias, { type: "function", function: { name: alias, description, responseTool: identity, ...(parameters ? { parameters } : {}) } });
   };
+  let searches = 0;
   for (const source of tools) {
     const tool = record(source);
+    // The hosted search tool is carried verbatim by the route that runs it; it is not a caller function.
+    if (tool.type === "web_search") { checkHostedWebSearch(tool); if (++searches > 1) reject("Only one web_search tool is allowed", "duplicate_tool", "web_search"); continue; }
     if (tool.type !== "namespace") { declare(tool); continue; }
     const group = name(tool.name);
     if (!Array.isArray(tool.tools)) reject("Namespace tools must be a list", "unsupported_tool", "namespace");
@@ -181,12 +240,12 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
   return [...(request.tools ?? []), ...lifted];
 }
 
-export function responsesToChatRequest(request: ResponsesRequest): OpenAIChatRequest {
+export function responsesToChatRequest(request: ResponsesRequest, options: ReplayOptions = {}): OpenAIChatRequest {
   const tools = normalizeResponsesTools(declaredResponsesTools(request));
   const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
   if (tool_choice === "required" && !tools.length) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
-  const messages = responsesInputToMessages(request.input);
+  const messages = responsesInputToMessages(request.input, options);
   if (request.instructions !== undefined) {
     if (typeof request.instructions !== "string") reject("instructions must be text", "invalid_instructions");
     if (request.instructions) messages.splice(0, 0, { content: request.instructions, role: "system" });

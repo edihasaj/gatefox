@@ -4,6 +4,7 @@ import { discoverCopilotModels } from "./providers/copilot-models.js";
 import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
+import { webSearchBackend } from "./web-search.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -16,6 +17,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
     const preferred = metadata?.defaultReasoningEffort && efforts.includes(metadata.defaultReasoningEffort) ? metadata.defaultReasoningEffort : "medium";
     // Codex 2 rows default to native Codex's truncation and usable window share.
     const codex = provider.type === "codex-subscription"; const truncation = metadata?.truncationPolicy;
+    const searchBackend = webSearchBackend(provider.type);
     return {
       slug: alias, display_name: `${provider.label || provider.id} · ${metadata?.displayName || provider.models[alias]}`,
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
@@ -38,6 +40,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true,
+      // Codex 2 and Claude may run their own provider's hosted web search; other routes have none.
+      ...(searchBackend ? { gateway_web_search: true, ...(searchBackend === "anthropic" ? { web_search_tool_type: "text" } : {}) } : {}),
       ...(metadata?.multiAgentVersion ? { multi_agent_version: metadata.multiAgentVersion } : {}),
       ...(metadata?.multiAgentReasoningEffort ? { multi_agent_reasoning_effort: metadata.multiAgentReasoningEffort } : {}),
       ...(metadata?.useResponsesLite ? { use_responses_lite: true } : {}),

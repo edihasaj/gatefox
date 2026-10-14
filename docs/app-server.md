@@ -350,8 +350,11 @@ local native catalog it loaded at startup and copies these fields:
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
-`comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
-web search disabled, because `tool_search` does not pass through the gateway. A
+`comp_hash` is never copied. `supports_search_tool` stays off, because Codex's
+deferred `tool_search` does not pass through the gateway; it is unrelated to web
+search. Codex 2 rows also copy `web_search_tool_type` from the native row. The
+adapter still starts every gateway chat with `web_search = "disabled"`; see
+[Web search](responses.md#web-search). A
 slug without a native row, and every Claude, Copilot or other row, stays as the
 gateway published it. The rows the adapter builds drop `upstream_slug`. At each
 launch the native-catalog preflight first writes `desktop-models.json` with the

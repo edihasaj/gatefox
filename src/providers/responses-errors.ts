@@ -23,7 +23,8 @@ const requestIdOf = (value: string | null | undefined) => value && /^[a-z0-9_-]{
 const streamEventTypes = new Set(["response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
   "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done", "response.reasoning_summary_part.added", "response.reasoning_summary_part.done",
   "response.reasoning_summary_text.delta", "response.reasoning_summary_text.done", "response.reasoning_text.delta", "response.reasoning_text.done", "response.function_call_arguments.delta", "response.function_call_arguments.done",
-  "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done", "response.completed", "response.incomplete", "response.failed", "error"]);
+  "response.custom_tool_call_input.delta", "response.custom_tool_call_input.done",
+  "response.web_search_call.in_progress", "response.web_search_call.searching", "response.web_search_call.completed", "response.output_text.annotation.added", "response.completed", "response.incomplete", "response.failed", "error"]);
 const count = (value: number) => Number.isFinite(value) ? Math.min(1000000, Math.max(0, Math.floor(value))) : 0;
 /** Track protocol shape only. Unknown types may contain private text, so retain no raw value. */
 export function observeResponsesStream(stream: ProviderStreamDiagnostic, event: WireEvent): void {

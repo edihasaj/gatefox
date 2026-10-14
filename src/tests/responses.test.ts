@@ -53,7 +53,7 @@ test("opaque reasoning remains transport state while provider-exposed summaries 
 
 const invalid = [
   { input: [{ role: "unknown", content: "text" }] }, { input: [{ type: "function_call_output", output: "result" }] },
-  { input: [{ type: "custom_tool_call", call_id: "one", name: "patch", input: {} }] }, { tools: [{ type: "web_search" }] },
+  { input: [{ type: "custom_tool_call", call_id: "one", name: "patch", input: {} }] }, { tools: [{ type: "web_search_preview" }] },
   { tools: [{ type: "function", name: "same" }, { type: "function", name: "same" }] }, { tool_choice: { type: "function", name: "missing" } },
   { tools: [{ type: "namespace", name: "group", tools: [{ type: "namespace", name: "nested", tools: [] }] }] },
 ];

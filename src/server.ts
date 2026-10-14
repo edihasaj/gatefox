@@ -9,7 +9,8 @@ import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
-import { responsesToChatRequest } from "./protocol/request.js";
+import { hostedWebSearch, responsesToChatRequest, ResponsesTranslationError } from "./protocol/request.js";
+import { webSearchBackend, type WebSearchBackend } from "./web-search.js";
 import type { ResponsesRequest, Usage } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
@@ -130,7 +131,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
   const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
     const adapter = factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window));
-    return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const);
+    const search: WebSearchBackend | undefined = webSearchBackend(provider.type);
+    return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, search, reasoningScope: reasoningScope(provider) }] as const);
   }));
   let current = config; let routes = buildRoutes(config);
   const snapshot = async () => {
@@ -174,9 +176,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
     let providerId: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
-    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let turnStateReturned = false;
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let searches = 0; let usage: Usage | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
-      firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
+      firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, webSearches: searches, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
     // timeoutMs bounds silence, not total length: it covers the upload and queue
     // wait, then restarts at admission and on every provider event. Long Max or
@@ -205,6 +207,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
+      // Only the Codex 2 route runs OpenAI's hosted web search. Anywhere else the tool fails before
+      // inference rather than being dropped, so a chat never believes it searched when it did not.
+      if (hostedWebSearch(request) && route.search !== "openai") throw new ResponsesTranslationError("This model route has no web search", "unsupported_tool", "web_search");
       const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();
       const streaming = request.stream === true;
       let lastEventAt = Date.now(); let opened = false;
@@ -240,7 +245,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
           continue;
         }
         open(); events++; if (!firstEventAt) firstEventAt = Date.now();
-        if (event.type === "tool") tools++; else if (event.type === "done") usage = event.usage;
+        if (event.type === "tool") tools++; else if (event.type === "hosted-item") { if (event.done) searches++; } else if (event.type === "done") usage = event.usage;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
         if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);

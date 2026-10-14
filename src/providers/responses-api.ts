@@ -1,8 +1,9 @@
 import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired } from "../auth/chatgpt.js";
 import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
+import { gatewayClaudeSearchPrefix, hostedItem, isHostedWebSearchCall } from "../protocol/hosted-search.js";
 import { readEvents } from "../protocol/sse.js";
-import type { ResponsesInputItem, ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
+import type { ResponsesHostedWebSearchTool, ResponsesInputItem, ResponsesRequest, ResponsesTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
@@ -72,6 +73,11 @@ export class ResponsesAPI implements Provider {
     const body: ResponsesRequest = { ...request, stream: true };
     // Public Responses endpoints reject agent_message items; send their text as a user message instead.
     if (Array.isArray(request.input)) body.input = request.input.flatMap((item): ResponsesInputItem[] => { if ((item as { type?: string }).type !== "agent_message") return [item]; const message = agentMessageInput(item as unknown as Record<string, unknown>); return message ? [message] : []; });
+    // OpenAI's hosted web search exists only on the subscription route. Anywhere else the tool and
+    // the search calls it produced are dropped, so a generic Responses upstream never sees them.
+    const hostedSearch = (request.tools ?? []).filter((tool): tool is ResponsesHostedWebSearchTool => tool.type === "web_search");
+    if (Array.isArray(body.input)) body.input = body.input.filter(item => !isHostedWebSearchCall(item) || (this.config.type === "codex-subscription" && !item.id.startsWith(gatewayClaudeSearchPrefix)));
+    if (this.config.type !== "codex-subscription" && hostedSearch.length) body.tools = (request.tools ?? []).filter(tool => tool.type !== "web_search");
     const hideSummary = (request.reasoning as { summary?: string } | undefined)?.summary === "none";
     // Responses wire values omit the summary to disable it. Codex's local
     // setting uses "none", which is not accepted by the upstream endpoint.
@@ -88,8 +94,9 @@ export class ResponsesAPI implements Provider {
       const namespaces = new Set(request.tools?.filter(tool => tool.type === "namespace").map(tool => tool.name));
       defaultNamespace = "gateway";
       while (namespaces.has(defaultNamespace)) defaultNamespace += "_";
-      const flat = request.tools?.filter(tool => tool.type !== "namespace") || [];
-      body.tools = [...(request.tools?.filter(tool => tool.type === "namespace") || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
+      const flat = (request.tools?.filter(tool => tool.type !== "namespace" && tool.type !== "web_search") || []) as Array<Exclude<ResponsesTool, { type: "namespace" } | ResponsesHostedWebSearchTool>>;
+      // The hosted search tool goes last and is never wrapped in a namespace; the object is the caller's own.
+      body.tools = [...(request.tools?.filter(tool => tool.type === "namespace") || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : []), ...hostedSearch];
       // Only calls of top-level tools move into the gateway namespace; tools declared
       // in Responses lite `additional_tools` items keep their own namespace.
       const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
@@ -112,6 +119,7 @@ export class ResponsesAPI implements Provider {
     let done = false; const output = new ResponsesOutput();
     const calls = new Map<string, { signature: string; identity: string; input: string }>();
     const unfinished = new Map<string, { identity: string; length: number; digest: string }>();
+    const searched = new Set<string>();
     const stream: ProviderStreamDiagnostic = { events: 0, reasoningItems: 0, textDeltas: 0, toolCalls: 0 };
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
       const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
@@ -176,6 +184,13 @@ export class ResponsesAPI implements Provider {
         return tool(item, snapshot);
       }
       if (item.type === "reasoning") return [{ type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item }];
+      if (item.type === "web_search_call") {
+        const search = hostedItem(item);
+        // The final snapshot repeats items already streamed; only an unseen one is new.
+        if (searched.has(search.id)) { if (snapshot) return []; throw new ProviderError("invalid_output", "Provider ended a web search twice"); }
+        if (searched.size >= 256) throw new ProviderError("invalid_output", "Provider returned too many web searches");
+        searched.add(search.id); return [{ type: "hosted-item", item: search, done: true }];
+      }
       throw new ProviderError("invalid_output", "Provider returned unsupported response output");
     };
     for await (const event of readEvents(response.body)) {
@@ -185,6 +200,7 @@ export class ResponsesAPI implements Provider {
         const item = event.item as Record<string, unknown>;
         if (item?.type === "message") output.added(item);
         if (item?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item };
+        if (item?.type === "web_search_call") yield { type: "hosted-item", item: hostedItem(item), done: false };
       }
       if (event.type === "response.output_text.delta") yield* output.delta(event);
       if (event.type === "response.output_item.done") {
@@ -201,7 +217,8 @@ export class ResponsesAPI implements Provider {
         if (completed.error !== undefined && completed.error !== null) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
         if (completed.status !== undefined && completed.status !== (interrupted ? "incomplete" : "completed")) throw new ProviderError("incomplete", "Provider did not complete the response");
         if ((interrupted || completed.status === undefined) && (typeof completed.id !== "string" || !completed.id || completed.id.length > 1024 || completed.id.includes("\0"))) throw new ProviderError("invalid_output", "Provider returned invalid response completion identity");
-        if (completed.end_turn !== undefined && typeof completed.end_turn !== "boolean") throw new ProviderError("invalid_output", "Provider returned invalid turn completion metadata");
+        // The subscription endpoint reports end_turn: null after a hosted search; Codex reads it as absent.
+        if (completed.end_turn !== undefined && completed.end_turn !== null && typeof completed.end_turn !== "boolean") throw new ProviderError("invalid_output", "Provider returned invalid turn completion metadata");
         if (completed.output !== undefined) {
           if (!Array.isArray(completed.output) || completed.output.length > 1024) throw new ProviderError("invalid_output", "Provider returned invalid response output");
           const snapshotIds = new Set<string>(); const snapshotCalls = new Set<string>();
@@ -227,7 +244,7 @@ export class ResponsesAPI implements Provider {
         done = true;
         const serviceTier = publicServiceTier(completed.service_tier);
         yield { type: "done", usage: completed.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, ...(serviceTier ? { serviceTier } : {}),
-          ...(interrupted ? { interrupted: true, endTurn: false } : completed.end_turn === undefined ? {} : { endTurn: completed.end_turn }) };
+          ...(interrupted ? { interrupted: true, endTurn: false } : typeof completed.end_turn !== "boolean" ? {} : { endTurn: completed.end_turn }) };
         break;
       }
     }

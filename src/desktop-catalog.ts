@@ -18,12 +18,18 @@ const publicFields = new Set([
   "include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions", "support_verbosity", "default_verbosity",
   "context_window", "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled",
   "multi_agent_version", "multi_agent_reasoning_effort", "use_responses_lite", "supports_reasoning_effort_updates",
-  "max_context_window", "auto_compact_token_limit",
+  "max_context_window", "auto_compact_token_limit", "gateway_web_search", "web_search_tool_type",
 ]);
 // Codex reads these as optional integers; anything else would break the combined catalog.
 const integerFields = new Set(["max_context_window", "auto_compact_token_limit"]);
 const publicScalar = (value: unknown) => value === null || ["string", "boolean", "number"].includes(typeof value);
-const publicField = (key: string, value: unknown) => publicFields.has(key) && publicScalar(value) && (!integerFields.has(key) || (Number.isSafeInteger(value) && (value as number) > 0));
+const booleanFields = new Set(["gateway_web_search"]);
+// Codex reads the search-tool type as an enum; anything else would break the combined catalog.
+const searchToolTypes = new Set(["text", "text_and_image"]);
+const publicField = (key: string, value: unknown) => publicFields.has(key) && publicScalar(value)
+  && (!integerFields.has(key) || (Number.isSafeInteger(value) && (value as number) > 0))
+  && (!booleanFields.has(key) || typeof value === "boolean")
+  && (key !== "web_search_tool_type" || searchToolTypes.has(String(value)));
 
 function publicModels(value: unknown, native: Message[]): Message[] {
   if (!Array.isArray(value) || !value.length || value.length > 4096) throw new Error("Gateway returned invalid model metadata");

@@ -53,9 +53,9 @@ in the inference host's local timezone and UTC. Missing metadata remains unknown
 the gateway does not guess a reset or retry across a subscription limit.
 
 Replayed reasoning summaries are treated as text. Encrypted reasoning transport
-state is not exposed to the Claude model. Hosted tools are outside
-the current Claude adapter's scope. Unsupported item and tool types return a
-client error instead of an internal crash.
+state is not exposed to the Claude model. The only hosted tool the adapters
+support is web search; see [Web search](#web-search). Unsupported item and tool
+types return a client error instead of an internal crash.
 
 Codex also replays `agent_message` items: text one agent wrote to another, with its
 encrypted transport state beside it. The public Responses endpoint the gateway uses
@@ -188,8 +188,8 @@ The admission bound includes body uploads. A full queue returns `busy` with HTTP
 429 and `Retry-After: 1`. Health exposes `running` and `queued` counts.
 
 The current adapters support text, inline images, and caller-dispatched tools. Audio input,
-hosted tools, previous-response-ID state, and every provider's full option surface
-are not supported. This is not a claim of complete Responses API compatibility.
+hosted tools other than web search, previous-response-ID state, and every provider's full option
+surface are not supported. This is not a claim of complete Responses API compatibility.
 
 Codex sends a `prompt_cache_key` in the body and `session-id` and `thread-id`
 headers. The body key passes through unchanged. For the ChatGPT subscription
@@ -240,6 +240,56 @@ request starts a separate session and replays caller-supplied history.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 Normal requests retain the selected model, reasoning, and subscription route.
+
+## Web search
+
+Web search is the one tool an inference provider runs itself; the client still
+executes every other tool. Codex decides whether a turn may search from its own
+`web_search` setting (`disabled`, `cached`, `indexed` or `live`, with `cached` when
+unset) and its `[tools.web_search]` table. Catalog rows for Codex 2 and Claude carry
+`gateway_web_search: true`; Claude rows also carry `web_search_tool_type: "text"`, and
+Codex 2 rows copy `web_search_tool_type` from the native row. `supports_search_tool`
+is unrelated: it gates Codex's deferred `tool_search`, and stays off.
+
+Codex 2 routes forward the hosted tool exactly as Codex sends it, for example
+`{"type":"web_search","external_web_access":true,"search_content_types":["text","image"]}`.
+The gateway checks the tool's keys and types (at most one per request), keeps the
+caller's object byte for byte, and places it after the caller's namespaces and the
+gateway namespace, never inside one. The upstream `web_search_call` items reach Codex
+unchanged as `response.output_item.added` and `response.output_item.done` events.
+Replayed `web_search_call` items are forwarded byte for byte, except items whose ID
+starts with the reserved `ws_claude_` prefix, which the gateway reserves for searches
+it reports for Claude and which OpenAI never issued. The `response.web_search_call.*`
+progress events and URL citation annotations are not forwarded, because Codex ignores
+them; the answer keeps its Markdown links. A search that has started is never retried
+automatically. A live check on 2026-10-14 against `api.openai.com/v1/responses` with
+the Codex 2 agent token returned one `web_search_call` with a `search` action, one
+`url_citation`, and `tool_usage.web_search.num_requests: 1`. The completion reported
+`end_turn: null`, which the gateway treats as absent. The gateway's dev build then
+repeated the search through the gateway, replayed its output in the next request
+(accepted), and confirmed that `indexed_web_access` is accepted.
+
+A request that carries the tool on any other route (Claude, Copilot, the Anthropic
+API, Chat Completions and other Responses upstreams) fails before inference with
+`invalid_request`, and a generic Responses upstream never receives the tool or any
+`web_search_call` item. Replayed `web_search_call` items are validated and then
+skipped on those routes. The desktop adapter still starts every gateway chat with
+`web_search = "disabled"`, so Codex does not send the tool today; the router change
+that lets Codex 2 and Claude rows search is applied after the Claude route lands.
+
+Codex rows that use Responses Lite, which includes every current Codex 2 row, never
+send the hosted tool: native Codex searches for them with its client-run `web.run`
+tool and the standalone `alpha/search` endpoint. The gateway does not support that
+endpoint. A probe on 2026-10-14 sent one `POST https://api.openai.com/v1/alpha/search`
+with the Codex 2 agent token and received HTTP 401 `hardened_oauth_rule_missing`
+("This ChatPass credential is not authorized for the requested operation"), so there
+is nothing to proxy. The same account rejects the hosted tool when it appears beside
+Lite `additional_tools` input items (HTTP 400, checked the same day), which matches
+Codex never sending them together. Until the account is allowed to use that endpoint,
+Lite rows have no web search.
+
+The telemetry events `request_completed` and `request_failed` carry `webSearches`, a
+count of finished searches. Queries, results and request bodies are never logged.
 
 ## Ordinary Anthropic API
 

@@ -46,6 +46,8 @@ export class ResponsesWriter {
   private message?: Message;
   private readonly messages = new Map<string, Message>();
   private readonly providerMessages = new Map<string, Message>();
+  private readonly searches = new Map<string, number>();
+  private readonly finished = new Set<string>();
   private serial = 0;
   private status: "in_progress" | "completed" | "incomplete" | "failed" = "in_progress";
   private answer = "";
@@ -133,6 +135,24 @@ export class ResponsesWriter {
       this.publish({ type: "response.output_item.done", output_index: state.position, item: state.item });
     }
   }
+  /** A search the provider ran: announced on first sight, replaced by its final item when done. */
+  private hosted(event: Extract<InferenceEvent, { type: "hosted-item" }>): void {
+    // Hosted items are whole output items, so a legacy text message ends before them like before a tool.
+    if (this.message?.providerId === undefined) this.closeMessage();
+    const known = this.searches.get(event.item.id);
+    if (known === undefined) {
+      if (this.searches.size >= 256) throw new Error("Provider emitted too many hosted items");
+      const position = this.ledger.length; this.searches.set(event.item.id, position);
+      const item = structuredClone(event.item) as Item; this.ledger.push(item);
+      this.publish({ type: "response.output_item.added", output_index: position, item: event.done ? { type: item.type, id: item.id, status: "in_progress" } : item });
+    } else if (!event.done) throw new Error("Provider announced a hosted item twice");
+    if (!event.done) return;
+    const position = this.searches.get(event.item.id)!;
+    if (this.finished.has(event.item.id)) throw new Error("Provider ended a hosted item twice");
+    this.finished.add(event.item.id);
+    const item = structuredClone(event.item) as Item; this.ledger[position] = item;
+    this.publish({ type: "response.output_item.done", output_index: position, item });
+  }
   accept(event: InferenceEvent): void {
     if (this.status !== "in_progress") throw new Error("Provider emitted after the response ended");
     switch (event.type) {
@@ -148,6 +168,7 @@ export class ResponsesWriter {
         const state = this.thought(event.item.id); state.item = { ...event.item } as Item;
         this.ledger[state.position] = state.item; return;
       }
+      case "hosted-item": this.hosted(event); return;
       case "tool": {
         // Explicit provider messages close at their actual output-item boundary.
         // Legacy text-only providers close before their next caller tool.
