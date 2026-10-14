@@ -394,6 +394,15 @@ executor catalog carries for sub-agents naming a model directly (a role's model,
 `direct` tools in executors, so their commands run instead of failing with "failed
 to spawn code-mode host". The native engine keeps its own catalog unchanged.
 
+node_repl (the browser, Chrome and computer-use tools) is a direct plugin MCP
+server, so it does not depend on code mode; only `tool_mode` does. A Codex 2 row
+follows its native row's `node_repl_disabled`. A row with no native counterpart,
+and a row whose `upstream_slug` is missing from the native catalog, enables
+node_repl only when every native row does. Whether the bundled gateway SDK honours
+`node_repl_disabled` at all is unconfirmed. `node scripts/check-node-repl.mjs
+catalog.json` prints the flag of every row in a copy of an executor home's combined
+catalog. It is advisory and never reads the installed app's live state.
+
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global
 cap of 872K, which cut Claude's 1M window.
@@ -545,13 +554,3 @@ account-change notification to force a refresh.
 Gateway executors use a private configuration home and share native chat storage.
 They do not copy the primary auth file. See [architecture](architecture.md) for
 configuration isolation, catalog generations, and failure recovery.
-
-### node_repl on gateway rows
-
-Gateway rows publish `node_repl_disabled: true`. The desktop adapter copies a
-native row's `node_repl_disabled` onto its Codex 2 row, and a row with no native
-counterpart (Claude, Copilot, API) enables it only when every native row does.
-node_repl (browser, Chrome and computer-use tools) runs through the code-mode
-host, so an executor without `codex-code-mode-host` (the bundled gateway SDK)
-keeps it disabled. Check a combined catalog with
-`node scripts/check-node-repl.mjs catalog.json`.

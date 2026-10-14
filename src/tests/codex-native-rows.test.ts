@@ -128,19 +128,40 @@ test("the first host read replaces the plain startup catalog even when the host 
   } finally { f.close(); }
 });
 
-test("node_repl follows the native row where the executor runs code mode, and stays off otherwise", () => {
+test("node_repl follows the native row whatever the executor's code mode is", () => {
   const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
   assert.equal(published.node_repl_disabled, true, "the published default is off");
-  assert.equal(withNativeRow(published, [{ ...nativeSol, node_repl_disabled: false }]).node_repl_disabled, false);
-  assert.equal(withNativeRow(published, [{ ...nativeSol, node_repl_disabled: false }], false).node_repl_disabled, true, "no code-mode host");
-  assert.equal(withNativeRow(published, [nativeSol]).node_repl_disabled, true, "a native row without the field keeps it off");
+  // node_repl is a direct plugin MCP server, so code mode never turns it off.
+  for (const codeMode of [true, false]) {
+    assert.equal(withNativeRow(published, [{ ...nativeSol, node_repl_disabled: false }], codeMode).node_repl_disabled, false, String(codeMode));
+    assert.equal(withNativeRow(published, [{ ...nativeSol, node_repl_disabled: true }], codeMode).node_repl_disabled, true, String(codeMode));
+    assert.equal(withNativeRow(published, [nativeSol], codeMode).node_repl_disabled, true, "a native row without the field keeps it off");
+  }
 });
 
-test("rows without a native counterpart enable node_repl only when all native rows do and code mode runs", () => {
+test("rows without a native counterpart enable node_repl only when all native rows do", () => {
   const config = { version: 1, port: 0, stateDirectory: ".", providers: [codex({ "codex/sol": "gpt-6.1-sol" }), { id: "claude", type: "claude-subscription", models: { "claude/opus": "opus" } }] } as unknown as GatewayConfig;
   const open: Array<Record<string, unknown>> = [{ ...nativeSol, node_repl_disabled: false }];
   const flags = (native: typeof open, mode: boolean) => new DesktopCatalog(config, native, "unused", mode).current().models.map(row => row.node_repl_disabled);
   assert.deepEqual(flags(open, true), [false, false]);
-  assert.deepEqual(flags(open, false), [true, true]);
+  assert.deepEqual(flags(open, false), [false, false], "the executor's code mode does not change the result");
   assert.deepEqual(flags([...open, { ...nativeSol, slug: "other" }], true), [false, true]);
+  assert.deepEqual(flags([...open, { ...nativeSol, slug: "other" }], false), [false, true]);
+});
+
+test("a row whose upstream_slug is absent from the native catalog takes the fallback", () => {
+  const config = { version: 1, port: 0, stateDirectory: ".", providers: [codex({ "codex/next": "gpt-9" })] } as unknown as GatewayConfig;
+  const open: Array<Record<string, unknown>> = [{ ...nativeSol, node_repl_disabled: false }];
+  const flags = (native: typeof open) => new DesktopCatalog(config, native, "unused", false).current().models.map(row => row.node_repl_disabled);
+  assert.deepEqual(flags(open), [false], "every native row enables it");
+  assert.deepEqual(flags([...open, { ...nativeSol, slug: "other" }]), [true], "one native row keeps it off");
+});
+
+test("combined rows keep the native node_repl flag with or without the code-mode host", () => {
+  const config = { version: 1, port: 0, stateDirectory: ".", providers: [codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata })] } as unknown as GatewayConfig;
+  const native: Array<Record<string, unknown>> = [{ ...nativeSol, node_repl_disabled: false }];
+  const [nativeRow, gatewayRow] = new DesktopCatalog(config, native, "unused", false).combined().models;
+  assert.equal(nativeRow.node_repl_disabled, false, "the native row keeps its own flag");
+  assert.equal(gatewayRow.node_repl_disabled, false, "the gateway row follows the same rule");
+  assert.equal(gatewayRow.tool_mode, "direct", "only tool_mode depends on code mode");
 });

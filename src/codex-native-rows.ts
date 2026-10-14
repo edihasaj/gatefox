@@ -33,12 +33,12 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
-  // node_repl (browser, Chrome, computer use) runs through the code-mode host; without it the tool stays off.
-  if (!codeMode) row.node_repl_disabled = true;
+  // node_repl (browser, Chrome, computer use) is a direct plugin MCP server, independent of code
+  // mode; only tool_mode depends on whether the executor runs it.
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
   const copy: Row = {};
-  if (codeMode && typeof source.node_repl_disabled === "boolean") copy.node_repl_disabled = source.node_repl_disabled;
+  if (typeof source.node_repl_disabled === "boolean") copy.node_repl_disabled = source.node_repl_disabled;
   const messages = plain(source.model_messages);
   // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
   if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }
@@ -57,7 +57,7 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   return { ...row, ...copy };
 }
 
-/** A row with no native counterpart (Claude, Copilot, API) enables node_repl only where every native row does and the executor runs code mode. */
-export function nodeReplFallback(native: readonly Row[], codeMode: boolean): boolean {
-  return !codeMode || !native.length || native.some(entry => entry.node_repl_disabled !== false);
+/** A row with no native counterpart (Claude, Copilot, API) enables node_repl only where every native row does. */
+export function nodeReplFallback(native: readonly Row[]): boolean {
+  return !native.length || native.some(entry => entry.node_repl_disabled !== false);
 }

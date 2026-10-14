@@ -95,7 +95,7 @@ export class DesktopCatalog {
     finally { await file?.close(); }
   }
   private snapshot(published: Message[]): DesktopCatalogSnapshot {
-    const disabled = nodeReplFallback(this.native, this.codeMode);
+    const disabled = nodeReplFallback(this.native);
     const models = published.map(model => {
       const row = withNativeRow(model, this.native, this.codeMode);
       return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : { ...row, node_repl_disabled: disabled };
