@@ -412,11 +412,16 @@ no top-level `instructions`). With Codex 0.160.0 the model called the code-mode
 at 500K that day, so its window did not change.
 
 A resumed chat keeps the base instructions saved with it, as natively; chats
-started before this change keep their empty base prompt. When it starts a new
-gateway chat without a saved preference, the adapter still selects medium effort
-and auto summaries, so the native default shows in the model list but does not
-yet start the chat. Those defaults never replace an existing chat's settings on
-resume; the chat's own reasoning is restored instead, as described above.
+started before this change keep their empty base prompt. A new gateway chat
+starts with the model's own reasoning defaults: the adapter takes the catalog
+row's `default_reasoning_level` and `default_reasoning_summary`, falling back to
+the first supported level (or medium when it is offered) and `auto` only when the
+row declares neither. A saved preference for the configured model
+(`model_reasoning_effort` and `model_reasoning_summary`, mirroring the native
+`config.toml` default that applies to the configured model) wins over the row,
+and an explicit choice in the request always wins over both. These defaults never
+replace an existing chat's settings on resume; the chat's own reasoning is
+restored instead, as described above.
 
 ## Empty chats and message order
 
@@ -468,11 +473,16 @@ capabilities in local and connected-machine `model/list` responses. Native rows
 retain their original capabilities. No speed tier is inferred from a model name.
 
 Standard remains the default in this installation. Choose Fast only for a model
-that advertises it; the pinned SDK identifies Fast as `priority`. Gateway-only
-preferences restore a saved new-chat default for the exact selected model. An explicit
-`serviceTier` or `config.service_tier` takes precedence, including explicit null
-for Standard. A model-only preference change clears the preceding model's tier.
-Resume and fork inherit their chat's tier; new-chat preferences never replace it.
+that advertises it; the pinned SDK identifies Fast as `priority`. Fast is never a
+new-chat default: neither a saved `service_tier` preference nor a row's
+`default_service_tier` starts a new gateway chat in Fast. Speed stays a per-chat
+choice, so a new chat opened after a Fast chat starts Standard, while an explicit
+`serviceTier` or `config.service_tier` on the start still applies and is still
+validated against what the model offers, including explicit null for Standard.
+Saving a tier through `config/batchWrite` remains allowed and only records the
+choice; it no longer injects it. A model-only preference change clears the
+preceding model's tier. Resume and fork inherit their chat's own tier, so a Fast
+chat keeps Fast; new-chat settings never replace it.
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
 original native home. Fresh connections reread this record. Runtime settings are

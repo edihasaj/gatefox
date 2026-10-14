@@ -154,25 +154,26 @@ export class AppServerRouter {
       throw new AppServerRoutingError("This gateway model does not support the selected service tier. Choose Standard or a model that offers that tier.", -32002);
     }
   }
-  private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
-    if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
-    return { ...params, serviceTier: this.preferences.service_tier };
-  }
-  private modelRequest(params: ObjectValue, model: string, newChat = false, restored?: ReasoningChoice | null): ObjectValue {
+  private modelRequest(params: ObjectValue, model: string, restored?: ReasoningChoice | null): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
     const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
+    // A saved preference mirrors the native config.toml default for the configured
+    // model; otherwise the row's own published default wins over the old fallback.
     const saved = this.preferences.model === model ? this.preferences.model_reasoning_effort : undefined;
-    const effort = typeof saved === "string" && levels.includes(saved) ? saved : levels.includes("medium") ? "medium" : levels[0] || "none";
-    let selected = newChat ? this.preferenceRequest(params, model) : params;
-    if (!tierSelection(selected) && newChat && typeof metadata.default_service_tier === "string") selected = { ...selected, serviceTier: metadata.default_service_tier };
-    const tier = tierSelection(selected); if (tier) this.assertServiceTier(model, tier.value);
-    const summary = this.preferences.model === model && typeof this.preferences.model_reasoning_summary === "string" ? this.preferences.model_reasoning_summary : "auto";
+    const rowEffort = typeof metadata.default_reasoning_level === "string" && levels.includes(metadata.default_reasoning_level) ? metadata.default_reasoning_level : undefined;
+    const effort = typeof saved === "string" && levels.includes(saved) ? saved : rowEffort ?? (levels.includes("medium") ? "medium" : levels[0] || "none");
+    // A speed tier is never a new-chat default: not from a saved preference and
+    // not from the row's default_service_tier. It travels with a chat (restored
+    // on resume and fork) or arrives explicitly, where it stays validated.
+    const tier = tierSelection(params); if (tier) this.assertServiceTier(model, tier.value);
+    const savedSummary = this.preferences.model === model && typeof this.preferences.model_reasoning_summary === "string" ? this.preferences.model_reasoning_summary : undefined;
+    const summary = savedSummary ?? (typeof metadata.default_reasoning_summary === "string" ? metadata.default_reasoning_summary : "auto");
     // A resumed chat keeps the reasoning settings saved with it; injecting a
     // default here would silently reset a Max chat to Medium on reload. A restored
     // choice is the chat's own setting, which the engine cannot recover on its own.
     const reasoning = restored === null ? {} : { model_reasoning_effort: restored?.effort ?? effort, model_reasoning_summary: restored?.summary ?? summary };
-    return { ...selected, model, modelProvider: gatewayProvider,
+    return { ...params, model, modelProvider: gatewayProvider,
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
   private assertSameProvider(provider: string, model: unknown): void {
@@ -325,7 +326,7 @@ export class AppServerRouter {
       let restored: ReasoningChoice | null | undefined = null;
       if (!sameModel) restored = undefined;
       else if (configEffort(params) === undefined) restored = await this.restoredReasoning(params.threadId, model, method);
-      forwarded = this.modelRequest(inherited, model, false, restored);
+      forwarded = this.modelRequest(inherited, model, restored);
     } else if (["thread/resume", "thread/fork"].includes(method)) {
       const effort = await this.nativeRestoredEffort(params, method, route);
       if (effort !== undefined) forwarded = { ...forwarded, config: { ...object(forwarded.config), model_reasoning_effort: effort } };
@@ -355,8 +356,8 @@ export class AppServerRouter {
     let forwarded = params;
     if (method === "thread/start") {
       const model = requestedModel(params) ?? this.preferences.model;
-      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model, true);
-      else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
+      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model);
+      else if (typeof model === "string") forwarded = { ...params, model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.
       const threadRoute = await this.route(params.threadId);

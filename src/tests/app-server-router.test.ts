@@ -270,7 +270,7 @@ test("model/list advertises exact SDK service tiers while standard models have n
   assert.deepEqual(capabilities, { status: "ok" });
 });
 
-test("private Fast preferences survive connections and preserve explicit chat request overrides", async () => {
+test("saved Fast preferences never start new chats in Fast while explicit overrides pass through", async () => {
   const { router, config, backend, calls, directory } = await fastFixture();
   await router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" },
@@ -281,7 +281,7 @@ test("private Fast preferences survive connections and preserve explicit chat re
   const params = { cwd: directory, config: { trusted: true, model_reasoning_effort: "none", model_reasoning_summary: "concise" } };
   await second.request("thread/start", params);
   const started = calls.at(-1)!.params;
-  assert.equal(started.serviceTier, "fast"); assert.equal(started.cwd, directory);
+  assert.equal(Object.hasOwn(started, "serviceTier"), false, "a saved tier no longer makes a new chat Fast"); assert.equal(started.cwd, directory);
   assert.equal((started.config as ObjectValue).model_reasoning_effort, "none");
   assert.equal((started.config as ObjectValue).model_reasoning_summary, "concise");
   assert.equal((started.config as ObjectValue).trusted, true);
@@ -295,18 +295,18 @@ test("private Fast preferences survive connections and preserve explicit chat re
   assert.equal(calls.at(-1)!.params.serviceTier, "flex"); assert.equal((calls.at(-1)!.params.config as ObjectValue).service_tier, "default");
 });
 
-test("declared gateway defaults apply only to new gateway chats and never override explicit Standard", async () => {
+test("declared gateway defaults and saved tiers never enter new gateway chats", async () => {
   const { config, backend, calls } = await fastFixture();
   config.providers[1].modelMetadata!["codex/model"].defaultServiceTier = "priority";
   const router = new AppServerRouter(config, backend); await router.initialize();
-  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "a row default tier never starts a chat in Fast");
   await router.request("thread/start", { model: "codex/model", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
   await router.request("thread/resume", { threadId: "persisted" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await router.request("thread/start", { model: "native" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "default", mergeStrategy: "upsert" },
   ] });
-  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "a saved tier is not injected either");
 });
 
 test("a Fast chat drops to Standard only when the picker selects a model without that tier", async () => {
@@ -438,7 +438,7 @@ test("private Fast defaults cannot replace a saved or parent chat's Standard tie
     await other.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
     await appliedSettings(other, "persisted", "codex/model", null);
   }
-  await other.request("thread/start", {}); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+  await other.request("thread/start", {}); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the saved Fast default never starts a new chat in Fast");
 });
 
 test("gateway forks inherit the authoritative parent tier rather than private or executor defaults", async () => {

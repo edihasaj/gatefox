@@ -86,7 +86,7 @@ function deferred<T>() {
 test("Fast saved chats resume and fork after new-chat preferences change to Standard", async () => {
   const f = await fixture(); const first = await f.connect();
   await preferences(first, "priority");
-  const id = threadId(await first.router.request("thread/start", {}));
+  const id = await start(first, "priority");
   assert.deepEqual(choice(await f.store().read(id)), { model: fastModel, serviceTier: "priority" });
   await preferences(first, null);
   const fresh = await f.connect();
@@ -98,7 +98,7 @@ test("Fast saved chats resume and fork after new-chat preferences change to Stan
   assert.equal((await fresh.router.request("thread/start", {})).serviceTier, null);
 });
 
-test("saved Standard survives Fast new-chat defaults across independent connections", async () => {
+test("saved Standard survives a Fast preference change across connections, which never enters new chats", async () => {
   const f = await fixture(); const first = await f.connect(); const id = await start(first, null);
   await preferences(first, "priority"); const fresh = await f.connect();
   assert.equal((await fresh.router.request("thread/resume", { threadId: id })).serviceTier, null);
@@ -107,7 +107,9 @@ test("saved Standard survives Fast new-chat defaults across independent connecti
   const fork = await fresh.router.request("thread/fork", { threadId: id });
   assert.equal(last(fresh, "thread/fork").serviceTier, null);
   assert.deepEqual(choice(await f.store().read(threadId(fork))), { model: fastModel, serviceTier: null });
-  assert.equal((await fresh.router.request("thread/start", {})).serviceTier, "priority");
+  const freshStart = await fresh.router.request("thread/start", {});
+  assert.equal(Object.hasOwn(last(fresh, "thread/start"), "serviceTier"), false, "a saved Fast default never starts a new chat in Fast");
+  assert.equal(freshStart.serviceTier, null);
 });
 
 test("an old connection rereads a peer's applied Standard before resume, fork and model guards", async () => {
