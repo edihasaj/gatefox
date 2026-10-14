@@ -102,7 +102,11 @@ export class DesktopCatalog {
   isNative(model: string): boolean { return this.native.some(entry => entry.slug === model); }
   combined(snapshot = this.value): { models: Message[] } {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
-    return { models: [...this.native, ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
+    // Only gateway executors load this catalog. Sub-agents that name a native model directly use
+    // these rows, so an executor without Codex's code-mode host gives them direct tools instead of
+    // failing every command; the native engine keeps its own catalog unchanged.
+    const native = this.codeMode ? this.native : this.native.map(model => typeof model.tool_mode === "string" && model.tool_mode !== "direct" ? { ...model, tool_mode: "direct" } : model);
+    return { models: [...native, ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
   refresh(strict = false): Promise<DesktopCatalogSnapshot> {
     return this.initialize().then(() => this.refreshInitialized(strict));

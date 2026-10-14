@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { createServer, type Server } from "node:http";
 import { chmod, lstat, readFile, writeFile, symlink } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
@@ -234,4 +235,13 @@ test("public rows keep numeric window limits and drop other values before cachin
     assert.equal(restored.current().revision, snapshot.revision);
     assert.equal(restored.current().models[0].max_context_window, 872000);
   } finally { f.close(); }
+});
+
+test("executors without the code-mode host give native rows direct tools; the rest of each row is unchanged", async () => {
+  const native = [{ slug: "gpt-native", display_name: "Native", tool_mode: "code_mode_only", priority: 1 }, { slug: "gpt-direct", display_name: "Direct", tool_mode: "direct", priority: 2 }];
+  const without = new DesktopCatalog({ version: 1, port: 0, stateDirectory: tmpdir(), providers: [] }, structuredClone(native), join(tmpdir(), "unused.json"), false);
+  assert.deepEqual(without.combined().models.map(row => row.tool_mode), ["direct", "direct"], "a sub-agent that names a native model can still run commands");
+  assert.deepEqual({ ...without.combined().models[0], tool_mode: "code_mode_only" }, native[0]);
+  const withHost = new DesktopCatalog({ version: 1, port: 0, stateDirectory: tmpdir(), providers: [] }, structuredClone(native), join(tmpdir(), "unused.json"), true);
+  assert.deepEqual(withHost.combined().models.map(row => row.tool_mode), ["code_mode_only", "direct"]);
 });
