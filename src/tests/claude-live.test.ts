@@ -381,12 +381,16 @@ test("a session retired during a turn closes when that turn is cancelled after i
 
 test("each provider's park time applies to its own sessions, whatever another provider sent since", async () => {
   const { f } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { calls: [{ tool: "alpha", input: { id: 1 } }] }] });
-  const pidOf = (threadId: string) => claudeLive({ max: 6, parkMinutes: 60 }).sessions().find(session => session.key === sessionKey(threadId))!.pid!;
+  // Record each pid while its turn runs: the 240 ms park can expire before a loaded test runner resumes after the turn.
+  const pids = new Map<string, number>();
+  const record = () => { for (const session of claudeLive({ max: 6, parkMinutes: 60 }).sessions()) if (session.pid) pids.set(session.key, session.pid); };
+  const watch = setInterval(record, 2);
+  const pidOf = (threadId: string) => { const pid = pids.get(sessionKey(threadId)); assert.ok(pid, `a live session ran for ${threadId}`); return pid; };
   try {
     // The second provider's request arrives while the first one's process is still starting.
     const short = turn(adapter({ parkMinutes: 0.004 }), [user("short")]); const long = turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } });
-    await short; const shortPid = pidOf("thread-1"); await long; const longPid = pidOf("thread-2");
+    await Promise.all([short, long]); record(); clearInterval(watch); const shortPid = pidOf("thread-1"); const longPid = pidOf("thread-2");
     assert.ok(await gone(shortPid, 3000), "the short park reaps its session");
     assert.equal(alive(longPid), true, "the long park keeps the other one");
-  } finally { await teardown(f); }
+  } finally { clearInterval(watch); await teardown(f); }
 });
