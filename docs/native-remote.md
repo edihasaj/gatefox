@@ -103,7 +103,9 @@ the pong. Every step is bounded by one 750 ms budget: forwarding the queued
 replies, queueing the pong, and waiting for the websocket writer to confirm it.
 Replies or a pong that miss the budget are dropped and counted, so a full queue or
 a stalled writer cannot keep a stream open. A re-initialized stream with the same
-client and stream ID is no longer closed when its predecessor's task finishes.
+client and stream ID is no longer closed when its predecessor's task finishes, and
+the old stream's chunk state is cleared when the new `initialize` arrives, so a
+restarted sequence cannot be mistaken for duplicates.
 
 On shutdown the relay first ends every session, which sends the unknown pongs,
 then reads transport events for up to one second until each stream reports
