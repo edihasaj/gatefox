@@ -197,3 +197,20 @@ test("a stopped supervisor exits at once instead of waiting out the inference gr
   assert.equal(code, 0); assert.ok(stoppedAt, "the supervisor stopped");
   assert.ok(Date.now() - stoppedAt < 1500, `no grace timer keeps the stopped service alive (${Date.now() - stoppedAt} ms)`);
 });
+
+test("a wake during a slot's start never spawns a second process for it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-start-once-"));
+  const marker = join(directory, "starts");
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
+    component(directory, "tunnel", "tunnel", `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); setInterval(()=>{},1000)`),
+  ] }, directory, 25);
+  const internals = supervisor as unknown as { slots: Array<{ child?: unknown; timer?: NodeJS.Timeout }>; startSlot(slot: unknown): Promise<void> };
+  try {
+    const slot = internals.slots[0]!;
+    // Two starts racing (a restart timer and a wake) start the component once.
+    await Promise.all([internals.startSlot(slot), internals.startSlot(slot), (async () => { supervisor.checkWake(Date.now() + 600_000); })()]);
+    await until(async () => (await readFile(marker, "utf8").catch(() => "")).length >= 1);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(await readFile(marker, "utf8"), "x");
+  } finally { await supervisor.stop(); }
+});

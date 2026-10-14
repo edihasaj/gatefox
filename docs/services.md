@@ -168,7 +168,7 @@ plan is restored and the service started again; the error names the backup.
 The service never keeps a Mac awake. While the inference host sleeps, other Macs'
 gateway requests fail and Codex retries them. When the supervisor sees a timer tick
 arrive more than 30 seconds late, the system slept: it logs `system_wake` and
-restarts SSH tunnels at once instead of waiting about 45 seconds for keepalives.
+restarts SSH tunnels at once instead of waiting about 45 seconds for keepalives. A component starts at most once at a time: a wake that arrives while a tunnel is still clearing a stale listener no longer starts a second tunnel for the same port, which made tunnels flap.
 Before starting a reverse tunnel, it frees the forwarded port on the remote Mac if
 a leftover sshd session of the same user still holds it. Without this, a tunnel
 dropped uncleanly (sleep, network change) can block reconnection until the remote's

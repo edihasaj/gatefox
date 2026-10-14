@@ -17,7 +17,7 @@ import { shutdownDrainMs } from "./runtime-activity.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 const execFileAsync = promisify(execFile);
-interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; failures: number; startedAt: number }
+interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
 function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown> {
   let timer: NodeJS.Timeout | undefined;
@@ -102,11 +102,17 @@ export class ServiceSupervisor {
       if (slot.definition.kind !== "tunnel") continue;
       slot.failures = 0;
       if (slot.child) slot.child.kill("SIGTERM");
-      else if (slot.timer) { clearTimeout(slot.timer); slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }
+      else if (slot.timer && !slot.starting) { clearTimeout(slot.timer); slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }
     }
   }
   private async startSlot(slot: Slot): Promise<void> {
-    if (this.stopping) return;
+    // One start per slot at a time: a tunnel's stale-listener cleanup can take seconds, and a
+    // wake during it must not spawn a second process for the same forwarded port.
+    if (this.stopping || slot.starting || slot.child) return;
+    slot.starting = true;
+    try { await this.spawnSlot(slot); } finally { slot.starting = false; }
+  }
+  private async spawnSlot(slot: Slot): Promise<void> {
     const component = slot.definition;
     await mkdir(dirname(component.log), { recursive: true, mode: 0o700 });
     const log = await open(component.log, constants.O_CREAT | constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW, 0o600);
@@ -134,7 +140,7 @@ export class ServiceSupervisor {
           slot.failures = Date.now() - slot.startedAt >= 60000 ? 1 : slot.failures + 1;
           const retry = Math.min(30000, this.retryBaseMs * 2 ** Math.min(slot.failures - 1, 10));
           slot.state.state = "waiting"; slot.state.restarts++; slot.state.nextRestartAt = new Date(Date.now() + retry).toISOString();
-          slot.timer = setTimeout(() => { delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }, retry);
+          slot.timer = setTimeout(() => { slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }, retry);
         }
         void this.publish().catch(() => { void this.stop(); });
       };
