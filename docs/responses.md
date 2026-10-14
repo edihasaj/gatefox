@@ -66,6 +66,12 @@ nothing, and an item with no text adds no message. Author and recipient are neve
 rendered into the transcript as labels or prose. Any other part type, including an
 image, fails as a client error before a provider is invoked.
 
+A Codex subscription request whose token refresh fails on the network, on a 429 or
+on a 5xx (for example right after the Mac wakes) returns a retryable
+`upstream_unavailable`, so Codex reconnects instead of ending the chat. Only a
+missing login, missing scopes, an unreadable credential file, or a refresh rejected
+with HTTP 400, 401 or 403 reports "ChatGPT provider requires login".
+
 Responses upstream completion retains an actual boolean `end_turn` when present.
 An absent value remains absent. This lets the SDK distinguish a continuation
 from the end of a turn, including a response containing only caller tools.

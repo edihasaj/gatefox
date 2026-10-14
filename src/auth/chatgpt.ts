@@ -30,15 +30,19 @@ interface TokenResponse {
   earliest_refresh_at?: number;
 }
 
+/** The stored login cannot work again without the user: missing, rejected or lacking scopes. Other failures are temporary. */
+export class ChatGPTLoginRequired extends Error {}
+
 async function json<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, redirect: "error", signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error(`OpenAI authentication returned HTTP ${response.status}; sign in again if access was revoked`);
+  // 400/401/403 mean the grant was rejected (revoked or reused); 429 and 5xx clear by themselves.
+  if (!response.ok) throw new ([400, 401, 403].includes(response.status) ? ChatGPTLoginRequired : Error)(`OpenAI authentication returned HTTP ${response.status}; sign in again if access was revoked`);
   return await response.json() as T;
 }
 
 export async function readCredentials(path: string): Promise<ChatGPTCredentials | null> {
   try { return JSON.parse(await readFile(path, "utf8")) as ChatGPTCredentials; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new Error("Credential file is unreadable or invalid"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new ChatGPTLoginRequired("Credential file is unreadable or invalid"); }
 }
 
 /** Verify OIDC identity before accepting any account's credentials. */
@@ -139,7 +143,7 @@ export async function signIn(path: string, agentName: string, onAuthorize: (url:
 const refreshing = new Map<string, Promise<string>>();
 export async function accessToken(path: string): Promise<string> {
   const credentials = await readCredentials(path);
-  if (!credentials || requiredScopes.some(scope => !credentials.scopes?.includes(scope))) throw new Error("ChatGPT provider requires login");
+  if (!credentials || requiredScopes.some(scope => !credentials.scopes?.includes(scope))) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
   if (credentials.expires_at > Date.now() + 120000 || (credentials.earliest_refresh_at && credentials.earliest_refresh_at * 1000 > Date.now() && credentials.expires_at > Date.now())) return credentials.access_token;
   const existing = refreshing.get(path); if (existing) return existing;
   const operation = refresh(path);
@@ -166,9 +170,9 @@ async function refresh(path: string): Promise<string> {
   }
   try {
     const credentials = await readCredentials(path);
-    if (!credentials) throw new Error("ChatGPT provider requires login");
+    if (!credentials) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
     if (credentials.expires_at > Date.now() + 120000) return credentials.access_token;
-    if (!credentials.refresh_token) throw new Error("ChatGPT login expired; sign in again");
+    if (!credentials.refresh_token) throw new ChatGPTLoginRequired("ChatGPT login expired; sign in again");
     const token = await json<TokenResponse>(`${issuer}/api/accounts/oauth/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "refresh_token", client_id: credentials.client_id, refresh_token: credentials.refresh_token, resource }),
     });

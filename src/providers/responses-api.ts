@@ -1,5 +1,5 @@
 import { apiCredential, type ProviderConfig } from "../config.js";
-import { accessToken } from "../auth/chatgpt.js";
+import { accessToken, ChatGPTLoginRequired } from "../auth/chatgpt.js";
 import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesInputItem, ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
@@ -62,7 +62,12 @@ export class ResponsesAPI implements Provider {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
-    catch { throw new ProviderError("authentication", "ChatGPT provider requires login", 401); }
+    catch (error) {
+      // Only a login that needs the user is final. A refresh that failed on the network (for
+      // example right after the Mac wakes) or on a 5xx is retried by Codex instead of ending the chat.
+      if (!plan || error instanceof ChatGPTLoginRequired) throw new ProviderError("authentication", "ChatGPT provider requires login", 401);
+      throw new ProviderError("upstream_unavailable", "ChatGPT login refresh failed temporarily; retry shortly", 503);
+    }
     if (!credential) throw new ProviderError("authentication", "API provider credential is missing", 401);
     const body: ResponsesRequest = { ...request, stream: true };
     // Public Responses endpoints reject agent_message items; send their text as a user message instead.
