@@ -14,7 +14,8 @@ const gateway = "subscription_gateway";
 const prediction = (threadId: string) => ({ threadId, experimentalPredictionMode: true, ephemeral: true, excludeTurns: true, threadSource: "composer_predictions" });
 
 // An engine whose chats named fork-* or eph-* are throwaway: its own chat read reports them ephemeral.
-async function fixture(options: { forkIds?: string[]; read?: (id: string) => ObjectValue; reply?: (method: string, params: ObjectValue) => ObjectValue | undefined } = {}) {
+async function fixture(options: { forkIds?: string[]; read?: (id: string) => ObjectValue; reply?: (method: string, params: ObjectValue) => ObjectValue | undefined;
+  hold?: (method: string, params: ObjectValue) => Promise<void> | undefined } = {}) {
   const root = await mkdtemp(join(tmpdir(), "gateway-ephemeral-"));
   const state = join(root, "state"); const native = join(root, "native"); await mkdir(native, { recursive: true, mode: 0o700 });
   configureTelemetry(state, "test");
@@ -26,6 +27,7 @@ async function fixture(options: { forkIds?: string[]; read?: (id: string) => Obj
   let forks = 0;
   const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
     calls.push({ method, params });
+    await options.hold?.(method, params);
     const replied = options.reply?.(method, params); if (replied) return replied;
     if (method === "thread/read") {
       const id = String(params.threadId);
@@ -78,6 +80,68 @@ test("a fork evicted by the 256 cap is still not written to disk by a later turn
   await f.router.observeNotification(settingsUpdated("fork-0", applied));
   await assertNothingDurable(f, "fork-0", "a turn on an evicted fork");
   assert.equal(tracked(f.router).length, 256, "the probed fork counts toward the cap");
+});
+
+// The engine is still answering a turn on the fork when it goes away; the answer must not make the chat durable.
+for (const [name, goAway] of [
+  ["thread/closed", async (r: AppServerRouter) => r.observeNotification({ method: "thread/closed", params: { threadId: "fork-0" } })],
+  ["thread/unsubscribe", async (r: AppServerRouter) => { await r.request("thread/unsubscribe", { threadId: "fork-0" }); }],
+  ["the 256 cap", async (r: AppServerRouter) => { for (let i = 0; i < 256; i++) await r.request("thread/fork", prediction("parent")); }],
+] as const) test(`a turn in flight when the fork goes away by ${name} does not write its reasoning`, async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; }); let started = false;
+  const f = await fixture({ forkIds: Array.from({ length: 257 }, (_, i) => `fork-${i}`), hold: method => { if (method !== "turn/start") return; started = true; return gate; } });
+  await f.router.request("thread/fork", prediction("parent"));
+  const turn = f.router.request("turn/start", { threadId: "fork-0", input: [], effort: "high", model: "codex/model" });
+  while (!started) await new Promise(resolve => setTimeout(resolve, 5));
+  await goAway(f.router);
+  assert.equal(tracked(f.router).includes("fork-0"), false, "the fork is no longer tracked while its turn is still running");
+  release(); await turn;
+  await assertNothingDurable(f, "fork-0", `a turn that was answered after ${name}`);
+});
+
+test("a durable chat whose turn is in flight still has its reasoning recorded", async () => {
+  // Control for the in-flight tests: only a chat that was ephemeral when the request began is exempt.
+  const f = await fixture();
+  await f.router.request("turn/start", { threadId: "durable", input: [], effort: "high", model: "codex/model" });
+  assert.equal((await f.store.read("durable"))?.effort, "high");
+});
+
+test("a fork the 256 cap evicted is still not written to disk by its own settings notification", async () => {
+  const f = await fixture({ forkIds: Array.from({ length: 257 }, (_, i) => `fork-${i}`) });
+  for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
+  assert.deepEqual(held(f.router, "fork-0"), [], "the oldest fork lost its route");
+  // The engine keeps the fork subscribed, so it can still report an applied change with no turn before it.
+  await f.router.observeNotification(settingsUpdated("fork-0", applied));
+  await assertNothingDurable(f, "fork-0", "a settings notification on a fork the cap evicted");
+  assert.deepEqual(held(f.router, "fork-0"), [], "and nothing about it was kept in memory");
+});
+
+test("settings that arrive for a chat before its thread/start returns are still recorded", async () => {
+  // The evicted-fork guard must not turn into a rule that drops notifications for chats with no route yet.
+  const f = await fixture();
+  await f.router.observeNotification(settingsUpdated("early", applied));
+  assert.equal((await f.store.read("early"))?.effort, "low");
+  assert.equal((await f.tiers.read("early"))?.model, "codex/model");
+});
+
+test("a fork the cap evicted that is resumed is still memory-only even if its result is not flagged", async () => {
+  const f = await fixture({ forkIds: Array.from({ length: 257 }, (_, i) => `fork-${i}`), read: () => ({ ephemeral: false }),
+    reply: method => method === "thread/resume" ? { thread: { id: "fork-0" }, modelProvider: gateway, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
+  for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
+  await f.router.request("thread/resume", { threadId: "fork-0" });
+  await assertNothingDurable(f, "fork-0", "a resume of a fork the cap evicted");
+  assert.ok(tracked(f.router).includes("fork-0"), "it is tracked again");
+});
+
+test("the ids of cap-evicted forks are themselves bounded to the newest 4096", async () => {
+  const total = 256 + 4096 + 1;
+  const f = await fixture({ forkIds: Array.from({ length: total }, (_, i) => `fork-${i}`) });
+  for (let i = 0; i < total; i++) await f.router.request("thread/fork", prediction("parent"));
+  const ids = (f.router as unknown as { evictedEphemeralIds: Set<string> }).evictedEphemeralIds;
+  assert.equal(ids.size, 4096);
+  assert.equal(ids.has("fork-0"), false, "the oldest evicted id was dropped");
+  assert.ok(ids.has("fork-1") && ids.has("fork-4096"));
+  assert.equal(tracked(f.router).length, 256);
 });
 
 test("forgetting an ephemeral chat also drops the chat snapshot it cached", async () => {

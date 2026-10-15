@@ -120,6 +120,7 @@ test("rejection names come only from the fixed list", () => {
     ["process/spawn", { code: -32603, message: "failed to spawn process: No such file or directory (os error 2)" }, "spawn_failed"],
     ["process/spawn", { code: -32600, message: "process/spawn requires experimentalApi capability" }, "experimental_api"],
     ["process/spawn", { code: -32600, message: "Invalid request: unknown variant `process/spawn`, expected one of `initialize`" }, "unknown_method"],
+    ["thread/example", { code: -32601, message: "Method not found" }, "unknown_method"],
     ["process/kill", { code: -32600, message: 'process "process:1" is no longer running' }, "process_not_running"],
     ["thread/fork", { code: -32600, message: "`experimentalPredictionMode` cannot be combined with configuration overrides" }, "prediction_fork_overrides"],
     ["thread/fork", { code: -32600, message: "`experimentalPredictionMode` requires a loaded parent" }, "prediction_fork_parent"],

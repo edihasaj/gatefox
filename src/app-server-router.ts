@@ -32,6 +32,8 @@ const enumEffort = (value: unknown): string | undefined => typeof value === "str
 type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
 // Throwaway prediction forks are tracked in this order-bounded set while they may still be routed.
 const maxEphemeralThreads = 256;
+// A fork pushed out of that set may still be subscribed and keep emitting; its id alone is kept longer.
+const maxEvictedEphemeralIds = 4096;
 
 /**
  * A prediction fork (the desktop's composer suggestions) starts from the loaded parent's
@@ -57,6 +59,7 @@ export class AppServerRouter {
   private readonly tierRecords = new Map<string, ThreadServiceTier | undefined>();
   private readonly settingsVersions = new Map<string, number>();
   private readonly ephemeralThreads = new Set<string>();
+  private readonly evictedEphemeralIds = new Set<string>();
   private preferences: ObjectValue = {};
   private writes: Promise<unknown> = Promise.resolve();
   private readonly preferencesPath: string;
@@ -90,7 +93,7 @@ export class AppServerRouter {
   private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number, inherited = false): Promise<void> {
     const thread = object(result.thread);
     // A prediction fork is throwaway: only its in-memory route is kept, never a durable record.
-    const ephemeral = inherited || thread.ephemeral === true;
+    const ephemeral = inherited || thread.ephemeral === true || (typeof thread.id === "string" && this.evictedEphemeralIds.has(thread.id));
     if (typeof thread.id === "string" && ephemeral) this.trackEphemeral(thread.id);
     if (typeof thread.id === "string" && !ephemeral) {
       const config = object(params.config);
@@ -137,7 +140,13 @@ export class AppServerRouter {
   }
   private trackEphemeral(threadId: string): void {
     this.ephemeralThreads.delete(threadId); this.ephemeralThreads.add(threadId);
-    while (this.ephemeralThreads.size > maxEphemeralThreads) this.forgetEphemeral(this.ephemeralThreads.values().next().value as string);
+    while (this.ephemeralThreads.size > maxEphemeralThreads) {
+      const oldest = this.ephemeralThreads.values().next().value as string;
+      this.forgetEphemeral(oldest);
+      // Only the id stays: the fork may still be subscribed, and its notifications must not reach disk.
+      this.evictedEphemeralIds.delete(oldest); this.evictedEphemeralIds.add(oldest);
+      while (this.evictedEphemeralIds.size > maxEvictedEphemeralIds) this.evictedEphemeralIds.delete(this.evictedEphemeralIds.values().next().value as string);
+    }
   }
   private forgetEphemeral(threadId: string): void {
     this.ephemeralThreads.delete(threadId); this.routes.delete(threadId); this.tierRecords.delete(threadId);
@@ -164,6 +173,8 @@ export class AppServerRouter {
           this.routes.set(params.threadId, { provider: gatewayProvider, model: settings.model, serviceTier: savedTier(settings.serviceTier) });
         return;
       }
+      // A fork the cap evicted has no route to update, and nothing about it may be recorded.
+      if (this.evictedEphemeralIds.has(params.threadId)) return;
       await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
@@ -396,6 +407,8 @@ export class AppServerRouter {
       const threadRoute = await this.route(params.threadId);
       if (threadRoute) forwarded = await this.routedRequest(method, params, threadRoute);
     }
+    // Settled before the engine call: a close or cap eviction during the call must not make the chat durable.
+    const wasEphemeral = typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId);
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;
     const settingsVersion = typeof params.threadId === "string" ? this.settingsVersions.get(params.threadId) || 0 : 0;
     const requestStartedAtMs = Date.now();
@@ -409,7 +422,7 @@ export class AppServerRouter {
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
-    if (typeof params.threadId === "string" && !this.ephemeralThreads.has(params.threadId) && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
+    if (typeof params.threadId === "string" && !wasEphemeral && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
       await this.recordReasoning(params.threadId, { model: requestedModel(params) ?? this.routes.get(params.threadId)?.model, effort: requestedEffort(params), summary: params.summary }, requestStartedAtMs);
     }
     const selected = requestedModel(params);

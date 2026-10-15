@@ -515,11 +515,19 @@ whether it was started, resumed, forked, or first seen when a turn probed its ow
 snapshot at once; a later turn on a chat that is still loaded in the engine is
 recognized as ephemeral again from the engine's own chat read and stays memory-only.
 
-The private service-tier store is bounded the way the reasoning store is. When it holds
-16384 chats, or when a write would take the saved file past 4 MiB (long model names
-reach that limit first), the store evicts other chats instead of failing the write.
-It evicts rows that were never stamped with a record time first, then the rows stamped
-longest ago, and it never evicts the chat being written.
+When the 256 cap pushes a chat out, its route and snapshot go but its id is kept in a
+second set of the newest 4096 evicted ids, because the engine may still have the chat
+subscribed. A settings notification for one of those ids writes nothing durable, and
+neither does the result of a resume of one. A turn that is already running when its chat
+is closed, unsubscribed or evicted writes no reasoning record when the engine answers.
+
+The private stores have different bounds. The service-tier store holds at most 16384
+chats and its file at most 4 MiB (long model names reach that limit first). When a write
+would pass either limit, it evicts other chats instead of failing: rows that were never
+stamped with a record time first, then the rows stamped longest ago, and never the chat
+being written. The reasoning store also holds at most 16384 chats and evicts the chat
+observed longest ago when it is full, but its 4 MiB file limit is a hard one: a write
+that would pass it is refused rather than making room.
 
 The per-chat compaction overrides that a gateway executor remembers are forgotten when
 the chat closes or is unsubscribed, deleted or archived. If 4096 chats are still held,

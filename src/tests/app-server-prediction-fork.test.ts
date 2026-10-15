@@ -25,7 +25,7 @@ function sdkFork(params: ObjectValue): void {
   if (params.experimentalPredictionMode === true && overrides) throw Object.assign(new Error("`experimentalPredictionMode` cannot be combined with configuration overrides"), { code: -32600 });
 }
 
-interface Options { source?: Pick<DesktopCatalog, "isNative" | "refresh"> | null; unique?: boolean }
+interface Options { source?: Pick<DesktopCatalog, "isNative" | "refresh"> | null; unique?: boolean; forkThread?: ObjectValue }
 
 async function fixture(parent: ObjectValue, options: Options = {}) {
   const root = await mkdtemp(join(tmpdir(), "gateway-prediction-"));
@@ -45,7 +45,7 @@ async function fixture(parent: ObjectValue, options: Options = {}) {
     // The fork result carries the parent's effective settings, exactly as the SDK replies.
     if (method === "thread/fork") {
       sdkFork(params);
-      return { thread: { id: options.unique ? `fork-${forks++}` : "fork", ephemeral: true }, modelProvider: parent.modelProvider, model: parent.model, serviceTier: null, reasoningEffort: "high" };
+      return { thread: options.forkThread ?? { id: options.unique ? `fork-${forks++}` : "fork", ephemeral: true }, modelProvider: parent.modelProvider, model: parent.model, serviceTier: null, reasoningEffort: "high" };
     }
     if (method === "turn/start") return { turn: { id: "turn-1" } };
     return {};
@@ -95,6 +95,26 @@ test("an ordinary fork keeps the adapter's settings and only prediction forks in
   await assert.rejects(f.router.request("thread/fork", { ...prediction("parent"), config: { model_reasoning_effort: "low" } }),
     { code: -32600, message: "`experimentalPredictionMode` cannot be combined with configuration overrides" });
   assert.deepEqual(f.calls.at(-1)!.params.config, { model_reasoning_effort: "low" });
+});
+
+test("an ordinary fork is not a prediction fork just because it asks to be ephemeral", async () => {
+  const f = await fixture({ modelProvider: "openai", model: "native" });
+  await f.store.write("parent", { model: "native", effort: "max", atMs: Date.now() - 60_000 });
+  await f.router.request("thread/fork", { threadId: "parent", ephemeral: true });
+  assert.equal(((f.calls.at(-1)!.params.config ?? {}) as ObjectValue).model_reasoning_effort, "max", "the adapter still restores the chat's effort");
+  // Only experimentalPredictionMode makes a fork inherit; the mode alone is enough.
+  assert.equal(inheritsParentSettings("thread/fork", { ephemeral: true }), false);
+  assert.equal(inheritsParentSettings("thread/fork", { ephemeral: true, excludeTurns: true, threadSource: "composer_predictions" }), false);
+  assert.equal(inheritsParentSettings("thread/fork", { experimentalPredictionMode: true }), true);
+});
+
+test("a gateway prediction fork whose result is not flagged ephemeral still writes nothing durable", async () => {
+  // The request alone marks it throwaway: the engine's reply need not repeat the flag.
+  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source: null, forkThread: { id: "fork" } });
+  await f.router.request("thread/fork", prediction("parent"));
+  assert.equal(await f.tiers.read("fork"), undefined, "no tier record");
+  assert.equal(await f.store.read("fork"), undefined, "no reasoning record");
+  assert.deepEqual(held(f.router, "fork").sort(), ["ephemeralThreads", "routes"], "the fork is tracked as throwaway with only its route");
 });
 
 test("a gateway prediction fork records nothing durable and its turns route without a probe", async () => {

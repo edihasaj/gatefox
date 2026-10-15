@@ -238,6 +238,17 @@ for (const method of ["thread/unsubscribe", "thread/archive", "thread/delete"]) 
   } finally { await f.clean(); }
 });
 
+test("thread/unsubscribe forgets the overrides on its own, with no thread/closed from the engine", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(); const id = "forget-silent";
+  try {
+    await startWithOverride(f, id);
+    assert.equal(await remembered(f, id), true);
+    await f.backends.request("thread/unsubscribe", { threadId: id, fixtureNoClosed: true });
+    assert.equal(f.events.some(event => event.method === "thread/closed"), false, "the engine announced nothing");
+    assert.equal(await remembered(f, id), false);
+  } finally { await f.clean(); }
+});
+
 test("a thread/closed notification forgets the executor's per-chat compaction overrides", { timeout: 15000 }, async () => {
   const f = await compactionSdkFixture(); const id = "forget-closed";
   try {

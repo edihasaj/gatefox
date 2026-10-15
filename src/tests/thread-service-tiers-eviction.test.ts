@@ -26,6 +26,17 @@ function fullRows(extra: Record<string, ThreadServiceTier> = {}): Record<string,
   return build(low);
 }
 
+const size = (threads: Record<string, ThreadServiceTier>) => Buffer.byteLength(pretty(threads));
+// The fewest oldest rows whose removal lets the new row fit, found by serializing the whole file each time.
+function fewestEvictions(rows: Record<string, ThreadServiceTier>, id: string, row: ThreadServiceTier): number {
+  const ids = Object.keys(rows);
+  for (let dropped = 0; dropped <= ids.length; dropped++) {
+    const kept = Object.fromEntries(ids.slice(dropped).map(key => [key, rows[key]]));
+    if (size({ ...kept, [id]: row }) <= maxBytes) return dropped;
+  }
+  throw new Error("no number of evictions fits");
+}
+
 test("a store full by size accepts a new chat by evicting only the oldest rows, never the new chat", async () => {
   const f = await fixture();
   try {
@@ -38,11 +49,46 @@ test("a store full by size accepts a new chat by evicting only the oldest rows, 
     assert.ok((await stat(f.path)).size <= maxBytes, "the file stays within the byte limit");
     assert.deepEqual(saved["new-chat"], { model: longModel("n"), serviceTier: null, revision: 1 }, "the chat being written is kept");
     const evicted = Object.keys(rows).filter(id => !(id in saved));
-    assert.ok(evicted.length >= 1 && evicted.length <= 2, `only the rows needed were dropped, got ${evicted.length}`);
+    const fewest = fewestEvictions(rows, "new-chat", { model: longModel("n"), serviceTier: null, revision: 1 });
+    assert.ok(fewest >= 1, "the store really was too full for the new chat");
+    assert.equal(evicted.length, fewest, "exactly the rows needed were dropped, no more");
     assert.deepEqual(evicted, Object.keys(rows).slice(0, evicted.length), "the oldest-stamped rows were the ones dropped");
     assert.equal(Object.keys(saved).length, count - evicted.length + 1);
     assert.equal(await f.store.write("another", { model: longModel("a"), serviceTier: null }), true, "a store that was already trimmed keeps accepting chats");
     assert.ok((await stat(f.path)).size <= maxBytes); assert.ok("another" in await f.threads());
+  } finally { await f.close(); }
+});
+
+// A new chat whose row adds exactly `bytes` to the file; the id grows once the model name reaches its 1024 character limit.
+function newRowOfSize(rows: Record<string, ThreadServiceTier>, bytes: number): { id: string; row: ThreadServiceTier } {
+  const added = (id: string, model: string): number => size({ ...rows, [id]: { model, serviceTier: null, revision: 1 } }) - size(rows);
+  let id = "new-chat"; let model = "n";
+  model += "n".repeat(Math.max(0, Math.min(1023, bytes - added(id, model))));
+  id += "i".repeat(Math.max(0, Math.min(1024 - id.length, bytes - added(id, model))));
+  assert.equal(added(id, model), bytes, "the new row has the size this trial needs");
+  return { id, row: { model, serviceTier: null, revision: 1 } };
+}
+
+test("a new chat that overshoots the limit by no more than one row's saving evicts exactly one row", async () => {
+  const f = await fixture();
+  try {
+    const rows = fullRows();
+    const without = Object.fromEntries(Object.entries(rows).slice(1));
+    const oldestSaving = size(rows) - size(without);
+    // The compact JSON length of a row understates what dropping it saves in the indented file by a few
+    // bytes per line, so sweeping the overshoot down from the full saving must cross every size where it matters.
+    for (let below = 0; below < 40; below++) {
+      const overshoot = oldestSaving - below;
+      const { id, row } = newRowOfSize(rows, maxBytes - size(rows) + overshoot);
+      assert.ok(size({ ...rows, [id]: row }) - maxBytes === overshoot && size({ ...without, [id]: row }) <= maxBytes, "dropping the oldest row is enough, and nothing less is");
+      assert.equal(fewestEvictions(rows, id, row), 1);
+      await writeFile(f.path, pretty(rows), { mode: 0o600 });
+      assert.equal(await f.store.write(id, { model: row.model, serviceTier: null }), true);
+      const saved = await f.threads();
+      assert.deepEqual(Object.keys(rows).filter(key => !(key in saved)), ["chat-0"], `${below} bytes below the full saving: only the oldest row went`);
+      assert.deepEqual(saved[id], row); assert.deepEqual(saved["chat-1"], rows["chat-1"]);
+      assert.ok((await stat(f.path)).size <= maxBytes);
+    }
   } finally { await f.close(); }
 });
 

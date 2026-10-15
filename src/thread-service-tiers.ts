@@ -35,6 +35,9 @@ function snapshot(value: unknown): Snapshot {
 }
 
 const serializedBytes = (value: Snapshot): number => Buffer.byteLength(JSON.stringify(value, null, 2) + "\n");
+/** What dropping one row saves in the indented file: its lines plus the separator after it (the file always keeps the row being written). */
+const rowBytes = (id: string, entry: ThreadServiceTier): number =>
+  Buffer.byteLength("    " + JSON.stringify(id) + ": " + JSON.stringify(entry, null, 2).replace(/\n/g, "\n    ") + ",\n");
 /** Other chats from oldest to newest record time; rows that were never stamped go first. */
 const evictionOrder = (threads: Record<string, ThreadServiceTier>, keep: string): Array<[string, ThreadServiceTier]> =>
   Object.entries(threads).filter(([id]) => id !== keep).sort((a, b) => (a[1].emittedAtMs ?? -1) - (b[1].emittedAtMs ?? -1));
@@ -80,9 +83,10 @@ export class ThreadServiceTiers {
     const oldest = evictionOrder(saved.threads, keep); let next = 0;
     while (over > 0) {
       if (next >= oldest.length) throw invalid();
-      // The compact length never exceeds what the indented file saves, so this drops no more than needed.
+      // Each row's exact indented size is counted, so this drops no more than needed; the
+      // serialization below is the final check and the loop only repeats if it is still over.
       let freed = 0;
-      do { const [id, entry] = oldest[next++]; freed += JSON.stringify(id).length + JSON.stringify(entry).length + 2; delete saved.threads[id]; } while (freed < over && next < oldest.length);
+      do { const [id, entry] = oldest[next++]; freed += rowBytes(id, entry); delete saved.threads[id]; } while (freed < over && next < oldest.length);
       over = serializedBytes(saved) - maxBytes;
     }
   }
