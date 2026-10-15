@@ -6,7 +6,7 @@ import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
-import { executorNativeRow, executorRunsCodeMode, nodeReplFallback, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
+import { executorNativeRow, executorRunsCodeMode, noReviewRoute, nodeReplFallback, reviewRoute, upstreamSlugField, withNativeRow, withReviewerPolicy, type ReviewRoute } from "./codex-native-rows.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -70,6 +70,8 @@ export class DesktopCatalog {
   private checkedAt = 0;
   // prepareNativeCatalog writes the gateway rows without native copies; replace that file once.
   private written = false;
+  // Which reviewers the gateway serves, as seen when each snapshot was built; combined() applies the same ones to the native rows.
+  private readonly routes = new WeakMap<DesktopCatalogSnapshot, ReviewRoute>();
   constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private readonly codeMode = executorRunsCodeMode()) {
     this.value = this.snapshot(modelCatalog(config).models);
   }
@@ -97,11 +99,29 @@ export class DesktopCatalog {
   private snapshot(published: Message[]): DesktopCatalogSnapshot {
     // A row without a native counterpart takes the strictest node_repl policy of the native rows.
     const fallback = nodeReplFallback(this.native);
+    // The reviewer the SDK picks must be offered and served by this gateway, or review would fail closed.
+    const route = reviewRoute(this.native, published);
     const models = published.map(model => {
-      const row = withNativeRow(model, this.native, this.codeMode);
+      const row = withNativeRow(model, this.native, this.codeMode, route);
       return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : { ...row, ...fallback };
     });
-    return { models, path: this.path, revision: createHash("sha256").update(JSON.stringify(models)).digest("hex") };
+    // The native rows carried for sub-agents change with the route too, so a new generation starts when they do.
+    const revision = createHash("sha256").update(JSON.stringify([models, this.executorNative(route)])).digest("hex");
+    const snapshot = { models, path: this.path, revision };
+    this.routes.set(snapshot, route);
+    return snapshot;
+  }
+  /**
+   * The native rows as gateway executors load them. Sub-agents that name a native model directly use
+   * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
+   * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
+   * cannot run here or no policy is stated. The native engine keeps its own catalog unchanged.
+   */
+  private executorNative(route: ReviewRoute): Message[] {
+    return withReviewerPolicy(this.native).map(model => {
+      const row = executorNativeRow(model, route);
+      return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
+    });
   }
   current(): DesktopCatalogSnapshot { return this.value; }
   isNative(model: string): boolean { return this.native.some(entry => entry.slug === model); }
@@ -109,15 +129,7 @@ export class DesktopCatalog {
   nativeRow(model: string): Message | undefined { return this.native.find(entry => entry.slug === model); }
   combined(snapshot = this.value): { models: Message[] } {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
-    // Only gateway executors load this catalog. Sub-agents that name a native model directly use
-    // these rows, so an executor without Codex's code-mode host gives them direct tools instead of
-    // failing every command; the native engine keeps its own catalog unchanged.
-    // These rows take the Codex 2 rows' node_repl rule: off where review cannot run here or no policy is stated.
-    const native = this.native.map(model => {
-      const row = executorNativeRow(model);
-      return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
-    });
-    return { models: [...native, ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
+    return { models: [...this.executorNative(this.routes.get(snapshot) ?? noReviewRoute), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
   refresh(strict = false): Promise<DesktopCatalogSnapshot> {
     return this.initialize().then(() => this.refreshInitialized(strict));
