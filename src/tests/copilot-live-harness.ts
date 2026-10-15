@@ -54,7 +54,7 @@ export async function harness() {
   const fixture = fileURLToPath(new URL("./copilot-live-fixture.js", import.meta.url)); const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
   await writeFile(join(bin, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(join(bin, "copilot"), 0o700);
   // Every fixture switch starts unset; a test sets the ones it needs, and restore() puts back what was there.
-  const switches = ["DIE", "STALL", "CHILD", "SLOW_SWITCH", "SLOW_CREATE", "SLOW_ABORT", "BOOT_EVENT", "IGNORE_TERM", "SWITCH_EFFORT"].map(name => `GATEWAY_COPILOT_LIVE_${name}`);
+  const switches = ["DIE", "STALL", "CHILD", "SLOW_SWITCH", "SLOW_CREATE", "SLOW_ABORT", "BOOT_EVENT", "IGNORE_TERM", "SWITCH_EFFORT", "SWITCH_ONE_WRITE"].map(name => `GATEWAY_COPILOT_LIVE_${name}`);
   const names = ["PATH", "TMPDIR", "GATEWAY_COPILOT_LIVE_LOG", ...switches]; const previous = names.map(name => process.env[name]);
   process.env.PATH = bin + delimiter + process.env.PATH; process.env.TMPDIR = scratch; process.env.GATEWAY_COPILOT_LIVE_LOG = logPath; for (const name of switches) delete process.env[name];
   configureTelemetry(directory, "test"); const since = Date.now();

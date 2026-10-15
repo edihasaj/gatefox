@@ -135,9 +135,13 @@ for await (const frame of copilotFrames(process.stdin)) {
   } else if (frame.method === "session.abort") { log({ op: "abort" }); later(Number(env("SLOW_ABORT") ?? 0), () => ok({ success: true })); }
   else if (frame.method === "session.model.switchTo") {
     log({ op: "switch", effort: params.reasoningEffort });
-    // The real CLI announces the change before it answers.
-    event("session.model_change", { source: "sdk", previousModel: config.model, newModel: params.modelId, previousReasoningEffort: config.reasoningEffort, reasoningEffort: env("SWITCH_EFFORT") ?? params.reasoningEffort });
+    const changed = eventMessage("session.model_change", { source: "sdk", previousModel: config.model, newModel: params.modelId, previousReasoningEffort: config.reasoningEffort, reasoningEffort: env("SWITCH_EFFORT") ?? params.reasoningEffort });
     config.reasoningEffort = params.reasoningEffort;
+    // The confirmation and the answer in one write, so the gateway reads them together and the confirmation is routed after the
+    // change has returned, possibly after the next request attached.
+    if (env("SWITCH_ONE_WRITE")) { send(changed, { jsonrpc: "2.0", id, result: { status: "applied", deferred: false } }, eventMessage("session.info", { infoType: "model" }, { ephemeral: true })); continue; }
+    // The real CLI announces the change before it answers.
+    send(changed);
     // A slow answer keeps the thread's request waiting inside its placement. The CLI then reports the new state.
     setTimeout(() => { ok({ status: "applied", deferred: false }); event("session.info", { infoType: "model" }, { ephemeral: true }); }, Number(env("SLOW_SWITCH") ?? 0));
   }

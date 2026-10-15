@@ -216,7 +216,36 @@ test("an effort confirmation for another effort than the one asked for ends the 
     const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
     assert.match(b.text, /^answer/); assert.ok(await until(() => !alive(pid)), "the session that changed to an effort nobody asked for is killed");
     const kinds = outcomes(await h.sessions());
-    assert.ok(kinds.includes("crashed:unattended_output") && kinds.includes("reseeded:session_dead"), kinds.join(","));
+    assert.ok(kinds.includes("crashed:effort_mismatch") && kinds.includes("reseeded:session_dead"), kinds.join(","));
+  } finally { await h.restore(); }
+});
+
+test("an effort confirmation that arrives in the same read as the answer to the change still counts: a matching one keeps the session", { timeout: 30000 }, async () => {
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_ONE_WRITE = "1";
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
+    assert.match(b.text, /^answer/); assert.equal((await h.pids()).length, 1, "one CLI process across the effort change");
+    assert.equal(live().sessions()[0].effort, "medium");
+    const c = await turn(provider, [...first, ...a.output, user("more"), ...b.output, user("again")], { extra: { reasoning: { effort: "high" } } });
+    assert.match(c.text, /^answer/); assert.equal((await h.pids()).length, 1, "and across a second one");
+  } finally { await h.restore(); }
+});
+
+test("an effort confirmation for another effort that arrives in the same read as the answer to the change ends the session before its answer is read", { timeout: 30000 }, async () => {
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT = "xhigh"; process.env.GATEWAY_COPILOT_LIVE_SWITCH_ONE_WRITE = "1";
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const [pid] = await h.pids();
+    // The confirmation is routed after the change returned and the request attached; it must not be read as a part of the answer.
+    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
+    assert.match(b.text, /^answer/, "the request is still served, one-shot");
+    assert.ok(await until(() => !alive(pid)), "the session that runs at an effort nobody asked for is killed");
+    assert.equal(live().sessions().length, 0, "and no session keeps it");
+    const kinds = outcomes(await h.sessions());
+    assert.ok(kinds.includes("crashed:effort_mismatch") && kinds.includes("fallback:stream_failed"), kinds.join(","));
   } finally { await h.restore(); }
 });
 

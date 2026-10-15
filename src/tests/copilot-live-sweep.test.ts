@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdir, readdir, rm, stat, symlink, utimes } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
-import { copilotParent, ensureCopilotParent, legacyAgeMs, processStart, sweepCopilotDirectories } from "../providers/copilot-directories.js";
+import { copilotParent, ensureCopilotParent, legacyAgeMs, ownedDirectory, processStart, sweepCopilotDirectories } from "../providers/copilot-directories.js";
 import { createGatewayHandler } from "../server.js";
 import { harness } from "./copilot-live-harness.js";
 
@@ -103,8 +104,41 @@ test("starting the gateway sweeps a dead gateway's folders before any Copilot re
     await ensureCopilotParent(h.scratch);
     const dead = [join(h.parent, "gateway-copilot-live-zzzzzz-abc123"), join(h.parent, "gateway-copilot-run-zzzzzz-abc123")];
     for (const path of dead) { await mkdir(join(path, "session-state"), { recursive: true }); }
-    await createGatewayHandler({ version: 1, port: 0, stateDirectory: join(h.directory, "state"), providers: [{ id: "c", type: "copilot-subscription", models: { a: "x" }, copilotSessions: { mode: "oneshot" } }] });
+    assert.equal(tmpdir(), h.scratch, "the sweep's default base is the private temp folder, as in the whole suite");
+    await createGatewayHandler({ version: 1, port: 0, stateDirectory: join(h.directory, "state"), providers: [{ id: "c", type: "copilot-subscription", models: { a: "x" }, copilotSessions: { mode: "oneshot" } }] }, undefined, undefined, { copilotTempBase: h.scratch });
     for (const path of dead) assert.equal(await exists(path), false, "removed at startup, with no Copilot request made");
     assert.deepEqual(await h.pids(), [], "no CLI was started for it");
   } finally { await h.restore(); }
+});
+
+test("a parent folder another user owns is refused", posix, async () => {
+  const h = await harness(); const getuid = process.getuid!;
+  try {
+    // As another user: the folder named for that user exists, but this process created it, so it is not that user's.
+    const stranger = getuid.call(process) + 1; process.getuid = () => stranger;
+    try {
+      await mkdir(copilotParent(h.scratch), { mode: 0o700 });
+      await assert.rejects(ensureCopilotParent(h.scratch), error => error instanceof ProviderError && error.code === "cli_failed", "a folder of the right name owned by someone else is not used");
+    } finally { process.getuid = getuid; }
+  } finally { await h.restore(); }
+});
+
+test("the sweep does not take the marker of a parent folder another user owns as proof that the temp folder was read", posix, async () => {
+  const h = await harness();
+  try {
+    const stranger = process.getuid!() + 1; const marker = join(h.parent, ".legacy-scan");
+    await ensureCopilotParent(h.scratch); await writeFile(marker, ""); await backdate(marker, 3600 * 1000);
+    // For a sweep run by `stranger`, the parent (made by this user) is someone else's: it is not read, and its marker proves nothing.
+    await sweepCopilotDirectories(h.scratch, stranger);
+    assert.ok(Date.now() - (await stat(marker)).mtimeMs < 60000, "the sweep read the temp folder and wrote its own marker instead of skipping on the strange one");
+    // For the owner, the same marker is enough to skip the read.
+    await backdate(marker, 3600 * 1000); await sweepCopilotDirectories(h.scratch);
+    assert.ok(Date.now() - (await stat(marker)).mtimeMs > 1800 * 1000, "the owner's marker is honored");
+  } finally { await h.restore(); }
+});
+
+test("only a real directory the user owns is a usable folder", () => {
+  const directory = { isDirectory: () => true, uid: 501 }; const link = { isDirectory: () => false, uid: 501 };
+  assert.equal(ownedDirectory(directory, 501), true); assert.equal(ownedDirectory(directory, 502), false, "another user's");
+  assert.equal(ownedDirectory(link, 501), false, "a symlink, a file or anything but a directory"); assert.equal(ownedDirectory(directory, undefined), true, "without uids, any real directory");
 });

@@ -58,6 +58,8 @@ interface Registry {
   ended: Map<string, string>;
   /** The provider scope that owns each key, so one provider can retire its own sessions. */
   scopes: Map<string, string>;
+  /** Why each key that was starting when its scope was retired must retire the session it gets. Absent in a registry an older release created. */
+  retired?: Map<string, string>;
 }
 type Plan = Exclude<ReturnType<typeof decide>, { kind: "reseed" }> | { kind: "seed" };
 const symbol = Symbol.for("harness-gateway/copilot-sessions/v1");
@@ -95,6 +97,8 @@ export function retireCopilotScopes(reason: (scope: string) => string | undefine
   const reg = (globalThis as unknown as Record<symbol, Registry | undefined>)[symbol];
   if (reg?.interfaceVersion !== 1) return;
   for (const [key, session] of reg.sessions) { const scope = reg.scopes.get(key); const why = scope === undefined ? undefined : reason(scope); if (why) void session.retire(why); }
+  // A session that is still starting is in no map yet. The attach that starts it retires it as soon as its request runs.
+  for (const key of reg.starting) { const scope = reg.scopes.get(key); const why = scope === undefined ? undefined : reason(scope); if (why) (reg.retired ??= new Map()).set(key, why); }
 }
 
 /** Retires every live session one provider scope owns: a provider switched to one-shot calls this. */
@@ -104,8 +108,9 @@ async function attach(reg: Registry, settings: CopilotLiveSettings, input: Copil
   if (signal.aborted) throw cancelled();
   const key = sessionKey(input.scope, input.threadId);
   if (reg.starting.has(key)) return { kind: "fallback", reason: "concurrent" };
-  reg.starting.add(key);
-  try { return await place(reg, settings, key, input, signal); } finally { reg.starting.delete(key); }
+  reg.starting.add(key); reg.scopes.set(key, input.scope);
+  try { return await place(reg, settings, key, input, signal); }
+  finally { reg.starting.delete(key); reg.retired?.delete(key); if (!reg.sessions.has(key)) reg.scopes.delete(key); }
 }
 
 /** Slots in use as the attach for `key` sees them: every session, plus each earlier attach that has no session yet. */
@@ -198,10 +203,13 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     reg.sessions.set(key, session); reg.ended.delete(key);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
-  reg.scopes.set(key, input.scope);
-  return { kind: "stream", events: start(reg, settings, session, input, entries.map(entry => entry.digest), plan, outputs, signal, {
+  const events = start(reg, settings, session, input, entries.map(entry => entry.digest), plan, outputs, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
-  }) };
+  });
+  // Its provider was removed or changed while this session was starting: the request that started it is its last (the session
+  // is running now, so it closes when the request ends).
+  const retired = reg.retired?.get(key); if (retired) void session.retire(retired);
+  return { kind: "stream", events };
 }
 
 /** The caller's tool outputs by call id, as `session.tools.handlePendingToolCall` takes them. */

@@ -20,6 +20,9 @@ const currentUid = (): number | undefined => typeof process.getuid === "function
 /** The dedicated parent of every CLI folder: one per user, so users who share a temp folder never meet. */
 export const copilotParent = (base = tmpdir()): string => join(base, `harness-gateway-copilot${currentUid() === undefined ? "" : `-${currentUid()}`}`);
 
+/** Whether `info` (from `lstat`) is a real directory, never a symlink, that the user `uid` owns; where there are no uids, any real directory. */
+export const ownedDirectory = (info: { isDirectory(): boolean; uid: number }, uid: number | undefined): boolean => info.isDirectory() && (uid === undefined || info.uid === uid);
+
 /**
  * Creates the parent folder if needed and returns it. It must be a real directory (never a symlink) that the current
  * user owns, and it is made 0700; anything else is refused, because the CLI folders inside it hold prompt logs.
@@ -28,7 +31,7 @@ export async function ensureCopilotParent(base = tmpdir()): Promise<string> {
   const path = copilotParent(base); const uid = currentUid();
   await mkdir(path, { mode: 0o700 }).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
   const info = await lstat(path);
-  if (!info.isDirectory() || (uid !== undefined && info.uid !== uid)) throw new ProviderError("cli_failed", "Copilot's private temp folder is not usable", 502);
+  if (!ownedDirectory(info, uid)) throw new ProviderError("cli_failed", "Copilot's private temp folder is not usable", 502);
   if ((info.mode & 0o777) !== 0o700) await chmod(path, 0o700);
   return path;
 }
@@ -94,7 +97,7 @@ async function sweepIn(directory: string, names: string[], uid: number | undefin
     if (!match && !(older && legacy.test(name))) continue;
     const path = join(directory, name);
     const info = await lstat(path).catch(() => undefined);
-    if (!info?.isDirectory() || (uid !== undefined && info.uid !== uid)) continue;
+    if (!info || !ownedDirectory(info, uid)) continue;
     if (match) { if (await ownerRuns(parseInt(match[1], 36), match[2] === undefined ? undefined : parseInt(match[2], 36))) continue; }
     else if (Date.now() - info.mtimeMs < legacyAgeMs.value) continue;
     await rm(path, { recursive: true, force: true }).catch(() => {});
@@ -112,7 +115,8 @@ async function sweepIn(directory: string, names: string[], uid: number | undefin
 export async function sweepCopilotDirectories(base = tmpdir(), uid = currentUid()): Promise<void> {
   void ownStart(); // Read once at startup, so the first Copilot request does not wait for it.
   const parent = copilotParent(base); const names = (directory: string) => readdir(directory).catch(() => [] as string[]);
-  const present = (await lstat(parent).catch(() => undefined))?.isDirectory() === true;
+  // A parent that is not a real directory this user owns is neither read nor trusted: its listing and its marker are another user's.
+  const present = await lstat(parent).then(info => ownedDirectory(info, uid), () => false);
   if (present) await sweepIn(parent, await names(parent), uid, false);
   const marker = join(parent, legacyScanMarker);
   if (present && await lstat(marker).then(info => info.isFile() && Date.now() - info.mtimeMs < legacyScanIntervalMs.value, () => false)) return;

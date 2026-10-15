@@ -95,7 +95,10 @@ export class CopilotLiveSession {
   private started = false;
   /** Whether a request has attached yet: the CLI's own start-up announcements are accepted until then. */
   private served = false;
-  /** An effort change in progress: the CLI confirms it with `session.model_change`, which may be routed after the change returns. */
+  /**
+   * An effort change in progress: the CLI confirms it with `session.model_change`, which may be routed after the change returns,
+   * even after the next request attached. It stays until the confirmation is routed or that request ends.
+   */
   private switching?: { model: string; effort: string };
   /** How the session ended, set when it starts to close. */
   end?: { outcome: SessionEnd; reason?: string };
@@ -180,8 +183,8 @@ export class CopilotLiveSession {
   run(live: LiveTurn): AsyncIterable<InferenceEvent> {
     if (this.state === "closed") return (async function* (): AsyncGenerator<InferenceEvent> { throw new ProviderError("cli_failed", "Copilot session closed", 502); })();
     const attached: Attached = { live, queue: [], onAbort: () => this.abort(attached) };
-    // From here every event goes to the request, a late effort confirmation included.
-    this.attached = attached; this.state = "generating"; this.served = true; this.switching = undefined; this.arm();
+    // From here every event goes to the request; a late effort confirmation is still told apart (see `route`).
+    this.attached = attached; this.state = "generating"; this.served = true; this.arm();
     live.signal.addEventListener("abort", attached.onAbort, { once: true });
     return this.events(attached);
   }
@@ -292,7 +295,7 @@ export class CopilotLiveSession {
   }
 
   private detach(attached: Attached): void {
-    if (this.attached === attached) this.attached = undefined;
+    if (this.attached === attached) { this.attached = undefined; this.switching = undefined; }
     attached.live.signal.removeEventListener("abort", attached.onAbort);
     this.lastUse = Date.now();
   }
@@ -345,11 +348,17 @@ export class CopilotLiveSession {
         return;
       }
     }
+    // The confirmation of an effort change may be routed after the request it was made for attached. One for another effort
+    // than asked means the session runs at an effort nobody asked for: end it before its answer is read (the request, if it
+    // has produced nothing, is served one-shot).
+    if (type === "session.model_change" && this.switching) {
+      if (this.confirmsSwitch(data)) return;
+      return this.violation(new ProviderError("cli_failed", "Copilot confirmed another reasoning effort than the one requested", 502), "effort_mismatch");
+    }
     const attached = this.attached;
     if (!attached) {
       if (acceptedBetweenRequests(type) || type === "tool.execution_start") return;
       if (!this.served && lifecycle.has(type)) return;
-      if (type === "session.model_change" && this.confirmsSwitch(data)) return;
       // A finished tool call nobody answered is the 30-minute timeout (or a failure); the runtime's own model call follows within seconds.
       return reject(completions.has(type) ? "unattended_completion" : "unattended_output", "Copilot acted outside a request");
     }
