@@ -9,7 +9,7 @@ import { imageConversation } from "../protocol/images.js";
 import { CopilotTurn } from "./copilot-turn.js";
 import { sessionFingerprint, sessionParams } from "./copilot-create.js";
 import { choiceLine, copilotPrompts, copilotSystem, nativeCatalog, type NativeTool } from "./copilot-render.js";
-import { copilotLive, retireCopilotScope, type CopilotLiveOutcome } from "./copilot-live.js";
+import { copilotLive, retireCopilotScope, type CopilotLiveInput, type CopilotLiveOutcome } from "./copilot-live.js";
 import { sessionKey } from "./claude-live-contract.js";
 import { leadingInstructions, markCustomCalls, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { telemetry } from "../telemetry.js";
@@ -35,9 +35,10 @@ export function copilotEffort(config: ProviderConfig, request: ResponsesRequest)
 
 // Codex owns these requests' history shape, so they never join or seed a live session.
 const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
+const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 
 /** One request, translated and rendered once for whichever path serves it. */
-interface Run {
+export interface CopilotRun {
   request: ResponsesRequest; signal: AbortSignal; context: InferenceContext;
   /** The whole caller catalog, whatever the tool choice: a changed catalog would change the prompt and break the cache. */
   tools: OpenAITool[]; native: NativeTool[]; choice: ChatToolSelection | undefined;
@@ -48,32 +49,45 @@ interface Run {
   create: Record<string, unknown>;
 }
 
+/** Validates and translates one request for the one-shot and live paths. */
+export function copilotRun(config: ProviderConfig, request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): CopilotRun {
+  validateCopilotServiceTier(request);
+  const normalized = responsesToChatRequest(request); const choice = normalized.tool_choice;
+  const tools = normalized.tools || []; const native = nativeCatalog(tools);
+  const effort = copilotEffort(config, request);
+  const summary = record(request.reasoning).summary;
+  const history = markCustomCalls(normalized.messages, tools);
+  const leading = leadingInstructions(history);
+  const { conversation, images } = imageConversation(history.slice(leading));
+  const create = sessionParams({ model: request.model, effort, summary, catalog: native, system: copilotSystem(history.slice(0, leading).map(message => message.content ?? ""), native) });
+  return { request, signal, context, tools, native, choice, effort, summary, conversation, images, leading, create };
+}
+
+/** The provider half of a live session key; the thread's half is whatever the caller added. */
+const copilotScope = (config: ProviderConfig): string => `${config.id}\0${config.authDirectory ?? ""}`;
+
+/** What a live session needs to place a request of a thread (`threadId` is required). */
+export function copilotLiveInput(config: ProviderConfig, run: CopilotRun, threadId: string): CopilotLiveInput {
+  const { request, context, tools, native, choice, effort, summary, conversation, images, leading, create } = run;
+  return { scope: copilotScope(config), threadId, windowId: context.windowId, model: request.model, effort, fingerprint: sessionFingerprint(create), create,
+    config, catalog: tools, native, request, conversation, images, leading, choice,
+    newTurn: () => new CopilotTurn({ model: request.model, offered: Object.values(config.models), tools, choice, summary }) };
+}
+
 export class CopilotSubscription implements Provider {
   constructor(private readonly config: ProviderConfig) {}
 
-  /** The provider half of a live session key; the thread's half is whatever the caller added. */
-  private scope(): string { return `${this.config.id}\0${this.config.authDirectory ?? ""}`; }
-
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
-    validateCopilotServiceTier(request);
-    const normalized = responsesToChatRequest(request); const choice = normalized.tool_choice;
-    const tools = normalized.tools || []; const native = nativeCatalog(tools);
-    const effort = copilotEffort(this.config, request);
-    const summary = record(request.reasoning).summary;
+    const run = copilotRun(this.config, request, signal, context);
     const settings = copilotSessionSettings(this.config);
-    const history = markCustomCalls(normalized.messages, tools);
-    const leading = leadingInstructions(history);
-    const { conversation, images } = imageConversation(history.slice(leading));
-    const create = sessionParams({ model: request.model, effort, summary, catalog: native, system: copilotSystem(history.slice(0, leading).map(message => message.content ?? ""), native) });
-    const run: Run = { request, signal, context, tools, native, choice, effort, summary, conversation, images, leading, create };
-    if (settings.mode !== "live") retireCopilotScope(this.scope(), "mode_oneshot");
+    if (settings.mode !== "live") retireCopilotScope(copilotScope(this.config), "mode_oneshot");
     else {
-      const threadKey = context.threadId ? sessionKey(this.scope(), context.threadId).slice(0, 8) : undefined;
+      const threadKey = context.threadId ? sessionKey(copilotScope(this.config), context.threadId).slice(0, 8) : undefined;
       let outcome: CopilotLiveOutcome;
       try { outcome = await this.live(run, settings); }
       catch (error) {
         // Placing the request failed unexpectedly, before any session work: the one-shot path still serves it.
-        if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw new ProviderError("cancelled", "Request cancelled", 499);
+        if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
         if (!(error instanceof ProviderError)) reportException(error, "copilot_live_attach");
         outcome = { kind: "fallback", reason: "attach_failed" };
       }
@@ -82,7 +96,7 @@ export class CopilotSubscription implements Provider {
         try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
         catch (error) {
           // A session that dies before its first event falls back to one-shot. Limits, cancellation and caller errors would only repeat.
-          if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
+          if (signal.aborted) throw cancelled();
           if (yielded || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
           telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", threadKey });
         }
@@ -92,18 +106,15 @@ export class CopilotSubscription implements Provider {
   }
 
   /** Serves the request from the thread's live session, or says why it cannot. */
-  private async live(run: Run, settings: ReturnType<typeof copilotSessionSettings>): Promise<CopilotLiveOutcome> {
-    const { request, signal, context, tools, native, choice, effort, summary, conversation, images, leading, create } = run;
+  private async live(run: CopilotRun, settings: ReturnType<typeof copilotSessionSettings>): Promise<CopilotLiveOutcome> {
     const skip = (reason: "no_thread" | "request_kind") => ({ kind: "fallback" as const, reason });
-    if (!context.threadId) return skip("no_thread");
-    if (oneShotKinds.has(context.requestKind)) return skip("request_kind");
-    return copilotLive(settings).attach({ scope: this.scope(), threadId: context.threadId, windowId: context.windowId, model: request.model, effort, fingerprint: sessionFingerprint(create), create,
-      config: this.config, catalog: tools, native, request, conversation, images, leading, choice,
-      newTurn: () => new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary }) }, signal);
+    if (!run.context.threadId) return skip("no_thread");
+    if (oneShotKinds.has(run.context.requestKind)) return skip("request_kind");
+    return copilotLive(settings).attach(copilotLiveInput(this.config, run, run.context.threadId), run.signal);
   }
 
   /** One session for one request, with the same system message, tools and per-item messages a live session is seeded with. */
-  private async *oneShot(run: Run): AsyncGenerator<InferenceEvent> {
+  private async *oneShot(run: CopilotRun): AsyncGenerator<InferenceEvent> {
     const { request, signal, tools, native, choice, summary, conversation, images, create } = run;
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
     const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
@@ -117,7 +128,7 @@ export class CopilotSubscription implements Provider {
         if (step.end) { yield turn.done(); return; }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");
-    } catch (error) { if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499); throw error; }
+    } catch (error) { if (signal.aborted) throw cancelled(); throw error; }
     finally { await client.close(sessionId); }
   }
 }
