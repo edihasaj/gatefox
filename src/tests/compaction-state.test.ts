@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { CompactionStateStore, compactionDecision } from "../compaction-state.js";
 
@@ -99,4 +100,26 @@ test("private compaction metadata rejects unsafe files and unknown persisted fie
   const linked = join(f.directory, "linked-state"); await symlink(f.directory, linked);
   await assert.rejects(new CompactionStateStore(linked, f.home).read("chat"), /invalid or unsafe/);
   assert.equal(await readFile(target, "utf8"), "native unchanged");
+});
+
+test("a full store drops the row observed longest ago instead of refusing a new chat", async () => {
+  const f = await fixture();
+  const rows = Object.fromEntries(Array.from({ length: 4096 }, (_, index) => [`chat-${index}`, { emittedAtMs: 1000 + index }]));
+  // Chat 7 was observed most recently, though it is not the last row, so the file order is not the age order.
+  rows["chat-7"] = { emittedAtMs: 9000 };
+  const path = join(f.directory, `desktop-compaction-${createHash("sha256").update(resolve(f.home)).digest("hex").slice(0, 16)}.json`);
+  await writeFile(path, JSON.stringify({ version: 1, threads: rows }), { mode: 0o600 });
+  await f.store.observe(terminal("new-chat", "turn", 20000));
+  const saved = JSON.parse(await readFile(path, "utf8")) as { threads: Record<string, unknown> };
+  assert.equal(Object.keys(saved.threads).length, 4096);
+  assert.ok(await f.peer().read("new-chat"), "the new chat is saved");
+  assert.equal(await f.peer().read("chat-0"), undefined, "the oldest row made room");
+  assert.ok(await f.peer().read("chat-1"), "only one row left");
+  assert.ok(await f.peer().read("chat-7"), "a recently observed row stays whatever its position");
+  // The store stays usable: the next new chat evicts the next oldest row.
+  await f.store.observe(terminal("another", "turn", 20001));
+  assert.equal(await f.peer().read("chat-1"), undefined); assert.ok(await f.peer().read("another")); assert.ok(await f.peer().read("new-chat"));
+  // An existing chat is rewritten in place and evicts nothing.
+  await f.store.observe(terminal("another", "turn-2", 20002));
+  assert.ok(await f.peer().read("chat-2"));
 });

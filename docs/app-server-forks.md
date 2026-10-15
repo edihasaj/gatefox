@@ -37,9 +37,13 @@ this, the adapter added a native chat's saved reasoning effort to the fork, so e
 suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
 above. The change applies to the next adapter connection after an update.
 
+On a gateway chat, a composer prediction fork runs real inference on that chat's
+provider, so it counts as that provider's usage. In 0.4.0 these forks always failed
+and ran nothing.
+
 Any ephemeral chat (prediction forks included) is memory-only. Its result writes no
-reasoning record and no service-tier row, and a later turn or applied settings change
-on it writes none either. The adapter keeps only an in-memory route, so a turn started
+reasoning record, no service-tier row and no compaction-recovery row, and a later
+turn or applied settings change on it writes none either. The adapter keeps only an in-memory route, so a turn started
 on the chat reaches the owning engine without a service-tier or reasoning write. The
 newest 256 such chats stay tracked this way, and each one counts toward that cap
 whether it was started, resumed, forked, or first seen when a turn probed its owner.
@@ -66,6 +70,17 @@ that would pass it is refused rather than making room.
 The per-chat compaction overrides that a gateway executor remembers are forgotten when
 the chat closes or is unsubscribed, deleted or archived. If 4096 chats are still held,
 remembering another drops the one set longest ago instead of refusing the new chat.
+
+The backends recognize a gateway executor's throwaway chats in three ways: the executor's
+`thread/started` notification or the answer to `thread/start`, `thread/resume` or
+`thread/fork` marks the chat `ephemeral`, or the request is a `thread/fork` with
+`experimentalPredictionMode` (or a start or fork with `ephemeral: true`). The turn and
+token events of such a chat are not written to the on-disk compaction store, which holds
+the compaction recovery state of every gateway chat. The newest 4096 such ids are tracked, and an id is forgotten when its chat is
+closed, unsubscribed, deleted or archived. The store itself holds at most 4096 chats and
+4 MiB. When a write for a new chat would pass either limit, it drops the chats observed
+longest ago instead of failing, and never the chat being written, so a full store no
+longer stops recovery for the other chats.
 
 Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
 can be told apart without storing error text; see [diagnostics](diagnostics.md).

@@ -102,6 +102,19 @@ function observation(message: unknown): { threadId: string; event: Observation; 
   }
 }
 
+/**
+ * A full store drops the rows observed longest ago, never the chat being written, instead of refusing the write:
+ * a refusal would stop recovery metadata for every chat, not just the oldest.
+ */
+function makeRoom(saved: Snapshot, keep: string): void {
+  const oldest = Object.keys(saved.threads).filter(id => id !== keep).sort((a, b) => saved.threads[a].emittedAtMs - saved.threads[b].emittedAtMs);
+  let count = Object.keys(saved.threads).length; let next = 0;
+  while (count > maxThreads || Buffer.byteLength(JSON.stringify(saved, null, 2) + "\n") > maxBytes) {
+    if (next >= oldest.length) throw invalid();
+    delete saved.threads[oldest[next++]]; count--;
+  }
+}
+
 /** Coalesced, account-home-scoped public counters and compaction lifecycle only. */
 export class CompactionStateStore {
   private readonly directory: string;
@@ -179,9 +192,8 @@ export class CompactionStateStore {
       const saved = await this.load(); let selected = saved.threads[threadId];
       for (const event of entries) selected = reduce(selected, event);
       if (selected) {
-        if (!Object.hasOwn(saved.threads, threadId) && Object.keys(saved.threads).length >= maxThreads) throw invalid();
         saved.threads[threadId] = row(selected);
-        if (Buffer.byteLength(JSON.stringify(saved, null, 2) + "\n") > maxBytes) throw invalid();
+        makeRoom(saved, threadId);
         await writePrivateJson(this.path, saved);
       }
     });

@@ -17,6 +17,7 @@ import { readServicePlan } from "./service-plan.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { withStagedQueueInput } from "./queued-attachments.js";
+import { BoundedIdSet } from "./bounded-id-set.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
@@ -59,6 +60,8 @@ export class AppServerBackends {
   private nativeHost?: { client: ExecutionHostClient; record: NativeLaunchRecord };
   private sharedGateway?: boolean;
   private readonly compaction: GatewayCompaction;
+  // Throwaway chats (composer prediction forks): their turns never write to the on-disk compaction store.
+  private readonly ephemeralThreads = new BoundedIdSet(4096);
   private readonly nativeActive = new Map<string, NativeTurn>();
   private readonly nativeCompleted = new Set<string>();
   private nativeNotificationRevision = 0;
@@ -178,10 +181,11 @@ export class AppServerBackends {
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
     if (engine) {
       engine.compaction?.observe(message);
-      await this.compaction.observe(message);
       const thread = object(params.thread); const threadId = typeof params.threadId === "string" ? params.threadId : typeof thread.id === "string" ? thread.id : undefined;
+      if (message.method === "thread/started" && threadId && thread.ephemeral === true) this.ephemeralThreads.add(threadId);
+      if (!threadId || !this.ephemeralThreads.has(threadId)) await this.compaction.observe(message);
       if (message.method === "thread/started" && threadId) { engine.threads.add(threadId); this.bindings.set(threadId, engine); }
-      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
+      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
       if (message.method === "turn/started" && threadId && typeof object(params.turn).id === "string") engine.active.set(threadId, String(object(params.turn).id));
       if (message.method === "turn/completed" && threadId && engine.active.get(threadId) === object(params.turn).id) engine.active.delete(threadId);
       // Executor account discovery is not the desktop's primary account state.
@@ -421,10 +425,11 @@ export class AppServerBackends {
       await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
         const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
+        if (object(result.thread).ephemeral === true || (method === "thread/fork" && params.experimentalPredictionMode === true) || (method !== "thread/resume" && params.ephemeral === true)) this.ephemeralThreads.add(id);
         if (method !== "thread/resume" || !loaded) engine.compaction?.remember(id, params);
       }
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
-        engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); engine.compaction?.forget(params.threadId);
+        engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); this.ephemeralThreads.delete(params.threadId); engine.compaction?.forget(params.threadId);
       }
       return result;
     } finally { engine.requests--; }
