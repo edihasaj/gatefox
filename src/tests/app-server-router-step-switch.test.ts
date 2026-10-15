@@ -12,6 +12,9 @@ type ObjectValue = Record<string, unknown>;
 const reason = "Cannot switch models mid-turn: the destination has different node_repl or auto review settings";
 const rejection = () => Object.assign(new Error(reason), { code: -32600 });
 
+/** The model the router records for the chat's active turn. */
+const activeModel = (router: AppServerRouter) => (router as unknown as { activeTurns: Map<string, { route: { model?: string } }> }).activeTurns.get("test")?.route.model;
+
 async function fixture(reject: (method: string, params: ObjectValue) => boolean, switched: ObjectValue = { status: "applied" }) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-step-switch-"));
   const tier = { id: "priority", name: "Fast", description: "Priority routing" };
@@ -43,16 +46,19 @@ test("a rejected active-turn model switch reaches the client with the SDK's code
     assert.equal((error as { code?: number }).code, -32600); assert.equal((error as Error).message, reason); return true;
   });
   assert.equal(calls.at(-1)!.method, "turn/settings/update", "the request reached the SDK, which gave the answer");
-  // The turn still runs on codex/model: a Fast tier is accepted for it. Had the router recorded Claude, this would fail with "does not support".
+  assert.equal(activeModel(router), "codex/model", "the refused switch is not recorded: the turn keeps codex/model");
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
   assert.equal(calls.at(-1)!.params.serviceTier, "priority");
 });
 
-test("an applied active-turn model switch is recorded, so the same follow-up is refused for the new model", async () => {
-  const { router } = await fixture(() => false);
+test("an applied active-turn model switch is recorded for the active turn", async () => {
+  const { router, calls } = await fixture(() => false);
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" }), /does not support/);
+  assert.equal(activeModel(router), "claude/model");
+  // Mid-chat tiers pass through like native Codex: the SDK keeps the choice and applies it only where the model offers it.
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
+  assert.equal(calls.at(-1)!.params.serviceTier, "priority");
 });
 
 test("thread settings updates, which change the next turn, are never checked for the active turn and still forward", async () => {
@@ -66,5 +72,5 @@ test("a model switch the SDK answers without applying it is not recorded either"
   const { router } = await fixture(() => false, { status: "targetUnavailable" });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   assert.equal((await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" })).status, "targetUnavailable");
-  await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
+  assert.equal(activeModel(router), "codex/model", "an unapplied switch is not recorded");
 });
