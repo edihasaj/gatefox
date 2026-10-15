@@ -110,9 +110,11 @@ const planScopeMissing = "ChatGPT plan permission was not granted; enable plan u
  */
 function checkReply(token: TokenResponse): { scopes: string[]; problem?: "plan_scope" | "malformed" } {
   const scopes = typeof token.scope === "string" ? token.scope.split(/\s+/).filter(Boolean) : [];
-  if (lacksPlanScopes(scopes)) return { scopes, problem: "plan_scope" };
+  // Malformed is checked first: a reply without a usable access token says nothing about granted scopes
+  // (an empty `{}` or an intermediary's error body has no `scope`), so it must stay temporary.
   if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" || typeof token.access_token !== "string" || !token.access_token ||
     typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes, problem: "malformed" };
+  if (lacksPlanScopes(scopes)) return { scopes, problem: "plan_scope" };
   return { scopes };
 }
 function grantedScopes(token: TokenResponse): string[] {
