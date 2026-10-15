@@ -1,58 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
-import { launchctlRunner, macDesktop, type LaunchctlExec } from "../mac-desktop.js";
+import { launchctlRunner, macDesktop } from "../mac-desktop.js";
 import { desktopEnvironment, launchDesktop, prepareDesktop } from "../desktop-launch.js";
 import { writePrivateJson } from "../config.js";
+import { FORCE, inDesktopHome, PATH_KEY, desktopFixture, type DesktopFixture as Fixture } from "./desktop-fixture.js";
 
 const mac = { skip: process.platform !== "darwin" };
-const FORCE = "CODEX_APP_SERVER_FORCE_CLI"; const PATH_KEY = "CODEX_CLI_PATH";
+const fixture = () => desktopFixture("no-force-cli");
 
-async function fixture() {
-  const root = await mkdtemp(join(tmpdir(), "gateway-no-force-cli-"));
-  const home = join(root, "home"); const app = join(root, "ChatGPT.app"); const state = join(root, "state");
-  const codex = join(app, "Contents/Resources/codex-cli/bin/codex");
-  await mkdir(join(home, "Library/LaunchAgents"), { recursive: true, mode: 0o700 });
-  await mkdir(join(app, "Contents/MacOS"), { recursive: true }); await mkdir(join(app, "Contents/Resources/codex-cli/bin"), { recursive: true });
-  await mkdir(state, { recursive: true, mode: 0o700 });
-  await writeFile(join(app, "Contents/MacOS/ChatGPT"), ""); await writeFile(codex, "#!/bin/sh\necho native \"$@\"\n"); await chmod(codex, 0o700);
-  const gateway = join(root, "gateway"); await writeFile(gateway, "#!/bin/sh\nexit 0\n"); await chmod(gateway, 0o700);
-  const config = join(root, "gateway.json");
-  await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: state, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_NO_FORCE_CLI_KEY", models: { fixture: "upstream" } }] });
-  const values = new Map<string, string>(); const calls: string[] = [];
-  // Records every launchctl call against a simulated GUI session; nothing here reaches /bin/launchctl.
-  const exec: LaunchctlExec = async (file, args) => {
-    assert.equal(file, "/bin/launchctl"); calls.push(args.join(" "));
-    if (args[0] === "getenv") {
-      const value = values.get(args[1]!); if (value === undefined) throw new Error("Command failed: /bin/launchctl getenv " + args[1]);
-      return { stdout: value };
-    }
-    if (args[0] === "setenv") values.set(args[1]!, args[2]!);
-    if (args[0] === "unsetenv") values.delete(args[1]!);
-    if (args[0] === "print") throw new Error("Could not find service");
-    return { stdout: "" };
-  };
-  const receipt = join(state, "desktop-registration.json");
-  return { root, home, app, state, config, gateway, values, calls, exec, receipt };
-}
-type Fixture = Awaited<ReturnType<typeof fixture>>;
-
-async function inHome<T>(f: Fixture, run: () => Promise<T>): Promise<T> {
-  const saved = { HOME: process.env.HOME, installed: process.env.GATEWAY_INSTALLED, command: process.env.GATEWAY_COMMAND };
-  process.env.HOME = f.home; process.env.GATEWAY_INSTALLED = "1"; process.env.GATEWAY_COMMAND = f.gateway;
-  try { return await run(); } finally {
-    if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
-    if (saved.installed === undefined) delete process.env.GATEWAY_INSTALLED; else process.env.GATEWAY_INSTALLED = saved.installed;
-    if (saved.command === undefined) delete process.env.GATEWAY_COMMAND; else process.env.GATEWAY_COMMAND = saved.command;
-    await rm(f.root, { recursive: true, force: true });
-  }
-}
 test("registration sets only CODEX_CLI_PATH and leaves the native app-server mode alone", mac, async () => {
   const f = await fixture();
-  await inHome(f, async () => {
+  await inDesktopHome(f, async () => {
     const result = await macDesktop("register", f.config, f.app, true, f.exec);
     assert.equal(result.registered, true);
     assert.equal(f.calls.some(call => call.startsWith(`setenv ${FORCE}`)), false, "FORCE_CLI must never be set");
@@ -74,7 +35,7 @@ async function legacyPair(f: Fixture, current: "same" | "older") {
 test("registration clears a FORCE_CLI left by an older gateway, including a restore-only re-register", mac, async () => {
   for (const current of ["same", "older"] as const) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       const { wrapper } = await legacyPair(f, current);
       const result = await macDesktop("register", f.config, f.app, true, f.exec);
       assert.equal(result.registered, true);
@@ -88,7 +49,7 @@ test("registration clears a FORCE_CLI left by an older gateway, including a rest
 
 test("registration clears our FORCE_CLI when the session already names the current wrapper but the receipt an older one", mac, async () => {
   const f = await fixture();
-  await inHome(f, async () => {
+  await inDesktopHome(f, async () => {
     const { wrapper } = await prepareDesktop(f.config, f.app);
     await writePrivateJson(f.receipt, { wrapper: join(f.state, "desktop-wrapper-0123456789abcdef"), registeredAt: new Date().toISOString() });
     f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, "1");
@@ -102,26 +63,86 @@ test("registration clears our FORCE_CLI when the session already names the curre
 });
 
 test("registration refuses a FORCE_CLI=1 it cannot prove it set", mac, async () => {
-  const unproven: Array<[string, (f: Fixture, wrapper: string) => Promise<void>]> = [
-    ["no receipt and no CODEX_CLI_PATH", async () => undefined],
-    ["a receipt but no CODEX_CLI_PATH", async (f, wrapper) => { await writePrivateJson(f.receipt, { wrapper }); }],
-    ["CODEX_CLI_PATH of the current wrapper but no receipt", async (f, wrapper) => { f.values.set(PATH_KEY, wrapper); }],
+  const unproven: Array<[string, (f: Fixture, wrapper: string) => Promise<void>, RegExp]> = [
+    ["no receipt and no CODEX_CLI_PATH", async () => undefined, /Another desktop CLI mode is active; it was not replaced/],
+    ["a receipt but no CODEX_CLI_PATH", async (f, wrapper) => { await writePrivateJson(f.receipt, { wrapper }); }, /Another desktop CLI mode is active; it was not replaced/],
+    ["a wrapper path but nothing naming a wrapper in the receipt", async (f, wrapper) => { f.values.set(PATH_KEY, wrapper); }, /no registration receipt proves the gateway set it/],
   ];
-  for (const [name, seed] of unproven) {
+  for (const [name, seed, refusal] of unproven) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       const { wrapper } = await prepareDesktop(f.config, f.app);
       await seed(f, wrapper); f.values.set(FORCE, "1");
-      await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), /Another desktop CLI mode is active; it was not replaced/, name);
+      await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), refusal, name);
       assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
       assert.equal(f.values.get(FORCE), "1", name);
     });
   }
 });
 
+/**
+ * The pair an older gateway exported, with the receipt gone: `CODEX_CLI_PATH` is still a wrapper of ours, but
+ * nothing proves the gateway exported FORCE_CLI=1. Registration says so, status calls the wrapper stale rather
+ * than ours to clear, and unregistration clears the path it owns and leaves the value.
+ */
+async function noReceiptPair(f: Fixture, receipt: "empty" | "missing") {
+  const stale = join(f.state, "desktop-wrapper-98fedcba01234567");
+  if (receipt === "empty") await writePrivateJson(f.receipt, {});
+  f.values.set(PATH_KEY, stale); f.values.set(FORCE, "1");
+  return stale;
+}
+
+test("registration refuses a FORCE_CLI=1 beside our own older wrapper when no receipt names a wrapper", mac, async () => {
+  for (const receipt of ["empty", "missing"] as const) {
+    for (const restoreOnly of [true, false]) {
+      const name = `receipt=${receipt} restoreOnly=${restoreOnly}`;
+      const f = await fixture();
+      await inDesktopHome(f, async () => {
+        const stale = await noReceiptPair(f, receipt);
+        await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec),
+          /CODEX_APP_SERVER_FORCE_CLI=1 is set beside a gateway wrapper, but no registration receipt proves the gateway set it\. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again\./, name);
+        assert.equal(f.values.get(PATH_KEY), stale, name + ": the wrapper path is untouched");
+        assert.equal(f.values.get(FORCE), "1", name + ": the value is untouched");
+        assert.equal(f.calls.some(call => (call.includes(PATH_KEY) || call.includes(FORCE)) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
+      });
+    }
+  }
+});
+
+test("status of our own older wrapper without a receipt names it stale and never ours to clear", mac, async () => {
+  for (const receipt of ["empty", "missing"] as const) {
+    const f = await fixture();
+    await inDesktopHome(f, async () => {
+      const stale = await noReceiptPair(f, receipt);
+      const status = await macDesktop("status", f.config, f.app, false, f.exec);
+      assert.equal(status.registered, false, receipt);
+      assert.equal(status.activeForFutureLaunches, false, receipt);
+      assert.equal(status.staleWrapper, true, receipt + ": " + stale + " is a wrapper of ours");
+      assert.equal(status.legacyForceCli, false, receipt + ": nothing proves the 1 is ours");
+      assert.equal(f.values.get(FORCE), "1", receipt + ": status writes nothing");
+      assert.equal(f.values.get(PATH_KEY), stale, receipt);
+    });
+  }
+});
+
+test("unregistration clears our own older wrapper without a receipt but leaves its FORCE_CLI", mac, async () => {
+  for (const receipt of ["empty", "missing"] as const) {
+    const f = await fixture();
+    await inDesktopHome(f, async () => {
+      await noReceiptPair(f, receipt);
+      const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
+      assert.equal(result.registered, false, receipt);
+      assert.ok(f.calls.includes(`unsetenv ${PATH_KEY}`), receipt + ": an own wrapper path is ours to clear");
+      assert.equal(f.calls.includes(`unsetenv ${FORCE}`), false, receipt + ": no receipt names a wrapper, so the 1 stays");
+      assert.equal(f.values.has(PATH_KEY), false, receipt);
+      assert.equal(f.values.get(FORCE), "1", receipt);
+    });
+  }
+});
+
 test("the standalone register path clears our FORCE_CLI, writes the login agent and bootstraps it", mac, async () => {
   const f = await fixture();
-  await inHome(f, async () => {
+  await inDesktopHome(f, async () => {
     await legacyPair(f, "older");
     const result = await macDesktop("register", f.config, f.app, false, f.exec);
     assert.equal(result.registered, true); assert.equal(result.freshAppLaunchRequired, true);
@@ -137,7 +158,7 @@ test("the standalone register path clears our FORCE_CLI, writes the login agent 
 
 test("registration refuses a FORCE_CLI set by something else and never touches it", mac, async () => {
   const f = await fixture();
-  await inHome(f, async () => {
+  await inDesktopHome(f, async () => {
     f.values.set(FORCE, "other");
     await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), /Another desktop CLI mode is active; it was not replaced/);
     assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, "no setenv or unsetenv for a foreign value");
@@ -150,7 +171,7 @@ test("registration refuses a foreign FORCE_CLI value even beside a proven gatewa
     for (const foreign of ["other", "0"]) {
       const name = `restoreOnly=${restoreOnly} value=${foreign}`;
       const f = await fixture();
-      await inHome(f, async () => {
+      await inDesktopHome(f, async () => {
         const { wrapper } = await legacyPair(f, "same"); f.values.set(FORCE, foreign);
         await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec), /Another desktop CLI mode is active; it was not replaced/, name);
         assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
@@ -170,7 +191,7 @@ test("unregistration leaves a FORCE_CLI=1 it cannot prove it set", mac, async ()
   ];
   for (const [name, seed] of unproven) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       const { wrapper } = await prepareDesktop(f.config, f.app);
       await seed(f, wrapper); f.values.set(FORCE, "1"); const cliPath = f.values.get(PATH_KEY);
       const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
@@ -184,7 +205,7 @@ test("unregistration leaves a FORCE_CLI=1 it cannot prove it set", mac, async ()
 
 test("status reports the legacy FORCE_CLI hook separately from the desktop registration", mac, async () => {
   const f = await fixture();
-  await inHome(f, async () => {
+  await inDesktopHome(f, async () => {
     const { wrapper } = await prepareDesktop(f.config, f.app);
     await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
     f.values.set(PATH_KEY, wrapper);
@@ -203,7 +224,7 @@ test("status reports the legacy FORCE_CLI hook separately from the desktop regis
 test("unregistration clears our FORCE_CLI and leaves a foreign value", mac, async () => {
   for (const [legacy, cleared] of [["1", true], ["other", false]] as const) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       const { wrapper } = await prepareDesktop(f.config, f.app);
       await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
       f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, legacy);
@@ -219,7 +240,7 @@ test("unregistration clears our FORCE_CLI and leaves a foreign value", mac, asyn
 test("registration still refuses a foreign CODEX_CLI_PATH and never replaces it", mac, async () => {
   for (const restoreOnly of [true, false]) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       f.values.set(PATH_KEY, "/opt/other-cli");
       await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec), /Another desktop CLI override is active/);
       assert.equal(f.calls.some(call => call.startsWith(`setenv ${PATH_KEY}`) || call.startsWith(`unsetenv ${PATH_KEY}`)), false, `restoreOnly=${restoreOnly}`);
@@ -257,7 +278,7 @@ test("launchDesktop starts the app with CODEX_CLI_PATH and no FORCE_CLI", mac, a
   ];
   for (const [name, inherited, expected] of cases) {
     const f = await fixture();
-    await inHome(f, async () => {
+    await inDesktopHome(f, async () => {
       const { binary, wrapper } = await prepareDesktop(f.config, f.app);
       const saved = { ...process.env };
       delete process.env[FORCE]; delete process.env[PATH_KEY]; Object.assign(process.env, inherited(wrapper));
