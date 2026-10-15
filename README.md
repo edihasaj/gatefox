@@ -139,7 +139,7 @@ Standard remains the default speed. Codex 2 discovery retains offered Fast tiers
 for local and connected-machine model lists. Claude models that support fast mode
 (Opus) offer Fast too, billed to Claude usage credits. Speed is independent of reasoning.
 The current Copilot CLI has no selected-model Fast tier; unsupported requests
-fail before inference. See [speed controls](docs/app-server.md#speed-controls).
+fail before inference. See [speed controls](docs/speed-controls.md).
 
 On macOS, install an explicit user service to keep the daemon alive independently
 of terminals and the Codex app:

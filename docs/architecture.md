@@ -78,7 +78,7 @@ Gateway-owned compaction metadata contains only current-window counters and SDK
 compaction lifecycle events, scoped to the native storage home. Recovery uses
 the loaded executor's frozen model limits and the next explicit user request.
 It preserves active steering, goals, native account ownership, and original
-rollouts. See [compaction and model changes](app-server.md#compaction-and-model-changes)
+rollouts. See [compaction and model changes](app-server-compaction.md)
 for completion, cancellation, and shared-ownership limits.
 
 Each adapter keeps a separate private cache of public gateway model rows.
