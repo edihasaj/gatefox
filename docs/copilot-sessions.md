@@ -189,8 +189,9 @@ model call nobody waits for.
 A cancelled request stops reading the model at once but ends only when its session is gone
 (about 2 seconds: the abort is bounded to 2 seconds, then the CLI is killed and its folder
 removed), handing over the usage the CLI reports meanwhile. A process outside the CLI's group
-that keeps the CLI's output open (a helper the CLI detached) does not hold the request: half a
-second after the CLI has exited, the gateway closes its pipes and the request ends. A reseed or
+that keeps the CLI's output open (a helper the CLI detached) does not hold the request: once the
+CLI has exited and its output has been silent for half a second, the gateway closes its pipes and
+the request ends. A reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
 request fails that request at once, or, before its first event, hands it to the one-shot
 path (`stream_failed`). The next request after a cancellation reseeds,

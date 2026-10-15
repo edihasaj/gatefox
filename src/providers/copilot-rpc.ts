@@ -6,15 +6,16 @@ type Message = Record<string, unknown>;
 const limit = 16 * 1024 * 1024;
 /** Bounds in milliseconds; tests shorten them. */
 export const rpcLimits = {
-  /** How long the CLI's output may stay open after the CLI process has exited, before the gateway closes it. */
+  /** How long the CLI's output may stay open and silent after the CLI process has exited, before the gateway closes it. */
   exitGraceMs: 500,
 };
 export const record = (value: unknown): Message => value && typeof value === "object" && !Array.isArray(value) ? value as Message : {};
 
 /** SDK stdio framing. Bound headers and payload before parsing JSON. */
-export async function* copilotFrames(input: Readable): AsyncGenerator<Message> {
+export async function* copilotFrames(input: Readable, onChunk?: () => void): AsyncGenerator<Message> {
   let buffer = Buffer.alloc(0);
   for await (const chunk of input) {
+    onChunk?.();
     buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
     while (buffer.length) {
       const end = buffer.indexOf("\r\n\r\n");
@@ -40,6 +41,8 @@ export class CopilotRPC {
   private readonly events = new Readable({ objectMode: true, highWaterMark: 256, read() {} });
   private readonly pending = new Map<number, { resolve: (value: Message) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private sequence = 0; private stopping = false; private queuedBytes = 0;
+  /** How many chunks of the CLI's output were read so far: after the CLI exits, a change shows that output is still arriving. */
+  private chunks = 0;
   /** Why the connection ended; `notifications` throws it after the events read before it. */
   private failure?: ProviderError;
   /** Whether the CLI's output is still being read: its event stream ends only once everything it wrote was read. */
@@ -50,14 +53,20 @@ export class CopilotRPC {
     this.child.stderr.resume(); this.events.on("error", () => {});
     this.exited = new Promise(resolve => this.child.once("close", () => { this.fail(new ProviderError("cli_failed", "Copilot CLI closed before completion")); resolve(); }));
     // Node reports `close` only once every stdio pipe has closed. A process outside the CLI's group can hold the CLI's output open
-    // after the CLI has gone (a helper it detached), so `exited` and the event stream would wait for it without limit. What the
-    // CLI wrote before it exited is read within a moment; after `exitGraceMs` the pipes are closed from this side.
+    // after the CLI has gone (a helper it detached), so `exited` and the event stream would wait for it without limit. Once the CLI
+    // has exited, its output is given `exitGraceMs` to say anything more; after that much silence the pipes are closed from this
+    // side. Silence is counted in ticks, not by the clock: a process that was held up for longer than the grace has had one tick,
+    // not all of them, and reads what is waiting for it before it can close anything.
     this.child.once("exit", () => {
-      const timer = setTimeout(() => {
+      const tick = Math.max(5, Math.floor(rpcLimits.exitGraceMs / 10)); let seen = this.chunks; let silent = 0;
+      const timer = setInterval(() => {
+        if (this.chunks !== seen) { seen = this.chunks; silent = 0; return; }
+        if (++silent < 10) return;
+        clearInterval(timer);
         this.failure ??= new ProviderError("cli_failed", "Copilot CLI closed before completion");
         for (const stream of [this.child.stdout, this.child.stdin, this.child.stderr]) stream.destroy();
-      }, rpcLimits.exitGraceMs).unref();
-      this.child.once("close", () => clearTimeout(timer));
+      }, tick).unref();
+      this.child.once("close", () => clearInterval(timer));
     });
     this.child.once("error", () => this.fail(new ProviderError("cli_failed", "Copilot CLI is unavailable; run gateway doctor")));
     this.child.stdin.on("error", () => this.fail(new ProviderError("cli_failed", "Copilot CLI connection failed")));
@@ -65,7 +74,7 @@ export class CopilotRPC {
   }
   private async read(): Promise<void> {
     try {
-      for await (const message of copilotFrames(this.child.stdout)) {
+      for await (const message of copilotFrames(this.child.stdout, () => { this.chunks++; })) {
         if (typeof message.method === "string") {
           if (message.id !== undefined) { this.send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: "Gateway does not execute host requests" } }); continue; }
           if (message.method !== "session.event") continue;

@@ -11,7 +11,7 @@ import { adapter, alive, harness, thread, tools, until, user } from "./copilot-l
 
 // A cancelled request ends once the CLI is gone, its folder removed and its event stream ended. Node reports a child's `close` only when
 // every pipe to it has closed, so a process outside the CLI's group that holds the CLI's stdout open (a helper the CLI detached) kept
-// the request open for as long as it lived. The connection now closes its pipes `rpcLimits.exitGraceMs` after the CLI exited.
+// the request open for as long as it lived. The connection now closes its pipes once the CLI has exited and its output has been silent for `rpcLimits.exitGraceMs`.
 
 for (const mode of ["oneshot", "live"] as const) {
   test(`a cancelled ${mode} request ends though a process outside the CLI's group still holds the CLI's output open`, { skip: process.platform === "win32", timeout: 60000 }, async () => {
@@ -48,5 +48,22 @@ test("the connection's event stream ends with the CLI's failure after the grace,
     assert.equal(seen.length, 1, "what the CLI wrote before it left was delivered");
     assert.ok(failure instanceof ProviderError && failure.code === "cli_failed", String(failure));
     assert.ok(stdout.destroyed && stdin.destroyed && stderr.destroyed, "all three pipes were closed from this side");
+  } finally { rpcLimits.exitGraceMs = limit; }
+});
+
+test("output that keeps arriving after the CLI exited is read, and the pipes are closed only after it falls silent", { timeout: 20000 }, async () => {
+  const { child, emitter, stdout, stderr, stdin } = fake(); const rpc = new CopilotRPC({}, ".", child); const limit = rpcLimits.exitGraceMs; rpcLimits.exitGraceMs = 200;
+  try {
+    const body = JSON.stringify({ jsonrpc: "2.0", method: "session.event", params: { sessionId: "s", event: { type: "assistant.usage" } } });
+    emitter.emit("exit", 0, null);
+    // Ten events, 60 ms apart: 600 ms in all, three times the grace. The pipes must stay open until the last one has been read.
+    let open = 0;
+    for (let index = 0; index < 10; index++) { stdout.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`); if (!stdout.destroyed) open++; await new Promise(resolve => setTimeout(resolve, 60)); }
+    const seen: unknown[] = []; let failure: unknown;
+    try { for await (const message of rpc.notifications()) seen.push(message); } catch (error) { failure = error; }
+    assert.equal(open, 10, "the output was still open for each of the ten events");
+    assert.equal(seen.length, 10, "and all ten were read");
+    assert.ok(failure instanceof ProviderError && failure.code === "cli_failed", String(failure));
+    assert.ok(stdout.destroyed && stdin.destroyed && stderr.destroyed, "the pipes were closed once the output fell silent");
   } finally { rpcLimits.exitGraceMs = limit; }
 });
