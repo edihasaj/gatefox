@@ -62,7 +62,9 @@ test("switching the provider to one-shot lets a running turn finish, then closes
     await turn(adapter({ mode: "oneshot" }), [user("other")], { context: { threadId: "other" } });
     const a = await running;
     assert.match(a.text, /^answer/); assert.equal(a.events.at(-1)?.type, "done");
-    assert.ok(await until(() => !alive(pid)), "then its session closes");
+    // The end event follows the process exit and the folder's removal, so wait for the event itself.
+    assert.ok(await until(async () => (await kinds(h)).includes("closed:mode_oneshot")), `then its session closes: ${(await kinds(h)).join(",")}`);
+    assert.ok(!alive(pid));
     const outcomes = await kinds(h);
     assert.ok(outcomes.includes("closed:mode_oneshot") && !outcomes.some(kind => kind.startsWith("fallback") || kind.startsWith("crashed")), outcomes.join(","));
   } finally { await h.restore(); }
