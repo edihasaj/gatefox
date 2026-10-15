@@ -48,7 +48,9 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const unified = await readServicePlan(config.stateDirectory);
   const pending = await readPendingLoginConsolidation(config.stateDirectory);
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist"); const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
-  const environment = async (name: string) => (await exec("/bin/launchctl", ["getenv", name]).catch(() => ({ stdout: "" }))).stdout.trim();
+  // A failing getenv propagates instead of looking like an unset variable, and launchctl prints the value
+  // followed by one newline, so exactly that terminator is removed; any other whitespace is part of the value.
+  const environment = async (name: string) => (await exec("/bin/launchctl", ["getenv", name])).stdout.replace(/\n$/, "");
   let registration: { wrapper?: string } = {}; try { registration = JSON.parse(await readFile(receipt, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (action === "status") {
     const cliPath = await environment("CODEX_CLI_PATH");
@@ -94,12 +96,12 @@ async function desktopOperation(action: string, configPath: string, app: string,
   // and the CLI path is a gateway wrapper (the receipt's, the current one, or an older one in this state
   // directory); any other value, or a "1" without that proof, belongs to someone else.
   const force = await environment("CODEX_APP_SERVER_FORCE_CLI");
-  if (force === "1" && ownPrevious && !registration.wrapper) throw new Error("CODEX_APP_SERVER_FORCE_CLI=1 is set beside a gateway wrapper, but no registration receipt proves the gateway set it. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again.");
+  if (force === "1" && ownPrevious && !registration.wrapper) throw new Error("CODEX_APP_SERVER_FORCE_CLI is set to the legacy value beside a gateway wrapper, but no registration receipt proves the gateway set it. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again.");
   const ours = !!registration.wrapper && !!previous && (previous === registration.wrapper || previous === wrapper || ownPrevious);
   // A 1 that nothing proves is ours gets the remedy, not just a refusal; any other value stays nameless so a
   // foreign setting is never echoed back.
   if (force && !(force === "1" && ours)) throw new Error(force === "1"
-    ? "CODEX_APP_SERVER_FORCE_CLI=1 is set and nothing proves the gateway set it. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again."
+    ? "CODEX_APP_SERVER_FORCE_CLI is set to the legacy value and nothing proves the gateway set it. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again."
     : "Another desktop CLI mode is active; it was not replaced");
   // Clearing ours returns durable chats and SSH rows to native execution; CODEX_CLI_PATH alone keeps local
   // chats on the gateway. Before the early return below so unified re-registration and upgrades clean it too.

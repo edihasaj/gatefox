@@ -27,9 +27,10 @@ export async function desktopFixture(name: string) {
   const exec: LaunchctlExec = async (file, args) => {
     assert.equal(file, "/bin/launchctl"); calls.push(args.join(" "));
     if (args[0] === "getenv") {
-      // A real launchctl getenv exits 0 with empty stdout for a name the session does not hold; only a
-      // non-empty value means the variable is set.
-      return { stdout: values.get(args[1]!) ?? "" };
+      // A real launchctl getenv exits 0 with empty stdout for a name the session does not hold, and prints
+      // the value plus exactly one newline when it does; only a non-empty value means the variable is set.
+      const value = values.get(args[1]!);
+      return { stdout: value === undefined ? "" : value + "\n" };
     }
     if (args[0] === "setenv") values.set(args[1]!, args[2]!);
     if (args[0] === "unsetenv") values.delete(args[1]!);

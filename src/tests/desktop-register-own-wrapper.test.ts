@@ -43,6 +43,7 @@ const lookalikeNames: Array<[string, (f: Fixture) => string]> = [
   ["a short hash in the state directory", f => join(f.state, "desktop-wrapper-0123")],
   ["a prefix in the state directory", f => join(f.state, "notdesktop-wrapper-0123456789abcdef")],
   ["16 characters that are not hex", f => join(f.state, "desktop-wrapper-zzzzzzzzzzzzzzzz")],
+  ["17 hex characters in the state directory", f => join(f.state, "desktop-wrapper-0123456789abcdef0")],
   ["uppercase hex", f => join(f.state, "desktop-wrapper-0123456789ABCDEF")],
   ["an uppercase prefix", f => join(f.state, "DESKTOP-WRAPPER-0123456789abcdef")],
   ["a subdirectory of the state directory", f => join(f.state, "sub", "desktop-wrapper-0123456789abcdef")],
@@ -96,12 +97,26 @@ const trickyPaths: Array<{ name: string; seed: (f: Fixture) => Promise<string | 
  * no root-owned file.
  */
 test("ownWrapper requires the wrapper file to belong to this user", mac, async () => {
-  const f = await fixture();
-  const wrapper = join(f.state, "desktop-wrapper-0123456789abcdef");
+  // The stat seam answers for the file system, so a fixed state-directory spelling is enough and no fixture is built.
+  const state = "/nonexistent/gateway-state";
+  const wrapper = join(state, "desktop-wrapper-0123456789abcdef");
   const mine = process.getuid?.() ?? 0; const other = mine === 0 ? 1 : 0;
   const stat = (uid: number) => async () => ({ isFile: () => true, isSymbolicLink: () => false, uid });
-  assert.equal(await ownWrapper(f.state, wrapper, stat(other)), false, "a regular wrapper someone else owns is foreign");
-  assert.equal(await ownWrapper(f.state, wrapper, stat(mine)), true, "the same wrapper owned by this user is ours");
+  assert.equal(await ownWrapper(state, wrapper, stat(other)), false, "a regular wrapper someone else owns is foreign");
+  assert.equal(await ownWrapper(state, wrapper, stat(mine)), true, "the same wrapper owned by this user is ours");
+});
+
+/**
+ * Only a missing file is proof of a wrapper we made and a cleanup already removed; every other probe failure says
+ * "cannot tell", and cannot-tell is foreign. The stat seam stands in, so no directory has to exist.
+ */
+test("ownWrapper treats a missing wrapper as ours to replace and every other stat error as foreign", mac, async () => {
+  const state = "/nonexistent/gateway-state";
+  const wrapper = join(state, "desktop-wrapper-0123456789abcdef");
+  const fail = (code: string) => async () => { throw Object.assign(new Error(code), { code }); };
+  assert.equal(await ownWrapper(state, wrapper, fail("EACCES")), false, "a state directory we cannot read proves nothing");
+  assert.equal(await ownWrapper(state, wrapper, fail("ENOTDIR")), false, "a path that stops at a regular file is foreign");
+  assert.equal(await ownWrapper(state, wrapper, fail("ENOENT")), true, "a wrapper a cleanup removed stays replaceable");
 });
 
 test("registration replaces an older gateway wrapper the receipt no longer names and clears its FORCE_CLI", mac, async () => {
@@ -179,6 +194,7 @@ test("unregistration clears an older gateway wrapper the receipt no longer names
       const { stale } = await staleOwnPair(f, onDisk);
       const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
       assert.equal(result.registered, false, `wrapperOnDisk=${onDisk}`);
+      assert.ok(!("legacyForceCliKept" in result), `wrapperOnDisk=${onDisk}: the receipt proved the pair, so nothing was kept`);
       assert.ok(f.calls.includes(`unsetenv ${PATH_KEY}`), `wrapperOnDisk=${onDisk}`); assert.ok(f.calls.includes(`unsetenv ${FORCE}`), `wrapperOnDisk=${onDisk}`);
       assert.equal(f.values.has(PATH_KEY), false, `wrapperOnDisk=${onDisk}`); assert.equal(f.values.has(FORCE), false, `wrapperOnDisk=${onDisk}`);
       assert.equal(await exists(stale), onDisk, "registration never deletes a wrapper file");

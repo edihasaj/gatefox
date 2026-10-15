@@ -33,18 +33,21 @@ a stale wrapper file. If a foreign `CODEX_CLI_PATH` override blocks registration
 
 The receipt requirement is what turns a missing receipt into a refusal rather than a guess. Where the
 receipt was cleared or never written, a gateway wrapper path beside a `1` proves the path is ours but says
-nothing about who exported the pair: `gateway desktop register` refuses with a message naming the value, and
-`gateway desktop status` reports `legacyForceCli: false`. `gateway desktop unregister` still clears an own
-`CODEX_CLI_PATH` there, because that path is ours whether or not the receipt survived, and it leaves the `1`
-alone; when it does, it reports `legacyForceCliKept: true` so the cleared path and the kept value show up in one
-output, and `gateway uninstall` passes that flag through. `gateway desktop status` also reports
-`staleWrapper: true` while the session points at a wrapper of ours that the receipt no longer names;
-that alone is not an active adapter, so
-`activeForFutureLaunches` stays `false` until a registration writes the current wrapper. Alongside
-`legacyForceCli`, status reports `forceCliSet`, which is true when the session holds
-any non-empty value of `CODEX_APP_SERVER_FORCE_CLI`, whatever that value is, and never carries the value itself. `gateway desktop`
-only leaves an inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` is a
-gateway wrapper; it does not change the login session, so later Dock launches still see it.
+nothing about who exported the pair: `gateway desktop register` refuses with a message that names the
+variable and the remedy, never a value, saying that `CODEX_APP_SERVER_FORCE_CLI` is set to the legacy
+value, and `gateway desktop status` reports `legacyForceCli: false`. `gateway desktop unregister` still
+clears an own `CODEX_CLI_PATH` there, because that path is ours whether or not the receipt survived, and it
+leaves the `1` alone; when it does, it reports `legacyForceCliKept: true` so the cleared path and the kept
+value show up in one output, and `gateway uninstall` passes that flag through. `gateway desktop status` also
+reports `staleWrapper: true` while the session points at a wrapper of ours that the receipt no longer
+names; that alone is not an active adapter, so `activeForFutureLaunches` stays `false` until a registration
+writes the current wrapper. Alongside `legacyForceCli`, status reports `forceCliSet`, which reads the
+variable with `launchctl getenv`, removes exactly one trailing newline, and counts it as set when anything
+remains, so a whitespace-only value is set; it never carries the value itself. If `launchctl` cannot be run
+or times out, register, unregister and status fail with that error rather than treating the variable as
+unset, so `forceCliSet: false` is only ever reported on a successful read. `gateway desktop` only leaves an
+inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` is a gateway
+wrapper; it does not change the login session, so later Dock launches still see it.
 
 After installing a release that stops setting it, clear the old value first, then
 restart the app:

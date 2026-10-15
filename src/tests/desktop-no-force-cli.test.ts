@@ -64,8 +64,8 @@ test("registration clears our FORCE_CLI when the session already names the curre
 
 test("registration refuses a FORCE_CLI=1 it cannot prove it set", mac, async () => {
   const unproven: Array<[string, (f: Fixture, wrapper: string) => Promise<void>, RegExp]> = [
-    ["no receipt and no CODEX_CLI_PATH", async () => undefined, /CODEX_APP_SERVER_FORCE_CLI=1 is set and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./],
-    ["a receipt but no CODEX_CLI_PATH", async (f, wrapper) => { await writePrivateJson(f.receipt, { wrapper }); }, /CODEX_APP_SERVER_FORCE_CLI=1 is set and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./],
+    ["no receipt and no CODEX_CLI_PATH", async () => undefined, /CODEX_APP_SERVER_FORCE_CLI is set to the legacy value and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./],
+    ["a receipt but no CODEX_CLI_PATH", async (f, wrapper) => { await writePrivateJson(f.receipt, { wrapper }); }, /CODEX_APP_SERVER_FORCE_CLI is set to the legacy value and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./],
     ["a wrapper path but nothing naming a wrapper in the receipt", async (f, wrapper) => { f.values.set(PATH_KEY, wrapper); }, /no registration receipt proves the gateway set it/],
   ];
   for (const [name, seed, refusal] of unproven) {
@@ -100,7 +100,7 @@ test("registration refuses a FORCE_CLI=1 beside our own older wrapper when no re
       await inDesktopHome(f, async () => {
         const stale = await noReceiptPair(f, receipt);
         await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec),
-          /CODEX_APP_SERVER_FORCE_CLI=1 is set beside a gateway wrapper, but no registration receipt proves the gateway set it\. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again\./, name);
+          /CODEX_APP_SERVER_FORCE_CLI is set to the legacy value beside a gateway wrapper, but no registration receipt proves the gateway set it\. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again\./, name);
         assert.equal(f.values.get(PATH_KEY), stale, name + ": the wrapper path is untouched");
         assert.equal(f.values.get(FORCE), "1", name + ": the value is untouched");
         assert.equal(f.calls.some(call => (call.includes(PATH_KEY) || call.includes(FORCE)) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
@@ -124,7 +124,7 @@ test("registration after such an unregistration names FORCE_CLI and gives the re
       assert.equal(f.values.has(PATH_KEY), false, receipt + ": " + stale + " is no longer the session path");
       assert.equal(f.values.get(FORCE), "1", receipt + ": the unproven value is untouched");
       await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec),
-        /CODEX_APP_SERVER_FORCE_CLI=1 is set and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./,
+        /CODEX_APP_SERVER_FORCE_CLI is set to the legacy value and nothing proves the gateway set it\. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again\./,
         receipt + ": the refusal names the value and the remedy, never a foreign one");
       assert.equal(f.calls.includes(`unsetenv ${FORCE}`), false, receipt + ": the refusal alone clears nothing more");
       assert.equal(f.values.get(FORCE), "1", receipt + ": register still has not touched the value");
@@ -207,6 +207,20 @@ test("registration refuses a foreign FORCE_CLI value even beside a proven gatewa
   }
 });
 
+test("registration refuses a FORCE_CLI=0 beside our own older wrapper when there is no receipt", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const stale = await noReceiptPair(f, "missing"); f.values.set(FORCE, "0");
+    await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), (error: unknown) => {
+      assert.match((error as Error).message, /^Another desktop CLI mode is active; it was not replaced$/, "a value other than 1 gets the nameless refusal, even beside a wrapper of ours");
+      return true;
+    });
+    assert.equal(f.values.get(PATH_KEY), stale, "the own wrapper path is untouched");
+    assert.equal(f.values.get(FORCE), "0", "the foreign value is untouched");
+    assert.equal(f.calls.some(call => (call.includes(PATH_KEY) || call.includes(FORCE)) && !call.startsWith("getenv ")), false, "no setenv or unsetenv");
+  });
+});
+
 test("unregistration leaves a FORCE_CLI=1 it cannot prove it set", mac, async () => {
   const unproven: Array<[string, (f: Fixture, wrapper: string) => Promise<void>]> = [
     ["a receipt wrapper beside a foreign CODEX_CLI_PATH", async (f, wrapper) => {
@@ -273,6 +287,26 @@ test("status reports whether FORCE_CLI is set without ever reporting its value",
   });
 });
 
+/**
+ * A real `launchctl getenv` prints the value plus exactly one newline. The fixture mirrors that, and status must
+ * strip exactly that terminator: leaving it on would break every wrapper comparison, and trimming further would
+ * turn a whitespace-only value into an unset one.
+ */
+test("the single trailing newline from getenv is stripped and a whitespace FORCE_CLI counts as set", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await prepareDesktop(f.config, f.app);
+    await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
+    f.values.set(PATH_KEY, wrapper);
+    assert.equal((await f.exec("/bin/launchctl", ["getenv", PATH_KEY])).stdout, wrapper + "\n", "the fixture answers like launchctl: the value plus exactly one newline");
+    assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).activeForFutureLaunches, true, "the stripped value equals the receipt's wrapper");
+    f.values.set(FORCE, " ");
+    const blank = await macDesktop("status", f.config, f.app, false, f.exec);
+    assert.equal(blank.forceCliSet, true, "a whitespace-only value is set, not the empty answer for an unset name");
+    assert.equal(blank.legacyForceCli, false, "and it is not the legacy 1");
+  });
+});
+
 test("unregistration clears our FORCE_CLI and leaves a foreign value", mac, async () => {
   for (const [legacy, cleared] of [["1", true], ["other", false]] as const) {
     const f = await fixture();
@@ -282,6 +316,7 @@ test("unregistration clears our FORCE_CLI and leaves a foreign value", mac, asyn
       f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, legacy);
       const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
       assert.equal(result.registered, false);
+      assert.ok(!("legacyForceCliKept" in result), legacy + ": the receipt proved the pair, so nothing was kept");
       assert.ok(f.calls.includes(`unsetenv ${PATH_KEY}`));
       assert.equal(f.calls.includes(`unsetenv ${FORCE}`), cleared);
       assert.equal(f.values.get(FORCE), cleared ? undefined : legacy);
@@ -351,6 +386,22 @@ test("launchDesktop starts the app with CODEX_CLI_PATH and no FORCE_CLI", mac, a
       assert.equal(seen![FORCE], expected, name);
     });
   }
+});
+
+test("a failing getenv propagates through every action instead of reading as unset", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const failing = async (file: string, args: string[]): Promise<{ stdout: string }> => {
+      if (args[0] === "getenv") { f.calls.push(args.join(" ")); throw new Error("spawn failed"); }
+      return f.exec(file, args);
+    };
+    await assert.rejects(macDesktop("status", f.config, f.app, false, failing), /spawn failed/, "status propagates rather than reporting forceCliSet:false");
+    await assert.rejects(macDesktop("register", f.config, f.app, true, failing), /spawn failed/, "register propagates rather than treating an unread session as clean");
+    await assert.rejects(macDesktop("unregister", f.config, f.app, false, failing), /spawn failed/, "unregister propagates rather than skipping what it owns");
+    assert.equal(f.calls.some(call => call.startsWith("setenv")), false, "no setenv before the probe could answer");
+    assert.equal(f.calls.some(call => call.startsWith("unsetenv")), false, "no unsetenv before the probe could answer");
+    assert.equal(f.calls.some(call => call.startsWith("bootout")), false, "no bootout before the probe could answer");
+  });
 });
 
 test("the default launchctl runner bounds every call with a timeout", async () => {

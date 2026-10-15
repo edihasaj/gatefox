@@ -7,21 +7,35 @@ import { macDesktop } from "./mac-desktop.js";
 import { macSsh } from "./mac-ssh.js";
 import { macNative } from "./mac-native.js";
 
-export async function uninstallGateway(configPath: string): Promise<Record<string, unknown>> {
+/**
+ * The commands the uninstaller runs. Injectable so a test can walk the whole uninstall path, including the
+ * kept-legacy warning, with fakes that record calls instead of touching launchctl, the Trash, or the network.
+ */
+export type UninstallDeps = {
+  macService: typeof macService;
+  macNative: typeof macNative;
+  macDesktop: typeof macDesktop;
+  macSsh: typeof macSsh;
+  macTunnel: typeof macTunnel;
+};
+
+const defaultDeps: UninstallDeps = { macService, macNative, macDesktop, macSsh, macTunnel };
+
+export async function uninstallGateway(configPath: string, deps: UninstallDeps = defaultDeps): Promise<Record<string, unknown>> {
   const command = process.env.GATEWAY_COMMAND;
   if (process.env.GATEWAY_INSTALLED !== "1" || !command) throw new Error("Uninstall requires an installed gateway command");
   const root = resolve(dirname(command), "../share/subscription-gateway");
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
-  await macService("uninstall", configPath);
-  await macNative("uninstall", configPath);
+  await deps.macService("uninstall", configPath);
+  await deps.macNative("uninstall", configPath);
   // Unregister reports legacyForceCliKept when it cleared our CODEX_CLI_PATH but a legacy FORCE_CLI=1 stayed
   // behind it for lack of a receipt; the uninstaller passes that warning through so the operator can clear it.
-  const desktop = await macDesktop("unregister", configPath);
-  await macSsh("unregister", configPath);
+  const desktop = await deps.macDesktop("unregister", configPath);
+  await deps.macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
   for (const file of await readdir(directory)) {
     const match = /^com\.edihasaj\.subscription-gateway\.tunnel\.([a-z][a-z0-9-]{0,63})\.plist$/.exec(file);
-    if (match) await macTunnel("uninstall", { id: match[1] }, dirname(configPath));
+    if (match) await deps.macTunnel("uninstall", { id: match[1] }, dirname(configPath));
   }
   const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true }); const suffix = Date.now();
   // The product-name alias goes too, but only when it is the installer's own link.
