@@ -284,7 +284,10 @@ Model metadata follows each provider's own catalog. The inference server refresh
 it a minute after start and every six hours: Codex, Copilot and OpenAI-compatible
 providers from their `/v1/models`, and Claude from the CLI's model list. Only the
 metadata of configured models changes; adding or removing routes stays an explicit
-`gateway discover PROVIDER --load`. A discovery failure keeps the saved metadata.
+`gateway discover PROVIDER --load`. A discovery failure keeps the saved metadata. This background
+refresh never refreshes a Codex login: a provider whose access token would need a refresh
+is skipped for that round and recorded as `model_metadata_skipped`, and the next real request
+refreshes it (see [responses](responses.md) and [diagnostics](diagnostics.md)).
 Claude also reports the context window the CLI actually used in every response
 (`modelUsage.contextWindow`); the server saves it in `observed-context-windows.json`
 and the next refresh adopts it, so a window never needs a manual table. Clients
