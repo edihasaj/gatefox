@@ -146,19 +146,24 @@ test("the ledger skips the messages that moved into the system prompt", () => {
   assert.equal(messages, 2); assert.deepEqual(entries.map(entry => [entry.kind, entry.first, entry.count]), [["m", 0, 1], ["m", 1, 1]]);
 });
 
-// A one-shot CLI that finishes a text turn, prints its rate limit (unless told not to), then prints the result after GATEWAY_FIXTURE_RESULT_MS (3 s).
+// A one-shot CLI that finishes a text turn, prints its rate limit (unless told not to), then prints the result: with the turn when
+// GATEWAY_FIXTURE_RESULT_MS is 0 (all lines in one run, so none can be cut off by the gateway's stop), never when it is "hold" (the
+// CLI then stays until it is stopped), or after that many ms. It records the pid of each CLI, and a line in `results` for each result it printed.
 async function slowResultFixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-endturn-"));
   const script = `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';for await(const _ of process.stdin){}appendFileSync(${JSON.stringify(join(directory, "pids"))},process.pid+'\\n');
+const parent=process.ppid;const watch=setInterval(()=>{try{process.kill(parent,0)}catch{process.exit(0)}},100);if(process.env.GATEWAY_FIXTURE_RESULT_MS!=='hold')watch.unref();
 const out=value=>console.log(JSON.stringify(value));const event=value=>out({type:'stream_event',event:value});const stop=process.env.GATEWAY_FIXTURE_STOP||'end_turn';
 event({type:'message_start',message:{id:'msg_1',usage:{input_tokens:3,cache_read_input_tokens:50,cache_creation_input_tokens:7,output_tokens:1}}});
 event({type:'content_block_start',index:0,content_block:{type:'text',text:''}});event({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Hi'}});
 event({type:'content_block_stop',index:0});event({type:'message_delta',delta:{stop_reason:stop},usage:{output_tokens:5}});event({type:'message_stop'});
 if(!process.env.GATEWAY_FIXTURE_NO_LIMIT)out({type:'rate_limit_event',rate_limit_info:{status:'allowed_warning',rateLimitType:'five_hour',resetsAt:4000000000}});
-setTimeout(()=>{out(stop==='end_turn'?{type:'result',subtype:'success',is_error:false,result:'Hi',modelUsage:{fixture:{contextWindow:300000}}}:{type:'result',subtype:'error_max_turns',is_error:true});process.exit(0);},Number(process.env.GATEWAY_FIXTURE_RESULT_MS||3000));\n`;
+const ms=process.env.GATEWAY_FIXTURE_RESULT_MS||'0';const result=()=>{appendFileSync(${JSON.stringify(join(directory, "results"))},'x\\n');out(stop==='end_turn'?{type:'result',subtype:'success',is_error:false,result:'Hi',modelUsage:{fixture:{contextWindow:300000}}}:{type:'result',subtype:'error_max_turns',is_error:true});process.exit(0);};
+if(ms==='0')result();else if(ms!=='hold')setTimeout(result,Number(ms));\n`;
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
   return { directory, pids: async () => (await readFile(join(directory, "pids"), "utf8")).trim().split("\n").map(Number),
+    results: async () => (await readFile(join(directory, "results"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).length,
     restore: async () => {
       if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous;
       for (const name of ["GATEWAY_FIXTURE_STOP", "GATEWAY_FIXTURE_NO_LIMIT", "GATEWAY_FIXTURE_RESULT_MS"]) delete process.env[name];
@@ -166,22 +171,24 @@ setTimeout(()=>{out(stop==='end_turn'?{type:'result',subtype:'success',is_error:
     } };
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** Waits for the process to be gone, however long that takes: a CLI that is never stopped fails the test by its timeout. */
 async function gone(pid: number): Promise<boolean> {
-  for (const started = Date.now(); alive(pid); await new Promise(resolve => setTimeout(resolve, 10))) if (Date.now() - started > 1000) return false;
+  while (alive(pid)) await new Promise(resolve => setTimeout(resolve, 10));
   return true;
 }
 
-test("a one-shot text turn ends at its end_turn delta with that usage, keeping a prompt rate limit and result window, without waiting for a slow result", async () => {
+test("a one-shot text turn ends at its end_turn delta with that usage, keeping a prompt rate limit and result window, without waiting for a slow result", { timeout: 30000 }, async () => {
   const f = await slowResultFixture();
   try {
     const limits: ClaudeLimit[] = []; const windows: Array<[string, number]> = [];
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } }, async limit => { limits.push(limit); }, (model, window) => { windows.push([model, window]); });
-    for (const [noLimit, resultMs] of [[false, 3000], [true, 3000], [false, 10]] as const) {
-      process.env.GATEWAY_FIXTURE_RESULT_MS = String(resultMs); if (noLimit) process.env.GATEWAY_FIXTURE_NO_LIMIT = "1"; else delete process.env.GATEWAY_FIXTURE_NO_LIMIT;
-      const started = Date.now(); let doneAt = 0;
+    // A CLI that never prints its result ("hold") cannot be waited for: a build that does hangs until the test's timeout. One that
+    // prints it with the turn (0) is read to the end of what it printed.
+    for (const [noLimit, resultMs] of [[false, "hold"], [true, "hold"], [false, "0"]] as const) {
+      process.env.GATEWAY_FIXTURE_RESULT_MS = resultMs; if (noLimit) process.env.GATEWAY_FIXTURE_NO_LIMIT = "1"; else delete process.env.GATEWAY_FIXTURE_NO_LIMIT;
       const events: InferenceEvent[] = [];
-      for await (const event of adapter.infer({ model: "fixture", input: "hello" }, new AbortController().signal)) { events.push(event); if (event.type === "done") doneAt = Date.now(); }
-      assert.ok(Date.now() - started < 1500 && Date.now() - doneAt < 500, "neither the answer nor the request waits for a slow result");
+      for await (const event of adapter.infer({ model: "fixture", input: "hello" }, new AbortController().signal)) events.push(event);
+      assert.equal(await f.results(), resultMs === "hold" ? 0 : 1, `${resultMs}: ${resultMs === "hold" ? "the CLI printed no result, and the request ended" : "the CLI printed its result"}`);
       assert.deepEqual(events, [{ type: "text", text: "Hi" }, { type: "done", usage: { input_tokens: 60, output_tokens: 5, total_tokens: 65, input_tokens_details: { cached_tokens: 50 } }, accounting: { cacheWriteTokens: 7 } }]);
     }
     assert.deepEqual(limits.map(limit => limit.status), ["allowed_warning", "allowed_warning"], "the rate limit printed right after the turn is kept");

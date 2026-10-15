@@ -85,6 +85,7 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
       const ordinary = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
       assert.equal(ordinary.reasoningEffort, "high"); assert.deepEqual(ordinary.allowedModels, ["fixture"]);
       assert.equal(ordinary.serviceTier, undefined); assert.equal(ordinary.capi, undefined);
+      assert.deepEqual(Object.keys(ordinary).filter(key => /tier/i.test(key)), [], `${service_tier}: no tier of any name reaches session.create`);
     }
     fixture.mode("provider-absent");
     assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");

@@ -32,6 +32,6 @@ test("a gateway that exits without closing anything kills every Copilot CLI it s
     assert.equal(await exited, 0);
     const pids = await h.pids(); assert.equal(pids.length, 3, "a live CLI, a one-shot CLI and a starting CLI ran");
     assert.deepEqual(await h.liveDirs(), [], "every folder was removed before the process ended");
-    for (const pid of pids) assert.ok(await until(() => !alive(pid), 2000), `CLI ${pid} was killed with its gateway`);
+    for (const pid of pids) assert.ok(await until(() => !alive(pid)), `CLI ${pid} was killed with its gateway`);
   } finally { await h.restore(); }
 });

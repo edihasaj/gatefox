@@ -59,10 +59,12 @@ out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:
     assert.equal((await run("cooldown", { service_tier: "priority" }) as { serviceTier?: string }).serviceTier, "default", "a refused fast turn reports Standard");
     assert.equal((await run("off", {}) as { serviceTier?: string }).serviceTier, undefined);
     assert.equal((await run("off", { service_tier: "flex" }) as { serviceTier?: string }).serviceTier, undefined, "a Flex turn is served as Standard");
-    const [withEffort, fastOnly, , standard, flex] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.equal((await run("off", { service_tier: "flex", reasoning: { effort: "high" } }) as { serviceTier?: string }).serviceTier, undefined, "and so is a Flex turn with an effort");
+    const [withEffort, fastOnly, , standard, flex, flexEffort] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
     assert.deepEqual(JSON.parse(withEffort[withEffort.indexOf("--settings") + 1]), { alwaysThinkingEnabled: true, fastMode: true });
     assert.deepEqual(JSON.parse(fastOnly[fastOnly.indexOf("--settings") + 1]), { fastMode: true });
     assert.equal(standard.includes("--settings"), false);
     assert.equal(flex.includes("--settings"), false, "and without Fast mode turned on");
+    assert.deepEqual(JSON.parse(flexEffort[flexEffort.indexOf("--settings") + 1]), { alwaysThinkingEnabled: true }, "a Flex turn with an effort sets thinking but not fastMode");
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
 });

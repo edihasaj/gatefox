@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readdir, stat } from "node:fs/promises";
+import { readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
 import { adapter, alive, callIds, defaultAdapter, harness, kind, live, lookupName, outputFor, png, sleep, tools, turn, until, user, type Entry } from "./copilot-live-harness.js";
@@ -323,7 +323,8 @@ test("a running session is never evicted: at the cap with every session generati
 });
 
 test("a session whose own next request is still being placed is not evicted for a newcomer", { timeout: 30000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_SWITCH = "500";
+  // The CLI answers the effort change only when the test lets it, which is after the newcomer was placed.
+  const h = await harness(); const gate = join(h.directory, "switch-gate"); process.env.GATEWAY_COPILOT_LIVE_SWITCH_GATE = gate;
   try {
     const provider = adapter({ mode: "live", max: 1 }); const first = [user("a")];
     const a = await turn(provider, first, { context: { threadId: "A" }, extra: { reasoning: { effort: "low" } } });
@@ -332,7 +333,7 @@ test("a session whose own next request is still being placed is not evicted for 
     const again = turn(provider, [...first, ...a.output, user("more")], { context: { threadId: "A" }, extra: { reasoning: { effort: "high" } } });
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "switch")));
     const b = await turn(provider, [user("b")], { context: { threadId: "B" } }); assert.match(b.text, /^answer/);
-    await again;
+    await writeFile(gate, "x"); await again;
     assert.ok(alive(pid), "thread A kept its session"); assert.equal((await h.log()).filter(entry => entry.op === "create" && entry.pid === pid).length, 1);
     const kinds = outcomes(await h.sessions());
     assert.ok(kinds.includes("fallback:capacity") && kinds.includes("continued") && !kinds.includes("reseeded:evicted"), kinds.join(","));

@@ -5,7 +5,7 @@ import { CopilotLiveSession } from "../providers/copilot-live-session.js";
 import { CopilotTurn } from "../providers/copilot-turn.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
-import { adapter, alive, harness, live, outputFor, providerId, sleep, thread, tools, turn, until, user, type Entry, type Harness } from "./copilot-live-harness.js";
+import { adapter, alive, harness, live, outputFor, providerId, queuedUsage, sleep, thread, tools, turn, until, user, type Entry, type Harness } from "./copilot-live-harness.js";
 
 // How a live session recovers when something around it goes wrong: a misbehaving start, a session that is still
 // closing when its thread's next request comes, a bug in placement, usage left unread, and the old process of a
@@ -105,7 +105,7 @@ test("usage the CLI reported in several calls before a cancellation reaches the 
       for await (const event of adapter().infer(request, controller.signal, thread)) {
         if (controller.signal.aborted) afterAbort.push(event);
         // The consumer is busy while the CLI reports two model calls' usage, then cancels.
-        if (event.type === "text") { await sleep(350); controller.abort(); }
+        if (event.type === "text") { assert.ok(await until(() => queuedUsage() === 2), "both calls' usage is waiting in the request's queue"); controller.abort(); }
       }
     } catch (error) { failure = error; }
     assert.ok(failure instanceof ProviderError && failure.code === "cancelled");

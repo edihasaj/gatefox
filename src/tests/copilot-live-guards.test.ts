@@ -10,7 +10,7 @@ import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { ProviderError } from "../providers/provider.js";
 import { sessionLimits } from "../providers/copilot-live-session.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
-import { adapter, alive, harness, live, outputFor, sleep, thread, tools, turn, until, user, type Harness } from "./copilot-live-harness.js";
+import { adapter, alive, harness, live, outputFor, queuedUsage, sleep, thread, tools, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 /** The process is dead, its folder is gone and the registry holds nothing. */
 async function closed(h: Harness, pid: number): Promise<void> {
@@ -129,7 +129,7 @@ test("usage that arrived but was not read when the client cancelled is still rep
       for await (const event of adapter().infer(request, controller.signal, thread)) {
         events.push(event);
         // The consumer is busy while the CLI reports the model call's usage, then cancels.
-        if (event.type === "text") { await sleep(350); controller.abort(); }
+        if (event.type === "text") { assert.ok(await until(() => queuedUsage() === 1), "the usage is waiting in the request's queue"); controller.abort(); }
       }
     } catch (error) { failure = error; }
     assert.ok(failure instanceof ProviderError && failure.code === "cancelled");

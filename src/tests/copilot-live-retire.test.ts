@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { gatewayToken, validateConfig, type GatewayConfig } from "../config.js";
 import { createGatewayHandler, startGateway } from "../server.js";
@@ -16,7 +17,8 @@ const config = (h: Harness, providers: unknown[]): GatewayConfig => validateConf
 const factory = (p: { type: string }) => p.type === "copilot-subscription" ? new CopilotSubscription(p as ConstructorParameters<typeof CopilotSubscription>[0]) : {} as Provider;
 
 test("a provider removed while its live session is still starting loses that session when the request it started ends", { timeout: 30000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "1500";
+  // The CLI answers session.create only when the test lets it, so the attach is in progress for exactly as long as the test needs.
+  const h = await harness(); const gate = join(h.directory, "create-gate"); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = gate;
   let next = config(h, [provider(), other]);
   const server = await startGateway(next, factory, async () => next, { onFailure: () => {}, copilotTempBase: h.scratch });
   try {
@@ -24,9 +26,9 @@ test("a provider removed while its live session is still starting loses that ses
     const headers = { Authorization: `Bearer ${await gatewayToken(join(h.directory, "state"))}`, "Content-Type": "application/json", "thread-id": "thread-1" };
     const answered = fetch(`${url}/v1/responses`, { method: "POST", headers, body: JSON.stringify({ model: "alias", input: "hello", stream: true }) }).then(response => response.text());
     // The CLI has started and is slow to create its session: the attach is in progress, and no session is registered yet.
-    assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "create"))); await sleep(200);
+    assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "create")));
     assert.equal(live().sessions().length, 0, "the session is not registered yet");
-    next = config(h, [other]); await fetch(`${url}/health`);
+    next = config(h, [other]); await fetch(`${url}/health`); await writeFile(gate, "x");
     assert.match(await answered, /answer/, "the request that was already running is still answered");
     const [pid] = await h.pids();
     assert.ok(await until(async () => !alive(pid) && live().sessions().length === 0 && (await h.liveDirs()).length === 0), "the session is gone once its request has ended, though its provider was removed while it started");

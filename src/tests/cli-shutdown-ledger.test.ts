@@ -33,9 +33,10 @@ test("serve leaves the ledger row of a request it stopped at shutdown, though it
     let seen = ""; const decoder = new TextDecoder();
     while (!seen.includes("partial")) { const { value, done } = await reader.read(); if (done) break; seen += decoder.decode(value); }
     assert.ok(seen.includes("partial"), "the request is streaming");
-    const stopped = Date.now(); const exited = once(child, "exit"); child.kill("SIGTERM");
-    const [code] = await exited; const elapsed = Date.now() - stopped;
-    assert.equal(code, 0); assert.ok(elapsed < 4000, `the process left at its exit deadline, not when the stopped CLI ended (${elapsed} ms)`);
+    // The stopped CLI never ends, so a process that waited for it would not exit at all (the test's timeout); it leaves at its exit deadline.
+    const exited = once(child, "exit"); child.kill("SIGTERM");
+    const [code] = await exited;
+    assert.equal(code, 0);
     const [row, ...rest] = (await readUsageLedger(state, 0)).filter(entry => entry.origin === "gateway");
     assert.equal(rest.length, 0);
     assert.deepEqual([row?.status, row?.inputTokens, row?.nanoAiu, row?.nanoAiuStatus], ["failed", 100, 1e9, "complete"], "the billed call is in the ledger");
@@ -43,7 +44,7 @@ test("serve leaves the ledger row of a request it stopped at shutdown, though it
     assert.ok(failed, "and the request's failure record is in telemetry"); assert.equal(failed.abortCause, "shutdown"); assert.equal(failed.nanoAiu, 1e9);
     // The drain writes its record only when it ends (after the 3 s usage wait), so a process that left earlier left by its deadline.
     assert.ok(!telemetry.some(event => event.event === "server_drain"), "the process left at the exit deadline, before the drain ended");
-    for (const pid of await h.pids()) assert.ok(await until(() => !alive(pid), 3000), `the CLI ${pid} did not outlive the gateway`);
+    for (const pid of await h.pids()) assert.ok(await until(() => !alive(pid)), `the CLI ${pid} did not outlive the gateway`);
   } finally {
     await reader?.cancel().catch(() => {});
     if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await once(child, "exit").catch(() => {}); }

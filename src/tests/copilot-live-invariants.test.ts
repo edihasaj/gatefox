@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { CopilotSubscription } from "../providers/copilot.js";
 import { ProviderError } from "../providers/provider.js";
 import { sessionLimits } from "../providers/copilot-live-session.js";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { adapter, alive, harness, live, providerId, sleep, turn, until, user, type Entry, type Harness } from "./copilot-live-harness.js";
 
 // Each test pins one guard of the live session design: removing the guard makes it fail.
@@ -27,12 +29,16 @@ test("a model change between turns starts a new session: the CLI fixes the model
 });
 
 test("two first requests of one thread at once start one live CLI; the second is served one-shot", { timeout: 30000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "400";
+  // No CLI answers session.create until the test has seen both requests start theirs, so the first is still starting when the second comes.
+  const h = await harness(); const gate = join(h.directory, "create-gate"); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = gate;
   try {
     const provider = adapter();
     const first = turn(provider, [user("a")]);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "create")), "the first request is starting its session");
-    const second = await turn(provider, [user("a")]);
+    const secondRequest = turn(provider, [user("a")]);
+    assert.ok(await until(async () => (await h.log()).filter(entry => entry.op === "create").length === 2), "the second request, served one-shot, started its own CLI");
+    await writeFile(gate, "x");
+    const second = await secondRequest;
     await first;
     assert.match(second.text, /^answer/);
     assert.equal((await liveCreates(h)).length, 1, "exactly one live CLI"); assert.equal(live().sessions().length, 1);
@@ -96,21 +102,22 @@ test("closing a live session kills its CLI at once, even one that ignores SIGTER
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_IGNORE_TERM = "1";
   try {
     await turn(adapter(), [user("hello")]); const [pid] = await h.pids();
-    const started = Date.now(); await live().stop();
-    assert.ok(!alive(pid)); assert.ok(Date.now() - started < 1000, `closed in ${Date.now() - started} ms, without waiting for a grace period`);
-    assert.ok(!(await h.log()).some(entry => entry.op === "sigterm"), "no SIGTERM was needed");
+    // The fixture ignores SIGTERM and logs it: a close that asked for the exit would have logged it, and one that waited for it would not end.
+    await live().stop();
+    assert.ok(!alive(pid)); assert.ok(!(await h.log()).some(entry => entry.op === "sigterm"), "no SIGTERM was needed");
   } finally { await h.restore(); }
 });
 
 test("a session that dies while its effort change is in flight is reported as dead, not as a refused change", { timeout: 30000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_SWITCH = "500";
+  // The CLI answers the change only when the test lets it, which is after the CLI has been killed.
+  const h = await harness(); const gate = join(h.directory, "switch-gate"); process.env.GATEWAY_COPILOT_LIVE_SWITCH_GATE = gate;
   try {
     const provider = adapter(); const first = [user("hello")];
     const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
     const [pid] = await h.pids();
     const next = turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "high" } } });
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "switch")));
-    process.kill(pid, "SIGKILL");
+    process.kill(pid, "SIGKILL"); await writeFile(gate, "x");
     const b = await next; assert.match(b.text, /^answer/);
     const outcomes = await kinds(h);
     assert.ok(outcomes.includes("reseeded:session_dead") && !outcomes.includes("reseeded:effort_rejected"), outcomes.join(","));

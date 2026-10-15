@@ -58,6 +58,9 @@ async function fixtureMain(): Promise<void> {
   const servers = JSON.parse(fs.readFileSync(argv[argv.indexOf("--mcp-config") + 1], "utf8")).mcpServers || {};
   const names = new Map<string, string>(); const waiting = new Map<number, (message: Json) => void>(); let rpc = 0;
   let mcp: import("node:child_process").ChildProcessWithoutNullStreams | undefined;
+  // A CLI whose parent is gone (a test run that was stopped) leaves, with its MCP child, instead of living on with nobody to serve.
+  const parent = process.ppid;
+  setInterval(() => { try { process.kill(parent, 0); } catch { mcp?.kill(); process.exit(0); } }, 100).unref();
   const call = (method: string, params: Json) => new Promise<Json>(resolve => { const id = ++rpc; waiting.set(id, resolve); mcp!.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n"); });
   if (servers.gateway && !(live && scenario.noMcp)) {
     mcp = spawn(servers.gateway.command, servers.gateway.args, { stdio: ["pipe", "pipe", "pipe"] }); log({ mcpPid: mcp.pid });

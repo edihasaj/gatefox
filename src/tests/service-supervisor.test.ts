@@ -10,8 +10,9 @@ import { ServiceSupervisor } from "../service-supervisor.js";
 import { readServicePlan, validateServicePlan, serviceStatusPath, type ServiceComponent } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 
+// Waits up to a minute: a state that is never reached fails the test, and a loaded machine (children are processes) fails nothing.
 async function until(predicate: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) { if (await predicate()) return; await delay(20); }
+  for (let attempt = 0; attempt < 3000; attempt++) { if (await predicate()) return; await delay(20); }
   assert.fail("Service did not reach the expected state");
 }
 function component(directory: string, id: string, kind: ServiceComponent["kind"], source: string): ServiceComponent {
@@ -44,19 +45,35 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
-test("missing child executable backs off and shutdown cancels the retry", async () => {
+test("a child that exits is restarted after its backoff, and shutdown cancels the retry that is pending", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-retry-")); const starts = join(directory, "starts");
+  // A child that exists, notes each start by appending one byte, and exits at once.
+  const child = component(directory, "native", "native", `require('node:fs').appendFileSync(${JSON.stringify(starts)}, 'x'); process.exit(1)`);
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 400);
+  const status = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0] as { state: string; restarts: number; nextRestartAt?: string };
+  const started = async () => (await readFile(starts, "utf8").catch(() => "")).length;
+  await supervisor.start();
+  // It exited once and waits for its backoff; the status says when the retry is due.
+  let due = 0;
+  await until(async () => { const current = await status(); if (current.state === "waiting" && current.nextRestartAt) due = Date.parse(current.nextRestartAt); return due > 0; });
+  await supervisor.stop();
+  // Whatever a loaded machine let run before stop(), the count at stop() is the baseline: no start may follow, past the due time and 500 ms more.
+  const baseline = await started();
+  assert.ok(baseline >= 1, "the child ran");
+  await delay(Math.max(0, due + 500 - Date.now()));
+  assert.equal(await started(), baseline, "no retry after shutdown");
+  const stopped = await status(); assert.equal(stopped.state, "stopped"); assert.equal(stopped.nextRestartAt, undefined);
+});
+
+test("a missing child executable waits for its backoff and shutdown stops it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-"));
   const child = component(directory, "native", "native", ""); child.command = join(directory, "absent");
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
   await supervisor.start();
   await until(async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0].state === "waiting");
-  // A loaded machine can let the 100 ms retry fire before stop() runs, so the count at stop is the baseline: stopping must end the retries.
   await supervisor.stop();
   const stopped = JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0];
   assert.equal(stopped.state, "stopped"); assert.ok(stopped.restarts >= 1, "the missing executable was retried with a backoff");
-  await delay(250);
-  const status = JSON.parse(await readFile(serviceStatusPath(directory), "utf8"));
-  assert.equal(status.components[0].state, "stopped"); assert.equal(status.components[0].restarts, stopped.restarts, "no retry after shutdown");
 });
 
 test("idle restart waits for the inference child to accept its own idle guard", { skip: process.platform === "win32" }, async () => {

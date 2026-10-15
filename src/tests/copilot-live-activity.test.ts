@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { busyActivities, runtimeBusy } from "../runtime-activity.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { ResponsesRequest } from "../protocol/types.js";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { adapter, harness, live, outputFor, sleep, thread, tools, turn, until, user } from "./copilot-live-harness.js";
 
 // An idle restart or a self-update waits while the gateway is busy. Live Copilot sessions must keep it busy while a session
@@ -13,19 +15,19 @@ const idle = () => assert.deepEqual([busy(), runtimeBusy()], [false, false]);
 const minutes = (count: number) => count * 60 * 1000;
 
 test("the gateway is busy while a Copilot session starts and while it generates, and idle once the turn is done", { timeout: 20000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "500";
+  const h = await harness(); const gate = join(h.directory, "create-gate"); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = gate;
   try {
     const provider = adapter();
-    // The CLI is started and has not answered session.create yet.
+    // The CLI is started and does not answer session.create until the test lets it.
     const starting = turn(provider, [user("hello")]);
-    assert.ok(await until(() => busy(), 400), "busy while the session starts"); assert.equal(runtimeBusy(), true);
-    await starting; idle();
+    assert.ok(await until(() => busy()), "busy while the session starts"); assert.equal(runtimeBusy(), true);
+    await writeFile(gate, "x"); await starting; idle();
     // The turn streams its answer for a while.
     let during: boolean | undefined;
     const request = restoreReasoning({ model: "fixture", input: [user("go [slow]")], tools } as ResponsesRequest, "scope");
     for await (const event of provider.infer(request, new AbortController().signal, thread)) if (event.type === "text" && during === undefined) during = busy();
     assert.equal(during, true, "busy while a turn generates");
-    assert.ok(await until(() => !busy(), 1000)); idle();
+    assert.ok(await until(() => !busy())); idle();
   } finally { await h.restore(); }
 });
 

@@ -22,11 +22,13 @@ const thread: InferenceContext = { threadId: "thread-1" };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const kind = (event: InferenceEvent) => event.type === "tool" ? `tool:${event.call.function.name}` : event.type;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-async function gone(pid: number, withinMs: number): Promise<boolean> {
-  const started = Date.now();
-  while (alive(pid)) { if (Date.now() - started > withinMs) return false; await sleep(10); }
+// Waits however long it takes: a process that is never stopped fails its test by the test's timeout, and a loaded machine fails nothing.
+async function gone(pid: number): Promise<boolean> {
+  while (alive(pid)) await sleep(10);
   return true;
 }
+/** Polls until `check` holds, with no bound of its own (see `gone`). */
+async function eventually(check: () => boolean | Promise<boolean>): Promise<void> { while (!(await check())) await sleep(10); }
 const user = (text: string): ResponsesInputItem => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
 // Session directories live in the shared temporary directory; a per-process provider id keeps concurrent suites apart.
 const providerId = `claude-${process.pid}`;
@@ -52,11 +54,16 @@ async function setup(scenario: FixtureScenario): Promise<{ f: ClaudeFixture; sin
   configureTelemetry(f.directory, "test"); const since = Date.now();
   return { f, since, sessions: async () => { await flushTelemetry(); return (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session"); } };
 }
-// Telemetry appends are asynchronous; let them land before the folder they write into goes.
-async function teardown(f: ClaudeFixture): Promise<void> { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await f.restore(); }
+// Telemetry appends are asynchronous and sessions end in the background. Whatever still settles after the sessions are stopped writes its
+// telemetry into the suite's own folder from here on, never into the fixture folder that is about to be removed; what was already
+// queued for the fixture folder lands before it goes.
+async function teardown(f: ClaudeFixture): Promise<void> {
+  await claudeLive({ max: 6, parkMinutes: 60 }).stop();
+  configureTelemetry(join(tmpdir(), "claude-live-late"), "test"); await flushTelemetry(); await f.restore();
+}
 const pids = async (f: ClaudeFixture, mode = "live") => (await f.capture()).filter(entry => entry.start === mode).map(entry => entry.pid);
 
-test("a tool loop keeps one CLI process, relays the caller's outputs verbatim and reports per-request usage", async () => {
+test("a tool loop keeps one CLI process, relays the caller's outputs verbatim and reports per-request usage", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "Checking", calls: [{ tool: "alpha", input: { id: 1 } }, { tool: "beta", input: { id: 2 } }] }, { text: "Done" }] });
   try {
     const limits: ClaudeLimit[] = [];
@@ -67,7 +74,7 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
     const a = await turn(provider, first).finally(() => { for (const [name, value] of Object.entries(host)) if (value === undefined) delete process.env[name]; else process.env[name] = value; });
     assert.deepEqual(a.events.map(kind), ["text", "text", "tool:alpha", "tool:beta", "done"]);
     const ended = a.events.at(-1); assert.ok(ended?.type === "done" && ended.accounting?.cacheWriteTokens === 10, "a live session reports its cache writes for the usage ledger");
-    await sleep(100);
+    await eventually(() => limits.length > 0);
     assert.equal(limits.length, 1, "a rate limit printed after the request ended still reaches the provider");
     const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "result")]);
     assert.equal(b.text, "Done");
@@ -83,7 +90,7 @@ test("a tool loop keeps one CLI process, relays the caller's outputs verbatim an
   } finally { await teardown(f); }
 });
 
-test("the next user turn sends only its new items, even after restored reasoning summaries", async () => {
+test("the next user turn sends only its new items, even after restored reasoning summaries", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ thinking: "plan", text: "Calling", calls: [{ tool: "alpha", input: { id: 1 } }] }, { thinking: "check", text: "Done" }, { text: "Second" }] });
   try {
     const provider = adapter(); const first = [user("Use alpha")];
@@ -102,7 +109,7 @@ test("the next user turn sends only its new items, even after restored reasoning
   } finally { await teardown(f); }
 });
 
-test("editing an earlier message answers one-shot, stops the old process and starts no new one", async () => {
+test("editing an earlier message answers one-shot, stops the old process and starts no new one", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "One" }, { text: "Two" }] });
   try {
     const provider = adapter();
@@ -111,7 +118,7 @@ test("editing an earlier message answers one-shot, stops the old process and sta
     assert.equal(b.text, "Two", "the one-shot path answered");
     const [old, ...others] = await pids(f);
     assert.deepEqual(others, [], "a second cache write in a new process would only repeat what the one-shot path already pays");
-    assert.ok(await gone(old, 2000), "the diverged session exits");
+    assert.ok(await gone(old), "the diverged session exits");
     assert.equal((await pids(f, "oneshot")).length, 1);
     const events = await sessions();
     assert.equal(events.filter(entry => entry.outcome === "reseeded").length, 0);
@@ -120,7 +127,7 @@ test("editing an earlier message answers one-shot, stops the old process and sta
   } finally { await teardown(f); }
 });
 
-test("an effort change between turns keeps the process; thinking off reseeds and a change while tools run answers one-shot", async () => {
+test("an effort change between turns keeps the process; thinking off reseeds and a change while tools run answers one-shot", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "A" }, { text: "B" }, { text: "C" }, { calls: [{ tool: "alpha", input: { id: 1 } }] }, { text: "D" }] });
   try {
     const provider = adapter(); const first = [user("one")];
@@ -140,7 +147,7 @@ test("an effort change between turns keeps the process; thinking off reseeds and
   } finally { await teardown(f); }
 });
 
-test("cancelling text interrupts and keeps the session; the next history may keep or drop the partial text", async () => {
+test("cancelling text interrupts and keeps the session; the next history may keep or drop the partial text", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ slow: true }, { text: "After drop" }, { slow: true }, { text: "After keep" }] });
   try {
     const provider = adapter(); const first = [user("long")];
@@ -159,26 +166,28 @@ test("cancelling text interrupts and keeps the session; the next history may kee
   } finally { await teardown(f); }
 });
 
-test("cancelling while a tool call is being written closes the session", async () => {
+test("cancelling while a tool call is being written closes the session", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ slowTool: "alpha" }] });
   try {
     const controller = new AbortController(); const request = turn(adapter(), [user("call slowly")], { controller });
-    while (!(await f.capture()).some(entry => entry.user !== undefined)) await sleep(10);
-    await sleep(60); controller.abort();
+    await eventually(async () => (await f.capture()).some(entry => entry.user !== undefined));
+    // The gateway has read the start of the tool call (the session knows a call is being written) before the request is cancelled.
+    const session = claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0] as unknown as { messageTool: boolean };
+    await eventually(() => session.messageTool === true); controller.abort();
     await assert.rejects(request, { code: "cancelled" });
     const [pid] = await pids(f);
-    assert.ok(await gone(pid, 2000));
+    assert.ok(await gone(pid));
     assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["interrupted", undefined], ["closed", "interrupted_tool"]]);
   } finally { await teardown(f); }
 });
 
-test("losing the relay kills the CLI with SIGKILL before any tool result is written", async () => {
+test("losing the relay kills the CLI with SIGKILL before any tool result is written", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }] });
   try {
     await turn(adapter(), [user("call")]);
     const [session] = claudeLive({ max: 6, parkMinutes: 60 }).sessions(); const [pid] = await pids(f);
     session.relay!.close();
-    assert.ok(await gone(pid, 2000), "the MCP child's deadman killed the CLI");
+    assert.ok(await gone(pid), "the MCP child's deadman killed the CLI");
     await sleep(50);
     const capture = await f.capture();
     assert.equal(capture.some(entry => entry.toolResult !== undefined || entry.exit !== undefined), false);
@@ -187,17 +196,17 @@ test("losing the relay kills the CLI with SIGKILL before any tool result is writ
   } finally { await teardown(f); }
 });
 
-test("a CLI tool_use for a non-gateway tool fails the request and kills the session before it can run", async () => {
+test("a CLI tool_use for a non-gateway tool fails the request and kills the session before it can run", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ foreign: "Bash" }] });
   try {
     await assert.rejects(turn(adapter(), [user("run")]), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
     const [pid] = await pids(f);
-    assert.ok(await gone(pid, 3000));
+    assert.ok(await gone(pid));
     assert.equal((await f.capture()).some(entry => entry.exit !== undefined), false, "killed, not asked to end its session");
   } finally { await teardown(f); }
 });
 
-test("at capacity a cold session makes room, a generating one never does", async () => {
+test("at capacity a cold session makes room, a generating one never does", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one" }, { slow: true }, { text: "fallback" }] });
   try {
     const provider = adapter({ max: 1 });
@@ -208,7 +217,7 @@ test("at capacity a cold session makes room, a generating one never does", async
     const controller = new AbortController(); const events: InferenceEvent[] = [];
     const slow = (async () => { for await (const event of provider.infer({ model: "fixture", input: [user("slow")], tools }, controller.signal, { threadId: "thread-2" })) events.push(event); })();
     while (!events.length) await sleep(10);
-    assert.ok(await gone(first, 2000), "the cold session made room");
+    assert.ok(await gone(first), "the cold session made room");
     const third = await turn(provider, [user("third")], { context: { threadId: "thread-3" } });
     assert.equal(third.text, "fallback");
     controller.abort(); await assert.rejects(slow, { code: "cancelled" });
@@ -217,19 +226,21 @@ test("at capacity a cold session makes room, a generating one never does", async
   } finally { await teardown(f); }
 });
 
-test("a parked session is reaped when its timer fires, and the probe stops reporting it", async () => {
+test("a parked session is reaped when its timer fires, and the probe stops reporting it", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }] });
   try {
-    await turn(adapter({ parkMinutes: 0.004 }), [user("park")]);
+    await turn(adapter({ parkMinutes: 60 }), [user("park")]);
     assert.equal(runtimeBusy(), true, "a recent tool wait keeps idle restarts away");
     const [pid] = await pids(f);
-    assert.ok(await gone(pid, 3000));
+    // Only now does the park timer become short, so the order is exact: the session was parked and busy, then reaped.
+    claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0]!.park(50);
+    assert.ok(await gone(pid));
     assert.equal(runtimeBusy(), false);
     assert.ok((await sessions()).some(entry => entry.outcome === "reaped"));
   } finally { await teardown(f); }
 });
 
-test("module copies share one registry; another interface version is not reused", async () => {
+test("module copies share one registry; another interface version is not reused", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ text: "one" }] });
   const symbol = Symbol.for("harness-gateway/claude-sessions/v1"); const scope = globalThis as unknown as Record<symbol, unknown>;
   try {
@@ -245,7 +256,7 @@ test("module copies share one registry; another interface version is not reused"
   } finally { await teardown(f); }
 });
 
-test("a CLI that exits at spawn falls back to one-shot with spawn_failed", async () => {
+test("a CLI that exits at spawn falls back to one-shot with spawn_failed", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], exitAtSpawn: true });
   try {
     assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
@@ -255,7 +266,7 @@ test("a CLI that exits at spawn falls back to one-shot with spawn_failed", async
   } finally { await teardown(f); }
 });
 
-test("a live CLI that dies before its first event falls back to one-shot with stream_failed", async () => {
+test("a live CLI that dies before its first event falls back to one-shot with stream_failed", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], exitAtFirstUser: true });
   try {
     assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
@@ -264,7 +275,7 @@ test("a live CLI that dies before its first event falls back to one-shot with st
   } finally { await teardown(f); }
 });
 
-test("compaction requests and requests without a thread run one-shot", async () => {
+test("compaction requests and requests without a thread run one-shot", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ text: "a" }, { text: "b" }] });
   try {
     await turn(adapter(), [user("compact")], { context: { threadId: "thread-1", requestKind: "compaction" } });
@@ -273,7 +284,7 @@ test("compaction requests and requests without a thread run one-shot", async () 
   } finally { await teardown(f); }
 });
 
-test("a request for a thread that is still generating falls back", async () => {
+test("a request for a thread that is still generating falls back", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ slow: true }, { text: "parallel" }] });
   try {
     const provider = adapter(); const controller = new AbortController(); const events: InferenceEvent[] = [];
@@ -285,7 +296,7 @@ test("a request for a thread that is still generating falls back", async () => {
   } finally { await teardown(f); }
 });
 
-test("session files of a dead gateway process are swept; a live owner's stay", async () => {
+test("session files of a dead gateway process are swept; a live owner's stay", { timeout: 30000 }, async () => {
   const { mkdir, readdir, writeFile, rm } = await import("node:fs/promises");
   const { sweepSessionDirectories } = await import("../providers/claude-session.js");
   const key = join(tmpdir(), "gateway-claude", `feedface${process.pid.toString(16).padStart(8, "0")}`);
@@ -297,7 +308,7 @@ test("session files of a dead gateway process are swept; a live owner's stay", a
   } finally { await rm(key, { recursive: true, force: true }); }
 });
 
-test("shutdown closes idle sessions at once and a running one when its turn ends", async () => {
+test("shutdown closes idle sessions at once and a running one when its turn ends", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ text: "idle" }, { slow: true }] });
   try {
     const provider = adapter();
@@ -307,13 +318,13 @@ test("shutdown closes idle sessions at once and a running one when its turn ends
     while (!events.length) await sleep(10);
     const [idle, running] = await pids(f);
     await runShutdownHooks(3000);
-    assert.ok(await gone(idle, 2000)); assert.equal(alive(running), true, "the running turn continues");
+    assert.ok(await gone(idle)); assert.equal(alive(running), true, "the running turn continues");
     controller.abort(); await assert.rejects(slow, { code: "cancelled" });
-    assert.ok(await gone(running, 3000), "and its session closes once the turn has ended");
+    assert.ok(await gone(running), "and its session closes once the turn has ended");
   } finally { await teardown(f); }
 });
 
-test("a follow-up sent the moment done arrives continues the session instead of racing it", async () => {
+test("a follow-up sent the moment done arrives continues the session instead of racing it", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { text: "Done" }] });
   try {
     const provider = adapter(); const first = [user("Use alpha")]; const writer = new ResponsesWriter("fixture", () => {});
@@ -329,7 +340,7 @@ test("a follow-up sent the moment done arrives continues the session instead of 
   } finally { await teardown(f); }
 });
 
-test("a CLI whose MCP child never says hello falls back before any user message is sent", async () => {
+test("a CLI whose MCP child never says hello falls back before any user message is sent", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], noMcp: true });
   const previous = sessionLimits.startMs; sessionLimits.startMs = 800;
   try {
@@ -337,11 +348,11 @@ test("a CLI whose MCP child never says hello falls back before any user message 
     const capture = await f.capture(); const [live] = await pids(f);
     assert.equal(capture.some(entry => entry.pid === live && entry.user !== undefined), false, "the live CLI never got the seed");
     assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
-    assert.ok(await gone(live, 2000));
+    assert.ok(await gone(live));
   } finally { sessionLimits.startMs = previous; await teardown(f); }
 });
 
-test("text between tool calls continues the session: the ledger echoes the text as the caller received it", async () => {
+test("text between tool calls continues the session: the ledger echoes the text as the caller received it", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "Checking", calls: [{ tool: "alpha", input: { id: 1 } }, { tool: "beta", input: { id: 2 } }], between: "Then beta" }, { text: "Done" }] });
   try {
     const provider = adapter(); const first = [user("Use alpha, then beta")];
@@ -353,7 +364,7 @@ test("text between tool calls continues the session: the ledger echoes the text 
   } finally { await teardown(f); }
 });
 
-test("a kept partial whose text resumed after thinking continues the session", async () => {
+test("a kept partial whose text resumed after thinking continues the session", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ slow: true, text: "Intro", thinking: "pause" }, { text: "After keep" }] });
   try {
     const provider = adapter(); const first = [user("long")]; let partial = "";
@@ -364,33 +375,36 @@ test("a kept partial whose text resumed after thinking continues the session", a
   } finally { await teardown(f); }
 });
 
-test("a non-gateway tool_use kills the session at once, even while the caller is not reading", async () => {
+test("a non-gateway tool_use kills the session at once, even while the caller is not reading", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ text: "Looking", foreign: "Bash" }] });
   try {
     const iterator = adapter().infer({ model: "fixture", input: [user("run")], tools }, new AbortController().signal, thread)[Symbol.asyncIterator]();
     const first = await iterator.next().catch((error: unknown) => error);
     const [pid] = await pids(f); assert.ok(pid, "a live session served the request");
-    assert.ok(await gone(pid, 3000), "killed before the consumer pulled the tool_use line");
+    assert.ok(await gone(pid), "killed before the consumer pulled the tool_use line");
     await assert.rejects(async () => { if (first instanceof Error) throw first; for (let next = await iterator.next(); !next.done; next = await iterator.next()); },
       (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
   } finally { await teardown(f); }
 });
 
-test("a session retired during a turn closes when that turn is cancelled after its result was read", async () => {
+test("a session retired during a turn closes when that turn is cancelled after its result was read", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ text: "Finished early" }] });
   try {
     const controller = new AbortController();
     const iterator = adapter().infer({ model: "fixture", input: [user("hi")], tools }, controller.signal, thread)[Symbol.asyncIterator]();
-    await iterator.next(); await sleep(150);
+    await iterator.next();
+    // The result line has been read into the request's queue, though nobody asked for it yet.
+    const session = claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0] as unknown as { attached?: { queue: Array<{ type?: unknown }> } };
+    await eventually(() => session.attached?.queue.some(message => message.type === "result") === true);
     await runShutdownHooks(3000);
     const [pid] = await pids(f); assert.equal(alive(pid), true, "the running turn keeps its session");
     controller.abort();
     await assert.rejects(iterator.next(), { code: "cancelled" });
-    assert.ok(await gone(pid, 2000), "the retired session closes with the turn");
+    assert.ok(await gone(pid), "the retired session closes with the turn");
   } finally { await teardown(f); }
 });
 
-test("each provider's park time applies to its own sessions, whatever another provider sent since", async () => {
+test("each provider's park time applies to its own sessions, whatever another provider sent since", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { calls: [{ tool: "alpha", input: { id: 1 } }] }] });
   // Record each pid while its turn runs: the 240 ms park can expire before a loaded test runner resumes after the turn.
   const pids = new Map<string, number>();
@@ -401,7 +415,7 @@ test("each provider's park time applies to its own sessions, whatever another pr
     // The second provider's request arrives while the first one's process is still starting.
     const short = turn(adapter({ parkMinutes: 0.004 }), [user("short")]); const long = turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } });
     await Promise.all([short, long]); record(); clearInterval(watch); const shortPid = pidOf("thread-1"); const longPid = pidOf("thread-2");
-    assert.ok(await gone(shortPid, 3000), "the short park reaps its session");
+    assert.ok(await gone(shortPid), "the short park reaps its session");
     assert.equal(alive(longPid), true, "the long park keeps the other one");
   } finally { clearInterval(watch); await teardown(f); }
 });
