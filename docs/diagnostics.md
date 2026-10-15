@@ -98,7 +98,10 @@ take earlier output, the server reads the provider on for up to 3 seconds, for u
 only, so usage the provider received before the stop is not lost. At shutdown the
 server waits for those requests to write their rows before it flushes telemetry and the
 ledger, but a stopping process leaves 1.5 seconds after the drain deadline at the
-latest (it flushes both first), so usage that arrives later than that is not recorded.
+latest. Before it leaves, it records every request still running as `failed` (a ledger
+row and a `request_failed` event with `abortCause` `shutdown`) with the usage received so
+far, and then flushes both, so usage that arrives later than that is not recorded but
+usage already received is.
 A row with no tokens and no credit amount is not written.
 
 Never stored: prompts, instructions, messages, tool names, arguments or outputs,

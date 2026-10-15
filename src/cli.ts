@@ -12,8 +12,7 @@ import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { codexShim } from "./codex-shim.js";
 import { readTelemetry, telemetry } from "./telemetry.js";
-import { flushRecords } from "./usage-ledger.js";
-import { shutdownDrainMs } from "./runtime-activity.js";
+import { stopServing } from "./serve-shutdown.js";
 import { summarizeTelemetry } from "./diagnostics.js";
 import { startServeRuntime } from "./serve-runtime.js";
 import { macService } from "./mac-service.js";
@@ -238,15 +237,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // Request handling, timers and in-place upgrades live in the serve runtime; signal
   // handlers below reach whichever generation currently owns the socket.
   const { server } = await startServeRuntime(path, values.port ? config.port : undefined);
-  process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
   let closing = false;
   const shutdown = (signal: NodeJS.Signals) => {
     if (closing) return; closing = true;
     telemetry("server_shutdown_signal", { signal });
     // Takes effect after an inference process restart; a hot swap keeps the old handler.
-    const exit = () => { void flushRecords().finally(() => process.exit(0)); };
-    const deadline = setTimeout(() => { server.closeAllConnections(); exit(); }, shutdownDrainMs() + 1500).unref();
-    server.close(() => { clearTimeout(deadline); exit(); });
+    stopServing(server);
   };
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
   if (process.platform !== "win32") process.on("SIGUSR2", () => {
@@ -264,6 +260,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       })) closing = true;
     }).catch(() => undefined);
   });
+  // The line that says the server is up comes after its signal handlers: whoever waits for it may stop the server at once.
+  process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
 }
 
 async function remoteCatalog(config: GatewayConfig): Promise<{ models: Array<Record<string, unknown>> }> {

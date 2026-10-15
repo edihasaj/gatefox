@@ -10,7 +10,7 @@ import { startGateway } from "../server.js";
 import type { Provider } from "../providers/provider.js";
 import type { InferenceEvent, UsageAccounting } from "../protocol/types.js";
 import { flushRecords, resetUsageLedger } from "../usage-ledger.js";
-import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import { configureTelemetry } from "../telemetry.js";
 
 // Copilot bills a model call when it reports its usage. At shutdown the server stops its running requests and keeps
 // reading each provider, for usage only, before the process exits; the ledger and telemetry written last must hold
@@ -42,18 +42,20 @@ test("usage a provider reports well after the shutdown stopped its request is in
   });
   const response = await gw.post(); const reader = response.body!.getReader(); await reader.read();
   // What the files hold at the instant the server reports itself closed, which is when a stopping process exits: the drain
-  // has to have written every row by then, with no later flush to rely on.
-  const written = () => { const directory = join(gw.directory, "usage"); try { return readdirSync(directory).filter(name => /^usage-.*\.jsonl$/.test(name)).map(name => readFileSync(join(directory, name), "utf8")).join(""); } catch { return ""; } };
-  let atClose = "";
-  await new Promise<void>(resolve => { gw.server.close(() => { atClose = written(); resolve(); }); });
-  const [row, ...rest] = atClose.split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>).filter(entry => entry.origin === "gateway");
+  // has to have written every row and record by then, with no later flush to rely on (this test flushes nothing itself).
+  const read = (folder: string, pattern: RegExp) => { const directory = join(gw.directory, folder); try { return readdirSync(directory).filter(name => pattern.test(name)).map(name => readFileSync(join(directory, name), "utf8")).join(""); } catch { return ""; } };
+  const lines = (text: string) => text.split("\n").filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>);
+  let atClose = { ledger: "", telemetry: "" };
+  await new Promise<void>(resolve => { gw.server.close(() => { atClose = { ledger: read("usage", /^usage-.*\.jsonl$/), telemetry: read("telemetry", /^events-.*\.jsonl$/) }; resolve(); }); });
+  const [row, ...rest] = lines(atClose.ledger).filter(entry => entry.origin === "gateway");
   assert.equal(rest.length, 0);
   assert.deepEqual([row?.status, row?.inputTokens, row?.cacheWriteTokens, row?.nanoAiu, row?.nanoAiuStatus], ["failed", 100, 10, 2e9, "complete"], "the billed call is in the ledger");
-  await flushTelemetry();
   // The drain writes its record just before its final flush, so that flush came after the stopped request's row.
-  const events = await readTelemetry(gw.directory, 0); const drained = events.find(event => event.event === "server_drain");
-  assert.ok(drained && Date.parse(drained.at) >= Date.parse(String(row?.at)), "the final flush waited for the stopped request to finish");
+  const events = lines(atClose.telemetry); const drained = events.find(event => event.event === "server_drain");
+  assert.ok(drained, "the drain's record was flushed before the server reported itself closed");
+  assert.ok(Date.parse(String(drained.at)) >= Date.parse(String(row?.at)), "the final flush waited for the stopped request to finish");
   const failed = events.find(event => event.event === "request_failed");
-  assert.equal(failed?.nanoAiu, 2e9, "telemetry keeps the spend too"); assert.equal(failed?.abortCause, "shutdown");
+  assert.ok(failed, "the stopped request's failure record was flushed too");
+  assert.equal(failed.nanoAiu, 2e9, "telemetry keeps the spend too"); assert.equal(failed.abortCause, "shutdown");
   await reader.cancel().catch(() => {});
 });

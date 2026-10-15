@@ -83,13 +83,19 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
   return value;
 }
-export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean };
+export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean;
+  /** Writes the ledger row and the failure record of every request still running, with the usage it has reported so far; returns how many it wrote. */
+  recordPending(): number };
 type AbortCause = "timeout" | "cancelled" | "shutdown";
 export interface GatewayFailure {
   event: "request_failed"; requestId: string; providerId?: string; model?: string;
   durationMs: number; code: string; status: number; abortCause?: AbortCause;
 }
-export interface GatewayStartOptions { heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void }
+export interface GatewayStartOptions {
+  heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void;
+  /** The temp folder whose Copilot parent the startup sweep reads; the OS temp folder by default. Tests pass a private one. */
+  copilotTempBase?: string;
+}
 /**
  * One generation of request handling; a server can switch generations without closing its socket.
  * Members added after 0.3 are optional, so a generation adopted by an in-place upgrade still fits.
@@ -103,6 +109,11 @@ export interface GatewayHandler {
    * as retryable before any provider work. Returns how many admitted requests still run.
    */
   beginDrain?(): number;
+  /**
+   * Records, as failed, every running request that has not been recorded, with the usage its provider reported so far, and
+   * returns how many. A process calls this just before it exits, so a request it stops mid-stream still reaches the ledger.
+   */
+  recordPending?(): number;
 }
 type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined> };
 const total = (values: Array<number | void>) => values.reduce<number>((sum, value) => sum + (typeof value === "number" ? value : 0), 0);
@@ -124,6 +135,8 @@ async function drain(target: HandledServer, close: Server["close"]): Promise<Err
   // An aborted request keeps reading its provider for up to usageDrainMs, for usage only, and then records its ledger row:
   // the final flush waits for that, so the spend of a request that stopped at shutdown is not left out.
   await Promise.all([runShutdownHooks(1000), settle(Date.now() + usageDrainMs)]);
+  // A request still running now (its provider stayed silent past the usage drain) is recorded with what it reported so far.
+  total(handlers().map(entry => entry.recordPending?.()));
   telemetry("server_drain", { active, drainedMs, aborted });
   // An idle restart exits straight from its callback, so the record is written first.
   await flushRecords();
@@ -146,6 +159,7 @@ export function adoptGatewayHandler(server: Server, handler: GatewayHandler): Ga
   // The callback runs after the drain and the shutdown hooks, so an exit cannot cut them short.
   const closing = () => target.gatewayClosing ??= drain(target, close);
   target.close = ((callback?: (error?: Error) => void) => { void closing().then(error => callback?.(error)); return target; }) as HandledServer["close"];
+  target.recordPending = () => total((target.gatewayHandlers || []).map(entry => entry.recordPending?.()));
   target.restartWhenIdle = callback => { if (!target.isIdle()) return false; void closing().then(() => callback()); return true; };
   return target;
 }
@@ -163,7 +177,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
   // A gateway that was killed left its Copilot CLIs' prompt logs in the temp folder; remove them before the first request, whatever any provider's mode.
-  await sweepCopilotDirectories();
+  await sweepCopilotDirectories(options.copilotTempBase);
+  // An in-place upgrade adopts the sessions of the release before it, which a configuration it no longer has may not serve.
+  retireUnconfiguredCopilotScopes(config.providers);
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
@@ -183,6 +199,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
   const admitted = new Set<AbortController>(); let draining = false;
+  /** One recorder per running request: writes its failure record if the request has none yet. */
+  const pending = new Set<() => boolean>();
   const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
   // Every response names the release whose code served it; useful during in-place upgrades.
@@ -215,6 +233,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     let writer: ResponsesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
+    // A request is recorded once, whichever of its end and a process exit gets there first.
+    let recorded = false;
     let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
     let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
@@ -226,6 +246,29 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
       inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens,
       reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus }, new Date(), new Map(current.providers.map(entry => [entry.id, entry.type])));
+    // The record of a failed request: telemetry, the ledger row with the usage reported so far, and the diagnostic line. Once per request.
+    const recordFailure = (error: unknown): ProviderError => {
+      const known = classifyProviderFailure(error, abortCause);
+      if (recorded) return known;
+      recorded = true;
+      // A rejected Responses request says which fixed class of data it rejected.
+      const translation = translationFailureFields(error);
+      // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
+      if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
+      ledger("failed");
+      const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
+      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
+      return known;
+    };
+    // A process that exits while this request runs records it as it stands: the stop it is about to suffer is the shutdown's doing.
+    const recordPending = (): boolean => {
+      if (recorded) return false;
+      abortCause ||= "shutdown";
+      recordFailure(new ProviderError("cancelled", "Request cancelled or timed out", 504));
+      return true;
+    };
+    pending.add(recordPending);
     // timeoutMs bounds silence, not total length: it covers the upload and queue
     // wait, then restarts at admission and on every provider event. Long Max or
     // Ultra streams continue while a stalled provider still fails. The whole
@@ -313,8 +356,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         await drainUsage(source, take);
       }
       if (!writer.completed) throw new ProviderError(controller.signal.aborted ? "cancelled" : "incomplete", controller.signal.aborted ? "Request cancelled or timed out" : "Provider did not complete", 504);
-      telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());
-      ledger(events <= 1 && !tools ? "empty" : "completed");
+      if (!recorded) {
+        recorded = true;
+        telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());
+        ledger(events <= 1 && !tools ? "empty" : "completed");
+      }
       if (!res.destroyed) {
         if (controller.signal.aborted && res.writableNeedDrain) res.destroy();
         else if (!streaming) send(res, 200, writer.result());
@@ -324,15 +370,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // A deferred head still opens, so the failure is a 200 stream with response.failed.
       if (!res.destroyed) open?.();
       clearInterval(heartbeat);
-      const known = classifyProviderFailure(error, abortCause);
-      // A rejected Responses request says which fixed class of data it rejected.
-      const translation = translationFailureFields(error);
-      // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
-      if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
-      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
-      ledger("failed");
-      const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
-      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
+      const known = recordFailure(error);
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
@@ -342,10 +380,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         }
         else send(res, known.status, { error: { code: known.code, message: known.message } });
       }
-    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); }
+    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };
   return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
+    recordPending: () => { let recorded = 0; for (const record of [...pending]) if (record()) recorded++; return recorded; },
     beginDrain: () => {
       draining = true; let running = 0;
       for (const [controller, abort] of active) { if (controller.signal.aborted) continue; if (admitted.has(controller)) running++; else abort("shutdown"); }
