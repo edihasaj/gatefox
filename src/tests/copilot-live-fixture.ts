@@ -21,10 +21,11 @@ const eventMessage = (type: string, data: Record<string, unknown> = {}, extra: R
 const event = (type: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => send(eventMessage(type, data, extra));
 /** The name the gateway gave the caller's first tool. */
 const toolName = () => String((config.availableTools as string[] | undefined)?.[0]);
-const usage = () => {
+const usageMessage = () => {
   calls++;
-  event("assistant.usage", { isByok: false, initiator: calls === 1 ? "user" : "agent", inputTokens: 100 * calls, outputTokens: 5, cacheReadTokens: calls === 1 ? 0 : 100 * (calls - 1), cacheWriteTokens: calls === 1 ? 100 : 10, reasoningTokens: 1, copilotUsage: { totalNanoAiu: calls === 1 ? 1e9 : 1e8 } });
+  return eventMessage("assistant.usage", { isByok: false, initiator: calls === 1 ? "user" : "agent", inputTokens: 100 * calls, outputTokens: 5, cacheReadTokens: calls === 1 ? 0 : 100 * (calls - 1), cacheWriteTokens: calls === 1 ? 100 : 10, reasoningTokens: 1, copilotUsage: { totalNanoAiu: calls === 1 ? 1e9 : 1e8 } });
 };
+const usage = () => send(usageMessage());
 const message = (data: Record<string, unknown>) => event("assistant.message", { model: config.model, providerId: "copilot", content: "", toolRequests: [], ...data });
 const env = (name: string) => process.env[`GATEWAY_COPILOT_LIVE_${name}`];
 /** The end of a finished turn as CLI 1.0.97 sends it: `assistant.idle`, then `session.idle` a moment later, both ephemeral. */
@@ -63,6 +64,10 @@ function respond(text: string): void {
   if (marker("permission")) { event("permission.requested", { requestId: "permission" }); return; }
   if (marker("lateusage")) { event("assistant.message_delta", { deltaContent: "partial" }); setTimeout(usage, 100); return; }
   if (marker("lateusage2")) { event("assistant.message_delta", { deltaContent: "partial" }); setTimeout(() => { usage(); usage(); }, 100); return; }
+  // Text, then 100 ms later more text and the call's usage in one write, then nothing.
+  if (marker("deltausage")) { event("assistant.message_delta", { deltaContent: "a" }); setTimeout(() => send(eventMessage("assistant.message_delta", { deltaContent: "b" }), usageMessage()), 100); return; }
+  // An answer too large for a client that does not read to take at once, then the call's usage, then nothing.
+  if (marker("bigusage")) { event("assistant.message_delta", { deltaContent: "x".repeat(7 * 1024 * 1024) }); usage(); log({ op: "bigusage_sent" }); return; }
   usage();
   // An answer that takes a while: its text arrives at once, the rest 400 ms later.
   if (marker("slow")) { event("assistant.message_delta", { deltaContent: `answer ${calls}` }); setTimeout(() => { message({ content: `answer ${calls}` }); idle(); }, 400); return; }

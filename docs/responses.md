@@ -283,8 +283,9 @@ items that are new; see [live Copilot sessions](copilot-sessions.md). Cancelling
 live request ends it at once; its session is aborted and its CLI process killed in the
 background, without the request waiting for the exit. The next request starts a new
 session and sends the caller-supplied history once. Cancelling a one-shot request stops
-its CLI process and waits for it to exit. A request a live session cannot serve (no
-thread id, compaction, a concurrent request, every slot busy, or
+its CLI process and waits for it to exit. Either way, usage the CLI reported before the
+cancellation still reaches the usage ledger and telemetry. A request a live session
+cannot serve (no thread id, compaction, a concurrent request, every slot busy, or
 `copilotSessions.mode: "oneshot"`) gets its own session, with the same system message,
 the caller's whole tool catalog and one user message per history item.
 The current Copilot CLI exposes no selected-model priority tier. Direct

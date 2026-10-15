@@ -11,7 +11,7 @@ import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
-import type { ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
+import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "./provider-failure.js";
@@ -31,6 +31,25 @@ const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<v
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
   if (!res.writableNeedDrain || res.destroyed || signal.aborted) finished();
 });
+/** After a request stops early, how long its provider may take to hand over usage it already received. */
+const usageDrainMs = 3000;
+/**
+ * Reads a stopped provider on, for its usage only, until it ends or `usageDrainMs` passes: a model call that was billed
+ * before the caller left still reaches the ledger and telemetry. A provider still running after that is closed.
+ */
+async function drainUsage(source: AsyncIterator<InferenceEvent>, take: (event: InferenceEvent) => void): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const expired = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), usageDrainMs); });
+  try {
+    for (;;) {
+      const step = await Promise.race([source.next(), expired]);
+      if (!step) { void Promise.resolve(source.return?.()).catch(() => undefined); return; }
+      if (step.done) return;
+      take(step.value);
+    }
+  } catch { /* A stopped provider ends by throwing; the usage it reported is already taken. */ }
+  finally { clearTimeout(timer); }
+}
 /** The one subscription alias that serves a bare vendor model name, if unambiguous. */
 export function nativeModelAlias(config: GatewayConfig, model: string): string | undefined {
   const vendor = /^claude-/.test(model) ? "claude-subscription" : /^(gpt-|o\d|codex-)/.test(model) ? "codex-subscription" : undefined;
@@ -256,24 +275,36 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (draining) active.get(controller)?.("shutdown");
       controller.signal.throwIfAborted(); touch(); admittedAt = Date.now(); admitted.add(controller);
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
-      for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
-        // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
-        if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; }
-        if (controller.signal.aborted || res.destroyed) break;
-        touch();
-        // Running usage never opens or writes the stream.
-        if (event.type === "usage") continue;
-        if (event.type === "transport") {
-          if (!opened) open(event.turnState);
-          else if (!streaming && !res.headersSent && sendableTurnState(event.turnState)) { res.setHeader("X-Codex-Turn-State", event.turnState); turnStateReturned = true; }
-          continue;
+      // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
+      const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
+      const source = route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
+      // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
+      const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
+      let stopped = false;
+      try {
+        for await (const event of kept) {
+          take(event);
+          if (controller.signal.aborted || res.destroyed) { stopped = true; break; }
+          touch();
+          // Running usage never opens or writes the stream.
+          if (event.type === "usage") continue;
+          if (event.type === "transport") {
+            if (!opened) open(event.turnState);
+            else if (!streaming && !res.headersSent && sendableTurnState(event.turnState)) { res.setHeader("X-Codex-Turn-State", event.turnState); turnStateReturned = true; }
+            continue;
+          }
+          open(); events++; if (!firstEventAt) firstEventAt = Date.now();
+          if (event.type === "tool") tools++;
+          writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
+          if (writer.completed) clearInterval(heartbeat);
+          if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
+          if (controller.signal.aborted || res.destroyed) { stopped = true; break; }
         }
-        open(); events++; if (!firstEventAt) firstEventAt = Date.now();
-        if (event.type === "tool") tools++;
-        writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
-        if (writer.completed) clearInterval(heartbeat);
-        if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
-        if (controller.signal.aborted || res.destroyed) break;
+      } catch (error) { await Promise.resolve(source.return?.()).catch(() => undefined); throw error; }
+      if (stopped) {
+        // The caller has gone or the request was aborted: stop the provider, then read it on for usage only.
+        if (!controller.signal.aborted) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); }
+        await drainUsage(source, take);
       }
       if (!writer.completed) throw new ProviderError(controller.signal.aborted ? "cancelled" : "incomplete", controller.signal.aborted ? "Request cancelled or timed out" : "Provider did not complete", 504);
       telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());

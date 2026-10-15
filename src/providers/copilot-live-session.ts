@@ -58,7 +58,11 @@ export interface LiveTurn {
   onEnd(outcome: "ended" | "interrupted" | "failed"): void;
 }
 
-interface Attached { live: LiveTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void }
+interface Attached {
+  live: LiveTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
+  /** The request's running usage total once its queued usage was added after it ended early, until it is handed over. */
+  usage?: InferenceEvent;
+}
 
 /**
  * One long-lived Copilot CLI process and session for one Codex thread. Native history stays in
@@ -188,6 +192,8 @@ export class CopilotLiveSession {
         const event = await this.next(attached, live.turn.answered ? sessionLimits.idleMs : undefined);
         const step = event ? live.turn.accept(event) : { events: [], end: "idle" as const };
         yield* step.events;
+        // A request cancelled or failed while its consumer held an event stops here: it must not finish the turn.
+        if (attached.error) throw attached.error;
         if (!step.end) continue;
         if (step.end === "tools") await this.handOver(attached);
         // The state changes before `done` leaves, so a fast follow-up never sees the session running.
@@ -196,8 +202,9 @@ export class CopilotLiveSession {
         return;
       }
     } catch (error) {
-      // Spend the CLI reported before the request failed or was cancelled still counts.
-      yield* this.queuedUsage(attached);
+      // Spend the CLI reported before the request failed or was cancelled still counts, as one running total.
+      this.settleUsage(attached);
+      if (attached.usage) { const usage = attached.usage; attached.usage = undefined; yield usage; }
       throw this.failed(attached, error);
     } finally {
       // A consumer that stops reading mid-turn cancels the turn like an abort.
@@ -230,16 +237,14 @@ export class CopilotLiveSession {
   }
 
   /**
-   * The usage that arrived but was not read when the request ended early, as one running total. Every queued call is
-   * added first: a caller that has gone records only the first usage event it gets, so it must be the whole sum.
+   * Adds the usage that arrived but was not read when the request ended early to its totals, once, and keeps the running
+   * total to hand over. Every queued call is added first: the request reports it as one event, so it must be the whole sum.
    */
-  private *queuedUsage(attached: Attached): Generator<InferenceEvent> {
-    let last: InferenceEvent | undefined;
+  private settleUsage(attached: Attached): void {
     for (const event of attached.queue.splice(0)) {
       if (event.type !== "assistant.usage") continue;
-      try { last = attached.live.turn.accept(event).events.at(-1) ?? last; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
+      try { attached.usage = attached.live.turn.accept(event).events.at(-1) ?? attached.usage; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
     }
-    if (last) yield last;
   }
 
   /** Waits until Copilot has announced a pending request for every call it just made, so the next request can answer them. */
@@ -265,7 +270,8 @@ export class CopilotLiveSession {
   /** Cancels the attached request. Its tool requests and half-written answer are not worth keeping, so the process goes. */
   private abort(attached: Attached): void {
     if (this.attached !== attached) return;
-    this.detach(attached); attached.error = cancelled(); attached.wake?.(); this.wakeWaiters();
+    // The queued usage joins the totals before the end is reported, whether or not the consumer reads on.
+    this.detach(attached); attached.error = cancelled(); this.settleUsage(attached); attached.wake?.(); this.wakeWaiters();
     attached.live.onEnd("interrupted");
     void this.close("closed", "interrupted");
   }

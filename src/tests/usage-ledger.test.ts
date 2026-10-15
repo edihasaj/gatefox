@@ -1,6 +1,7 @@
 import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { request, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayToken, validateConfig } from "../config.js";
@@ -28,7 +29,7 @@ async function start(t: TestContext, type: Kind, events: (signal: AbortSignal) =
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { Authorization: `Bearer ${await gatewayToken(directory)}`, "Content-Type": "application/json" };
   const post = (body: Record<string, unknown>, signal?: AbortSignal) => fetch(`${url}/v1/responses`, { method: "POST", headers, signal, body: JSON.stringify({ model: "alias", ...body }) });
-  return { directory, post, close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }) };
+  return { directory, url, headers, post, close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }) };
 }
 const answer = (): (() => AsyncGenerator<InferenceEvent>) => async function* () {
   yield { type: "usage", usage, accounting }; yield { type: "text", text: "hello" }; yield { type: "done", usage, accounting };
@@ -183,6 +184,29 @@ test("usage a provider reports after the client disconnected is still recorded",
     await flushTelemetry();
     const failed = (await readTelemetry(gateway.directory, 0)).find(event => event.event === "request_failed");
     assert.equal(failed?.nanoAiu, 2e9, "telemetry keeps the spend too");
+  } finally { await gateway.close(); }
+});
+
+test("usage a provider reports after a client that stopped reading left is recorded, though the gateway was waiting to write", async t => {
+  let wrote!: () => void; const writing = new Promise<void>(resolve => { wrote = resolve; }); let pulledEarly = false;
+  const gateway = await start(t, "copilot-subscription", async function* (signal) {
+    wrote(); yield { type: "text", text: "x".repeat(32 * 1024 * 1024) };
+    // The gateway asks for more only once the client took the text, or after the client left.
+    if (!signal.aborted) pulledEarly = true;
+    // The provider had already paid for this call when the caller left.
+    yield { type: "usage", usage, accounting }; yield { type: "done", usage, accounting };
+  });
+  try {
+    const client = request(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers }); client.on("error", () => {});
+    const responded = new Promise<IncomingMessage>(resolve => client.once("response", resolve));
+    client.end(JSON.stringify({ model: "alias", input: "hi", stream: true }));
+    // The body is never read: the gateway waits for the client to take the text, and the client leaves instead.
+    await responded; await writing; await new Promise(resolve => setTimeout(resolve, 300)); client.destroy();
+    let found: Awaited<ReturnType<typeof rows>> = [];
+    for (let attempt = 0; attempt < 100 && !found.length; attempt++) { found = await rows(gateway.directory); if (!found.length) await new Promise(resolve => setTimeout(resolve, 30)); }
+    assert.equal(pulledEarly, false, "the gateway was still waiting to write when the client left");
+    const [row, ...rest] = found; assert.equal(rest.length, 0);
+    assert.deepEqual([row?.status, row?.inputTokens, row?.nanoAiu, row?.nanoAiuStatus], ["failed", 100, 2e9, "complete"]);
   } finally { await gateway.close(); }
 });
 

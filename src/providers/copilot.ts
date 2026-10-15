@@ -118,17 +118,38 @@ export class CopilotSubscription implements Provider {
     const { request, signal, tools, native, choice, summary, conversation, images, create } = run;
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
     const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
+    const notifications = client.rpc.notifications();
+    /** The session's next event, or undefined once the CLI's stream has ended. */
+    const next = async (): Promise<Record<string, unknown> | undefined> => {
+      for (;;) { const { value, done } = await notifications.next(); if (done) return undefined; const params = record(value.params); if (params.sessionId === sessionId) return record(params.event); }
+    };
     try {
       await client.rpc.request("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
       await client.rpc.request("session.sendMessages", { sessionId, messages: await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory) }, 30000);
-      for await (const message of client.rpc.notifications()) {
-        const params = record(message.params); if (params.sessionId !== sessionId) continue;
-        const step = turn.accept(record(params.event));
+      for (let event = await next(); event; event = await next()) {
+        // A cancelled request yields nothing more, except the usage its CLI reported.
+        if (signal.aborted) { yield* usageAfterAbort(turn, event, next); throw cancelled(); }
+        const step = turn.accept(event);
         yield* step.events;
         if (step.end) { yield turn.done(); return; }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");
     } catch (error) { if (signal.aborted) throw cancelled(); throw error; }
-    finally { await client.close(sessionId); }
+    finally { await notifications.return(undefined); await client.close(sessionId); }
   }
+}
+
+/**
+ * After a cancellation, which already stopped the one-shot CLI: the usage it reported (read, or still arriving before it
+ * exits) is added to the request's totals and handed over as one running total. Nothing else is.
+ */
+async function* usageAfterAbort(turn: CopilotTurn, first: Record<string, unknown>, next: () => Promise<Record<string, unknown> | undefined>): AsyncGenerator<InferenceEvent> {
+  let last: InferenceEvent | undefined;
+  const take = (event: Record<string, unknown>) => {
+    if (event.type !== "assistant.usage") return;
+    try { last = turn.accept(event).events.at(-1) ?? last; } catch { /* The request is cancelled anyway; valid usage is still counted. */ }
+  };
+  take(first);
+  try { for (let event = await next(); event; event = await next()) take(event); } catch { /* The stopped CLI's connection ended. */ }
+  if (last) yield last;
 }

@@ -35,6 +35,10 @@ export class CopilotRPC {
   private readonly events = new Readable({ objectMode: true, highWaterMark: 256, read() {} });
   private readonly pending = new Map<number, { resolve: (value: Message) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private sequence = 0; private stopping = false; private queuedBytes = 0;
+  /** Why the connection ended; `notifications` throws it after the events read before it. */
+  private failure?: ProviderError;
+  /** Whether the CLI's output is still being read: its event stream ends only once everything it wrote was read. */
+  private reading = true;
   readonly exited: Promise<void>;
   constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams) {
     this.child = child || spawn("copilot", ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -60,6 +64,7 @@ export class CopilotRPC {
         }
       }
     } catch (error) { this.fail(error instanceof ProviderError ? error : new ProviderError("invalid_stream", "Copilot RPC stream failed")); }
+    finally { this.reading = false; this.endEvents(); }
   }
   private send(message: Message): void {
     if (this.stopping) return;
@@ -78,14 +83,21 @@ export class CopilotRPC {
       catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error instanceof Error ? error : new ProviderError("invalid_request", "Copilot request is invalid", 400)); }
     });
   }
+  /** The CLI's session events in order. Events it sent before the connection failed come first, then the failure is thrown. */
   async *notifications(): AsyncGenerator<Message> {
     for await (const entry of this.events) { this.queuedBytes -= entry.bytes; yield entry.message; }
+    throw this.failure ?? new ProviderError("cli_failed", "Copilot CLI closed before completion");
   }
   private fail(error: ProviderError): void {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear();
-    if (!this.events.destroyed) this.events.destroy(error);
+    this.failure ??= error; this.endEvents();
     this.stop();
   }
+  /**
+   * Ends the event stream once the connection has failed and everything the CLI wrote was read. Destroying it would drop
+   * events not yet consumed, such as the usage of a model call the CLI reported just before it stopped.
+   */
+  private endEvents(): void { if (this.failure && !this.reading && !this.events.destroyed) this.events.push(null); }
   get pid(): number | undefined { return this.child.pid; }
   /** Whether the connection is over: stopped by the gateway, or the process has exited. */
   get closed(): boolean { return this.stopping || this.child.exitCode !== null || this.child.signalCode !== null; }

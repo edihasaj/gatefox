@@ -92,7 +92,11 @@ only some were priced or Copilot itself called a figure partial (the amount is t
 floor), and `unavailable` when none was. A request that fails after a provider reported
 usage keeps that usage, and so does a request whose caller disconnected after the
 provider reported it, so a Copilot call that is billed and then rejected or abandoned
-still shows up. A row with no tokens and no credit amount is not written.
+still shows up. When a request stops early (the caller left, it was cancelled or timed
+out, or the gateway is shutting down), even while the gateway waits for a slow client to
+take earlier output, the server reads the provider on for up to 3 seconds, for usage
+only, so usage the provider received before the stop is not lost. A row with no tokens
+and no credit amount is not written.
 
 Never stored: prompts, instructions, messages, tool names, arguments or outputs,
 images, thread, session or turn ids, account ids, credentials, error text or
