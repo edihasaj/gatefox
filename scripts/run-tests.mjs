@@ -5,7 +5,7 @@
 // for the whole suite and nothing of theirs reaches the real one. (One thing stays outside: the fixed `/tmp/codex-daemon-<uid>`
 // socket rendezvous the pinned SDK uses for the sockets themselves, where the execution-host tests remove what they make. A run
 // that was stopped may leave a socket there; the runner removes each one that the run's folder links to and that no process
-// listens on.)
+// listens on, after asking again for a few seconds in case its owner is still being torn down.)
 //
 // Several tests start gateways and fixture Copilot CLIs. Their startup sweep and their folders live under
 // `<TMPDIR>/harness-gateway-copilot-<uid>`, and a test that wrote there would delete a running gateway's leftovers or leave
@@ -21,12 +21,11 @@
 // which run in groups of their own, are stopped with it; the fixture CLIs leave when their parent does as well.
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
-import { connect } from "node:net";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { groupGone } from "./group-gone.mjs";
-import { ownSocket, sdkSocketName } from "./stale-sockets.mjs";
+import { isStale, ownSocket, sdkSocketName } from "./stale-sockets.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const testsFolder = join(root, "dist", "tests");
@@ -59,12 +58,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {
   setTimeout(() => send("SIGKILL"), killGrace).unref();
 });
 child.once("error", error => { process.stderr.write(`Could not start the test run: ${error.message}\n`); remove(); process.exit(2); });
-/** Whether nothing listens on this socket file: a connection to it is refused. */
-const refused = path => new Promise(settle => {
-  const socket = connect(path); const timer = setTimeout(() => setImmediate(() => { socket.destroy(); settle(false); }), 1500);
-  socket.once("connect", () => { clearTimeout(timer); socket.destroy(); settle(false); });
-  socket.once("error", error => { clearTimeout(timer); settle(error.code === "ECONNREFUSED"); });
-});
 /**
  * The pinned SDK puts the socket of an execution host in a fixed folder, `/tmp/codex-daemon-<uid>`, and the run's folder holds a
  * symlink to it. A run that was stopped leaves the socket file behind. Each one the run's folder links to is removed when nothing
@@ -86,16 +79,17 @@ async function removeStaleSockets() {
     }
   };
   walk(folder);
-  for (const target of targets) {
-    try { const info = lstatSync(target); if (!ownSocket(info, process.getuid())) continue; } catch { continue; }
-    if (await refused(target)) { try { unlinkSync(target); } catch { /* Best effort. */ } }
-  }
+  // All at once: a socket that is still served is asked for a few seconds, and they should not add up.
+  await Promise.all([...targets].map(async target => {
+    try { const info = lstatSync(target); if (!ownSocket(info, process.getuid())) return; } catch { return; }
+    if (await isStale(target)) { try { unlinkSync(target); } catch { /* Best effort. */ } }
+  }));
 }
 child.once("exit", async (code, signal) => {
   // Whatever the leader left running in its group goes with it.
   send("SIGKILL");
-  // A killed process closes its sockets when the kernel has torn it down, not when the signal is sent: a socket is looked at, and
-  // the folder removed, only once nothing is left in the group (a socket checked sooner can still be accepting connections).
+  // Nothing of the run is left running when its folder goes, and a socket is looked at only after its owner is gone. (A killed process
+  // leaves its group before the kernel has closed its sockets, so removeStaleSockets also asks a socket again before it believes it.)
   if (grouped && child.pid) await groupGone(child.pid, 10000);
   await removeStaleSockets().catch(() => {}); remove();
   const name = stopped ?? signal;

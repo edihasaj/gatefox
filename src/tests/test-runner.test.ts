@@ -9,6 +9,7 @@ import { createServer, connect, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { shortFolder } from "./short-folder.js";
 
 // `npm test` must fail a broken test instead of hanging on it, and must leave no process behind however the run ends. These
 // tests run the runner (scripts/run-tests.mjs) on small suites of their own; a nested run starts as a run of its own.
@@ -263,4 +264,26 @@ test("the runner waits for a killed process group to be gone before it looks at 
     assert.deepEqual(await waiting, { gone: true, afterKill: true }, "it settles once the group is gone, not before");
     assert.equal(await groupGone(pid, 200), true, "and a group that is gone is gone at once");
   } finally { try { process.kill(-pid, "SIGKILL"); } catch { /* Gone already. */ } }
+});
+
+test("a socket is stale when nothing listens on it, also when its owner was killed just after answering, and never while something listens", { skip: process.platform === "win32", timeout: 60000 }, async () => {
+  const { isStale } = await import(new URL("../../scripts/stale-sockets.mjs", import.meta.url).href) as { isStale(path: string, ms?: number): Promise<boolean> };
+  const folder = await shortFolder("gw-stale-");
+  try {
+    const maker = (path: string, body: string) => spawn(process.execPath, ["-e", `const server = require("node:net").createServer(${body}); server.listen(${JSON.stringify(path)}, () => process.stdout.write("up"));`], { stdio: ["ignore", "pipe", "ignore"] });
+    const ready = async (child: ChildProcess) => { await once(child.stdout!, "data"); };
+    // Nothing listens: the maker was killed as soon as it listened.
+    const dead = join(folder.directory, "dead.sock"); const killed = maker(dead, "() => {}"); await ready(killed); killed.kill("SIGKILL"); await once(killed, "exit");
+    assert.equal(await isStale(dead, 3000), true, "a socket nobody listens on is stale");
+    // The owner is killed by its first connection, which is answered: the first question finds a listener, the next one a stale socket.
+    const dying = join(folder.directory, "dying.sock"); const second = maker(dying, `() => process.kill(process.pid, "SIGKILL")`); await ready(second); const gone = once(second, "exit");
+    assert.equal(await isStale(dying, 30000), true, "a listener that is gone a moment later is asked again, and found stale");
+    await gone;
+    // Something that keeps listening is never stale, and the question ends at its limit.
+    const serving = join(folder.directory, "serving.sock"); const server = createServer(socket => socket.end()); await new Promise<void>(resolve => server.listen(serving, resolve));
+    try { assert.equal(await isStale(serving, 300), false, "a socket that is served is not stale"); } finally { server.close(); }
+    // A path that is no socket cannot be asked: it is kept.
+    const plain = join(folder.directory, "plain"); await writeFile(plain, "x");
+    assert.equal(await isStale(plain, 300), false, "a file that is no socket is not stale");
+  } finally { await folder.remove(); }
 });
