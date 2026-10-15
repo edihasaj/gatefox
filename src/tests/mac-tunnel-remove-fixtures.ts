@@ -92,6 +92,14 @@ export async function transportFixture(port: number, clientOnly: boolean, forwar
 
 /** ssh resolves nothing beyond the tunnel's own arguments: no ssh_config forwards and no GatewayPorts. */
 export const noSsh: SshResolver = async () => ({ listeners: [], declared: false, gatewayPorts: false });
-/** Pass `{}` as the seams to use the real `/usr/bin/ssh -G`. */
+/** Every provider hostname resolves to a documentation address that is not this machine, so no test depends on real DNS. */
+export const remoteLookup = async () => ["203.0.113.7"];
+/** Pass `{}` as the seams to use the real `/usr/bin/ssh -G`; hostnames still resolve through `remoteLookup` unless a seam says otherwise. */
 export const remove = async (state: string, id: string, listProcesses = none, seams: TunnelRemoveSeams = { resolveSsh: noSsh }) =>
-  removeTunnelComponent(state, (await readServicePlan(state))!, id, listProcesses, seams);
+  removeTunnelComponent(state, (await readServicePlan(state))!, id, listProcesses, { lookup: remoteLookup, ...seams });
+
+/** Runs an action as if on macOS, which `gateway tunnel` requires. */
+export const darwin = async <T>(action: () => Promise<T>): Promise<T> => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!; Object.defineProperty(process, "platform", { value: "darwin" });
+  try { return await action(); } finally { Object.defineProperty(process, "platform", original); }
+};

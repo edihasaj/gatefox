@@ -162,7 +162,15 @@ checked. It refuses when:
   to every interface (`*`, `0.0.0.0`, an empty bind such as `:port`, any other
   non-loopback bind address, or `GatewayPorts yes` or `-g` without a bind
   address) is also reached through this machine's hostname and interface
-  addresses. A name that only resolves to this machine through DNS is not seen;
+  addresses. A provider host that is a name is also resolved (the system
+  resolver, so DNS and `/etc/hosts`, every address it returns), but only when its
+  port is the tunnel's: any loopback address reaches a loopback forward, and a
+  loopback or own-interface address reaches a wildcard one. So `qwen.internal`
+  mapped to `127.0.0.1` is refused, and one that resolves to a remote address is
+  not. A lookup that fails or takes more than 3 seconds fails with `Cannot
+  determine whether provider <id>'s host <name> reaches tunnel <id>'s local port
+  <port>; the tunnel was not removed`, because the answer is unknown. A provider
+  that plainly matches is reported before any name is looked up;
 - on a remote client, one of those ports is the configured `port`, because that
   tunnel is how the client reaches its gateway; stop the client with `gateway
   service uninstall` instead. Another tunnel on the same machine still retires
@@ -178,9 +186,15 @@ checked. It refuses when:
   OpenSSH's table and guessed. It fails with the same `Cannot determine tunnel
   <id>'s local port` error;
 - neither the arguments nor ssh's resolved configuration declare any forward (no
-  `-L`, `-D`, `-R`, `LocalForward`, `DynamicForward` or `RemoteForward`);
-- the tunnel is the plan's only component; uninstall the gateway service instead.
-- a next-login consolidation is pending (`service-login-pending.json`): the command fails with `Tunnel startup is staged under the unified service at next login` before it reads or changes the plan, whatever tunnel id was given, so the staged plan can still be activated.
+  `-L`, `-D`, `-R`, `LocalForward`, `DynamicForward` or `RemoteForward`). It
+  fails with `Cannot determine tunnel <id>'s local port`, like the cases above;
+- the tunnel is the plan's only component; uninstall the gateway service instead;
+- a next-login consolidation is pending (`service-login-pending.json`): the
+  command fails with `Tunnel startup is staged under the unified service at next
+  login` before it reads or changes the plan, whatever tunnel id was given, so
+  the staged plan can still be activated. The check runs again under the plan
+  lock, so a consolidation staged while the command waited for that lock is
+  refused too.
 
 The plan it replaces is saved first to a private
 `service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
@@ -189,7 +203,11 @@ and the record all happen under the same plan-file lock `service shared-executor
 `service shared-native` and their disable commands hold, so a concurrent change
 is never overwritten: the removal refuses with `Gateway service plan changed`, or
 waits up to 5 seconds for the lock and then fails with `Gateway service plan is busy;
-the tunnel was not removed`. A lock that cannot be created at all (for example an
+the tunnel was not removed`. The removal never holds the login registration lock while it waits for the plan
+lock. Every plan writer takes the plan lock first and the login lock second, so
+a removal that held the login lock could block a writer that already holds the
+plan lock, and make it fail as busy (a shared-executors disable could then leave
+the service stopped). A lock that cannot be created at all (for example an
 unwritable state directory) fails with `Cannot lock the gateway service plan
 (<code>); the tunnel was not removed`. Either way nothing was backed up or written.
 A plan write that fails after the backup leaves the backup in place and records

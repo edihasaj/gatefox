@@ -9,7 +9,7 @@ import { pendingLoginConsolidationPath } from "../mac-login-consolidate.js";
 import { readServicePlan, servicePlanPath, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
-import { api, fixture, forward, ids, noBackups, noSsh, none, remove, removeAllRoots, running, sshConfigFile, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
+import { api, darwin, fixture, forward, ids, noBackups, noSsh, none, remove, removeAllRoots, running, sshConfigFile, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
 
 
 test("removing a tunnel keeps every other component and archives the plan it replaced", async () => {
@@ -374,10 +374,6 @@ test("a removal waits for the plan-file lock the other plan writers hold and the
 });
 
 const exists = (path: string) => access(path).then(() => true, () => false);
-const darwin = async <T>(action: () => Promise<T>): Promise<T> => {
-  const original = Object.getOwnPropertyDescriptor(process, "platform")!; Object.defineProperty(process, "platform", { value: "darwin" });
-  try { return await action(); } finally { Object.defineProperty(process, "platform", original); }
-};
 
 test("a pending next-login consolidation refuses a tunnel removal and changes nothing", async () => {
   const f = await fixture({ active: 0, status: "ok" });

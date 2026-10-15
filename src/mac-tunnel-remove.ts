@@ -2,22 +2,26 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { requireMaintenanceWindow } from "./mac-consolidate.js";
-import { reachesListener } from "./mac-tunnel-local.js";
+import { HostLookupError, providerReaches, reachesListener, systemLookup, type HostLookup, type ReachableListener } from "./mac-tunnel-local.js";
 import { tunnelListeners, type SshResolver } from "./mac-tunnel-ssh.js";
 import { readPlanFile, readRemovals, removalsForCurrentPlan, removalsPath } from "./mac-tunnel-removals.js";
 import { lockBusyCode, withPrivateFileLock } from "./private-file-lock.js";
+import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { servicePlanPath, validateServicePlan, type ServicePlan } from "./service-plan.js";
 
 const appliesAt = "next service restart";
+export const pendingMessage = "Tunnel startup is staged under the unified service at next login; its separate registration was not changed";
 type ListProcesses = Parameters<typeof requireMaintenanceWindow>[1];
 // No consolidation is running here, so the shared guard's consolidation wording is replaced.
 const blocks = { desktop: "Quit ChatGPT normally after local and remote chats finish", busy: "Gateway inference is busy or unhealthy" };
-/** Test seams: how ssh resolves the tunnel's forwards, how the plan is written, and how long the plan lock is awaited. */
-export interface TunnelRemoveSeams { resolveSsh?: SshResolver; writePlan?: (path: string, plan: ServicePlan) => Promise<void>; lockTimeoutMs?: number }
+/** Test seams: how ssh resolves the tunnel's forwards, how the plan is written, how long the plan lock is awaited, and how provider hostnames resolve. */
+export interface TunnelRemoveSeams { resolveSsh?: SshResolver; writePlan?: (path: string, plan: ServicePlan) => Promise<void>; lockTimeoutMs?: number; lookup?: HostLookup; lookupTimeoutMs?: number }
 
 /**
- * Removes one SSH tunnel component from a unified service plan. Callers hold the
- * login registration lock and have already refused a pending next-login plan.
+ * Removes one SSH tunnel component from a unified service plan. Callers must not hold
+ * the login registration lock: every other plan writer takes the plan lock first and the
+ * login lock second, so waiting for the plan lock while holding the login lock could block
+ * one of them. The pending next-login plan is checked again inside the plan lock.
  * Nothing is restarted: the supervisor reads the plan whenever the unified service
  * starts, so the tunnel stops at the next restart of that service.
  */
@@ -39,10 +43,7 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
   // On a remote client, that forwarded port is how the client reaches its gateway: removing this tunnel disconnects it.
   const carried = config.clientOnly ? ports.find(listener => listener.port === config.port)?.port : undefined;
   if (carried !== undefined) throw new Error(`Tunnel ${id} carries this client's gateway connection on port ${carried}; stop this remote client with gateway service uninstall instead of removing its tunnel`);
-  for (const listener of ports) {
-    const provider = config.providers.find(candidate => reachesListener(candidate.baseUrl, listener));
-    if (provider) throw new Error(`Provider ${provider.id} uses this tunnel's local port ${listener.port}; point it at another endpoint or remove it from the gateway configuration, then repeat the removal`);
-  }
+  await refuseProviderOnListeners(config.providers, ports, id, seams);
   // The shared maintenance guard: desktop quit, and /health ok and idle when this plan runs inference.
   // A remote client or a plan without inference has no local listener, so its probe never needs a tunnel.
   try { await requireMaintenanceWindow(plan.config, listProcesses, blocks); }
@@ -53,12 +54,35 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
   const path = servicePlanPath(state); let entered = false;
   try {
     // The same plan-file lock every other plan writer holds across its read, compare and write.
-    return await withPrivateFileLock(path, async () => { entered = true; return rewritePlan(state, path, plan, id, seams.writePlan ?? writePrivateJson); }, seams.lockTimeoutMs);
+    return await withPrivateFileLock(path, async () => {
+      entered = true;
+      // Re-checked under the plan lock, as shared-executors does: a staged plan may have appeared while waiting.
+      if (await readPendingLoginConsolidation(state)) throw new Error(pendingMessage);
+      return rewritePlan(state, path, plan, id, seams.writePlan ?? writePrivateJson);
+    }, seams.lockTimeoutMs);
   } catch (error) {
     if (entered) throw error;
     // Acquiring the lock failed before anything was read or written.
     const code = (error as NodeJS.ErrnoException)?.code;
     throw new Error(code === lockBusyCode ? "Gateway service plan is busy; the tunnel was not removed" : `Cannot lock the gateway service plan${code ? ` (${code})` : ""}; the tunnel was not removed`);
+  }
+}
+
+/** A provider on one of the tunnel's local ports blocks its removal. Hosts as written are settled first; names are then resolved, each once. */
+async function refuseProviderOnListeners(providers: Array<{ id: string; baseUrl?: string }>, ports: ReachableListener[], id: string, seams: TunnelRemoveSeams): Promise<void> {
+  const blocked = (provider: { id: string }, listener: ReachableListener) =>
+    new Error(`Provider ${provider.id} uses this tunnel's local port ${listener.port}; point it at another endpoint or remove it from the gateway configuration, then repeat the removal`);
+  for (const listener of ports) for (const provider of providers) if (reachesListener(provider.baseUrl, listener)) throw blocked(provider, listener);
+  const lookups = new Map<string, Promise<string[]>>(); const lookup = seams.lookup ?? systemLookup;
+  const cached: HostLookup = host => { let found = lookups.get(host); if (!found) lookups.set(host, found = lookup(host)); return found; };
+  for (const listener of ports) for (const provider of providers) {
+    let reaches: boolean;
+    try { reaches = await providerReaches(provider.baseUrl, listener, cached, seams.lookupTimeoutMs); }
+    catch (error) {
+      if (!(error instanceof HostLookupError)) throw error;
+      throw new Error(`Cannot determine whether provider ${provider.id}'s host ${error.host} reaches tunnel ${id}'s local port ${listener.port}; the tunnel was not removed`);
+    }
+    if (reaches) throw blocked(provider, listener);
   }
 }
 

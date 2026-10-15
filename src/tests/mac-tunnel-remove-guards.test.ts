@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { reachesListener } from "../mac-tunnel-local.js";
+import { providerReaches, reachesListener, systemLookup } from "../mac-tunnel-local.js";
 import { parseSshConfigDump, type SshResolver } from "../mac-tunnel-ssh.js";
 import { planKey } from "../mac-tunnel-removals.js";
 import type { TunnelRemoveSeams } from "../mac-tunnel-remove.js";
@@ -192,4 +192,67 @@ test("a plan replaced by a copy with the same content and modification time does
     assert.equal(now.mtimeNs, left.mtimeNs, "same modification time"); assert.notEqual(now.ino, left.ino, "another file");
     await assert.rejects(remove(f.state, "spark"), /^Error: No tunnel spark in the unified service plan$/);
   } finally { await f.stop(); }
+});
+
+const alias = (...addresses: string[]): TunnelRemoveSeams => ({ resolveSsh: noSsh, lookup: async host => host === "qwen.internal" ? addresses : ["203.0.113.7"] });
+
+test("a provider name that resolves to this machine reaches a loopback listener, one that resolves elsewhere does not", async () => {
+  for (const address of ["127.0.0.1", "127.8.9.10", "::1", "::ffff:127.0.0.1", "0.0.0.0"]) {
+    const f = await fixture(ok, api("https://qwen.internal:18301/v1"));
+    try {
+      await assert.rejects(remove(f.state, "spark", none, alias(address)), /Provider spark_api uses this tunnel's local port 18301/, address);
+      assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+      await noBackups(f.state);
+    } finally { await f.stop(); }
+  }
+  const mixed = await fixture(ok, api("https://qwen.internal:18301/v1"));
+  try { await assert.rejects(remove(mixed.state, "spark", none, alias("203.0.113.7", "::1")), /Provider spark_api uses this tunnel's local port 18301/, "any one loopback answer is enough"); } finally { await mixed.stop(); }
+  for (const addresses of [["203.0.113.7"], ["2001:db8::1"], ["128.0.0.1", "::2"], []]) {
+    const f = await fixture(ok, api("https://qwen.internal:18301/v1"));
+    try { assert.equal((await remove(f.state, "spark", none, alias(...addresses))).removed, true, addresses.join(",")); } finally { await f.stop(); }
+  }
+});
+
+test("a name that resolves to an own interface address reaches only a wildcard listener", { skip: ownIPv4 ? false : "no non-loopback IPv4 address" }, async () => {
+  const wildcard = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "*:18301:127.0.0.1:18300"]);
+  try { await assert.rejects(remove(wildcard.state, "spark", none, alias(ownIPv4!)), /Provider spark_api uses this tunnel's local port 18301/); } finally { await wildcard.stop(); }
+  const loopback = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "127.0.0.1:18301:127.0.0.1:18300"]);
+  try { assert.equal((await remove(loopback.state, "spark", none, alias(ownIPv4!))).removed, true); } finally { await loopback.stop(); }
+});
+
+test("a name that cannot be resolved in time, or at all, refuses the removal instead of guessing", async () => {
+  const message = /^Error: Cannot determine whether provider spark_api's host qwen\.internal reaches tunnel spark's local port 18301; the tunnel was not removed$/;
+  const stuck: TunnelRemoveSeams = { resolveSsh: noSsh, lookup: () => new Promise(() => {}), lookupTimeoutMs: 40 };
+  const failing: TunnelRemoveSeams = { resolveSsh: noSsh, lookup: async () => { throw Object.assign(new Error("getaddrinfo ENOTFOUND qwen.internal"), { code: "ENOTFOUND" }); } };
+  for (const seams of [stuck, failing]) {
+    const f = await fixture(ok, api("https://qwen.internal:18301/v1"));
+    try {
+      await assert.rejects(remove(f.state, "spark", none, seams), message);
+      assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+      await noBackups(f.state);
+    } finally { await f.stop(); }
+  }
+});
+
+test("a name is looked up only when its port is the tunnel's, once per host, and a provider that plainly matches wins over a failed lookup", async () => {
+  const seen: string[] = []; const record: TunnelRemoveSeams = { resolveSsh: noSsh, lookup: async host => { seen.push(host); throw new Error("offline"); } };
+  const other = await fixture(ok, api("https://qwen.internal:18302/v1"));
+  try { assert.equal((await remove(other.state, "spark", none, record)).removed, true); assert.deepEqual(seen, [], "another port needs no lookup"); } finally { await other.stop(); }
+  const literal = await fixture(ok, api("https://203.0.113.7:18301/v1"));
+  try { assert.equal((await remove(literal.state, "spark", none, record)).removed, true); assert.deepEqual(seen, [], "an IP literal needs no lookup"); } finally { await literal.stop(); }
+  const local = await fixture(ok, { ...api("https://qwen.internal:18301/v1"), id: "first" }, ["-L", "18301:127.0.0.1:18300"]);
+  try {
+    const config = JSON.parse(await readFile(local.plan.config, "utf8")); config.providers.push({ ...api("http://127.0.0.1:18301/v1"), id: "second", models: { other: "other" } });
+    await writeFile(local.plan.config, JSON.stringify(config));
+    await assert.rejects(remove(local.state, "spark", none, record), /Provider second uses this tunnel's local port 18301/);
+    assert.deepEqual(seen, [], "a plain match is decided before any lookup");
+  } finally { await local.stop(); }
+});
+
+test("providerReaches resolves names and the system resolver answers localhost with a loopback address", async () => {
+  const listener = { port: 18301, wildcard: false };
+  assert.equal(await providerReaches("https://qwen.internal:18301", listener, async () => ["127.0.0.1"]), true);
+  assert.equal(await providerReaches("https://qwen.internal:18301", listener, async () => ["203.0.113.7"]), false);
+  assert.equal(await providerReaches("not a url", listener, async () => { throw new Error("never looked up"); }), false);
+  assert.ok((await systemLookup("localhost")).some(address => address === "127.0.0.1" || address === "::1"));
 });
