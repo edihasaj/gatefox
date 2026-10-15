@@ -178,21 +178,27 @@ ends the request normally; the session then closes (`idle_missing`).
   `~/.copilot`, and the CLI's configuration folder is private. The CLI does write a log of
   the conversation, including prompts and tool results, to `session-state/<id>/events.jsonl`
   in that folder. In one-shot mode it lives for seconds; in live mode it lives as long as
-  the session. The folder is `$TMPDIR/gateway-copilot-live-<owner pid>-<owner start>-<random>`
+  the session. The folder is
+  `$TMPDIR/harness-gateway-copilot-<uid>/gateway-copilot-live-<owner pid>-<owner start>-<random>`
   (one-shot: `gateway-copilot-run-…`), with the gateway's pid and start time in base 36
-  (the start time is left out when `ps` cannot read it), mode 0700. It holds the CLI's own
-  `TMPDIR` and the history's images, for every CLI the gateway starts. It is removed when
-  the session closes, parks out, is evicted, crashes, is cancelled or is retired, and by
-  every gateway shutdown hook. If the gateway exits through `process.exit` or the end of
-  its event loop without closing them, an exit handler kills every Copilot CLI it started
-  (live, one-shot, starting or closing) and removes their folders synchronously. If the
-  gateway is killed outright, its CLIs exit when their input closes (measured on CLI
-  1.0.97), and the next gateway removes every folder whose owner no longer runs when it
-  starts, before its first request and whatever any provider's mode is. An owner no longer
-  runs when its pid is dead or now belongs to a process with another start time (`ps -o
-  lstart`), so a reused pid keeps nothing. Folders that older releases left without an
-  owner (`gateway-copilot-<random>`) are removed once they are more than two hours old,
-  longer than any request runs.
+  (the start time is left out when `ps` cannot read it), mode 0700. The parent
+  `harness-gateway-copilot-<uid>` is the gateway's own folder in the OS temp folder, mode
+  0700 and owned by you; a symlink or another user's folder in its place is refused.
+  The folder holds the CLI's own `TMPDIR` and the history's images, for every CLI the gateway
+  starts. It is removed when the session closes, parks out, is evicted, crashes, is
+  cancelled or is retired, and by every gateway shutdown hook. If the gateway exits through
+  `process.exit` or the end of its event loop without closing them, an exit handler kills
+  every Copilot CLI it started (live, one-shot, starting or closing) and removes their
+  folders synchronously. If the gateway is killed outright, its CLIs exit when their input
+  closes (measured on CLI 1.0.97), and the next gateway removes every folder whose owner no
+  longer runs when it starts, before its first request and whatever any provider's mode is.
+  It reads only the parent folder, never the whole OS temp folder, which can hold hundreds
+  of thousands of entries. An owner no longer runs when its pid is dead or now belongs to a
+  process with another start time (`ps -o lstart`), so a reused pid keeps nothing; folders
+  that another user owns are never removed. Folders that older releases left straight in the
+  OS temp folder without an owner (`gateway-copilot-<random>`) are removed once they are
+  more than two hours old, longer than any request runs; the OS temp folder is read for
+  them once and again after a week (the `.legacy-scan` file in the parent records when).
 - No caller prompt, tool argument or output goes to gateway logs, telemetry or the usage
   ledger.
 

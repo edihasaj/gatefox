@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
+import { readdir, stat } from "node:fs/promises";
+import { basename, join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
 import { adapter, alive, callIds, defaultAdapter, harness, kind, live, lookupName, outputFor, png, sleep, tools, turn, until, user, type Entry } from "./copilot-live-harness.js";
 
@@ -34,12 +34,14 @@ test("a tool loop keeps one CLI process, answers the waiting call and bills each
     assert.equal(send.prompts.length, 1); assert.match(send.prompts[0], /^<<item 1 user>>\nstart \[tool\]\n<<\/item>>$/);
     const calls = callIds([...a.output, ...b.output]);
     assert.deepEqual(entries.filter(entry => entry.op === "deliver").map(entry => [entry.toolCallId, entry.result]), [[calls[0], "NEXT 2"], [calls[1], "plain"]]);
-    // While the session lives its folder is private, holds the CLI's own temp folder, and nothing else is left in the OS temp folder.
+    // While the session lives its folder is private, holds the CLI's own temp folder, and the only thing in the OS temp folder is the
+    // dedicated parent (private too), so the startup sweep reads that parent and never the whole OS temp folder.
     const [name, ...rest] = await h.liveDirs(); assert.equal(rest.length, 0);
     assert.ok(name.startsWith(`gateway-copilot-live-${process.pid.toString(36)}-`));
-    assert.equal((await stat(join(h.scratch, name))).mode & 0o777, 0o700);
-    assert.equal(entries[0].tmpdir, join(h.scratch, name, "tmp"), "the CLI stages its temp files inside the session folder");
-    assert.ok((await stat(join(h.scratch, name, "session-state", entries[0].params.sessionId, "events.jsonl"))).isFile(), "the CLI's prompt log lives in the private folder");
+    assert.deepEqual(await readdir(h.scratch), [basename(h.parent)]); assert.equal((await stat(h.parent)).mode & 0o777, 0o700);
+    assert.equal((await stat(join(h.parent, name))).mode & 0o777, 0o700);
+    assert.equal(entries[0].tmpdir, join(h.parent, name, "tmp"), "the CLI stages its temp files inside the session folder");
+    assert.ok((await stat(join(h.parent, name, "session-state", entries[0].params.sessionId, "events.jsonl"))).isFile(), "the CLI's prompt log lives in the private folder");
     // The session event carries the request's detail and who started its model calls, and no content.
     const telemetry = await h.sessions();
     assert.deepEqual(telemetry.filter(entry => entry.outcome === "spawned" || entry.outcome === "continued").map(entry => [entry.outcome, entry.initiator, entry.reasoningTokens, entry.cacheReadTokens, entry.cacheWriteTokens, entry.nanoAiu]),
@@ -124,7 +126,7 @@ test("the session is created with the caller's instructions, tool names and ever
     assert.equal(params.tools[0].skipPermission, true); assert.equal(params.tools[0].name, lookupName); assert.equal(params.tools[0].defer, "never", "no tool hides behind the CLI's tool search");
     assert.deepEqual(params.toolSearch, { enabled: false });
     assert.deepEqual(params.largeOutput, { enabled: false }, "a large tool result stays inline instead of being saved to a file outside the session folder");
-    assert.equal(params.configDir, params.workingDirectory); assert.equal(params.configDir, create.directory); assert.ok(create.directory.startsWith(h.scratch));
+    assert.equal(params.configDir, params.workingDirectory); assert.equal(params.configDir, create.directory); assert.ok(create.directory.startsWith(h.parent));
     assert.equal(params.reasoningEffort, undefined);
   } finally { await h.restore(); }
 });

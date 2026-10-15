@@ -108,7 +108,7 @@ for await (const frame of copilotFrames(process.stdin)) {
     mkdirSync(join(directory, "session-state", sessionId), { recursive: true }); writeFileSync(join(directory, "session-state", sessionId, "events.jsonl"), "PROMPT-LOG\n");
     // A helper process in the CLI's process group, to show that ending the session ends the group.
     if (process.env.GATEWAY_COPILOT_LIVE_CHILD) log({ op: "child", child: spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).pid });
-    log({ op: "create", directory, tmpdir: process.env.TMPDIR, params, ...surroundings(directory) });
+    log({ op: "create", directory, args: process.argv.slice(2), tmpdir: process.env.TMPDIR, params, ...surroundings(directory) });
     // An event of the given type just before `session.create` answers, while the gateway is still starting a live
     // session: in the same write as the answer, or on its own when the answer is delayed.
     const boot = env("BOOT_EVENT") && directory.includes("-live-") ? [eventMessage(env("BOOT_EVENT")!, {})] : [];

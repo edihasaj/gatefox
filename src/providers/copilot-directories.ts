@@ -1,16 +1,37 @@
 import { execFile } from "node:child_process";
-import { lstat, readdir, rm } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ProviderError } from "./provider.js";
 
 /**
- * Every Copilot CLI process gets a private folder under the OS temp folder, because the CLI logs the
- * conversation (prompts and tool results) to `session-state/<id>/events.jsonl` inside its configuration folder.
+ * Every Copilot CLI process gets a private folder, because the CLI logs the conversation (prompts and tool
+ * results) to `session-state/<id>/events.jsonl` inside its configuration folder. All of them live under one
+ * dedicated parent folder of the OS temp folder (mode 0700, see `copilotParent`), so the startup sweep reads
+ * that small folder and never the whole temp folder, which can hold hundreds of thousands of entries.
  * The folder name carries the owning gateway's pid and start time, so a later gateway can tell a dead owner's
  * leftovers from a running gateway's folders even after the pid was reused. `run` is a one-shot request, `live`
  * a long-lived session.
  */
 export type DirectoryKind = "run" | "live";
+
+const currentUid = (): number | undefined => typeof process.getuid === "function" ? process.getuid() : undefined;
+
+/** The dedicated parent of every CLI folder: one per user, so users who share a temp folder never meet. */
+export const copilotParent = (base = tmpdir()): string => join(base, `harness-gateway-copilot${currentUid() === undefined ? "" : `-${currentUid()}`}`);
+
+/**
+ * Creates the parent folder if needed and returns it. It must be a real directory (never a symlink) that the current
+ * user owns, and it is made 0700; anything else is refused, because the CLI folders inside it hold prompt logs.
+ */
+export async function ensureCopilotParent(base = tmpdir()): Promise<string> {
+  const path = copilotParent(base); const uid = currentUid();
+  await mkdir(path, { mode: 0o700 }).catch(error => { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; });
+  const info = await lstat(path);
+  if (!info.isDirectory() || (uid !== undefined && info.uid !== uid)) throw new ProviderError("cli_failed", "Copilot's private temp folder is not usable", 502);
+  if ((info.mode & 0o777) !== 0o700) await chmod(path, 0o700);
+  return path;
+}
 
 /** When a process started, in whole seconds since the epoch (`ps -o lstart`), or undefined when that cannot be read. */
 export function processStart(pid: number): Promise<number | undefined> {
@@ -59,23 +80,42 @@ async function ownerRuns(pid: number, start: number | undefined): Promise<boolea
   return actual === undefined || sameStart(actual, start);
 }
 
+/** How long the one-time check of the temp folder itself for older releases' folders stands before it runs again. */
+export const legacyScanIntervalMs = { value: 7 * 24 * 3600 * 1000 };
+const legacyScanMarker = ".legacy-scan";
+
 /**
- * Removes the folders of gateway processes that no longer run, which hold prompt logs the CLI wrote.
- * Runs once when the gateway starts, whichever mode any provider is in. A folder is removed only if it is a
- * real directory (never a symlink) that the current user owns. A living process that reuses a dead owner's
- * pid does not keep the folder: its start time differs.
+ * Removes the folders `names` lists in `directory` that nobody owns any more: in the dedicated parent, those of a gateway
+ * that no longer runs; in the temp folder (`older`), those of releases before the parent, once they are old enough.
  */
-export async function sweepCopilotDirectories(base = tmpdir()): Promise<void> {
-  const uid = typeof process.getuid === "function" ? process.getuid() : undefined;
-  void ownStart(); // Read once at startup, so the first Copilot request does not wait for it.
-  for (const name of await readdir(base).catch(() => [] as string[])) {
-    const match = owned.exec(name);
-    if (!match && !legacy.test(name)) continue;
-    const path = join(base, name);
+async function sweepIn(directory: string, names: string[], uid: number | undefined, older: boolean): Promise<void> {
+  for (const name of names) {
+    const match = older ? null : owned.exec(name);
+    if (!match && !(older && legacy.test(name))) continue;
+    const path = join(directory, name);
     const info = await lstat(path).catch(() => undefined);
     if (!info?.isDirectory() || (uid !== undefined && info.uid !== uid)) continue;
     if (match) { if (await ownerRuns(parseInt(match[1], 36), match[2] === undefined ? undefined : parseInt(match[2], 36))) continue; }
     else if (Date.now() - info.mtimeMs < legacyAgeMs.value) continue;
     await rm(path, { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/**
+ * Removes the folders of gateway processes that no longer run, which hold prompt logs the CLI wrote.
+ * Runs once when the gateway starts, whichever mode any provider is in. It reads only the dedicated parent folder.
+ * Releases before it put their folders (`gateway-copilot-<random>`) straight into the temp folder, which can be huge,
+ * so that folder is read for them once, then again after `legacyScanIntervalMs`. A folder is removed only if it is a
+ * real directory (never a symlink) that `uid` (the current user) owns. A living process that reuses a dead owner's
+ * pid does not keep the folder: its start time differs.
+ */
+export async function sweepCopilotDirectories(base = tmpdir(), uid = currentUid()): Promise<void> {
+  void ownStart(); // Read once at startup, so the first Copilot request does not wait for it.
+  const parent = copilotParent(base); const names = (directory: string) => readdir(directory).catch(() => [] as string[]);
+  const present = (await lstat(parent).catch(() => undefined))?.isDirectory() === true;
+  if (present) await sweepIn(parent, await names(parent), uid, false);
+  const marker = join(parent, legacyScanMarker);
+  if (present && await lstat(marker).then(info => info.isFile() && Date.now() - info.mtimeMs < legacyScanIntervalMs.value, () => false)) return;
+  await sweepIn(base, await names(base), uid, true);
+  await ensureCopilotParent(base).then(() => writeFile(marker, "", { mode: 0o600 })).catch(() => {});
 }

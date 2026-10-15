@@ -1,12 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lstat, mkdir, stat, symlink, utimes } from "node:fs/promises";
-import { join } from "node:path";
 import { copilotSessionSettings, validateConfig } from "../config.js";
 import { ProviderError } from "../providers/provider.js";
-import { legacyAgeMs, processStart, sweepCopilotDirectories } from "../providers/copilot-directories.js";
 import { runShutdownHooks } from "../runtime-activity.js";
-import { createGatewayHandler } from "../server.js";
 import { adapter, alive, callIds, harness, live, outputFor, thread, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 const settled = (value: Promise<unknown>) => value.then(() => undefined, error => error as unknown);
@@ -15,49 +11,6 @@ async function closed(h: Harness, pid: number): Promise<void> {
   assert.ok(await until(() => !alive(pid)), "the CLI process ended"); assert.ok(await until(async () => (await h.liveDirs()).length === 0), "its folder was removed");
   assert.ok(await until(() => live().sessions().length === 0), "the registry forgot it");
 }
-const exists = (path: string) => stat(path).then(() => true, () => false);
-
-test("a dead gateway's folders, live or one-shot, are swept; a living gateway's folders and unrelated ones stay", async () => {
-  const h = await harness();
-  try {
-    const b36 = (value: number) => value.toString(36);
-    const parent = (await processStart(process.ppid))!; const own = (await processStart(process.pid))!;
-    assert.ok(parent && own, "ps reports when a process started");
-    const names = {
-      deadLive: `gateway-copilot-live-zzzzzz-${b36(parent)}-abc123`, deadRun: "gateway-copilot-run-zzzzzz-abc123",
-      livingLive: `gateway-copilot-live-${b36(process.ppid)}-${b36(parent)}-abc123`, livingRun: `gateway-copilot-run-${b36(process.ppid)}-${b36(parent)}-abc123`,
-      // A name from before the start time joined it: a living pid is trusted.
-      livingPidOnly: `gateway-copilot-run-${b36(process.ppid)}-abc123`,
-      // The pid lives, but it is another process now: the folder's owner started an hour before it.
-      reusedLive: `gateway-copilot-live-${b36(process.ppid)}-${b36(parent - 3600)}-abc123`, reusedOwn: `gateway-copilot-run-${b36(process.pid)}-${b36(own - 3600)}-abc123`,
-      own: `gateway-copilot-run-${b36(process.pid)}-${b36(own)}-abc123`, unrelated: "gateway-copilot-harness-abc123", legacyFresh: "gateway-copilot-abc123", legacyOld: "gateway-copilot-OLD123",
-    };
-    for (const name of Object.values(names)) await mkdir(join(h.scratch, name));
-    const old = new Date(Date.now() - 3 * 3600 * 1000); await utimes(join(h.scratch, names.legacyOld), old, old);
-    await sweepCopilotDirectories(h.scratch);
-    for (const name of [names.deadLive, names.deadRun, names.legacyOld, names.reusedLive, names.reusedOwn]) assert.equal(await exists(join(h.scratch, name)), false, `${name} belongs to nobody and holds a prompt log`);
-    for (const name of [names.livingLive, names.livingRun, names.livingPidOnly, names.own, names.unrelated, names.legacyFresh]) assert.equal(await exists(join(h.scratch, name)), true, `${name} stays`);
-    // A symlink with a dead owner's name (one the sweep matches) is not followed or removed: only real directories are the gateway's.
-    const link = join(h.scratch, "gateway-copilot-run-zzzzzz-link12");
-    const target = join(h.scratch, "target"); await mkdir(target); await symlink(target, link);
-    await sweepCopilotDirectories(h.scratch);
-    assert.equal(await lstat(link).then(info => info.isSymbolicLink(), () => false), true); assert.equal(await exists(target), true);
-    // A legacy folder is swept only once it is older than any request can run.
-    legacyAgeMs.value = 0; try { await sweepCopilotDirectories(h.scratch); } finally { legacyAgeMs.value = 2 * 3600 * 1000; }
-    assert.equal(await exists(join(h.scratch, names.legacyFresh)), false);
-  } finally { await h.restore(); }
-});
-
-test("starting the gateway sweeps a dead gateway's folders before any Copilot request, whatever the mode", async () => {
-  const h = await harness();
-  try {
-    const dead = [join(h.scratch, "gateway-copilot-live-zzzzzz-abc123"), join(h.scratch, "gateway-copilot-run-zzzzzz-abc123")];
-    for (const path of dead) { await mkdir(join(path, "session-state"), { recursive: true }); }
-    await createGatewayHandler({ version: 1, port: 0, stateDirectory: join(h.directory, "state"), providers: [{ id: "c", type: "copilot-subscription", models: { a: "x" }, copilotSessions: { mode: "oneshot" } }] });
-    for (const path of dead) assert.equal(await exists(path), false, "removed at startup, with no Copilot request made");
-    assert.deepEqual(await h.pids(), [], "no CLI was started for it");
-  } finally { await h.restore(); }
-});
 
 test("a permission request, a foreign tool or a native tool call is rejected and ends the session completely", async () => {
   // The event router kills the session the moment the CLI asks for permission or uses another tool, and says why; a native

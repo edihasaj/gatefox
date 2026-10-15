@@ -1,10 +1,9 @@
 import { rmSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "../config.js";
 import { CopilotRPC } from "./copilot-rpc.js";
-import { directoryPrefix, type DirectoryKind } from "./copilot-directories.js";
+import { directoryPrefix, ensureCopilotParent, type DirectoryKind } from "./copilot-directories.js";
 import { ProviderError } from "./provider.js";
 
 export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
@@ -44,8 +43,9 @@ export interface OpenOptions {
  */
 export async function openCopilot(config: ProviderConfig, signal?: AbortSignal, options: OpenOptions = {}) {
   if (signal?.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
-  // mkdtemp creates the directory 0700. The CLI writes its event log (which holds prompts) here, so the mode is also enforced.
-  const directory = await mkdtemp(join(tmpdir(), await directoryPrefix(options.kind ?? "run")));
+  // The folder lives in the dedicated parent (0700), so the startup sweep reads only that. mkdtemp creates the directory 0700.
+  // The CLI writes its event log (which holds prompts) here, so the mode is also enforced.
+  const directory = await mkdtemp(join(await ensureCopilotParent(), await directoryPrefix(options.kind ?? "run")));
   const entry: { directory: string; rpc?: CopilotRPC } = { directory }; open.add(entry);
   if (!exitHandler) { exitHandler = true; process.once("exit", stopCopilotClientsNow); }
   let rpc: CopilotRPC | undefined;

@@ -6,6 +6,7 @@ import { CopilotSubscription } from "../providers/copilot.js";
 import { claudeToolName } from "../providers/claude-tool-names.js";
 import { normalizeResponsesTools } from "../protocol/request.js";
 import { copilotLive } from "../providers/copilot-live.js";
+import { copilotParent } from "../providers/copilot-directories.js";
 import type { InferenceContext } from "../providers/provider.js";
 import { ResponsesWriter } from "../protocol/responses.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
@@ -51,7 +52,7 @@ export async function harness() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-test-copilot-harness-"));
   const bin = join(directory, "bin"); const scratch = join(directory, "tmp"); const logPath = join(directory, "log.jsonl"); await mkdir(bin); await mkdir(scratch);
   const fixture = fileURLToPath(new URL("./copilot-live-fixture.js", import.meta.url)); const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
-  await writeFile(join(bin, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)}\n`); await chmod(join(bin, "copilot"), 0o700);
+  await writeFile(join(bin, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(join(bin, "copilot"), 0o700);
   // Every fixture switch starts unset; a test sets the ones it needs, and restore() puts back what was there.
   const switches = ["DIE", "STALL", "CHILD", "SLOW_SWITCH", "SLOW_CREATE", "SLOW_ABORT", "BOOT_EVENT", "IGNORE_TERM", "SWITCH_EFFORT"].map(name => `GATEWAY_COPILOT_LIVE_${name}`);
   const names = ["PATH", "TMPDIR", "GATEWAY_COPILOT_LIVE_LOG", ...switches]; const previous = names.map(name => process.env[name]);
@@ -60,7 +61,9 @@ export async function harness() {
   const log = async (): Promise<Entry[]> => (await readFile(logPath, "utf8").catch(() => "")).split("\n").filter(Boolean).map(line => JSON.parse(line));
   return {
     directory, scratch, log, die: join(directory, "die"), stall: join(directory, "stall"),
-    liveDirs: async () => (await readdir(scratch)).filter(name => name.startsWith("gateway-copilot-")),
+    /** The dedicated parent of every CLI folder, inside the private temp folder. */
+    parent: copilotParent(scratch),
+    liveDirs: async () => (await readdir(copilotParent(scratch)).catch(() => [] as string[])).filter(name => name.startsWith("gateway-copilot-")),
     pids: async () => [...new Set((await log()).map(entry => entry.pid as number))],
     sessions: async () => { await flushTelemetry(); return (await readTelemetry(directory, since)).filter(entry => entry.event === "copilot_session"); },
     restore: async () => {
