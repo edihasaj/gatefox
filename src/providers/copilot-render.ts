@@ -67,12 +67,13 @@ const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "
 /**
  * Writes one image (0600) into the `images` folder of the CLI's private folder and returns it as a `file` attachment.
  * Images never travel inline in a prompt: one RPC message is limited to 16 MiB, and a few screenshots pass that.
- * The folder goes with the CLI's folder, so no image outlives the session.
+ * The folder goes with the CLI's folder, so no image outlives the session. `images` is created without `recursive`, which would
+ * also recreate the CLI's own folder: once that is removed (the session ended), staging fails instead of leaving a folder behind.
  */
 async function stage(directory: string, { label, image }: ClaudeImages[number]): Promise<Attachment> {
   const folder = join(directory, "images"); const path = join(folder, `${label}.${extensions[image.mediaType] ?? "img"}`);
   try {
-    await mkdir(folder, { recursive: true, mode: 0o700 });
+    await mkdir(folder, { mode: 0o700 }).catch(error => { if (error?.code !== "EEXIST") throw error; });
     await writeFile(path, Buffer.from(image.data, "base64"), { mode: 0o600 });
   } catch { throw new ProviderError("cli_failed", "Copilot image attachment could not be written"); }
   return { type: "file", path, displayName: label };
@@ -82,13 +83,18 @@ async function stage(directory: string, { label, image }: ClaudeImages[number]):
  * One user message per conversation item from `from`, oldest first, with each item's images as file attachments in
  * `directory` (the CLI's private folder) and the choice line closing the last message. Item numbers count from the
  * start of the conversation, so a continuation numbers its items the way a seed would have.
+ * `stopped` is asked before each image is written: once it says yes the rendering fails as cancelled, so a request that ended
+ * (and whose folder is about to be removed) never keeps writing into it.
  */
-export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string): Promise<Prompt[]> {
+export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string, stopped: () => boolean = () => false): Promise<Prompt[]> {
   const owned = imagesByItem(images);
   const prompts: Prompt[] = [];
   for (const [offset, item] of conversation.slice(from).entries()) {
     const attachments: Attachment[] = [];
-    for (const image of owned.get(from + offset) || []) attachments.push(await stage(directory, image));
+    for (const image of owned.get(from + offset) || []) {
+      if (stopped()) throw new ProviderError("cancelled", "Request cancelled", 499);
+      attachments.push(await stage(directory, image));
+    }
     prompts.push({ prompt: itemText(item, from + offset + 1), ...(attachments.length ? { attachments } : {}) });
   }
   if (!prompts.length) prompts.push({ prompt: "(the conversation has no items)" });

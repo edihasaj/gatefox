@@ -63,7 +63,10 @@ what the model sees.
   the CLI's private folder and attached to the item's message as `file` attachments; the
   message text names each one. Their bytes never travel inside a message, because one
   RPC message to the CLI is limited to 16 MiB and a few screenshots pass that. The files
-  go with the folder. A tool output's images can only travel inline, as binary results
+  go with the folder. A request that is cancelled (or whose session ends) while its images
+  are being written writes no further image: the check comes before each one, the write in
+  flight ends before the folder is removed, and an `images` folder is never created in a
+  CLI folder that is already gone. A tool output's images can only travel inline, as binary results
   of the waiting call, so a tool result whose JSON exceeds 12 MiB is not handed over: the
   thread reseeds (`large_tool_result`), and the seed sends those images as files.
 - **Tools:** the caller's whole catalog, always, whatever the tool choice. Each tool is an
@@ -217,7 +220,9 @@ ends the request normally; the session then closes (`idle_missing`).
   cancelled or is retired, and by every gateway shutdown hook. If the gateway exits through
   `process.exit` or the end of its event loop without closing them, an exit handler kills
   every Copilot CLI it started (live, one-shot, starting or closing) and removes their
-  folders synchronously. If the gateway is killed outright, its CLIs exit when their input
+  folders synchronously; a folder that could not be removed when its CLI closed (the
+  removal is retried five times) stays on that list for the handler, and closing never
+  fails the request or the gateway because of it. If the gateway is killed outright, its CLIs exit when their input
   closes (measured on CLI 1.0.97), and the next gateway removes every folder whose owner no
   longer runs when it starts, before its first request and whatever any provider's mode is.
   Each sweep reads the parent folder; it does not read the whole OS temp folder, which can
@@ -249,10 +254,12 @@ writes a `failed` ledger row and a `request_failed` record for every request sti
 running, with the usage its provider had reported so far, and then flushes telemetry and
 the ledger, so a request stopped at shutdown never loses what it had already cost. Usage
 that arrives after the process has left is not recorded. A cancelled request hands
-its total over as the CLI reports it, live or one-shot: a one-shot request hands over the
-running total after each call it reads, without waiting for its CLI to be aborted and killed
-(`session.abort` is bounded to 2 seconds before SIGKILL), so a process that leaves in
-between has the usage already.
+its total over as the CLI reports it, live or one-shot: each usage the CLI reports while it
+is being aborted (`session.abort` is bounded to 2 seconds before SIGKILL) is added to the
+request's totals and handed over at once as the running total, without waiting for the CLI
+to be killed, so a process that leaves in between has the usage already. A live request
+ends once its session is gone; the `interrupted` event is written then, so it counts that
+usage too.
 
 `copilot_session` telemetry has one event per decision or end:
 

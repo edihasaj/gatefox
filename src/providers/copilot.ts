@@ -153,13 +153,18 @@ export class CopilotSubscription implements Provider {
       }
     };
     let ending: Promise<void> | undefined;
+    // The messages being rendered (images are written into the CLI's folder). Settled, never rejected, so that waiting for it is safe.
+    let rendering: Promise<void> = Promise.resolve();
+    // It never rejects: the folder's removal is the client's to retry (copilot-client.ts), and a teardown nobody awaits must not
+    // end the process with an unhandled rejection.
     const end = (): Promise<void> => ending ??= (async () => {
-      if (idle) { await notifications.return(undefined); await client.close(sessionId); return; }
+      if (idle) { await notifications.return(undefined); await rendering; await client.close(sessionId); return; }
       // Like a live session that ends: abort (bounded), then SIGKILL of the process group, never session.delete and SIGTERM.
       // The event stream stays open until then: a closed one makes the connection treat the CLI's next event as an overflow and stop it.
-      await client.rpc.request("session.abort", { sessionId }, sessionLimits.abortMs).catch(() => {}); await client.close(undefined, true);
+      // A rendering still in progress stops at its next image (the request is cancelled); its last write ends before the folder goes.
+      await client.rpc.request("session.abort", { sessionId }, sessionLimits.abortMs).catch(() => {}); await rendering; await client.close(undefined, true);
       await notifications.return(undefined);
-    })();
+    })().catch(() => {});
     // A cancellation ends the CLI at once, the same way, while the request goes on reading what the CLI still reports (its usage).
     const onAbort = () => { void end(); };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -172,7 +177,9 @@ export class CopilotSubscription implements Provider {
       if (signal.aborted) throw cancelled();
       await ask("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
       // Rendering the messages can take a while (images are written to files), and the abort can come during it.
-      const messages = await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory);
+      const render = copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory, () => signal.aborted || ending !== undefined);
+      rendering = render.then(() => {}, () => {});
+      const messages = await render;
       await ask("session.sendMessages", { sessionId, messages }, 30000);
       for (let event = await next(); event; event = await next()) {
         // A cancelled request yields nothing more, except the usage its CLI reported.

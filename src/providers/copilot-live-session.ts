@@ -4,6 +4,7 @@ import type { InferenceEvent } from "../protocol/types.js";
 import { echoDigests, type LedgerState } from "./claude-ledger.js";
 import { openCopilot, type CopilotClient } from "./copilot-client.js";
 import type { Prompt, ToolResult } from "./copilot-render.js";
+import { reportException } from "../error-report.js";
 import { record } from "./copilot-rpc.js";
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
@@ -52,8 +53,11 @@ export interface SessionOptions {
 
 /** One request served by the session. */
 export interface LiveTurn {
-  /** New conversation items as user messages (rendered into the session's folder, which holds their images), or the caller's tool outputs by call id. */
-  begin: { prompts: (directory: string) => Promise<Prompt[]> } | { outputs: Map<string, string | ToolResult> };
+  /**
+   * New conversation items as user messages (rendered into the session's folder, which holds their images), or the caller's tool outputs by call id.
+   * `stopped` says the request is over: the rendering must write nothing more, since the folder is about to go.
+   */
+  begin: { prompts: (directory: string, stopped: () => boolean) => Promise<Prompt[]> } | { outputs: Map<string, string | ToolResult> };
   /** Ledger digests of this request's canonical input. */
   prefix: string[];
   turn: CopilotTurn;
@@ -66,7 +70,12 @@ interface Attached {
   live: LiveTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
   /** The request's running usage total once its queued usage was added after it ended early, until it is handed over. */
   usage?: InferenceEvent;
+  /** Set when the request was cancelled: settles once the session is gone and the usage it reported meanwhile has been added. */
+  over?: Promise<void>;
 }
+
+/** The most usage events a cancelled request collects while its session is being aborted. */
+const lateUsageLimit = 1000;
 
 /**
  * One long-lived Copilot CLI process and session for one Codex thread. Native history stays in
@@ -89,6 +98,12 @@ export class CopilotLiveSession {
   /** Pending external tool requests by the model's tool call id. */
   private readonly requests = new Map<string, string>();
   private attached?: Attached; private readonly waiters = new Set<() => void>();
+  /** The cancelled request whose session is being aborted: the usage the CLI still reports for it is routed to it (see `route`). */
+  private draining?: Attached;
+  /** The event reader's end, which comes after the last event the CLI wrote was routed. Never rejects. */
+  private pumping: Promise<void> = Promise.resolve();
+  /** The messages being rendered into the session's folder; settled when the rendering ended, never rejected. */
+  private rendering: Promise<void> = Promise.resolve();
   private timer?: NodeJS.Timeout; private parkMs = 30 * 60000; private toolWaitMs = 25 * 60000;
   private closing?: Promise<void>; private stopping?: Promise<void>; private retiring?: string; private stopped = false;
   /** Handed to the registry; only then does its end reach `onClose`. */
@@ -129,7 +144,7 @@ export class CopilotLiveSession {
   private async boot(signal: AbortSignal): Promise<void> {
     const client = this.client = await openCopilot(this.options.config, signal, { kind: "live" });
     client.release();
-    void this.pump(client);
+    this.pumping = this.pump(client);
     await client.rpc.request("session.create", { sessionId: this.sessionId, ...this.options.create, workingDirectory: client.directory, configDir: client.directory }, sessionLimits.startMs);
     // Events reach the router a tick after the answer that followed them; route what the CLI sent so far while the
     // session is still starting, so one that misbehaved now is caught here and never handed to a request.
@@ -210,8 +225,7 @@ export class CopilotLiveSession {
       }
     } catch (error) {
       // Spend the CLI reported before the request failed or was cancelled still counts, as one running total.
-      this.settleUsage(attached);
-      if (attached.usage) { const usage = attached.usage; attached.usage = undefined; yield usage; }
+      yield* this.lateUsage(attached);
       throw this.failed(attached, error);
     } finally {
       // A consumer that stops reading mid-turn cancels the turn like an abort.
@@ -225,7 +239,10 @@ export class CopilotLiveSession {
     // or a tool result delivered now would start a model call that nobody is waiting for. The check comes right before each send.
     const stillWanted = () => { if (attached.error) throw attached.error; };
     if (!("outputs" in begin)) {
-      const messages = await begin.prompts(this.client!.directory); stillWanted();
+      const render = begin.prompts(this.client!.directory, () => attached.error !== undefined);
+      this.rendering = render.then(() => {}, () => {});
+      // A rendering that failed because the session ended under it (its folder is gone) failed because of that.
+      const messages = await render.catch(error => { throw attached.error ?? error; }); stillWanted();
       await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages }, 30000); return;
     }
     // Anything but a confirmed delivery (a refusal, an error reply, no answer in time, a full connection) means the
@@ -262,6 +279,21 @@ export class CopilotLiveSession {
     }
   }
 
+  /**
+   * The usage the request has not handed over yet, as one running total, and, for a cancelled request, each usage the CLI
+   * reports while its session is aborted (up to `abortMs`): it is handed over as it arrives, and the request ends once the
+   * session is gone, so a process that leaves in between has it already.
+   */
+  private async *lateUsage(attached: Attached): AsyncGenerator<InferenceEvent> {
+    let over = !attached.over; void attached.over?.then(() => { over = true; attached.wake?.(); });
+    for (;;) {
+      this.settleUsage(attached);
+      if (attached.usage) { const usage = attached.usage; attached.usage = undefined; yield usage; continue; }
+      if (over) return;
+      await new Promise<void>(resolve => { attached.wake = () => { attached.wake = undefined; resolve(); }; });
+    }
+  }
+
   /** Waits until Copilot has announced a pending request for every call it just made, so the next request can answer them. */
   private async handOver(attached: Attached): Promise<void> {
     const ids = attached.live.turn.calls.map(call => call.id);
@@ -285,10 +317,13 @@ export class CopilotLiveSession {
   /** Cancels the attached request. Its tool requests and half-written answer are not worth keeping, so the process goes. */
   private abort(attached: Attached): void {
     if (this.attached !== attached) return;
-    // The queued usage joins the totals before the end is reported, whether or not the consumer reads on.
     this.detach(attached); attached.error = cancelled(); this.settleUsage(attached); attached.wake?.(); this.wakeWaiters();
-    attached.live.onEnd("interrupted");
-    void this.close("closed", "interrupted");
+    // The CLI may still report the call it was making while it is aborted (up to `abortMs`); that usage is routed to this
+    // request. The end is reported once the session is gone and the last event was routed, whether or not the consumer reads on.
+    this.draining = attached;
+    attached.over = this.close("closed", "interrupted").then(() => this.pumping).then(() => {
+      this.draining = undefined; this.settleUsage(attached); attached.live.onEnd("interrupted");
+    }).catch(error => reportException(error, "copilot_live_abort"));
   }
 
   /** A stream failure closes the session at once: the CLI must not act on a foreign or failed turn. */
@@ -339,7 +374,12 @@ export class CopilotLiveSession {
   }
 
   private route(message: Record<string, unknown>): void {
-    const params = record(message.params); if (params.sessionId !== this.sessionId || this.state === "closed") return;
+    const params = record(message.params); if (params.sessionId !== this.sessionId) return;
+    if (this.state === "closed") {
+      const late = record(params.event);
+      if (this.draining && late.type === "assistant.usage" && this.draining.queue.length < lateUsageLimit) { this.draining.queue.push(late); this.draining.wake?.(); }
+      return;
+    }
     const event = record(params.event); const data = record(event.data); const type = typeof event.type === "string" ? event.type : "";
     const reject = (reason: string, text = "Copilot did something beyond caller-dispatched inference") => this.violation(new ProviderError("invalid_tool_call", text), reason);
     if (event.agentId) return this.violation(new ProviderError("invalid_stream", "Copilot emitted an unexpected sub-agent event"), "sub_agent");
@@ -382,7 +422,8 @@ export class CopilotLiveSession {
     this.state = "closed"; clearTimeout(this.timer); this.end = { outcome, reason };
     if (this.attached) { this.attached.error ??= new ProviderError("cli_failed", "Copilot session closed", 502); this.attached.wake?.(); }
     this.wakeWaiters();
-    return this.closing = this.stop(abort).then(() => { if (this.started) this.options.onClose(this, outcome, reason); });
+    // It never rejects: nobody awaits most closes, and a bookkeeping failure in the registry must not end the process.
+    return this.closing = this.stop(abort).then(() => { if (this.started) this.options.onClose(this, outcome, reason); }).catch(error => reportException(error, "copilot_live_close"));
   }
 
   /** Settles once a closing session's process is gone and its folder removed; at once for a session that is not closing. */
@@ -395,6 +436,8 @@ export class CopilotLiveSession {
     const client = this.client; if (!client) return Promise.resolve();
     return this.stopping ??= (async () => {
       if (abort) await client.rpc.request("session.abort", { sessionId: this.sessionId }, sessionLimits.abortMs).catch(() => {});
+      // A rendering in progress writes into the folder: it stops at its next image (the request is over), and ends before the folder goes.
+      await this.rendering;
       await client.close(undefined, true).catch(() => {});
     })();
   }

@@ -15,7 +15,7 @@ export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
   return env;
 }
 
-/** Every client this module copy opened whose folder still exists: from its creation until its removal, starting and closing included. */
+/** Every client this module copy opened whose folder still exists: from its creation until its removal, starting and closing included. A folder that could not be removed stays here for the exit handler. */
 const open = new Set<{ directory: string; rpc?: CopilotRPC }>();
 let exitHandler = false;
 
@@ -52,12 +52,15 @@ export async function openCopilot(config: ProviderConfig, signal?: AbortSignal, 
   const abort = () => rpc?.stop(); signal?.addEventListener("abort", abort, { once: true });
   let closing: Promise<void> | undefined;
   // `hard` ends the process at once (SIGKILL of its group) instead of asking it to exit: a live session being closed must not make another model call.
-  const close = (sessionId?: string, hard = false) => closing ??= (async () => {
+  // It never rejects: a folder that cannot be removed (something still writes into it) stays in `open`, so the exit handler tries
+  // again and the next gateway's sweep covers a process that is killed outright; a caller has nothing it could do about it.
+  const close = (sessionId?: string, hard = false): Promise<void> => closing ??= (async () => {
     signal?.removeEventListener("abort", abort);
     if (sessionId && !signal?.aborted && !hard) await rpc?.request("session.delete", { sessionId }, 3000).catch(() => {});
     if (hard) rpc?.kill(); else rpc?.stop();
-    await rpc?.exited; await rm(directory, { recursive: true, force: true });
-    open.delete(entry);
+    await rpc?.exited;
+    try { await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); open.delete(entry); }
+    catch { /* Kept in `open`. */ }
   })();
   try {
     await chmod(directory, 0o700);

@@ -267,8 +267,10 @@ as proof of the tier served. An upstream may return `default` after a priority
 request; the gateway preserves that result and does not retry to chase Fast.
 
 Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
-setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
-other tiers are rejected before the CLI starts. The CLI reports its fast mode
+setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast.
+Claude has no Flex tier, and a native Codex chat that moved to a Claude row keeps asking
+for it, so a Flex request runs as Standard (no fast mode). Any other tier is rejected
+before the CLI starts. The CLI reports its fast mode
 state. When fast mode stays on, the completion reports `priority`. When Claude
 refuses it (for example, no usage credits) and falls back to standard speed, the
 turn still completes and reports `default`.
@@ -280,11 +282,11 @@ BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
 By default the thread keeps one live CLI session, and a request sends only the
 items that are new; see [live Copilot sessions](copilot-sessions.md). Cancelling a
-live request ends it at once; its session is aborted and its CLI process killed in the
-background, without the request waiting for the exit. The next request starts a new
-session and sends the caller-supplied history once. Cancelling a one-shot request stops
+live request aborts its session and kills its CLI process (at most 2 seconds); the
+request hands over the usage the CLI reports meanwhile and then ends. The next request
+starts a new session and sends the caller-supplied history once. Cancelling a one-shot request stops
 its CLI process and waits for it to exit. Either way, usage the CLI reported before the
-cancellation still reaches the usage ledger and telemetry. A request a live session
+cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry. A request a live session
 cannot serve gets its own session, with the same system message, the caller's whole tool
 catalog and one user message per history item. That happens, for example, for a request
 without a thread id; a compaction, prewarm or memory request; a second request while the

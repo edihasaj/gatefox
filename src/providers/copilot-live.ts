@@ -200,9 +200,8 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };
     }
-    // The scope goes with the session: the reseeded session's predecessor ended while this attach was starting and may have
-    // taken the entry `attach` made, and a session without a scope is one no reload or upgrade can retire.
-    reg.sessions.set(key, session); reg.scopes.set(key, input.scope); reg.ended.delete(key);
+    // `attach` registered the scope before anything started, and `ended` keeps it while an attach is starting for the key.
+    reg.sessions.set(key, session); reg.ended.delete(key);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   const events = start(reg, settings, session, input, entries.map(entry => entry.digest), plan, outputs, signal, {
@@ -223,7 +222,7 @@ function toolResults(input: CopilotLiveInput, entries: Extract<Plan, { kind: "co
 function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
   plan: Plan, outputs: Map<string, string | ToolResult> | undefined, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
   const begin = plan.kind === "continue_outputs" ? { outputs: outputs ?? toolResults(input, plan.outputs) }
-    : { prompts: (directory: string) => copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native), directory) };
+    : { prompts: (directory: string, stopped: () => boolean) => copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native), directory, stopped) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();
   return session.run({

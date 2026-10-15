@@ -6,6 +6,11 @@
 // Like CLI 1.0.97 it announces `session.start` and `session.managed_settings_resolved` right after answering
 // `session.create`, confirms `session.model.switchTo` with `session.model_change` before it answers (and
 // `session.info` after), and follows `assistant.idle` with `session.idle`.
+// Switches that make a test's ordering exact instead of timed (each is read from GATEWAY_COPILOT_LIVE_<name>):
+// ABORT_GATE=<file> and CREATE_GATE=<file> answer `session.abort`, and `session.create`, once the file exists; CREATE_AFTER_ABORT and
+// DELIVER_AFTER_ABORT hold the answer to `session.create`, and to each delivered tool result, until `session.abort` arrives;
+// ABORT_BURST=<n> sends n usage events, in one write with the answer, when `session.abort` arrives; SWITCH_GATE=<file> answers
+// `session.model.switchTo` once the file exists.
 import { copilotFrames, record } from "../providers/copilot-rpc.js";
 import { appendFileSync, mkdirSync, existsSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -16,6 +21,8 @@ const frame = (value: unknown) => { const body = JSON.stringify(value); return `
 const send = (...values: unknown[]) => { process.stdout.write(values.map(frame).join("")); };
 const log = (entry: Record<string, unknown>) => { if (process.env.GATEWAY_COPILOT_LIVE_LOG) appendFileSync(process.env.GATEWAY_COPILOT_LIVE_LOG, JSON.stringify({ pid: process.pid, ...entry }) + "\n"); };
 let sessionId = ""; let config: Record<string, unknown> = {}; let calls = 0; let sequence = 0;
+/** What `session.abort` releases: the held answer to `session.create`, and the held answers to delivered results. */
+const held: Array<() => void> = [];
 /** How the next tool result is answered: refused, with a JSON-RPC error, or never. */
 let rejectNext = false; let errorNext = false; let silentNext = false;
 const pending = new Map<string, { toolCallId: string }>(); const delivered: unknown[] = [];
@@ -34,6 +41,10 @@ const env = (name: string) => process.env[`GATEWAY_COPILOT_LIVE_${name}`];
 const idle = () => { event("assistant.idle", {}, { ephemeral: true }); setTimeout(() => event("session.idle", {}, { ephemeral: true }), 5); };
 const later = (ms: number, run: () => void) => { if (ms > 0) setTimeout(run, ms); else run(); };
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** A CLI whose parent is gone (a test run that was stopped) exits instead of living on with nobody to serve. */
+const parent = process.ppid;
+const leaveWithParent = () => setInterval(() => { if (!alive(parent)) process.exit(0); }, 100);
+leaveWithParent().unref();
 /** Earlier CLI processes of this test that are still running, and the gateway folders next to this one: what a new session starts beside. */
 function surroundings(directory: string) {
   const path = env("LOG"); const earlier = path && existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line).pid as number) : [];
@@ -69,7 +80,7 @@ function respond(text: string): void {
   if (marker("lateusage")) { event("assistant.message_delta", { deltaContent: "partial" }); setTimeout(usage, 100); return; }
   if (marker("lateusage2")) { event("assistant.message_delta", { deltaContent: "partial" }); setTimeout(() => { usage(); usage(); }, 100); return; }
   // Text, then 100 ms later more text and the call's usage in one write, then nothing.
-  if (marker("deltausage")) { event("assistant.message_delta", { deltaContent: "a" }); setTimeout(() => send(eventMessage("assistant.message_delta", { deltaContent: "b" }), usageMessage()), 100); return; }
+  if (marker("deltausage")) { event("assistant.message_delta", { deltaContent: "a" }); setTimeout(() => { send(eventMessage("assistant.message_delta", { deltaContent: "b" }), usageMessage()); log({ op: "usage_sent" }); }, 100); return; }
   // An answer too large for a client that does not read to take at once, then the call's usage, then nothing.
   if (marker("bigusage")) { event("assistant.message_delta", { deltaContent: "x".repeat(7 * 1024 * 1024) }); usage(); log({ op: "bigusage_sent" }); return; }
   usage();
@@ -109,15 +120,19 @@ for await (const frame of copilotFrames(process.stdin)) {
     // The real CLI logs the conversation under the configDir even with the session store off.
     mkdirSync(join(directory, "session-state", sessionId), { recursive: true }); writeFileSync(join(directory, "session-state", sessionId, "events.jsonl"), "PROMPT-LOG\n");
     // A helper process in the CLI's process group, to show that ending the session ends the group.
-    if (process.env.GATEWAY_COPILOT_LIVE_CHILD) log({ op: "child", child: spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }).pid });
+    if (process.env.GATEWAY_COPILOT_LIVE_CHILD) log({ op: "child", child: spawn(process.execPath, ["-e", `const parent = ${parent}; setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 100)`], { stdio: "ignore" }).pid });
     log({ op: "create", directory, args: process.argv.slice(2), tmpdir: process.env.TMPDIR, params, ...surroundings(directory) });
     // An event of the given type just before `session.create` answers, while the gateway is still starting a live
     // session: in the same write as the answer, or on its own when the answer is delayed.
     const boot = env("BOOT_EVENT") && directory.includes("-live-") ? [eventMessage(env("BOOT_EVENT")!, {})] : [];
     const delay = Number(env("SLOW_CREATE") ?? 0);
     if (delay > 0) send(...boot);
-    later(delay, () => send(...(delay > 0 ? [] : boot), { jsonrpc: "2.0", id, result: { sessionId } },
+    const answer = () => later(delay, () => send(...(delay > 0 ? [] : boot), { jsonrpc: "2.0", id, result: { sessionId } },
       eventMessage("session.start", { sessionId, version: 1, producer: "copilot-agent", copilotVersion: "1.0.97" }), eventMessage("session.managed_settings_resolved", {}, { ephemeral: true })));
+    const createGate = env("CREATE_GATE");
+    if (env("CREATE_AFTER_ABORT")) held.push(answer);
+    else if (createGate) { const timer = setInterval(() => { if (existsSync(createGate)) { clearInterval(timer); answer(); } }, 10); }
+    else answer();
   } else if (frame.method === "session.sendMessages") {
     const messages = params.messages as Array<{ prompt: string; attachments?: Array<Record<string, unknown>> }>;
     log({ op: frame.method, prompts: messages.map(entry => entry.prompt), attachments: messages.map(entry => entry.attachments), files: messages.map(entry => (entry.attachments ?? []).map(fileOf)) }); ok({ messageIds: ["fixture"] });
@@ -129,8 +144,9 @@ for await (const frame of copilotFrames(process.stdin)) {
     if (errorNext) { send({ jsonrpc: "2.0", id, error: { code: -32000, message: "refused" } }); continue; }
     if (!known || rejectNext) { ok({ success: false }); continue; }
     pending.delete(requestId); delivered.push(params.result);
-    // A CLI that takes a while to accept a result (SLOW_DELIVER): the answer and everything that follows from it come late.
-    later(Number(env("SLOW_DELIVER") ?? 0), () => {
+    // A CLI that takes a while to accept a result (SLOW_DELIVER, or until the abort for DELIVER_AFTER_ABORT): the answer and
+    // everything that follows from it come late.
+    const accept = () => later(Number(env("SLOW_DELIVER") ?? 0), () => {
       ok({ success: true });
       event("external_tool.completed", { requestId });
       if (!pending.size) {
@@ -138,7 +154,16 @@ for await (const frame of copilotFrames(process.stdin)) {
         respond(results.some(value => value.includes("NEXT")) ? "[next]" : `final ${results.join("|")}`);
       }
     });
-  } else if (frame.method === "session.abort") { log({ op: "abort" }); later(Number(env("SLOW_ABORT") ?? 0), () => ok({ success: true })); }
+    if (env("DELIVER_AFTER_ABORT")) held.push(accept); else accept();
+  } else if (frame.method === "session.abort") {
+    log({ op: "abort" });
+    for (const release of held.splice(0)) release();
+    const gate = env("ABORT_GATE"); const burst = Number(env("ABORT_BURST") ?? 0);
+    // The CLI's last words: the usage of many calls, in one write with the answer, and then it is gone.
+    if (burst > 0) { send(...Array.from({ length: burst }, usageMessage), { jsonrpc: "2.0", id, result: { success: true } }); continue; }
+    if (gate) { const timer = setInterval(() => { if (existsSync(gate)) { clearInterval(timer); ok({ success: true }); } }, 10); }
+    else later(Number(env("SLOW_ABORT") ?? 0), () => ok({ success: true }));
+  }
   else if (frame.method === "session.model.switchTo") {
     log({ op: "switch", effort: params.reasoningEffort });
     const changed = eventMessage("session.model_change", { source: "sdk", previousModel: config.model, newModel: params.modelId, previousReasoningEffort: config.reasoningEffort, reasoningEffort: env("SWITCH_EFFORT") ?? params.reasoningEffort });
@@ -150,12 +175,15 @@ for await (const frame of copilotFrames(process.stdin)) {
     if (env("SWITCH_ONE_WRITE")) { send(changed, { jsonrpc: "2.0", id, result: { status: "applied", deferred: false } }, eventMessage("session.info", { infoType: "model" }, { ephemeral: true })); continue; }
     // The real CLI announces the change before it answers.
     send(changed);
-    // A slow answer keeps the thread's request waiting inside its placement. The CLI then reports the new state.
-    setTimeout(() => { ok({ status: "applied", deferred: false }); event("session.info", { infoType: "model" }, { ephemeral: true }); }, Number(env("SLOW_SWITCH") ?? 0));
+    // A slow answer keeps the thread's request waiting inside its placement (until SWITCH_GATE's file exists, or SLOW_SWITCH ms). The CLI then reports the new state.
+    const answer = () => { ok({ status: "applied", deferred: false }); event("session.info", { infoType: "model" }, { ephemeral: true }); };
+    const switchGate = env("SWITCH_GATE");
+    if (switchGate) { const timer = setInterval(() => { if (existsSync(switchGate)) { clearInterval(timer); answer(); } }, 10); }
+    else setTimeout(answer, Number(env("SLOW_SWITCH") ?? 0));
   }
   else if (frame.method === "session.delete") { log({ op: "delete" }); ok({ success: true }); }
   else send({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported" } });
 }
 log({ op: "stdin_closed" });
-// A CLI that ignores SIGTERM also outlives its input; only SIGKILL ends it.
-if (env("IGNORE_TERM")) setInterval(() => {}, 1000);
+// A CLI that ignores SIGTERM also outlives its input; only SIGKILL ends it (or its parent leaving).
+if (env("IGNORE_TERM")) leaveWithParent();

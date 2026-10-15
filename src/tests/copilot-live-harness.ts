@@ -22,11 +22,15 @@ export const user = (text: string): ResponsesInputItem => ({ type: "message", ro
 export const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 export const kind = (event: InferenceEvent) => event.type === "tool" ? `tool:${event.call.function.name}` : event.type;
-export async function until(check: () => boolean | Promise<boolean>, ms = 4000): Promise<boolean> {
+/** Polls until `check` holds; false only after `ms`, a bound no loaded machine reaches (the test's own timeout comes first for a hung build). */
+export async function until(check: () => boolean | Promise<boolean>, ms = 30000): Promise<boolean> {
   const started = Date.now();
   while (!(await check())) { if (Date.now() - started > ms) return false; await sleep(15); }
   return true;
 }
+
+/** How many `assistant.usage` events the live session's attached request has been sent and not yet read (the event reader has routed them). */
+export const queuedUsage = (): number => (((live().sessions()[0] ?? {}) as unknown as { attached?: { queue: Array<{ type?: unknown }> } }).attached?.queue ?? []).filter(event => event.type === "assistant.usage").length;
 
 export type Entry = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 export const providerId = "copilot-live-test";
@@ -56,7 +60,7 @@ export async function harness() {
   const fixture = fileURLToPath(new URL("./copilot-live-fixture.js", import.meta.url)); const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
   await writeFile(join(bin, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)} "$@"\n`); await chmod(join(bin, "copilot"), 0o700);
   // Every fixture switch starts unset; a test sets the ones it needs, and restore() puts back what was there.
-  const switches = ["DIE", "STALL", "CHILD", "SLOW_SWITCH", "SLOW_CREATE", "SLOW_ABORT", "BOOT_EVENT", "IGNORE_TERM", "SWITCH_EFFORT", "SWITCH_ONE_WRITE", "SWITCH_NO_CONFIRM", "SLOW_DELIVER"].map(name => `GATEWAY_COPILOT_LIVE_${name}`);
+  const switches = ["DIE", "STALL", "CHILD", "SLOW_SWITCH", "SLOW_CREATE", "SLOW_ABORT", "BOOT_EVENT", "IGNORE_TERM", "SWITCH_EFFORT", "SWITCH_ONE_WRITE", "SWITCH_NO_CONFIRM", "SLOW_DELIVER", "ABORT_GATE", "CREATE_GATE", "CREATE_AFTER_ABORT", "DELIVER_AFTER_ABORT", "ABORT_BURST", "SWITCH_GATE"].map(name => `GATEWAY_COPILOT_LIVE_${name}`);
   const names = ["PATH", "TMPDIR", "GATEWAY_COPILOT_LIVE_LOG", ...switches]; const previous = names.map(name => process.env[name]);
   process.env.PATH = bin + delimiter + process.env.PATH; process.env.TMPDIR = scratch; process.env.GATEWAY_COPILOT_LIVE_LOG = logPath; for (const name of switches) delete process.env[name];
   configureTelemetry(directory, "test"); const since = Date.now();
@@ -71,6 +75,8 @@ export async function harness() {
     restore: async () => {
       await live().stop();
       names.forEach((name, index) => { if (previous[index] === undefined) delete process.env[name]; else process.env[name] = previous[index]; });
+      // Whatever still settles writes its telemetry into the suite's own folder from here on, never into the folder that is about to go.
+      configureTelemetry(join(tmpdir(), "copilot-live-late"), "test");
       // Telemetry appends are asynchronous; let them land before the folder goes.
       await flushTelemetry(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     },
