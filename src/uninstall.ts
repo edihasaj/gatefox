@@ -1,6 +1,7 @@
 import { lstat, readFile, readdir, readlink, mkdir, rename } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
+import { loadConfig } from "./config.js";
 import { macService } from "./mac-service.js";
 import { macTunnel } from "./mac-tunnel.js";
 import { macDesktop, planDesktopUnregister } from "./mac-desktop.js";
@@ -61,9 +62,11 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
   const desktop = await deps.macDesktop("unregister", configPath).catch((error: unknown) => { throw uninstallFailure(error, "unregister"); });
   await deps.macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
+  // The tunnel step keeps its login lock and staged login in the configured state directory, as the CLI's own tunnel command does.
+  let stateDirectory: string | undefined;
   for (const file of await readdir(directory)) {
     const match = /^com\.edihasaj\.subscription-gateway\.tunnel\.([a-z][a-z0-9-]{0,63})\.plist$/.exec(file);
-    if (match) await deps.macTunnel("uninstall", { id: match[1] }, dirname(configPath));
+    if (match) await deps.macTunnel("uninstall", { id: match[1] }, stateDirectory ??= (await loadConfig(configPath)).stateDirectory);
   }
   const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true }); const suffix = Date.now();
   // The product-name alias goes too, but only when it is the installer's own link.

@@ -249,3 +249,25 @@ test("a non-macOS host skips the desktop preflight and hears it from the service
     await gateway.cleanup();
   }
 });
+
+/**
+ * The tunnel step takes its login lock and checks the staged login in the state directory, which is where the CLI's own
+ * tunnel command puts them: the loaded configuration's stateDirectory, `<config dir>/.state` unless it names another.
+ * It once received the directory that holds the configuration file instead.
+ */
+test("each tunnel is removed with the configured state directory, not the configuration's own directory", async () => {
+  for (const [name, stateDirectory, expected] of [["default", undefined, ".state"], ["custom", "private-state", "private-state"]] as const) {
+    const gateway = await installedGateway();
+    try {
+      await writeFile(gateway.config, JSON.stringify({ version: 1, port: 3457, providers: [], clientOnly: true, ...(stateDirectory ? { stateDirectory } : {}) }));
+      for (const id of ["alpha", "beta-2"]) await writeFile(join(gateway.home, "Library", "LaunchAgents", `com.edihasaj.subscription-gateway.tunnel.${id}.plist`), "");
+      const seen: Array<{ id: string; state: string }> = [];
+      const recorder = fakes();
+      recorder.deps.macTunnel = async (action, options, state) => { seen.push({ id: options.id, state }); assert.equal(action, "uninstall"); return {}; };
+      await uninstallGateway(gateway.config, recorder.deps);
+      const state = join(gateway.home, expected);
+      assert.deepEqual(seen.sort((a, b) => a.id.localeCompare(b.id)), [{ id: "alpha", state }, { id: "beta-2", state }], name);
+      assert.notEqual(state, gateway.home, "the directory holding the configuration file is not the state directory");
+    } finally { await gateway.cleanup(); }
+  }
+});
