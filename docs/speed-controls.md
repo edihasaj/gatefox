@@ -43,8 +43,9 @@ is passed through unchanged, and the SDK answers it as invalid parameters. The
 `serviceTierForTurn` field exists only on `turn/start`, so a session start passes it
 through untouched. Saving a gateway default tier that the chosen row does not offer is
 the one tier check left: that configuration write fails with error `-32002` and asks
-the user to choose Standard or another model. Flex is the one tier that check accepts
-for every row, so a Flex default can be saved for any model. Flex is passed to the
+the user to choose Standard or another model. That check has no Flex exemption: a Flex
+default can be saved only for a row that declares Flex, as in 0.4.0 (see
+[Rollback and mixed versions](#rollback-and-mixed-versions)). Flex is passed to the
 provider at session start and inside a chat, as native Codex sends it. The Codex
 subscription provider forwards it without checking the row's tier list. The Claude and
 Copilot providers treat Flex as Standard; that handling ships in the same release.
@@ -96,9 +97,34 @@ offers priority. Native feature flags and configuration files retain their value
 enabling that private capability does not select Fast automatically.
 
 A loaded Fast chat that switches to a model without Fast keeps its Fast tier, and the
-SDK runs the new model's requests as Standard. A connection that cannot determine the
-saved tier sends none, so a model change never clears or invents it. Reasoning effort is
-independent of speed.
+SDK runs the new model's requests as Standard. The private record of that chat holds
+Standard from the switch on, because its row does not declare Fast; the SDK's Fast
+returns to the record when the chat is on a Fast row again. A connection that cannot
+determine the saved tier sends none, so a model change never clears or invents it.
+Reasoning effort is independent of speed.
+
+## Rollback and mixed versions
+
+The 0.4.0 adapter checks a chat's saved tier against the tiers its row declares and
+refuses with `-32002` when the row lacks it. During an upgrade, 0.4.0 adapter processes
+keep running beside this build on the same state files until the desktop restarts its
+CLI, and a rollback leaves 0.4.0 in charge of every saved chat. The rule that keeps
+both safe:
+
+| What is written | What this build writes |
+| --- | --- |
+| A chat's tier in the private tier store (session-start answer, applied settings notification) | The tier only if the chat's row declares it in its catalog metadata, with no Flex exemption. Any other storable tier is recorded as Standard. A tier the store cannot hold stays the unknown marker described above. |
+| A saved new-chat default (`config/value/write`, `config/batchWrite`) | Only a tier the selected row declares, or Standard. Anything else fails with `-32002`. |
+
+A Flex chat, a Fast chat that moved to a row without Fast and a saved default therefore
+resume and run turns under 0.4.0 without an error. The cost is that a chat on a row
+without Flex declared does not carry Flex across a resume or fork: the SDK still keeps
+and sends Flex while the chat is loaded, but the next session start inherits Standard
+from the record. Nothing else changes: the record is read only at session start, where a
+tier the row lacks already starts the chat as Standard (Flex was the one exemption), and
+inside a chat the gateway forwards tiers untouched and never reads the record. The test `app-server-0-4-0-rollback.test.ts`
+runs every row and saved default this build writes through the 0.4.0 checks, which
+`app-server-0-4-0-tier-check.ts` copies verbatim from release commit `4a8bb9e`.
 
 Claude rows offer Fast when Claude's own model list marks the model as supporting
 fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for

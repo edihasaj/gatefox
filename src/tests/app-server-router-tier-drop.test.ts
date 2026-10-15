@@ -299,20 +299,21 @@ test("Flex is never dropped: a session start keeps it on a row that does not lis
     await f.router.request(method, { threadId: "t", model: claude, serviceTier: "flex" });
     assert.equal(f.last().method, method); assert.equal(f.last().params.serviceTier, "flex", method);
   }
-  // The chat's own Flex is inherited by the next session start on a row that lacks Fast.
+  // The chat keeps Flex in the SDK, but the private record holds only tiers its row declares (0.4.0 refuses the rest on
+  // resume), so the next session start inherits Standard rather than Flex.
   await f.router.request("thread/start", { model: claude, serviceTier: "flex" });
   await f.router.request("thread/fork", { threadId: "t", model: claude });
-  assert.equal(f.last().params.serviceTier, "flex");
+  assert.equal(f.last().params.serviceTier, null);
   assert.deepEqual(await f.events(), []);
 });
 
-test("a saved Flex default is accepted for a row that does not list it", async () => {
+test("a saved Flex default is refused for a row that does not list it, as 0.4.0 refused it", async () => {
   const f = await fixture();
-  await f.router.request("config/batchWrite", { edits: [
+  await assert.rejects(f.router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: claude, mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "flex", mergeStrategy: "upsert" },
-  ] });
+  ] }), (error: unknown) => (error as { code?: number }).code === -32002);
   await f.router.request("thread/start", {});
-  assert.equal(f.last().params.serviceTier, "flex"); assert.deepEqual(await f.events(), []);
+  assert.ok(noTier(f.last().params)); assert.deepEqual(await f.events(), []);
 });
 
 test("no drop is recorded when the SDK kept the tier, as a loaded chat does with a resume override", async () => {

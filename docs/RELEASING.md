@@ -194,6 +194,10 @@ unloads its job only after its idle guard accepts the stop, so KeepAlive cannot
 restart the old command. Older daemons need one safe restart to load the installed
 idle-upgrade protocol. Failure reenables the job and restores its earlier plist.
 
+A 0.4.0 adapter that is still running, or a rollback to 0.4.0, reads the same state
+files, so this build saves a chat's tier or a new-chat default only when its row
+declares it; see [rollback and mixed versions](speed-controls.md#rollback-and-mixed-versions).
+
 Use `gateway service status`, `gateway doctor`, and `gateway desktop status` after
 installation. Registration prepares future app launches and does not interrupt an
 open app. One fresh launch is needed after first registration. The private desktop

@@ -7,7 +7,7 @@ import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
-import { loggableTier, offersServiceTier } from "./app-server-tier-offers.js";
+import { declaresServiceTier, loggableTier, offersServiceTier, recordableTier } from "./app-server-tier-offers.js";
 import { storableServiceTier, ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
 import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummary, type ThreadReasoningSelection } from "./thread-reasoning.js";
 import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
@@ -108,7 +108,7 @@ export class AppServerRouter {
       this.routes.set(thread.id, route);
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
       if (!ephemeral && route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
-        const record = { model: route.model, serviceTier: savedTier(result.serviceTier) };
+        const record = { model: route.model, serviceTier: recordableTier(this.extraModels, route.model, savedTier(result.serviceTier)) };
         const against = thread.id === params.threadId ? expected ?? null : null;
         // The SDK accepted a tier the private store cannot hold, so the chat's tier is recorded as unknown. The route above already leaves it out.
         if (storableServiceTier(record.serviceTier)) await this.threadTiers.write(thread.id, record, against, requestStartedAtMs);
@@ -186,7 +186,7 @@ export class AppServerRouter {
       if (this.evictedEphemeralIds.has(params.threadId)) return;
       await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
-      const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
+      const record = { model: settings.model, serviceTier: recordableTier(this.extraModels, settings.model, savedTier(settings.serviceTier)), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
       // Duplicate notifications from slower shared clients cannot replace newer settings.
       const storable = storableServiceTier(record.serviceTier);
@@ -299,7 +299,7 @@ export class AppServerRouter {
     if (params.expectedVersion !== undefined && params.expectedVersion !== null) throw new AppServerRoutingError("Gateway default writes do not support a native config version guard");
     for (const edit of local) {
       if (!["replace", "upsert"].includes(String(edit.mergeStrategy)) || (edit.value !== null && typeof edit.value !== "string")) throw new AppServerRoutingError("Gateway defaults require string values with replace or upsert merge strategy");
-      if (edit.keyPath === "service_tier" && edit.value !== null && typeof chosen === "string" && this.aliases.has(chosen) && !offersServiceTier(this.extraModels, chosen, edit.value as string)) {
+      if (edit.keyPath === "service_tier" && edit.value !== null && typeof chosen === "string" && this.aliases.has(chosen) && !declaresServiceTier(this.extraModels, chosen, edit.value as string)) {
         throw new AppServerRoutingError("This gateway model does not offer that speed, so it cannot be the saved default. Choose Standard, or pick a model that offers it, then save again.", -32002);
       }
     }
