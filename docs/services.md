@@ -117,7 +117,8 @@ name that is not a tunnel. Repeating a removal that already landed reports
 removal record the command writes after the plan edit succeeds
 (`service-backups/tunnel-removals.json`, private), by an exact comparison of the
 recorded tunnel id, and only while the plan file is the one that removal left
-(the record stores its content, inode and timestamps). Removing another tunnel
+(the record stores its content hash, inode, modification time and change time, so
+even a copy with identical content and modification time is another file). Removing another tunnel
 with this command keeps earlier records valid; restoring a saved plan, editing
 it by hand, replacing it, or `gateway service uninstall` followed by a new
 consolidation ends them, so such a plan reports `No tunnel <id>` again. A backup
@@ -137,27 +138,43 @@ refusals say `Quit ChatGPT normally after local and remote chats finish` or
 removed`; they do not use the consolidation wording. A plan
 with no inference component, and a remote-client configuration, have nothing
 listening locally, so no probe is made and it never depends on the tunnel being
-removed. It checks the tunnel's local listeners, which are its `-L` and `-D`
-forwards (also written as `-o LocalForward` or `DynamicForward`, attached to the
-flag, clustered like `-NTL`, or with a bracketed IPv6 bind). It reads the ssh
-arguments with the same option table the service uses for ssh (so `-P tag` and
-`-PLab` are a tag, not a forward) and stops at `--`. A reverse `-R` forward only
-listens on the other machine, so it is not checked. It refuses when:
+removed. A remote-client configuration is never probed even when its plan still
+lists an inference component (a Mac that moved from standalone to client).
 
-- a configured provider's loopback `baseUrl` (`127.0.0.1`, `localhost`, `[::1]`)
-  uses one of those ports, naming the provider; point that provider at another
-  endpoint or remove it from the gateway configuration, then repeat the removal;
+It checks the tunnel's local listeners, which are its `-L` and `-D` forwards (also
+written as `-o LocalForward` or `DynamicForward`, attached to the flag, clustered
+like `-NTL`, or with a bracketed IPv6 bind). It reads the ssh arguments with the
+same option table the service uses for ssh (so `-P tag` and `-PLab` are a tag, not
+a forward) and stops at `--`. It also asks `/usr/bin/ssh -G` with the same
+arguments what ssh resolves (it does not connect), and merges that with the
+arguments: forwards that `-F` or the host alias add through ssh_config count as
+the tunnel's own, and so does `GatewayPorts`. Because `ssh -G` evaluates the
+ssh configuration, a `Match exec` line in it runs, as it does whenever that tunnel
+starts. A reverse `-R` forward only listens on the other machine, so it is not
+checked. It refuses when:
+
+- a configured provider's `baseUrl` connects to one of those ports, naming the
+  provider; point that provider at another endpoint or remove it from the gateway
+  configuration, then repeat the removal. A forward bound to loopback (the default)
+  is reached through every spelling of this machine: `localhost` (with or without
+  a trailing dot, and `*.localhost`), the whole `127.0.0.0/8` range, `0.0.0.0`,
+  `::`, `::1`, and IPv4-mapped forms such as `[::ffff:127.0.0.1]`. A forward bound
+  to every interface (`*`, `0.0.0.0`, an empty bind such as `:port`, any other
+  non-loopback bind address, or `GatewayPorts yes` or `-g` without a bind
+  address) is also reached through this machine's hostname and interface
+  addresses. A name that only resolves to this machine through DNS is not seen;
 - on a remote client, one of those ports is the configured `port`, because that
   tunnel is how the client reaches its gateway; stop the client with `gateway
   service uninstall` instead. Another tunnel on the same machine still retires
   normally;
-- a local forward's port cannot be identified (a socket path, a malformed spec, a
-  `-L` or `-D` with no value), because the checks above cannot run; edit the
-  service plan manually;
-- the arguments declare no forward at all (no `-L`, `-D`, `-R` or `-o
-  Local/Dynamic/RemoteForward`), so its forwards come from ssh_config through `-F`
-  or the host alias, which the command cannot see. Forwards that ssh_config adds
-  to explicit ones are not seen either; keep tunnel forwards on the command line;
+- the tunnel's local port cannot be determined, because the checks above cannot
+  run: a forward's port cannot be identified (a socket path, a malformed spec, port
+  0, which asks ssh for a free port), a trailing `-L`, `-D` or `-R` has no value, or
+  `ssh -G` cannot resolve the arguments (for example an unreadable `-F` file). It
+  fails with `Cannot determine tunnel <id>'s local port`; edit the service plan
+  manually;
+- neither the arguments nor ssh's resolved configuration declare any forward (no
+  `-L`, `-D`, `-R`, `LocalForward`, `DynamicForward` or `RemoteForward`);
 - the tunnel is the plan's only component; uninstall the gateway service instead.
 
 The plan it replaces is saved first to a private
@@ -166,7 +183,12 @@ check that the plan did not change since it was read, the backup, the plan write
 and the record all happen under the same plan-file lock `service shared-executors`,
 `service shared-native` and their disable commands hold, so a concurrent change
 is never overwritten: the removal refuses with `Gateway service plan changed`, or
-waits up to 5 seconds for the lock and then fails as busy.
+waits up to 5 seconds for the lock and then fails with `Gateway service plan is busy;
+the tunnel was not removed`. A lock that cannot be created at all (for example an
+unwritable state directory) fails with `Cannot lock the gateway service plan
+(<code>); the tunnel was not removed`. Either way nothing was backed up or written.
+A plan write that fails after the backup leaves the backup in place and records
+nothing, so a plan someone later edits by hand is still refused as `No tunnel <id>`.
 
 Nothing restarts: the result says `appliesAt: next service restart`, and a repeat
 says the same. The tunnel stops when the unified service next starts from the

@@ -13,10 +13,15 @@ export interface Removal { id: string; backup: string; removedAt: string; plan: 
 
 export const removalsPath = (state: string) => resolve(state, "service-backups", "tunnel-removals.json");
 
-/** The plan file's text and a key that changes whenever the file is rewritten, even with identical content. */
+/** A key that changes with the file's content and with any rewrite of it: another inode or other timestamps. */
+export function planKey(text: string, info: { ino: bigint; mtimeNs: bigint; ctimeNs: bigint }): string {
+  return [createHash("sha256").update(text).digest("hex"), info.ino, info.mtimeNs, info.ctimeNs].join(":");
+}
+
+/** The plan file's text and its key. */
 export async function readPlanFile(path: string): Promise<{ text: string; key: string }> {
   const info = await stat(path, { bigint: true }); const text = await readFile(path, "utf8");
-  return { text, key: [createHash("sha256").update(text).digest("hex"), info.ino, info.mtimeNs, info.ctimeNs].join(":") };
+  return { text, key: planKey(text, info) };
 }
 
 /** Throws when the record exists but cannot be read; a missing record is empty. */

@@ -2,8 +2,9 @@ import { open, readFile, lstat, unlink, type FileHandle } from "node:fs/promises
 import { setTimeout as delay } from "node:timers/promises";
 
 /** Serialize small private-file updates across adapter processes. */
-export async function withPrivateFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
-  const lock = `${path}.lock`; const deadline = Date.now() + 5000;
+export const lockBusyCode = "ELOCKBUSY";
+export async function withPrivateFileLock<T>(path: string, operation: () => Promise<T>, timeoutMs = 5000): Promise<T> {
+  const lock = `${path}.lock`; const deadline = Date.now() + timeoutMs;
   let file: FileHandle;
   for (;;) {
     try {
@@ -32,7 +33,7 @@ export async function withPrivateFileLock<T>(path: string, operation: () => Prom
         });
         continue;
       }
-      if (Date.now() >= deadline) throw new Error("Private preferences are busy; retry the selection");
+      if (Date.now() >= deadline) throw Object.assign(new Error("Private preferences are busy; retry the selection"), { code: lockBusyCode });
       await delay(25);
     }
   }

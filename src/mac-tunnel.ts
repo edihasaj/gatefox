@@ -8,7 +8,7 @@ import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
-import { removeTunnelComponent } from "./mac-tunnel-remove.js";
+import { removeTunnelComponent, type TunnelRemoveSeams } from "./mac-tunnel-remove.js";
 
 const exec = promisify(execFile); const marker = "<!-- Managed by subscription-gateway tunnel -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -19,18 +19,18 @@ export function tunnelArguments(options: TunnelOptions): string[] {
   return ["/usr/bin/ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
     ...(options.sshConfig ? ["-F", resolve(options.sshConfig)] : []), options.reverse ? "-R" : "-L", `127.0.0.1:${options.port}:127.0.0.1:${options.remotePort}`, options.host];
 }
-export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string, listProcesses?: Parameters<typeof removeTunnelComponent>[3]): Promise<Record<string, unknown>> {
+export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string, listProcesses?: Parameters<typeof removeTunnelComponent>[3], seams?: TunnelRemoveSeams): Promise<Record<string, unknown>> {
   if (action === "status") return tunnelOperation(action, options, state);
-  return withLoginRegistrationLock(state, () => tunnelOperation(action, options, state, listProcesses));
+  return withLoginRegistrationLock(state, () => tunnelOperation(action, options, state, listProcesses, seams));
 }
-async function tunnelOperation(action: string | undefined, options: TunnelOptions, state: string, listProcesses?: Parameters<typeof removeTunnelComponent>[3]): Promise<Record<string, unknown>> {
+async function tunnelOperation(action: string | undefined, options: TunnelOptions, state: string, listProcesses?: Parameters<typeof removeTunnelComponent>[3], seams?: TunnelRemoveSeams): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Managed SSH tunnels currently support macOS");
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(options.id) || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose tunnel install/status/uninstall and a lowercase --tunnel-id");
   const plan = await readServicePlan(state);
   if (action !== "status" && await readPendingLoginConsolidation(state)) throw new Error("Tunnel startup is staged under the unified service at next login; its separate registration was not changed");
   if (plan) {
     if (action === "status") return { ...await consolidatedStatus(state), component: plan.components.find(component => component.id === "tunnel-" + options.id)?.id || null };
-    if (action === "uninstall") return removeTunnelComponent(state, plan, options.id, listProcesses);
+    if (action === "uninstall") return removeTunnelComponent(state, plan, options.id, listProcesses, seams);
     throw new Error("Tunnels are owned by the unified service. Finish chats and uninstall that service before changing its tunnel configuration");
   }
   const label = `com.edihasaj.subscription-gateway.tunnel.${options.id}`; const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
