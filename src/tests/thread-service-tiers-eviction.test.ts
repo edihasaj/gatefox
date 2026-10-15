@@ -19,8 +19,8 @@ async function fixture() {
     async threads(): Promise<Record<string, ThreadServiceTier>> { return JSON.parse(await readFile(path, "utf8")).threads; } };
 }
 // The extra rows first, then rows with 1 KiB model names (what the 1024 character limit allows) up to the largest count that still fits the byte limit.
-function fullRows(extra: Record<string, ThreadServiceTier> = {}): Record<string, ThreadServiceTier> {
-  const build = (count: number) => ({ ...extra, ...Object.fromEntries(Array.from({ length: count }, (_, i) => [`chat-${i}`, { model: longModel("m"), serviceTier: null, emittedAtMs: 1000 + i }])) });
+function fullRows(extra: Record<string, ThreadServiceTier> = {}, model = longModel("m")): Record<string, ThreadServiceTier> {
+  const build = (count: number) => ({ ...extra, ...Object.fromEntries(Array.from({ length: count }, (_, i) => [`chat-${i}`, { model, serviceTier: null, emittedAtMs: 1000 + i }])) });
   let low = 0; let high = maxThreads;
   while (low < high) { const middle = Math.ceil((low + high) / 2); if (Buffer.byteLength(pretty(build(middle))) <= maxBytes) low = middle; else high = middle - 1; }
   return build(low);
@@ -69,10 +69,12 @@ function newRowOfSize(rows: Record<string, ThreadServiceTier>, bytes: number): {
   return { id, row: { model, serviceTier: null, revision: 1 } };
 }
 
-test("a new chat that overshoots the limit by no more than one row's saving evicts exactly one row", async () => {
+// The second model name is 1024 bytes but only 768 characters: a row's size is counted in bytes, not characters.
+for (const [label, model] of [["ASCII", longModel("m")], ["multi-byte", "m".repeat(512) + "\u00e9".repeat(256)]] as const) test(`a new chat that overshoots the limit by no more than one ${label} row's saving evicts exactly one row`, async () => {
   const f = await fixture();
   try {
-    const rows = fullRows();
+    const rows = fullRows({}, model);
+    assert.equal(Buffer.byteLength(model), 1024);
     const without = Object.fromEntries(Object.entries(rows).slice(1));
     const oldestSaving = size(rows) - size(without);
     // The compact JSON length of a row understates what dropping it saves in the indented file by a few
