@@ -111,29 +111,50 @@ gateway tunnel uninstall --tunnel-id spark
 ```
 
 This edits the service plan rather than registering another LaunchAgent. It
-refuses an unknown tunnel name, and repeating a removal it already made reports
-`alreadyRemoved` instead of failing again. A repeat is recognised only by a saved
-backup carrying that exact id followed by a full timestamp, so a tunnel named
-`spark-2026` cannot make an unknown `spark` look already removed.
+refuses a tunnel name that is not in the plan, and it refuses a component of that
+name that is not a tunnel. Repeating a removal that already landed reports
+`alreadyRemoved` instead of failing again. A repeat is recognised only from the
+removal record the command writes after the plan edit succeeds
+(`service-backups/tunnel-removals.json`, private), by an exact comparison of the
+recorded tunnel id. A backup file by itself, whatever its name, proves nothing:
+a failed edit, or a plan someone changed by hand, never makes an unknown name
+look removed, and `spark-2026` never makes `spark` look removed. If only the
+record write fails, the removal still succeeds and the result says a repeat will
+not be recognised.
 
-Before it writes anything, it requires the gateway's `/health` endpoint to answer
-with no active inference. It asks only when the plan has an inference component:
-a plan of tunnels and the desktop, or a remote-client configuration, has nothing
-listening locally to check. It refuses when a configured provider still uses that
-tunnel's own loopback port, naming the provider; the provider usually wants a
-replacement tunnel, so move the provider or add its new tunnel first. On a remote
-client, the tunnel that forwards the configured `port` is how that client reaches
-its gateway, so removing it is refused: uninstall the remote client instead.
-Another tunnel on the same machine still retires normally. The plan it replaces is
-saved first to a private `service-backups/tunnel-removed-<id>-<timestamp>.json`
-file.
+Before it writes anything, it runs the same maintenance check as `gateway service
+restart` on a unified plan and consolidation: the ChatGPT desktop must be quit,
+and when the plan runs inference, `/health` must answer with status `ok` and no
+active inference (a busy, unhealthy or unreachable gateway is refused). A plan
+with no inference component, and a remote-client configuration, have nothing
+listening locally, so no probe is made and it never depends on the tunnel being
+removed. It checks the tunnel's local listeners, which are its `-L` and `-D`
+forwards (also written as `-o LocalForward` or `DynamicForward`, attached to the
+flag, clustered like `-NTL`, or with a bracketed IPv6 bind). A reverse `-R`
+forward only listens on the other machine, so it is not checked. It refuses when:
 
-Nothing restarts: the result says `appliesAt: next service restart`, and the
-tunnel stops when the supervisor next starts from the shorter plan, after
-`gateway service restart` in a maintenance window or at the next login. Restore
-the saved file over `service-plan.json` and restart to bring the tunnel back. A
-tunnel that is the plan's only component is refused instead; that machine has
-nothing left to run, so uninstall the gateway service.
+- a configured provider's loopback `baseUrl` (`127.0.0.1`, `localhost`, `[::1]`)
+  uses one of those ports, naming the provider; point that provider at another
+  endpoint or remove it from the gateway configuration, then repeat the removal;
+- on a remote client, one of those ports is the configured `port`, because that
+  tunnel is how the client reaches its gateway; stop the client with `gateway
+  service uninstall` instead. Another tunnel on the same machine still retires
+  normally;
+- a local forward's port cannot be identified (a socket path, a malformed spec),
+  because the checks above cannot run; edit the service plan manually;
+- the tunnel is the plan's only component; uninstall the gateway service instead.
+
+The plan it replaces is saved first to a private
+`service-backups/tunnel-removed-<id>-<timestamp>.json` file.
+
+Nothing restarts: the result says `appliesAt: next service restart`, and a repeat
+says the same. The tunnel stops when the unified service next starts from the
+shorter plan. That is any restart, not only one you run: `gateway service
+restart`, an idle self-upgrade restart after an update, a launchd restart after a
+crash, or the next login. Until then `gateway tunnel status --tunnel-id <id>`
+shows `component: null` because the tunnel is gone from the plan, but its ssh
+process keeps running. Restore the saved file over `service-plan.json` and restart
+to bring the tunnel back.
 
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.
