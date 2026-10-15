@@ -322,8 +322,8 @@ applies its own default namespace only to calls of top-level tools. Other
 providers skip the item when building their transcript.
 
 A model that lacks the chat's speed tier (a Fast Codex chat switched to Claude)
-runs the chat as Standard on every routed request, as native Codex does. See
-"Speed controls" for the full rule.
+runs its requests as Standard while the chat keeps its tier, as native Codex does.
+See "Speed controls" for the full rule.
 
 Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
 roles in the native configuration) inherit the gateway provider but take their
@@ -488,21 +488,35 @@ preferences restore a saved new-chat default for the exact selected model. An ex
 `serviceTier` or `config.service_tier` takes precedence, including explicit null
 for Standard. A model-only preference change clears the preceding model's tier.
 Resume and fork inherit their chat's tier; new-chat preferences never replace it.
-When a request names a tier the selected gateway row does not offer, such as the
-desktop's saved Fast default sent for a Claude row, the gateway matches native
-Codex: it drops the tier, sends the request as Standard (`serviceTier: null`), and
-records a `service_tier_dropped` telemetry event with only the model, tier, and
-method. This covers `thread/start`, `turn/start`, `thread/resume`, `thread/fork`,
-`thread/settings/update`, `turn/settings/update`, and `serviceTierForTurn`. A tier the
-row offers is forwarded unchanged, and Fast is never added where it was not
-requested. Native Codex never fails a request because the selected model lacks a
-tier, so neither does the gateway. A tier inherited from the chat that the selected
-row does not offer is sent as `serviceTier: null` and recorded as a
-`service_tier_reset` event (the previous tier, model, and method). This covers
-`turn/start`, `turn/settings/update`, `thread/settings/update`, `thread/resume`, and
-`thread/fork`, both when the model changes and when the chat's own row stopped
-offering the tier. Only a chat whose tier is unknown and whose target row offers a
-non-Standard tier still fails; a target with no such tier runs as Standard.
+A tier the selected gateway row does not offer is handled as the pinned SDK handles it,
+and the SDK treats opening a session differently from running inside one:
+
+| Request | What the gateway sends | What happens |
+| --- | --- | --- |
+| `thread/start`, `thread/resume`, `thread/fork` naming a tier the row lacks (`serviceTier` or `config.service_tier`), or inheriting a chat tier the row lacks | `serviceTier: null` and no `config.service_tier` | The chat starts as Standard, as the SDK does when it builds a session. |
+| `thread/resume`, `thread/fork` for a chat whose tier the gateway never read | No tier | The SDK applies its own default and drops what the model lacks. |
+| `turn/start`, `thread/settings/update`, `turn/settings/update` | The request as the caller sent it, whatever the tier | The SDK accepts any tier string, keeps it as the chat's chosen tier, and leaves it off the outgoing request while the model lacks it. |
+
+At session start the gateway applies a saved new-chat default first and then checks it
+against the row, so a saved Fast default for a row that no longer offers Fast starts
+Standard instead of failing. Inside a chat the gateway never sends `serviceTier: null`
+for a tier, never clears the chosen tier, and adds no inherited tier. A Fast chat that
+runs a turn on a Claude row therefore runs that turn as Standard, and the next turn on a
+Fast row runs Fast again. `serviceTierForTurn` changes one turn only and never the chat's
+tier; the gateway maps its legacy value `fast` to `priority`. A tier that is not a string
+is passed through unchanged, and the SDK answers it as invalid parameters. The
+`serviceTierForTurn` field exists only on `turn/start`, so a session start passes it
+through untouched. Saving a gateway default tier that the chosen row does not offer is
+the one tier check left: that configuration write fails with error `-32002` and asks
+the user to choose Standard or another model. Flex is the one tier the SDK sends for
+every model. The gateway drops it at session start like any other tier a row does not
+list, but inside a chat it is forwarded, and a provider that does not offer Flex then
+answers that request with its own error.
+
+Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
+the SDK accepted the request. See [diagnostics](diagnostics.md#local-telemetry) for its
+fields.
+
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
 original native home. Fresh connections reread this record. Runtime settings are
@@ -513,9 +527,8 @@ in the same millisecond resolve conservatively to Standard; an explicit confirme
 SDK snapshot can establish the current choice again. Clock uncertainty never
 restores Fast from an uncertain older notification.
 The adapter passes the known parent tier explicitly when forking because the SDK
-otherwise uses executor defaults. If that parent tier is unknown and the fork's
-model offers a non-Standard tier, resume the parent or specify a tier before
-forking; a model without one opens the fork as Standard.
+otherwise uses executor defaults. If the gateway never read the parent's tier, the
+fork carries no tier and the SDK chooses its own default.
 The SDK's returned tier is authoritative. Resuming an already-loaded chat keeps
 its loaded settings even when resume parameters request another tier; change it
 through `thread/settings/update`. A cold resume can apply an explicit override.
@@ -524,11 +537,10 @@ Gateway executors enable the SDK's Fast feature when their validated catalog
 offers priority. Native feature flags and configuration files retain their values;
 enabling that private capability does not select Fast automatically.
 
-A loaded Fast chat that switches to a model without Fast runs as Standard. When a
-connection cannot determine the saved tier and the new model offers a
-non-Standard tier, resume the chat to read its settings or explicitly choose
-Standard before changing models; that check returns an application error rather
-than a misleading native-config warning. Reasoning effort is independent of speed.
+A loaded Fast chat that switches to a model without Fast keeps its Fast tier, and the
+SDK runs the new model's requests as Standard. A connection that cannot determine the
+saved tier sends none, so a model change never clears or invents it. Reasoning effort is
+independent of speed.
 
 Claude rows offer Fast when Claude's own model list marks the model as supporting
 fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for
