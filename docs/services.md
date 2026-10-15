@@ -169,7 +169,9 @@ checked. It refuses when:
   mapped to `127.0.0.1` is refused, and one that resolves to a remote address is
   not. A lookup that fails or takes more than 3 seconds fails with `Cannot
   determine whether provider <id>'s host <name> reaches tunnel <id>'s local port
-  <port>; the tunnel was not removed`, because the answer is unknown. A provider
+  <port>; the tunnel was not removed`, because the answer is unknown. A slow
+  lookup is refused after 3 seconds, but the resolver call is not cancelled, so
+  the command can still take until that system lookup ends to exit. A provider
   that plainly matches is reported before any name is looked up;
 - on a remote client, one of those ports is the configured `port`, because that
   tunnel is how the client reaches its gateway; stop the client with `gateway
@@ -193,8 +195,8 @@ checked. It refuses when:
   command fails with `Tunnel startup is staged under the unified service at next
   login` before it reads or changes the plan, whatever tunnel id was given, so
   the staged plan can still be activated. The check runs again under the plan
-  lock, so a consolidation staged while the command waited for that lock is
-  refused too.
+  lock and the login lock, so a consolidation staged while the command waited for
+  either of them is refused too.
 
 The plan it replaces is saved first to a private
 `service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
@@ -203,13 +205,19 @@ and the record all happen under the same plan-file lock `service shared-executor
 `service shared-native` and their disable commands hold, so a concurrent change
 is never overwritten: the removal refuses with `Gateway service plan changed`, or
 waits up to 5 seconds for the lock and then fails with `Gateway service plan is busy;
-the tunnel was not removed`. The removal never holds the login registration lock while it waits for the plan
-lock. Every plan writer takes the plan lock first and the login lock second, so
-a removal that held the login lock could block a writer that already holds the
-plan lock, and make it fail as busy (a shared-executors disable could then leave
-the service stopped). A lock that cannot be created at all (for example an
-unwritable state directory) fails with `Cannot lock the gateway service plan
-(<code>); the tunnel was not removed`. Either way nothing was backed up or written.
+the tunnel was not removed`. The removal takes the plan lock first and the login
+registration lock second, the order `service shared-executors`, `service
+shared-native` and their disable commands use, so it never holds the login lock
+while it waits for the plan lock. The commands that move the plan itself are not
+plan-lock writers: `service uninstall` trashes the plan and `service consolidate
+--next-login` stages one, each under the login lock alone, so a plan that was
+moved or staged while this removal waited is caught by that second lock and
+refused instead of written back. A lock that cannot be created at all (for
+example an unwritable state directory) fails with `Cannot lock the gateway
+service plan (<code>); the tunnel was not removed`, or `Cannot lock the gateway
+service registration (<code>)` once the plan lock is held; a login lock still
+held after 5 seconds fails as `Gateway service registration is busy; the tunnel
+was not removed`. Either way nothing was backed up or written.
 A plan write that fails after the backup leaves the backup in place and records
 nothing, so a plan someone later edits by hand is still refused as `No tunnel <id>`.
 

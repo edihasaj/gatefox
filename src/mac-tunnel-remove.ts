@@ -6,6 +6,7 @@ import { HostLookupError, providerReaches, reachesListener, systemLookup, type H
 import { tunnelListeners, type SshResolver } from "./mac-tunnel-ssh.js";
 import { readPlanFile, readRemovals, removalsForCurrentPlan, removalsPath } from "./mac-tunnel-removals.js";
 import { lockBusyCode, withPrivateFileLock } from "./private-file-lock.js";
+import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { servicePlanPath, validateServicePlan, type ServicePlan } from "./service-plan.js";
 
@@ -18,10 +19,11 @@ const blocks = { desktop: "Quit ChatGPT normally after local and remote chats fi
 export interface TunnelRemoveSeams { resolveSsh?: SshResolver; writePlan?: (path: string, plan: ServicePlan) => Promise<void>; lockTimeoutMs?: number; lookup?: HostLookup; lookupTimeoutMs?: number }
 
 /**
- * Removes one SSH tunnel component from a unified service plan. Callers must not hold
- * the login registration lock: every other plan writer takes the plan lock first and the
- * login lock second, so waiting for the plan lock while holding the login lock could block
- * one of them. The pending next-login plan is checked again inside the plan lock.
+ * Removes one SSH tunnel component from a unified service plan. Takes the plan lock first and
+ * the login registration lock second, the order `service shared-executors`, `shared-native` and
+ * their disable commands use, so a command that holds the plan lock never waits on this one.
+ * Callers must hold neither lock. The pending next-login plan is checked again inside both,
+ * because the commands that move the plan hold only the login lock.
  * Nothing is restarted: the supervisor reads the plan whenever the unified service
  * starts, so the tunnel stops at the next restart of that service.
  */
@@ -51,20 +53,27 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
     if (error instanceof Error && ["TypeError", "TimeoutError", "AbortError", "SyntaxError"].includes(error.name)) throw new Error("Cannot verify the running gateway is idle; the tunnel was not removed");
     throw new Error(`${error instanceof Error ? error.message : "The maintenance check failed"}; the tunnel was not removed`);
   }
-  const path = servicePlanPath(state); let entered = false;
+  const path = servicePlanPath(state); let planLocked = false; let loginLocked = false;
   try {
     // The same plan-file lock every other plan writer holds across its read, compare and write.
     return await withPrivateFileLock(path, async () => {
-      entered = true;
-      // Re-checked under the plan lock, as shared-executors does: a staged plan may have appeared while waiting.
-      if (await readPendingLoginConsolidation(state)) throw new Error(pendingMessage);
-      return rewritePlan(state, path, plan, id, seams.writePlan ?? writePrivateJson);
+      planLocked = true;
+      // Then the login lock, which `service uninstall` and the staging commands hold while they move the plan.
+      return await withLoginRegistrationLock(state, async () => {
+        loginLocked = true;
+        // Re-checked under both locks, as shared-executors does: a plan may have been staged or moved while waiting.
+        if (await readPendingLoginConsolidation(state)) throw new Error(pendingMessage);
+        return rewritePlan(state, path, plan, id, seams.writePlan ?? writePrivateJson);
+      });
     }, seams.lockTimeoutMs);
   } catch (error) {
-    if (entered) throw error;
-    // Acquiring the lock failed before anything was read or written.
+    if (loginLocked) throw error; // Both locks were held: this is the work failing, not a lock.
+    // A lock failed to be acquired before anything was read or written. The plan lock comes first,
+    // so a failure while holding it can only be the login lock.
     const code = (error as NodeJS.ErrnoException)?.code;
-    throw new Error(code === lockBusyCode ? "Gateway service plan is busy; the tunnel was not removed" : `Cannot lock the gateway service plan${code ? ` (${code})` : ""}; the tunnel was not removed`);
+    const target = planLocked ? "registration" : "plan";
+    throw new Error(code === lockBusyCode ? `Gateway service ${target} is busy; the tunnel was not removed`
+      : `Cannot lock the gateway service ${target}${code ? ` (${code})` : ""}; the tunnel was not removed`);
   }
 }
 
@@ -88,7 +97,13 @@ async function refuseProviderOnListeners(providers: Array<{ id: string; baseUrl?
 
 /** Under the plan lock: re-read, compare, back up, write the shorter plan, then record the removal. */
 async function rewritePlan(state: string, path: string, plan: ServicePlan, id: string, writePlan: (path: string, plan: ServicePlan) => Promise<void>): Promise<Record<string, unknown>> {
-  const { text: original, key: before } = await readPlanFile(path);
+  let original: string; let before: string;
+  try { ({ text: original, key: before } = await readPlanFile(path)); }
+  catch (error) {
+    // A plan that is gone was moved by the command that held the login lock, the same as a plan that was rewritten.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    throw new Error("Gateway service plan changed; repeat the tunnel removal");
+  }
   if (JSON.stringify(validateServicePlan(JSON.parse(original))) !== JSON.stringify(plan)) throw new Error("Gateway service plan changed; repeat the tunnel removal");
   const backups = resolve(state, "service-backups"); await mkdir(backups, { recursive: true, mode: 0o700 });
   const backup = resolve(backups, `tunnel-removed-${id}-${new Date().toISOString().replaceAll(":", "-")}.json`);

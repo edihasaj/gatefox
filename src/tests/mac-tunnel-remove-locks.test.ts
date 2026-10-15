@@ -67,14 +67,64 @@ test("a unified plan that appears while the uninstall waits for the login lock i
     const path = servicePlanPath(f.state);
     await rename(path, path + ".hidden");
     await darwin(async () => {
-      let removal!: Promise<Record<string, unknown>>;
-      await withLoginRegistrationLock(f.state, async () => {
-        removal = macTunnel("uninstall", { id: "spark" }, f.state, none, seams()); const outcome = settle(removal);
-        await delay(150); assert.equal(outcome.done, false, "the uninstall waits for the login lock");
-        await rename(path + ".hidden", path);
+      let removal!: Promise<Record<string, unknown>>; let outcome!: ReturnType<typeof settle>; let waited!: number;
+      // This holder keeps the plan lock from here on, so once it frees the login lock the uninstall waits for the plan.
+      await withPrivateFileLock(path, async () => {
+        await withLoginRegistrationLock(f.state, async () => {
+          removal = macTunnel("uninstall", { id: "spark" }, f.state, none, seams()); outcome = settle(removal);
+          await delay(150); assert.equal(outcome.done, false, "the uninstall waits for the login lock");
+          await rename(path + ".hidden", path);
+        });
+        await delay(150);
+        assert.equal(outcome.done, false, "the uninstall now waits for the plan lock this holder keeps");
+        const began = Date.now();
+        await withLoginRegistrationLock(f.state, async () => {});
+        waited = Date.now() - began;
       });
+      assert.ok(waited < 1000, `the login lock was free while the uninstall waited for the plan lock (took ${waited} ms)`);
       assert.equal((await removal).removed, true);
     });
     assert.deepEqual(ids((await readServicePlan(f.state))!), ids(f.plan).filter(id => id !== "tunnel-spark"));
+  } finally { await f.stop(); }
+});
+
+/** The login lock is what moves the plan: `gateway service uninstall` trashes it and `service consolidate --next-login`
+ * stages a plan under it, both without the plan lock. A unified-plan removal must wait for that lock too. */
+test("a removal that only held the plan lock would overwrite a plan the login-lock holder moved to Trash", async () => {
+  const f = await fixture(ok);
+  try {
+    await darwin(async () => {
+      let removal!: Promise<unknown>; let outcome!: ReturnType<typeof settle>;
+      await withLoginRegistrationLock(f.state, async () => {
+        removal = macTunnel("uninstall", { id: "spark" }, f.state, none, seams()); outcome = settle(removal);
+        await delay(200);
+        assert.equal(outcome.done, false, "the uninstall waits for the login lock the plan writer holds");
+        await rename(servicePlanPath(f.state), join(f.root, "service-plan.in-trash.json"));
+      });
+      await assert.rejects(removal, /^Error: Gateway service plan changed; repeat the tunnel removal$/);
+    });
+    assert.equal(await readServicePlan(f.state), undefined, "the removed plan was not written back from a stale copy");
+    await noBackups(f.state);
+  } finally { await f.stop(); }
+});
+
+test("a consolidation staged under the login lock while the removal waits is refused instead of overwritten", async () => {
+  const f = await fixture(ok);
+  try {
+    await darwin(async () => {
+      let removal!: Promise<unknown>; let outcome!: ReturnType<typeof settle>;
+      await withLoginRegistrationLock(f.state, async () => {
+        removal = macTunnel("uninstall", { id: "spark" }, f.state, none, seams()); outcome = settle(removal);
+        await delay(200);
+        assert.equal(outcome.done, false, "the uninstall waits for the login lock the staging command holds");
+        const staged: ServicePlan = { ...f.plan, components: f.plan.components.filter(component => component.id !== "tunnel-studio") };
+        const label = "com.edihasaj.subscription-gateway";
+        await writePrivateJson(pendingLoginConsolidationPath(f.state), { version: 1, phase: "ready", config: f.plan.config, plan: staged, primaryLabel: label, primaryPlistDigest: "a".repeat(64),
+          removedLabels: [], backup: join(f.state, "service-backups", "login-consolidation-test.json"), sources: [{ label, digest: "b".repeat(64), mode: 0o600 }] });
+      });
+      await assert.rejects(removal, /^Error: Tunnel startup is staged under the unified service at next login; its separate registration was not changed$/);
+    });
+    assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+    await noBackups(f.state);
   } finally { await f.stop(); }
 });

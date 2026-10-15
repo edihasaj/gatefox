@@ -19,7 +19,9 @@ const realSsh = { skip: existsSync("/usr/bin/ssh") ? false : "no /usr/bin/ssh" }
 
 /** This machine's own non-loopback IPv4 address and hostname, as a provider could write them. */
 const ownIPv4 = Object.values(networkInterfaces()).flat().find(entry => entry && !entry.internal && entry.family === "IPv4")?.address;
-const ownHosts = [ownIPv4, hostname()].filter((host): host is string => !!host && (() => { try { return !!new URL(`http://${host}:18301`); } catch { return false; } })());
+/** The same address written as an IPv4-mapped IPv6 one, which is how a URL or a resolver may spell it. */
+const mappedOwnIPv4 = ownIPv4 ? `[::ffff:${ownIPv4}]` : undefined;
+const ownHosts = [ownIPv4, mappedOwnIPv4, hostname()].filter((host): host is string => !!host && (() => { try { return !!new URL(`http://${host}:18301`); } catch { return false; } })());
 
 const qwenHost = (...forwards: string[]) => ["Host qwen-spark", "  HostName example.invalid", ...forwards.map(line => "  " + line)];
 
@@ -39,6 +41,11 @@ test("every spelling of the local machine reaches a loopback listener, whatever 
   for (const url of ["http://128.0.0.1:18301", "http://[::ffff:128.0.0.1]:18301", "http://[::2]:18301", "http://localhost:18302", "http://localhost.evil.com:18301", "http://xlocalhost:18301", "not a url", ""]) assert.equal(reachesListener(url, loopback), false, url);
   assert.equal(reachesListener(undefined, loopback), false);
   assert.equal(reachesListener("https://localhost/v1", { port: 443, wildcard: false }), true, "the scheme's default port");
+});
+
+test("an own interface address reaches a wildcard listener in every spelling", { skip: ownIPv4 ? false : "no non-loopback IPv4 address" }, () => {
+  for (const host of ownHosts) assert.equal(reachesListener(`http://${host}:18301/v1`, { port: 18301, wildcard: true }), true, host);
+  for (const host of ownHosts) assert.equal(reachesListener(`http://${host}:18301/v1`, { port: 18301, wildcard: false }), false, `loopback listener: ${host}`);
 });
 
 test("a forward bound beyond loopback is reached through this machine's own name and addresses", async () => {
@@ -214,10 +221,13 @@ test("a provider name that resolves to this machine reaches a loopback listener,
 });
 
 test("a name that resolves to an own interface address reaches only a wildcard listener", { skip: ownIPv4 ? false : "no non-loopback IPv4 address" }, async () => {
-  const wildcard = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "*:18301:127.0.0.1:18300"]);
-  try { await assert.rejects(remove(wildcard.state, "spark", none, alias(ownIPv4!)), /Provider spark_api uses this tunnel's local port 18301/); } finally { await wildcard.stop(); }
-  const loopback = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "127.0.0.1:18301:127.0.0.1:18300"]);
-  try { assert.equal((await remove(loopback.state, "spark", none, alias(ownIPv4!))).removed, true); } finally { await loopback.stop(); }
+  // getaddrinfo spells an A-record answer this way, so a resolver answer can be the mapped form of the interface address.
+  for (const address of [ownIPv4!, `::ffff:${ownIPv4!}`]) {
+    const wildcard = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "*:18301:127.0.0.1:18300"]);
+    try { await assert.rejects(remove(wildcard.state, "spark", none, alias(address)), /Provider spark_api uses this tunnel's local port 18301/, address); } finally { await wildcard.stop(); }
+    const loopback = await fixture(ok, api("https://qwen.internal:18301/v1"), ["-L", "127.0.0.1:18301:127.0.0.1:18300"]);
+    try { assert.equal((await remove(loopback.state, "spark", none, alias(address))).removed, true, address); } finally { await loopback.stop(); }
+  }
 });
 
 test("a name that cannot be resolved in time, or at all, refuses the removal instead of guessing", async () => {
@@ -247,6 +257,18 @@ test("a name is looked up only when its port is the tunnel's, once per host, and
     await assert.rejects(remove(local.state, "spark", none, record), /Provider second uses this tunnel's local port 18301/);
     assert.deepEqual(seen, [], "a plain match is decided before any lookup");
   } finally { await local.stop(); }
+});
+
+test("two providers that name the same host on the tunnel's port cost one lookup", async () => {
+  const calls: string[] = []; const counted: TunnelRemoveSeams = { resolveSsh: noSsh, lookup: async host => { calls.push(host); return ["203.0.113.7"]; } };
+  const f = await fixture(ok, api("https://qwen.internal:18301/v1"));
+  try {
+    const config = JSON.parse(await readFile(f.plan.config, "utf8"));
+    config.providers.push({ ...api("https://qwen.internal:18301/v1"), id: "second", models: { other: "other" } });
+    await writeFile(f.plan.config, JSON.stringify(config));
+    assert.equal((await remove(f.state, "spark", none, counted)).removed, true, "neither provider reaches this machine");
+    assert.deepEqual(calls, ["qwen.internal"], "the second provider reuses the first answer");
+  } finally { await f.stop(); }
 });
 
 test("providerReaches resolves names and the system resolver answers localhost with a loopback address", async () => {

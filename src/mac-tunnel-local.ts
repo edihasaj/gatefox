@@ -19,11 +19,20 @@ function ipv6Groups(address: string): number[] | undefined {
 
 const normalise = (host: string) => host.trim().replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "").replace(/\.+$/, "").toLowerCase();
 
+/** The dotted IPv4 an IPv4-mapped IPv6 address carries (`::ffff:192.0.2.7`, as a resolver or a URL may spell it), or undefined. */
+function mappedIPv4(groups: number[]): string | undefined {
+  if (!groups.slice(0, 5).every(group => group === 0) || groups[5] !== 0xffff) return undefined;
+  return `${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`;
+}
+
 /** The same address however it is written, so interface addresses compare equal to URL hosts. */
 function canonical(host: string): string {
   const groups = ipv6Groups(host);
   return groups ? groups.map(group => group.toString(16)).join(":") : host;
 }
+
+/** One comparable spelling per address: an IPv4-mapped IPv6 one becomes the IPv4 it carries. */
+const comparable = (raw: string) => { const host = normalise(raw); const groups = ipv6Groups(host); return (groups && mappedIPv4(groups)) || canonical(host); };
 
 /** Whether a client using this host reaches the local machine's loopback: 127.0.0.0/8, 0.0.0.0, ::, ::1, mapped IPv4 forms, localhost. */
 export function isLoopbackHost(raw: string): boolean {
@@ -32,18 +41,17 @@ export function isLoopbackHost(raw: string): boolean {
   if (isIP(host) === 4) return host.startsWith("127.") || host === "0.0.0.0";
   const groups = ipv6Groups(host);
   if (!groups) return false;
-  if (groups.slice(0, 7).every(group => group === 0)) return groups[7] <= 1; // :: and ::1
-  if (groups.slice(0, 5).every(group => group === 0) && groups[5] === 0xffff) {
-    return isLoopbackHost(`${groups[6] >> 8}.${groups[6] & 255}.${groups[7] >> 8}.${groups[7] & 255}`);
-  }
-  return false;
+  const mapped = mappedIPv4(groups);
+  if (mapped) return isLoopbackHost(mapped);
+  return groups.slice(0, 7).every(group => group === 0) && groups[7] <= 1; // :: and ::1
 }
 
 /** This machine's own name and addresses: where a wildcard-bound listener can also be reached. */
 function isOwnHost(raw: string): boolean {
   const host = normalise(raw); const name = normalise(hostname());
   if (host === name || host === name.split(".")[0]) return true;
-  return Object.values(networkInterfaces()).flat().some(entry => entry !== undefined && canonical(normalise(entry.address)) === canonical(host));
+  const address = comparable(host);
+  return Object.values(networkInterfaces()).flat().some(entry => entry !== undefined && comparable(entry.address) === address);
 }
 
 const portOf = (url: URL) => url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
