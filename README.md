@@ -168,7 +168,9 @@ jobs with one supervisor. Apply with `--apply` after local and remote chats fini
 The migration preserves endpoints and saves rollback copies. See
 [service ownership](docs/services.md).
 
-Development gate: `npm run build && npm run check && npm test`.
+Development gate: `npm run build && npm run check && npm test`. `npm test` runs the suite under a private
+temporary folder (`scripts/run-tests.mjs`) that it removes afterwards, so no test touches the real one; name test files
+after `--` to run only those.
 Hosted macOS native CI is manual-only: dispatch from `production` with
 **Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).

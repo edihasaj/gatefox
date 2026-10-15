@@ -15,7 +15,8 @@ download cache.
 
 The `verify` job uses Ubuntu 24.04 ARM and runs the unchanged source gate:
 `npm ci`, `npm run build`, `npm run check`, the executable CI-policy guard, and
-`npm test`. Six tests require macOS and retain their explicit platform guards.
+`npm test`, which runs the suite under a private temporary folder so no test touches the
+runner's real one. Six tests require macOS and retain their explicit platform guards.
 
 `macos-native` uses GitHub's macOS 15 Apple Silicon runner only for an intentional
 native validation: an explicit dispatch from `production` with

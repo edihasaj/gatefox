@@ -1,0 +1,47 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
+import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import { copilotParent } from "../providers/copilot-directories.js";
+
+// The suite starts gateways and fixture Copilot CLIs whose folders and startup sweep live in the temp folder. `npm test` runs
+// it under one private temp folder (scripts/run-tests.mjs), so no test touches the real `<TMPDIR>/harness-gateway-copilot-<uid>`.
+const runner = fileURLToPath(new URL("../../scripts/run-tests.mjs", import.meta.url));
+const run = promisify(execFile);
+const exists = (path: string) => stat(path).then(() => true, () => false);
+
+test("the suite runs under a private temp folder, so no test reaches the real Copilot folder", async () => {
+  const given = process.env.GATEWAY_TEST_TMPDIR;
+  assert.ok(given, "run the suite with `npm test`: it gives the tests a private temp folder (scripts/run-tests.mjs)");
+  assert.equal(tmpdir(), given, "the temp folder is the runner's");
+  assert.ok(copilotParent().startsWith(given + sep), "so the Copilot parent, whose name the gateway derives from it, is inside it");
+  assert.match(given, /gwt-/);
+});
+
+test("the test runner gives a run its own temp folder, passes the exit code on, and removes the folder after a pass and after a failure", { timeout: 60000 }, async () => {
+  const work = await mkdtemp(join(tmpdir(), "gateway-runner-test-"));
+  try {
+    const record = join(work, "record.json");
+    // The test runner marks the processes it starts; a nested run must start as a run of its own.
+    const environment: NodeJS.ProcessEnv = { ...process.env, RUNNER_RECORD: record }; delete environment.NODE_TEST_CONTEXT;
+    const suite = async (name: string, body: string) => {
+      const file = join(work, `${name}.test.mjs`);
+      await writeFile(file, `import test from "node:test"; import assert from "node:assert/strict"; import { writeFileSync } from "node:fs"; import { tmpdir } from "node:os";\n` +
+        `test("${name}", () => { writeFileSync(process.env.RUNNER_RECORD, JSON.stringify({ tmpdir: tmpdir(), marker: process.env.GATEWAY_TEST_TMPDIR })); ${body} });\n`);
+      return file;
+    };
+    for (const [name, body, passes] of [["passing", "", true], ["failing", "assert.fail('fixture failure');", false]] as const) {
+      const file = await suite(name, body);
+      const outcome = await run(process.execPath, [runner, file], { env: environment }).then(() => 0, (error: { code?: number }) => error.code ?? 1);
+      assert.equal(outcome === 0, passes, `${name}: the runner's exit code follows the suite's`);
+      const seen = JSON.parse(await readFile(record, "utf8")) as { tmpdir: string; marker: string };
+      assert.notEqual(seen.tmpdir, tmpdir(), `${name}: the suite did not get this process's temp folder`);
+      assert.equal(seen.marker, seen.tmpdir, `${name}: the marker names the folder the tests saw`);
+      assert.equal(await exists(seen.tmpdir), false, `${name}: the folder is removed afterwards`);
+    }
+  } finally { await rm(work, { recursive: true, force: true }); }
+});

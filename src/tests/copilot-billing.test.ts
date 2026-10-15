@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, chmod, readFile, writeFile, stat, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { fixtureCli } from "./copilot-fixture-cli.js";
 import { CopilotSubscription } from "../providers/copilot.js";
 import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
@@ -13,20 +12,11 @@ const collect = async (input: AsyncIterable<InferenceEvent>) => { const events: 
 const request: ResponsesRequest = { model: "fixture", input: "hello" };
 
 async function withFixture(run: (directory: string, mode: (value: string | undefined) => void) => Promise<void>): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-test-copilot-billing-"));
-  const fixture = fileURLToPath(new URL("./copilot-fixture.js", import.meta.url));
-  const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
-  await writeFile(join(directory, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)}\n`); await chmod(join(directory, "copilot"), 0o700);
-  const previous = { PATH: process.env.PATH, mode: process.env.GATEWAY_COPILOT_FIXTURE_MODE, receipt: process.env.GATEWAY_COPILOT_FIXTURE_RECEIPT };
-  process.env.PATH = directory + delimiter + process.env.PATH; process.env.GATEWAY_COPILOT_FIXTURE_RECEIPT = join(directory, "receipt.json");
-  try { await run(directory, value => { if (value === undefined) delete process.env.GATEWAY_COPILOT_FIXTURE_MODE; else process.env.GATEWAY_COPILOT_FIXTURE_MODE = value; }); }
-  finally {
-    for (const [key, value] of [["PATH", previous.PATH], ["GATEWAY_COPILOT_FIXTURE_MODE", previous.mode], ["GATEWAY_COPILOT_FIXTURE_RECEIPT", previous.receipt]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; }
-    await rm(directory, { recursive: true, force: true });
-  }
+  const fixture = await fixtureCli("gateway-test-copilot-billing-");
+  try { await run(fixture.directory, fixture.mode); } finally { await fixture.restore(); }
 }
 
-test("Copilot sums every model call of one request and reports billing detail separately from usage", async () => {
+test("Copilot sums every model call of one request and reports billing detail separately from usage", { timeout: 30000 }, async () => {
   await withFixture(async (_directory, mode) => {
     const adapter = new CopilotSubscription(provider);
     mode("billing");
@@ -46,7 +36,7 @@ test("Copilot sums every model call of one request and reports billing detail se
   });
 });
 
-test("Copilot marks the credit total partial when only some calls were priced or a call reports a partial figure", async () => {
+test("Copilot marks the credit total partial when only some calls were priced or a call reports a partial figure", { timeout: 30000 }, async () => {
   await withFixture(async (_directory, mode) => {
     const adapter = new CopilotSubscription(provider);
     mode("mixed");
@@ -61,7 +51,7 @@ test("Copilot marks the credit total partial when only some calls were priced or
   });
 });
 
-test("a one-shot session still rejects permission and external tool requests, which only a live session may answer", async () => {
+test("a one-shot session still rejects permission and external tool requests, which only a live session may answer", { timeout: 30000 }, async () => {
   await withFixture(async (_directory, mode) => {
     const adapter = new CopilotSubscription(provider);
     for (const value of ["permission", "external"]) {
@@ -71,7 +61,7 @@ test("a one-shot session still rejects permission and external tool requests, wh
   });
 });
 
-test("Copilot reports usage before a rejected model route and keeps the temporary session private", async () => {
+test("Copilot reports usage before a rejected model route and keeps the temporary session private", { timeout: 30000 }, async () => {
   await withFixture(async (directory, mode) => {
     const adapter = new CopilotSubscription(provider); const seen: InferenceEvent[] = [];
     mode("model-switch");

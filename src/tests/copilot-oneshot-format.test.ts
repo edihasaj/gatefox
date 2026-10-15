@@ -10,7 +10,7 @@ import { adapter, callIds, harness, live, lookupName, outputFor, png, tools, tur
 // same way: caller instructions in the system message, one user message per item, the whole catalog every time.
 const other = { type: "function" as const, name: "other", description: "Another", parameters: { type: "object", properties: {} } };
 
-test("a one-shot request puts the caller's instructions in the system message and sends one message per conversation item", async () => {
+test("a one-shot request puts the caller's instructions in the system message and sends one message per conversation item", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const first = [user("first question")]; const provider = adapter({ mode: "oneshot" });
@@ -33,7 +33,7 @@ test("a one-shot request puts the caller's instructions in the system message an
   } finally { await h.restore(); }
 });
 
-test("a one-shot request's private folder carries its owner's pid and start time, so a later gateway can sweep it if this one is killed", async () => {
+test("a one-shot request's private folder carries its owner's pid and start time, so a later gateway can sweep it if this one is killed", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const running = turn(adapter({ mode: "oneshot" }), [user("go [hang]")], { controller }).then(() => undefined, () => undefined);
@@ -46,7 +46,7 @@ test("a one-shot request's private folder carries its owner's pid and start time
   } finally { await h.restore(); }
 });
 
-test("a forced tool choice keeps the whole catalog in the one-shot session and names the tool on the last message", async () => {
+test("a forced tool choice keeps the whole catalog in the one-shot session and names the tool on the last message", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "oneshot" });
@@ -66,7 +66,7 @@ test("a forced tool choice keeps the whole catalog in the one-shot session and n
   } finally { await h.restore(); }
 });
 
-test("a one-shot request sends images as private file attachments on their item and answers a tool loop without a session", async () => {
+test("a one-shot request sends images as private file attachments on their item and answers a tool loop without a session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "oneshot" });

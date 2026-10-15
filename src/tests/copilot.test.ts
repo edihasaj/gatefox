@@ -1,10 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtemp, chmod, readFile, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, delimiter } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fixtureCli } from "./copilot-fixture-cli.js";
 import { copilotFrames } from "../providers/copilot-rpc.js";
 import { copilotEnvironment } from "../providers/copilot-client.js";
 import { nativeCopilotModels } from "../providers/copilot-models.js";
@@ -19,7 +18,7 @@ const provider: ProviderConfig = { id: "copilot", type: "copilot-subscription", 
 const collect = async (input: AsyncIterable<InferenceEvent>) => { const events = []; for await (const event of input) events.push(event); return events; };
 const frames = async (chunks: Buffer[]) => { const messages = []; for await (const message of copilotFrames(Readable.from(chunks))) messages.push(message); return messages; };
 
-test("Copilot RPC handles split UTF-8 frames and rejects unbounded, ambiguous, or incomplete framing", async () => {
+test("Copilot RPC handles split UTF-8 frames and rejects unbounded, ambiguous, or incomplete framing", { timeout: 30000 }, async () => {
   const body = JSON.stringify({ jsonrpc: "2.0", id: 1, result: "ë🙂" }); const frame = Buffer.from(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   assert.deepEqual(await frames([...frame].map(byte => Buffer.from([byte]))), [{ jsonrpc: "2.0", id: 1, result: "ë🙂" }]);
   for (const malformed of ["x".repeat(8193), "Content-Length: 16777217\r\n\r\n", "Content-Length: 1\r\nContent-Length: 1\r\n\r\n0", "Content-Length: 8\r\n\r\n{}", "Content-Length: 1\r\n\r\nx", "Content-Length: 2\r\n\r\n{}"])
@@ -63,14 +62,8 @@ test("Copilot environment excludes BYOK and inherited account selectors", () => 
   finally { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });
 
-test("Copilot SDK inference streams, confines tools, sanitizes failures, and releases cancelled workers", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-test-copilot-fixture-"));
-  // Preserve module resolution when the fixture is launched as an executable.
-  const fixture = fileURLToPath(new URL("./copilot-fixture.js", import.meta.url));
-  const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
-  await writeFile(join(directory, "copilot"), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fixture)}\n`); await chmod(join(directory, "copilot"), 0o700);
-  const previous = { PATH: process.env.PATH, mode: process.env.GATEWAY_COPILOT_FIXTURE_MODE, receipt: process.env.GATEWAY_COPILOT_FIXTURE_RECEIPT };
-  process.env.PATH = directory + delimiter + process.env.PATH; process.env.GATEWAY_COPILOT_FIXTURE_RECEIPT = join(directory, "receipt.json");
+test("Copilot SDK inference streams, confines tools, sanitizes failures, and releases cancelled workers", { timeout: 60000 }, async () => {
+  const fixture = await fixtureCli("gateway-test-copilot-fixture-"); const { directory } = fixture;
   const request: ResponsesRequest = { model: "fixture", input: "hello", reasoning: { effort: "high", summary: "auto" } };
   try {
     const adapter = new CopilotSubscription(provider);
@@ -92,32 +85,29 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
       assert.equal(ordinary.reasoningEffort, "high"); assert.deepEqual(ordinary.allowedModels, ["fixture"]);
       assert.equal(ordinary.serviceTier, undefined); assert.equal(ordinary.capi, undefined);
     }
-    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "provider-absent";
+    fixture.mode("provider-absent");
     assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");
-    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "tool";
+    fixture.mode("tool");
     const custom = await collect(adapter.infer({ ...request, tools: [{ type: "custom", name: "patch" }], tool_choice: "required" }, new AbortController().signal));
     assert.equal(custom.find(event => event.type === "tool")?.call.responseTool?.type, "custom");
     for (const mode of ["protocol", "auth", "byok", "model-switch", "provider-switch", "inconsistent", "error", "permission", "foreign-tool"]) {
-      process.env.GATEWAY_COPILOT_FIXTURE_MODE = mode;
+      fixture.mode(mode);
       await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof Error && !error.message.includes("private-token"));
     }
-    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-code";
+    fixture.mode("context-code");
     await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "context_length_exceeded" && error.status === 400 && !error.message.includes("private-token"));
     // A plain rate limit stays retryable for Codex; quota wording is a final usage limit.
     for (const [mode, code, wire] of [["rate-limit", "rate_limit_exceeded", "rate_limit_exceeded"], ["usage-limit", "usage_limit", "invalid_prompt"]]) {
-      process.env.GATEWAY_COPILOT_FIXTURE_MODE = mode;
+      fixture.mode(mode);
       await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === code && error.status === 429 &&
         streamFailureCode(error) === wire && !error.message.includes("private-token"));
     }
-    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "context-prose";
+    fixture.mode("context-prose");
     await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof ProviderError && error.code === "inference_failed");
-    process.env.GATEWAY_COPILOT_FIXTURE_MODE = "hang";
+    fixture.mode("hang");
     const control = new AbortController(); const timer = setTimeout(() => control.abort(), 300);
     try { await assert.rejects(collect(adapter.infer(request, control.signal)), /cancelled/); } finally { clearTimeout(timer); }
-    delete process.env.GATEWAY_COPILOT_FIXTURE_MODE;
+    fixture.mode(undefined);
     assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");
-  } finally {
-    for (const [key, value] of [["PATH", previous.PATH], ["GATEWAY_COPILOT_FIXTURE_MODE", previous.mode], ["GATEWAY_COPILOT_FIXTURE_RECEIPT", previous.receipt]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; }
-    await rm(directory, { recursive: true, force: true });
-  }
+  } finally { await fixture.restore(); }
 });
