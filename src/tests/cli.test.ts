@@ -5,12 +5,13 @@ import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { connect, type Socket } from "node:net";
 import { once } from "node:events";
-import { mkdtemp, symlink, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readTelemetry } from "../telemetry.js";
 import { gatewayToken } from "../config.js";
+import { cliFailureMessage } from "../cli.js";
 
 test("npm-style CLI symlinks execute help and version without a provider configuration", { skip: process.platform === "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-cli-"));
@@ -63,4 +64,34 @@ test("serve waits the drain deadline for a connection that never finishes", { sk
     assert.ok(elapsed >= 2400, `the deadline is the drain plus 1.5 s, not a fixed 2 s (${elapsed} ms)`);
     assert.deepEqual(await server.signals(), ["SIGINT"]);
   } finally { socket?.destroy(); await server.cleanup(); }
+});
+
+test("cliFailureMessage hides what a JSON parse error quoted from the file", () => {
+  let broken: unknown; let leaked: unknown;
+  try { JSON.parse("{bad"); } catch (error) { broken = error; }
+  try { JSON.parse('{"wrapper": gh_pat_secret_value'); } catch (error) { leaked = error; }
+  assert.ok(broken instanceof SyntaxError && leaked instanceof SyntaxError);
+  assert.equal(cliFailureMessage(broken), "Invalid JSON data");
+  assert.equal(cliFailureMessage(leaked), "Invalid JSON data");
+  assert.equal(cliFailureMessage(new Error("Unknown command; run gateway --help")), "Unknown command; run gateway --help");
+  assert.equal(cliFailureMessage(undefined), "Command failed");
+});
+
+test("desktop status reports a corrupt registration as invalid JSON only", { skip: process.platform !== "darwin" }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-cli-json-"));
+  const home = join(directory, "home"); const state = join(directory, "state");
+  await mkdir(home, { recursive: true, mode: 0o700 }); await mkdir(state, { recursive: true, mode: 0o700 });
+  const config = join(directory, "gateway.json");
+  await writeFile(config, JSON.stringify({ version: 1, port: 3457, stateDirectory: state, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_CLI_JSON_FIXTURE_KEY", models: { fixture: "upstream" } }] }), { mode: 0o600 });
+  await writeFile(join(state, "desktop-registration.json"), '{"wrapper": gh_pat_secret_value', { mode: 0o600 });
+  const child = spawn(process.execPath, [fileURLToPath(new URL("../cli.js", import.meta.url)), "desktop", "status", "--config", config], {
+    env: { ...process.env, GATEWAY_CONFIG: config, HOME: home, GATEWAY_TELEMETRY: "off", GATEWAY_ERROR_REPORTS: "off" },
+    stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = ""; let stderr = "";
+  child.stdout!.on("data", chunk => { stdout += chunk; }); child.stderr!.on("data", chunk => { stderr += chunk; });
+  const [code] = await once(child, "exit");
+  await rm(directory, { recursive: true, force: true });
+  assert.equal(code, 2);
+  assert.equal(stderr, "gateway: Invalid JSON data\n");
+  assert.equal(stdout, "");
 });

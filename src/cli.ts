@@ -32,6 +32,7 @@ import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
+import { safeErrorMessage } from "./error-message.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -265,6 +266,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   });
 }
 
+/** What `gateway` prints when a command fails: SyntaxError becomes a fixed string so no file content leaks. */
+export function cliFailureMessage(error: unknown): string {
+  return safeErrorMessage(error, "Command failed");
+}
+
 async function remoteCatalog(config: GatewayConfig): Promise<{ models: Array<Record<string, unknown>> }> {
   const token = await readPrivateClientToken(resolve(config.stateDirectory, "client-token"));
   const response = await fetch(`http://127.0.0.1:${config.port}/v1/model-catalog`, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(10000) });
@@ -276,5 +282,5 @@ async function remoteCatalog(config: GatewayConfig): Promise<{ models: Array<Rec
 }
 
 if (process.argv[1] && await realpath(process.argv[1]).catch(() => resolve(process.argv[1])) === fileURLToPath(import.meta.url)) {
-  main().catch(error => { const message = error instanceof SyntaxError ? "Invalid JSON data" : error instanceof Error ? error.message : "Command failed"; process.stderr.write(`gateway: ${message}\n`); process.exitCode = 2; });
+  main().catch(error => { process.stderr.write(`gateway: ${cliFailureMessage(error)}\n`); process.exitCode = 2; });
 }
