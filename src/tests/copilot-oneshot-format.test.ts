@@ -33,7 +33,7 @@ test("a one-shot request puts the caller's instructions in the system message an
   } finally { await h.restore(); }
 });
 
-test("a one-shot request's private folder carries its owner's pid and start time, so a later gateway can sweep it if this one is killed", { timeout: 30000 }, async () => {
+test("a one-shot request's private folder carries its owner's pid and start time, so a later gateway can sweep it if this one is killed", { timeout: 20000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const running = turn(adapter({ mode: "oneshot" }), [user("go [hang]")], { controller }).then(() => undefined, () => undefined);

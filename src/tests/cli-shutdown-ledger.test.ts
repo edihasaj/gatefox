@@ -39,8 +39,10 @@ test("serve leaves the ledger row of a request it stopped at shutdown, though it
     const [row, ...rest] = (await readUsageLedger(state, 0)).filter(entry => entry.origin === "gateway");
     assert.equal(rest.length, 0);
     assert.deepEqual([row?.status, row?.inputTokens, row?.nanoAiu, row?.nanoAiuStatus], ["failed", 100, 1e9, "complete"], "the billed call is in the ledger");
-    const failed = (await readTelemetry(state, 0)).find(event => event.event === "request_failed");
+    const telemetry = await readTelemetry(state, 0); const failed = telemetry.find(event => event.event === "request_failed");
     assert.ok(failed, "and the request's failure record is in telemetry"); assert.equal(failed.abortCause, "shutdown"); assert.equal(failed.nanoAiu, 1e9);
+    // The drain writes its record only when it ends (after the 3 s usage wait), so a process that left earlier left by its deadline.
+    assert.ok(!telemetry.some(event => event.event === "server_drain"), "the process left at the exit deadline, before the drain ended");
     for (const pid of await h.pids()) assert.ok(await until(() => !alive(pid), 3000), `the CLI ${pid} did not outlive the gateway`);
   } finally {
     await reader?.cancel().catch(() => {});

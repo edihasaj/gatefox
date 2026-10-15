@@ -63,7 +63,7 @@ test("Copilot environment excludes BYOK and inherited account selectors", () => 
   finally { for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });
 
-test("Copilot SDK inference streams, confines tools, sanitizes failures, and releases cancelled workers", { timeout: 60000 }, async () => {
+test("Copilot SDK inference streams, confines tools, sanitizes failures, and releases cancelled workers", { timeout: 20000 }, async () => {
   const fixture = await fixtureCli("gateway-test-copilot-fixture-"); const { directory } = fixture;
   const request: ResponsesRequest = { model: "fixture", input: "hello", reasoning: { effort: "high", summary: "auto" } };
   try {

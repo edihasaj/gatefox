@@ -85,6 +85,8 @@ test("recordPending writes a running request's record once, and its late end doe
   assert.equal(gw.server.recordPending(), 0, "a request already recorded is not recorded again");
   await flushRecords();
   assert.deepEqual(gw.ledger().map(entry => [entry.status, entry.inputTokens, entry.nanoAiu]), [["failed", 100, 2e9]]);
+  // No abort reached the request first, so the stop it is about to suffer is named by the record itself.
+  assert.equal(gw.events().find(event => event.event === "request_failed")?.abortCause, "shutdown", "a request recorded at exit says it was stopped by the shutdown");
   provider.release();
   for (let attempt = 0; !gw.server.isIdle() && attempt < 200; attempt++) await new Promise(resolve => setTimeout(resolve, 20));
   await reader.cancel().catch(() => {});
