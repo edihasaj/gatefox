@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
-import { CopilotLiveSession } from "../providers/copilot-live-session.js";
+import { CopilotLiveSession, sessionLimits } from "../providers/copilot-live-session.js";
 import { CopilotTurn } from "../providers/copilot-turn.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
@@ -149,20 +151,29 @@ test("at the cap, a session that is already closing makes room before any parked
   } finally { await h.restore(); }
 });
 
-test("a thread whose session is being evicted waits for it and reseeds as evicted; no process runs beside the dying one", { timeout: 20000 }, async () => {
-  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "800";
+test("a thread whose session is being evicted waits for it and reseeds as evicted; no process runs beside the dying one", { timeout: 30000 }, async () => {
+  // The evicted CLI answers session.abort only when the test lets it (the gate), and the abort limit is far beyond the test: the
+  // dying session stays there for exactly as long as the test wants, whatever the machine's speed.
+  const h = await harness(); const gate = join(h.directory, "abort-gate"); process.env.GATEWAY_COPILOT_LIVE_ABORT_GATE = gate;
+  const limit = sessionLimits.abortMs; sessionLimits.abortMs = 600000;
+  let newcomer: Promise<unknown> | undefined; let next: Promise<{ text: string }> | undefined;
   try {
     const provider = adapter({ mode: "live", max: 2 }); const first = [user("a [tool]")];
     const a = await turn(provider, first, { context: { threadId: "A" } }); await sleep(5);
     await turn(provider, [user("c [tool]")], { context: { threadId: "C" } });
     const [old] = await h.pids();
-    // Thread B needs a slot: A, the least recently used session, waits for tools, so it is aborted (slowly) and killed.
-    const newcomer = turn(provider, [user("b")], { context: { threadId: "B" } });
+    // Thread B needs a slot: A, the least recently used session, waits for tools, so it is aborted and killed.
+    newcomer = turn(provider, [user("b")], { context: { threadId: "B" } }).catch(error => error as unknown);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "abort" && entry.pid === old)));
     assert.ok(alive(old), "the evicted session is still ending");
-    // Its thread's next request arrives inside that window.
-    const next = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")], { context: { threadId: "A" } });
-    assert.match(next.text, /^answer/); await newcomer;
+    // Its thread's next request arrives inside that window, and waits for it: nothing new starts while the gate is shut.
+    next = turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")], { context: { threadId: "A" } });
+    next.catch(() => {});
+    await sleep(300);
+    assert.equal((await creates(h)).length, 2, "no CLI was started beside the dying one");
+    assert.ok(alive(old), "and it is still there");
+    await writeFile(gate, "x");
+    assert.match((await next).text, /^answer/); await newcomer;
     const all = await creates(h); assert.equal(all.length, 4, "A, C, B and A again");
     for (const entry of all) assert.ok(entry.alivePeers.length + 1 <= 2, `${entry.alivePeers.length + 1} CLIs ran when ${entry.pid} was created; the cap is 2`);
     const again = all.at(-1)!; assert.ok(!again.alivePeers.includes(old) && !again.folders.some((name: string) => again.directory.endsWith(name)), "the evicted process was gone before its thread's new one started");
@@ -170,5 +181,5 @@ test("a thread whose session is being evicted waits for it and reseeds as evicte
     const outcomes = await kinds(h);
     assert.ok(outcomes.includes("evicted") && outcomes.includes("reseeded:evicted"), `the thread says why it started over: ${outcomes.join(",")}`);
     assert.equal(outcomes.filter(kind => kind === "spawned").length, 3, "only the first request of each of the three threads spawned");
-  } finally { await h.restore(); }
+  } finally { sessionLimits.abortMs = limit; await writeFile(gate, "x"); await newcomer; await next?.catch(() => {}); await h.restore(); }
 });

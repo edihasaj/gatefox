@@ -2,11 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { constants } from "node:fs";
-import { chmod, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { ProviderError } from "../providers/provider.js";
-import { openCopilot, stopCopilotClientsNow } from "../providers/copilot-client.js";
+import { folderRemoval, openCopilot, stopCopilotClientsNow } from "../providers/copilot-client.js";
 import { copilotRun } from "../providers/copilot.js";
 import { copilotPrompts } from "../providers/copilot-render.js";
 import { sessionLimits } from "../providers/copilot-live-session.js";
@@ -21,8 +21,9 @@ import { shortFolder } from "./short-folder.js";
 // can only make a build that is wrong fail, never a correct one.
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const picture = (bytes: number) => `data:image/png;base64,${Buffer.concat([signature, Buffer.alloc(bytes, 7)]).toString("base64")}`;
-const withImages = (count: number, bytes: number): ResponsesInputItem[] => [{ type: "message", role: "user", content: [{ type: "input_text", text: "look" },
-  ...Array.from({ length: count }, () => ({ type: "input_image" as const, image_url: picture(bytes) }))] }];
+/** The images share one data URL (one string, not one per image), so a request with many of them stays small in memory; each is still decoded and written on its own. */
+const withImages = (count: number, bytes: number): ResponsesInputItem[] => { const url = picture(bytes); return [{ type: "message", role: "user", content: [{ type: "input_text", text: "look" },
+  ...Array.from({ length: count }, () => ({ type: "input_image" as const, image_url: url }))] }]; };
 const exists = (path: string) => stat(path).then(() => true, () => false);
 const config = { id: providerId, type: "copilot-subscription" as const, models: { alias: "fixture" } };
 const modes = ["oneshot", "live"] as const;
@@ -191,14 +192,37 @@ test("closing a CLI whose folder cannot be removed neither rejects nor forgets t
   } finally { await h.restore(); }
 });
 
-test("closing a CLI retries the removal of its folder while something is still writing into it", { skip: process.platform === "win32", timeout: 30000 }, async () => {
-  const h = await harness();
+test("closing a CLI removes its folder with retries, so a removal that runs into something busy is tried again", { timeout: 30000 }, async () => {
+  // The retries are Node's, driven by the options the removal is given: this pins the options. (The next test shows the retries working.)
+  const h = await harness(); const real = folderRemoval.remove; const calls: Array<{ path: string; options: Record<string, unknown> }> = [];
+  folderRemoval.remove = (async (path: Parameters<typeof rm>[0], options?: Parameters<typeof rm>[1]) => { calls.push({ path: String(path), options: { ...options } }); return real(path, options); }) as typeof rm;
   try {
-    const client = await openCopilot(config); const noise = join(client.directory, "noise"); await mkdir(noise);
-    // Something keeps adding files for a while (a write still going on, or a child of the CLI), then stops: the first removal runs into it.
-    let stop = false; const writer = (async () => { for (let index = 0; !stop; index++) await writeFile(join(noise, String(index)), "x"); })();
-    setTimeout(() => { stop = true; }, 150);
-    await client.close(undefined, true); await writer;
-    assert.equal(await exists(client.directory), false, "the folder was removed once the writer had stopped");
-  } finally { stopCopilotClientsNow(); await h.restore(); }
+    const client = await openCopilot(config); await client.close(undefined, true);
+    assert.equal(calls.length, 1, "the folder was removed once"); assert.equal(calls[0].path, client.directory);
+    assert.deepEqual([calls[0].options.recursive, calls[0].options.force], [true, true]);
+    assert.ok(Number(calls[0].options.maxRetries) >= 3 && Number(calls[0].options.retryDelay) >= 25, `with retries: ${JSON.stringify(calls[0].options)}`);
+    assert.equal(await exists(client.directory), false);
+  } finally { folderRemoval.remove = real; stopCopilotClientsNow(); await h.restore(); }
+});
+
+test("closing a CLI keeps retrying the removal of its folder for as long as something blocks it, and removes it once that is gone", { skip: process.platform !== "darwin" || process.getuid?.() === 0, timeout: 60000 }, async () => {
+  // A file with the user-immutable flag cannot be removed (EPERM, which Node retries), whatever the timing: it stands for a busy folder.
+  // The retry delay is stretched so that clearing the flag, which is what the test waits for, has seconds to spare, never milliseconds.
+  const h = await harness(); const delay = folderRemoval.delayMs; folderRemoval.delayMs = 400; const run = promisify(execFile);
+  let blocked: string | undefined;
+  try {
+    const client = await openCopilot(config); const folder = join(client.directory, "blocked"); await mkdir(folder); blocked = join(folder, "file"); await writeFile(blocked, "x");
+    await run("chflags", ["uchg", blocked]);
+    let settled = false; const closing = client.close(undefined, true).then(() => { settled = true; });
+    // The removal takes everything else away and runs into the file; it has not given up while the file is there.
+    assert.ok(await until(async () => (await readdir(client.directory)).join() === "blocked"), "everything but the blocked file was removed");
+    await sleep(600);
+    assert.equal(settled, false, "the close waits, retrying, while the folder is blocked");
+    await run("chflags", ["nouchg", blocked]); blocked = undefined;
+    await closing;
+    assert.equal(await exists(client.directory), false, "the folder was removed once nothing blocked it");
+  } finally {
+    folderRemoval.delayMs = delay; if (blocked) await run("chflags", ["nouchg", blocked]).catch(() => {});
+    stopCopilotClientsNow(); await h.restore();
+  }
 });

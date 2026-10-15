@@ -15,6 +15,12 @@ export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * How a closed CLI's folder is removed. Something may still be writing into it (a write that was under way, a child of the CLI), or
+ * hold it for a moment, so a busy removal is retried before it is given up on. Tests wrap `remove` and shorten the delay.
+ */
+export const folderRemoval = { retries: 5, delayMs: 50, remove: rm };
+
 /** Every client this module copy opened whose folder still exists: from its creation until its removal, starting and closing included. A folder that could not be removed stays here for the exit handler. */
 const open = new Set<{ directory: string; rpc?: CopilotRPC }>();
 let exitHandler = false;
@@ -59,7 +65,7 @@ export async function openCopilot(config: ProviderConfig, signal?: AbortSignal, 
     if (sessionId && !signal?.aborted && !hard) await rpc?.request("session.delete", { sessionId }, 3000).catch(() => {});
     if (hard) rpc?.kill(); else rpc?.stop();
     await rpc?.exited;
-    try { await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); open.delete(entry); }
+    try { await folderRemoval.remove(directory, { recursive: true, force: true, maxRetries: folderRemoval.retries, retryDelay: folderRemoval.delayMs }); open.delete(entry); }
     catch { /* Kept in `open`. */ }
   })();
   try {
