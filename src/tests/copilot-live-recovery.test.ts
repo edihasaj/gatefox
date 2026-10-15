@@ -13,7 +13,7 @@ import { adapter, alive, harness, live, outputFor, providerId, sleep, thread, to
 const kinds = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 const creates = async (h: Harness): Promise<Entry[]> => (await h.log()).filter(entry => entry.op === "create");
 
-test("a session that misbehaves while it starts is never handed out: the request is served one-shot and nothing is left", async () => {
+test("a session that misbehaves while it starts is never handed out: the request is served one-shot and nothing is left", { timeout: 30000 }, async () => {
   // The event comes just before session.create answers, or well before it.
   for (const delay of ["0", "150"]) {
     const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_BOOT_EVENT = "assistant.usage"; process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = delay;
@@ -29,7 +29,7 @@ test("a session that misbehaves while it starts is never handed out: the request
   }
 });
 
-test("the CLI's start-up announcements, before or after session.create answers, are part of a normal start", async () => {
+test("the CLI's start-up announcements, before or after session.create answers, are part of a normal start", { timeout: 30000 }, async () => {
   for (const early of ["session.start", "session.managed_settings_resolved", undefined]) {
     const h = await harness(); if (early) process.env.GATEWAY_COPILOT_LIVE_BOOT_EVENT = early; process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "100";
     try {
@@ -42,7 +42,7 @@ test("the CLI's start-up announcements, before or after session.create answers, 
   }
 });
 
-test("a session that is still closing when its thread's next request comes frees its slot, says why, and is gone before the new one starts", async () => {
+test("a session that is still closing when its thread's next request comes frees its slot, says why, and is gone before the new one starts", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "400";
   try {
     const provider = adapter({ mode: "live", max: 1 }); const first = [user("go [tool]")];
@@ -61,7 +61,7 @@ test("a session that is still closing when its thread's next request comes frees
   } finally { await h.restore(); }
 });
 
-test("a reseed and an eviction wait until the old process and its folder are gone before a new process starts", async () => {
+test("a reseed and an eviction wait until the old process and its folder are gone before a new process starts", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "300";
   try {
     const provider = adapter({ mode: "live", max: 1 }); const first = [user("go [tool]")];
@@ -80,7 +80,7 @@ test("a reseed and an eviction wait until the old process and its folder are gon
   } finally { await h.restore(); }
 });
 
-test("an unexpected failure while placing a request in its session serves it one-shot instead of failing it", async () => {
+test("an unexpected failure while placing a request in its session serves it one-shot instead of failing it", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     live(); // The registry exists from here.
@@ -96,7 +96,7 @@ test("an unexpected failure while placing a request in its session serves it one
   } finally { await h.restore(); }
 });
 
-test("usage the CLI reported in several calls before a cancellation reaches the caller as one running total", async () => {
+test("usage the CLI reported in several calls before a cancellation reaches the caller as one running total", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const afterAbort: InferenceEvent[] = []; let failure: unknown;
@@ -117,7 +117,7 @@ test("usage the CLI reported in several calls before a cancellation reaches the 
   } finally { await h.restore(); }
 });
 
-test("a session that closed before its request attached refuses it at once and stays closed", async () => {
+test("a session that closed before its request attached refuses it at once and stays closed", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const session = await CopilotLiveSession.start({ key: "unit", fingerprint: "f", window: "", config: { id: providerId, type: "copilot-subscription", models: { alias: "fixture" } },
@@ -132,7 +132,7 @@ test("a session that closed before its request attached refuses it at once and s
   } finally { await h.restore(); }
 });
 
-test("at the cap, a session that is already closing makes room before any parked session is evicted", async () => {
+test("at the cap, a session that is already closing makes room before any parked session is evicted", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "400";
   try {
     const provider = adapter({ mode: "live", max: 2 });

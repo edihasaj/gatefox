@@ -10,7 +10,7 @@ const operations = (entries: Entry[]) => entries.map(entry => entry.op).filter(o
 const outcomes = (events: Entry[]) => events.map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 const imageUser = (text: string) => ({ type: "message" as const, role: "user" as const, content: [{ type: "input_text" as const, text }, { type: "input_image" as const, image_url: png }] });
 
-test("a tool loop keeps one CLI process, answers the waiting call and bills each request on its own", async () => {
+test("a tool loop keeps one CLI process, answers the waiting call and bills each request on its own", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("start [tool]")];
@@ -51,7 +51,7 @@ test("a tool loop keeps one CLI process, answers the waiting call and bills each
   } finally { await h.restore(); }
 });
 
-test("a provider with no copilotSessions setting runs live: one CLI process across a tool loop", async () => {
+test("a provider with no copilotSessions setting runs live: one CLI process across a tool loop", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = defaultAdapter(); const first = [user("start [tool]")];
@@ -67,7 +67,7 @@ test("a provider with no copilotSessions setting runs live: one CLI process acro
   } finally { await h.restore(); }
 });
 
-test("parallel tool calls: each output reaches the waiting call it belongs to, whatever order they arrive in", async () => {
+test("parallel tool calls: each output reaches the waiting call it belongs to, whatever order they arrive in", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tools:2]")];
@@ -84,7 +84,7 @@ test("parallel tool calls: each output reaches the waiting call it belongs to, w
   } finally { await h.restore(); }
 });
 
-test("a continued turn sends only its new items; divergence and changed instructions reseed in a new process", async () => {
+test("a continued turn sends only its new items; divergence and changed instructions reseed in a new process", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -114,7 +114,7 @@ test("a continued turn sends only its new items; divergence and changed instruct
   } finally { await h.restore(); }
 });
 
-test("the session is created with the caller's instructions, tool names and every confinement", async () => {
+test("the session is created with the caller's instructions, tool names and every confinement", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     await turn(adapter(), [user("hi")], { extra: { instructions: "Be brief" } });
@@ -128,10 +128,17 @@ test("the session is created with the caller's instructions, tool names and ever
     assert.deepEqual(params.largeOutput, { enabled: false }, "a large tool result stays inline instead of being saved to a file outside the session folder");
     assert.equal(params.configDir, params.workingDirectory); assert.equal(params.configDir, create.directory); assert.ok(create.directory.startsWith(h.parent));
     assert.equal(params.reasoningEffort, undefined);
+    // The CLI itself is confined by its command line, live or one-shot: no built-in MCP servers, no custom instructions, no remote
+    // control or export, no self-update, and its log in the private folder.
+    await turn(adapter({ mode: "oneshot" }), [user("hi")], { context: { threadId: "one-shot" } });
+    const spawned = (await h.log()).filter(entry => entry.op === "create"); assert.equal(spawned.length, 2);
+    for (const { args, directory } of spawned) {
+      assert.deepEqual(args, ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", directory]);
+    }
   } finally { await h.restore(); }
 });
 
-test("a reordered tool catalog is the same session; a different catalog is a new one", async () => {
+test("a reordered tool catalog is the same session; a different catalog is a new one", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const other = { type: "function" as const, name: "other", description: "Another", parameters: { type: "object", properties: {} } };
@@ -146,7 +153,26 @@ test("a reordered tool catalog is the same session; a different catalog is a new
   } finally { await h.restore(); }
 });
 
-test("an effort change between turns switches in place; one while tools wait, or a set effort that goes unset, starts a new session", async () => {
+test("a tool that keeps its name but changes its description or parameters is a new session", { timeout: 30000 }, async () => {
+  // The tool's native name hashes only its namespace and name, so the schema in the session's fingerprint is the only thing that tells these apart.
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first);
+    const described = { ...tools[0], description: "Look something up, in more detail" };
+    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { tools: [described] } });
+    const reshaped = { ...described, parameters: { type: "object", properties: { id: { type: "string" }, limit: { type: "number" } } } };
+    await turn(provider, [...first, ...a.output, user("more"), ...b.output, user("again")], { extra: { tools: [reshaped] } });
+    const creates = (await h.log()).filter(entry => entry.op === "create");
+    assert.equal(creates.length, 3, "each change of the schema started a new session");
+    assert.deepEqual(creates.map(entry => entry.params.availableTools), [[lookupName], [lookupName], [lookupName]], "the name did not change");
+    assert.deepEqual(creates.map(entry => entry.params.tools[0].description), ["Caller tool lookup. Look something up", "Caller tool lookup. Look something up, in more detail", "Caller tool lookup. Look something up, in more detail"]);
+    assert.deepEqual(creates.map(entry => Object.keys(entry.params.tools[0].parameters.properties)), [["id"], ["id"], ["id", "limit"]]);
+    assert.deepEqual(outcomes(await h.sessions()).filter(value => /^(spawned|continued|reseeded)/.test(value)), ["spawned", "reseeded:fingerprint_changed", "reseeded:fingerprint_changed"]);
+  } finally { await h.restore(); }
+});
+
+test("an effort change between turns switches in place; one while tools wait, or a set effort that goes unset, starts a new session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -167,7 +193,7 @@ test("an effort change between turns switches in place; one while tools wait, or
   } finally { await h.restore(); }
 });
 
-test("the CLI's own confirmation of an effort change, which comes before its answer, keeps the session", async () => {
+test("the CLI's own confirmation of an effort change, which comes before its answer, keeps the session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -181,7 +207,7 @@ test("the CLI's own confirmation of an effort change, which comes before its ans
   } finally { await h.restore(); }
 });
 
-test("an effort confirmation for another effort than the one asked for ends the session; the request is served by a new one", async () => {
+test("an effort confirmation for another effort than the one asked for ends the session; the request is served by a new one", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT = "xhigh";
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -194,7 +220,7 @@ test("an effort confirmation for another effort than the one asked for ends the 
   } finally { await h.restore(); }
 });
 
-test("cancelling aborts the session, kills the process, removes its folder and the next request starts a new session", async () => {
+test("cancelling aborts the session, kills the process, removes its folder and the next request starts a new session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const controller = new AbortController();
@@ -210,7 +236,7 @@ test("cancelling aborts the session, kills the process, removes its folder and t
   } finally { await h.restore(); }
 });
 
-test("a finished turn that the client abandons afterwards keeps its session", async () => {
+test("a finished turn that the client abandons afterwards keeps its session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const controller = new AbortController(); const first = [user("hello")];
@@ -222,7 +248,7 @@ test("a finished turn that the client abandons afterwards keeps its session", as
   } finally { await h.restore(); }
 });
 
-test("a thread's second request while its first still runs is served one-shot", async () => {
+test("a thread's second request while its first still runs is served one-shot", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const controller = new AbortController();
@@ -234,7 +260,7 @@ test("a thread's second request while its first still runs is served one-shot", 
   } finally { await h.restore(); }
 });
 
-test("at the session cap a newcomer evicts the least recently used parked session, preferring one that finished its turn", async () => {
+test("at the session cap a newcomer evicts the least recently used parked session, preferring one that finished its turn", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 2 }); const ctx = (threadId: string) => ({ context: { threadId } });
@@ -253,7 +279,7 @@ test("at the session cap a newcomer evicts the least recently used parked sessio
   } finally { await h.restore(); }
 });
 
-test("a running session is never evicted: at the cap with every session generating, a newcomer is served one-shot", async () => {
+test("a running session is never evicted: at the cap with every session generating, a newcomer is served one-shot", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 1 }); const controller = new AbortController();
@@ -267,7 +293,7 @@ test("a running session is never evicted: at the cap with every session generati
   } finally { await h.restore(); }
 });
 
-test("a session whose own next request is still being placed is not evicted for a newcomer", async () => {
+test("a session whose own next request is still being placed is not evicted for a newcomer", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_SWITCH = "500";
   try {
     const provider = adapter({ mode: "live", max: 1 }); const first = [user("a")];
@@ -284,7 +310,7 @@ test("a session whose own next request is still being placed is not evicted for 
   } finally { await h.restore(); }
 });
 
-test("conversation images travel as private file attachments on their item, in a seed and in a continuation, on one process", async () => {
+test("conversation images travel as private file attachments on their item, in a seed and in a continuation, on one process", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [imageUser("look")];
@@ -307,7 +333,7 @@ test("conversation images travel as private file attachments on their item, in a
   } finally { await h.restore(); }
 });
 
-test("an image in a tool output reaches the waiting call as a binary result", async () => {
+test("an image in a tool output reaches the waiting call as a binary result", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool]")];

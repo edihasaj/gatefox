@@ -15,7 +15,7 @@ const sha = createHash("sha256").update(bytes).digest("hex");
 const screenshots = (count: number) => Array.from({ length: count }, () => ({ type: "input_image" as const, image_url: big }));
 const sends = async (h: Harness): Promise<Entry[]> => (await h.log()).filter(entry => entry.op === "session.sendMessages");
 
-test("a history with more than 16 MiB of images is served, live and one-shot: the images are private files, not message bytes", async () => {
+test("a history with more than 16 MiB of images is served, live and one-shot: the images are private files, not message bytes", { timeout: 30000 }, async () => {
   assert.ok(3 * big.length > 16 * 1024 * 1024, "the images alone pass the RPC limit");
   for (const mode of ["live", "oneshot"]) {
     const h = await harness();
@@ -36,7 +36,7 @@ test("a history with more than 16 MiB of images is served, live and one-shot: th
   }
 });
 
-test("a tool result whose images pass the inline budget starts the thread over, where they become files; a smaller one is handed over inline", async () => {
+test("a tool result whose images pass the inline budget starts the thread over, where they become files; a smaller one is handed over inline", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool]")];

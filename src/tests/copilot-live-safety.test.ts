@@ -12,7 +12,7 @@ async function closed(h: Harness, pid: number): Promise<void> {
   assert.ok(await until(() => live().sessions().length === 0), "the registry forgot it");
 }
 
-test("a permission request, a foreign tool or a native tool call is rejected and ends the session completely", async () => {
+test("a permission request, a foreign tool or a native tool call is rejected and ends the session completely", { timeout: 30000 }, async () => {
   // The event router kills the session the moment the CLI asks for permission or uses another tool, and says why; a native
   // call announced only in the model's message fails the request when it is read.
   const reasons: Array<[string, string]> = [["permission", "permission"], ["native", "foreign_tool"], ["nativemsg", "invalid_tool_call"], ["foreignreq", "foreign_tool"], ["foreignstart", "foreign_tool"]];
@@ -28,7 +28,7 @@ test("a permission request, a foreign tool or a native tool call is rejected and
   }
 });
 
-test("a parked session, one waiting too long for tool outputs and a crashed CLI each release their process and folder", async () => {
+test("a parked session, one waiting too long for tool outputs and a crashed CLI each release their process and folder", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -52,7 +52,19 @@ test("a parked session, one waiting too long for tool outputs and a crashed CLI 
   } finally { await h.restore(); }
 });
 
-test("gateway shutdown closes every live session", async () => {
+test("a session waiting for tool outputs closes at the smaller of toolWaitMinutes and parkMinutes", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); await turn(provider, [user("go [tool]")]);
+    const [session] = live().sessions(); assert.equal(session.state, "awaiting_outputs");
+    // The tool wait is long, the park time short: the shorter one rules.
+    session.timers(40, 60000);
+    await closed(h, (await h.pids())[0]);
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "reaped" && entry.missReason === "tool_wait_expired"));
+  } finally { await h.restore(); }
+});
+
+test("gateway shutdown closes every live session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter();
@@ -65,7 +77,7 @@ test("gateway shutdown closes every live session", async () => {
   } finally { await h.restore(); }
 });
 
-test("requests that cannot join a session run one-shot; forced and disabled tool choices are served in the session", async () => {
+test("requests that cannot join a session run one-shot; forced and disabled tool choices are served in the session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const creates = async () => (await h.log()).filter(entry => entry.op === "create");
@@ -100,7 +112,7 @@ test("requests that cannot join a session run one-shot; forced and disabled tool
   } finally { await h.restore(); }
 });
 
-test("a session whose CLI dies before its first event falls back to one-shot, and one-shot mode retires parked sessions", async () => {
+test("a session whose CLI dies before its first event falls back to one-shot, and one-shot mode retires parked sessions", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); process.env.GATEWAY_COPILOT_LIVE_DIE = h.die;

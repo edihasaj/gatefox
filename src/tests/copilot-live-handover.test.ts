@@ -11,7 +11,7 @@ import { adapter, alive, callIds, harness, live, outputFor, providerId, thread, 
 // How a continuation hands the caller's tool outputs to the calls waiting in the session.
 const kinds = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 
-test("a tool result the CLI answers with an error, or not in time, is a refused delivery: the request is served one-shot", async () => {
+test("a tool result the CLI answers with an error, or not in time, is a refused delivery: the request is served one-shot", { timeout: 30000 }, async () => {
   for (const marker of ["rpcerror", "nodeliver"]) {
     const h = await harness(); const deliver = sessionLimits.deliverMs; sessionLimits.deliverMs = 300;
     try {
@@ -26,7 +26,7 @@ test("a tool result the CLI answers with an error, or not in time, is a refused 
   }
 });
 
-test("more parallel tool outputs than the CLI connection takes at once all reach their waiting calls", async () => {
+test("more parallel tool outputs than the CLI connection takes at once all reach their waiting calls", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tools:33]")]; const a = await turn(provider, first);
@@ -40,7 +40,7 @@ test("more parallel tool outputs than the CLI connection takes at once all reach
   } finally { await h.restore(); }
 });
 
-test("an empty tool output is handed over as a placeholder, so the waiting call is still answered", async () => {
+test("an empty tool output is handed over as a placeholder, so the waiting call is still answered", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool]")]; const a = await turn(provider, first);
@@ -51,7 +51,7 @@ test("an empty tool output is handed over as a placeholder, so the waiting call 
   } finally { await h.restore(); }
 });
 
-test("a translation that does not match the session's ledger starts the thread over instead of sending the wrong items", async () => {
+test("a translation that does not match the session's ledger starts the thread over instead of sending the wrong items", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const config: ProviderConfig = { id: providerId, type: "copilot-subscription", models: { alias: "fixture" }, copilotSessions: { mode: "live" } };

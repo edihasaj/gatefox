@@ -11,11 +11,11 @@ import { harness } from "./copilot-live-harness.js";
 // folder; the OS temp folder itself, which can hold hundreds of thousands of entries, is read only for older releases'
 // folders, once a week.
 const exists = (path: string) => stat(path).then(() => true, () => false);
-const posix = { skip: typeof process.getuid !== "function" };
+const posix = { skip: typeof process.getuid !== "function", timeout: 30000 };
 const week = 7 * 24 * 3600 * 1000;
 const backdate = async (path: string, ms: number) => { const old = new Date(Date.now() - ms); await utimes(path, old, old); };
 
-test("a dead gateway's folders, live or one-shot, are swept; a living gateway's folders and unrelated ones stay", async () => {
+test("a dead gateway's folders, live or one-shot, are swept; a living gateway's folders and unrelated ones stay", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const b36 = (value: number) => value.toString(36);
@@ -53,7 +53,7 @@ test("a dead gateway's folders, live or one-shot, are swept; a living gateway's 
   } finally { await h.restore(); }
 });
 
-test("the sweep reads the temp folder itself once, then again only after a week", async () => {
+test("the sweep reads the temp folder itself once, then again only after a week", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const marker = join(h.parent, ".legacy-scan");
@@ -97,7 +97,7 @@ test("the dedicated parent is private and real: it is made 0700, and a symlink i
   } finally { await h.restore(); }
 });
 
-test("starting the gateway sweeps a dead gateway's folders before any Copilot request, whatever the mode", async () => {
+test("starting the gateway sweeps a dead gateway's folders before any Copilot request, whatever the mode", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     await ensureCopilotParent(h.scratch);

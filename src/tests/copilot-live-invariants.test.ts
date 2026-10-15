@@ -12,7 +12,7 @@ const settled = (value: Promise<unknown>) => value.then(() => undefined, error =
 /** The settled value, or "pending" once `ms` passes. */
 const within = (value: Promise<unknown>, ms: number) => Promise.race([value, sleep(ms).then(() => "pending")]);
 
-test("a model change between turns starts a new session: the CLI fixes the model at creation", async () => {
+test("a model change between turns starts a new session: the CLI fixes the model at creation", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = new CopilotSubscription({ id: providerId, type: "copilot-subscription", models: { alias: "fixture", other: "fixture-2" }, copilotSessions: { mode: "live" } });
@@ -26,7 +26,7 @@ test("a model change between turns starts a new session: the CLI fixes the model
   } finally { await h.restore(); }
 });
 
-test("two first requests of one thread at once start one live CLI; the second is served one-shot", async () => {
+test("two first requests of one thread at once start one live CLI; the second is served one-shot", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "400";
   try {
     const provider = adapter();
@@ -40,7 +40,7 @@ test("two first requests of one thread at once start one live CLI; the second is
   } finally { await h.restore(); }
 });
 
-test("the park timer never closes a session while its turn runs", async () => {
+test("the park timer never closes a session while its turn runs", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController();
@@ -53,7 +53,7 @@ test("the park timer never closes a session while its turn runs", async () => {
   } finally { await h.restore(); }
 });
 
-test("switching the provider to one-shot lets a running turn finish, then closes its session", async () => {
+test("switching the provider to one-shot lets a running turn finish, then closes its session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const running = turn(adapter(), [user("go [slow]")]);
@@ -70,7 +70,7 @@ test("switching the provider to one-shot lets a running turn finish, then closes
   } finally { await h.restore(); }
 });
 
-test("a session closed under a running request fails that request at once", async () => {
+test("a session closed under a running request fails that request at once", { timeout: 30000 }, async () => {
   for (const close of ["stop", "shutdown"] as const) {
     const h = await harness();
     try {
@@ -83,7 +83,7 @@ test("a session closed under a running request fails that request at once", asyn
   }
 });
 
-test("a tool call whose pending request never comes fails the request and ends the session", async () => {
+test("a tool call whose pending request never comes fails the request and ends the session", { timeout: 30000 }, async () => {
   const h = await harness(); const wait = sessionLimits.requestsMs; sessionLimits.requestsMs = 200;
   try {
     const error = await settled(turn(adapter(), [user("go [tool][norequest]")]));
@@ -92,7 +92,7 @@ test("a tool call whose pending request never comes fails the request and ends t
   } finally { sessionLimits.requestsMs = wait; await h.restore(); }
 });
 
-test("closing a live session kills its CLI at once, even one that ignores SIGTERM", async () => {
+test("closing a live session kills its CLI at once, even one that ignores SIGTERM", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_IGNORE_TERM = "1";
   try {
     await turn(adapter(), [user("hello")]); const [pid] = await h.pids();
@@ -102,7 +102,7 @@ test("closing a live session kills its CLI at once, even one that ignores SIGTER
   } finally { await h.restore(); }
 });
 
-test("a session that dies while its effort change is in flight is reported as dead, not as a refused change", async () => {
+test("a session that dies while its effort change is in flight is reported as dead, not as a refused change", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_SWITCH = "500";
   try {
     const provider = adapter(); const first = [user("hello")];

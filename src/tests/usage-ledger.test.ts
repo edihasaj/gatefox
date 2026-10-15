@@ -160,14 +160,17 @@ test("an import that failed before its marker is retried without repeating rows,
   await mkdir(join(directory, "usage"), { recursive: true });
   const at = new Date().toISOString();
   const row = { v: 1, at, host: "mac", requestId: "x", provider: "copilot", model: "m", status: "completed", origin: "telemetry", inputTokens: 50, cachedTokens: 0, cacheWriteTokens: 0, outputTokens: 3, reasoningTokens: 0, nanoAiu: null };
-  await writeFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), JSON.stringify(row) + "\n" + JSON.stringify({ ...row, origin: "gateway", inputTokens: 51 }) + "\n");
+  // For x the imported row comes first and the gateway's after it; for z the gateway's comes first and the imported one is written later.
+  const lines = [row, { ...row, origin: "gateway", inputTokens: 51 }, { ...row, requestId: "z", origin: "gateway", inputTokens: 61 }, { ...row, requestId: "z", inputTokens: 60 }];
+  await writeFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), lines.map(line => JSON.stringify(line) + "\n").join(""));
   recordUsage(directory, { requestId: "later", status: "completed", inputTokens: 1 }); await flushUsageLedger();
   const all = await readUsageLedger(directory, 0);
-  assert.deepEqual(all.map(entry => [entry.requestId, entry.origin]).sort(), [["later", "gateway"], ["x", "gateway"], ["y", "telemetry"]]);
+  assert.deepEqual(all.map(entry => [entry.requestId, entry.origin]).sort(), [["later", "gateway"], ["x", "gateway"], ["y", "telemetry"], ["z", "gateway"]]);
   assert.equal(all.find(entry => entry.requestId === "x")?.inputTokens, 51, "the gateway row wins over the imported one");
-  // Spend tools read the raw files, so the retry itself must not repeat a row: the two x rows, the imported y and the later row.
-  const lines = (await readFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as { requestId: string; origin: string });
-  assert.deepEqual(lines.map(line => [line.requestId, line.origin]), [["x", "telemetry"], ["x", "gateway"], ["y", "telemetry"], ["later", "gateway"]]);
+  assert.equal(all.find(entry => entry.requestId === "z")?.inputTokens, 61, "and wins whichever of the two was written last");
+  // Spend tools read the raw files, so the retry itself must not repeat a row: the two x rows, the two z rows, the imported y and the later row.
+  const written = (await readFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as { requestId: string; origin: string });
+  assert.deepEqual(written.map(line => [line.requestId, line.origin]), [["x", "telemetry"], ["x", "gateway"], ["z", "gateway"], ["z", "telemetry"], ["y", "telemetry"], ["later", "gateway"]]);
 });
 
 test("usage a provider reports after the client disconnected is still recorded", async t => {

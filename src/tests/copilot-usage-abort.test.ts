@@ -52,7 +52,7 @@ test("a client that stops reading and then leaves still has the usage the CLI re
   }
 });
 
-test("a cancelled one-shot request hands over the usage its CLI reported, though more text was read ahead of it", async () => {
+test("a cancelled one-shot request hands over the usage its CLI reported, though more text was read ahead of it", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const afterAbort: InferenceEvent[] = []; let failure: unknown;
@@ -72,7 +72,7 @@ test("a cancelled one-shot request hands over the usage its CLI reported, though
   } finally { await h.restore(); }
 });
 
-test("the end of a cancelled live request counts the usage that was queued when it was cancelled", async () => {
+test("the end of a cancelled live request counts the usage that was queued when it was cancelled", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController();

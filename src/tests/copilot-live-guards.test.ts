@@ -29,7 +29,7 @@ const killers: Array<[string, string]> = [
   ["session.model_change", "unattended_output"], ["session.start", "unattended_output"], ["session.managed_settings_resolved", "unattended_output"],
 ];
 
-test("between requests, anything but housekeeping kills the session before it can spend: a timed-out or failed tool call, a model call, output", async () => {
+test("between requests, anything but housekeeping kills the session before it can spend: a timed-out or failed tool call, a model call, output", { timeout: 30000 }, async () => {
   for (const [type, reason] of killers) {
     const h = await harness();
     try {
@@ -46,7 +46,7 @@ test("between requests, anything but housekeeping kills the session before it ca
   }
 });
 
-test("housekeeping events between requests are accepted and the session lives on", async () => {
+test("housekeeping events between requests are accepted and the session lives on", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const types = ["session.info", "session.usage_info", "session.usage_checkpoint", "session.idle", "model.call_finished"]; const provider = adapter({ mode: "live", max: types.length });
@@ -59,7 +59,7 @@ test("housekeeping events between requests are accepted and the session lives on
   } finally { await h.restore(); }
 });
 
-test("a sub-agent event or a tool call nobody is waiting for kills the session, even among housekeeping events", async () => {
+test("a sub-agent event or a tool call nobody is waiting for kills the session, even among housekeeping events", { timeout: 30000 }, async () => {
   for (const [marker, reason] of [["lateagent:session.info", "sub_agent"], ["lateghost:external_tool.requested", "unannounced_tool"], ["lateghost:tool.execution_start", "unannounced_tool"]]) {
     const h = await harness();
     try {
@@ -70,7 +70,7 @@ test("a sub-agent event or a tool call nobody is waiting for kills the session, 
   }
 });
 
-test("a request for a tool call the model never announced fails the request and ends the session", async () => {
+test("a request for a tool call the model never announced fails the request and ends the session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const error = await turn(adapter(), [user("go [tool][extrareq]")]).then(() => undefined, error => error as unknown);
@@ -79,7 +79,7 @@ test("a request for a tool call the model never announced fails the request and 
   } finally { await h.restore(); }
 });
 
-test("a stop while tools wait, followed by outputs and a new message, starts over: the session is aborted and never handed the outputs", async () => {
+test("a stop while tools wait, followed by outputs and a new message, starts over: the session is aborted and never handed the outputs", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool]")];
@@ -96,7 +96,7 @@ test("a stop while tools wait, followed by outputs and a new message, starts ove
   } finally { await h.restore(); }
 });
 
-test("two threads starting at once never run more live sessions than the cap", async () => {
+test("two threads starting at once never run more live sessions than the cap", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 1 });
@@ -120,7 +120,7 @@ test("a complete answer whose idle event never comes still ends the request, and
   } finally { sessionLimits.idleMs = idle; await h.restore(); }
 });
 
-test("usage that arrived but was not read when the client cancelled is still reported", async () => {
+test("usage that arrived but was not read when the client cancelled is still reported", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const events: InferenceEvent[] = []; let failure: unknown;
@@ -138,7 +138,7 @@ test("usage that arrived but was not read when the client cancelled is still rep
   } finally { await h.restore(); }
 });
 
-test("tool outputs whose pending requests the session lost start the thread over instead of guessing", async () => {
+test("tool outputs whose pending requests the session lost start the thread over instead of guessing", { timeout: 30000 }, async () => {
   const h = await harness(); const wait = sessionLimits.pendingMs; sessionLimits.pendingMs = 100;
   try {
     const provider = adapter(); const first = [user("go [tool]")]; const a = await turn(provider, first);
@@ -149,7 +149,7 @@ test("tool outputs whose pending requests the session lost start the thread over
   } finally { sessionLimits.pendingMs = wait; await h.restore(); }
 });
 
-test("a session that refuses a tool result is replaced by a one-shot answer, and its process and folder go", async () => {
+test("a session that refuses a tool result is replaced by a one-shot answer, and its process and folder go", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool][reject]")]; const a = await turn(provider, first);
@@ -160,7 +160,7 @@ test("a session that refuses a tool result is replaced by a one-shot answer, and
   } finally { await h.restore(); }
 });
 
-test("a session that never answers session.create falls back to one-shot within the start bound and leaves nothing behind", async () => {
+test("a session that never answers session.create falls back to one-shot within the start bound and leaves nothing behind", { timeout: 30000 }, async () => {
   const h = await harness(); const start = sessionLimits.startMs; sessionLimits.startMs = 200; process.env.GATEWAY_COPILOT_LIVE_STALL = h.stall;
   try {
     const a = await turn(adapter(), [user("hello")]);
@@ -170,7 +170,7 @@ test("a session that never answers session.create falls back to one-shot within 
   } finally { sessionLimits.startMs = start; await h.restore(); }
 });
 
-test("ending a session ends everything the CLI started, not just the CLI", async () => {
+test("ending a session ends everything the CLI started, not just the CLI", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_CHILD = "1";
   let helper: number | undefined;
   try {
@@ -183,7 +183,7 @@ test("ending a session ends everything the CLI started, not just the CLI", async
   } finally { if (helper && alive(helper)) process.kill(helper, "SIGKILL"); await h.restore(); }
 });
 
-test("a second loaded copy of the module adopts the registry of the first", async () => {
+test("a second loaded copy of the module adopts the registry of the first", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     await turn(adapter(), [user("hello")]);
@@ -193,7 +193,7 @@ test("a second loaded copy of the module adopts the registry of the first", asyn
   } finally { await h.restore(); }
 });
 
-test("no prompt, tool argument or tool output reaches telemetry, the usage ledger or the CLI's account folder", async () => {
+test("no prompt, tool argument or tool output reaches telemetry, the usage ledger or the CLI's account folder", { timeout: 30000 }, async () => {
   const h = await harness(); const state = join(h.directory, "state"); const account = join(h.directory, "account"); await mkdir(account);
   const config = validateConfig({ version: 1, port: 0, stateDirectory: state, providers: [{ id: "copilot", type: "copilot-subscription", models: { alias: "fixture" }, authDirectory: account }] });
   resetUsageLedger(); const server = await startGateway(config);
