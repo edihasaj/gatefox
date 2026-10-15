@@ -133,10 +133,30 @@ The gateway no longer sets `CODEX_APP_SERVER_FORCE_CLI`. With `CODEX_CLI_PATH`
 alone, new local chats use the gateway catalog while durable chats and the
 desktop's SSH connection rows keep their native behavior: an SSH row runs Codex
 on the remote Mac, and gateway models reach it only through that Mac's own
-registration. `gateway desktop register` and the launcher clear a
-`CODEX_APP_SERVER_FORCE_CLI=1` left behind by an older gateway, but never a value
-set by something else; registration refuses a foreign value instead of replacing
-it. Quit and reopen ChatGPT once so the change applies.
+registration.
+
+An older gateway also exported `CODEX_APP_SERVER_FORCE_CLI=1`, which pushed durable
+chats and SSH rows through the adapter as extra local app-servers. Registration,
+including the unified service's re-registration at start and the login agent, and
+`gateway desktop unregister` remove that value from the login session. They
+remove it only when it is provably the gateway's: the registration receipt names a
+wrapper and the session's `CODEX_CLI_PATH` equals it or the current wrapper. Registration refuses any
+other value (including a `1` without that proof) instead of replacing it, and
+unregister leaves it alone. `gateway desktop` only leaves an inherited `1` out of
+the app it launches, and only when the inherited `CODEX_CLI_PATH` is a gateway
+wrapper; it does not change the login session, so later Dock launches still see it.
+`gateway desktop status` reports `legacyForceCli: true` while a value that is ours
+is still set.
+
+After installing a release that stops setting it, clear the old value first, then
+restart the app:
+
+1. Unified service: wait for the service to restart onto the new release, or run
+   `gateway desktop register` to do it now. A standalone desktop LaunchAgent only
+   runs at login, so run `gateway desktop register` (or log out and back in).
+2. Run `gateway desktop status` and confirm `legacyForceCli: false`.
+3. Quit and reopen ChatGPT once. Reopening earlier keeps the old behavior,
+   including the repeated "409 Remote app server already online" errors.
 
 Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
@@ -175,7 +195,7 @@ or authentication files. LaunchServices can reuse an existing instance, so an
 `gateway desktop register` stores a managed per-user LaunchAgent and sets
 `CODEX_CLI_PATH` for future launches. The agent restores it at login and does not
 open or quit the app. Registration refuses an unrelated existing CLI override and
-clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` left by an older gateway.
+clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` that an older gateway set.
 `gateway desktop unregister` removes its own overrides.
 This keeps normal Dock launches configured after initial activation without
 editing the Obsidian-managed native configuration.

@@ -29,7 +29,10 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist"); const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const environment = async (name: string) => (await exec("/bin/launchctl", ["getenv", name]).catch(() => ({ stdout: "" }))).stdout.trim();
   let registration: { wrapper?: string } = {}; try { registration = JSON.parse(await readFile(receipt, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-  if (action === "status") return { registered: !!registration.wrapper, activeForFutureLaunches: !!registration.wrapper && await environment("CODEX_CLI_PATH") === registration.wrapper, legacyForceCli: await environment("CODEX_APP_SERVER_FORCE_CLI") === "1" };
+  if (action === "status") {
+    const cliPath = await environment("CODEX_CLI_PATH"); const owned = !!registration.wrapper && cliPath === registration.wrapper;
+    return { registered: !!registration.wrapper, activeForFutureLaunches: owned, legacyForceCli: owned && await environment("CODEX_APP_SERVER_FORCE_CLI") === "1" };
+  }
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to change an unmanaged desktop LaunchAgent");
   if (action === "unregister") {
@@ -43,11 +46,13 @@ async function desktopOperation(action: string, configPath: string, app: string,
   }
   const { wrapper } = await prepareDesktop(configPath, app); const previous = await environment("CODEX_CLI_PATH");
   if (previous && previous !== wrapper && previous !== registration.wrapper) throw new Error("Another desktop CLI override is active; it was not replaced");
-  const force = await environment("CODEX_APP_SERVER_FORCE_CLI"); if (force && force !== "1") throw new Error("Another desktop CLI mode is active; it was not replaced");
-  // A "1" here came from an older gateway. Clearing it returns durable chats and SSH rows to
-  // native execution; CODEX_CLI_PATH alone keeps local chats on the gateway. Before the early
-  // return below so unified re-registration and upgrades clean it too.
-  if (force === "1") await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
+  // Older gateways exported FORCE_CLI=1 beside CODEX_CLI_PATH. It is ours only when the receipt and the
+  // current CLI path prove the pair; any other value, or a "1" without that proof, belongs to someone else.
+  const force = await environment("CODEX_APP_SERVER_FORCE_CLI"); const ours = !!registration.wrapper && !!previous && (previous === registration.wrapper || previous === wrapper);
+  if (force && !(force === "1" && ours)) throw new Error("Another desktop CLI mode is active; it was not replaced");
+  // Clearing ours returns durable chats and SSH rows to native execution; CODEX_CLI_PATH alone keeps local
+  // chats on the gateway. Before the early return below so unified re-registration and upgrades clean it too.
+  if (force) await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
   const helper = gatewayCommand(); const args = [helper.command, ...helper.args, "desktop", "register", "--config", configPath, "--app", app];
   const contents = `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>RunAtLoad</key><true/></dict></plist>\n`;
   await writePrivateJson(receipt, { wrapper, registeredAt: new Date().toISOString() });

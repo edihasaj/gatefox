@@ -78,7 +78,9 @@ installed data directory. It never copies native Codex authentication or setting
 Desktop registration applies to future normal app launches and is restored at
 login. Quit the app normally once after initial registration. Run `gateway desktop`
 to launch immediately with the adapter. The launcher refuses to stop a running app.
-`gateway desktop status` checks registration; `gateway desktop unregister` removes it.
+`gateway desktop status` checks registration and reports `legacyForceCli: true` while an old
+`CODEX_APP_SERVER_FORCE_CLI=1` from an earlier gateway is still set; `gateway desktop register`
+clears it (see [the adapter setup](docs/app-server.md)). `gateway desktop unregister` removes the registration.
 
 For an optional Codex CLI installation, generate settings in a separate home:
 
