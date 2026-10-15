@@ -30,10 +30,13 @@ and the Codex source (`ModelInfo` in `codex-rs/protocol`, pinned revision 740e5a
   `~/.codex/config.toml` runs `[mcp_servers.node_repl]` from the app. Only
   `tool_mode` follows code mode.
 - Every native row has `node_repl_disabled: false`. `gpt-6-astra`, `gpt-6.1-sol` and
-  `gpt-6-sol` set `node_repl_auto_review_required: true`; `gpt-6-luna`, the 5.6 rows
-  and `gpt-daybreak-blue-latest` set it to false. `guardian`,
+  `gpt-6-sol` set `node_repl_auto_review_required: true`; `gpt-6-luna`, `gpt-reserve`,
+  the 5.6 rows and `gpt-daybreak-blue-latest` set it to false. `guardian`,
   `auto_review_model_override` and `requires_sandboxed_review` are absent on every
-  row in that file, and the SDK reads an absent field as null.
+  row in that file, and the SDK reads an absent field as null. The catalog embedded
+  in the ChatGPT.app `codex` binary states them instead: `guardian` and
+  `auto_review_model_override` are `null` and `requires_sandboxed_review` is `false`
+  on its rows. The two sources mean the same.
 - In the SDK, `ModelInfo::computer_use_review_required` lets a `guardian` policy,
   when one is set, decide review instead of the flag: computer use is reviewed
   unless `guardian.computer_use` is absent, null or `disabled`. A null `guardian`
@@ -197,7 +200,7 @@ only for an `applied` result, so the turn keeps its model.
 
 On the live configuration the rows fall in two groups: review required (`gpt-6.1-sol`,
 `gpt-6-astra`, `gpt-6-sol`, every Claude, Copilot and Qwen row) and review not required
-(`gpt-6-luna`, the 5.6 rows, `gpt-daybreak-blue-latest`). Claude to `gpt-6.1-sol` still
+(`gpt-6-luna`, `gpt-reserve`, the 5.6 rows, `gpt-daybreak-blue-latest`). Claude to `gpt-6.1-sol` still
 switches mid-turn; Claude to `gpt-6-luna` is rejected, like native `gpt-6.1-sol` to
 `gpt-6-luna`. The groups are the same with or without the reviewer. `thread/settings/update`
 changes the next turn and is never checked.

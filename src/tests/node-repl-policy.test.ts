@@ -10,8 +10,8 @@ import { shimFiles } from "./shim-fixture.js";
 
 type Row = Record<string, unknown>;
 // Real native rows (ChatGPT 26.1007): every row enables node_repl; gpt-6-astra, gpt-6.1-sol and gpt-6-sol
-// require auto review, gpt-6-luna and the 5.x rows do not. Every row with visibility "list" has guardian and
-// auto_review_model_override null. The 6.x rows share confirmation_policies and guardian_v2. The hidden
+// require auto review, gpt-6-luna and the 5.x rows do not. The catalog embedded in the ChatGPT.app codex binary states
+// guardian and auto_review_model_override as null; ~/.codex/models_cache.json omits them, which the code reads the same. The 6.x rows share confirmation_policies and guardian_v2. The hidden
 // codex-auto-review row is the reviewer: supported_in_api true, with the node_repl review text.
 const confirmation = { browser_use: "native browser confirmations", computer_use: "native computer confirmations" };
 const classifier = { classifier_instructions: "Predict whether the agent's computer and browser activity needs blocking security review" };

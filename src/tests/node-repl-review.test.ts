@@ -192,8 +192,10 @@ test("the revision changes when only the reviewers change", async () => {
   const advertised = await live(natives(), [lax], { models: advertise }); const plain = await live(natives(), [lax], undefined);
   try {
     const [a, b] = [await advertised.read(), await plain.read()];
-    assert.deepEqual(a.models.map(repl), b.models.map(repl), "no row differs");
-    assert.deepEqual(a.models.map(row => row.slug), b.models.map(row => row.slug));
-    assert.notEqual(a.revision, b.revision);
+    // The published gateway rows serialize identically, so only the native rows carried for sub-agents can tell the generations apart.
+    assert.equal(JSON.stringify(a.models), JSON.stringify(b.models), "the published rows are identical");
+    const executorRows = (run: typeof advertised, snapshot: typeof a) => run.catalog.combined(snapshot).models.slice(0, natives().length).map(repl);
+    assert.notDeepEqual(executorRows(advertised, a), executorRows(plain, b), "the executor's native rows differ");
+    assert.notEqual(a.revision, b.revision, "so the generation must differ");
   } finally { advertised.f.close(); plain.f.close(); }
 });
