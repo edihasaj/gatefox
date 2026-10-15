@@ -9,9 +9,9 @@ import { startGateway } from "../server.js";
 import { flushUsageLedger, readUsageLedger, resetUsageLedger, type LedgerRow } from "../usage-ledger.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { ProviderError } from "../providers/provider.js";
-import { sessionLimits } from "../providers/copilot-live-session.js";
+import { sessionLimits, type CopilotLiveSession } from "../providers/copilot-live-session.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
-import { adapter, harness, providerId, queuedUsage, sleep, thread, tools, until, user, type Harness } from "./copilot-live-harness.js";
+import { adapter, harness, live, providerId, queuedUsage, sleep, thread, tools, until, user, type Harness } from "./copilot-live-harness.js";
 
 // Copilot bills a model call when it reports its usage. A request that ends early, because the caller cancelled or
 // left, must still record that usage, in the ledger and in telemetry, whichever path served it.
@@ -162,3 +162,27 @@ for (const mode of ["oneshot", "live"] as const) {
     } finally { await h.restore(); }
   });
 }
+
+test("a cancelled live request counts all of the usage its CLI reports while it is aborted, though the caller reads none of it until the session is gone", { timeout: 30000 }, async () => {
+  // The CLI answers the abort with 1500 calls' usage in front of the answer, more than any queue the request could keep (there is
+  // none: each is added to the request's totals as it is routed). The caller is held at the first usage it is handed until the
+  // session has ended and its last event was routed, so nothing is read while the 1500 arrive.
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_ABORT_BURST = "1500";
+  try {
+    const controller = new AbortController(); let failure: unknown; let totals = 0; let last = 0; let session: CopilotLiveSession | undefined;
+    const input = restoreReasoning({ model: "fixture", input: [user("go [stall]")], tools } as ResponsesRequest, "scope");
+    try {
+      for await (const event of adapter({ mode: "live" }).infer(input, controller.signal, thread)) {
+        if (!controller.signal.aborted) { if (event.type === "text") { session = live().sessions()[0]; controller.abort(); } continue; }
+        if (event.type !== "usage") continue;
+        if (totals++ === 0) { await session!.finished; await (session as unknown as { pumping: Promise<void> }).pumping; }
+        last = event.usage.input_tokens;
+      }
+    } catch (error) { failure = error; }
+    assert.ok(failure instanceof ProviderError && failure.code === "cancelled", String(failure));
+    // One call before the cancellation (100 input tokens) and 1500 after it: the running total ends at the sum of 100 * 1..1501.
+    assert.equal(last, 100 * 1501 * 1502 / 2, "all 1500 calls were counted");
+    const interrupted = (await h.sessions()).find(entry => entry.outcome === "interrupted");
+    assert.equal(interrupted?.inputTokens, 100 * 1501 * 1502 / 2, "and so does the session's end event");
+  } finally { await h.restore(); }
+});

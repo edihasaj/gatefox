@@ -74,9 +74,6 @@ interface Attached {
   over?: Promise<void>;
 }
 
-/** The most usage events a cancelled request collects while its session is being aborted. */
-const lateUsageLimit = 1000;
-
 /**
  * One long-lived Copilot CLI process and session for one Codex thread. Native history stays in
  * the session: a caller tool call waits as a pending external tool request until Codex sends its
@@ -269,14 +266,16 @@ export class CopilotLiveSession {
   }
 
   /**
-   * Adds the usage that arrived but was not read when the request ended early to its totals, once, and keeps the running
-   * total to hand over. Every queued call is added first: the request reports it as one event, so it must be the whole sum.
+   * Adds one usage event to the request's totals and keeps the running total to hand over. The request reports every call it
+   * added as one event, so each call must be added exactly once: here, and nowhere else.
    */
+  private addUsage(attached: Attached, event: Record<string, unknown>): void {
+    try { attached.usage = attached.live.turn.accept(event).events.at(-1) ?? attached.usage; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
+  }
+
+  /** Adds the usage that arrived but was not read when the request ended early to its totals, once. */
   private settleUsage(attached: Attached): void {
-    for (const event of attached.queue.splice(0)) {
-      if (event.type !== "assistant.usage") continue;
-      try { attached.usage = attached.live.turn.accept(event).events.at(-1) ?? attached.usage; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
-    }
+    for (const event of attached.queue.splice(0)) if (event.type === "assistant.usage") this.addUsage(attached, event);
   }
 
   /**
@@ -377,7 +376,8 @@ export class CopilotLiveSession {
     const params = record(message.params); if (params.sessionId !== this.sessionId) return;
     if (this.state === "closed") {
       const late = record(params.event);
-      if (this.draining && late.type === "assistant.usage" && this.draining.queue.length < lateUsageLimit) { this.draining.queue.push(late); this.draining.wake?.(); }
+      // The usage of every call the aborted CLI still reports goes straight into the request's totals: there is no queue to fill, so none is dropped.
+      if (this.draining && late.type === "assistant.usage") { this.addUsage(this.draining, late); this.draining.wake?.(); }
       return;
     }
     const event = record(params.event); const data = record(event.data); const type = typeof event.type === "string" ? event.type : "";
