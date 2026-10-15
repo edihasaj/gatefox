@@ -212,7 +212,14 @@ It uses uniquely named launchd fixtures to verify live-PID preservation, refused
 manual promotion, and actual primary-job activation. It stops only those fixtures
 and uses no provider inference or native authentication.
 
-To remove the installation, run `gateway uninstall`. The installation and managed
-LaunchAgents move to Trash. Credentials and native Codex configuration remain.
+To remove the installation, run `gateway uninstall`. On macOS it first reads the
+desktop state as a preflight and stops before removing anything, including when a
+`launchctl getenv` fails or a login promotion is staged for the next login. A
+unified service plan is not a refusal there, because the service step trashes that
+file with the service; off macOS the preflight is skipped and the service step
+gives its own platform answer. A later desktop error names what is already gone;
+resolve that cause, then rerun `gateway uninstall`. The installation and
+managed LaunchAgents move to Trash. Credentials and native Codex configuration
+remain.
 CLI registration cannot make an unconfigured SSH/cloud backend understand gateway
 models; test each execution backend used by a shared chat.
