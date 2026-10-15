@@ -178,8 +178,7 @@ metadata needs neither gateway inference nor model discovery.
 Choose a gateway model in a **new chat**. A loaded chat cannot switch between
 native and gateway providers in this Codex version. The adapter rejects that
 change before inference. Switching Claude and Codex 2 inside a gateway chat works
-between turns because they share the gateway provider and its account-scoped replay
-handling; during a running turn the SDK also checks safety settings (below).
+because they share the gateway provider and its account-scoped replay handling.
 Native return from gateway history is not supported: a real probe failed on
 foreign item IDs. The adapter does not rewrite stored native history to bypass it.
 
@@ -187,18 +186,16 @@ Gateway executors enable Codex's active-step model switching. The adapter forwar
 `thread/settings/update`, `turn/settings/update`, `turn/steer`, and goal operations
 with their original turn IDs and authorization fields. A thread-level model
 selection remains the default after a saved chat resumes. An active-turn model
-update applies at the next inference step. The SDK rejects an active-turn switch
-whose destination differs in node_repl or review safety settings, as it does
-natively, and the adapter forwards the error unchanged ([full list and which
-rows](node-repl.md#switching-models-during-a-running-turn)). A captured tool step
-keeps its approval requirements; changing thread access updates subsequent turns.
+update applies at the next inference step, unless the destination differs in
+node_repl or review settings: the SDK then rejects it, as natively, and the adapter
+forwards the error ([which rows](node-repl.md#switching-models-during-a-running-turn)).
+A captured tool step keeps its approval requirements; changing thread access updates
+subsequent turns.
 
-These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol
-when every gateway row published the same node_repl fields. Those tests do not cover
-an active-turn switch across the node_repl groups; adapter tests cover its forwarding
-(`src/tests/app-server-router-step-switch.test.ts`). Goal creation, reads, updates,
-notifications, and clearing were tested. Automatic goal continuation and every
-rendered control remain separate desktop checks.
+These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol,
+which were then in one node_repl group; only adapter tests cover a rejected switch.
+Goal creation, reads, updates, notifications, and clearing were tested. Automatic
+goal continuation and every rendered control remain separate desktop checks.
 
 ## Compaction and model changes
 
@@ -371,8 +368,8 @@ local native catalog it loaded at startup and copies these fields:
   `max_context_window`. Otherwise, or when the upstream reports no maximum, the
   upstream window stays;
 - `node_repl_disabled`, `node_repl_auto_review_required`, `guardian`,
-  `auto_review_model_override`, `requires_sandboxed_review` and `model_specialty`
-  ([node_repl](#node_repl-browser-chrome-and-computer-use)).
+  `auto_review_model_override`, `requires_sandboxed_review` (data only: no SDK reads
+  it) and `model_specialty` ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
@@ -383,8 +380,8 @@ gateway published it, apart from the strictest native node_repl policy and the
 native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
 preflight first writes `desktop-models.json` with the plain gateway rows, marker
-included; the adapter replaces that file with the
-copied rows on its first successful cache restore or host refresh, and every
+included; the adapter replaces that file with the copied rows on its first
+successful cache restore or host refresh, and every
 gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
 ignore the marker, as they do in the plain catalog that CLI and remote clients
 read. Those clients have no native catalog, so they keep the gateway rows
@@ -432,12 +429,11 @@ resume; the chat's own reasoning is restored instead, as described above.
 
 ### node_repl (browser, Chrome and computer use)
 
-Gateway rows get the same node_repl policy as native rows, and a row with no native
-counterpart (Claude, Copilot, Qwen) always requires review. The reviewer
-`codex-auto-review` is served through the Codex subscription, and a row that needs
-review has node_repl on only while the gateway advertises it. An active-turn model
-switch across review groups is rejected by the SDK. The rules, evidence, groups and
-fail-closed cases are only in [node_repl on gateway rows](node-repl.md).
+Gateway rows get the native node_repl policy, and rows with no native counterpart
+always require review. The gateway serves the reviewer `codex-auto-review` through the
+Codex subscription for every Auto-review approval in a gateway executor, not only
+node_repl; 0.3.9 declined them, and their context now leaves the chat's own provider.
+The rules, evidence and fail-closed cases are only in [node_repl on gateway rows](node-repl.md).
 
 ## Empty chats and message order
 

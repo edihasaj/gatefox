@@ -36,7 +36,11 @@ and the Codex source (`ModelInfo` in `codex-rs/protocol`, pinned revision 740e5a
   row in that file, and the SDK reads an absent field as null. The catalog embedded
   in the ChatGPT.app `codex` binary states them instead: `guardian` and
   `auto_review_model_override` are `null` and `requires_sandboxed_review` is `false`
-  on its rows. The two sources mean the same.
+  on its rows. The two sources mean the same. `requires_sandboxed_review` is data
+  only: it is not a `ModelInfo` field in the pinned source (only the bundled
+  `models-manager/models.json` names it), and in both the ChatGPT.app `codex` and the
+  gateway SDK binary it appears only inside the embedded catalog, never among the
+  fields their parser reads.
 - In the SDK, `ModelInfo::computer_use_review_required` lets a `guardian` policy,
   when one is set, decide review instead of the flag: computer use is reviewed
   unless `guardian.computer_use` is absent, null or `disabled`. A null `guardian`
@@ -126,18 +130,29 @@ rows have node_repl off until a read succeeds. A failed refresh keeps the last
 snapshot. The reviewers are part of the catalog revision, so a change starts a new
 executor generation.
 
-### Data and decision
+### Scope, data and decision
 
-Reviewed actions and their context are sent to OpenAI's reviewer through the Codex
-subscription. For Claude, Copilot and Qwen chats this means the actions and context
-of a chat leave that chat's own provider. Edi accepted this on 2026-10-15 ("Add the
-reviewer"). The reviewer review text is never logged: telemetry records fixed
-fields only, and no token, prompt, request body, tool argument or environment value
-is logged.
+The route serves every Auto-review approval in a gateway executor, not only node_repl.
+The SDK resolves the reviewer the same way for node_repl elicitations, shell and exec
+escalations, `apply_patch`, network access, MCP tool calls and permission requests
+(`core/src/tools/approvals.rs`, `orchestrator.rs`, `network_approval.rs`,
+`runtimes/unified_exec.rs`, `core/src/session/mcp.rs`). The gateway cannot tell these
+apart without reading request bodies, which it never does. Only chats whose approvals
+reviewer is Auto-review send reviews.
+
+On 0.3.9 each of these reviews got 404 from the gateway, and the SDK counts a failed
+review as a denial, so every action that needed Auto-review was declined in gateway
+chats. Now those actions and their transcript context go to OpenAI's reviewer through
+the Codex subscription; for Claude, Copilot and Qwen chats they leave that chat's own
+provider. Edi decided on 2026-10-15 that the route is on: gateway engines send the
+review step to OpenAI's reviewer through the Codex subscription, and it fails closed
+only when that route is unavailable. The review text is never logged: telemetry
+records fixed fields only, and no token, prompt, request body, tool argument or
+environment value is logged.
 
 ### Telemetry
 
-Requests whose model is the reviewer slug carry `autoReview: true`, with `model` set to
+Every Auto-review request (any kind, above) carries `autoReview: true`, with `model` set to
 that slug, on `request_completed`, `request_empty` and `request_failed`, including the
 404. `gateway diagnostics` adds an `autoReview` bucket: `completed`, `empty` and
 `failed:<code>`. Other model names are never recorded for a request without a route.
@@ -145,9 +160,10 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
 ## Rules
 
 - A Codex 2 row copies `node_repl_disabled`, `node_repl_auto_review_required`,
-  `guardian`, `auto_review_model_override`, `requires_sandboxed_review` and
-  `model_specialty` from its native row, with code mode on or off. A value that is not plainly typed is not
-  copied, and a node_repl field that is not a boolean becomes `true`.
+  `guardian`, `auto_review_model_override`, `requires_sandboxed_review` (data only,
+  see Evidence) and `model_specialty` from its native row, with code mode on or off. A
+  value that is not plainly typed is not copied, and a node_repl field that is not a
+  boolean becomes `true`.
 - A row needs review when its `guardian` reviews computer use, or when it has no
   `guardian` and its flag is not plainly `false`. A `guardian` that is not an object
   counts as needing review. Such a row has node_repl on only if its reviewer runs
@@ -168,9 +184,15 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
   shared and node_repl is off. Without these texts node_repl would read an empty
   `openai/confirmation_policies`, which clears the connector defaults. node_repl is
   off if the reviewer does not run, any native row turns it off or states no policy,
-  or there is no native catalog. A sandboxed-review requirement carries over.
+  or there is no native catalog. `requires_sandboxed_review: true` is carried when a
+  native row sets it, as data only; nothing enforces it.
+- A `guardian` on any native row turns node_repl off for every fallback row, with code
+  mode on or off. A fallback row cannot mirror a guardian (its computer-use mode,
+  scoring, or shell, MCP, network and permission scopes), so a review policy that may
+  differ from the strictest native one is never applied; off is the stricter choice.
+  No native row sets a guardian today.
 - Fallback rows do not copy `auto_review.rejection_instructions`, so a denied action in a
-  Claude, Copilot or Qwen chat shows the SDK's bundled rejection guidance, as the 5.6
+  Claude, Copilot, Qwen, API or missing-upstream chat shows the SDK's bundled rejection guidance, as the 5.6
   rows do natively. It is stricter than the 6.x text: it tells the agent to stop and
   request user input, where the 6.x text lets it finish unaffected work.
 - The plain catalog (CLI and remote clients) publishes `true` for both fields on
@@ -190,8 +212,8 @@ fallback rows:
 - no ChatGPT plan login on the reviewer provider;
 - the reviewer row missing from the native catalog, or `supported_in_api` not exactly `true`;
 - an override that names a slug the gateway does not advertise, or is not a string;
-- native rows that disagree on a shared review text, or any native row that turns
-  node_repl off (fallback rows only).
+- native rows that disagree on a shared review text, any native row that turns
+  node_repl off, or any native row that sets a `guardian` (fallback rows only).
 
 The adapter does not know a chat's approvals reviewer, so review-required rows stay
 off without an advertised reviewer even when that chat would not use the reviewer
@@ -212,8 +234,10 @@ parent-fallback review texts. App-server maps the rejection to JSON-RPC `-32600`
 with the SDK's reason. The router forwards it unchanged and records the new model
 only for an `applied` result, so the turn keeps its model.
 
-On the live configuration the rows fall in three groups, and a mid-turn switch works
-only inside one:
+On the live configuration (the `guardianv2` feature off, its default) the rows fall in
+three groups, and a mid-turn switch works only inside one. With `guardianv2` on, the
+`guardian_v2` settings are compared too, so `gpt-6-luna`, which carries them, no
+longer switches with the 5.6 rows:
 
 | Group | Rows |
 | --- | --- |
@@ -246,8 +270,10 @@ old one, and the next turn uses the new one. A CLI or script gets the error.
 
 ## Check script
 
-`node scripts/check-node-repl.mjs catalog.json` reads a copy of an executor home's
-combined catalog. It prints both node_repl fields for every row as JSON, and
+`node scripts/check-node-repl.mjs <copy>` reads a copy of a combined catalog:
+`<stateDirectory>/desktop-catalog-<revision>.json`, which one executor generation loads
+as `model_catalog_json`, or `<stateDirectory>/desktop-models.json`, which holds the
+latest one once the adapter has restored or refreshed. It prints both node_repl fields for every row as JSON, and
 `guardian` when one is set. It then counts the rows that keep node_repl off and the
 rows that enable it without review, as the SDK reads them: a missing
 `node_repl_disabled` means enabled, and a set `guardian` decides review. A
