@@ -166,8 +166,17 @@ try {
     const start = params => client.rpc('thread/start', { model: 'fixture/fast', cwd: work, approvalPolicy: 'never', sandbox: 'read-only', ...params });
     const standard = await start({});
     await invoke(client, standard.thread.id, transport + '-standard-default', null, {}, 'default');
+    // A draft Fast pick while the default model is a gateway model is accepted for that draft but never saved.
     await client.rpc('config/batchWrite', { edits: [{ keyPath: 'model', value: 'fixture/fast', mergeStrategy: 'replace' }, { keyPath: 'service_tier', value: 'priority', mergeStrategy: 'replace' }] });
-    const fast = await start({}); await invoke(client, fast.thread.id, transport + '-saved-fast-default', 'priority');
+    assert.notEqual((await client.rpc('config/read', { includeLayers: false })).config.service_tier, 'priority');
+    const unsaved = await start({}); await invoke(client, unsaved.thread.id, transport + '-gateway-fast-default-not-saved', null, {}, 'default');
+    // Fast is chosen per chat; the desktop names a draft pick explicitly on the start.
+    const fast = await start({ serviceTier: 'priority' }); await invoke(client, fast.thread.id, transport + '-explicit-fast-start', 'priority');
+    // A pick inside the chat stays with the chat; the follow-up default write is refused.
+    await client.rpc('thread/settings/update', { threadId: fast.thread.id, serviceTier: 'priority' });
+    await assert.rejects(client.rpc('config/batchWrite', { edits: [{ keyPath: 'service_tier', value: 'priority', mergeStrategy: 'upsert' }] }), error => error.code === -32002);
+    assert.notEqual((await client.rpc('config/read', { includeLayers: false })).config.service_tier, 'priority');
+    await save({ phase: transport + '-chat-fast-pick-not-default', passed: true });
     await invoke(client, fast.thread.id, transport + '-null-turn-inherits-fast', 'priority', { serviceTierForTurn: null });
     await invoke(client, fast.thread.id, transport + '-one-turn-standard', null, { serviceTierForTurn: 'default' }, 'default');
     await invoke(client, fast.thread.id, transport + '-follow-up-retains-fast', 'priority');
@@ -192,7 +201,9 @@ try {
     executorHost = await host(); ({ listener, client } = await open());
     await client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work });
     await invoke(client, fast.thread.id, transport + '-cold-fast-survives-standard-newchat-default', 'priority');
+    // Accepted without a chat pick, but not saved while the default model is a gateway model.
     await client.rpc('config/value/write', { keyPath: 'service_tier', value: 'priority', mergeStrategy: 'replace' });
+    assert.notEqual((await client.rpc('config/read', { includeLayers: false })).config.service_tier, 'priority');
     // A second adapter changes the same SDK session; the older router must see it.
     const peer = await open();
     await peer.client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work });
