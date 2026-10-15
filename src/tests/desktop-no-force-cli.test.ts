@@ -246,7 +246,7 @@ test("status reports the legacy FORCE_CLI hook separately from the desktop regis
   });
 });
 
-/** forceCliSet is the presence half of status: any value, ours or not, is reported without echoing it. */
+/** forceCliSet is the presence half of status: any non-empty value, ours or not, is reported without echoing it. */
 test("status reports whether FORCE_CLI is set without ever reporting its value", mac, async () => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
@@ -254,14 +254,18 @@ test("status reports whether FORCE_CLI is set without ever reporting its value",
     await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
     f.values.set(PATH_KEY, wrapper);
     assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).forceCliSet, false, "an unset variable is not set");
-    for (const value of ["1", "other", ""]) {
+    for (const value of ["1", "other"]) {
       f.values.set(FORCE, value);
       const status = await macDesktop("status", f.config, f.app, false, f.exec);
-      assert.equal(status.forceCliSet, true, JSON.stringify(value) + ": any value counts as set");
+      assert.equal(status.forceCliSet, true, JSON.stringify(value) + ": any non-empty value counts as set");
       assert.equal(status.legacyForceCli, value === "1", JSON.stringify(value) + ": only the legacy 1 is ours to clear");
       assert.equal(JSON.stringify(status).includes("other"), false, "the output never carries the value");
       assert.equal(f.calls.some(call => call.includes("other")), false, "the value never reaches a launchctl call");
     }
+    // launchctl getenv exits 0 with empty stdout for an unset name, so an empty value reads as not set.
+    f.values.set(FORCE, "");
+    assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).forceCliSet, false, "an empty value is not set");
+    f.values.set(FORCE, "1");
     f.values.set(PATH_KEY, "/opt/other-cli");
     const foreign = await macDesktop("status", f.config, f.app, false, f.exec);
     assert.equal(foreign.forceCliSet, true, "presence is not ownership: a foreign CLI path still leaves the value set");

@@ -138,7 +138,7 @@ registration.
 An older gateway also exported `CODEX_APP_SERVER_FORCE_CLI=1`, which ran durable chats and
 SSH rows as extra local app-servers. Registration removes that value only when a registration receipt
 proves the gateway set it; after upgrading, run `gateway desktop register`, check `gateway desktop status`
-shows `legacyForceCli: false` and `forceCliSet: false`, then restart ChatGPT once. While the session still
+shows `legacyForceCli: false` and `forceCliSet: false` (status calls the variable set only for a non-empty value), then restart ChatGPT once. While the session still
 names an older gateway wrapper, status reports `staleWrapper: true` and `activeForFutureLaunches: false`
 until a register writes the current one. Details and the ownership rules are in
 [legacy FORCE_CLI cleanup](desktop-legacy-force-cli.md).

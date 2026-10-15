@@ -28,6 +28,14 @@ export async function uninstallGateway(configPath: string): Promise<Record<strin
   const alias = resolve(dirname(command), "harness-gateway");
   if ((await lstat(alias).catch(() => undefined))?.isSymbolicLink() && await readlink(alias) === "gateway") await rename(alias, resolve(trash, `harness-gateway.${suffix}`));
   await rename(command, resolve(trash, `gateway.${suffix}`)); await rename(root, resolve(trash, `subscription-gateway.${suffix}`));
+  return uninstallResult(desktop);
+}
+
+/**
+ * The uninstall contract. Pure so a test can prove the legacy FORCE_CLI warning passes through
+ * without running the installer's launchctl, trash, or filesystem work.
+ */
+export function uninstallResult(desktop: Record<string, unknown>): Record<string, unknown> {
   return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: true,
     ...(desktop.legacyForceCliKept === true ? { legacyForceCliKept: true } : {}) };
 }

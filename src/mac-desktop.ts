@@ -19,17 +19,21 @@ type ExecFileWithTimeout = (file: string, args: string[], options: { timeout: nu
 export const launchctlRunner = (run: ExecFileWithTimeout = (file, args, options) => execFileAsync(file, args, options)): LaunchctlExec =>
   (file, args) => run(file, args, { timeout: 10000 });
 const launchctlExec = launchctlRunner();
+/** The part of an entry's status that ownership needs: what kind of entry it is, and who owns it. */
+export type WrapperStat = (path: string) => Promise<{ isFile(): boolean; isSymbolicLink(): boolean; uid: number }>;
 /**
  * An older gateway exported CODEX_CLI_PATH beside FORCE_CLI=1. That path is ours only when it is an absolute,
  * already-normalised name of a regular file owned by this user, or of an entry that no longer exists, sitting
  * directly in this state directory with a generated wrapper name. A relative path, one that climbs through `..`
  * or ends in a slash, a symlink, or a directory is foreign; a deleted stale wrapper stays replaceable.
+ * `stat` and `uid` are seams: production uses `lstat` and this process's uid, and a test can supply either
+ * without a root-owned file in the state directory.
  */
-const ownWrapper = async (stateDirectory: string, value: string): Promise<boolean> => {
+export const ownWrapper = async (stateDirectory: string, value: string, stat: WrapperStat = lstat, uid = process.getuid?.()): Promise<boolean> => {
   // normalize keeps a trailing separator, so a path that ends in one is rejected on its own.
   if (!isAbsolute(value) || value.endsWith(sep) || normalize(value) !== value || dirname(value) !== resolve(stateDirectory)) return false;
   if (!/^desktop-wrapper-[0-9a-f]{16}$/.test(basename(value))) return false;
-  try { const info = await lstat(value); return info.isFile() && !info.isSymbolicLink() && info.uid === process.getuid?.(); }
+  try { const info = await stat(value); return info.isFile() && !info.isSymbolicLink() && info.uid === uid; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 };
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -48,14 +52,15 @@ async function desktopOperation(action: string, configPath: string, app: string,
   let registration: { wrapper?: string } = {}; try { registration = JSON.parse(await readFile(receipt, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (action === "status") {
     const cliPath = await environment("CODEX_CLI_PATH");
-    // One getenv answers both FORCE_CLI questions. forceCliSet is presence only: it is true when the session
-    // holds the variable at all, whatever its value, and the value itself never reaches the output.
-    const force = await exec("/bin/launchctl", ["getenv", "CODEX_APP_SERVER_FORCE_CLI"]).then(result => result.stdout.trim(), () => undefined);
+    // One getenv answers both FORCE_CLI questions. A real `launchctl getenv` exits 0 with empty stdout for an
+    // unset name, so the variable counts as set only when it holds a non-empty value; the value itself never
+    // reaches the output.
+    const force = await environment("CODEX_APP_SERVER_FORCE_CLI");
     const fromReceipt = !!registration.wrapper && cliPath === registration.wrapper;
     const owned = fromReceipt || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath));
     // Future launches use the registered wrapper, so an older one we still own is stale, not active. Ownership
     // only decides whether the legacy FORCE_CLI value is ours to clear.
-    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, forceCliSet: force !== undefined,
+    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, forceCliSet: force !== "",
       legacyForceCli: owned && !!registration.wrapper && force === "1",
       ...(owned && !fromReceipt ? { staleWrapper: true } : {}) };
   }

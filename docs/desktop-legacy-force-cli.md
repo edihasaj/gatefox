@@ -28,7 +28,8 @@ plus 16 lowercase hex digits. A look-alike stays foreign: the same name in anoth
 subdirectory of the state directory, a name with a suffix, a shorter, non-hex, or uppercase suffix, a path
 that climbs back through `..` or ends in a slash, or a name held by a symlink or a directory. Registration
 refuses a foreign value instead of replacing it, unregister leaves it alone, and registration never deletes
-a stale wrapper file.
+a stale wrapper file. If a foreign `CODEX_CLI_PATH` override blocks registration, run
+`launchctl unsetenv CODEX_CLI_PATH` and then register again.
 
 The receipt requirement is what turns a missing receipt into a refusal rather than a guess. Where the
 receipt was cleared or never written, a gateway wrapper path beside a `1` proves the path is ours but says
@@ -36,11 +37,12 @@ nothing about who exported the pair: `gateway desktop register` refuses with a m
 `gateway desktop status` reports `legacyForceCli: false`. `gateway desktop unregister` still clears an own
 `CODEX_CLI_PATH` there, because that path is ours whether or not the receipt survived, and it leaves the `1`
 alone; when it does, it reports `legacyForceCliKept: true` so the cleared path and the kept value show up in one
-output, and `gateway uninstall` passes that flag through. `gateway desktop status` also reports `staleWrapper: true` while the session points at a wrapper of
-ours that the receipt no longer names; that alone is not an active adapter, so
+output, and `gateway uninstall` passes that flag through. `gateway desktop status` also reports
+`staleWrapper: true` while the session points at a wrapper of ours that the receipt no longer names;
+that alone is not an active adapter, so
 `activeForFutureLaunches` stays `false` until a registration writes the current wrapper. Alongside
 `legacyForceCli`, status reports `forceCliSet`, which is true when the session holds
-`CODEX_APP_SERVER_FORCE_CLI` at all, whatever its value, and never carries the value itself. `gateway desktop`
+any non-empty value of `CODEX_APP_SERVER_FORCE_CLI`, whatever that value is, and never carries the value itself. `gateway desktop`
 only leaves an inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` is a
 gateway wrapper; it does not change the login session, so later Dock launches still see it.
 

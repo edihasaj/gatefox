@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { access, chmod, link, lstat, mkdir, readlink, symlink, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { macDesktop } from "../mac-desktop.js";
+import { macDesktop, ownWrapper } from "../mac-desktop.js";
 import { prepareDesktop } from "../desktop-launch.js";
 import { writePrivateJson } from "../config.js";
 import { FORCE, inDesktopHome, PATH_KEY, desktopFixture, type DesktopFixture as Fixture } from "./desktop-fixture.js";
@@ -52,7 +52,8 @@ const lookalikeNames: Array<[string, (f: Fixture) => string]> = [
 /**
  * Paths that reach a wrapper name only through spelling or a link. Each seed leaves the object it created behind
  * for the verify step, so a refusal can never quietly replace or delete it. A seed that returns `null` could not
- * be built on this machine (a link across volumes, a restricted source file), so its cases are skipped.
+ * be built on this machine (a link across volumes, a restricted source file); each test reports such a shape
+ * as skipped instead of passing over it quietly.
  */
 const trickyPaths: Array<{ name: string; seed: (f: Fixture) => Promise<string | null>; verify?: (f: Fixture) => Promise<void> }> = [
   { name: "a relative wrapper name", seed: async () => "desktop-wrapper-0123456789abcdef" },
@@ -72,7 +73,8 @@ const trickyPaths: Array<{ name: string; seed: (f: Fixture) => Promise<string | 
   { name: "a wrapper name with a trailing slash", seed: async f => join(f.state, "desktop-wrapper-456789abcdef0123") + "/" },
   { name: "a hard link in the state directory to someone else's file", seed: async f => {
     // A second name for a root-owned file: same volume, regular file, exact wrapper name, right directory, and
-    // only the owner differs. The uid check is the last thing standing between that and a replaced /etc/hosts.
+    // only the owner differs. The gateway never writes the target; the uid rule only guards replacing a launchctl
+    // value and clearing FORCE_CLI, never this file.
     const path = join(f.state, "desktop-wrapper-aaaaaaaaaaaaaaaa");
     if (process.getuid?.() === 0) return null; // as root the file would be ours by uid, so nothing to prove
     try { await link("/private/etc/hosts", path); }
@@ -83,10 +85,24 @@ const trickyPaths: Array<{ name: string; seed: (f: Fixture) => Promise<string | 
     const info = await lstat(path);
     assert.ok(info.isFile(), "the link is still a plain file, not a replaced one");
     assert.notEqual(info.uid, process.getuid?.(), "and it still belongs to its original owner");
-    assert.equal((await readFile("/private/etc/hosts", "utf8")).length > 0, true, "the file behind it is untouched");
+    assert.equal((await readFile("/private/etc/hosts", "utf8")).length > 0, true, "the gateway never writes the file behind the link");
     await unlink(path);
   } },
 ];
+
+/**
+ * The ownership rule is a uid rule, and a hard link is the case that proves it: same volume, exact wrapper name,
+ * right directory, plain regular file, and only the owner differs. `stat` and `uid` are seams so the test needs
+ * no root-owned file.
+ */
+test("ownWrapper requires the wrapper file to belong to this user", mac, async () => {
+  const f = await fixture();
+  const wrapper = join(f.state, "desktop-wrapper-0123456789abcdef");
+  const mine = process.getuid?.() ?? 0; const other = mine === 0 ? 1 : 0;
+  const stat = (uid: number) => async () => ({ isFile: () => true, isSymbolicLink: () => false, uid });
+  assert.equal(await ownWrapper(f.state, wrapper, stat(other)), false, "a regular wrapper someone else owns is foreign");
+  assert.equal(await ownWrapper(f.state, wrapper, stat(mine)), true, "the same wrapper owned by this user is ours");
+});
 
 test("registration replaces an older gateway wrapper the receipt no longer names and clears its FORCE_CLI", mac, async () => {
   for (const restoreOnly of [true, false]) {
@@ -123,13 +139,13 @@ test("registration refuses a CODEX_CLI_PATH that only looks like one of our wrap
   }
 });
 
-test("registration refuses a CODEX_CLI_PATH that reaches a wrapper name only through spelling, a link, or a directory", mac, async () => {
+test("registration refuses a CODEX_CLI_PATH that reaches a wrapper name only through spelling, a link, or a directory", mac, async (t) => {
   for (const shape of trickyPaths) {
     const f = await fixture();
     await inDesktopHome(f, async () => {
       await staleOwnPair(f);
       const path = await shape.seed(f);
-      if (path === null) return; // this machine cannot build that shape
+      if (path === null) { t.skip(`${shape.name}: cannot be built on this machine`); return; }
       f.values.set(PATH_KEY, path);
       await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), overrideRefusal(path), shape.name);
       assert.equal(f.values.get(PATH_KEY), path, shape.name + ": the path is never replaced");
@@ -138,6 +154,22 @@ test("registration refuses a CODEX_CLI_PATH that reaches a wrapper name only thr
       await shape.verify?.(f);
     });
   }
+});
+
+test("the nameless refusal of a foreign FORCE_CLI value never carries that value", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    await staleOwnPair(f);
+    const foreign = "foreign-sentinel-7f3e"; f.values.set(FORCE, foreign);
+    await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), (error: unknown) => {
+      const message = (error as Error).message;
+      assert.match(message, /^Another desktop CLI mode is active; it was not replaced$/, "a value other than 1 gets the nameless refusal");
+      assert.equal(message.includes(foreign), false, "the foreign FORCE_CLI value itself never appears in the message");
+      return true;
+    });
+    assert.equal(f.values.get(FORCE), foreign, "the refusal leaves the foreign value alone");
+    assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, "no setenv or unsetenv for the foreign value");
+  });
 });
 
 test("unregistration clears an older gateway wrapper the receipt no longer names", mac, async () => {
@@ -154,13 +186,13 @@ test("unregistration clears an older gateway wrapper the receipt no longer names
   }
 });
 
-test("unregistration leaves a look-alike in the state directory and its FORCE_CLI untouched", mac, async () => {
+test("unregistration leaves a look-alike in the state directory and its FORCE_CLI untouched", mac, async (t) => {
   for (const shape of trickyPaths) {
     const f = await fixture();
     await inDesktopHome(f, async () => {
       await staleOwnPair(f);
       const path = await shape.seed(f);
-      if (path === null) return; // this machine cannot build that shape
+      if (path === null) { t.skip(`${shape.name}: cannot be built on this machine`); return; }
       f.values.set(PATH_KEY, path);
       const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
       assert.equal(result.registered, false, shape.name);
@@ -172,7 +204,7 @@ test("unregistration leaves a look-alike in the state directory and its FORCE_CL
   }
 });
 
-test("status separates owning a stale wrapper from what future launches use", mac, async () => {
+test("status separates owning a stale wrapper from what future launches use", mac, async (t) => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
     const { wrapper, stale: stalePath } = await staleOwnPair(f);
@@ -193,7 +225,7 @@ test("status separates owning a stale wrapper from what future launches use", ma
     }
     for (const shape of trickyPaths) {
       const path = await shape.seed(f);
-      if (path === null) continue; // this machine cannot build that shape
+      if (path === null) { t.skip(`${shape.name}: cannot be built on this machine`); continue; }
       f.values.set(PATH_KEY, path);
       const foreign = await macDesktop("status", f.config, f.app, false, f.exec);
       assert.equal(foreign.activeForFutureLaunches, false, `${shape.name} is not ours`);
