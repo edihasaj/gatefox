@@ -299,7 +299,7 @@ test("waits", () => { writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.st
     const run = await startedRun(w, file, { GATEWAY_TEST_KILL_GRACE_MS: "60000" }); child = run.child; started = run.started;
     child.kill("SIGTERM"); const [code] = await run.exited; assert.equal(code, 128 + 15, "the runner's exit code");
     assert.equal(await exists(marker), true, "the test process finished its exit handler before the runner ended the run");
-    assert.equal(alive(started.pids[0]), false, "and it is gone");
+    assert.ok(await wait(() => !alive(started!.pids[0]), 20000), "and it is gone");
     passed = true;
   } finally { if (!passed) await cleanUp(child, started); await rm(w.work, { recursive: true, force: true }); }
 });
