@@ -79,9 +79,9 @@ Desktop registration applies to future normal app launches and is restored at
 login. Quit the app normally once after initial registration. Run `gateway desktop`
 to launch immediately with the adapter. The launcher refuses to stop a running app.
 `gateway desktop status` checks registration and reports `legacyForceCli: true` while an old
-`CODEX_APP_SERVER_FORCE_CLI=1` is ours to clear, `forceCliSet: true` while the variable holds anything left
-after `launchctl getenv` removes exactly one trailing newline (an empty value reads as not set, and a read
-that fails or times out is an error, not `forceCliSet: false`), and
+`CODEX_APP_SERVER_FORCE_CLI=1` is ours to clear, `forceCliSet: true` while the variable holds anything
+left after the gateway strips the single newline `launchctl getenv` prints (an empty value reads as not
+set, and a read that fails or times out is an error, not `forceCliSet: false`), and
 `staleWrapper: true` while the session names a gateway wrapper the receipt no longer names. `gateway desktop
 register` clears the legacy value when a registration receipt proves the gateway set it (see
 [the adapter setup](docs/app-server.md)). `gateway desktop unregister` removes the registration.

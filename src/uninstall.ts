@@ -26,11 +26,19 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
   if (process.env.GATEWAY_INSTALLED !== "1" || !command) throw new Error("Uninstall requires an installed gateway command");
   const root = resolve(dirname(command), "../share/subscription-gateway");
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
+  // Read the desktop state first: a status probe touches the config and the GUI session, so an unreadable
+  // registration or an unreachable session fails here, while the service and native components are still there
+  // to clean up, rather than halfway through the removal below.
+  await deps.macDesktop("status", configPath);
   await deps.macService("uninstall", configPath);
   await deps.macNative("uninstall", configPath);
   // Unregister reports legacyForceCliKept when it cleared our CODEX_CLI_PATH but a legacy FORCE_CLI=1 stayed
   // behind it for lack of a receipt; the uninstaller passes that warning through so the operator can clear it.
-  const desktop = await deps.macDesktop("unregister", configPath);
+  // A failure here is mid-removal, so the message says what is already gone and to run the command again.
+  const desktop = await deps.macDesktop("unregister", configPath).catch((error: unknown) => {
+    const reason = error instanceof Error ? error.message : "The desktop registration could not be removed";
+    throw new Error(`Desktop unregister failed after the service and native components were already removed: ${reason}. Rerun \`gateway uninstall\`.`, { cause: error });
+  });
   await deps.macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
   for (const file of await readdir(directory)) {

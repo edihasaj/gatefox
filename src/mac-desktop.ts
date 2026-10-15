@@ -71,13 +71,18 @@ async function desktopOperation(action: string, configPath: string, app: string,
   if (action === "unregister") {
     if (unified || pending) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
     const cliPath = await environment("CODEX_CLI_PATH");
-    // FORCE_CLI is ours to clear only when the receipt names a wrapper. An own path beside an empty or missing
+    // Ownership is decided from the session as it is now, before any write, so a later failure cannot leave a
+    // half-cleared pair behind, and so the call order is always reads first then writes.
+    const ownPath = (!!registration.wrapper && cliPath === registration.wrapper) || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath));
+    // FORCE_CLI is read only once the path proves itself ours, and an unset name reads as the empty string.
+    const force = ownPath ? await environment("CODEX_APP_SERVER_FORCE_CLI") : "";
+    // It is ours to clear only when the receipt names a wrapper. An own path beside an empty or missing
     // receipt proves the path is ours, not that we ever exported the pair, so the 1 stays beside the path we
     // just cleared. legacyForceCliKept says so: the next register refuses until the value is cleared by hand.
     let legacyForceCliKept = false;
-    if ((!!registration.wrapper && cliPath === registration.wrapper) || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath))) {
+    if (ownPath) {
       await exec("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
-      if (await environment("CODEX_APP_SERVER_FORCE_CLI") === "1") {
+      if (force === "1") {
         if (registration.wrapper) await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
         else legacyForceCliKept = true;
       }

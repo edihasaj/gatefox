@@ -26,10 +26,12 @@ A path counts as such a wrapper only when it is an absolute, normalised path nam
 you, or a missing entry, directly in the gateway state directory, whose name is exactly `desktop-wrapper-`
 plus 16 lowercase hex digits. A look-alike stays foreign: the same name in another directory or a
 subdirectory of the state directory, a name with a suffix, a shorter, non-hex, or uppercase suffix, a path
-that climbs back through `..` or ends in a slash, or a name held by a symlink or a directory. Registration
-refuses a foreign value instead of replacing it, unregister leaves it alone, and registration never deletes
-a stale wrapper file. If a foreign `CODEX_CLI_PATH` override blocks registration, run
-`launchctl unsetenv CODEX_CLI_PATH` and then register again.
+that climbs back through `..` or ends in a slash, or a name held by a symlink or a directory. The
+`gateway desktop` launcher uses the same rule: only the current wrapper, or a `desktop-wrapper-`
+plus 16 lowercase hex digits name in the gateway state directory, counts as ours. Registration
+refuses a foreign value instead of replacing it, unregister leaves it alone, and registration
+never deletes a stale wrapper file. If a foreign `CODEX_CLI_PATH` override blocks registration,
+run `launchctl unsetenv CODEX_CLI_PATH` and then register again.
 
 The receipt requirement is what turns a missing receipt into a refusal rather than a guess. Where the
 receipt was cleared or never written, a gateway wrapper path beside a `1` proves the path is ours but says

@@ -1,7 +1,7 @@
 import { spawn, execFileSync } from "node:child_process";
 import { access, open, readFile, chmod, lstat } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
@@ -29,7 +29,13 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   return { binary, wrapper };
 }
 
-const gatewayWrapper = /(^|\/)desktop-wrapper-[0-9a-f]{16}$/;
+const wrapperName = /^desktop-wrapper-[0-9a-f]{16}$/;
+/**
+ * Whether an inherited `CODEX_CLI_PATH` is a gateway wrapper: the one this launch writes, or an older one
+ * generated in the same state directory. A look-alike name anywhere else is someone else's file.
+ */
+const isGatewayWrapper = (inherited: string, wrapper: string) => inherited === wrapper
+  || (dirname(inherited) === dirname(wrapper) && wrapperName.test(basename(inherited)));
 /**
  * The launch environment for the desktop. `CODEX_CLI_PATH` is the only adapter hook:
  * `CODEX_APP_SERVER_FORCE_CLI` would push durable chats and SSH rows through the CLI too.
@@ -40,7 +46,7 @@ export function desktopEnvironment(base: NodeJS.ProcessEnv, wrapper: string, con
   const env: NodeJS.ProcessEnv = { ...base, CODEX_CLI_PATH: wrapper, GATEWAY_CONFIG: configPath,
     ...(nativeHome ? { CODEX_HOME: resolve(nativeHome) } : {}) };
   const inherited = base.CODEX_CLI_PATH;
-  if (env.CODEX_APP_SERVER_FORCE_CLI === "1" && inherited && (inherited === wrapper || gatewayWrapper.test(inherited))) delete env.CODEX_APP_SERVER_FORCE_CLI;
+  if (env.CODEX_APP_SERVER_FORCE_CLI === "1" && inherited && isGatewayWrapper(inherited, wrapper)) delete env.CODEX_APP_SERVER_FORCE_CLI;
   // Preserve the desktop's saved login instead of a terminal's platform API overrides.
   for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
   return env;

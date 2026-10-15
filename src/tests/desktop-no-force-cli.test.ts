@@ -345,11 +345,12 @@ test("the desktop launch environment uses CODEX_CLI_PATH alone", () => {
   assert.equal(env.PATH, "/usr/bin");
   assert.equal(base.CODEX_CLI_PATH, undefined, "the base environment is not mutated"); assert.equal(base[FORCE], undefined);
   assert.equal(desktopEnvironment({ [PATH_KEY]: "/tmp/wrapper", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], undefined, "our inherited legacy pair is dropped");
-  assert.equal(desktopEnvironment({ [PATH_KEY]: "/s/desktop-wrapper-0123456789abcdef", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], undefined, "an older wrapper counts as ours");
+  assert.equal(desktopEnvironment({ [PATH_KEY]: "/tmp/desktop-wrapper-0123456789abcdef", [FORCE]: "1" }, "/tmp/desktop-wrapper-fedcba9876543210", "/tmp/gateway.json")[FORCE], undefined, "an older wrapper beside this one counts as ours");
+  assert.equal(desktopEnvironment({ [PATH_KEY]: "/s/desktop-wrapper-0123456789abcdef", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", "the same wrapper name in another directory is not ours");
   assert.equal(desktopEnvironment({ [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", "a 1 without our wrapper is the user's");
   assert.equal(desktopEnvironment({ [PATH_KEY]: "/opt/other-cli", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", "a 1 beside a foreign CLI path is the user's");
-  // Only an exact gateway wrapper name counts as ours: look-alike paths belong to the user.
-  for (const lookalike of ["/opt/notdesktop-wrapper-0123456789abcdef", "/s/desktop-wrapper-0123456789abcdef.sh", "/s/desktop-wrapper-0123", "/opt/my-desktop-wrapper-tool"]) {
+  // Only the exact wrapper name in this wrapper's directory counts as ours: look-alike paths belong to the user.
+  for (const lookalike of ["/opt/notdesktop-wrapper-0123456789abcdef", "/s/desktop-wrapper-0123456789abcdef", "/s/desktop-wrapper-0123456789abcdef.sh", "/s/desktop-wrapper-0123", "/opt/my-desktop-wrapper-tool"]) {
     assert.equal(desktopEnvironment({ [PATH_KEY]: lookalike, [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", `a 1 beside ${lookalike} is the user's`);
   }
   assert.equal(desktopEnvironment({ [FORCE]: "other" }, "/tmp/wrapper", "/tmp/gateway.json", "/tmp/native")[FORCE], "other", "a foreign value survives");
@@ -401,6 +402,45 @@ test("a failing getenv propagates through every action instead of reading as uns
     assert.equal(f.calls.some(call => call.startsWith("setenv")), false, "no setenv before the probe could answer");
     assert.equal(f.calls.some(call => call.startsWith("unsetenv")), false, "no unsetenv before the probe could answer");
     assert.equal(f.calls.some(call => call.startsWith("bootout")), false, "no bootout before the probe could answer");
+  });
+});
+
+/** A FORCE_CLI read that fails on its own must stop the action before any write, including the receipt. */
+test("a failing FORCE read alone changes nothing in any action", mac, async () => {
+  for (const action of ["register", "unregister", "status"] as const) {
+    const f = await fixture();
+    await inDesktopHome(f, async () => {
+      const { wrapper } = await prepareDesktop(f.config, f.app);
+      await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
+      f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, "1");
+      const failing = async (file: string, args: string[]): Promise<{ stdout: string }> => {
+        if (args[0] === "getenv" && args[1] === FORCE) { f.calls.push(args.join(" ")); throw new Error("spawn failed"); }
+        return f.exec(file, args);
+      };
+      const before = await readFile(f.receipt, "utf8");
+      await assert.rejects(macDesktop(action, f.config, f.app, action === "register", failing), /spawn failed/, action);
+      for (const verb of ["setenv", "unsetenv", "bootout"]) {
+        assert.equal(f.calls.some(call => call.startsWith(verb)), false, action + ": no " + verb + " behind a failed read");
+      }
+      assert.equal(await readFile(f.receipt, "utf8"), before, action + ": the receipt is untouched");
+    });
+  }
+});
+
+/** The fixture echoes the value plus exactly one newline, so the second newline is part of a foreign value. */
+test("exactly one trailing newline is stripped from FORCE_CLI", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await prepareDesktop(f.config, f.app);
+    await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
+    f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, "1\n");
+    assert.equal((await f.exec("/bin/launchctl", ["getenv", FORCE])).stdout, "1\n\n", "the fixture prints the value plus exactly one newline");
+    const status = await macDesktop("status", f.config, f.app, false, f.exec);
+    assert.equal(status.forceCliSet, true, "the value is present");
+    assert.equal(status.legacyForceCli, false, "and a newline after the 1 is part of the value, so it is not the legacy hook");
+    await noReceiptPair(f, "empty"); f.values.set(FORCE, "1\n");
+    await assert.rejects(macDesktop("register", f.config, f.app, true, f.exec), /Another desktop CLI mode is active; it was not replaced/);
+    assert.equal(f.values.get(FORCE), "1\n", "the value with the extra newline is left alone");
   });
 });
 
