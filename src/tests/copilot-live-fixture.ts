@@ -141,7 +141,7 @@ for await (const frame of copilotFrames(process.stdin)) {
     // A slow answer keeps the thread's request waiting inside its placement. The CLI then reports the new state.
     setTimeout(() => { ok({ status: "applied", deferred: false }); event("session.info", { infoType: "model" }, { ephemeral: true }); }, Number(env("SLOW_SWITCH") ?? 0));
   }
-  else if (frame.method === "session.delete") ok({ success: true });
+  else if (frame.method === "session.delete") { log({ op: "delete" }); ok({ success: true }); }
   else send({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported" } });
 }
 log({ op: "stdin_closed" });

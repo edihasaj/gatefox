@@ -157,6 +157,9 @@ Cancelling a request, a reseed, an eviction, a tool-wait expiry and any violatio
 session the same way: `session.abort` (bounded to 2 seconds, errors ignored), then SIGKILL
 of the CLI's whole process group, which is its own group, and the removal of its folder.
 A parked session that is not running anything needs no abort and is killed the same way.
+A one-shot request is closed the same way when its CLI holds an unanswered tool request,
+that is, when the turn ended in tool calls or was cancelled after the CLI announced one;
+only a one-shot turn that ended in text is deleted (`session.delete`) and stopped with SIGTERM.
 A cancelled request ends at once and its session is killed in the background; a reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
 request fails that request at once, or, before its first event, hands it to the one-shot

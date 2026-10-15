@@ -7,6 +7,7 @@ import { record } from "./copilot-rpc.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
 import { imageConversation } from "../protocol/images.js";
 import { CopilotTurn } from "./copilot-turn.js";
+import { sessionLimits } from "./copilot-live-session.js";
 import { sessionFingerprint, sessionParams } from "./copilot-create.js";
 import { choiceLine, copilotPrompts, copilotSystem, nativeCatalog, type NativeTool } from "./copilot-render.js";
 import { copilotLive, retireCopilotScope, type CopilotLiveInput, type CopilotLiveOutcome } from "./copilot-live.js";
@@ -119,9 +120,18 @@ export class CopilotSubscription implements Provider {
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
     const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
     const notifications = client.rpc.notifications();
+    // Whether the session may still be working: a tool call was made or requested, and the CLI holds its external tool request
+    // unanswered. Closing such a session must not let the runtime fail the call and make a model call of its own.
+    let working = false;
     /** The session's next event, or undefined once the CLI's stream has ended. */
     const next = async (): Promise<Record<string, unknown> | undefined> => {
-      for (;;) { const { value, done } = await notifications.next(); if (done) return undefined; const params = record(value.params); if (params.sessionId === sessionId) return record(params.event); }
+      for (;;) {
+        const { value, done } = await notifications.next(); if (done) return undefined;
+        const params = record(value.params); if (params.sessionId !== sessionId) continue;
+        const event = record(params.event);
+        if (event.type === "tool.execution_start" || event.type === "external_tool.requested") working = true;
+        return event;
+      }
     };
     try {
       await client.rpc.request("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
@@ -131,11 +141,18 @@ export class CopilotSubscription implements Provider {
         if (signal.aborted) { yield* usageAfterAbort(turn, event, next); throw cancelled(); }
         const step = turn.accept(event);
         yield* step.events;
-        if (step.end) { yield turn.done(); return; }
+        if (step.end) { working ||= step.end === "tools"; yield turn.done(); return; }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");
     } catch (error) { if (signal.aborted) throw cancelled(); throw error; }
-    finally { await notifications.return(undefined); await client.close(sessionId); }
+    finally {
+      if (working) {
+        // Like a live session that ends: abort (bounded), then SIGKILL of the process group, never session.delete and SIGTERM.
+        // The event stream stays open until then: a closed one makes the connection treat the CLI's next event as an overflow and stop it.
+        await client.rpc.request("session.abort", { sessionId }, sessionLimits.abortMs).catch(() => {}); await client.close(undefined, true);
+        await notifications.return(undefined);
+      } else { await notifications.return(undefined); await client.close(sessionId); }
+    }
   }
 }
 

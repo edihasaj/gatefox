@@ -511,7 +511,10 @@ rows or session folders. A normal shutdown removed the parked session's process 
 folder. After the gateway was killed outright, its CLIs exited when their input closed,
 and the next gateway's startup sweep removed their folders. The check found that the CLI
 sends `session.idle` right after `assistant.idle`; the gateway first treated it as
-unrequested output, and now accepts it between requests.
+unrequested output, and now accepts it between requests. That check did not cover a
+one-shot request that ends in tool calls on the external-tool setup, which the gateway
+closes with `session.abort` and SIGKILL as a live session ends; only the scripted CLI
+fixture tests cover it, so repeat it against the installed CLI after upgrading.
 
 A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
 a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
