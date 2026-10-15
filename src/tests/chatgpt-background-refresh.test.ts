@@ -121,7 +121,6 @@ test("a refresh reply without the plan scope keeps the rotated token, asks for s
   // [reply change, refresh token kept on file, scopes kept on file]
   const cases: Array<[Record<string, unknown>, string, string[]]> = [
     [{ scope: "openid offline_access" }, "new-refresh", ["openid", "offline_access"]],
-    [{ scope: undefined }, "new-refresh", []],
     [{ scope: "openid", refresh_token: undefined }, "old-refresh", ["openid"]],
   ];
   for (const [over, refreshToken, keptScopes] of cases) {
@@ -146,7 +145,8 @@ test("a malformed refresh reply is temporary: the rotated token is saved and the
   // A reply without a usable access token is malformed whatever its scope says, including no scope at all.
   const malformed: Array<Record<string, unknown>> = [{ token_type: "mac" }, { token_type: 5 }, { token_type: undefined }, { access_token: 5 },
     { access_token: "" }, { access_token: undefined }, { expires_in: 0 }, { expires_in: "3600" },
-    { access_token: undefined, scope: undefined }, { token_type: "mac", scope: undefined }, { scope: "openid", token_type: "mac" }];
+    { access_token: undefined, scope: undefined }, { token_type: "mac", scope: undefined }, { scope: "openid", token_type: "mac" },
+    { scope: ["openid"] }, { scope: 5 }];
   for (const over of malformed) for (const rotated of ["rotated-refresh", undefined]) {
     const { path } = await loginFile(0);
     const sent: Array<string | null> = [];
@@ -166,6 +166,16 @@ test("a malformed refresh reply is temporary: the rotated token is saved and the
     });
     assert.equal((await stored(path)).refresh_token, "new-refresh");
   }
+});
+
+test("a valid refresh reply that omits scope keeps the stored scopes and works (RFC 6749 section 6)", async () => {
+  const { path } = await loginFile(0);
+  await withFetch(async () => refreshReply({ scope: undefined }), async () => {
+    assert.equal(await accessToken(path), "new-access");
+    assert.equal(await accessToken(path), "new-access", "the saved login keeps working without another sign-in");
+  });
+  const after = await stored(path);
+  assert.deepEqual(after.scopes, scopes, "the originally granted scopes stay on file"); assert.equal(after.refresh_token, "new-refresh");
 });
 
 test("an empty or foreign 200 reply is temporary and never wipes the stored scopes", async () => {

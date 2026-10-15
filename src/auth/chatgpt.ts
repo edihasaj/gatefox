@@ -8,6 +8,7 @@ import { writePrivateJson } from "../config.js";
 const issuer = "https://auth.openai.com";
 const resource = "https://api.openai.com/v1";
 const requiredScopes = ["resource.invoke", "chatgpt.tokens.use.direct"];
+const requestedScopes = ["openid", "profile", "email", "offline_access", ...requiredScopes];
 export interface ChatGPTCredentials {
   client_id: string;
   subject: string;
@@ -108,17 +109,22 @@ const planScopeMissing = "ChatGPT plan permission was not granted; enable plan u
  * `plan_scope`: the reply lacks the plan scopes, which only a new sign-in grants. `malformed`: it holds
  * no usable bearer access token or lifetime, which is treated as temporary.
  */
-function checkReply(token: TokenResponse): { scopes: string[]; problem?: "plan_scope" | "malformed" } {
-  const scopes = typeof token.scope === "string" ? token.scope.split(/\s+/).filter(Boolean) : [];
+function checkReply(token: TokenResponse, unchanged: string[]): { scopes: string[]; problem?: "plan_scope" | "malformed" } {
   // Malformed is checked first: a reply without a usable access token says nothing about granted scopes
   // (an empty `{}` or an intermediary's error body has no `scope`), so it must stay temporary.
   if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" || typeof token.access_token !== "string" || !token.access_token ||
-    typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes, problem: "malformed" };
+    typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes: unchanged, problem: "malformed" };
+  // RFC 6749 sections 5.1 and 6: an omitted scope means the scope is unchanged (the requested one for a
+  // sign-in, the originally granted one for a refresh). A scope that is present but not a string is unreadable.
+  const raw = (token as { scope?: unknown }).scope;
+  if (raw === undefined) return { scopes: unchanged };
+  if (typeof raw !== "string") return { scopes: unchanged, problem: "malformed" };
+  const scopes = raw.split(/\s+/).filter(Boolean);
   if (lacksPlanScopes(scopes)) return { scopes, problem: "plan_scope" };
   return { scopes };
 }
 function grantedScopes(token: TokenResponse): string[] {
-  const { scopes, problem } = checkReply(token);
+  const { scopes, problem } = checkReply(token, requestedScopes);
   if (problem === "plan_scope") throw new ChatGPTLoginRequired(planScopeMissing);
   if (problem === "malformed") throw new Error("OpenAI returned an unusable access token; sign in again");
   return scopes;
@@ -166,7 +172,7 @@ export async function signIn(path: string, agentName: string, onAuthorize: (url:
   const redirect = `http://127.0.0.1:${port}/auth/callback`;
   const url = new URL(`${issuer}/api/accounts/authorize`);
   const params = { client_id: prior?.client_id || "dynamic_agent_client", ext_agent_host_id: host.id,
-    response_type: "code", redirect_uri: redirect, scope: "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct",
+    response_type: "code", redirect_uri: redirect, scope: requestedScopes.join(" "),
     resource, state, nonce, code_challenge_method: "S256", code_challenge: createHash("sha256").update(verifier).digest("base64url"),
     ...(!prior ? { agent_name_hint: agentName } : {}),
   };
@@ -244,7 +250,7 @@ async function refresh(path: string): Promise<string> {
     // The old refresh token is spent once this reply arrives, so the replacement is written in the
     // same save that records the outcome, before the reply is reported as unusable.
     const replacement = typeof token.refresh_token === "string" && token.refresh_token ? token.refresh_token : undefined;
-    const { scopes, problem } = checkReply(token);
+    const { scopes, problem } = checkReply(token, credentials.scopes ?? []);
     if (problem === "plan_scope") {
       // Only signing in again with plan usage grants the scopes. The file keeps any rotated token, the
       // old access token and only the scopes this reply granted, so this and every later request

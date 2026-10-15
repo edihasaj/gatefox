@@ -93,12 +93,15 @@ replacement refresh token is written to the credential file (atomically, mode 06
 same save that records the outcome, so a reply that fails a check never loses the rotated
 token. How the reply is handled:
 
-- A reply without the plan scope can only be fixed by signing in again (`gateway login ID`
+- A valid reply that omits `scope` keeps the scope granted earlier (RFC 6749 sections 5.1
+  and 6) and is used normally; a `scope` that is present but not a string counts as malformed.
+- A reply whose `scope` lacks the plan scopes can only be fixed by signing in again (`gateway login ID`
   with plan usage enabled). The gateway keeps the old access token and only the scopes that
   reply granted, so that request and every later one report "ChatGPT provider requires
   login" without another token request, in this process or another one waiting on the
   refresh lock.
-- A malformed reply (no bearer access token or no positive lifetime) is temporary. The
+- A malformed reply (no bearer access token or no positive lifetime) is temporary, whatever its
+  scope says, and is checked before the plan scopes. The
   request returns the retryable `upstream_unavailable`, the stored access token, scopes and
   expiry stay as they were, and the next real request refreshes again with the saved
   replacement token, or with the stored one when the reply carried none.
