@@ -8,6 +8,7 @@ import { modelCatalog } from "../catalog.js";
 import type { GatewayConfig } from "../config.js";
 import { Build040, OldRoutingError } from "./app-server-0-4-0-tier-check.js";
 import { oldBuildAccepts } from "./thread-tier-0-4-0-parser.js";
+import { ThreadServiceTiers } from "../thread-service-tiers.js";
 
 type ObjectValue = Record<string, unknown>;
 const gateway = "subscription_gateway";
@@ -59,7 +60,19 @@ async function fixture() {
     }
     return row;
   };
-  return { router, sdk, announce, old, rows, old040Opens, state };
+  /**
+   * A fresh 0.4.0 process after a rollback: it reads the saved row, or finds none and has no tier for the chat (the route
+   * carries serviceTier undefined). It then forks the chat, runs a turn on another model and asks for a settings change.
+   */
+  const old040Fresh = async () => {
+    const row = (await rows())["t"];
+    const route = { provider: gateway, model: row?.model ?? sdk.model, serviceTier: row?.serviceTier };
+    const checks: Array<[string, ObjectValue]> = [["thread/fork", { threadId: "t" }], ["thread/resume", { threadId: "t" }],
+      ["turn/start", { threadId: "t", model: claude }], ["thread/settings/update", { threadId: "t", model: claude }], ["turn/settings/update", { threadId: "t", model: claude }]];
+    for (const [method, params] of checks) assert.doesNotThrow(() => old.routedTierCheck(method, params, route), `${method} ${JSON.stringify(params)} on ${JSON.stringify(row)}`);
+    return row;
+  };
+  return { router, sdk, announce, old, rows, old040Opens, old040Fresh, state, tiers: new ThreadServiceTiers(state, nativeHome) };
 }
 
 test("the 0.4.0 check really refuses a saved tier its row does not declare", async () => {
@@ -132,4 +145,18 @@ test("a saved new-chat default is saved only when 0.4.0 accepts it for the selec
   // The refused writes changed nothing: the last accepted default is still the file's.
   await assert.rejects(save(codex, "flex"), refused);
   assert.equal((JSON.parse(await readFile(join(f.state, "desktop-preferences.json"), "utf8")) as ObjectValue).service_tier, null);
+});
+
+test("a chat on a tier the store cannot hold rolls back to a Standard row that a fresh 0.4.0 process accepts", async () => {
+  for (const tier of ["auto", "Fast"]) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: codex });
+    f.sdk.tier = tier; await f.announce();
+    // 0.4.1 still reads the chat as unknown, so it forwards no tier and never invents one.
+    assert.equal(await f.tiers.read("t"), undefined, `${tier} stays unknown`);
+    const row = await f.old040Fresh();
+    assert.ok(row, `${tier}: a row stays under the chat id for 0.4.0`);
+    assert.deepEqual({ model: row.model, serviceTier: row.serviceTier }, { model: codex, serviceTier: null }, tier);
+    await f.old040Opens();
+  }
 });

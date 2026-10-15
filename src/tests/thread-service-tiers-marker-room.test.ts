@@ -48,7 +48,8 @@ test("an unknown tier for a new chat in a store full by count evicts the oldest 
     const saved = await f.threads();
     assert.equal(names(saved).length, maxThreads);
     assert.equal(saved["chat-0"], undefined, "the oldest chat went");
-    assert.ok(saved["chat-1"] && saved[markerKey("new-chat")], "the marker is kept");
+    assert.equal(saved["chat-1"], undefined, "the pair adds two entries, so a second chat went");
+    assert.ok(saved["chat-2"] && saved[markerKey("new-chat")] && saved["new-chat"], "the marker and its Standard row are kept");
     assert.equal(await f.store.read("new-chat"), undefined);
     assert.equal(await f.store.write("new-chat", { ...fast, emittedAtMs: 4000 }), false, "the marker's watermark still blocks an older tier");
   } finally { await f.close(); }
@@ -64,12 +65,13 @@ for (const markers of [false, true]) test(`an unknown tier in a store full by si
     assert.equal(await f.store.markUnknown("new-chat", { model, emittedAtMs: 5000 }), true);
     const saved = await f.threads(); const marker = saved[markerKey("new-chat")];
     assert.deepEqual(marker, { model, serviceTier: null, revision: 1, emittedAtMs: 5000 });
+    assert.deepEqual(saved["new-chat"], marker, "the chat's Standard row carries the marker's stamp");
     assert.ok((await stat(f.path)).size <= maxBytes);
     const evicted = names(rows).filter(id => !(id in saved));
-    // The fewest oldest rows whose removal lets the marker fit, found by serializing the whole file each time.
-    let fewest = 0; while (size({ ...Object.fromEntries(names(rows).slice(fewest).map(id => [id, rows[id]])), [markerKey("new-chat")]: marker }) > maxBytes) fewest++;
-    assert.ok(fewest >= 1, "the store really was too full for the marker");
-    assert.equal(evicted.length, fewest, "marker rows are counted by their exact size, no more are dropped");
+    // The fewest oldest rows whose removal lets the pair fit, found by serializing the whole file each time.
+    let fewest = 0; while (size({ ...Object.fromEntries(names(rows).slice(fewest).map(id => [id, rows[id]])), "new-chat": saved["new-chat"], [markerKey("new-chat")]: marker }) > maxBytes) fewest++;
+    assert.ok(fewest >= 1, "the store really was too full for the pair");
+    assert.equal(evicted.length, fewest, "both entries are counted by their exact size, no more rows are dropped");
     assert.deepEqual(evicted, names(rows).slice(0, fewest));
   } finally { await f.close(); }
 });
@@ -104,15 +106,17 @@ test("at the row limit a known tier for a chat that only has a marker evicts nob
   } finally { await f.close(); }
 });
 
-test("at the row limit an unknown tier for a chat that already has a row evicts nobody", async () => {
+test("at the row limit an unknown tier for a chat that already has a row evicts exactly one other chat", async () => {
   const f = await fixture();
   try {
     await f.put(countFull({ chat: { ...fast, revision: 1, emittedAtMs: 500 } }));
     assert.equal(await f.store.markUnknown("chat", { model: "gateway/model", emittedAtMs: 600 }), true);
     const saved = await f.threads();
     assert.equal(names(saved).length, maxThreads);
-    assert.equal(saved.chat, undefined, "the row gave way to the marker");
-    assert.ok(saved[markerKey("chat")] && saved["chat-0"], "the marker is kept and no other chat was evicted");
+    assert.deepEqual(saved.chat, { model: "gateway/model", serviceTier: null, revision: 2, emittedAtMs: 600 }, "the row became Standard beside the marker");
+    assert.ok(saved[markerKey("chat")], "the marker is kept");
+    assert.equal(saved["chat-0"], undefined, "the marker is one entry more than the row, so the oldest other chat went");
+    assert.ok(saved["chat-1"]);
     assert.equal(await f.store.read("chat"), undefined);
   } finally { await f.close(); }
 });
@@ -158,9 +162,10 @@ test("in a store full by count a marker with the oldest stamp of all keeps itsel
     assert.equal(await f.store.markUnknown("new-chat", { model: "gateway/model", emittedAtMs: 500 }), true);
     const saved = await f.threads();
     assert.equal(names(saved).length, maxThreads);
-    assert.ok(saved[markerKey("new-chat")], "the marker stayed although it is the oldest entry");
-    assert.equal(saved["chat-0"], undefined, "the oldest other chat went instead");
-    assert.ok(saved["chat-1"]);
+    assert.ok(saved[markerKey("new-chat")] && saved["new-chat"], "the marker and its row stayed although they are the oldest entries");
+    assert.equal(saved["chat-0"], undefined, "the oldest other chats went instead");
+    assert.equal(saved["chat-1"], undefined);
+    assert.ok(saved["chat-2"]);
     assert.equal(await f.store.write("new-chat", { ...fast, emittedAtMs: 400 }), false, "its watermark still blocks an older tier");
   } finally { await f.close(); }
 });
@@ -174,5 +179,23 @@ test("in a store full by count a known tier with the oldest stamp of all keeps i
     assert.equal(names(saved).length, maxThreads);
     assert.equal(saved["new-chat"]?.serviceTier, "priority");
     assert.equal(saved["chat-0"], undefined);
+  } finally { await f.close(); }
+});
+
+test("the Standard row and marker of an unknown chat are evicted together when that chat is the oldest", async () => {
+  const f = await fixture();
+  try {
+    const pair = { chat: { ...standard, revision: 1, emittedAtMs: 100 }, [markerKey("chat")]: { ...standard, revision: 1, emittedAtMs: 100 } };
+    await f.put({ ...pair, ...chats(maxThreads - 2) });
+    assert.equal(await f.store.write("new-chat", standard), true);
+    const saved = await f.threads();
+    assert.equal(saved.chat, undefined); assert.equal(saved[markerKey("chat")], undefined);
+    assert.ok(saved["chat-0"] && saved["new-chat"]);
+    assert.equal(names(saved).length, maxThreads - 1, "the pair left whole, never one half");
+    // The chat being written keeps both entries even when its stamp is the oldest of all.
+    await f.put({ ...pair, ...chats(maxThreads - 2) });
+    assert.equal(await f.store.markUnknown("chat", { model: "gateway/model", emittedAtMs: 100 }), true);
+    const kept = await f.threads();
+    assert.ok(kept.chat && kept[markerKey("chat")] && kept["chat-0"]);
   } finally { await f.close(); }
 });

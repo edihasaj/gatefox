@@ -19,7 +19,7 @@ async function fixture() {
     close: () => rm(root, { recursive: true, force: true }) };
 }
 
-test("an unknown tier removes the chat's row, keeps a 0.4.0-readable marker, and reads as no record", async () => {
+test("an unknown tier replaces the chat's row with Standard beside a 0.4.0-readable marker, and reads as no record", async () => {
   const f = await fixture();
   try {
     assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 100 }), true);
@@ -28,15 +28,17 @@ test("an unknown tier removes the chat's row, keeps a 0.4.0-readable marker, and
     assert.equal(await f.store.read("chat"), undefined);
     assert.equal((await f.store.read("other"))?.serviceTier, "priority", "unrelated chats are untouched");
     const saved = await f.file();
-    assert.equal(Object.hasOwn(saved.threads, "chat"), false);
-    const markers = Object.entries(saved.threads).filter(([id]) => id !== "other");
+    const markers = Object.entries(saved.threads).filter(([id]) => id !== "other" && id !== "chat");
     assert.equal(markers.length, 1);
-    assert.deepEqual(markers[0][1], { model: "gateway/model", serviceTier: null, revision: 2, emittedAtMs: 200 });
-    // The old build loads the whole file and finds no record for the chat.
+    const stamped = { model: "gateway/model", serviceTier: null, revision: 2, emittedAtMs: 200 };
+    assert.deepEqual(markers[0][1], stamped);
+    // The chat's own row is Standard with the marker's stamp, so the marker still wins a tie.
+    assert.deepEqual(saved.threads.chat, stamped);
+    // The old build loads the whole file and finds the chat as Standard, never the marker.
     const old = oldBuildAccepts(saved);
-    assert.equal(Object.hasOwn(old, "chat"), false);
+    assert.deepEqual(old.chat, { model: "gateway/model", serviceTier: null });
     assert.equal(old.other.serviceTier, "priority");
-    assert.ok(!JSON.stringify(saved).includes("chat"), "the marker key does not carry the chat id");
+    assert.ok(!markers[0][0].includes("chat"), "the marker key does not carry the chat id");
   } finally { await f.close(); }
 });
 
@@ -247,5 +249,28 @@ test("when a trusted row and the marker both carry a window, the later end appli
     await put({ ...standard, revision: 3, emittedAtMs: 5000 }, 3000);
     assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 4000 }), false, "older than the row");
     assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 6000 }), true, "past the marker's window and newer than the row");
+  } finally { await f.close(); }
+});
+
+test("an unknown chat keeps a Standard row for 0.4.0 that never outranks the marker, and a marker left alone is repaired", async () => {
+  const f = await fixture();
+  try {
+    await f.store.write("chat", { ...fast, emittedAtMs: 100 });
+    await f.store.markUnknown("chat", { ...unknown, emittedAtMs: 200 });
+    const marker = Object.entries((await f.file()).threads).find(([id]) => id !== "chat")!;
+    // Repeating the same unknown answer changes nothing; the pair is already whole.
+    assert.equal(await f.store.markUnknown("chat", { ...unknown, emittedAtMs: 200 }), true);
+    assert.deepEqual((await f.file()).threads, { chat: marker[1], [marker[0]]: marker[1] });
+    assert.equal(await f.store.read("chat"), undefined, "the equal stamp lets the marker win");
+    // A marker without its row (an interrupted write by an earlier build) is completed by the next unknown answer.
+    await writeFile(f.path, JSON.stringify({ version: 1, threads: { [marker[0]]: marker[1] } }, null, 2) + "\n", { mode: 0o600 });
+    assert.equal(await f.store.markUnknown("chat", { ...unknown, emittedAtMs: 200 }), true);
+    const repaired = (await f.file()).threads;
+    assert.equal(repaired.chat.serviceTier, null); assert.equal(repaired.chat.emittedAtMs, 200);
+    assert.equal(await f.store.read("chat"), undefined);
+    // A 0.4.0 process that later records a newer tier for the chat replaces the unknown state, as before.
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 300 }), true);
+    assert.equal((await f.store.read("chat"))?.serviceTier, "priority");
+    assert.equal(Object.keys((await f.file()).threads).length, 1, "the marker is gone once the tier is known");
   } finally { await f.close(); }
 });

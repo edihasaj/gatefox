@@ -54,13 +54,16 @@ The SDK accepts any tier string inside a chat, including values such as `auto`, 
 or a very long id. The gateway's private tier record holds only lowercase ids of up to
 128 characters that are not `auto`. For any other tier the gateway records the chat's
 tier as unknown. It writes this through the same locked, timestamp-ordered path as a
-known tier: the chat's own record is removed, and a marker row holding the source
-time stays under a separate key derived from a hash of the chat id. A later resume or
-fork therefore adds no inherited tier, on this connection and on any fresh one, and an
-older notification that arrives late cannot bring a tier back. The marker is an
-ordinary row in the existing file format, so a 0.4.0 build still reads the whole file;
-it never looks the marker up and sees the chat as having no record, which is also an
-unknown tier. A marker also wins over a non-Standard row that falls inside its
+known tier: a marker row holding the source time stays under a separate key derived
+from a hash of the chat id, and the chat's own record becomes a Standard row with the
+marker's stamp. This build reads a row no newer than its marker as unknown, so a later
+resume or fork adds no inherited tier, on this connection and on any fresh one, and an
+older notification that arrives late cannot bring a tier back. Both are ordinary rows
+in the existing file format, so a 0.4.0 build still reads the whole file. It never
+looks the marker up and finds the Standard row, so after a rollback a fresh 0.4.0
+process can fork the chat and change its model; with no record it would refuse both
+with `-32002`. The row and the marker are evicted together and count as two rows. A
+marker also wins over a non-Standard row that falls inside its
 uncertainty window, because a 0.4.0 build wrote that row without knowing the watermark.
 A newer Standard row from a 0.4.0 build is trusted over the marker, and it keeps the
 marker's window, so a late non-Standard notification is still rejected. A marker that
@@ -117,14 +120,24 @@ both safe:
 | A saved new-chat default (`config/value/write`, `config/batchWrite`) | Only a tier the selected row declares, or Standard. Anything else fails with `-32002`. |
 
 A Flex chat, a Fast chat that moved to a row without Fast and a saved default therefore
-resume and run turns under 0.4.0 without an error. The cost is that a chat on a row
+resume and run turns under 0.4.0 without an error, provided the chat is not loaded in
+an SDK that a 0.4.0 client shares with this build. A loaded chat keeps its Flex, or the
+Fast it had before moving to a row without Fast, inside the SDK, and the 0.4.0 client
+checks that tier against the row and can refuse with `-32002`. To recover, choose
+Standard in the 0.4.0 client, or reopen the chat from 0.4.1. The cost is that a chat on a row
 without Flex declared does not carry Flex across a resume or fork: the SDK still keeps
 and sends Flex while the chat is loaded, but the next session start inherits Standard
 from the record. Nothing else changes: the record is read only at session start, where a
 tier the row lacks already starts the chat as Standard (Flex was the one exemption), and
-inside a chat the gateway forwards tiers untouched and never reads the record. The test `app-server-0-4-0-rollback.test.ts`
+inside a chat the gateway forwards tiers untouched and never applies the record. The test `app-server-0-4-0-rollback.test.ts`
 runs every row and saved default this build writes through the 0.4.0 checks, which
-`app-server-0-4-0-tier-check.ts` copies verbatim from release commit `4a8bb9e`.
+`app-server-0-4-0-tier-check.ts` copies verbatim from release commit `4a8bb9e`,
+including the chats on a tier the store cannot hold (`auto`, `Fast`).
+
+The compaction recovery file is bounded differently. This build keeps 4096 chats and
+evicts the oldest instead of failing. After a rollback with a full 4096-row file, 0.4.0
+still updates the chats already in it, but it refuses a row for a new chat and warns that
+compaction recovery metadata is unavailable for it.
 
 Claude rows offer Fast when Claude's own model list marks the model as supporting
 fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for

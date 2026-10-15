@@ -17,10 +17,11 @@ const integer = (value: unknown): value is number => typeof value === "number" &
 
 /**
  * A chat whose tier the SDK kept but the store cannot hold ("auto", "Fast", a long id) has an unknown tier. It is
- * recorded as a marker row under this separate key and the chat's own row is removed. Both are ordinary rows, so a
- * 0.4.0 build still reads the whole file; it never looks the marker up and sees the chat as having no record,
- * which is exactly an unknown tier. The marker also holds the watermark that keeps an older notification from
- * bringing a tier back.
+ * recorded as a marker row under this separate key, next to a Standard row under the chat's own id that carries the
+ * marker's stamp. Both are ordinary rows, so a 0.4.0 build still reads the whole file; it never looks the marker up
+ * and finds the Standard row, so a fresh 0.4.0 process after a rollback can fork the chat and change its model
+ * (with no record it would refuse with -32002). This build reads a row no newer than its marker as unknown: the
+ * marker wins a tie. The marker also holds the watermark that keeps an older notification from bringing a tier back.
  */
 const markerKey = (threadId: string) => `tier-unknown:${createHash("sha256").update(threadId).digest("hex")}`;
 /** A pending record. An undefined tier means unknown. */
@@ -150,7 +151,8 @@ export class ThreadServiceTiers {
   }
   /**
    * Records that the chat's tier is unknown, through the same locked, timestamp-ordered path as a known tier. The
-   * chat's own row is removed, so a later session start forwards no tier, and an older notification stays rejected.
+   * chat's own row becomes Standard for 0.4.0 but is read as unknown here, so a later session start forwards no tier,
+   * and an older notification stays rejected.
    */
   async markUnknown(threadId: string, value: { model: string; emittedAtMs?: number }, expected?: ThreadServiceTier | null, confirmedSnapshotAtMs?: number): Promise<boolean> {
     if (!text(threadId) || !text(value.model) || (value.emittedAtMs !== undefined && !integer(value.emittedAtMs)) || (confirmedSnapshotAtMs !== undefined && !integer(confirmedSnapshotAtMs))) throw invalid();
@@ -184,13 +186,19 @@ export class ThreadServiceTiers {
         }
         emittedAtMs = selected.emittedAtMs;
       }
-      if (base && base.model === selected.model && currentTier === selected.serviceTier && base.emittedAtMs === emittedAtMs && base.uncertainBeforeMs === uncertainBeforeMs) return true;
+      // An unknown tier is complete only with its Standard row beside the marker, so a marker alone is repaired.
+      if (base && base.model === selected.model && currentTier === selected.serviceTier && base.emittedAtMs === emittedAtMs && base.uncertainBeforeMs === uncertainBeforeMs
+        && (selected.serviceTier !== undefined || (!!live && live.model === base.model && live.serviceTier === null && live.emittedAtMs === base.emittedAtMs))) return true;
       // The revision never repeats across a swap between the chat's row and its marker, so a stale CAS cannot match.
       const revision = Math.max(live?.revision ?? 0, marker?.revision ?? 0) + 1; if (!integer(revision)) throw invalid();
       const next: ThreadServiceTier = { model: selected.model, serviceTier: selected.serviceTier ?? null, revision, ...(emittedAtMs !== undefined ? { emittedAtMs } : {}), ...(uncertainBeforeMs !== undefined ? { uncertainBeforeMs } : {}) };
-      if (selected.serviceTier === undefined) { delete saved.threads[threadId]; saved.threads[markerKey(threadId)] = next; }
+      if (selected.serviceTier === undefined) {
+        // The chat's own row holds Standard with the marker's stamp (never newer, so the marker wins), without its watermark.
+        const { uncertainBeforeMs: _watermark, ...standard } = next;
+        saved.threads[threadId] = standard; saved.threads[markerKey(threadId)] = next;
+      }
       else { saved.threads[threadId] = next; delete saved.threads[markerKey(threadId)]; }
-      // The chat now has one entry, so a chat that only had a marker (or only a row) changes no count. Other chats make room.
+      // A chat holds one row, or an unknown tier's row and marker together; other chats make room for either.
       makeRoom(saved, new Set([threadId, markerKey(threadId)]));
       await writePrivateJson(this.path, saved);
       return true;

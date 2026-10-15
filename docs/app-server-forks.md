@@ -67,7 +67,7 @@ chats and its file at most 4 MiB (long model names reach that limit first). When
 would pass either limit, it evicts other chats instead of failing: rows that were never
 stamped with a record time first, then the rows stamped longest ago, and never the chat
 being written. A chat's row and its unknown-tier marker (below) count as rows, each by its
-exact size, and leave together: chats go oldest first by the newest stamp of either, so an
+exact size, and leave together (an unknown tier keeps both, so it counts as two rows): chats go oldest first by the newest stamp of either, so an
 older row never outlives a newer marker. The reasoning store also holds at most 16384 chats and evicts the chat
 observed longest ago when it is full, but its 4 MiB file limit is a hard one: a write
 that would pass it is refused rather than making room.
@@ -83,9 +83,10 @@ The backends recognize a gateway executor's throwaway chats in three ways: the e
 token events of such a chat are not written to the on-disk compaction store, which holds
 the compaction recovery state of every gateway chat. The newest 4096 such ids are tracked, and an id is forgotten when its chat is
 closed, unsubscribed, deleted or archived. The store itself holds at most 4096 chats and
-4 MiB. When a write for a new chat would pass either limit, it drops the chats observed
-longest ago instead of failing, and never the chat being written, so a full store no
-longer stops recovery for the other chats.
+4 MiB. When a write would pass either limit, for a new chat or for an existing chat whose
+row grows past the byte bound, it drops the chats observed longest ago instead of
+failing, and never the chat being written, so a full store no longer stops recovery for
+the other chats.
 
 Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
 can be told apart without storing error text; see [diagnostics](diagnostics.md).

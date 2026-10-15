@@ -145,14 +145,14 @@ test("a connection that held Fast in memory stops forwarding it once another con
   }
 });
 
-test("the file written after an odd tier is accepted by the 0.4.0 parser and shows 0.4.0 no tier for the chat", async () => {
+test("the file written after an odd tier is accepted by the 0.4.0 parser and shows 0.4.0 a Standard chat", async () => {
   for (const tier of oddTiers) {
     const f = await fixture();
     await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
     await f.announce(f.router, tier, Date.now() + 100);
     const accepted = oldBuildAccepts(JSON.parse(await readFile(await f.file(), "utf8")));
-    assert.equal(Object.hasOwn(accepted, "t"), false, `0.4.0 would still find a record for the chat after ${label(tier)}`);
-    assert.ok(Object.keys(accepted).length > 0, "the watermark is stored as a row 0.4.0 accepts");
+    assert.equal(accepted.t?.serviceTier, null, `0.4.0 finds Standard for the chat after ${label(tier)}, never the old Fast`);
+    assert.ok(Object.keys(accepted).length > 1, "the watermark is stored as a row 0.4.0 accepts");
   }
 });
 
