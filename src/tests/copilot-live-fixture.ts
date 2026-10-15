@@ -10,7 +10,8 @@
 // ABORT_GATE=<file> and CREATE_GATE=<file> answer `session.abort`, and `session.create`, once the file exists; CREATE_AFTER_ABORT and
 // DELIVER_AFTER_ABORT hold the answer to `session.create`, and to each delivered tool result, until `session.abort` arrives;
 // ABORT_BURST=<n> sends n usage events, in one write with the answer, when `session.abort` arrives; SWITCH_GATE=<file> answers
-// `session.model.switchTo` once the file exists.
+// `session.model.switchTo` once the file exists; HOLD_STDOUT=<ms> starts, at `session.create`, a process in a group of its own that holds the
+// CLI's stdout open for that long (or until the test process is gone), as a helper the CLI detached would.
 import { copilotFrames, record } from "../providers/copilot-rpc.js";
 import { appendFileSync, mkdirSync, existsSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -120,6 +121,8 @@ for await (const frame of copilotFrames(process.stdin)) {
     mkdirSync(join(directory, "session-state", sessionId), { recursive: true }); writeFileSync(join(directory, "session-state", sessionId, "events.jsonl"), "PROMPT-LOG\n");
     // A helper process in the CLI's process group, to show that ending the session ends the group.
     if (process.env.GATEWAY_COPILOT_LIVE_CHILD) log({ op: "child", child: spawn(process.execPath, ["-e", `const parent = ${parent}; setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } }, 100)`], { stdio: "ignore" }).pid });
+    if (env("HOLD_STDOUT")) log({ op: "holder", holder: spawn(process.execPath, ["-e", `const parent = ${parent}; const end = Date.now() + ${Number(env("HOLD_STDOUT"))};
+setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } if (Date.now() > end) process.exit(0); }, 100)`], { stdio: ["ignore", 1, "ignore"], detached: true }).pid });
     log({ op: "create", directory, args: process.argv.slice(2), tmpdir: process.env.TMPDIR, params, ...surroundings(directory) });
     // An event of the given type just before `session.create` answers, while the gateway is still starting a live
     // session: in the same write as the answer, or on its own when the answer is delayed.

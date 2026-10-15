@@ -4,6 +4,11 @@ import { ProviderError } from "./provider.js";
 
 type Message = Record<string, unknown>;
 const limit = 16 * 1024 * 1024;
+/** Bounds in milliseconds; tests shorten them. */
+export const rpcLimits = {
+  /** How long the CLI's output may stay open after the CLI process has exited, before the gateway closes it. */
+  exitGraceMs: 500,
+};
 export const record = (value: unknown): Message => value && typeof value === "object" && !Array.isArray(value) ? value as Message : {};
 
 /** SDK stdio framing. Bound headers and payload before parsing JSON. */
@@ -44,6 +49,16 @@ export class CopilotRPC {
     this.child = child || spawn("copilot", ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stderr.resume(); this.events.on("error", () => {});
     this.exited = new Promise(resolve => this.child.once("close", () => { this.fail(new ProviderError("cli_failed", "Copilot CLI closed before completion")); resolve(); }));
+    // Node reports `close` only once every stdio pipe has closed. A process outside the CLI's group can hold the CLI's output open
+    // after the CLI has gone (a helper it detached), so `exited` and the event stream would wait for it without limit. What the
+    // CLI wrote before it exited is read within a moment; after `exitGraceMs` the pipes are closed from this side.
+    this.child.once("exit", () => {
+      const timer = setTimeout(() => {
+        this.failure ??= new ProviderError("cli_failed", "Copilot CLI closed before completion");
+        for (const stream of [this.child.stdout, this.child.stdin, this.child.stderr]) stream.destroy();
+      }, rpcLimits.exitGraceMs).unref();
+      this.child.once("close", () => clearTimeout(timer));
+    });
     this.child.once("error", () => this.fail(new ProviderError("cli_failed", "Copilot CLI is unavailable; run gateway doctor")));
     this.child.stdin.on("error", () => this.fail(new ProviderError("cli_failed", "Copilot CLI connection failed")));
     void this.read();
