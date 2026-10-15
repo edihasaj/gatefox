@@ -86,11 +86,13 @@ only), `provider`, `providerType`, `model`, `status` (`completed`, `empty` or
 (imported rows only), `inputTokens` (gross, including cached), `cachedTokens`,
 `cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `nanoAiu` and `nanoAiuStatus`.
 `nanoAiu` is Copilot's credit amount in billionths of a credit; `null` means none
-was reported, which is not zero. `nanoAiuStatus` is `complete`, `partial` or
-`unavailable` when a request made several Copilot calls and only some were priced.
-A request that fails after a provider reported usage keeps that usage, so a Copilot
-call that is billed and then rejected still shows up. A row with no tokens and no
-credit amount is not written.
+was reported, which is not zero. `nanoAiuStatus` is present on every Copilot row that
+has usage: `complete` when every model call of the request was priced, `partial` when
+only some were priced or Copilot itself called a figure partial (the amount is then a
+floor), and `unavailable` when none was. A request that fails after a provider reported
+usage keeps that usage, and so does a request whose caller disconnected after the
+provider reported it, so a Copilot call that is billed and then rejected or abandoned
+still shows up. A row with no tokens and no credit amount is not written.
 
 Never stored: prompts, instructions, messages, tool names, arguments or outputs,
 images, thread, session or turn ids, account ids, credentials, error text or
@@ -105,8 +107,13 @@ a gateway request once, from the ledger, and skips the matching Codex record.
 `<state>/usage/telemetry-import.json` is absent, each `request_*` telemetry event with
 input or output tokens becomes one `origin: "telemetry"` row (no response id, credit
 amount `null`), and the marker file records the count. This keeps request history
-that telemetry would drop after its 14 days. `providerType` is set only for providers
-in the current configuration.
+that telemetry would drop after its 14 days. An imported row keeps the cache-write,
+reasoning and credit figures its event carries (`cacheWriteTokens`, `reasoningTokens`,
+`nanoAiu`, `nanoAiuStatus`; older events have none, so those read 0 or `null`).
+`providerType` is set only for providers in the current configuration. The import skips
+every request this process records and any request already in the ledger, and writes in
+one append per month, so a request is never counted twice; a reader also keeps one row
+per request id and prefers the gateway's own row over an imported one.
 
 `gateway diagnostics` also sums Copilot credits per model from `nanoAiu`.
 

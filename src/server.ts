@@ -254,17 +254,19 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       controller.signal.throwIfAborted(); touch(); admittedAt = Date.now(); admitted.add(controller);
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       for await (const event of route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)) {
+        // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
+        if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; }
         if (controller.signal.aborted || res.destroyed) break;
         touch();
-        // Running usage is recorded for the ledger and telemetry; it never opens or writes the stream.
-        if (event.type === "usage") { usage = event.usage; accounting = event.accounting ?? accounting; continue; }
+        // Running usage never opens or writes the stream.
+        if (event.type === "usage") continue;
         if (event.type === "transport") {
           if (!opened) open(event.turnState);
           else if (!streaming && !res.headersSent && sendableTurnState(event.turnState)) { res.setHeader("X-Codex-Turn-State", event.turnState); turnStateReturned = true; }
           continue;
         }
         open(); events++; if (!firstEventAt) firstEventAt = Date.now();
-        if (event.type === "tool") tools++; else if (event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; }
+        if (event.type === "tool") tools++;
         writer.accept(event.type === "reasoning-state" ? { ...event, item: wrapReasoning(event.item, route.reasoningScope) } : event);
         if (writer.completed) clearInterval(heartbeat);
         if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);

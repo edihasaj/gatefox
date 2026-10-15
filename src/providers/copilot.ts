@@ -1,14 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
-import type { ResponsesRequest, InferenceEvent, OpenAITool, OpenAIToolCall, Usage, UsageAccounting } from "../protocol/types.js";
+import type { ResponsesRequest, InferenceEvent } from "../protocol/types.js";
 import { openCopilot } from "./copilot-client.js";
 import { record } from "./copilot-rpc.js";
 import { ProviderError, type Provider } from "./provider.js";
 import { imageConversation } from "../protocol/images.js";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { copilotContextFailure } from "./context-errors.js";
+import { CopilotTurn } from "./copilot-turn.js";
+
+export { nativeCopilotCalls } from "./copilot-turn.js";
 
 /** Protocol 3 supports Auto routing profiles, but no selected-model service tier. */
 export function validateCopilotServiceTier(request: ResponsesRequest): void {
@@ -26,21 +28,6 @@ export function copilotEffort(config: ProviderConfig, request: ResponsesRequest)
   return effort as string | undefined;
 }
 
-export function nativeCopilotCalls(value: unknown, tools: OpenAITool[]): OpenAIToolCall[] {
-  if (!Array.isArray(value)) throw new ProviderError("invalid_tool_call", "Copilot returned invalid tool requests");
-  const ids = new Set<string>();
-  return value.map(raw => {
-    const call = record(raw); const match = typeof call.name === "string" && call.name.match(/^gateway_tool_(\d+)$/);
-    const definition = match ? tools[Number(match[1])]?.function : undefined;
-    if (!definition || call.type !== "function" || typeof call.toolCallId !== "string" || !call.toolCallId || ids.has(call.toolCallId) || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) throw new ProviderError("invalid_tool_call", "Copilot returned an unknown, duplicate, or malformed tool call");
-    ids.add(call.toolCallId);
-    if (definition.responseTool?.type === "custom" && typeof record(call.arguments).input !== "string") throw new ProviderError("invalid_tool_call", "Free-form input must be a string");
-    return { id: call.toolCallId, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(call.arguments) } };
-  });
-}
-
-const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
-
 export class CopilotSubscription implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
@@ -51,11 +38,7 @@ export class CopilotSubscription implements Provider {
     const summary = record(request.reasoning).summary;
     const { conversation, images } = imageConversation(normalized.messages);
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
-    let text = ""; let final = false; let subscriptionVerified = false;
-    // One gateway request can contain several model calls; their counts add up.
-    const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, nanoAiu: 0, priced: 0, calls: 0 };
-    let usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-    let accounting: UsageAccounting = {};
+    const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
     try {
       await client.rpc.request("session.create", {
         sessionId, model: request.model, allowedModels: [request.model], streaming: true, ...(effort ? { reasoningEffort: effort } : {}),
@@ -78,60 +61,9 @@ export class CopilotSubscription implements Provider {
       await client.rpc.request("session.send", { sessionId, ...(attachments.length ? { attachments } : {}), prompt: `Tool names: ${JSON.stringify(aliases)}\n${choice === "required" || typeof choice === "object" ? "Use the required caller tool.\n" : ""}Conversation: ${JSON.stringify(conversation)}` });
       for await (const message of client.rpc.notifications()) {
         const params = record(message.params); if (params.sessionId !== sessionId) continue;
-        const event = record(params.event); const data = record(event.data);
-        if (event.agentId) throw new ProviderError("invalid_stream", "Copilot emitted an unexpected sub-agent event");
-        if (event.type === "permission.requested" || event.type === "external_tool.requested") throw new ProviderError("invalid_tool_call", "Copilot requested execution beyond caller-dispatched inference");
-        if (event.type === "session.error") {
-          const context = copilotContextFailure(data); if (context) throw context;
-          const diagnostic = typeof data.message === "string" ? data.message : "";
-          if (/unsupported value|invalid value|not supported with|model.+not available/i.test(diagnostic)) throw new ProviderError("invalid_request", "Copilot rejected the requested model or reasoning option", 400);
-          // Usage-limit and quota wording is final for Codex; a plain rate limit clears by itself, so Codex may retry it.
-          if (/usage.?limit|quota/i.test(diagnostic)) throw new ProviderError("usage_limit", "Copilot subscription usage limit reached", 429);
-          if (/rate.?limit/i.test(diagnostic)) throw new ProviderError("rate_limit_exceeded", "Copilot is temporarily limiting requests; retry shortly", 429);
-          throw new ProviderError("inference_failed", "Copilot inference did not complete; check its subscription and model access");
-        }
-        if (event.type === "assistant.message_delta" && typeof data.deltaContent === "string") {
-          text += data.deltaContent; if (Buffer.byteLength(text) > 8 * 1024 * 1024) throw new ProviderError("output_too_large", "Copilot output exceeds 8 MiB");
-          yield { type: "text", text: data.deltaContent };
-        }
-        if (event.type === "assistant.reasoning_delta" && typeof data.deltaContent === "string" && summary !== "none") yield { type: "reasoning", text: data.deltaContent, ...(typeof data.reasoningId === "string" ? { id: data.reasoningId } : {}) };
-        if (event.type === "assistant.usage") {
-          if (data.isByok === true) throw new ProviderError("account_route", "Copilot attempted BYOK inference");
-          if (data.isByok !== false && data.provider !== "copilot") throw new ProviderError("subscription_unverified", "Copilot did not verify subscription inference");
-          subscriptionVerified = true;
-          const nanoAiu = record(data.copilotUsage).totalNanoAiu;
-          totals.input += count(data.inputTokens); totals.output += count(data.outputTokens); totals.cacheRead += count(data.cacheReadTokens);
-          totals.cacheWrite += count(data.cacheWriteTokens); totals.reasoning += count(data.reasoningTokens); totals.calls++;
-          if (typeof nanoAiu === "number" && Number.isFinite(nanoAiu) && nanoAiu >= 0 && data.aiCreditsStatus !== "unavailable") { totals.priced++; totals.nanoAiu += nanoAiu; }
-          usage = { input_tokens: totals.input, output_tokens: totals.output, total_tokens: totals.input + totals.output, input_tokens_details: { cached_tokens: totals.cacheRead } };
-          accounting = { cacheWriteTokens: totals.cacheWrite, reasoningTokens: totals.reasoning, ...(totals.priced ? { nanoAiu: totals.nanoAiu } : {}),
-            nanoAiuStatus: totals.priced === totals.calls ? "complete" : totals.priced ? "partial" : "unavailable" };
-          // The server records this before any later check can reject the call, so spend is never lost.
-          yield { type: "usage", usage, accounting };
-        }
-        if (event.type === "assistant.message") {
-          // Protocol 3 in CLI 1.0.91 omits this optional field. Its preceding
-          // isByok:false usage and exact model still attest the subscription route.
-          if (data.providerId !== undefined && data.providerId !== "copilot") throw new ProviderError("provider_route", "Copilot changed the requested subscription route");
-          if (data.model !== request.model) {
-            const actual = typeof data.model === "string" && Object.values(this.config.models).includes(data.model) ? data.model : "an unexpected model";
-            throw new ProviderError("model_route", `Copilot returned ${actual} instead of the requested model`);
-          }
-          if (!subscriptionVerified) throw new ProviderError("subscription_unverified", "Copilot did not verify subscription inference");
-          const content = typeof data.content === "string" ? data.content : "";
-          if (!content.startsWith(text)) throw new ProviderError("inconsistent_stream", "Copilot final text differs from streamed text");
-          if (content.length > text.length) yield { type: "text", text: content.slice(text.length) };
-          final = true;
-          if (Array.isArray(data.toolRequests) && data.toolRequests.length) {
-            for (const call of nativeCopilotCalls(data.toolRequests, tools)) yield { type: "tool", call };
-            yield { type: "done", usage, accounting }; return;
-          }
-          if (choice === "required" || typeof choice === "object") throw new ProviderError("invalid_tool_call", "Copilot did not return the required tool call");
-        }
-        if (event.type === "assistant.idle") {
-          if (!final) throw new ProviderError("incomplete", "Copilot became idle without a final response");
-          yield { type: "done", usage, accounting }; return;
-        }
+        const step = turn.accept(record(params.event));
+        yield* step.events;
+        if (step.end) { yield turn.done(); return; }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");
     } catch (error) { if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499); throw error; }

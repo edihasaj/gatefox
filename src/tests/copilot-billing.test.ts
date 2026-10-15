@@ -43,6 +43,21 @@ test("Copilot sums every model call of one request and reports billing detail se
   });
 });
 
+test("Copilot marks the credit total partial when only some calls were priced or a call reports a partial figure", async () => {
+  await withFixture(async (_directory, mode) => {
+    const adapter = new CopilotSubscription(provider);
+    mode("mixed");
+    const mixed = (await collect(adapter.infer(request, new AbortController().signal))).at(-1);
+    assert.ok(mixed?.type === "done");
+    assert.deepEqual(mixed.accounting, { cacheWriteTokens: 0, reasoningTokens: 0, nanoAiu: 2e9, nanoAiuStatus: "partial" });
+    mode("partial");
+    const partial = (await collect(adapter.infer(request, new AbortController().signal))).at(-1);
+    assert.ok(partial?.type === "done");
+    assert.equal(partial.accounting?.nanoAiu, 5e8, "the partial figure is kept as a floor");
+    assert.equal(partial.accounting?.nanoAiuStatus, "partial");
+  });
+});
+
 test("Copilot reports usage before a rejected model route and keeps the temporary session private", async () => {
   await withFixture(async (directory, mode) => {
     const adapter = new CopilotSubscription(provider); const seen: InferenceEvent[] = [];

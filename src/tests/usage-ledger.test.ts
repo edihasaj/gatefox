@@ -14,13 +14,13 @@ const usage = { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_to
 const accounting: UsageAccounting = { cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "complete" };
 type Kind = "copilot-subscription" | "claude-subscription" | "codex-subscription";
 
-async function start(type: Kind, events: (() => AsyncGenerator<InferenceEvent>)) {
+async function start(type: Kind, events: (signal: AbortSignal) => AsyncGenerator<InferenceEvent>) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-")); resetUsageLedger(); configureTelemetry(directory, "test");
   const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "fake", type, models: { alias: "actual" }, ...(type === "codex-subscription" ? { credentialFile: join(directory, "credentials.json") } : {}) }] });
-  const server = await startGateway(config, () => ({ infer: events }) as Provider);
+  const server = await startGateway(config, () => ({ infer: (_request: unknown, signal: AbortSignal) => events(signal) }) as Provider);
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { Authorization: `Bearer ${await gatewayToken(directory)}`, "Content-Type": "application/json" };
-  const post = (body: Record<string, unknown>) => fetch(`${url}/v1/responses`, { method: "POST", headers, body: JSON.stringify({ model: "alias", ...body }) });
+  const post = (body: Record<string, unknown>, signal?: AbortSignal) => fetch(`${url}/v1/responses`, { method: "POST", headers, signal, body: JSON.stringify({ model: "alias", ...body }) });
   return { directory, post, close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }) };
 }
 const answer = (): (() => AsyncGenerator<InferenceEvent>) => async function* () {
@@ -123,4 +123,69 @@ test("the telemetry history is imported once, without zero-token rows", async ()
   const marker = JSON.parse(await readFile(join(directory, "usage", "telemetry-import.json"), "utf8")) as { rows: number }; assert.equal(marker.rows, 2);
   resetUsageLedger(); recordUsage(directory, { requestId: "later", status: "completed", inputTokens: 1 }); await flushUsageLedger();
   assert.equal((await readUsageLedger(directory, 0)).filter(entry => entry.origin === "telemetry").length, 2, "a second run does not import again");
+});
+
+async function telemetryHistory(directory: string, ids: string[]): Promise<void> {
+  const day = new Date().toISOString().slice(0, 10); const at = new Date().toISOString();
+  await mkdir(join(directory, "telemetry"), { recursive: true });
+  await writeFile(join(directory, "telemetry", `events-${day}.jsonl`), ids.map(requestId => JSON.stringify({ at, host: "mac", component: "gateway", pid: 1, event: "request_completed", requestId, provider: "copilot", model: "m", inputTokens: 50, outputTokens: 3 })).join("\n") + "\n");
+}
+
+test("two requests that finish while the telemetry import runs each get exactly one gateway row", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-race-")); resetUsageLedger();
+  // Both requests are already in telemetry when the first write triggers the one-time import.
+  await telemetryHistory(directory, ["a", "b", "old"]);
+  recordUsage(directory, { requestId: "a", status: "completed", inputTokens: 7 });
+  recordUsage(directory, { requestId: "b", status: "completed", inputTokens: 8 });
+  await flushUsageLedger();
+  const all = await readUsageLedger(directory, 0);
+  assert.deepEqual(all.map(row => [row.requestId, row.origin]).sort(), [["a", "gateway"], ["b", "gateway"], ["old", "telemetry"]]);
+  const files = (await readdir(join(directory, "usage"))).filter(name => name.startsWith("usage-"));
+  const lines = (await Promise.all(files.map(name => readFile(join(directory, "usage", name), "utf8")))).join("").split("\n").filter(Boolean);
+  assert.equal(lines.length, 3, "no request is written twice");
+});
+
+test("an import that failed before its marker is retried without repeating rows, and readers keep the gateway row", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-retry-")); resetUsageLedger();
+  await telemetryHistory(directory, ["x", "y"]);
+  // A first run appended x but died before writing the marker; its copy of y was lost.
+  await mkdir(join(directory, "usage"), { recursive: true });
+  const at = new Date().toISOString();
+  const row = { v: 1, at, host: "mac", requestId: "x", provider: "copilot", model: "m", status: "completed", origin: "telemetry", inputTokens: 50, cachedTokens: 0, cacheWriteTokens: 0, outputTokens: 3, reasoningTokens: 0, nanoAiu: null };
+  await writeFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), JSON.stringify(row) + "\n" + JSON.stringify({ ...row, origin: "gateway", inputTokens: 51 }) + "\n");
+  recordUsage(directory, { requestId: "later", status: "completed", inputTokens: 1 }); await flushUsageLedger();
+  const all = await readUsageLedger(directory, 0);
+  assert.deepEqual(all.map(entry => [entry.requestId, entry.origin]).sort(), [["later", "gateway"], ["x", "gateway"], ["y", "telemetry"]]);
+  assert.equal(all.find(entry => entry.requestId === "x")?.inputTokens, 51, "the gateway row wins over the imported one");
+});
+
+test("usage a provider reports after the client disconnected is still recorded", async () => {
+  let began!: () => void; const started = new Promise<void>(resolve => { began = resolve; });
+  const gateway = await start("copilot-subscription", async function* (signal) {
+    began(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+    // The provider had already paid for this call when the caller left.
+    yield { type: "usage", usage, accounting }; yield { type: "done", usage, accounting };
+  });
+  try {
+    const client = new AbortController();
+    const pending = gateway.post({ input: "hi", stream: true }, client.signal).then(response => response.text()).catch(() => "");
+    await started; client.abort(); await pending;
+    for (let attempt = 0; attempt < 50; attempt++) { if ((await rows(gateway.directory)).length) break; await new Promise(resolve => setTimeout(resolve, 20)); }
+    const [row, ...rest] = await rows(gateway.directory); assert.equal(rest.length, 0);
+    assert.equal(row.status, "failed"); assert.equal(row.inputTokens, 100); assert.equal(row.nanoAiu, 2e9); assert.equal(row.nanoAiuStatus, "complete");
+    await flushTelemetry();
+    const failed = (await readTelemetry(gateway.directory, 0)).find(event => event.event === "request_failed");
+    assert.equal(failed?.nanoAiu, 2e9, "telemetry keeps the spend too");
+  } finally { await gateway.close(); }
+});
+
+test("the telemetry import keeps cache-write, reasoning and credit figures that the event carries", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-figures-")); resetUsageLedger();
+  const at = new Date().toISOString();
+  await mkdir(join(directory, "telemetry"), { recursive: true });
+  await writeFile(join(directory, "telemetry", `events-${at.slice(0, 10)}.jsonl`), JSON.stringify({ at, host: "mac", component: "gateway", pid: 1, event: "request_completed", requestId: "k", provider: "copilot", model: "m",
+    inputTokens: 50, cachedTokens: 40, outputTokens: 3, cacheWriteTokens: 6, reasoningTokens: 2, nanoAiu: 2.5e9, nanoAiuStatus: "partial" }) + "\n");
+  recordUsage(directory, { requestId: "later", status: "completed", inputTokens: 1 }); await flushUsageLedger();
+  const row = (await readUsageLedger(directory, 0)).find(entry => entry.requestId === "k");
+  assert.deepEqual([row?.origin, row?.cacheWriteTokens, row?.reasoningTokens, row?.nanoAiu, row?.nanoAiuStatus], ["telemetry", 6, 2, 2.5e9, "partial"]);
 });

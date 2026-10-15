@@ -32,6 +32,9 @@ export const ledgerFields: ReadonlySet<string> = new Set(["v", "at", "host", "re
 
 const prepared = new Map<string, Promise<void>>(); const lastMonth = new Map<string, string>(); const fileModes = new Set<string>();
 let writes: Promise<void> = Promise.resolve();
+/** Request ids this process has queued rows for. The telemetry import skips them, whenever they finish. */
+const recorded = new Set<string>();
+const remember = (requestId: string) => { recorded.add(requestId); if (recorded.size > 20000) recorded.delete(recorded.keys().next().value!); };
 
 export const usageLedgerEnabled = (): boolean => process.env.GATEWAY_USAGE_LEDGER !== "off";
 export const usageLedgerMarks = (type: string): boolean => usageLedgerEnabled() && LEDGER_COUNTED_TYPES.has(type);
@@ -56,10 +59,22 @@ function build(fields: UsageFields, at: string, host: string): LedgerRow | undef
   return empty ? undefined : row;
 }
 
-async function append(directory: string, row: LedgerRow): Promise<void> {
-  const path = fileFor(directory, monthOf(row.at));
-  await appendFile(path, JSON.stringify(row) + "\n", { mode: 0o600 });
+async function appendLines(path: string, lines: string[]): Promise<void> {
+  await appendFile(path, lines.join("\n") + "\n", { mode: 0o600 });
   if (!fileModes.has(path)) { fileModes.add(path); await chmod(path, 0o600); }
+}
+const append = (directory: string, row: LedgerRow) => appendLines(fileFor(directory, monthOf(row.at)), [JSON.stringify(row)]);
+
+/** Request ids already in the ledger files, so a repeated import never writes a row twice. */
+async function ledgerRequestIds(directory: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  for (const name of await readdir(directory).catch(() => [] as string[])) {
+    if (!/^usage-\d{4}-\d{2}\.jsonl$/.test(name)) continue;
+    for (const line of (await readFile(join(directory, name), "utf8").catch(() => "")).split("\n")) {
+      try { const id = (JSON.parse(line) as { requestId?: unknown }).requestId; if (typeof id === "string") ids.add(id); } catch { /* A torn line is skipped. */ }
+    }
+  }
+  return ids;
 }
 
 async function prune(directory: string, now: Date): Promise<void> {
@@ -71,19 +86,28 @@ async function prune(directory: string, now: Date): Promise<void> {
   }
 }
 
-/** Copies the last telemetry window once (except the request being recorded), so request history that predates the ledger survives telemetry expiry. */
-async function importTelemetry(stateDirectory: string, directory: string, types: ReadonlyMap<string, string>, current: string): Promise<void> {
-  const marker = join(directory, "telemetry-import.json"); let rows = 0;
+/**
+ * Copies the last telemetry window once, so request history that predates the ledger survives telemetry
+ * expiry. It skips every request this process records (they get a gateway row) and any request already
+ * in the ledger, and writes all rows in one append per month, so a failed import repeats cleanly.
+ */
+async function importTelemetry(stateDirectory: string, directory: string, types: ReadonlyMap<string, string>): Promise<void> {
+  const marker = join(directory, "telemetry-import.json");
   if (await readFile(marker, "utf8").then(() => true, () => false)) return;
+  const known = await ledgerRequestIds(directory); const months = new Map<string, string[]>(); let rows = 0;
   for (const event of await readTelemetry(stateDirectory, 0)) {
     const status: LedgerStatus | undefined = event.event === "request_completed" ? "completed" : event.event === "request_empty" ? "empty" : event.event === "request_failed" ? "failed" : undefined;
-    if (!status || typeof event.requestId !== "string" || event.requestId === current || !(count(event.inputTokens) > 0 || count(event.outputTokens) > 0)) continue;
+    if (!status || typeof event.requestId !== "string" || recorded.has(event.requestId) || known.has(event.requestId) || !(count(event.inputTokens) > 0 || count(event.outputTokens) > 0)) continue;
     const provider = typeof event.provider === "string" ? event.provider : undefined; const providerType = provider ? types.get(provider) : undefined;
     const row = build({ requestId: event.requestId, provider, ...(providerType ? { providerType } : {}), model: typeof event.model === "string" ? event.model : undefined, status,
       origin: "telemetry", session: event.session === true, inputTokens: count(event.inputTokens), cachedTokens: count(event.cachedTokens), outputTokens: count(event.outputTokens),
-      nanoAiu: null }, event.at, typeof event.host === "string" ? text(event.host) ?? "unknown" : "unknown");
-    if (row) { await append(directory, row); rows++; }
+      cacheWriteTokens: count(event.cacheWriteTokens), reasoningTokens: count(event.reasoningTokens),
+      nanoAiu: typeof event.nanoAiu === "number" ? event.nanoAiu : null, nanoAiuStatus: typeof event.nanoAiuStatus === "string" ? event.nanoAiuStatus as NanoAiuStatus : undefined }, event.at, typeof event.host === "string" ? text(event.host) ?? "unknown" : "unknown");
+    if (!row) continue;
+    known.add(row.requestId); rows++;
+    const month = monthOf(row.at); months.set(month, [...(months.get(month) || []), JSON.stringify(row)]);
   }
+  for (const [month, lines] of months) await appendLines(fileFor(directory, month), lines);
   await writeFile(marker, JSON.stringify({ importedAt: new Date().toISOString(), rows }), { mode: 0o600 }); await chmod(marker, 0o600);
 }
 
@@ -94,11 +118,13 @@ async function importTelemetry(stateDirectory: string, directory: string, types:
 export function recordUsage(stateDirectory: string, fields: UsageFields, now: Date = new Date(), types: ReadonlyMap<string, string> = new Map()): void {
   if (!usageLedgerEnabled()) return;
   const row = build({ ...fields, origin: "gateway" }, now.toISOString(), hostname().split(".")[0]); if (!row) return;
+  // Marked now, not when the write runs: a request that finishes while the import reads telemetry is still excluded.
+  remember(row.requestId);
   const directory = join(stateDirectory, "usage"); const month = monthOf(now);
   writes = writes.then(async () => {
     let ready = prepared.get(directory);
     if (!ready) {
-      ready = mkdir(directory, { recursive: true, mode: 0o700 }).then(() => chmod(directory, 0o700)).then(() => importTelemetry(stateDirectory, directory, types, fields.requestId));
+      ready = mkdir(directory, { recursive: true, mode: 0o700 }).then(() => chmod(directory, 0o700)).then(() => importTelemetry(stateDirectory, directory, types));
       prepared.set(directory, ready);
     }
     await ready.catch(() => { prepared.delete(directory); });
@@ -111,11 +137,11 @@ export function recordUsage(stateDirectory: string, fields: UsageFields, now: Da
 export async function flushUsageLedger(): Promise<void> { await writes; }
 
 /** Forgets per-process directory state; tests use it to start from a clean process view. */
-export function resetUsageLedger(): void { prepared.clear(); lastMonth.clear(); fileModes.clear(); }
+export function resetUsageLedger(): void { prepared.clear(); lastMonth.clear(); fileModes.clear(); recorded.clear(); }
 
-/** Reads rows at or after `sinceMs`, keeping only the documented fields. */
+/** Reads rows at or after `sinceMs`, keeping only the documented fields. One row per request id; the gateway's own row wins over an imported one. */
 export async function readUsageLedger(stateDirectory: string, sinceMs: number): Promise<LedgerRow[]> {
-  const directory = join(stateDirectory, "usage"); const since = monthOf(new Date(sinceMs)); const rows: LedgerRow[] = [];
+  const directory = join(stateDirectory, "usage"); const since = monthOf(new Date(sinceMs)); const rows = new Map<string, LedgerRow>();
   for (const name of (await readdir(directory).catch(() => [] as string[])).sort()) {
     const month = /^usage-(\d{4}-\d{2})\.jsonl$/.exec(name)?.[1]; if (!month || month < since) continue;
     for (const line of (await readFile(join(directory, name), "utf8").catch(() => "")).split("\n")) {
@@ -124,9 +150,10 @@ export async function readUsageLedger(stateDirectory: string, sinceMs: number): 
         const raw = JSON.parse(line) as Record<string, unknown>; if (raw.v !== 1 || typeof raw.at !== "string" || Date.parse(raw.at) < sinceMs) continue;
         const kept = Object.fromEntries(Object.entries(raw).filter(([key]) => ledgerFields.has(key)));
         const row = build({ ...(kept as unknown as UsageFields), origin: raw.origin === "telemetry" ? "telemetry" : "gateway" }, raw.at, typeof raw.host === "string" ? raw.host : "unknown");
-        if (row) rows.push(row);
+        const earlier = row ? rows.get(row.requestId) : undefined;
+        if (row && (!earlier || (earlier.origin === "telemetry" && row.origin === "gateway"))) rows.set(row.requestId, row);
       } catch { /* A torn line is skipped. */ }
     }
   }
-  return rows;
+  return [...rows.values()];
 }

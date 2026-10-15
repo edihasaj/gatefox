@@ -26,7 +26,11 @@ for await (const message of copilotFrames(process.stdin)) {
     if (mode === "billing") {
       event("assistant.usage", { isByok: false, inputTokens: 100, outputTokens: 5, cacheReadTokens: 80, cacheWriteTokens: 10, reasoningTokens: 3, copilotUsage: { totalNanoAiu: 2e9 } });
       event("assistant.usage", { isByok: false, inputTokens: 50, outputTokens: 2, cacheReadTokens: 40, cacheWriteTokens: 0, reasoningTokens: 1, copilotUsage: { totalNanoAiu: 1e9 } });
-    } else if (mode === "unpriced") event("assistant.usage", { isByok: false, inputTokens: 11, outputTokens: 2, aiCreditsStatus: "unavailable" });
+    } else if (mode === "mixed") {
+      event("assistant.usage", { isByok: false, inputTokens: 100, outputTokens: 5, copilotUsage: { totalNanoAiu: 2e9 } });
+      event("assistant.usage", { isByok: false, inputTokens: 50, outputTokens: 2, aiCreditsStatus: "unavailable" });
+    } else if (mode === "partial") event("assistant.usage", { isByok: false, inputTokens: 40, outputTokens: 4, aiCreditsStatus: "partial", copilotUsage: { totalNanoAiu: 5e8 } });
+    else if (mode === "unpriced") event("assistant.usage", { isByok: false, inputTokens: 11, outputTokens: 2, aiCreditsStatus: "unavailable" });
     else event("assistant.usage", { isByok: mode === "byok", inputTokens: 11, outputTokens: 2 });
     const tool = mode === "tool" || mode === "foreign-tool";
     const text = tool ? "" : "fixture-proof";
