@@ -33,7 +33,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       if (typeof event.firstEventMs === "number") (firstEvent[model] ||= []).push(event.firstEventMs);
     }
     if (event.event === "provider_retry") bump(retries, event.upstreamCode ?? event.code);
-    if (event.event === "rpc_error") bump(rpcErrors, `${event.method} ${event.code} ${event.reason ?? event.errorClass ?? ""}`.trim());
+    if (event.event === "rpc_error") bump(rpcErrors, `${event.method} ${event.code} ${event.reason ?? (event.rejection && event.rejection !== "other" ? event.rejection : event.errorClass) ?? ""}`.trim());
     if (event.event === "component_exit") bump(components, `${event.component} exit ${event.code}`);
     if (event.event.startsWith("execution_host_") || event.event === "native_acquire") bump(host, `${event.event}${event.outcome ? ":" + event.outcome : ""}`);
     if (event.event === "claude_cli") bump(claude, event.isError ? `error:${event.result}` : event.interrupted ? "interrupted" : event.aborted ? "aborted" : event.result);

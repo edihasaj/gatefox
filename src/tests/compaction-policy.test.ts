@@ -90,3 +90,32 @@ test("goal guard uses stable default, confirmed configuration, final SDK toggle 
   assert.equal(disabled.goalsEnabled("chat"), true); assert.equal(disabled.goalsEnabled("other"), false);
   disabled.remember("chat", { "features.goals": false }); assert.equal(disabled.goalsEnabled("chat"), false);
 });
+
+const noGoals = { features: { goals: false } };
+
+test("forgetting a chat drops its per-chat overrides and falls back to the loaded settings", () => {
+  const policy = new CompactionPolicy([row]);
+  policy.remember("chat", { model_context_window: 150000, features: { goals: false } });
+  assert.equal(policy.target("chat", row.slug)!.effectiveContextWindow, 142500); assert.equal(policy.goalsEnabled("chat"), false);
+  policy.forget("chat");
+  assert.equal(policy.target("chat", row.slug)!.effectiveContextWindow, 258400); assert.equal(policy.goalsEnabled("chat"), true);
+  policy.forget("never-remembered");
+});
+
+test("a full policy table drops the chat set longest ago instead of refusing a new chat", () => {
+  const policy = new CompactionPolicy([row]);
+  for (let i = 0; i < 4096; i++) policy.remember(`chat-${i}`, noGoals);
+  assert.doesNotThrow(() => policy.remember("chat-4096", noGoals), "a chat started on a full table is accepted");
+  assert.equal(policy.goalsEnabled("chat-0"), true, "the oldest chat lost its overrides");
+  assert.equal(policy.goalsEnabled("chat-1"), false); assert.equal(policy.goalsEnabled("chat-4096"), false);
+  assert.equal((policy as unknown as { threads: Map<string, unknown> }).threads.size, 4096);
+});
+
+test("setting a chat again makes it the newest, so a full table drops a different one", () => {
+  const policy = new CompactionPolicy([row]);
+  for (let i = 0; i < 4096; i++) policy.remember(`chat-${i}`, noGoals);
+  policy.remember("chat-0", { features: { goals: false }, model_context_window: 150000 });
+  policy.remember("chat-4096", noGoals);
+  assert.equal(policy.goalsEnabled("chat-0"), false, "the refreshed chat survives");
+  assert.equal(policy.goalsEnabled("chat-1"), true, "the next oldest chat is the one dropped");
+});

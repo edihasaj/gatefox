@@ -181,7 +181,7 @@ export class AppServerBackends {
       await this.compaction.observe(message);
       const thread = object(params.thread); const threadId = typeof params.threadId === "string" ? params.threadId : typeof thread.id === "string" ? thread.id : undefined;
       if (message.method === "thread/started" && threadId) { engine.threads.add(threadId); this.bindings.set(threadId, engine); }
-      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
+      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
       if (message.method === "turn/started" && threadId && typeof object(params.turn).id === "string") engine.active.set(threadId, String(object(params.turn).id));
       if (message.method === "turn/completed" && threadId && engine.active.get(threadId) === object(params.turn).id) engine.active.delete(threadId);
       // Executor account discovery is not the desktop's primary account state.
@@ -424,7 +424,7 @@ export class AppServerBackends {
         if (method !== "thread/resume" || !loaded) engine.compaction?.remember(id, params);
       }
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
-        engine.threads.delete(params.threadId); this.bindings.delete(params.threadId);
+        engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); engine.compaction?.forget(params.threadId);
       }
       return result;
     } finally { engine.requests--; }

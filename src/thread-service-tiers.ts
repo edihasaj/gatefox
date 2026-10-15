@@ -29,7 +29,9 @@ interface ChatState { live?: ThreadServiceTier; marker?: ThreadServiceTier; unkn
 /** The newer of the chat's own row and its marker wins; a tie is unknown, which forwards no tier. */
 function chatState(saved: Snapshot, threadId: string): ChatState {
   const live = saved.threads[threadId]; const marker = saved.threads[markerKey(threadId)];
-  const unknown = !!marker && (!live || (marker.emittedAtMs ?? 0) >= (live.emittedAtMs ?? 0));
+  // A row 0.4.0 wrote inside the marker's uncertainty window is not trusted either: 0.4.0 knew nothing of the watermark.
+  const unknown = !!marker && (!live || (marker.emittedAtMs ?? 0) >= (live.emittedAtMs ?? 0) ||
+    (live.serviceTier !== null && marker.uncertainBeforeMs !== undefined && (live.emittedAtMs ?? 0) <= marker.uncertainBeforeMs));
   return { live, marker, unknown, known: unknown ? undefined : live, base: unknown ? marker : live };
 }
 
@@ -53,6 +55,47 @@ function snapshot(value: unknown): Snapshot {
   const threads: Record<string, ThreadServiceTier> = Object.create(null);
   for (const [id, value] of entries) { if (!text(id)) throw invalid(); threads[id] = row(value); }
   return { version: 1, threads };
+}
+
+const serializedBytes = (value: Snapshot): number => Buffer.byteLength(JSON.stringify(value, null, 2) + "\n");
+/** What dropping one row saves in the indented file: its lines plus the separator after it (the file always keeps the row being written). */
+const rowBytes = (id: string, entry: ThreadServiceTier): number =>
+  Buffer.byteLength("    " + JSON.stringify(id) + ": " + JSON.stringify(entry, null, 2).replace(/\n/g, "\n    ") + ",\n");
+/**
+ * Other chats from oldest to newest, each as the keys of its row and its marker so they leave together; an older
+ * row can then never outlive a newer marker. A chat is as new as the newest stamp of either, and chats with no stamp go first.
+ */
+function evictionGroups(threads: Record<string, ThreadServiceTier>, keep: Set<string>): string[][] {
+  const grouped = new Set<string>(); const groups: Array<{ ids: string[]; stamp: number }> = [];
+  const stamp = (ids: string[]) => Math.max(...ids.map(id => threads[id].emittedAtMs ?? -1));
+  for (const id of Object.keys(threads)) {
+    const marker = markerKey(id);
+    if (keep.has(id) || grouped.has(id) || !Object.hasOwn(threads, marker)) continue;
+    grouped.add(id); grouped.add(marker); groups.push({ ids: [id, marker], stamp: stamp([id, marker]) });
+  }
+  for (const id of Object.keys(threads)) if (!keep.has(id) && !grouped.has(id)) groups.push({ ids: [id], stamp: stamp([id]) });
+  return groups.sort((a, b) => a.stamp - b.stamp).map(group => group.ids);
+}
+
+/**
+ * Keeps the store within its row and byte limits by dropping other chats, oldest first, never the chat just written
+ * (its row and marker are in `keep`). Rows and markers count alike, each by its exact size. False only if nothing is left to drop.
+ */
+function makeRoom(saved: Snapshot, keep: Set<string>): boolean {
+  let count = Object.keys(saved.threads).length; let over = serializedBytes(saved) - maxBytes;
+  if (count <= maxThreads && over <= 0) return true;
+  const oldest = evictionGroups(saved.threads, keep); let next = 0;
+  while (count > maxThreads || over > 0) {
+    if (next >= oldest.length) return false;
+    // Each row's exact indented size is counted, so this drops no more than needed; the
+    // serialization below is the final check and the loop only repeats if it is still over.
+    let freed = 0;
+    do {
+      for (const id of oldest[next++]) { freed += rowBytes(id, saved.threads[id]); delete saved.threads[id]; count--; }
+    } while ((count > maxThreads || freed < over) && next < oldest.length);
+    over = serializedBytes(saved) - maxBytes;
+  }
+  return true;
 }
 
 /** Private chat metadata, isolated from native configuration, authentication, and history. */
@@ -137,13 +180,18 @@ export class ThreadServiceTiers {
         emittedAtMs = selected.emittedAtMs;
       }
       if (base && base.model === selected.model && currentTier === selected.serviceTier && base.emittedAtMs === emittedAtMs && base.uncertainBeforeMs === uncertainBeforeMs) return true;
-      if (!live && !marker && Object.keys(saved.threads).length >= maxThreads) throw invalid();
       // The revision never repeats across a swap between the chat's row and its marker, so a stale CAS cannot match.
       const revision = Math.max(live?.revision ?? 0, marker?.revision ?? 0) + 1; if (!integer(revision)) throw invalid();
       const next: ThreadServiceTier = { model: selected.model, serviceTier: selected.serviceTier ?? null, revision, ...(emittedAtMs !== undefined ? { emittedAtMs } : {}), ...(uncertainBeforeMs !== undefined ? { uncertainBeforeMs } : {}) };
       if (selected.serviceTier === undefined) { delete saved.threads[threadId]; saved.threads[markerKey(threadId)] = next; }
       else { saved.threads[threadId] = next; delete saved.threads[markerKey(threadId)]; }
-      if (Buffer.byteLength(JSON.stringify(saved, null, 2) + "\n") > maxBytes) throw invalid();
+      // The chat now has one entry, so a chat that only had a marker (or only a row) changes no count. Other chats make room.
+      if (!makeRoom(saved, new Set([threadId, markerKey(threadId)]))) {
+        if (selected.serviceTier !== undefined) throw invalid();
+        // Unreachable while a lone marker is far below the byte limit; kept so an unknown tier can never fail for lack of room.
+        // The chat's row is already gone, so a full store keeps no watermark and an older notification could bring a tier back.
+        delete saved.threads[markerKey(threadId)];
+      }
       await writePrivateJson(this.path, saved);
       return true;
     });

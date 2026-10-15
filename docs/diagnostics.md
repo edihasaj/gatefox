@@ -26,6 +26,18 @@ only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` 
 | Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry, `threadKey` — the same first 8 hex `claude_session` reports, when the request carried a thread id, so one thread's one-shot and live events line up — and `systemPrefixOnly` set when its cache read reached only the system prefix, the same test `claude_session` applies below; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `model_metadata_skipped` (the six-hour metadata refresh left one provider out: `provider` and a fixed `reason`, `refresh_deferred` when serving a Codex login's access token would need a refresh (it has expired, or expires within two minutes unless the issuer's `earliest_refresh_at` is still in the future) and the refresh was left to the next real request, or `discovery_failed` for any other failure; the error text is never recorded), `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
+An adapter `rpc_error` records the method, the JSON-RPC code and either `reason` (the
+adapter's own fixed routing message) or `errorClass`. It also records `rejection`, named
+from the engine's or adapter's message, which is itself never stored: `adapter_routing`,
+`unknown_method`, `experimental_api`, `invalid_params`, `relative_path` (a path such as
+the desktop's projectless `~` that is not absolute), `prediction_fork_overrides`,
+`prediction_fork_parent`, `no_active_process`, `process_not_running`,
+`duplicate_process_handle`, `spawn_failed`, `rollout_not_found`, `thread_not_loaded`,
+`thread_not_persisted`, `engine_closed`, `engine_timeout`, or `other`. `gateway
+diagnostics` groups non-routing RPC errors by `rejection` when it is more specific
+than `other` (and by `errorClass` otherwise); adapter routing errors stay grouped by
+their fixed `reason`.
+
 A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403
 for a rejected login; any other HTTP error status, for example 429 or 5xx, for a temporary
 failure) records `request_failed` with `upstreamEvent` `oauth_refresh` and `upstreamCode` set to the OAuth error code the token
