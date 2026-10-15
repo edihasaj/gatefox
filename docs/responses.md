@@ -285,9 +285,12 @@ background, without the request waiting for the exit. The next request starts a 
 session and sends the caller-supplied history once. Cancelling a one-shot request stops
 its CLI process and waits for it to exit. Either way, usage the CLI reported before the
 cancellation still reaches the usage ledger and telemetry. A request a live session
-cannot serve (no thread id, compaction, a concurrent request, every slot busy, or
-`copilotSessions.mode: "oneshot"`) gets its own session, with the same system message,
-the caller's whole tool catalog and one user message per history item.
+cannot serve gets its own session, with the same system message, the caller's whole tool
+catalog and one user message per history item. That happens, for example, for a request
+without a thread id; a compaction, prewarm or memory request; a second request while the
+thread's first still runs; no free slot; a session that fails to start, does not accept a
+tool result or dies before its first event; or `copilotSessions.mode: "oneshot"`. The
+[full list](copilot-sessions.md#how-a-request-is-served) names each case.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 Normal requests retain the selected model, reasoning, and subscription route.

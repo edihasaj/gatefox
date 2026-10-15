@@ -100,7 +100,8 @@ what the model sees.
 - **One-shot fallback** (the request is answered with its own session and no live session
   starts or changes): `no_thread` (no thread id), `request_kind` (compaction, prewarm and
   memory requests), `concurrent` (a second request for a thread whose first still runs or
-  is still being placed), `capacity` (every slot is running a turn), `spawn_failed` or
+  is still being placed), `capacity` (every slot is held by a running session, a session
+  whose own request is being placed, or a session still starting), `spawn_failed` or
   `initialize_timeout` (the process or its handshake did not come up in time, or the
   session misbehaved while starting), `delivery_rejected` (the session did not confirm a
   tool result: it refused it, answered with an error, did not answer within 15 seconds,
@@ -115,8 +116,10 @@ what the model sees.
 While every slot holds a session, a new thread first waits for a session that is already
 closing, then takes the slot of the least recently used session that finished its turn,
 then of the least recently used one that waits for tool outputs. A running session is
-never evicted, and neither is one whose own request is being placed. When every session is
-running, the newcomer is served one-shot (`capacity`). An evicted session's process and
+never evicted, and neither is one whose own request is being placed. When no slot can be
+freed, because every slot is held by a running session, a session whose own request is
+being placed, or a session still starting (another thread's attach that has no session
+yet), the newcomer is served one-shot (`capacity`). An evicted session's process and
 folder are gone before its replacement starts, and the evicted thread reseeds on its next
 request (`evicted`). Sessions being started count toward `max`, in arrival order, so
 concurrent starts never hold more sessions than the cap. A session that is still closing
@@ -224,6 +227,19 @@ A session that never served a request (it failed while starting) has no end even
 request's `fallback` event says why. `request_completed` and `request_failed` carry the
 same `initiator`, `cacheWriteTokens`, `reasoningTokens` and `nanoAiu` for every Copilot
 request.
+
+## Restarts and upgrades
+
+An in-place upgrade keeps the sessions: the registry lives on the versioned global
+symbol `harness-gateway/copilot-sessions/v1`, so the new runtime adopts the one it finds,
+with its sessions, and the next request of a thread continues the running process unless
+something the session was created with changed. A registry with another interface version
+is replaced, not adopted; its sessions still close on their own timers or at shutdown.
+The gateway counts as busy, so an idle restart or a self-update waits, while a session is
+starting or generating, or has waited for tool outputs for less than 10 minutes; a longer
+wait gains nothing from its cache. On shutdown, after the request drain, every session is
+closed: a turn that runs or waits for tools is aborted, then the process group is killed
+and the folder removed.
 
 ## Limits
 
