@@ -153,7 +153,7 @@ is no level to restore to. A restored level the model does not offer is fitted d
 the closest offered level, or to that model's default when none qualify; the
 adjustment is reported as `reasoning_effort_reset`. A resume that switches
 models still receives a level the new model supports. A caller that sends its
-own effort always wins over the restored one. A native chat receives its saved
-effort only when the request already names that chat's own model, and only with
-a level the native catalog row offers; the adapter never changes a native chat's
-model ([native chats keep their model](app-server.md#native-chats-keep-their-model)).
+own effort always wins over the restored one. A native chat receives nothing
+from the adapter: its requests reach the engine exactly as the desktop sent them,
+and the engine restores the chat's own model and effort
+([native chats keep their model](app-server.md#native-chats-keep-their-model)).

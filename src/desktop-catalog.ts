@@ -130,8 +130,6 @@ export class DesktopCatalog {
   }
   current(): DesktopCatalogSnapshot { return this.value; }
   isNative(model: string): boolean { return this.native.some(entry => entry.slug === model); }
-  /** The engine's own row for a native model, including the efforts it offers. */
-  nativeRow(model: string): Message | undefined { return this.native.find(entry => entry.slug === model); }
   combined(snapshot = this.value): { models: Message[] } {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
     return { models: [...this.executorNative(this.reviewers.get(snapshot) ?? noReviewers), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };

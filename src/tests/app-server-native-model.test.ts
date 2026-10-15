@@ -77,16 +77,15 @@ for (const [name, shape] of [["renderer", desktopResume], ["main process", mainP
   });
 }
 
-test("a resume that already names the chat's own model still receives the chat's effort", async () => {
+test("a resume that names a model is forwarded byte-identical, with no effort added", async () => {
   const f = await fixture();
-  const result = await f.router.request("thread/resume", { ...desktopResume, model: chat.model });
-  assert.equal(object(f.sent("thread/resume").config).model_reasoning_effort, "high");
-  assert.equal(result.model, "gpt-6.1-sol");
-  // The typed field wins over a config key, as in the SDK, and a config key alone names the model too.
-  await f.router.request("thread/resume", { ...desktopResume, config: { model: chat.model } });
-  assert.equal(object(f.sent("thread/resume").config).model_reasoning_effort, "high");
-  await f.router.request("thread/resume", { ...desktopResume, model: "gpt-6-astra", config: { model: chat.model } });
-  assert.equal(Object.hasOwn(object(f.sent("thread/resume").config), "model_reasoning_effort"), false, "Astra runs, so Sol's effort stays off");
+  // The typed model, a config model, and both together all reach the engine as sent.
+  for (const shape of [{ ...desktopResume, model: chat.model }, { ...desktopResume, config: { model: chat.model } },
+    { ...desktopResume, model: "gpt-6-astra", config: { model: chat.model } }, { ...desktopResume, model: chat.model, modelProvider: "openai" }]) {
+    await f.router.request("thread/resume", structuredClone(shape));
+    assert.deepEqual(f.sent("thread/resume"), shape);
+  }
+  assert.equal((await f.router.request("thread/resume", { ...desktopResume, model: chat.model })).model, "gpt-6.1-sol");
 });
 
 test("a resume that names no model receives no effort even when the engine will not restore", async () => {
@@ -106,14 +105,28 @@ test("a native fork that names no model reaches the engine unchanged, as the des
   assert.deepEqual({ model: result.model, reasoningEffort: result.reasoningEffort }, { model: "gpt-6-astra", reasoningEffort: null });
 });
 
-test("a native fork keeps the model it names; the chat's effort fills in only for the chat's own model", async () => {
+test("a native fork is forwarded byte-identical; naming the model without an effort gets the engine's own effort", async () => {
   const f = await fixture();
   assert.equal((await f.router.request("thread/fork", structuredClone(forkIntoLocal))).model, "gpt-6.1-sol");
   assert.deepEqual(f.sent("thread/fork"), forkIntoLocal, "the desktop's own effort wins");
-  // The desktop sends no effort when it has none for the chat; the chat's record fills it for the same model.
-  const result = await f.router.request("thread/fork", { ...forkBase, model: chat.model });
-  assert.deepEqual({ model: result.model, effort: object(f.sent("thread/fork").config).model_reasoning_effort }, { model: "gpt-6.1-sol", effort: "high" });
-  // A fork onto another model never carries this chat's effort, including the engine's reported one.
+  // The desktop sends no effort when it has none for the chat: the adapter adds none, so the engine's own effort applies.
+  const named = { ...forkBase, model: chat.model };
+  const result = await f.router.request("thread/fork", structuredClone(named));
+  assert.deepEqual(f.sent("thread/fork"), named);
+  assert.deepEqual({ model: result.model, effort: result.reasoningEffort }, { model: "gpt-6.1-sol", effort: null }, "the engine's own effort, not the adapter's saved one");
   await f.router.request("thread/fork", { ...forkBase, model: "gpt-6-astra" });
-  assert.equal(Object.hasOwn(object(f.sent("thread/fork").config), "model_reasoning_effort"), false);
+  assert.deepEqual(f.sent("thread/fork"), { ...forkBase, model: "gpt-6-astra" });
+});
+
+test("native turn and settings requests reach the engine exactly as sent", async () => {
+  const f = await fixture();
+  await f.router.request("thread/resume", structuredClone(desktopResume));
+  const turn = { threadId: "chat", input: [{ type: "text", text: "hi" }], model: "gpt-6-astra", effort: "low", summary: "auto", serviceTier: null };
+  const settings = { threadId: "chat", model: "gpt-6-astra", effort: "xhigh", config: { model_reasoning_effort: "xhigh" } };
+  await f.router.request("turn/start", structuredClone(turn));
+  assert.deepEqual(f.sent("turn/start"), turn);
+  await f.router.request("thread/settings/update", structuredClone(settings));
+  assert.deepEqual(f.sent("thread/settings/update"), settings);
+  await f.router.request("turn/start", { threadId: "chat", input: [] });
+  assert.deepEqual(f.sent("turn/start"), { threadId: "chat", input: [] });
 });

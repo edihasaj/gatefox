@@ -28,9 +28,6 @@ const savedTier = (value: string | null): string | null => value === "default" ?
 // An effort can arrive as a turn setting or inside the collaboration mode that carries it.
 const requestedEffort = (params: ObjectValue): unknown => params.effort ?? object(object(params.collaborationMode).settings).reasoning_effort;
 const configEffort = (params: ObjectValue): unknown => object(params.config).model_reasoning_effort;
-// The model a resume or fork names to the engine: the typed field wins over a config key, and the SDK reads null as absent.
-const namedModel = (params: ObjectValue): string | undefined => typeof params.model === "string" ? params.model
-  : typeof object(params.config).model === "string" ? object(params.config).model as string : undefined;
 const enumEffort = (value: unknown): string | undefined => typeof value === "string" && ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(value) ? value : undefined;
 type TierDrop = { model: string; tier: string; method: string };
 type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
@@ -347,24 +344,6 @@ export class AppServerRouter {
     telemetry("reasoning_restored", { provider: "gateway", method, source: recovered.source, adjusted: fitted.adjusted });
     return { effort: fitted.effort, ...(recovered.summary ? { summary: recovered.summary } : {}) };
   }
-  /**
-   * The engine restores a native chat's model, provider and effort on resume only while the request overrides
-   * none of them, and an added effort is itself such an override: it would move the chat to the configured
-   * default model. A fork never takes its parent's model. So the chat's effort is added only when the caller
-   * already names the chat's own model and sends no effort; the engine then runs the same model either way.
-   */
-  private async nativeRestoredEffort(params: ObjectValue, method: string, route: ThreadRoute): Promise<string | undefined> {
-    if (!this.source || typeof params.threadId !== "string" || configEffort(params) !== undefined) return;
-    const threadId = params.threadId;
-    const model = namedModel(params);
-    if (model === undefined || model !== route.model) return;
-    const levels = (((this.source.nativeRow(model) ?? {}).supported_reasoning_levels ?? []) as Array<{ effort: string }>).map(level => level.effort);
-    if (!levels.length) return;
-    const recovered = await this.reasoning.recover(threadId, model, () => this.threadSnapshot(threadId));
-    if (!recovered || !levels.includes(recovered.effort)) return;
-    telemetry("reasoning_restored", { provider: "native", method, source: recovered.source, adjusted: false });
-    return recovered.effort;
-  }
   /** Provider-specific rewriting for a chat some SDK knows; the SDK still validates the result. */
   private async routedRequest(method: string, params: ObjectValue, threadRoute: ThreadRoute, drops: TierDrop[]): Promise<ObjectValue> {
     let forwarded = params;
@@ -388,10 +367,9 @@ export class AppServerRouter {
       if (!sameModel) restored = undefined;
       else if (configEffort(params) === undefined) restored = await this.restoredReasoning(String(params.threadId), model, method);
       forwarded = this.modelRequest(inherited, model, false, restored);
-    } else if (sessionStart) {
-      const effort = await this.nativeRestoredEffort(params, method, route);
-      if (effort !== undefined) forwarded = { ...forwarded, config: { ...object(forwarded.config), model_reasoning_effort: effort } };
     }
+    // A native chat's request reaches the SDK exactly as the caller sent it: the SDK restores the chat's own model,
+    // provider and effort, and any model or effort key added here would count as an override and defeat that restore.
     return forwarded;
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {

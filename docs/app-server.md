@@ -226,18 +226,24 @@ fork never takes its parent's model: it runs the model it names or the configure
 default, so a fork that names no model, such as a side chat, is forwarded unchanged
 as well.
 
-The adapter adds a native chat's saved effort only when the request already names
-that chat's own model and carries no effort, for example a resume from another
-client, or "Fork into local" on a chat whose effort the desktop does not know. The
-engine runs the same model either way; only the effort differs from that model's
-default. Releases 0.3.9 and 0.4.0 also added the effort to the desktop's resume,
-whose null model is no override, so after every engine restart a chat on
-GPT-6.1-Sol came back on the configured default model with its saved effort.
+The adapter adds nothing to a native chat's request. `thread/resume`, `thread/fork`,
+`turn/start` and the settings updates reach the SDK exactly as the desktop sent them:
+the adapter never adds or changes `model`, `modelProvider`, `config.model` or
+`config.model_reasoning_effort`. A fork that names the chat's model without an effort
+therefore gets the SDK's own effort, as it does natively. Gateway chats are different:
+the SDK cannot restore a gateway alias, so the adapter still restores a gateway chat's
+reasoning ([compaction](app-server-compaction.md)). Releases 0.3.9 and 0.4.0 added the
+saved effort to the desktop's resume, whose null model is no override, so after every
+engine restart a chat on GPT-6.1-Sol came back on the configured default model with
+its saved effort. Release 0.4.1 first limited that to requests naming the chat's model
+and now removes it, so the `reasoning_restored` event no longer reports `provider: native`.
 
 The signed SDK (0.162.0-alpha.17.2) with a localhost mock upstream confirmed both
 rules: the desktop's resume kept GPT-6.1-Sol, and the same resume with an added
 effort returned the configured default. A fork that named no model ran the
-configured default whether or not it carried an effort.
+configured default whether or not it carried an effort. `scripts/e2e-native-model.mjs`
+requires the adapter to give every desktop shape the same model and effort as the SDK
+gives it directly.
 
 ## Compaction and model changes
 

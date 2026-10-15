@@ -153,9 +153,9 @@ try {
     assert.equal(adapter[name].model, direct[name].model, name); assert.equal(adapter[name].modelProvider, direct[name].modelProvider, name);
     assert.equal(adapter[name].next.model, direct[name].next.model, name);
   }
-  // Efforts match too, except where the request names the chat's own model without one: the adapter fills the chat's.
-  for (const name of ['resume', 'forkIntoLocal', 'sideChat']) assert.equal(adapter[name].next.effort, direct[name].next.effort, name);
-  assert.equal(adapter.forkNamedModelNoEffort.next.effort, 'high');
+  // Efforts match too: the adapter adds nothing to a native request, so a fork that names the chat's own model
+  // without an effort gets the engine's own effort, exactly as it does directly.
+  for (const name of ['resume', 'forkIntoLocal', 'forkNamedModelNoEffort', 'sideChat']) assert.equal(adapter[name].next.effort, direct[name].next.effort, name);
   result.passed = true;
 } catch (error) { result.failure = { phase, message: String(error?.message).slice(0, 500) }; process.exitCode = 1; }
 finally {

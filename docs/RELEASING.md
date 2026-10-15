@@ -75,8 +75,8 @@ belongs in the release archive.
    --gateway INSTALLED_COMMAND --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It sends the
    desktop's own resume and fork shapes after an engine restart to the signed SDK
    directly and through the adapter, and requires the adapter to give each the same
-   model. It uses isolated homes and a localhost mock upstream, with no authentication
-   or paid inference.
+   model and effort. It uses isolated homes and a localhost mock upstream, with no
+   authentication or paid inference.
 5. Commit and push the final source. Wait for green CI.
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
    the archive's file list and verify `SHA256SUMS`.

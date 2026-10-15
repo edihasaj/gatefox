@@ -84,12 +84,12 @@ test("a gateway prediction fork is forwarded unchanged and never refused over it
   assert.deepEqual(f.calls, [{ method: "thread/fork", params: prediction("parent") }]);
 });
 
-test("an ordinary fork keeps the adapter's settings and only prediction forks inherit", async () => {
+test("only prediction forks are special-cased; an ordinary native fork is also forwarded unchanged", async () => {
   const f = await fixture({ modelProvider: "openai", model: "native" });
   await f.store.write("parent", { model: "native", effort: "max", atMs: Date.now() - 60_000 });
-  // An ordinary fork that names the chat's own model ("Fork into local") still receives its effort.
+  // An ordinary fork that names the chat's own model ("Fork into local") gets no adapter effort either.
   await f.router.request("thread/fork", { threadId: "parent", model: "native" });
-  assert.equal(((f.calls.at(-1)!.params.config ?? {}) as ObjectValue).model_reasoning_effort, "max");
+  assert.deepEqual(f.calls.at(-1)!.params, { threadId: "parent", model: "native" });
   assert.equal(inheritsParentSettings("thread/fork", { experimentalPredictionMode: false }), false);
   assert.equal(inheritsParentSettings("thread/resume", { experimentalPredictionMode: true }), false);
   // A caller that adds an override to a prediction fork receives the SDK's own refusal.
@@ -102,7 +102,7 @@ test("an ordinary fork is not a prediction fork just because it asks to be ephem
   const f = await fixture({ modelProvider: "openai", model: "native" });
   await f.store.write("parent", { model: "native", effort: "max", atMs: Date.now() - 60_000 });
   await f.router.request("thread/fork", { threadId: "parent", model: "native", ephemeral: true });
-  assert.equal(((f.calls.at(-1)!.params.config ?? {}) as ObjectValue).model_reasoning_effort, "max", "the adapter still restores the chat's effort");
+  assert.deepEqual(f.calls.at(-1)!.params, { threadId: "parent", model: "native", ephemeral: true }, "the adapter adds nothing to a native fork");
   // Only experimentalPredictionMode makes a fork inherit; the mode alone is enough.
   assert.equal(inheritsParentSettings("thread/fork", { ephemeral: true }), false);
   assert.equal(inheritsParentSettings("thread/fork", { ephemeral: true, excludeTurns: true, threadSource: "composer_predictions" }), false);

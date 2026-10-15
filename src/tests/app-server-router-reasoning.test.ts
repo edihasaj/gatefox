@@ -172,38 +172,27 @@ test("a gateway model that offers no reasoning levels receives nothing back", as
   assert.equal((await f.events()).some(event => event.event === "reasoning_restored"), false, "a model with no reasoning control reports no restore");
 });
 
-test("native resume restores only when a model override blocks the engine", async () => {
+test("a native resume reaches the engine exactly as sent, with or without a model", async () => {
   const f = await fixture();
   f.thread.modelProvider = "openai"; f.thread.model = "native";
   await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
   const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }] }]));
-  await router.request("thread/resume", { threadId: "persisted" });
-  assert.equal(Object.hasOwn(f.forwarded(), "config"), false, "without a model override the engine restores its own settings");
-  await router.request("thread/resume", { threadId: "persisted", model: "native" });
-  assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
+  for (const params of [{ threadId: "persisted" }, { threadId: "persisted", model: "native" }, { threadId: "persisted", model: "native", modelProvider: "openai", config: { model: "native" } }]) {
+    await router.request("thread/resume", structuredClone(params));
+    assert.deepEqual(f.forwarded(), params, "the adapter adds no model, provider or effort to a native resume");
+  }
+  assert.equal((await f.events()).some(event => event.event === "reasoning_restored"), false, "a native chat reports no adapter restore");
 });
 
-test("a native fork naming the chat's own model restores the effort its catalog row offers", async () => {
+test("a native fork reaches the engine exactly as sent, so the engine chooses its own effort", async () => {
   const f = await fixture();
   f.thread.modelProvider = "openai"; f.thread.model = "native";
   await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
   const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }] }]));
-  // A fork that names no model runs the configured default model, so the chat's effort is not added to it.
-  await router.request("thread/fork", { threadId: "persisted" });
-  assert.equal(Object.hasOwn(f.forwarded(), "config"), false);
-  await router.request("thread/fork", { threadId: "persisted", model: "native" });
-  assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
-  assert.ok((await f.events()).some(event => event.event === "reasoning_restored" && event.provider === "native"
-    && event.method === "thread/fork" && event.source === "record" && event.adjusted === false));
-});
-
-test("native fork restores an effort its catalog row offers, and the caller still wins", async () => {
-  const f = await fixture();
-  f.thread.modelProvider = "openai"; f.thread.model = "native";
-  await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
-  const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }] }]));
-  await router.request("thread/fork", { threadId: "persisted", model: "native" });
-  assert.equal(Object.hasOwn(f.forwarded().config ?? {}, "model_reasoning_effort"), false, "a level the native row does not offer is not injected");
-  await router.request("thread/fork", { threadId: "persisted", model: "native", config: { model_reasoning_effort: "low" } });
-  assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "low", "the caller's choice wins");
+  for (const params of [{ threadId: "persisted" }, { threadId: "persisted", model: "native" },
+    { threadId: "persisted", model: "native", config: { model_reasoning_effort: "low" } }]) {
+    await router.request("thread/fork", structuredClone(params));
+    assert.deepEqual(f.forwarded(), params);
+  }
+  assert.equal((await f.events()).some(event => event.event === "reasoning_restored"), false);
 });
