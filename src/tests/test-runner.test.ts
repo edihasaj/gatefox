@@ -88,7 +88,7 @@ test("a runner with nothing compiled says to build first instead of printing a s
   const w = await workspace();
   try {
     // The runner finds the compiled tests next to itself: a copy in a folder with no dist has none.
-    await mkdir(join(w.work, "scripts")); for (const name of ["run-tests.mjs", "stale-sockets.mjs"]) await copyFile(join(dirname(runner), name), join(w.work, "scripts", name));
+    await mkdir(join(w.work, "scripts")); for (const name of ["run-tests.mjs", "stale-sockets.mjs", "group-gone.mjs"]) await copyFile(join(dirname(runner), name), join(w.work, "scripts", name));
     const child = spawn(process.execPath, [join(w.work, "scripts", "run-tests.mjs")], { env: w.environment, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = ""; child.stderr.on("data", chunk => { stderr += String(chunk); });
     const [code] = await once(child, "exit");
@@ -251,4 +251,16 @@ test("the runner removes only a socket this user made, and only under a name the
   assert.equal(ownSocket(status("file", 501), 501), false, "so is a file that is not a socket");
   assert.equal(sdkSocketName("a".repeat(64)), true); assert.equal(sdkSocketName(createHash("sha256").update("x").digest("hex")), true);
   for (const name of ["a".repeat(63), "a".repeat(65), "A".repeat(64), `${"a".repeat(63)}g`, `${"a".repeat(64)}.lock`, `x${"a".repeat(64)}`, "", `${"a".repeat(64)}\n`]) assert.equal(sdkSocketName(name), false, JSON.stringify(name));
+});
+
+test("the runner waits for a killed process group to be gone before it looks at the sockets of the run", { skip: process.platform === "win32", timeout: 60000 }, async () => {
+  const { groupGone } = await import(new URL("../../scripts/group-gone.mjs", import.meta.url).href) as { groupGone(leader: number, ms: number): Promise<boolean> };
+  const leader = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); const pid = leader.pid!;
+  try {
+    assert.equal(await groupGone(pid, 200), false, "a group that is running is not gone, and the wait ends at its limit");
+    let killed = false; const waiting = groupGone(pid, 30000).then(gone => ({ gone, afterKill: killed }));
+    await new Promise(resolve => setTimeout(resolve, 100)); killed = true; process.kill(-pid, "SIGKILL");
+    assert.deepEqual(await waiting, { gone: true, afterKill: true }, "it settles once the group is gone, not before");
+    assert.equal(await groupGone(pid, 200), true, "and a group that is gone is gone at once");
+  } finally { try { process.kill(-pid, "SIGKILL"); } catch { /* Gone already. */ } }
 });

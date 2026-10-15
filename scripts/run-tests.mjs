@@ -25,6 +25,7 @@ import { connect } from "node:net";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { groupGone } from "./group-gone.mjs";
 import { ownSocket, sdkSocketName } from "./stale-sockets.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
@@ -93,6 +94,9 @@ async function removeStaleSockets() {
 child.once("exit", async (code, signal) => {
   // Whatever the leader left running in its group goes with it.
   send("SIGKILL");
+  // A killed process closes its sockets when the kernel has torn it down, not when the signal is sent: a socket is looked at, and
+  // the folder removed, only once nothing is left in the group (a socket checked sooner can still be accepting connections).
+  if (grouped && child.pid) await groupGone(child.pid, 10000);
   await removeStaleSockets().catch(() => {}); remove();
   const name = stopped ?? signal;
   process.exit(name ? 128 + (constants.signals[name] ?? 15) : code ?? 1);
