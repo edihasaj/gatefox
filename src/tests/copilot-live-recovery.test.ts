@@ -148,3 +148,27 @@ test("at the cap, a session that is already closing makes room before any parked
     assert.ok(!outcomes.includes("evicted") && outcomes.includes("reaped:tool_wait_expired"), outcomes.join(","));
   } finally { await h.restore(); }
 });
+
+test("a thread whose session is being evicted waits for it and reseeds as evicted; no process runs beside the dying one", { timeout: 20000 }, async () => {
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "800";
+  try {
+    const provider = adapter({ mode: "live", max: 2 }); const first = [user("a [tool]")];
+    const a = await turn(provider, first, { context: { threadId: "A" } }); await sleep(5);
+    await turn(provider, [user("c [tool]")], { context: { threadId: "C" } });
+    const [old] = await h.pids();
+    // Thread B needs a slot: A, the least recently used session, waits for tools, so it is aborted (slowly) and killed.
+    const newcomer = turn(provider, [user("b")], { context: { threadId: "B" } });
+    assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "abort" && entry.pid === old)));
+    assert.ok(alive(old), "the evicted session is still ending");
+    // Its thread's next request arrives inside that window.
+    const next = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")], { context: { threadId: "A" } });
+    assert.match(next.text, /^answer/); await newcomer;
+    const all = await creates(h); assert.equal(all.length, 4, "A, C, B and A again");
+    for (const entry of all) assert.ok(entry.alivePeers.length + 1 <= 2, `${entry.alivePeers.length + 1} CLIs ran when ${entry.pid} was created; the cap is 2`);
+    const again = all.at(-1)!; assert.ok(!again.alivePeers.includes(old) && !again.folders.some((name: string) => again.directory.endsWith(name)), "the evicted process was gone before its thread's new one started");
+    assert.ok(!alive(old));
+    const outcomes = await kinds(h);
+    assert.ok(outcomes.includes("evicted") && outcomes.includes("reseeded:evicted"), `the thread says why it started over: ${outcomes.join(",")}`);
+    assert.equal(outcomes.filter(kind => kind === "spawned").length, 3, "only the first request of each of the three threads spawned");
+  } finally { await h.restore(); }
+});

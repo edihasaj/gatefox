@@ -121,7 +121,8 @@ freed, because every slot is held by a running session, a session whose own requ
 being placed, or a session still starting (another thread's attach that has no session
 yet), the newcomer is served one-shot (`capacity`). An evicted session's process and
 folder are gone before its replacement starts, and the evicted thread reseeds on its next
-request (`evicted`). Sessions being started count toward `max`, in arrival order, so
+request (`evicted`), even one that arrives while the old session is still ending: the
+evicted session keeps its slot until it is gone, and that request waits for it. Sessions being started count toward `max`, in arrival order, so
 concurrent starts never hold more sessions than the cap. A session that is still closing
 when its thread's next request comes no longer holds the thread or a slot; the request
 waits until it is gone and starts a new session, reporting how the old one ended (for

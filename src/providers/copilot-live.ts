@@ -179,7 +179,10 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     while (slotsTaken(reg, key) >= settings.max) {
       const victim = evictable(reg);
       if (!victim) return { kind: "fallback", reason: "capacity" };
-      reg.sessions.delete(victim.key); await victim.close("evicted");
+      // The victim stays in the registry until it is gone (its close removes it): it still holds a slot and a process, and
+      // its thread's next request finds it closing and waits for it, so that request reseeds as `evicted` instead of
+      // spawning beside a process that is still ending.
+      await victim.close("evicted");
       if (signal.aborted) throw cancelled();
     }
     try {
