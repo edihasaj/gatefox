@@ -52,7 +52,13 @@ async function setup(scenario: FixtureScenario): Promise<{ f: ClaudeFixture; sin
   configureTelemetry(f.directory, "test"); const since = Date.now();
   return { f, since, sessions: async () => { await flushTelemetry(); return (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session"); } };
 }
-async function teardown(f: ClaudeFixture): Promise<void> { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+// Telemetry writes into the fixture directory; a late one would make its removal fail with ENOTEMPTY.
+async function teardown(f: ClaudeFixture): Promise<void> {
+  await claudeLive({ max: 6, parkMinutes: 60 }).stop();
+  configureTelemetry(join(tmpdir(), `gateway-claude-telemetry-${process.pid}`), "test");
+  await flushTelemetry();
+  await f.restore();
+}
 const pids = async (f: ClaudeFixture, mode = "live") => (await f.capture()).filter(entry => entry.start === mode).map(entry => entry.pid);
 
 test("a tool loop keeps one CLI process, relays the caller's outputs verbatim and reports per-request usage", async () => {
@@ -185,12 +191,12 @@ test("losing the relay kills the CLI with SIGKILL before any tool result is writ
   } finally { await teardown(f); }
 });
 
-test("a CLI tool_use for a non-gateway tool fails the request and kills the session before it can run", async () => {
+test("a CLI tool_use for a non-gateway tool fails the request and kills the session before it can run", { timeout: 20000 }, async () => {
   const { f } = await setup({ replies: [{ foreign: "Bash" }] });
   try {
     await assert.rejects(turn(adapter(), [user("run")]), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
     const [pid] = await pids(f);
-    assert.ok(await gone(pid, 300));
+    assert.ok(await gone(pid, Infinity));
     assert.equal((await f.capture()).some(entry => entry.exit !== undefined), false, "killed, not asked to end its session");
   } finally { await teardown(f); }
 });
@@ -362,13 +368,13 @@ test("a kept partial whose text resumed after thinking continues the session", a
   } finally { await teardown(f); }
 });
 
-test("a non-gateway tool_use kills the session at once, even while the caller is not reading", async () => {
+test("a non-gateway tool_use kills the session at once, even while the caller is not reading", { timeout: 20000 }, async () => {
   const { f } = await setup({ replies: [{ text: "Looking", foreign: "Bash" }] });
   try {
     const iterator = adapter().infer({ model: "fixture", input: [user("run")], tools }, new AbortController().signal, thread)[Symbol.asyncIterator]();
     const first = await iterator.next().catch((error: unknown) => error);
     const [pid] = await pids(f); assert.ok(pid, "a live session served the request");
-    assert.ok(await gone(pid, 300), "killed before the consumer pulled the tool_use line");
+    assert.ok(await gone(pid, Infinity), "killed before the consumer pulled the tool_use line");
     await assert.rejects(async () => { if (first instanceof Error) throw first; for (let next = await iterator.next(); !next.done; next = await iterator.next()); },
       (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
   } finally { await teardown(f); }

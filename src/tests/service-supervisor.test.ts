@@ -44,15 +44,34 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
-test("missing child executable backs off and shutdown cancels the retry", async () => {
+test("a missing child executable moves the component to the waiting state", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-"));
   const child = component(directory, "native", "native", ""); child.command = join(directory, "absent");
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
-  await supervisor.start();
-  await until(async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0].state === "waiting");
-  await supervisor.stop(); await delay(150);
-  const status = JSON.parse(await readFile(serviceStatusPath(directory), "utf8"));
-  assert.equal(status.components[0].state, "stopped"); assert.equal(status.components[0].restarts, 1);
+  try {
+    await supervisor.start();
+    await until(async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0].state === "waiting");
+  } finally { await supervisor.stop(); }
+});
+
+test("shutdown during a failed component's backoff cancels its retry", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-cancel-"));
+  const marker = join(directory, "starts");
+  const failing = component(directory, "native", "native", `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(1)`);
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [failing] }, directory, 100);
+  const read = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { components: Array<{ state: string; restarts: number; nextRestartAt?: string }> };
+  const starts = async () => (await readFile(marker, "utf8")).length;
+  try {
+    await supervisor.start();
+    await until(async () => { const first = (await read()).components[0]; return first.state === "waiting" && !!first.nextRestartAt; });
+    // The retry time is read before stop() so the wait below is measured against the timer stop() must cancel.
+    const retryAt = Date.parse((await read()).components[0].nextRestartAt!);
+    await supervisor.stop();
+    const afterStop = await starts();
+    await delay(Math.max(0, retryAt + 500 - Date.now()));
+    assert.equal(await starts(), afterStop, "a cancelled retry never starts the component again");
+    assert.equal((await read()).components[0].state, "stopped");
+  } finally { await supervisor.stop(); }
 });
 
 test("idle restart waits for the inference child to accept its own idle guard", { skip: process.platform === "win32" }, async () => {
