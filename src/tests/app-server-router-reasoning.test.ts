@@ -183,12 +183,15 @@ test("native resume restores only when a model override blocks the engine", asyn
   assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
 });
 
-test("a native fork restores the effort its own catalog row offers", async () => {
+test("a native fork naming the chat's own model restores the effort its catalog row offers", async () => {
   const f = await fixture();
   f.thread.modelProvider = "openai"; f.thread.model = "native";
   await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
   const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }, { effort: "max" }] }]));
+  // A fork that names no model runs the configured default model, so the chat's effort is not added to it.
   await router.request("thread/fork", { threadId: "persisted" });
+  assert.equal(Object.hasOwn(f.forwarded(), "config"), false);
+  await router.request("thread/fork", { threadId: "persisted", model: "native" });
   assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "max");
   assert.ok((await f.events()).some(event => event.event === "reasoning_restored" && event.provider === "native"
     && event.method === "thread/fork" && event.source === "record" && event.adjusted === false));
@@ -199,8 +202,8 @@ test("native fork restores an effort its catalog row offers, and the caller stil
   f.thread.modelProvider = "openai"; f.thread.model = "native";
   await f.store.write("persisted", { model: "native", effort: "max", atMs: old() });
   const router = await f.router(f.source([{ slug: "native", supported_reasoning_levels: [{ effort: "low" }] }]));
-  await router.request("thread/fork", { threadId: "persisted" });
+  await router.request("thread/fork", { threadId: "persisted", model: "native" });
   assert.equal(Object.hasOwn(f.forwarded().config ?? {}, "model_reasoning_effort"), false, "a level the native row does not offer is not injected");
-  await router.request("thread/fork", { threadId: "persisted", config: { model_reasoning_effort: "low" } });
+  await router.request("thread/fork", { threadId: "persisted", model: "native", config: { model_reasoning_effort: "low" } });
   assert.equal((f.forwarded().config as ObjectValue).model_reasoning_effort, "low", "the caller's choice wins");
 });

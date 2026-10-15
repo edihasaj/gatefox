@@ -34,8 +34,11 @@ forwards a prediction fork exactly as the desktop sent it to the engine that own
 chat. It adds no restored reasoning, gateway model, provider, catalog or speed tier,
 applies no hooks-alias correction, and never refuses it over an unknown tier. Before
 this, the adapter added a native chat's saved reasoning effort to the fork, so every
-suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
-above. The change applies to the next adapter connection after an update.
+suggestion fork failed. Ordinary forks keep the tier handling described above. A native
+ordinary fork receives the chat's saved effort only when it names the chat's own model;
+one that names no model, such as a side chat, reaches the engine unchanged and runs the
+configured default model, as natively ([native chats keep their model](app-server.md#native-chats-keep-their-model)).
+The change applies to the next adapter connection after an update.
 
 On a gateway chat, a composer prediction fork runs real inference on that chat's
 provider, so it counts as that provider's usage. In 0.4.0 these forks always failed

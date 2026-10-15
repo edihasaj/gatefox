@@ -213,6 +213,32 @@ which were then in one node_repl group; only adapter tests cover a rejected swit
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
 goal continuation and every rendered control remain separate desktop checks.
 
+## Native chats keep their model
+
+The adapter never changes a native chat's model or provider. When "Authenticated
+workspace changed" restarts the desktop's local engine, ChatGPT 26.1007.71326
+resumes each open chat with `model: null` and `modelProvider: null`. The signed SDK
+then restores the model, provider and reasoning effort saved with the chat. It skips
+that restore when the request names a model or a provider, or carries a
+`config.model` or `config.model_reasoning_effort` key, and then runs the configured
+default model. The adapter therefore forwards such a resume unchanged. A native
+fork never takes its parent's model: it runs the model it names or the configured
+default, so a fork that names no model, such as a side chat, is forwarded unchanged
+as well.
+
+The adapter adds a native chat's saved effort only when the request already names
+that chat's own model and carries no effort, for example a resume from another
+client, or "Fork into local" on a chat whose effort the desktop does not know. The
+engine runs the same model either way; only the effort differs from that model's
+default. Releases 0.3.9 and 0.4.0 also added the effort to the desktop's resume,
+whose null model is no override, so after every engine restart a chat on
+GPT-6.1-Sol came back on the configured default model with its saved effort.
+
+The signed SDK (0.162.0-alpha.17.2) with a localhost mock upstream confirmed both
+rules: the desktop's resume kept GPT-6.1-Sol, and the same resume with an added
+effort returned the configured default. A fork that named no model ran the
+configured default whether or not it carried an effort.
+
 ## Compaction and model changes
 
 Moved to [Compaction and model changes](app-server-compaction.md).

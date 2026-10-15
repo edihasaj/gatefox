@@ -87,7 +87,8 @@ test("a gateway prediction fork is forwarded unchanged and never refused over it
 test("an ordinary fork keeps the adapter's settings and only prediction forks inherit", async () => {
   const f = await fixture({ modelProvider: "openai", model: "native" });
   await f.store.write("parent", { model: "native", effort: "max", atMs: Date.now() - 60_000 });
-  await f.router.request("thread/fork", { threadId: "parent" });
+  // An ordinary fork that names the chat's own model ("Fork into local") still receives its effort.
+  await f.router.request("thread/fork", { threadId: "parent", model: "native" });
   assert.equal(((f.calls.at(-1)!.params.config ?? {}) as ObjectValue).model_reasoning_effort, "max");
   assert.equal(inheritsParentSettings("thread/fork", { experimentalPredictionMode: false }), false);
   assert.equal(inheritsParentSettings("thread/resume", { experimentalPredictionMode: true }), false);
@@ -100,7 +101,7 @@ test("an ordinary fork keeps the adapter's settings and only prediction forks in
 test("an ordinary fork is not a prediction fork just because it asks to be ephemeral", async () => {
   const f = await fixture({ modelProvider: "openai", model: "native" });
   await f.store.write("parent", { model: "native", effort: "max", atMs: Date.now() - 60_000 });
-  await f.router.request("thread/fork", { threadId: "parent", ephemeral: true });
+  await f.router.request("thread/fork", { threadId: "parent", model: "native", ephemeral: true });
   assert.equal(((f.calls.at(-1)!.params.config ?? {}) as ObjectValue).model_reasoning_effort, "max", "the adapter still restores the chat's effort");
   // Only experimentalPredictionMode makes a fork inherit; the mode alone is enough.
   assert.equal(inheritsParentSettings("thread/fork", { ephemeral: true }), false);

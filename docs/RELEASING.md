@@ -71,6 +71,12 @@ belongs in the release archive.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.
+   For native resume, fork or reasoning changes, run `scripts/e2e-native-model.mjs
+   --gateway INSTALLED_COMMAND --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It sends the
+   desktop's own resume and fork shapes after an engine restart to the signed SDK
+   directly and through the adapter, and requires the adapter to give each the same
+   model. It uses isolated homes and a localhost mock upstream, with no authentication
+   or paid inference.
 5. Commit and push the final source. Wait for green CI.
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
    the archive's file list and verify `SHA256SUMS`.
