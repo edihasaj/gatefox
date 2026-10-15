@@ -123,3 +123,74 @@ test("a full store drops the row observed longest ago instead of refusing a new 
   await f.store.observe(terminal("another", "turn-2", 20002));
   assert.ok(await f.peer().read("chat-2"));
 });
+
+const maxBytes = 4 * 1024 * 1024;
+const storePath = (f: Awaited<ReturnType<typeof fixture>>) => join(f.directory, `desktop-compaction-${createHash("sha256").update(resolve(f.home)).digest("hex").slice(0, 16)}.json`);
+type Rows = Record<string, { emittedAtMs: number; compaction?: { turnId: string; status: string; emittedAtMs: number } }>;
+const bytes = (threads: Rows) => Buffer.byteLength(JSON.stringify({ version: 1, threads }, null, 2) + "\n");
+// A row that carries a 1000-character compaction turn id, so the byte bound is reached long before the 4096-row bound.
+const bulky = (letter: string, at: number) => ({ emittedAtMs: at, compaction: { turnId: letter.repeat(1000), status: "completed", emittedAtMs: at } });
+/** The most bulky rows, stamped in order, whose file still fits the byte bound. */
+function byteFull(): Rows {
+  const build = (count: number): Rows => Object.fromEntries(Array.from({ length: count }, (_, index) => [`chat-${index}`, bulky("a", 1000 + index)]));
+  let low = 0; let high = 4095;
+  while (low < high) { const middle = Math.ceil((low + high) / 2); if (bytes(build(middle)) <= maxBytes) low = middle; else high = middle - 1; }
+  return build(low);
+}
+/** Writes a bulky row for a chat through the store: a started item then its terminal event, both stamped `at`. */
+async function writeBulky(f: Awaited<ReturnType<typeof fixture>>, threadId: string, letter: string, at: number): Promise<void> {
+  const turnId = letter.repeat(1000);
+  await f.store.observe(item(threadId, turnId, at));
+  await f.store.observe(terminal(threadId, turnId, at));
+}
+
+test("a store full by bytes ends within 4 MiB and drops only the oldest rows the new row needs", async () => {
+  const f = await fixture();
+  const rows = byteFull(); const count = Object.keys(rows).length;
+  assert.ok(count > 2000 && count < 4096, "bulky rows reach the byte bound before the row bound");
+  await writeFile(storePath(f), JSON.stringify({ version: 1, threads: rows }), { mode: 0o600 });
+  await writeBulky(f, "new-chat", "b", 20000);
+  const saved = JSON.parse(await readFile(storePath(f), "utf8")) as { threads: Rows };
+  assert.ok((await stat(storePath(f))).size <= maxBytes, "the file ends within the byte bound");
+  assert.ok(saved.threads["new-chat"], "the chat being written is saved");
+  // The fewest oldest rows whose removal lets the new row fit, found by serializing the whole file each time.
+  let fewest = 0;
+  while (bytes({ ...Object.fromEntries(Object.entries(rows).slice(fewest)), "new-chat": saved.threads["new-chat"] }) > maxBytes) fewest++;
+  assert.ok(fewest >= 1, "the store really was too full for the new row");
+  const dropped = Object.keys(rows).filter(id => !(id in saved.threads));
+  assert.deepEqual(dropped, Object.keys(rows).slice(0, fewest), "exactly the oldest rows went, none beyond what was needed");
+  assert.equal(Object.keys(saved.threads).length, count - fewest + 1);
+});
+
+test("an existing chat whose row grows past the byte bound evicts the oldest other rows and is itself kept", async () => {
+  const f = await fixture();
+  const rows = byteFull(); rows["chat-5"] = { emittedAtMs: 1005 };
+  // Pad the file with small rows until no other row fits, so the grown row cannot fit without an eviction.
+  for (let index = 0; bytes({ ...rows, [`pad-${index}`]: { emittedAtMs: 3000 + index } }) <= maxBytes; index++) rows[`pad-${index}`] = { emittedAtMs: 3000 + index };
+  await writeFile(storePath(f), JSON.stringify({ version: 1, threads: rows }), { mode: 0o600 });
+  assert.ok(bytes(rows) <= maxBytes, "the file fits before the row grows");
+  await writeBulky(f, "chat-5", "c", 20000);
+  const saved = JSON.parse(await readFile(storePath(f), "utf8")) as { threads: Rows };
+  assert.ok((await stat(storePath(f))).size <= maxBytes);
+  assert.equal(saved.threads["chat-5"].compaction?.turnId, "c".repeat(1000), "the grown row is saved whole");
+  assert.equal(saved.threads["chat-0"], undefined, "the oldest other row made room");
+});
+
+test("the chat being written is never evicted, even when its stamp is older than every other row", async () => {
+  const f = await fixture();
+  const rows: Rows = Object.fromEntries(Array.from({ length: 4096 }, (_, index) => [`chat-${index}`, { emittedAtMs: 1000 + index }]));
+  await writeFile(storePath(f), JSON.stringify({ version: 1, threads: rows }), { mode: 0o600 });
+  await f.store.observe(terminal("oldest", "turn", 10));
+  let saved = JSON.parse(await readFile(storePath(f), "utf8")) as { threads: Rows };
+  assert.equal(Object.keys(saved.threads).length, 4096);
+  assert.deepEqual(saved.threads.oldest, { emittedAtMs: 10 }, "its row, the oldest of all, stayed");
+  assert.equal(saved.threads["chat-0"], undefined, "the oldest other row went instead");
+  assert.ok(saved.threads["chat-1"]);
+  // The same holds by bytes: a bulky row stamped older than all the others keeps itself.
+  const full = byteFull(); await writeFile(storePath(f), JSON.stringify({ version: 1, threads: full }), { mode: 0o600 });
+  await writeBulky(f, "oldest-bulky", "d", 10);
+  saved = JSON.parse(await readFile(storePath(f), "utf8")) as { threads: Rows };
+  assert.ok(saved.threads["oldest-bulky"], "kept although it is the oldest row");
+  assert.equal(saved.threads["chat-0"], undefined);
+  assert.ok((await stat(storePath(f))).size <= maxBytes);
+});
