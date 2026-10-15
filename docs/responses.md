@@ -260,6 +260,12 @@ only when it is a recognized public value. It never reports the requested tier
 as proof of the tier served. An upstream may return `default` after a priority
 request; the gateway preserves that result and does not retry to chase Fast.
 
+Flex depends on the provider. The Codex subscription path passes `flex` through to
+the upstream, and the model's declared tier list does not apply to it, as in native
+Codex; the ordinary Responses API provider forwards it the same way. Claude and
+Copilot run `flex` as Standard (see their sections below). The Anthropic API and
+Chat Completions providers ignore every service tier.
+
 Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
 setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
 `flex` has no Claude equivalent, so it runs the turn as Standard with no fast mode
