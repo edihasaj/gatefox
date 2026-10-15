@@ -15,6 +15,8 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
   const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
+  // Every Auto-review request from a gateway executor (node_repl, shell, apply_patch, network, MCP, permissions).
+  const autoReview: Counts = {};
   for (const event of events) {
     const model = String(event.model ?? "unknown");
     if (event.event.startsWith("turn_")) {
@@ -28,6 +30,8 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       const entry = requests[model] ||= {};
       // Translation failures also carry their fixed reason, so a 400 is separable per model.
       bump(entry, event.event === "request_failed" ? `failed:${event.code}${event.reason ? ":" + event.reason : ""}` : event.event.slice(8));
+      // Auto-review requests, of any kind, counted apart from chat requests.
+      if (event.autoReview === true) bump(autoReview, event.event === "request_failed" ? `failed:${event.code}` : event.event.slice(8));
       if (typeof event.inputTokens === "number") entry.input = (entry.input || 0) + event.inputTokens;
       if (typeof event.cachedTokens === "number") entry.cached = (entry.cached || 0) + event.cachedTokens;
       if (typeof event.firstEventMs === "number") (firstEvent[model] ||= []).push(event.firstEventMs);
@@ -55,6 +59,6 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
-    turns, turnFailures, requests: requestSummary, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
+    turns, turnFailures, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
     claudeSessions: sessions, accountEngines: accounts, recentProblems: recent };
 }

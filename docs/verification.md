@@ -271,6 +271,7 @@ The remaining desktop checks are:
 | Stop and recovery | Backend checks passed interruption and recovery. The native relay logged interruption requests. | Establish which provider handled each interrupted cloud turn and verify its recovery. |
 | Qwen | The real backend tool loop passed and the model appears in the combined catalog. | Verify text, file tools, follow-up, and interruption through the original connection. |
 | Reasoning controls | v0.2.8 persists all six display efforts. MacBook Pro 2's local rendered Claude menu showed Max. The user also confirmed that all levels now appear on the primary Mac. | Capture the primary Mac's menu and verify refresh persistence when using the connected computer. |
+| Auto-review reviewer | A fake-gateway run of the pinned SDK sent the reviewer request as `codex-auto-review` (low effort, strict JSON schema), and the route and catalog tests cover routing and advertisement. The route is on by default for every Auto-review approval. The subscription endpoint accepting that slug was not called live: the stored login had expired, and refreshing it would rotate the installed credential. | Run a browser action in a Claude chat and confirm that Auto-review items appear and the action completes ([node_repl](node-repl.md)). |
 
 Shared execution ownership and outage recovery passed the v0.2.10 backend gate.
 The signed SDK checks below prove gateway ownership across several adapter clients

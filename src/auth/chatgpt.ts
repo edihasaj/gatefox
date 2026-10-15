@@ -82,6 +82,12 @@ export async function readCredentials(path: string): Promise<ChatGPTCredentials 
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw new ChatGPTLoginRequired("Credential file is unreadable or invalid"); }
 }
 
+/** Whether a ChatGPT plan login with the scopes inference needs is stored. It never refreshes, uses the network or writes. */
+export async function hasPlanLogin(path: string): Promise<boolean> {
+  try { const credentials = await readCredentials(path); return !!credentials && requiredScopes.every(scope => credentials.scopes?.includes(scope)); }
+  catch { return false; }
+}
+
 /** Verify OIDC identity before accepting any account's credentials. */
 export async function validateIdToken(token: string, clientId: string, nonce: string,
   keys?: Array<JsonWebKey & { kid?: string }>, now = Date.now()): Promise<{ subject: string; email?: string }> {

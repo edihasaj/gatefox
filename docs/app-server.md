@@ -199,10 +199,14 @@ Gateway executors enable Codex's active-step model switching. The adapter forwar
 `thread/settings/update`, `turn/settings/update`, `turn/steer`, and goal operations
 with their original turn IDs and authorization fields. A thread-level model
 selection remains the default after a saved chat resumes. An active-turn model
-update applies at the next inference step. A captured tool step keeps its approval
-requirements; changing thread access updates subsequent turns.
+update applies at the next inference step, unless the destination differs in
+node_repl or review settings: the SDK then rejects it, as natively, and the adapter
+forwards the error ([which rows](node-repl.md#switching-models-during-a-running-turn)).
+A captured tool step keeps its approval requirements; changing thread access updates
+subsequent turns.
 
-These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol.
+These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol,
+which were then in one node_repl group; only adapter tests cover a rejected switch.
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
 goal continuation and every rendered control remain separate desktop checks.
 
@@ -377,17 +381,22 @@ local native catalog it loaded at startup and copies these fields:
 - `effective_context_window_percent` and `truncation_policy`;
 - `context_window`, but only when the native value is at or below the upstream's
   `max_context_window`. Otherwise, or when the upstream reports no maximum, the
-  upstream window stays.
+  upstream window stays;
+- `node_repl_disabled`, `node_repl_auto_review_required`, `guardian`,
+  `auto_review_model_override`, `requires_sandboxed_review` (data only: no SDK reads
+  it) and `model_specialty` ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
 `comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
 web search disabled, because `tool_search` does not pass through the gateway. A
 slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it. The rows the adapter builds drop `upstream_slug`. At each
-launch the native-catalog preflight first writes `desktop-models.json` with the
-plain gateway rows, marker included; the adapter replaces that file with the
-copied rows on its first successful cache restore or host refresh, and every
+gateway published it, apart from the strictest native node_repl policy and the
+native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
+The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
+preflight first writes `desktop-models.json` with the plain gateway rows, marker
+included; the adapter replaces that file with the copied rows on its first
+successful cache restore or host refresh, and every
 gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
 ignore the marker, as they do in the plain catalog that CLI and remote clients
 read. Those clients have no native catalog, so they keep the gateway rows
@@ -432,6 +441,14 @@ gateway chat without a saved preference, the adapter still selects medium effort
 and auto summaries, so the native default shows in the model list but does not
 yet start the chat. Those defaults never replace an existing chat's settings on
 resume; the chat's own reasoning is restored instead, as described above.
+
+### node_repl (browser, Chrome and computer use)
+
+Gateway rows get the native node_repl policy, and rows with no native counterpart
+always require review. The gateway serves the reviewer `codex-auto-review` through the
+Codex subscription for every Auto-review approval in a gateway executor, not only
+node_repl; 0.3.9 declined them, and their context now leaves the chat's own provider.
+The rules, evidence and fail-closed cases are only in [node_repl on gateway rows](node-repl.md).
 
 ## Empty chats and message order
 

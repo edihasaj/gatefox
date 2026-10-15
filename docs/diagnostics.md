@@ -70,10 +70,18 @@ data" whatever the reason.
 
 `gateway diagnostics [--since HOURS]` summarizes the log: turn outcomes and
 failure classes per model, request outcomes, cache-hit ratio and first-event
-latency per model, retries, RPC errors, component exits, host events, live Claude
+latency per model, Auto-review requests (`autoReview`, below), retries, RPC errors,
+component exits, host events, live Claude
 sessions per outcome (and per miss reason) with their cache reads, writes and a rewrite
 count — the spawns and reseeds whose cache read reached only the system prefix — and the 25
 most recent problems. Set `GATEWAY_TELEMETRY=off` to disable the log.
+
+A request whose model is the reviewer `codex-auto-review` carries `autoReview: true` on
+`request_completed`, `request_empty` and `request_failed`, including its 404. Gateway
+executors send every Auto-review approval there (node_repl, shell, `apply_patch`,
+network, MCP and permissions), so `gateway diagnostics` counts them together in an
+`autoReview` bucket: `completed`, `empty` and `failed:<code>`
+([node_repl](node-repl.md#scope-data-and-decision)).
 
 ## Native relay records
 

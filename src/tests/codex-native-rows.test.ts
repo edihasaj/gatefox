@@ -19,6 +19,8 @@ const nativeSol = {
   web_search_tool_type: "text_and_image", service_tiers: [{ id: "flex", name: "Flex", description: "native tier" }], additional_speed_tiers: ["native"],
   multi_agent_version: "v9", multi_agent_reasoning_effort: "max", experimental_supported_tools: ["clock"], include_skills_usage_instructions: false,
   include_plugin_usage_instructions: false, include_apps_usage_instructions: false,
+  // Every real native row states its node_repl policy; node-repl-policy.test.ts covers rows that state none.
+  node_repl_disabled: false, node_repl_auto_review_required: false,
 };
 const usageFlags = ["include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions"] as const;
 const codex = (models: Record<string, string>, metadata: ProviderConfig["modelMetadata"] = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", label: "Codex 2", models, modelMetadata: metadata });
@@ -42,6 +44,13 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
+});
+
+test("a Codex 2 row carries the native model specialty, which picks the SDK's Guardian rejection policy", () => {
+  const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
+  assert.equal(withNativeRow(published, [{ ...nativeSol, model_specialty: "cyber" }]).model_specialty, "cyber");
+  assert.equal(withNativeRow(published, [{ ...nativeSol, model_specialty: null }]).model_specialty, null);
+  for (const odd of [undefined, 7, { cyber: true }]) assert.equal(Object.hasOwn(withNativeRow(published, [{ ...nativeSol, model_specialty: odd }]), "model_specialty"), false, String(odd));
 });
 
 test("native values outside the upstream's limits or offered levels keep the published row", () => {

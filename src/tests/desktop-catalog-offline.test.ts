@@ -16,7 +16,8 @@ async function fixture() {
   await writePrivateJson(files.config, files.value);
   const path = join(files.directory, "combined.json");
   const cachePath = join(files.value.stateDirectory, "desktop-public-models.json");
-  const native = [{ slug: "native", priority: 1, identity: "not-public-cache-identity", model_messages: { instructions_template: "original client instructions" } }];
+  // Every real native row states its node_repl policy; node-repl-policy.test.ts covers rows that state none.
+  const native = [{ slug: "native", priority: 1, identity: "not-public-cache-identity", model_messages: { instructions_template: "original client instructions" }, node_repl_disabled: false, node_repl_auto_review_required: false }];
   const create = () => new DesktopCatalog(files.value, native, path);
   return { ...files, path, cachePath, native, create };
 }
@@ -238,7 +239,8 @@ test("public rows keep numeric window limits and drop other values before cachin
 });
 
 test("executors without the code-mode host give native rows direct tools; the rest of each row is unchanged", async () => {
-  const native = [{ slug: "gpt-native", display_name: "Native", tool_mode: "code_mode_only", priority: 1 }, { slug: "gpt-direct", display_name: "Direct", tool_mode: "direct", priority: 2 }];
+  const repl = { node_repl_disabled: false, node_repl_auto_review_required: false };
+  const native = [{ slug: "gpt-native", display_name: "Native", tool_mode: "code_mode_only", priority: 1, ...repl }, { slug: "gpt-direct", display_name: "Direct", tool_mode: "direct", priority: 2, ...repl }];
   const without = new DesktopCatalog({ version: 1, port: 0, stateDirectory: tmpdir(), providers: [] }, structuredClone(native), join(tmpdir(), "unused.json"), false);
   assert.deepEqual(without.combined().models.map(row => row.tool_mode), ["direct", "direct"], "a sub-agent that names a native model can still run commands");
   assert.deepEqual({ ...without.combined().models[0], tool_mode: "code_mode_only" }, native[0]);
