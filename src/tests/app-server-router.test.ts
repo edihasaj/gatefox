@@ -321,13 +321,15 @@ test("a Fast chat drops to Standard only when the picker selects a model without
   await router.request("thread/settings/update", { threadId: "test", model: "claude/model" });
   assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
   await router.request("thread/settings/update", { threadId: "test", model: "codex/model", serviceTier: "priority" });
-  await assert.rejects(router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: "priority" }), /does not support/, "an explicit unsupported tier still fails");
+  await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: "priority" });
+  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null }, "an explicit unsupported tier is dropped to Standard like native");
   await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: null });
   assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
   await appliedSettings(router, "test", "claude/model", null);
   await router.request("turn/start", { threadId: "test", input: [] });
+  await router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTierForTurn"), false, "an unsupported per-turn tier is omitted");
   const after = calls.length;
-  await assert.rejects(router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] }), /does not support/);
   await assert.rejects(router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
   ] }), /does not support/);

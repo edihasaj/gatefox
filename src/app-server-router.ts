@@ -154,6 +154,22 @@ export class AppServerRouter {
       throw new AppServerRoutingError("This gateway model does not support the selected service tier. Choose Standard or a model that offers that tier.", -32002);
     }
   }
+  /** Native Codex omits a tier the model lacks and runs Standard; an explicit request is never failed for it. */
+  private dropUnsupportedTier(params: ObjectValue, model: string, method: string): ObjectValue {
+    let result = params;
+    const tier = tierSelection(params);
+    if (tier && tier.value !== null && tier.value !== undefined && !this.offersServiceTier(model, String(tier.value))) {
+      const { service_tier: _dropped, ...config } = object(params.config);
+      result = { ...params, serviceTier: null, ...(params.config === undefined ? {} : { config }) };
+      telemetry("service_tier_dropped", { model, tier: String(tier.value), method });
+    }
+    const turnTier = params.serviceTierForTurn;
+    if (typeof turnTier === "string" && !this.offersServiceTier(model, turnTier)) {
+      const { serviceTierForTurn: _turn, ...rest } = result; result = rest;
+      telemetry("service_tier_dropped", { model, tier: turnTier, method });
+    }
+    return result;
+  }
   private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
     return { ...params, serviceTier: this.preferences.service_tier };
@@ -297,6 +313,7 @@ export class AppServerRouter {
     this.assertSameProvider(route.provider, requestedModel(params));
     const selectedModel = requestedModel(params) ?? route.model;
     if (route.provider === gatewayProvider && typeof selectedModel === "string") {
+      params = this.dropUnsupportedTier(params, selectedModel, method); forwarded = params;
       const tier = tierSelection(params);
       const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
       if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
@@ -324,7 +341,7 @@ export class AppServerRouter {
       // so the gateway supplies the chat's own reasoning for the model it keeps.
       let restored: ReasoningChoice | null | undefined = null;
       if (!sameModel) restored = undefined;
-      else if (configEffort(params) === undefined) restored = await this.restoredReasoning(params.threadId, model, method);
+      else if (configEffort(params) === undefined) restored = await this.restoredReasoning(String(params.threadId), model, method);
       forwarded = this.modelRequest(inherited, model, false, restored);
     } else if (["thread/resume", "thread/fork"].includes(method)) {
       const effort = await this.nativeRestoredEffort(params, method, route);
@@ -355,7 +372,7 @@ export class AppServerRouter {
     let forwarded = params;
     if (method === "thread/start") {
       const model = requestedModel(params) ?? this.preferences.model;
-      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model, true);
+      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(this.dropUnsupportedTier(params, model, method), model, true);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.

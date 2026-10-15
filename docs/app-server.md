@@ -489,6 +489,14 @@ preferences restore a saved new-chat default for the exact selected model. An ex
 `serviceTier` or `config.service_tier` takes precedence, including explicit null
 for Standard. A model-only preference change clears the preceding model's tier.
 Resume and fork inherit their chat's tier; new-chat preferences never replace it.
+When a request names a tier the selected gateway row does not offer, such as the
+desktop's saved Fast default sent for a Claude row, the gateway matches native
+Codex: it drops the tier, sends the request as Standard (`serviceTier: null`), and
+records a `service_tier_dropped` telemetry event with only the model, tier, and
+method. This covers `thread/start`, `turn/start`, `thread/resume`, `thread/fork`,
+`thread/settings/update`, `turn/settings/update`, and `serviceTierForTurn`. A tier the
+row offers is forwarded unchanged, and Fast is never added where it was not
+requested. A tier merely inherited from a chat still fails for a stale peer.
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
 original native home. Fresh connections reread this record. Runtime settings are
