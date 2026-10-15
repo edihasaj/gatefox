@@ -186,12 +186,12 @@ test("remote tier metadata survives offline restoration and model/list without p
     f.setCatalog({ models: [{ slug: "codex/sol", display_name: "Codex 2 · Sol", supported_reasoning_levels: [], service_tiers: [{ ...tier, auth: "excluded-tier-auth" }], additional_speed_tiers: ["fast"], default_service_tier: "priority" }] });
     live = await adapter(f);
     const model = (await live.rpc("model/list")).data.find((row: { model: string }) => row.model === "codex/sol");
-    assert.deepEqual(model.serviceTiers, [tier]); assert.deepEqual(model.additionalSpeedTiers, ["fast"]); assert.equal(model.defaultServiceTier, "priority");
+    assert.deepEqual(model.serviceTiers, [tier]); assert.deepEqual(model.additionalSpeedTiers, ["fast"]); assert.equal(model.defaultServiceTier, null);
     await live.stop(); live = undefined; f.close();
     const cache = await readFile(f.cachePath, "utf8"); assert.equal(cache.includes("excluded-tier-auth"), false);
     restarted = await adapter(f);
     const restored = (await restarted.rpc("model/list")).data.find((row: { model: string }) => row.model === "codex/sol");
-    assert.deepEqual(restored.serviceTiers, [tier]); assert.deepEqual(restored.additionalSpeedTiers, ["fast"]); assert.equal(restored.defaultServiceTier, "priority");
+    assert.deepEqual(restored.serviceTiers, [tier]); assert.deepEqual(restored.additionalSpeedTiers, ["fast"]); assert.equal(restored.defaultServiceTier, null);
   } finally { await live?.stop(); await restarted?.stop(); f.close(); }
 });
 

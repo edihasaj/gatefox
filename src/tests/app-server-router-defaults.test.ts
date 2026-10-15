@@ -72,7 +72,9 @@ test("Fast is never a new-chat default from a row or a saved preference", async 
   assert.equal(f.forwarded().serviceTier, null, "an explicit Standard still passes through");
   await f.router.request("thread/start", { serviceTier: "fast" });
   assert.equal(f.forwarded().serviceTier, "fast", "Fast remains selectable per chat");
-  await assert.rejects(f.router.request("thread/start", { model: "claude/model", serviceTier: "fast" }), /does not support/, "an explicit tier is still validated");
+  const claude = await f.router.request("thread/start", { model: "claude/model", serviceTier: "fast" });
+  assert.equal(claude.serviceTier, null, "a tier the row does not offer becomes Standard instead of failing the start");
+  assert.equal(f.forwarded().serviceTier, null);
 });
 
 test("a new chat after a Fast chat starts Standard while the Fast chat keeps Fast", async () => {
