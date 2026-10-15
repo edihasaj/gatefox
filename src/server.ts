@@ -61,6 +61,10 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
     const served: string[] = [];
     for (const slug of autoReviewModels) {
       const target = autoReviewTarget(config, slug);
+      // An alias spelled exactly like the slug takes the request, so it must really name the reviewer model; one that
+      // points at another model would run the reviews on that model while the catalog claimed the native reviewer.
+      const named = config.providers.find(provider => Object.hasOwn(provider.models, slug));
+      if (named && named.models[slug] !== slug) continue;
       if (target?.type === "codex-subscription" && target.credentialFile && await hasPlanLogin(target.credentialFile)) served.push(slug);
     }
     return served;

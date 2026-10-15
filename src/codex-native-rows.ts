@@ -32,8 +32,8 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
  * off until tool_search passes through. comp_hash is never copied. The node_repl policy (both
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
- * requires_sandboxed_review) follow the native row too. Without a marker or a native row for that
- * slug the row stays as the gateway published it here; snapshot() then gives it nodeReplFallback().
+ * requires_sandboxed_review, model_specialty) follow the native row too. Without a marker or a native
+ * row for that slug the row stays as the gateway published it here; snapshot() then gives it nodeReplFallback().
  * `reviewers` are the reviewer slugs the inference host advertised; with none, review cannot run.
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true, reviewers: ReadonlySet<string> = noReviewers): Row {
@@ -46,6 +46,8 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (source.guardian === null || plain(source.guardian)) copy.guardian = structuredClone(source.guardian);
   if (typeof source.auto_review_model_override === "string" || source.auto_review_model_override === null) copy.auto_review_model_override = source.auto_review_model_override;
   if (typeof source.requires_sandboxed_review === "boolean") copy.requires_sandboxed_review = source.requires_sandboxed_review;
+  // The specialty (cyber) chooses the SDK's Guardian rejection policy and its exec-policy handling, so a reviewed row must carry it.
+  if (typeof source.model_specialty === "string" || source.model_specialty === null) copy.model_specialty = source.model_specialty;
   const messages = plain(source.model_messages);
   // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
   if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }

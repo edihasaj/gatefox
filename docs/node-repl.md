@@ -44,8 +44,12 @@ and the Codex source (`ModelInfo` in `codex-rs/protocol`, pinned revision 740e5a
 - The hidden row `codex-auto-review` is the reviewer: `visibility: hide`,
   `supported_in_api: true`, `use_responses_lite: true`, and its
   `model_messages.auto_review` holds `policy`, `policy_template` and
-  `node_repl_policy`, which is the node_repl review text. The 6.x rows carry
-  `auto_review` fields that are null, the same as absent.
+  `node_repl_policy`, which is the node_repl review text. The four 6.x rows set
+  `auto_review.rejection_instructions` (the same 388-character text on all four) and
+  leave `policy`, `policy_template` and `timeout_instructions` null.
+- Only `gpt-daybreak-blue-latest` sets `model_specialty: "cyber"`. In the SDK that
+  selects a stricter Guardian rejection policy (the turn is interrupted after one
+  denial instead of three consecutive or ten recent ones) and ignores prefix rules.
 - The four 6.x rows share one `confirmation_policies` and one `guardian_v2` (identical
   across the rows). Rows such as `gpt-5.6-luna` have neither. Claude, Copilot and
   Qwen rows are published by the gateway and have neither either.
@@ -77,7 +81,9 @@ The reviewer is a normal thread on the same gateway provider. It never executes
 anything for the client: its tools (`exec_command`, `write_stdin`, `view_image`, `exec`
 and `wait`) run read-only inside the SDK's sandbox, so the reviewer may inspect state
 with read-only commands. Full Access approves the empty-schema node_repl elicitations
-without any review, as natively.
+without any review, as natively. So does the `user` approvals reviewer, for ordinary
+node_repl `js` calls that are not sensitive and need no user input
+(`core/src/session/mcp.rs`, `user_cua_execution`).
 
 A live check of the pinned gateway SDK, with a fake gateway and no paid inference,
 saw the reviewer request as `POST /v1/responses` with `model: "codex-auto-review"`,
@@ -139,8 +145,8 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
 ## Rules
 
 - A Codex 2 row copies `node_repl_disabled`, `node_repl_auto_review_required`,
-  `guardian`, `auto_review_model_override` and `requires_sandboxed_review` from its
-  native row, with code mode on or off. A value that is not plainly typed is not
+  `guardian`, `auto_review_model_override`, `requires_sandboxed_review` and
+  `model_specialty` from its native row, with code mode on or off. A value that is not plainly typed is not
   copied, and a node_repl field that is not a boolean becomes `true`.
 - A row needs review when its `guardian` reviews computer use, or when it has no
   `guardian` and its flag is not plainly `false`. A `guardian` that is not an object
@@ -163,6 +169,10 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
   `openai/confirmation_policies`, which clears the connector defaults. node_repl is
   off if the reviewer does not run, any native row turns it off or states no policy,
   or there is no native catalog. A sandboxed-review requirement carries over.
+- Fallback rows do not copy `auto_review.rejection_instructions`, so a denied action in a
+  Claude, Copilot or Qwen chat shows the SDK's bundled rejection guidance, as the 5.6
+  rows do natively. It is stricter than the 6.x text: it tells the agent to stop and
+  request user input, where the 6.x text lets it finish unaffected work.
 - The plain catalog (CLI and remote clients) publishes `true` for both fields on
   every row.
 - Executors start on the machine with the native catalog and settings. Their
@@ -183,6 +193,10 @@ fallback rows:
 - native rows that disagree on a shared review text, or any native row that turns
   node_repl off (fallback rows only).
 
+The adapter does not know a chat's approvals reviewer, so review-required rows stay
+off without an advertised reviewer even when that chat would not use the reviewer
+(Full Access or the `user` approvals reviewer).
+
 At run time any reviewer failure (401, 404, 5xx, timeout) makes the SDK decline the
 action. In a mixed deployment an inference host older than this release sends no
 `auto_review`, so those rows stay off until the host is updated.
@@ -198,11 +212,20 @@ parent-fallback review texts. App-server maps the rejection to JSON-RPC `-32600`
 with the SDK's reason. The router forwards it unchanged and records the new model
 only for an `applied` result, so the turn keeps its model.
 
-On the live configuration the rows fall in two groups: review required (`gpt-6.1-sol`,
-`gpt-6-astra`, `gpt-6-sol`, every Claude, Copilot and Qwen row) and review not required
-(`gpt-6-luna`, `gpt-reserve`, the 5.6 rows, `gpt-daybreak-blue-latest`). Claude to `gpt-6.1-sol` still
-switches mid-turn; Claude to `gpt-6-luna` is rejected, like native `gpt-6.1-sol` to
-`gpt-6-luna`. The groups are the same with or without the reviewer. `thread/settings/update`
+On the live configuration the rows fall in three groups, and a mid-turn switch works
+only inside one:
+
+| Group | Rows |
+| --- | --- |
+| Review required | `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, every Claude, Copilot and Qwen row |
+| Review not required | `gpt-6-luna`, `gpt-reserve`, the 5.6 rows |
+| Cyber (`model_specialty`) | `gpt-daybreak-blue-latest` |
+
+Claude to `gpt-6.1-sol` still switches mid-turn; Claude to `gpt-6-luna` is rejected,
+like native `gpt-6.1-sol` to `gpt-6-luna`, and a switch to or from
+`gpt-daybreak-blue-latest` is rejected like natively (the destination changes the
+admitted Guardian rejection policy). The groups are the same with or without the
+reviewer. `thread/settings/update`
 changes the next turn and is never checked.
 
 ChatGPT desktop 26.1007 changes the model only through `thread/settings/update` and

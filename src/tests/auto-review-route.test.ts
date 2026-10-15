@@ -83,6 +83,21 @@ test("an explicit alias for the reviewer keeps its precedence, also with two Cod
   } finally { await g.close(); }
 }));
 
+test("an alias on another provider keeps its precedence over the one Codex route, and the reviewer route emits no alias event", () => withDirectory(async directory => {
+  configureTelemetry(directory, "gateway"); const since = Date.now() - 1000;
+  const aliased = await gateway(directory, [{ ...claude, models: { ...claude.models, "codex-auto-review": "opus" } }, codex("codex", { "codex/sol": "gpt-6.1-sol" })]);
+  try {
+    assert.equal((await aliased.post(reviewRequest("codex-auto-review"))).status, 200);
+    assert.deepEqual([...aliased.seen.keys()], ["claude"], "the alias decides, the Codex route is not used");
+    assert.equal(aliased.seen.get("claude")![0].model, "opus");
+  } finally { await aliased.close(); }
+  const plain = await gateway(directory, [codex("codex", { "codex/sol": "gpt-6.1-sol" })]);
+  try { assert.equal((await plain.post(reviewRequest("codex-auto-review"))).status, 200); } finally { await plain.close(); }
+  await flushTelemetry();
+  const events = await readTelemetry(directory, since);
+  assert.equal(events.filter(event => event.event === "model_alias_resolved").length, 0, "neither request resolved an alias by another name");
+}));
+
 test("the catalog advertises the reviewer only with a unique Codex route and a stored plan login", () => withDirectory(async directory => {
   const file = (name: string, value: unknown) => writeFile(join(directory, name), JSON.stringify(value), { mode: 0o600 }).then(() => join(directory, name));
   const good = await file("good.json", login); const noScope = await file("scope.json", { ...login, scopes: ["resource.invoke"] });
@@ -104,6 +119,11 @@ test("the catalog advertises the reviewer only with a unique Codex route and a s
   assert.equal(await advertised([codex("a", { "a/sol": "gpt-6.1-sol" }, good), codex("b", { "b/sol": "gpt-6.1-sol" }, good)]), undefined, "two accounts: which one is not decided");
   assert.deepEqual(await advertised([codex("a", { "a/review": "codex-auto-review" }, good), codex("b", { "b/sol": "gpt-6.1-sol" }, good)]), { models: ["codex-auto-review"] }, "an alias decides");
   assert.equal(await advertised([{ ...claude, models: { "codex-auto-review": "opus" } }]), undefined, "an alias on another vendor's provider is not a Codex login");
+  assert.equal(await advertised([codex("a", { "codex-auto-review": "gpt-6.1-sol" }, good)]), undefined, "an alias spelled like the reviewer that points at another model would run the reviews on that model");
+  assert.deepEqual(await advertised([codex("a", { "codex-auto-review": "codex-auto-review" }, good)]), { models: ["codex-auto-review"] }, "an alias that names the reviewer model itself is the reviewer");
+  const chat = (models: Record<string, string>): ProviderConfig => ({ id: "chat", type: "chat-completions-api", baseUrl: "https://example.invalid/v1", credentialFile: good, models });
+  assert.equal(await advertised([chat({ "codex-auto-review": "codex-auto-review" })]), undefined, "a provider of another type is not a Codex login, even with a valid plan login file");
+  assert.equal(await advertised([{ ...claude, credentialFile: good, models: { "codex-auto-review": "codex-auto-review" } }, codex("a", { "a/sol": "gpt-6.1-sol" }, good)]), undefined, "an alias on another vendor's provider wins over the one Codex route");
 }));
 
 test("telemetry marks reviewer requests with fixed fields only, on success, on 404 and on failure, and diagnostics count them", () => withDirectory(async directory => {

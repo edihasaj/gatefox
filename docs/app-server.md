@@ -179,7 +179,7 @@ Choose a gateway model in a **new chat**. A loaded chat cannot switch between
 native and gateway providers in this Codex version. The adapter rejects that
 change before inference. Switching Claude and Codex 2 inside a gateway chat works
 between turns because they share the gateway provider and its account-scoped replay
-handling; during a running turn it also needs matching node_repl settings (below).
+handling; during a running turn the SDK also checks safety settings (below).
 Native return from gateway history is not supported: a real probe failed on
 foreign item IDs. The adapter does not rewrite stored native history to bypass it.
 
@@ -187,12 +187,11 @@ Gateway executors enable Codex's active-step model switching. The adapter forwar
 `thread/settings/update`, `turn/settings/update`, `turn/steer`, and goal operations
 with their original turn IDs and authorization fields. A thread-level model
 selection remains the default after a saved chat resumes. An active-turn model
-update applies at the next inference step only when the destination matches the
-running model's node_repl availability and review requirement. The SDK rejects any
-other active-turn switch, as it does natively, and the adapter forwards the error
-unchanged ([which rows](#node_repl-browser-chrome-and-computer-use)). A captured
-tool step keeps its approval requirements; changing thread access updates
-subsequent turns.
+update applies at the next inference step. The SDK rejects an active-turn switch
+whose destination differs in node_repl or review safety settings, as it does
+natively, and the adapter forwards the error unchanged ([full list and which
+rows](node-repl.md#switching-models-during-a-running-turn)). A captured tool step
+keeps its approval requirements; changing thread access updates subsequent turns.
 
 These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol
 when every gateway row published the same node_repl fields. Those tests do not cover
@@ -372,7 +371,7 @@ local native catalog it loaded at startup and copies these fields:
   `max_context_window`. Otherwise, or when the upstream reports no maximum, the
   upstream window stays;
 - `node_repl_disabled`, `node_repl_auto_review_required`, `guardian`,
-  `auto_review_model_override` and `requires_sandboxed_review`
+  `auto_review_model_override`, `requires_sandboxed_review` and `model_specialty`
   ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
@@ -433,36 +432,12 @@ resume; the chat's own reasoning is restored instead, as described above.
 
 ### node_repl (browser, Chrome and computer use)
 
-Gateway chats get the same node_repl capability and safety policy as native rows,
-never a weaker one (`src/codex-native-rows.ts`, `src/desktop-catalog.ts`). The
-evidence, rules, telemetry and fail-closed cases are in
-[node_repl on gateway rows](node-repl.md); this is the summary.
-
-- node_repl does not depend on code mode, so both of its fields follow the native
-  row whether code mode is on or off. A Codex 2 row copies `node_repl_disabled`,
-  `node_repl_auto_review_required` and the review fields from its `upstream_slug`
-  row. The native rows carried for sub-agents get the same rule.
-- A row with no native counterpart (Claude, Copilot, Qwen, API, or a Codex row
-  whose upstream is missing) always requires review, which is the strictest native
-  policy. It takes the native confirmation and classifier texts when the native
-  rows agree on them.
-- Review runs as it does natively. From a gateway executor the SDK asks for the
-  reviewer `codex-auto-review`, not `gpt-5.6-luna`: the executor's provider
-  authenticates with a command, so no API-key auth is ever cached on it. The
-  gateway serves that slug through the Codex subscription and advertises it in
-  `/v1/model-catalog`. A row that needs review has node_repl on only while the live
-  catalog advertises it and the native catalog offers the reviewer row to API-key
-  auth; otherwise it is off. Actions from Claude, Copilot and Qwen chats are
-  therefore reviewed by an OpenAI model, which Edi accepted on 2026-10-15.
-- During a running turn the SDK rejects a model switch between rows whose node_repl
-  availability or review requirement differ, as it does natively between
-  `gpt-6.1-sol` and `gpt-6-luna`. Review-required rows (`gpt-6.1-sol`, `gpt-6-astra`,
-  `gpt-6-sol` and every Claude, Copilot and Qwen row) switch among themselves.
-  `gpt-6-luna`, `gpt-reserve`, the 5.6 rows and `gpt-daybreak-blue-latest` switch
-  among themselves.
-  A switch across the two groups, such as Claude to `gpt-6-luna`, is rejected
-  mid-turn, and the adapter forwards the SDK's error. Choosing the model between
-  turns or in a new chat always works.
+Gateway rows get the same node_repl policy as native rows, and a row with no native
+counterpart (Claude, Copilot, Qwen) always requires review. The reviewer
+`codex-auto-review` is served through the Codex subscription, and a row that needs
+review has node_repl on only while the gateway advertises it. An active-turn model
+switch across review groups is rejected by the SDK. The rules, evidence, groups and
+fail-closed cases are only in [node_repl on gateway rows](node-repl.md).
 
 ## Empty chats and message order
 

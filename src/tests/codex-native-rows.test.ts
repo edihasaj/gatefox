@@ -46,6 +46,13 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
 });
 
+test("a Codex 2 row carries the native model specialty, which picks the SDK's Guardian rejection policy", () => {
+  const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
+  assert.equal(withNativeRow(published, [{ ...nativeSol, model_specialty: "cyber" }]).model_specialty, "cyber");
+  assert.equal(withNativeRow(published, [{ ...nativeSol, model_specialty: null }]).model_specialty, null);
+  for (const odd of [undefined, 7, { cyber: true }]) assert.equal(Object.hasOwn(withNativeRow(published, [{ ...nativeSol, model_specialty: odd }]), "model_specialty"), false, String(odd));
+});
+
 test("native values outside the upstream's limits or offered levels keep the published row", () => {
   const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
   assert.equal(withNativeRow(published, [{ ...nativeSol, context_window: 900000 }]).context_window, 500000);
