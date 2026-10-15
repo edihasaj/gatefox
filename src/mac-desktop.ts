@@ -102,8 +102,9 @@ async function planUnregister(stateDirectory: string, exec: LaunchctlExec, optio
   // moves the unified service plan to the Trash. The plan file it sees here is one the removal already owns, not
   // another owner of this registration. A staged next-login promotion survives the service uninstall, so it is
   // refused either way, and a standalone `desktop unregister`, which removes no service, still refuses both.
+  if (await readPendingLoginConsolidation(stateDirectory)) throw new Error("A gateway login promotion is staged for the next login; log in again to finish it, then unregister the desktop adapter");
   const unified = options.serviceRemovedFirst ? undefined : await readServicePlan(stateDirectory);
-  if (unified || await readPendingLoginConsolidation(stateDirectory)) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
+  if (unified) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
   const receipt = resolve(stateDirectory, "desktop-registration.json");
   const plist = resolve(homedir(), "Library/LaunchAgents", label + ".plist");
   const existing = await readDesktopPlist(plist);

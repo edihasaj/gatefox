@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { macDesktop, ownWrapper, planDesktopUnregister, type LaunchctlExec } from "../mac-desktop.js";
@@ -149,8 +149,8 @@ test("the plan skips the service-plan refusal only for the uninstaller that remo
     assert.deepEqual(writes(f, beforePlan), [], "the flag does not make the plan write anything");
     // A pending login promotion survives the service uninstall, so it keeps its refusal even with the flag.
     await pendingLoginFile(f);
-    await assert.rejects(planDesktopUnregister(f.config, f.exec, { serviceRemovedFirst: true }), /owned by the unified service or its pending login plan/, "the pending login plan still owns the registration");
-    await assert.rejects(macDesktop("unregister", f.config, f.app, false, f.exec), /owned by the unified service or its pending login plan/, "and for unregister too");
+    await assert.rejects(planDesktopUnregister(f.config, f.exec, { serviceRemovedFirst: true }), /^Error: A gateway login promotion is staged for the next login/, "the pending login plan still owns the registration, and the refusal names it");
+    await assert.rejects(macDesktop("unregister", f.config, f.app, false, f.exec), /^Error: A gateway login promotion is staged for the next login/, "and for unregister too");
   });
 });
 
@@ -234,7 +234,7 @@ test("a receipt that is not JSON stops the plan and unregister before either wri
  * set, and a malformed wrapper is no proof of anything.
  */
 test("a receipt that parses into something other than a registration fails the plan before it reads the session", mac, async () => {
-  for (const shape of ["null", "[]", '{"wrapper":5}'] as const) {
+  for (const shape of ["null", "[]", '{"wrapper":5}', '{"wrapper":null}', "5", '"x"', "true"] as const) {
     const f = await fixture();
     await inDesktopHome(f, async () => {
       const wrapper = await legacyPair(f);
@@ -286,4 +286,14 @@ test("the plan waits for a registration or consolidation that already holds the 
     assert.equal((await plan).unregisterReady, true, "released, it plans the same session the holder left alone");
     assert.deepEqual(f.calls, [`getenv ${PATH_KEY}`, `getenv ${FORCE}`], "and only then asks the session, reads first");
   });
+});
+
+test("the unregister plan refuses off macOS before it reads or asks anything", async () => {
+  const f = await fixture();
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux" });
+  try {
+    await assert.rejects(planDesktopUnregister(f.config, f.exec), /on macOS/);
+    assert.deepEqual(f.calls, [], "launchctl was never asked");
+  } finally { Object.defineProperty(process, "platform", original); await rm(f.root, { recursive: true, force: true }); }
 });
