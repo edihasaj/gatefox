@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { uninstallGateway, uninstallResult, type UninstallDeps } from "../uninstall.js";
+import { uninstallGateway, uninstallFailure, uninstallResult, type UninstallDeps } from "../uninstall.js";
 
-// The result shape is the whole uninstall contract, so it is checked here as a pure helper. Only the pure-helper
-// tests below reach neither launchctl, the Trash, nor the filesystem; the `uninstallGateway` tests run the real
-// path, but through fake commands and a temp HOME.
+// The result shape and the failure wording are the uninstall contract, so both are checked here as pure helpers.
+// Only the pure-helper tests below reach neither launchctl, the Trash, nor the filesystem; the `uninstallGateway`
+// tests run the real path, but through fake commands and a temp HOME.
 const BASE = ["uninstalled", "installationMovedToTrash", "credentialsPreserved", "nativeConfigUntouched"] as const;
 
 test("a kept legacy FORCE_CLI flag is passed through to the operator", () => {
@@ -42,12 +42,13 @@ test("the helper is pure and never calls launchctl", () => {
  * Each desktop call is recorded with the action it was given, and `runDesktop` can fail or answer one action
  * instead of returning `desktopResult` for every one.
  */
-function fakes(desktopResult: Record<string, unknown> = {}, runDesktop?: (action: string) => Promise<Record<string, unknown>>) {
+function fakes(desktopResult: Record<string, unknown> = {}, runDesktop?: (action: string) => Promise<Record<string, unknown>>, runPlan?: () => Promise<Record<string, unknown>>) {
   const calls: string[] = [];
   const record = (name: string) => async (): Promise<Record<string, unknown>> => { calls.push(name); return {}; };
   const deps: UninstallDeps = {
     macService: record("service"), macNative: record("native"), macSsh: record("ssh"), macTunnel: record("tunnel"),
     macDesktop: async (action: string) => { calls.push(`desktop:${action}`); return runDesktop ? runDesktop(action) : desktopResult; },
+    planDesktopUnregister: async () => { calls.push("desktop:plan"); return runPlan ? runPlan() : {}; },
   };
   return { calls, deps };
 }
@@ -87,29 +88,74 @@ test("uninstallGateway carries unregister's kept-flag warning through the whole 
     assert.equal(result.legacyForceCliKept, true, "the kept legacy value is the operator's remaining step");
     for (const key of BASE) assert.equal(result[key], true, `${key} must stay true`);
     // The empty LaunchAgents directory means no tunnel plist, so no tunnel uninstall; order is the real one.
-    assert.deepEqual(kept.calls, ["desktop:status", "service", "native", "desktop:unregister", "ssh"]);
+    assert.deepEqual(kept.calls, ["desktop:plan", "service", "native", "desktop:unregister", "ssh"]);
     assert.equal(await readFile(gateway.command, "utf8").then(() => true, () => false), false, "the command moved to the Trash");
 
     // A second uninstall of a re-installed gateway whose unregister cleared everything reports no warning.
     await rm(join(gateway.home, ".Trash"), { recursive: true, force: true }); await gateway.install();
     const cleared = fakes({});
     assert.equal("legacyForceCliKept" in await uninstallGateway(gateway.config, cleared.deps), false);
-    assert.deepEqual(cleared.calls, ["desktop:status", "service", "native", "desktop:unregister", "ssh"]);
+    assert.deepEqual(cleared.calls, ["desktop:plan", "service", "native", "desktop:unregister", "ssh"]);
   } finally { await gateway.cleanup(); }
 });
 
-test("a desktop status probe that fails stops the uninstall before anything is removed", async () => {
+test("a desktop unregister plan that fails stops the uninstall before anything is removed", async () => {
   const gateway = await installedGateway();
   try {
-    // Status is the first call, so the failure must reach the operator with the install still intact.
-    const failed = fakes({}, async (action) => {
-      if (action === "status") throw new Error("The desktop session could not be read");
-      return {};
-    });
-    await assert.rejects(() => uninstallGateway(gateway.config, failed.deps), /desktop session could not be read/);
-    assert.deepEqual(failed.calls, ["desktop:status"], "a failed probe must not remove the service, native files, or SSH");
+    // The plan is the first desktop call, and it reads what unregister would change without changing it, so a
+    // failure reaches the operator with the install still intact.
+    const failed = fakes({}, undefined, async () => { throw new Error("The desktop session could not be read"); });
+    const message = await uninstallGateway(gateway.config, failed.deps).then(
+      () => "uninstallGateway resolved", (cause: unknown) => cause instanceof Error ? cause.message : String(cause));
+    assert.notEqual(message, "uninstallGateway resolved", "a failed plan must fail the whole uninstall");
+    assert.match(message, /unregister preflight failed before anything was removed/, "the message says nothing is gone yet");
+    assert.match(message, /desktop session could not be read/, "and names the cause");
+    assert.match(message, /resolve the cause above, then rerun `gateway uninstall`/i, "and gives the next step");
+    assert.deepEqual(failed.calls, ["desktop:plan"], "a failed plan must not remove the service, native files, or SSH");
     assert.equal(await readFile(gateway.command, "utf8").then(() => true, () => false), true, "the command is still installed");
   } finally { await gateway.cleanup(); }
+});
+
+/** The refusal this preflight exists for: the plist is not ours, so nothing of ours may go. */
+test("an unmanaged desktop LaunchAgent is refused before the service or native files are removed", async () => {
+  const gateway = await installedGateway();
+  try {
+    const refused = fakes({}, undefined, async () => { throw new Error("Refusing to change an unmanaged desktop LaunchAgent"); });
+    await assert.rejects(() => uninstallGateway(gateway.config, refused.deps), /unmanaged desktop LaunchAgent/);
+    assert.deepEqual(refused.calls, ["desktop:plan"], "the refusal lands while every component is still installed");
+    assert.equal(await readFile(gateway.command, "utf8").then(() => true, () => false), true, "the command is still installed");
+  } finally { await gateway.cleanup(); }
+});
+
+/**
+ * A JSON parse failure quotes the file it read, so its message never reaches the operator: both desktop steps
+ * report it as invalid data, with the cause kept underneath for anyone who can read the files.
+ */
+test("a corrupt receipt is reported as invalid JSON, never as the text that failed to parse", async () => {
+  const sentinel = "a-sentinel-from-the-file-9c1f";
+  for (const stage of ["preflight", "unregister"] as const) {
+    const gateway = await installedGateway();
+    try {
+      const broken = async (): Promise<never> => { throw new SyntaxError(`Unexpected token <, "<!${sentinel}-->" is not valid JSON`); };
+      const recorder = stage === "preflight" ? fakes({}, undefined, broken) : fakes({}, () => broken());
+      const error = await uninstallGateway(gateway.config, recorder.deps).then(() => undefined, (cause: unknown) => cause as Error);
+      assert.ok(error, stage + ": a parse failure must fail the uninstall");
+      assert.match(error.message, /Invalid JSON data/, stage);
+      assert.equal(error.message.includes(sentinel), false, stage + ": no file snippet reaches the output");
+      assert.ok(error.cause instanceof SyntaxError, stage + ": the real failure stays reachable as the cause");
+      assert.deepEqual(recorder.calls, stage === "preflight"
+        ? ["desktop:plan"]
+        : ["desktop:plan", "service", "native", "desktop:unregister"], stage + ": it stops where that step sits");
+    } finally { await gateway.cleanup(); }
+  }
+});
+
+test("the failure helper names the step, what is still installed, and never the JSON text", () => {
+  const message = uninstallFailure(new SyntaxError('Unexpected token <, "<!-- managed -->" is not valid JSON'), "preflight").message;
+  assert.equal(message, 'Desktop unregister preflight failed before anything was removed: Invalid JSON data. Resolve the cause above, then rerun `gateway uninstall`.');
+  assert.equal(message.includes("<!--"), false, "the quoted snippet never survives the helper");
+  assert.match(uninstallFailure(new Error("boom"), "unregister").message, /^Desktop unregister failed after the service and native components were already removed: boom\./);
+  assert.match(uninstallFailure("not an error", "preflight").message, /The desktop registration could not be removed/);
 });
 
 test("a failed unregister says what the uninstall already removed and skips SSH", async () => {
@@ -125,6 +171,7 @@ test("a failed unregister says what the uninstall already removed and skips SSH"
     for (const pattern of [/desktop unregister/i, /already removed/i, /boom/, /gateway uninstall/]) {
       assert.match(message, pattern, "the message names the step, what is gone, the cause, and the remedy");
     }
-    assert.deepEqual(failed.calls, ["desktop:status", "service", "native", "desktop:unregister"], "SSH never runs after it");
+    assert.match(message, /resolve the cause above, then rerun `gateway uninstall`/i, "and the next step");
+    assert.deepEqual(failed.calls, ["desktop:plan", "service", "native", "desktop:unregister"], "SSH never runs after it");
   } finally { await gateway.cleanup(); }
 });

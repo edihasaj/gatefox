@@ -27,11 +27,13 @@ you, or a missing entry, directly in the gateway state directory, whose name is 
 plus 16 lowercase hex digits. A look-alike stays foreign: the same name in another directory or a
 subdirectory of the state directory, a name with a suffix, a shorter, non-hex, or uppercase suffix, a path
 that climbs back through `..` or ends in a slash, or a name held by a symlink or a directory. The
-`gateway desktop` launcher uses the same rule: only the current wrapper, or a `desktop-wrapper-`
-plus 16 lowercase hex digits name in the gateway state directory, counts as ours. Registration
-refuses a foreign value instead of replacing it, unregister leaves it alone, and registration
-never deletes a stale wrapper file. If a foreign `CODEX_CLI_PATH` override blocks registration,
-run `launchctl unsetenv CODEX_CLI_PATH` and then register again.
+`gateway desktop` launcher runs the inherited `CODEX_CLI_PATH` through the same path test in
+`src/desktop-wrapper-path.ts`, or accepts the exact wrapper it is about to launch, and stops there: it
+never stats the entry, so an accepted name is proof enough for it. That check has one effect, which is to
+drop a legacy `CODEX_APP_SERVER_FORCE_CLI=1` from the single app process the launcher starts; it changes
+nothing in the login session. Registration refuses a foreign value instead of replacing it, unregister
+leaves it alone, and registration never deletes a stale wrapper file. If a foreign `CODEX_CLI_PATH`
+override blocks registration, run `launchctl unsetenv CODEX_CLI_PATH` and then register again.
 
 The receipt requirement is what turns a missing receipt into a refusal rather than a guess. Where the
 receipt was cleared or never written, a gateway wrapper path beside a `1` proves the path is ours but says
@@ -48,8 +50,8 @@ variable with `launchctl getenv`, removes exactly one trailing newline, and coun
 remains, so a whitespace-only value is set; it never carries the value itself. If `launchctl` cannot be run
 or times out, register, unregister and status fail with that error rather than treating the variable as
 unset, so `forceCliSet: false` is only ever reported on a successful read. `gateway desktop` only leaves an
-inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` is a gateway
-wrapper; it does not change the login session, so later Dock launches still see it.
+inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` names a gateway
+wrapper by that spelling test; it does not change the login session, so later Dock launches still see it.
 
 After installing a release that stops setting it, clear the old value first, then
 restart the app:

@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { macService } from "./mac-service.js";
 import { macTunnel } from "./mac-tunnel.js";
-import { macDesktop } from "./mac-desktop.js";
+import { macDesktop, planDesktopUnregister } from "./mac-desktop.js";
 import { macSsh } from "./mac-ssh.js";
 import { macNative } from "./mac-native.js";
 
@@ -15,30 +15,44 @@ export type UninstallDeps = {
   macService: typeof macService;
   macNative: typeof macNative;
   macDesktop: typeof macDesktop;
+  planDesktopUnregister: typeof planDesktopUnregister;
   macSsh: typeof macSsh;
   macTunnel: typeof macTunnel;
 };
 
-const defaultDeps: UninstallDeps = { macService, macNative, macDesktop, macSsh, macTunnel };
+const defaultDeps: UninstallDeps = { macService, macNative, macDesktop, planDesktopUnregister, macSsh, macTunnel };
+
+/** Where a desktop step failed, which is also what the install still holds at that point. */
+const failureStage = {
+  preflight: "Desktop unregister preflight failed before anything was removed",
+  unregister: "Desktop unregister failed after the service and native components were already removed",
+} as const;
+/**
+ * What a desktop step failed on, in one line the operator can act on. A JSON parse error is named rather than
+ * quoted, because its message carries a snippet of the file it read and an uninstall never echoes file contents.
+ */
+export function uninstallFailure(error: unknown, stage: keyof typeof failureStage): Error {
+  const reason = error instanceof SyntaxError ? "Invalid JSON data"
+    : error instanceof Error ? error.message : "The desktop registration could not be removed";
+  return new Error(`${failureStage[stage]}: ${reason}. Resolve the cause above, then rerun \`gateway uninstall\`.`, { cause: error });
+}
 
 export async function uninstallGateway(configPath: string, deps: UninstallDeps = defaultDeps): Promise<Record<string, unknown>> {
   const command = process.env.GATEWAY_COMMAND;
   if (process.env.GATEWAY_INSTALLED !== "1" || !command) throw new Error("Uninstall requires an installed gateway command");
   const root = resolve(dirname(command), "../share/subscription-gateway");
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
-  // Read the desktop state first: a status probe touches the config and the GUI session, so an unreadable
-  // registration or an unreachable session fails here, while the service and native components are still there
-  // to clean up, rather than halfway through the removal below.
-  await deps.macDesktop("status", configPath);
+  // Plan the desktop unregister first, and write nothing: the plan reads the config, the receipt, the desktop
+  // LaunchAgent and its managed marker, and the GUI session, so an unmanaged plist, an unreadable registration,
+  // or an unreachable session fails here, while the service and native components are still there to clean up,
+  // rather than halfway through the removal below.
+  await deps.planDesktopUnregister(configPath).catch((error: unknown) => { throw uninstallFailure(error, "preflight"); });
   await deps.macService("uninstall", configPath);
   await deps.macNative("uninstall", configPath);
   // Unregister reports legacyForceCliKept when it cleared our CODEX_CLI_PATH but a legacy FORCE_CLI=1 stayed
   // behind it for lack of a receipt; the uninstaller passes that warning through so the operator can clear it.
-  // A failure here is mid-removal, so the message says what is already gone and to run the command again.
-  const desktop = await deps.macDesktop("unregister", configPath).catch((error: unknown) => {
-    const reason = error instanceof Error ? error.message : "The desktop registration could not be removed";
-    throw new Error(`Desktop unregister failed after the service and native components were already removed: ${reason}. Rerun \`gateway uninstall\`.`, { cause: error });
-  });
+  // A failure here is mid-removal, so the message says what is already gone and what to do next.
+  const desktop = await deps.macDesktop("unregister", configPath).catch((error: unknown) => { throw uninstallFailure(error, "unregister"); });
   await deps.macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
   for (const file of await readdir(directory)) {

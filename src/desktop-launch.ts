@@ -1,7 +1,8 @@
 import { spawn, execFileSync } from "node:child_process";
 import { access, open, readFile, chmod, lstat } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, dirname, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { isOwnWrapperPath } from "./desktop-wrapper-path.js";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
@@ -29,13 +30,13 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   return { binary, wrapper };
 }
 
-const wrapperName = /^desktop-wrapper-[0-9a-f]{16}$/;
 /**
- * Whether an inherited `CODEX_CLI_PATH` is a gateway wrapper: the one this launch writes, or an older one
- * generated in the same state directory. A look-alike name anywhere else is someone else's file.
+ * Whether an inherited `CODEX_CLI_PATH` is a gateway wrapper: the one this launch writes, or an older one the
+ * same rule accepts in this state directory. A look-alike name anywhere else is someone else's file. Only the
+ * spelling is checked here, because the inherited value is never written to: it only decides whether a legacy
+ * `CODEX_APP_SERVER_FORCE_CLI=1` may leave the launched app.
  */
-const isGatewayWrapper = (inherited: string, wrapper: string) => inherited === wrapper
-  || (dirname(inherited) === dirname(wrapper) && wrapperName.test(basename(inherited)));
+const isGatewayWrapper = (inherited: string, wrapper: string) => inherited === wrapper || isOwnWrapperPath(inherited, dirname(wrapper));
 /**
  * The launch environment for the desktop. `CODEX_CLI_PATH` is the only adapter hook:
  * `CODEX_APP_SERVER_FORCE_CLI` would push durable chats and SSH rows through the CLI too.
