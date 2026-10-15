@@ -25,6 +25,8 @@ const requestedModel = (params: ObjectValue): unknown => object(object(params.co
 const tierSelection = (params: ObjectValue): { value: unknown } | undefined => Object.hasOwn(params, "serviceTier") && params.serviceTier !== undefined
   ? { value: params.serviceTier } : Object.hasOwn(object(params.config), "service_tier") ? { value: object(params.config).service_tier } : undefined;
 const tierId = (value: unknown): unknown => value === "fast" ? "priority" : value;
+// Telemetry names only tiers the gateway knows; a caller-supplied id is never logged.
+const tierLabel = (value: unknown): string => ["priority", "flex", "default"].includes(String(tierId(value))) ? String(tierId(value)) : "other";
 const savedTier = (value: string | null): string | null => value === "default" ? null : tierId(value) as string | null;
 // An effort can arrive as a turn setting or inside the collaboration mode that carries it.
 const requestedEffort = (params: ObjectValue): unknown => params.effort ?? object(object(params.collaborationMode).settings).reasoning_effort;
@@ -163,7 +165,7 @@ export class AppServerRouter {
   private offeredTier(params: ObjectValue, model: string, method: string): ObjectValue {
     const tier = tierSelection(params);
     if (!tier || typeof tier.value !== "string" || tier.value === "default" || this.offersServiceTier(model, tier.value)) return params;
-    telemetry("service_tier_reset", { from: tierId(tier.value), model, method });
+    telemetry("service_tier_reset", { from: tierLabel(tier.value), model, method });
     const { service_tier: _dropped, ...config } = object(params.config);
     return { ...params, serviceTier: null, ...(Object.hasOwn(object(params.config), "service_tier") ? { config } : {}) };
   }
@@ -246,6 +248,7 @@ export class AppServerRouter {
     const tierEdit = local.find(edit => edit.keyPath === "service_tier");
     const pick = tierEdit ? this.tierPicks.take() : undefined;
     if (!local.length && !desktopEdits.length) throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
+    if (new Set(local.map(edit => edit.keyPath)).size !== local.length) throw new AppServerRoutingError("Gateway defaults accept one value for each setting in a single write");
     if (local.length && (typeof chosen !== "string" || !chosen)) throw new AppServerRoutingError("Select a model before saving its reasoning preferences");
     // Do not redirect writes explicitly aimed at a project or other profile.
     if (typeof params.filePath === "string" && params.filePath !== this.preferencesPath) throw new AppServerRoutingError("Gateway defaults are scoped to this adapter; choose a model without a custom config-file target");
@@ -266,13 +269,14 @@ export class AppServerRouter {
     if (tierEdit && tierId(tierEdit.value) === "priority") {
       const decision = fastDefaultDecision(pick, defaultIsGateway);
       if (decision === "reject") throw new AppServerRoutingError("Fast stays with the chat where you chose it; it is not saved as the default for new chats.", -32002);
-      // A Fast pick for a gateway default starts the chat it was chosen for and is not saved. Keep a previous Standard.
+      // A Fast pick for a gateway default starts the chat it was chosen for and is not saved. A previous non-Fast tier stays.
       if (decision === "accept-unsaved") {
-        if (previous !== undefined && tierId(previous) !== "priority" && !(modelEdit && chosen !== this.preferences.model)) preferences.service_tier = previous;
+        if (previous !== undefined && tierId(previous) !== "priority") preferences.service_tier = previous;
         else delete preferences.service_tier;
       }
-    } else if (!tierEdit && modelEdit && chosen !== this.preferences.model && tierId(previous) === "priority" && defaultIsGateway) {
-      // A saved Standard or other tier survives a model change, as natively; Fast never becomes a gateway default.
+    } else if (!tierEdit && modelEdit && chosen !== this.preferences.model && tierId(previous) === "priority" && (defaultIsGateway || this.isGatewayModel(this.preferences.model))) {
+      // A saved Standard or other tier survives a model change, as natively. A saved Fast survives only native to
+      // native: it never becomes a gateway default, and one hidden behind a gateway model must not resurface.
       delete preferences.service_tier;
     }
     await writePrivateJson(this.preferencesPath, preferences); this.preferences = preferences;
@@ -352,7 +356,10 @@ export class AppServerRouter {
         // Only the picker's explicit settings change qualifies; a turn start from a
         // stale peer still cannot drop another client's Fast setting.
         if (method === "thread/settings/update" && selectedModel !== route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
-          forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
+          forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: tierLabel(route.serviceTier), model: selectedModel, method });
+        } else if (["thread/resume", "thread/fork"].includes(method) && selectedModel === route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
+          // The row stopped offering the chat's own tier: the chat must still open, as Standard.
+          forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: tierLabel(route.serviceTier), model: selectedModel, method });
         } else this.assertServiceTier(selectedModel, route.serviceTier);
       }
       if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
@@ -455,9 +462,11 @@ export class AppServerRouter {
     if (method === "config/read") {
       await this.readPreferences();
       const { desktop, ...modelPreferences } = this.preferences;
-      // A saved Fast default for a gateway model (an older file) would make the desktop resend it for every new chat.
-      if (tierId(modelPreferences.service_tier) === "priority" && this.isGatewayModel(modelPreferences.model)) delete modelPreferences.service_tier;
-      return { ...result, config: { ...mergeDesktopPreferences(object(result.config), object(desktop)), ...modelPreferences, model_catalog_json: this.catalogPath } };
+      const config: ObjectValue = { ...mergeDesktopPreferences(object(result.config), object(desktop)), ...modelPreferences, model_catalog_json: this.catalogPath };
+      // The desktop starts every new draft with the default speed, so Fast is never reported while the default model
+      // is a gateway model, whether it was saved by an older file or comes from the native config.toml.
+      if (tierId(config.service_tier) === "priority" && this.isGatewayModel(config.model)) delete config.service_tier;
+      return { ...result, config };
     }
     return result;
   }

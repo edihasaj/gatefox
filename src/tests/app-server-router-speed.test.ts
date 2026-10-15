@@ -1,69 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { AppServerRouter } from "../app-server-router.js";
-import type { GatewayConfig } from "../config.js";
 import { ChatTierPicks, tierPickWindowMs } from "../speed-defaults.js";
-
-type ObjectValue = Record<string, unknown>;
-const gateway = "subscription_gateway";
-
-// The codex row advertises Fast and names it its default; the claude row has no Fast.
-// Requests below copy the shapes the installed desktop sends.
-async function fixture(saved?: ObjectValue) {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-speed-"));
-  if (saved) await writeFile(join(directory, "desktop-preferences.json"), JSON.stringify(saved));
-  const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: directory, providers: [
-    { id: "claude", type: "claude-subscription", label: "Claude", models: { "claude/model": "model" }, modelMetadata: { "claude/model": { reasoningEfforts: ["low", "high"] } } },
-    { id: "codex", type: "codex-subscription", label: "Codex", credentialFile: "unused", models: { "codex/model": "model" },
-      modelMetadata: { "codex/model": { reasoningEfforts: ["low", "medium", "high", "xhigh"], defaultReasoningEffort: "high",
-        serviceTiers: [{ id: "priority", name: "Fast", description: "Priority routing" }], defaultServiceTier: "priority" } } },
-  ] };
-  const calls: Array<{ method: string; params: ObjectValue }> = [];
-  const threads = new Map<string, { modelProvider: string; model: string }>(); let counter = 0;
-  const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
-    calls.push({ method, params });
-    const thread = typeof params.threadId === "string" ? threads.get(params.threadId) : undefined;
-    switch (method) {
-      case "model/list": return { data: [{ id: "native", model: "native", displayName: "Native", hidden: false, defaultServiceTier: "priority", serviceTiers: [{ id: "priority", name: "Fast", description: "" }] }], nextCursor: null };
-      case "thread/start": {
-        const id = `chat-${++counter}`; const started = { modelProvider: String(params.modelProvider || "openai"), model: String(params.model || "native") };
-        threads.set(id, started); return { thread: { id }, ...started, serviceTier: params.serviceTier ?? null };
-      }
-      case "thread/resume": case "thread/fork": return { thread: { id: params.threadId }, modelProvider: params.modelProvider ?? thread?.modelProvider, model: params.model ?? thread?.model, serviceTier: params.serviceTier ?? null };
-      case "thread/read":
-        if (!thread) throw Object.assign(new Error(`thread not loaded: ${params.threadId}`), { code: -32600 });
-        return { thread: { id: params.threadId, ...thread } };
-      case "thread/settings/update": return { status: "applied" };
-      case "turn/start": return { turn: { id: `turn-${++counter}` } };
-      case "config/read": return { config: { model: "native" } };
-      default: return { status: "ok" };
-    }
-  };
-  const connect = async () => { const router = new AppServerRouter(config, backend); await router.initialize(); return router; };
-  const last = (method: string) => calls.filter(call => call.method === method).at(-1)!.params;
-  const file = async () => JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8")) as ObjectValue;
-  return { directory, calls, connect, last, file, router: await connect() };
-}
-type F = Awaited<ReturnType<typeof fixture>>;
-type R = AppServerRouter;
-
-const pick = (r: R, threadId: string, serviceTier: string | null) => r.request("thread/settings/update", { threadId, serviceTier });
-const batch = (r: R, ...edits: Array<[string, string | null]>) => r.request("config/batchWrite", { edits: edits.map(([keyPath, value]) => ({ keyPath, value, mergeStrategy: "upsert" })), filePath: null, expectedVersion: null, reloadUserConfig: true });
-const defaultWrite = (r: R, value: string | null) => batch(r, ["service_tier", value]);
-const modelWrite = (r: R, model: string, effort: string) => batch(r, ["model", model], ["model_reasoning_effort", effort]);
-const start = (r: R, model: string, serviceTier: string | null, effort?: string) => r.request("thread/start", { cwd: "/tmp/project", model, modelProvider: null, serviceTier,
-  config: effort === undefined ? {} : { model_reasoning_effort: effort }, personality: null, ephemeral: null, baseInstructions: null, threadSource: "user", experimentalRawEvents: false, dynamicTools: null });
-const turn = (r: R, threadId: string, serviceTier: string | null, effort: string) => r.request("turn/start", { threadId, turnTrigger: "composer", model: null, serviceTier, effort, summary: "none",
-  input: [{ type: "text", text: "hi", text_elements: [] }], collaborationMode: null });
-const id = (result: ObjectValue) => String(object(result.thread).id);
-const object = (value: unknown) => value as ObjectValue;
-const refused = (error: unknown) => (error as { code?: number }).code === -32002 && /Fast stays with the chat/.test((error as Error).message);
-const savedTier = async (f: F) => ({ file: (await f.file()).service_tier, read: object((await f.router.request("config/read", {})).config).service_tier });
-const settled = (threadId: string, model: string, serviceTier: string | null) => ({ method: "thread/settings/updated", emittedAtMs: Date.now(),
-  params: { threadId, threadSettings: { model, modelProvider: gateway, serviceTier } } });
+import { defaultWrite, fixture, id, modelWrite, object, pick, refused, savedTier, settled, start, turn, type ObjectValue } from "./speed-fixture.js";
 
 test("S1 gateway rows never advertise a Fast default but stay selectable; native rows keep theirs", async () => {
   const f = await fixture();
@@ -149,6 +87,7 @@ test("S7 a tier the row does not offer becomes Standard on start, turn, prewarm 
   const chat = id(await start(f.router, "claude/model", "priority", "high"));
   assert.equal(f.last("thread/start").serviceTier, null);
   await turn(f.router, chat, "priority", "high"); assert.equal(f.last("turn/start").serviceTier, null);
+  await f.router.request("turn/start", { threadId: chat, input: [] }); // fails if the turn recorded Fast on a row without it
   await f.router.request("thread/resume", { threadId: chat }); assert.equal(f.last("thread/resume").serviceTier, null, "the turn did not record Fast");
   const prewarmed = id(await start(f.router, "claude/model", null, "high"));
   await turn(f.router, prewarmed, "priority", "high"); assert.equal(f.last("turn/start").serviceTier, null);

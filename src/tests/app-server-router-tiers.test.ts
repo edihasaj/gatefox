@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -95,12 +95,17 @@ test("Fast saved chats resume and fork after new-chat preferences change to Stan
   const fork = await fresh.router.request("thread/fork", { threadId: id });
   assert.notEqual(threadId(fork), id); assert.equal(last(fresh, "thread/fork").serviceTier, "priority");
   assert.deepEqual(choice(await f.store().read(threadId(fork))), { model: fastModel, serviceTier: "priority" });
-  assert.equal((await fresh.router.request("thread/start", {})).serviceTier, null);
+  // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
+  await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: fastModel, service_tier: "priority" }));
+  const newChat = await fresh.router.request("thread/start", {});
+  assert.equal(Object.hasOwn(last(fresh, "thread/start"), "serviceTier"), false, "a legacy Fast default never starts a new chat in Fast");
+  assert.equal(newChat.serviceTier, null);
 });
 
 test("saved Standard survives a Fast preference change across connections, which never enters new chats", async () => {
   const f = await fixture(); const first = await f.connect(); const id = await start(first, null);
-  await preferences(first, "priority"); const fresh = await f.connect();
+  await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: fastModel, service_tier: "priority" }));
+  const fresh = await f.connect();
   assert.equal((await fresh.router.request("thread/resume", { threadId: id })).serviceTier, null);
   assert.ok(Object.hasOwn(last(fresh, "thread/resume"), "serviceTier"));
   assert.equal(last(fresh, "thread/resume").serviceTier, null);

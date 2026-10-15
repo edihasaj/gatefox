@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
@@ -271,12 +271,9 @@ test("model/list advertises exact SDK service tiers while standard models have n
 });
 
 test("saved Fast preferences never start new chats in Fast while explicit overrides pass through", async () => {
-  const { router, config, backend, calls, directory } = await fastFixture();
-  await router.request("config/batchWrite", { edits: [
-    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" },
-    { keyPath: "service_tier", value: "fast", mergeStrategy: "upsert" },
-    { keyPath: "model_reasoning_summary", value: "detailed", mergeStrategy: "upsert" },
-  ] });
+  const { config, backend, calls, directory } = await fastFixture();
+  // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
+  await writeFile(join(directory, "desktop-preferences.json"), JSON.stringify({ model: "codex/model", service_tier: "fast", model_reasoning_summary: "detailed" }));
   const second = new AppServerRouter(config, backend); await second.initialize();
   const params = { cwd: directory, config: { trusted: true, model_reasoning_effort: "none", model_reasoning_summary: "concise" } };
   await second.request("thread/start", params);
@@ -309,7 +306,7 @@ test("declared gateway defaults and saved tiers never enter new gateway chats", 
   await router.request("thread/start", { model: "codex/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "a saved tier is not injected either");
 });
 
-test("a Fast chat drops to Standard only when the picker selects a model without that tier", async () => {
+test("a Fast chat switches to Standard on a model change only when the picker makes it, and stale peers still fail", async () => {
   const { router, calls } = await fastFixture();
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   const before = calls.length;
@@ -421,10 +418,8 @@ test("loaded resume's authoritative tier takes precedence when the SDK ignores a
 });
 
 test("private Fast defaults cannot replace a saved or parent chat's Standard tier on resume or fork", async () => {
-  const { router, config, backend, calls } = await fastFixture();
-  await router.request("config/batchWrite", { edits: [
-    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
-  ] });
+  const { router, config, backend, calls, directory } = await fastFixture();
+  await writeFile(join(directory, "desktop-preferences.json"), JSON.stringify({ model: "codex/model", service_tier: "priority" }));
   await router.request("thread/start", { model: "codex/model", serviceTier: null });
   await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
   await appliedSettings(router, "test", "codex/model", null);

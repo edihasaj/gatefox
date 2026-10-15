@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
@@ -62,10 +62,9 @@ test("Fast is never a new-chat default from a row or a saved preference", async 
   const f = await fixture();
   await f.router.request("thread/start", { model: "codex/model" });
   assert.equal(Object.hasOwn(f.forwarded(), "serviceTier"), false, "a row's default_service_tier does not start a chat in Fast");
-  await f.router.request("config/batchWrite", { edits: [
-    { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" },
-    { keyPath: "service_tier", value: "fast", mergeStrategy: "upsert" },
-  ] });
+  // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
+  await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: "codex/model", service_tier: "fast" }));
+  assert.equal(JSON.parse(await readFile(join(f.directory, "desktop-preferences.json"), "utf8")).service_tier, "fast");
   await f.router.request("thread/start", {});
   assert.equal(Object.hasOwn(f.forwarded(), "serviceTier"), false, "a saved tier does not start a chat in Fast either");
   await f.router.request("thread/start", { serviceTier: null });
