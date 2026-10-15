@@ -168,14 +168,16 @@ test("a malformed refresh reply is temporary: the rotated token is saved and the
   }
 });
 
-test("a valid refresh reply that omits scope keeps the stored scopes and works (RFC 6749 section 6)", async () => {
-  const { path } = await loginFile(0);
-  await withFetch(async () => refreshReply({ scope: undefined }), async () => {
-    assert.equal(await accessToken(path), "new-access");
-    assert.equal(await accessToken(path), "new-access", "the saved login keeps working without another sign-in");
-  });
-  const after = await stored(path);
-  assert.deepEqual(after.scopes, scopes, "the originally granted scopes stay on file"); assert.equal(after.refresh_token, "new-refresh");
+test("a valid refresh reply that omits scope or sends null keeps the stored scopes and works (RFC 6749 section 6)", async () => {
+  for (const omitted of [undefined, null]) {
+    const { path } = await loginFile(0);
+    await withFetch(async () => refreshReply({ scope: omitted }), async () => {
+      assert.equal(await accessToken(path), "new-access", `scope ${omitted} is used`);
+      assert.equal(await accessToken(path), "new-access", "the saved login keeps working without another sign-in");
+    });
+    const after = await stored(path);
+    assert.deepEqual(after.scopes, scopes, "the originally granted scopes stay on file"); assert.equal(after.refresh_token, "new-refresh");
+  }
 });
 
 test("an empty or foreign 200 reply is temporary and never wipes the stored scopes", async () => {

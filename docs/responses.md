@@ -93,7 +93,7 @@ replacement refresh token is written to the credential file (atomically, mode 06
 same save that records the outcome, so a reply that fails a check never loses the rotated
 token. How the reply is handled:
 
-- A valid reply that omits `scope` keeps the scope granted earlier (RFC 6749 sections 5.1
+- A valid reply that omits `scope` (or sends `null`) keeps the scope granted earlier (RFC 6749 sections 5.1
   and 6) and is used normally; a `scope` that is present but not a string counts as malformed.
 - A reply whose `scope` lacks the plan scopes can only be fixed by signing in again (`gateway login ID`
   with plan usage enabled). The gateway keeps the old access token and only the scopes that

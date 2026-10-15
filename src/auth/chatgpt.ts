@@ -117,7 +117,8 @@ function checkReply(token: TokenResponse, unchanged: string[]): { scopes: string
   // RFC 6749 sections 5.1 and 6: an omitted scope means the scope is unchanged (the requested one for a
   // sign-in, the originally granted one for a refresh). A scope that is present but not a string is unreadable.
   const raw = (token as { scope?: unknown }).scope;
-  if (raw === undefined) return { scopes: unchanged };
+  // `null` is read as omitted: treating it as malformed would spend a refresh token on every request.
+  if (raw === undefined || raw === null) return { scopes: unchanged };
   if (typeof raw !== "string") return { scopes: unchanged, problem: "malformed" };
   const scopes = raw.split(/\s+/).filter(Boolean);
   if (lacksPlanScopes(scopes)) return { scopes, problem: "plan_scope" };
