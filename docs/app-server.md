@@ -394,14 +394,53 @@ executor catalog carries for sub-agents naming a model directly (a role's model,
 `direct` tools in executors, so their commands run instead of failing with "failed
 to spawn code-mode host". The native engine keeps its own catalog unchanged.
 
-node_repl (the browser, Chrome and computer-use tools) is a direct plugin MCP
-server, so it does not depend on code mode; only `tool_mode` does. A Codex 2 row
-follows its native row's `node_repl_disabled`. A row with no native counterpart,
-and a row whose `upstream_slug` is missing from the native catalog, enables
-node_repl only when every native row does. Whether the bundled gateway SDK honours
-`node_repl_disabled` at all is unconfirmed. `node scripts/check-node-repl.mjs
-catalog.json` prints the flag of every row in a copy of an executor home's combined
-catalog. It is advisory and never reads the installed app's live state.
+node_repl (the browser, Chrome and computer-use tools) has two policy fields on
+each model row: `node_repl_disabled` and `node_repl_auto_review_required`. Both are
+ModelInfo fields of the bundled gateway SDK (the 0.3.9 `gateway-sdk/gateway-codex`
+binary lists them, next to the `node_repl`, `cua_repl` and `turn_ended` strings), so
+it honours the native values.
+
+- Evidence that node_repl does not depend on code mode (read-only, ChatGPT 26.1007):
+  the bundled `unified-computer-use` plugin's `.mcp.json` declares `cua_repl` with
+  `omit_tools_from: ["code_mode", "deferred"]`, so its tools are direct calls.
+  `~/.codex/config.toml` runs `[mcp_servers.node_repl]` from
+  `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl`, with its
+  paths pointing at that app and at the native home. Only `tool_mode` depends on code
+  mode.
+- Evidence for the policy: in the native catalog embedded in the app's Codex, every
+  row has `node_repl_disabled: false`, and `node_repl_auto_review_required` is `true`
+  on `gpt-6-astra`, `gpt-6.1-sol` and `gpt-6-sol` and `false` on the others. The
+  per-row review text, `node_repl_policy`, sits in `model_messages.auto_review`; a
+  Codex 2 row gets it with the rest of the copied `model_messages`.
+- A Codex 2 row copies both fields from its native row (found by `upstream_slug`),
+  whether the executor runs code mode or not. A native row that does not state a field
+  as a boolean gives the stricter value (`true`), so a weaker value from the host or
+  an old cache never survives.
+- A row with no native counterpart (Claude, Copilot, API, or a Codex row whose
+  `upstream_slug` is missing from the native catalog) takes the strictest policy among
+  the native rows: node_repl is disabled unless every native row enables it, and auto
+  review is required when any native row requires it. With no native catalog, both are
+  `true`. This keeps those rows from ever being weaker than a native row. The plain
+  catalog (what the CLI and remote clients read) publishes the same strict default:
+  `node_repl_disabled: true` and `node_repl_auto_review_required: true`.
+- The native rows that the executor catalog carries for sub-agents keep their own two
+  fields, with code mode on or off.
+- Executors: every executor that loads the combined catalog runs on the machine that
+  holds the native catalog. A local executor and the shared execution host (including
+  the one behind a connected machine's relay) start from that machine's native
+  settings, and the executor home copies them, `mcp_servers` included. The node_repl
+  command and its trusted paths are absolute (the ChatGPT app and the native Codex
+  home, which the executor home links for `plugins`), so they resolve the same way
+  there. No executor was found that cannot start node_repl where a native chat can, so
+  none is forced off. The catalog cannot see the settings. If the native settings hold
+  no `node_repl` server, native chats lack the tools too. Plain-catalog clients have
+  no executor of ours and keep the disabled default.
+
+`node scripts/check-node-repl.mjs catalog.json` prints both fields of every row in a
+copy of an executor home's combined catalog (`missing` when a field is absent) and
+counts the rows that keep node_repl disabled and the rows that enable it without
+requiring auto review. Native rows such as `gpt-6-luna` are expected in the second
+count. It is advisory and never reads the installed app's live state.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global

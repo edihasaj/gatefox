@@ -5,5 +5,8 @@ import { readFileSync } from "node:fs";
 const file = process.argv[2];
 if (!file) { console.error("Usage: node scripts/check-node-repl.mjs <copy-of-combined-catalog.json>"); process.exit(0); }
 const models = JSON.parse(readFileSync(file, "utf8")).models ?? [];
-for (const m of models) console.log(`${m.node_repl_disabled === false ? "enabled " : "disabled"} ${m.slug}`);
+const show = value => value === undefined ? "missing" : String(value);
+for (const m of models) console.log(`disabled=${show(m.node_repl_disabled)} auto_review_required=${show(m.node_repl_auto_review_required)} ${m.slug}`);
 console.log(`${models.filter(m => m.node_repl_disabled !== false).length} of ${models.length} row(s) keep node_repl disabled.`);
+// A native row may enable node_repl without auto review; a gateway row must not unless its native row does.
+console.log(`${models.filter(m => m.node_repl_disabled === false && m.node_repl_auto_review_required !== true).length} of ${models.length} row(s) enable node_repl without requiring auto review.`);

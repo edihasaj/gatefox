@@ -33,12 +33,14 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
-  // node_repl (browser, Chrome, computer use) is a direct plugin MCP server, independent of code
-  // mode; only tool_mode depends on whether the executor runs it.
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
   const copy: Row = {};
-  if (typeof source.node_repl_disabled === "boolean") copy.node_repl_disabled = source.node_repl_disabled;
+  // node_repl (browser, Chrome, computer use) is a direct plugin MCP server, independent of code mode,
+  // so both of its policy fields follow the native row whatever the executor's code mode is. A native
+  // row that does not state a field plainly gets the stricter value, never the SDK default.
+  copy.node_repl_disabled = typeof source.node_repl_disabled === "boolean" ? source.node_repl_disabled : true;
+  copy.node_repl_auto_review_required = typeof source.node_repl_auto_review_required === "boolean" ? source.node_repl_auto_review_required : true;
   const messages = plain(source.model_messages);
   // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
   if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }
@@ -57,7 +59,17 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   return { ...row, ...copy };
 }
 
-/** A row with no native counterpart (Claude, Copilot, API) enables node_repl only where every native row does. */
-export function nodeReplFallback(native: readonly Row[]): boolean {
-  return !native.length || native.some(entry => entry.node_repl_disabled !== false);
+export interface NodeReplPolicy { node_repl_disabled: boolean; node_repl_auto_review_required: boolean }
+
+/**
+ * The node_repl policy for a row with no native counterpart (Claude, Copilot, API, or a Codex row whose
+ * upstream is missing). It is never weaker than any native row: node_repl stays disabled unless every
+ * native row enables it, and auto review is required when any native row requires it. With no native
+ * rows, or a field that is not a plain boolean, the stricter value applies.
+ */
+export function nodeReplFallback(native: readonly Row[]): NodeReplPolicy {
+  return {
+    node_repl_disabled: !native.length || native.some(entry => entry.node_repl_disabled !== false),
+    node_repl_auto_review_required: !native.length || native.some(entry => entry.node_repl_auto_review_required !== false),
+  };
 }
