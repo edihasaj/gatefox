@@ -590,8 +590,9 @@ ordinary row in the existing file format, so a 0.4.0 build still reads the whole
 it never looks the marker up and sees the chat as having no record, which is also an
 unknown tier. A marker also wins over a non-Standard row that falls inside its
 uncertainty window, because a 0.4.0 build wrote that row without knowing the watermark.
-A Standard row from a 0.4.0 build is trusted over the marker, and it keeps the marker's
-window, so a late non-Standard notification is still rejected. A tier the store can hold
+A newer Standard row from a 0.4.0 build is trusted over the marker, and it keeps the
+marker's window, so a late non-Standard notification is still rejected. A marker that
+outvotes a 0.4.0 row keeps that row's window too. A tier the store can hold
 that is chosen later replaces the marker. Such a tier never fails a settings notification
 or a resume, and recording it makes room like any other write. When a peer connection
 has marked the chat unknown, this connection also stops forwarding the tier it held,

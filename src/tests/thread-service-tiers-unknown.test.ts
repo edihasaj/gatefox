@@ -194,6 +194,27 @@ test("a Standard row 0.4.0 wrote beats the marker but keeps its uncertainty wind
   } finally { await f.close(); }
 });
 
+test("a marker that outvotes a 0.4.0 row keeps that row's uncertainty window against a stale Fast notification", async () => {
+  const f = await fixture();
+  try {
+    // This build marks the chat unknown at 6000.
+    assert.equal(await f.store.markUnknown("chat", { ...unknown, emittedAtMs: 6000 }), true);
+    const saved = await f.file();
+    // A downgraded 0.4.0 build records Standard at 12000, then a slow resume answer that started at 5000 reports Fast,
+    // which 0.4.0 keeps as an uncertain row: it rejects any non-Standard event up to 12000.
+    await writeFile(f.path, JSON.stringify({ ...saved, threads: { ...saved.threads, chat: { ...fast, revision: 2, emittedAtMs: 5000, uncertainBeforeMs: 12000 } } }), { mode: 0o600 });
+    oldBuildAccepts(await f.file());
+    assert.equal(await f.store.read("chat"), undefined, "the marker (6000) outvotes the older row (5000)");
+    // A stale Fast inside the row's window stays rejected, as 0.4.0 alone would reject it.
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 10000 }), false);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 12000 }), false);
+    assert.equal(await f.store.read("chat"), undefined);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 12001 }), true, "a Fast past the window is honored");
+    assert.equal((await f.store.read("chat"))?.serviceTier, "priority");
+    oldBuildAccepts(await f.file());
+  } finally { await f.close(); }
+});
+
 test("a non-Standard row stamped exactly at the marker's uncertainty end is not trusted, and one a millisecond later is", async () => {
   const f = await fixture();
   try {

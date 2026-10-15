@@ -35,7 +35,9 @@ function chatState(saved: Snapshot, threadId: string): ChatState {
   // A known row that beats the marker still carries the marker's window, so a stale notification stays rejected.
   const window = Math.max(live?.uncertainBeforeMs ?? -1, marker?.uncertainBeforeMs ?? -1);
   const known = unknown || !live ? undefined : window < 0 || live.uncertainBeforeMs === window ? live : { ...live, uncertainBeforeMs: window };
-  return { live, marker, unknown, known, base: unknown ? marker : known };
+  // A marker that outvotes a 0.4.0 row still keeps that row's window: the row's stale Fast must stay rejected.
+  const merged = unknown && marker && window >= 0 && marker.uncertainBeforeMs !== window ? { ...marker, uncertainBeforeMs: window } : marker;
+  return { live, marker, unknown, known, base: unknown ? merged : known };
 }
 
 /** Whether the private store can hold this tier. The SDK keeps other strings ("auto", "Fast", a long value) that the store rejects. */

@@ -138,6 +138,19 @@ test("a chat's row and marker are evicted together, by the newest stamp of eithe
   } finally { await f.close(); }
 });
 
+test("a pair whose marker is newer than its row is aged by the marker", async () => {
+  const f = await fixture();
+  try {
+    // The row is old (1000) but the marker is recent (5000): the pair is newer than a single chat at 3000.
+    const pair = { chat: { ...fast, revision: 1, emittedAtMs: 1000 }, [markerKey("chat")]: { ...standard, revision: 2, emittedAtMs: 5000 } };
+    await f.put({ ...pair, single: { ...standard, emittedAtMs: 3000 }, ...chats(maxThreads - 3) });
+    assert.equal(await f.store.write("new-chat", standard), true);
+    const saved = await f.threads();
+    assert.equal(saved.single, undefined, "the single row (3000) goes before the pair (newest 5000)");
+    assert.ok(saved.chat && saved[markerKey("chat")], "the pair stays whole");
+  } finally { await f.close(); }
+});
+
 test("in a store full by count a marker with the oldest stamp of all keeps itself and evicts the oldest other chat", async () => {
   const f = await fixture();
   try {
