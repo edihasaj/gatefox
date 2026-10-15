@@ -7,6 +7,7 @@ import { join, sep } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { copilotParent } from "../providers/copilot-directories.js";
+import { shortFolder } from "./short-folder.js";
 
 // The suite starts gateways and fixture Copilot CLIs whose folders and startup sweep live in the temp folder. `npm test` runs
 // it under one private temp folder (scripts/run-tests.mjs), so no test touches the real `<TMPDIR>/harness-gateway-copilot-<uid>`.
@@ -20,6 +21,15 @@ test("the suite runs under a private temp folder, so no test reaches the real Co
   assert.equal(tmpdir(), given, "the temp folder is the runner's");
   assert.ok(copilotParent().startsWith(given + sep), "so the Copilot parent, whose name the gateway derives from it, is inside it");
   assert.match(given, /gwt-/);
+});
+
+test("a short folder for a socket test is made inside the runner's folder, so nothing it holds outlives the run", async () => {
+  const given = process.env.GATEWAY_TEST_TMPDIR;
+  assert.ok(given, "run the suite with `npm test`");
+  const folder = await shortFolder("gw-isolation-");
+  try { assert.ok(folder.directory.startsWith(given + sep), "inside the runner's folder, not beside it in /tmp"); }
+  finally { await folder.remove(); }
+  assert.equal(await exists(folder.directory), false, "and removed by its owner");
 });
 
 test("the test runner gives a run its own temp folder, passes the exit code on, and removes the folder after a pass and after a failure", { timeout: 60000 }, async () => {

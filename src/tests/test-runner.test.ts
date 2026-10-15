@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { copyFile, chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer, connect, type Server } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // `npm test` must fail a broken test instead of hanging on it, and must leave no process behind however the run ends. These
@@ -91,4 +94,104 @@ test("a runner with nothing compiled says to build first instead of printing a s
     const [code] = await once(child, "exit");
     assert.equal(code, 2); assert.match(stderr, /run npm run build first/); assert.doesNotMatch(stderr, /ENOENT|at /);
   } finally { await rm(w.work, { recursive: true, force: true }); }
+});
+
+/** Starts the runner on one suite, waits until the suite has written its record, and returns what it needs to stop the run and check it. */
+async function startedRun(w: Awaited<ReturnType<typeof workspace>>, file: string, extra: NodeJS.ProcessEnv = {}) {
+  const child = spawn(process.execPath, [runner, file], { env: { ...w.environment, GATEWAY_TEST_KILL_GRACE_MS: "1500", ...extra }, stdio: "ignore" });
+  const exited = once(child, "exit") as Promise<[number | null, string | null]>;
+  assert.ok(await wait(() => exists(join(w.work, "record.json")), 60000), "the suite started");
+  return { child, exited, started: await w.record() };
+}
+/** Stops what a failed assertion left behind: the run, the processes it started and its folder. */
+async function cleanUp(child: ChildProcess | undefined, started: { tmpdir: string; pids: number[] } | undefined) {
+  if (child && child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await once(child, "exit"); }
+  for (const pid of started?.pids ?? []) { try { process.kill(pid, "SIGKILL"); } catch { /* Gone already. */ } }
+  if (started) await rm(started.tmpdir, { recursive: true, force: true });
+}
+
+test("a signal also stops the Copilot CLI a test started, though it runs in a process group of its own and ignores the signal and the end of its input", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
+  try {
+    // A `copilot` that answers the handshake like the real one, ignores SIGTERM, and outlives its input: only a SIGKILL ends it.
+    const dist = (name: string) => JSON.stringify(new URL(`../providers/${name}.js`, import.meta.url).href);
+    const bin = join(w.work, "bin"); await mkdir(bin);
+    await writeFile(join(bin, "cli.mjs"), `import { copilotFrames } from ${dist("copilot-rpc")}; process.on("SIGTERM", () => {});
+const send = value => { const body = JSON.stringify(value); process.stdout.write("Content-Length: " + Buffer.byteLength(body) + "\\r\\n\\r\\n" + body); };
+for await (const message of copilotFrames(process.stdin)) {
+  if (message.method === "connect") send({ jsonrpc: "2.0", id: message.id, result: { protocolVersion: 3 } });
+  else if (message.method === "auth.getStatus") send({ jsonrpc: "2.0", id: message.id, result: { isAuthenticated: true } });
+}
+setInterval(() => {}, 1000);\n`);
+    await writeFile(join(bin, "copilot"), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(bin, "cli.mjs"))}\n`); await chmod(join(bin, "copilot"), 0o700);
+    const file = await (async () => { const target = join(w.work, "holds.test.mjs");
+      await writeFile(target, `import test from "node:test"; import { renameSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os";
+import { openCopilot } from ${dist("copilot-client")};
+test("holds a CLI", async () => { const client = await openCopilot({ id: "held", type: "copilot-subscription", models: {} });
+  writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid, client.rpc.pid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD); return new Promise(() => {}); });\n`);
+      return target; })();
+    const run = await startedRun(w, file, { PATH: bin + delimiter + process.env.PATH }); child = run.child; started = run.started;
+    const [leader, cli] = started.pids; assert.ok(alive(cli), "the CLI is running in its own group");
+    child.kill("SIGTERM");
+    const [code] = await run.exited; assert.equal(code, 128 + 15, "the runner's exit code");
+    assert.ok(await wait(() => !alive(leader), 60000), "the test process is gone");
+    assert.ok(await wait(() => !alive(cli), 60000), "and so is the CLI it started");
+    assert.equal(await exists(started.tmpdir), false, "and the temp folder");
+    passed = true;
+  } finally { if (!passed) await cleanUp(child, started); await rm(w.work, { recursive: true, force: true }); }
+});
+
+test("a leader that cannot be stopped is killed after the grace, and the runner still exits with 128 plus the signal", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
+  try {
+    // The test process stops its own leader (the `node --test` process it belongs to): a stopped process takes no signal but SIGKILL.
+    const file = await w.suite("stops-its-leader", `import { renameSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os";
+test("stops its leader", () => { writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid, process.ppid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD);
+  process.kill(process.ppid, "SIGSTOP"); return new Promise(() => {}); });`);
+    const run = await startedRun(w, file); child = run.child; started = run.started;
+    child.kill("SIGINT");
+    // Without the escalation the runner waits for ever for the stopped leader: this test then ends by its timeout.
+    const [code] = await run.exited; assert.equal(code, 128 + 2, "the runner's exit code");
+    for (const pid of started.pids) assert.ok(await wait(() => !alive(pid), 60000), `process ${pid} of the run is gone`);
+    assert.equal(await exists(started.tmpdir), false, "the temp folder is removed");
+    passed = true;
+  } finally { if (!passed) await cleanUp(child, started); await rm(w.work, { recursive: true, force: true }); }
+});
+
+test("a stopped run removes the stale execution sockets its folder links to, and leaves live ones and everything else alone", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
+  const rendezvous = join(realpathSync("/tmp"), `codex-daemon-${process.getuid!()}`);
+  const name = () => createHash("sha256").update(randomUUID()).digest("hex");
+  const stale = join(rendezvous, name()); const live = join(rendezvous, name()); const unlinked = join(rendezvous, name()); const elsewhere = join(w.work, "elsewhere.sock");
+  let server: Server | undefined; let other: Server | undefined;
+  try {
+    // The folder the SDK uses is made by it, private; it exists on a machine that ran any execution-host test.
+    await mkdir(rendezvous, { recursive: true, mode: 0o700 });
+    server = createServer(socket => socket.end()); await new Promise<void>(resolve => server!.listen(live, resolve));
+    other = createServer(); await new Promise<void>(resolve => other!.listen(elsewhere, resolve));
+    // A socket nobody listens on any more: the process that made it is killed.
+    for (const path of [stale, unlinked]) {
+      const maker = spawn(process.execPath, ["-e", `require("node:net").createServer().listen(${JSON.stringify(path)}, () => process.kill(process.pid, "SIGKILL"))`], { stdio: "ignore" });
+      await once(maker, "exit");
+    }
+    assert.ok(await exists(stale) && await exists(unlinked), "the stale sockets exist");
+    // The suite links to the stale one, the live one, and a socket elsewhere, and waits for ever.
+    const file = await w.suite("links", `import { renameSync, symlinkSync, writeFileSync } from "node:fs"; import { join } from "node:path"; import { tmpdir } from "node:os";
+test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNER_LINKS).entries()) symlinkSync(target, join(tmpdir(), "link-" + index));
+  writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD); return new Promise(() => {}); });`);
+    const run = await startedRun(w, file, { RUNNER_LINKS: JSON.stringify([stale, live, elsewhere]) }); child = run.child; started = run.started;
+    child.kill("SIGTERM"); const [code] = await run.exited; assert.equal(code, 128 + 15);
+    assert.equal(await exists(stale), false, "the stale socket the run linked to is removed");
+    assert.equal(await exists(live), true, "a socket that is listening is kept");
+    assert.equal(await exists(unlinked), true, "a stale socket the run did not link to is kept");
+    assert.equal(await exists(elsewhere), true, "so is one outside the folder the SDK uses");
+    assert.equal(await new Promise(resolve => connect(live).once("connect", () => resolve(true)).once("error", () => resolve(false))), true, "and it still accepts connections");
+    assert.equal(await exists(started.tmpdir), false, "the temp folder is removed");
+    passed = true;
+  } finally {
+    if (!passed) await cleanUp(child, started);
+    server?.close(); other?.close();
+    for (const path of [stale, live, unlinked]) await rm(path, { force: true });
+    await rm(w.work, { recursive: true, force: true });
+  }
 });

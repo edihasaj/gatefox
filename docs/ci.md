@@ -18,7 +18,10 @@ The `verify` job uses Ubuntu 24.04 ARM and runs the unchanged source gate:
 `npm test`, which runs the suite under a private temporary folder, so the
 runner's real one is left as it was. It also fails a test that hangs (120 s by default for a test with no timeout of
 its own), lets a test file exit once its tests have ended, and stops every test process
-when the run is signalled. Six tests require macOS and retain their explicit platform guards.
+when the run is signalled: the test processes exit on the signal, which stops the Copilot CLIs
+they started (those run in process groups of their own), and the runner removes the stale
+sockets its run linked to in `/tmp/codex-daemon-<uid>`. Six tests require macOS and retain
+their explicit platform guards.
 
 `macos-native` uses GitHub's macOS 15 Apple Silicon runner only for an intentional
 native validation: an explicit dispatch from `production` with

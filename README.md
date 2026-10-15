@@ -174,7 +174,9 @@ Development gate: `npm run build && npm run check && npm test`. `npm test` runs 
 temporary folder (`scripts/run-tests.mjs`) that it removes afterwards, so the real one is left as it was; name test files
 after `--` to run only those. The runner fails a test that sets no timeout after 120 s
 (`GATEWAY_TEST_TIMEOUT_MS`), lets a test file exit once its tests have ended, and runs the suite in its own
-process group, so a signal to the runner stops every test process and it exits with 128 plus the signal.
+process group, so a signal to the runner stops every test process and it exits with 128 plus the signal. Each test
+process exits on the signal, so the Copilot CLIs it started (they run in groups of their own) stop with it, and the runner
+removes the stale sockets its run linked to in `/tmp/codex-daemon-<uid>`.
 Hosted macOS native CI is manual-only: dispatch from `production` with
 **Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).
