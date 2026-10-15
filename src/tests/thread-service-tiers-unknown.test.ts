@@ -162,3 +162,69 @@ test("a row 0.4.0 wrote inside the marker's uncertainty window does not outvote 
     assert.equal(await f.store.read("chat"), undefined);
   } finally { await f.close(); }
 });
+
+// The file a 0.4.0 build leaves behind: it never looks the marker up, so it writes the chat's row from nothing (revision 1, no window).
+const markerOf = (chat: string) => `tier-unknown:${createHash("sha256").update(chat).digest("hex")}`;
+
+test("a Standard row 0.4.0 wrote beats the marker but keeps its uncertainty window against a stale Fast notification", async () => {
+  const f = await fixture();
+  try {
+    await f.store.write("chat", { ...fast, emittedAtMs: 9000 });
+    // A resume snapshot far older than the stored event marks everything up to 9000 uncertain, then reports an odd tier.
+    const current = (await f.store.read("chat"))!;
+    assert.equal(await f.store.markUnknown("chat", unknown, current, 1000), true);
+    const saved = await f.file();
+    assert.deepEqual(saved.threads[markerOf("chat")], { model: "gateway/model", serviceTier: null, revision: 2, emittedAtMs: 1000, uncertainBeforeMs: 9000 });
+    // The downgraded build then records Standard at 5000. That row is newer than the marker and is trusted.
+    await writeFile(f.path, JSON.stringify({ ...saved, threads: { ...saved.threads, chat: { ...standard, revision: 1, emittedAtMs: 5000 } } }), { mode: 0o600 });
+    assert.equal((await f.store.read("chat"))?.serviceTier, null);
+    assert.equal((await f.store.read("chat"))?.uncertainBeforeMs, 9000, "the marker's window survives");
+    // A slow client now delivers an old Fast, stamped inside that window (6000) and exactly at its end (9000).
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 6000 }), false);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 9000 }), false);
+    assert.equal((await f.store.read("chat"))?.serviceTier, null, "Standard stands");
+    // A later Standard carries the window into the row it writes, and the marker is gone.
+    assert.equal(await f.store.write("chat", { ...standard, emittedAtMs: 7000 }), true);
+    const after = await f.file();
+    assert.deepEqual(Object.keys(after.threads), ["chat"]);
+    assert.equal(after.threads.chat.uncertainBeforeMs, 9000);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 8000 }), false);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 9001 }), true, "a Fast past the window is honored");
+    oldBuildAccepts(await f.file());
+  } finally { await f.close(); }
+});
+
+test("a non-Standard row stamped exactly at the marker's uncertainty end is not trusted, and one a millisecond later is", async () => {
+  const f = await fixture();
+  try {
+    await mkdir(f.state, { mode: 0o700 });
+    const marker = { ...standard, revision: 2, emittedAtMs: 1000, uncertainBeforeMs: 9000 };
+    const put = (row: Record<string, unknown>) => writeFile(f.path, JSON.stringify({ version: 1, threads: { [markerOf("chat")]: marker, chat: row } }), { mode: 0o600 });
+    await put({ ...fast, revision: 3, emittedAtMs: 9000 });
+    assert.equal(await f.store.read("chat"), undefined, "the window includes its last millisecond");
+    await put({ ...fast, revision: 3, emittedAtMs: 9001 });
+    assert.equal((await f.store.read("chat"))?.serviceTier, "priority");
+    // The same boundary for a notification written while only the marker exists.
+    await writeFile(f.path, JSON.stringify({ version: 1, threads: { [markerOf("chat")]: marker } }), { mode: 0o600 });
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 9000 }), false);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 9001 }), true);
+  } finally { await f.close(); }
+});
+
+test("when a trusted row and the marker both carry a window, the later end applies", async () => {
+  const f = await fixture();
+  try {
+    await mkdir(f.state, { mode: 0o700 });
+    const put = (row: Record<string, unknown>, window: number) => writeFile(f.path, JSON.stringify({ version: 1, threads: {
+      [markerOf("chat")]: { ...standard, revision: 2, emittedAtMs: 1000, uncertainBeforeMs: window }, chat: row } }), { mode: 0o600 });
+    await put({ ...standard, revision: 3, emittedAtMs: 5000, uncertainBeforeMs: 9000 }, 3000);
+    assert.equal((await f.store.read("chat"))?.uncertainBeforeMs, 9000, "the row's own window is longer");
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 8000 }), false);
+    await put({ ...standard, revision: 3, emittedAtMs: 5000, uncertainBeforeMs: 3000 }, 9000);
+    assert.equal((await f.store.read("chat"))?.uncertainBeforeMs, 9000, "the marker's window is longer");
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 8000 }), false);
+    await put({ ...standard, revision: 3, emittedAtMs: 5000 }, 3000);
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 4000 }), false, "older than the row");
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 6000 }), true, "past the marker's window and newer than the row");
+  } finally { await f.close(); }
+});

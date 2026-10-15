@@ -137,3 +137,29 @@ test("a chat's row and marker are evicted together, by the newest stamp of eithe
     assert.equal(names(saved).length, maxThreads - 1);
   } finally { await f.close(); }
 });
+
+test("in a store full by count a marker with the oldest stamp of all keeps itself and evicts the oldest other chat", async () => {
+  const f = await fixture();
+  try {
+    await f.put(countFull());
+    assert.equal(await f.store.markUnknown("new-chat", { model: "gateway/model", emittedAtMs: 500 }), true);
+    const saved = await f.threads();
+    assert.equal(names(saved).length, maxThreads);
+    assert.ok(saved[markerKey("new-chat")], "the marker stayed although it is the oldest entry");
+    assert.equal(saved["chat-0"], undefined, "the oldest other chat went instead");
+    assert.ok(saved["chat-1"]);
+    assert.equal(await f.store.write("new-chat", { ...fast, emittedAtMs: 400 }), false, "its watermark still blocks an older tier");
+  } finally { await f.close(); }
+});
+
+test("in a store full by count a known tier with the oldest stamp of all keeps its own row", async () => {
+  const f = await fixture();
+  try {
+    await f.put(countFull());
+    assert.equal(await f.store.write("new-chat", { ...fast, emittedAtMs: 500 }), true);
+    const saved = await f.threads();
+    assert.equal(names(saved).length, maxThreads);
+    assert.equal(saved["new-chat"]?.serviceTier, "priority");
+    assert.equal(saved["chat-0"], undefined);
+  } finally { await f.close(); }
+});

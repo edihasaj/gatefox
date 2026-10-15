@@ -175,8 +175,11 @@ export class AppServerRouter {
       if (this.ephemeralThreads.has(params.threadId)) {
         // A throwaway fork's applied settings stay in its route; nothing about it is recorded durably.
         this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
-        if (settings.modelProvider === gatewayProvider && typeof settings.model === "string" && (settings.serviceTier === null || typeof settings.serviceTier === "string"))
-          this.routes.set(params.threadId, { provider: gatewayProvider, model: settings.model, serviceTier: savedTier(settings.serviceTier) });
+        if (settings.modelProvider === gatewayProvider && typeof settings.model === "string" && (settings.serviceTier === null || typeof settings.serviceTier === "string")) {
+          // Only a tier a later fork or resume can forward is kept; an odd one leaves the route without a tier, as for a durable chat.
+          const tier = savedTier(settings.serviceTier);
+          this.routes.set(params.threadId, { provider: gatewayProvider, model: settings.model, ...(storableServiceTier(tier) ? { serviceTier: tier } : {}) });
+        }
         return;
       }
       // A fork the cap evicted has no route to update, and nothing about it may be recorded.

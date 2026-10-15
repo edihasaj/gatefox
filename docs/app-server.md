@@ -590,12 +590,12 @@ ordinary row in the existing file format, so a 0.4.0 build still reads the whole
 it never looks the marker up and sees the chat as having no record, which is also an
 unknown tier. A marker also wins over a non-Standard row that falls inside its
 uncertainty window, because a 0.4.0 build wrote that row without knowing the watermark.
-A tier the store can hold that is chosen later replaces the marker. Such a tier never
-fails a settings notification or a resume, and recording it makes room like any other
-write. If a marker could not fit even then, which a store this size cannot reach, the
-chat's row is still removed and a full store keeps no watermark for it. When a peer
-connection has marked the chat unknown, this connection also stops forwarding the tier
-it held, whether its own notification was rejected as older or its resume was in flight.
+A Standard row from a 0.4.0 build is trusted over the marker, and it keeps the marker's
+window, so a late non-Standard notification is still rejected. A tier the store can hold
+that is chosen later replaces the marker. Such a tier never fails a settings notification
+or a resume, and recording it makes room like any other write. When a peer connection
+has marked the chat unknown, this connection also stops forwarding the tier it held,
+whether its own notification was rejected as older or its resume was in flight.
 
 Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
 the SDK accepted the request and only when its answer shows the chat started as Standard.

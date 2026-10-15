@@ -32,7 +32,10 @@ function chatState(saved: Snapshot, threadId: string): ChatState {
   // A row 0.4.0 wrote inside the marker's uncertainty window is not trusted either: 0.4.0 knew nothing of the watermark.
   const unknown = !!marker && (!live || (marker.emittedAtMs ?? 0) >= (live.emittedAtMs ?? 0) ||
     (live.serviceTier !== null && marker.uncertainBeforeMs !== undefined && (live.emittedAtMs ?? 0) <= marker.uncertainBeforeMs));
-  return { live, marker, unknown, known: unknown ? undefined : live, base: unknown ? marker : live };
+  // A known row that beats the marker still carries the marker's window, so a stale notification stays rejected.
+  const window = Math.max(live?.uncertainBeforeMs ?? -1, marker?.uncertainBeforeMs ?? -1);
+  const known = unknown || !live ? undefined : window < 0 || live.uncertainBeforeMs === window ? live : { ...live, uncertainBeforeMs: window };
+  return { live, marker, unknown, known, base: unknown ? marker : known };
 }
 
 /** Whether the private store can hold this tier. The SDK keeps other strings ("auto", "Fast", a long value) that the store rejects. */
@@ -79,14 +82,15 @@ function evictionGroups(threads: Record<string, ThreadServiceTier>, keep: Set<st
 
 /**
  * Keeps the store within its row and byte limits by dropping other chats, oldest first, never the chat just written
- * (its row and marker are in `keep`). Rows and markers count alike, each by its exact size. False only if nothing is left to drop.
+ * (its row and marker are in `keep`). Rows and markers count alike, each by its exact size. One chat's entries are far
+ * below the limits and every other chat can go, so running out of chats to drop cannot happen; it fails closed regardless.
  */
-function makeRoom(saved: Snapshot, keep: Set<string>): boolean {
+function makeRoom(saved: Snapshot, keep: Set<string>): void {
   let count = Object.keys(saved.threads).length; let over = serializedBytes(saved) - maxBytes;
-  if (count <= maxThreads && over <= 0) return true;
+  if (count <= maxThreads && over <= 0) return;
   const oldest = evictionGroups(saved.threads, keep); let next = 0;
   while (count > maxThreads || over > 0) {
-    if (next >= oldest.length) return false;
+    if (next >= oldest.length) throw invalid();
     // Each row's exact indented size is counted, so this drops no more than needed; the
     // serialization below is the final check and the loop only repeats if it is still over.
     let freed = 0;
@@ -95,7 +99,6 @@ function makeRoom(saved: Snapshot, keep: Set<string>): boolean {
     } while ((count > maxThreads || freed < over) && next < oldest.length);
     over = serializedBytes(saved) - maxBytes;
   }
-  return true;
 }
 
 /** Private chat metadata, isolated from native configuration, authentication, and history. */
@@ -186,12 +189,7 @@ export class ThreadServiceTiers {
       if (selected.serviceTier === undefined) { delete saved.threads[threadId]; saved.threads[markerKey(threadId)] = next; }
       else { saved.threads[threadId] = next; delete saved.threads[markerKey(threadId)]; }
       // The chat now has one entry, so a chat that only had a marker (or only a row) changes no count. Other chats make room.
-      if (!makeRoom(saved, new Set([threadId, markerKey(threadId)]))) {
-        if (selected.serviceTier !== undefined) throw invalid();
-        // Unreachable while a lone marker is far below the byte limit; kept so an unknown tier can never fail for lack of room.
-        // The chat's row is already gone, so a full store keeps no watermark and an older notification could bring a tier back.
-        delete saved.threads[markerKey(threadId)];
-      }
+      makeRoom(saved, new Set([threadId, markerKey(threadId)]));
       await writePrivateJson(this.path, saved);
       return true;
     });
