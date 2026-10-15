@@ -43,8 +43,7 @@ const later = (ms: number, run: () => void) => { if (ms > 0) setTimeout(run, ms)
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 /** A CLI whose parent is gone (a test run that was stopped) exits instead of living on with nobody to serve. */
 const parent = process.ppid;
-const leaveWithParent = () => setInterval(() => { if (!alive(parent)) process.exit(0); }, 100);
-leaveWithParent().unref();
+setInterval(() => { if (!alive(parent)) process.exit(0); }, 100).unref();
 /** Earlier CLI processes of this test that are still running, and the gateway folders next to this one: what a new session starts beside. */
 function surroundings(directory: string) {
   const path = env("LOG"); const earlier = path && existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line).pid as number) : [];
@@ -185,5 +184,5 @@ for await (const frame of copilotFrames(process.stdin)) {
   else send({ jsonrpc: "2.0", id, error: { code: -32601, message: "unsupported" } });
 }
 log({ op: "stdin_closed" });
-// A CLI that ignores SIGTERM also outlives its input; only SIGKILL ends it (or its parent leaving).
-if (env("IGNORE_TERM")) leaveWithParent();
+// A CLI that ignores SIGTERM also outlives its input; only SIGKILL ends it (or its parent leaving, which the watcher above sees).
+if (env("IGNORE_TERM")) setInterval(() => {}, 1000);
