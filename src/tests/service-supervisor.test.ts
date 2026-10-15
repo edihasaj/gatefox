@@ -50,9 +50,13 @@ test("missing child executable backs off and shutdown cancels the retry", async 
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
   await supervisor.start();
   await until(async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0].state === "waiting");
-  await supervisor.stop(); await delay(150);
+  // A loaded machine can let the 100 ms retry fire before stop() runs, so the count at stop is the baseline: stopping must end the retries.
+  await supervisor.stop();
+  const stopped = JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0];
+  assert.equal(stopped.state, "stopped"); assert.ok(stopped.restarts >= 1, "the missing executable was retried with a backoff");
+  await delay(250);
   const status = JSON.parse(await readFile(serviceStatusPath(directory), "utf8"));
-  assert.equal(status.components[0].state, "stopped"); assert.equal(status.components[0].restarts, 1);
+  assert.equal(status.components[0].state, "stopped"); assert.equal(status.components[0].restarts, stopped.restarts, "no retry after shutdown");
 });
 
 test("idle restart waits for the inference child to accept its own idle guard", { skip: process.platform === "win32" }, async () => {

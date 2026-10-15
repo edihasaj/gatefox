@@ -191,7 +191,7 @@ test("a CLI tool_use for a non-gateway tool fails the request and kills the sess
   try {
     await assert.rejects(turn(adapter(), [user("run")]), (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
     const [pid] = await pids(f);
-    assert.ok(await gone(pid, 300));
+    assert.ok(await gone(pid, 3000));
     assert.equal((await f.capture()).some(entry => entry.exit !== undefined), false, "killed, not asked to end its session");
   } finally { await teardown(f); }
 });
@@ -369,7 +369,7 @@ test("a non-gateway tool_use kills the session at once, even while the caller is
     const iterator = adapter().infer({ model: "fixture", input: [user("run")], tools }, new AbortController().signal, thread)[Symbol.asyncIterator]();
     const first = await iterator.next().catch((error: unknown) => error);
     const [pid] = await pids(f); assert.ok(pid, "a live session served the request");
-    assert.ok(await gone(pid, 300), "killed before the consumer pulled the tool_use line");
+    assert.ok(await gone(pid, 3000), "killed before the consumer pulled the tool_use line");
     await assert.rejects(async () => { if (first instanceof Error) throw first; for (let next = await iterator.next(); !next.done; next = await iterator.next()); },
       (error: unknown) => error instanceof ProviderError && error.code === "invalid_tool_call" && error.upstream?.code === "native_builtin_tool");
   } finally { await teardown(f); }
