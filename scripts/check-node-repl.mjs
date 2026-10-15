@@ -1,9 +1,11 @@
 // Advisory report (never a gate, never run against installed apps by CI): it exits 0, also when the input cannot be read.
-// Pass a COPY of the combined catalog.json from an executor home, never the installed app's live state.
-// Usage: node scripts/check-node-repl.mjs combined-catalog.json
+// Pass a COPY of a combined catalog, never the installed app's live state. The combined catalogs are
+// <stateDirectory>/desktop-catalog-<revision>.json, which one executor generation loads as model_catalog_json,
+// and <stateDirectory>/desktop-models.json, which holds the latest one once the adapter has restored or refreshed.
+// Usage: node scripts/check-node-repl.mjs copy-of-desktop-catalog.json
 import { readFileSync } from "node:fs";
 const file = process.argv[2];
-if (!file) { console.error("Usage: node scripts/check-node-repl.mjs <copy-of-combined-catalog.json>"); process.exit(0); }
+if (!file) { console.error("Usage: node scripts/check-node-repl.mjs <copy of desktop-catalog-<revision>.json or desktop-models.json>"); process.exit(0); }
 let models;
 try { models = JSON.parse(readFileSync(file, "utf8")).models; } catch { models = undefined; }
 if (!Array.isArray(models)) { console.error(`cannot read a combined catalog from ${file}`); process.exit(0); }
