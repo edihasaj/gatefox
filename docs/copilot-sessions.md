@@ -43,7 +43,7 @@ request falls back to whenever a live session cannot serve it.
 | `mode` | `live` | `live` keeps a session per thread; `oneshot` or `replay` starts a session per request |
 | `max` | 4 | Live sessions in the whole process (1–16). A session being started counts toward it |
 | `parkMinutes` | 30 | Idle time before a session closes (5–240). Copilot's prompt cache lasted 30 minutes for `gpt-6-luna` and 5 minutes for `claude-haiku-5.5` in the measurements; a session parked longer still continues, at about the price of a reseed, and keeps its native history |
-| `toolWaitMinutes` | 25 | How long a session waits for Codex to run a tool before it closes (1–25) |
+| `toolWaitMinutes` | 25 | How long a session waits for Codex to run a tool before it closes (1–25). The wait is the smaller of this and `parkMinutes`: with `parkMinutes: 10` a session waiting for tools closes after 10 minutes |
 
 ## What a session is made of
 
@@ -136,8 +136,8 @@ example `tool_wait_expired`).
 
 Copilot fails a pending external tool request 1,800 seconds after it was issued, and the
 runtime then makes a model call of its own, which is billed. The gateway closes a session
-that is waiting for tool outputs after `toolWaitMinutes` (25 at most), before that
-happens: `session.abort`, then SIGKILL. The next request reseeds (`tool_wait_expired`).
+that is waiting for tool outputs after `toolWaitMinutes` (25 at most) or `parkMinutes`,
+whichever is smaller, before that happens: `session.abort`, then SIGKILL. The next request reseeds (`tool_wait_expired`).
 
 Between requests the gateway accepts only housekeeping: the pending calls' own
 `tool.execution_start` and `external_tool.requested` events, `session.info`,
