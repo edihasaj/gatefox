@@ -14,7 +14,9 @@ export async function uninstallGateway(configPath: string): Promise<Record<strin
   if (await readFile(resolve(root, ".gateway-installation"), "utf8") !== "subscription-gateway\n" || !(await readFile(command, "utf8")).includes("# Managed by subscription-gateway installer")) throw new Error("Installation is not managed by this installer");
   await macService("uninstall", configPath);
   await macNative("uninstall", configPath);
-  await macDesktop("unregister", configPath);
+  // Unregister reports legacyForceCliKept when it cleared our CODEX_CLI_PATH but a legacy FORCE_CLI=1 stayed
+  // behind it for lack of a receipt; the uninstaller passes that warning through so the operator can clear it.
+  const desktop = await macDesktop("unregister", configPath);
   await macSsh("unregister", configPath);
   const directory = resolve(homedir(), "Library/LaunchAgents");
   for (const file of await readdir(directory)) {
@@ -26,5 +28,6 @@ export async function uninstallGateway(configPath: string): Promise<Record<strin
   const alias = resolve(dirname(command), "harness-gateway");
   if ((await lstat(alias).catch(() => undefined))?.isSymbolicLink() && await readlink(alias) === "gateway") await rename(alias, resolve(trash, `harness-gateway.${suffix}`));
   await rename(command, resolve(trash, `gateway.${suffix}`)); await rename(root, resolve(trash, `subscription-gateway.${suffix}`));
-  return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: true };
+  return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: true,
+    ...(desktop.legacyForceCliKept === true ? { legacyForceCliKept: true } : {}) };
 }

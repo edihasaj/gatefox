@@ -35,9 +35,12 @@ receipt was cleared or never written, a gateway wrapper path beside a `1` proves
 nothing about who exported the pair: `gateway desktop register` refuses with a message naming the value, and
 `gateway desktop status` reports `legacyForceCli: false`. `gateway desktop unregister` still clears an own
 `CODEX_CLI_PATH` there, because that path is ours whether or not the receipt survived, and it leaves the `1`
-alone. `gateway desktop status` also reports `staleWrapper: true` while the session points at a wrapper of
+alone; when it does, it reports `legacyForceCliKept: true` so the cleared path and the kept value show up in one
+output, and `gateway uninstall` passes that flag through. `gateway desktop status` also reports `staleWrapper: true` while the session points at a wrapper of
 ours that the receipt no longer names; that alone is not an active adapter, so
-`activeForFutureLaunches` stays `false` until a registration writes the current wrapper. `gateway desktop`
+`activeForFutureLaunches` stays `false` until a registration writes the current wrapper. Alongside
+`legacyForceCli`, status reports `forceCliSet`, which is true when the session holds
+`CODEX_APP_SERVER_FORCE_CLI` at all, whatever its value, and never carries the value itself. `gateway desktop`
 only leaves an inherited `1` out of the app it launches, and only when the inherited `CODEX_CLI_PATH` is a
 gateway wrapper; it does not change the login session, so later Dock launches still see it.
 
@@ -54,6 +57,8 @@ restart the app:
    and register again: `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`. That is
    the whole remedy for the missing-receipt case; nothing else in the gateway
    touches the value without a receipt naming a wrapper.
-3. Run `gateway desktop status` and confirm `legacyForceCli: false`.
+3. Run `gateway desktop status` and confirm `forceCliSet: false`, not only `legacyForceCli: false`.
+   A value that is not ours also reads `legacyForceCli: false`, while `forceCliSet: false` is the proof
+   that no `CODEX_APP_SERVER_FORCE_CLI` is left in the session at all.
 4. Quit and reopen ChatGPT once. Reopening earlier keeps the old behavior,
    including the repeated "409 Remote app server already online" errors.

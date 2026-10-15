@@ -136,9 +136,11 @@ on the remote Mac, and gateway models reach it only through that Mac's own
 registration.
 
 An older gateway also exported `CODEX_APP_SERVER_FORCE_CLI=1`, which ran durable chats and
-SSH rows as extra local app-servers. Registration removes that value only when it can prove
-it set it; after upgrading, run `gateway desktop register`, check `gateway desktop status`
-shows `legacyForceCli: false`, then restart ChatGPT once. Details and the ownership rules are in
+SSH rows as extra local app-servers. Registration removes that value only when a registration receipt
+proves the gateway set it; after upgrading, run `gateway desktop register`, check `gateway desktop status`
+shows `legacyForceCli: false` and `forceCliSet: false`, then restart ChatGPT once. While the session still
+names an older gateway wrapper, status reports `staleWrapper: true` and `activeForFutureLaunches: false`
+until a register writes the current one. Details and the ownership rules are in
 [legacy FORCE_CLI cleanup](desktop-legacy-force-cli.md).
 
 Desktop startup reads organization requirements and native configuration through

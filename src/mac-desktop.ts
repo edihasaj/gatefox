@@ -48,12 +48,15 @@ async function desktopOperation(action: string, configPath: string, app: string,
   let registration: { wrapper?: string } = {}; try { registration = JSON.parse(await readFile(receipt, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (action === "status") {
     const cliPath = await environment("CODEX_CLI_PATH");
+    // One getenv answers both FORCE_CLI questions. forceCliSet is presence only: it is true when the session
+    // holds the variable at all, whatever its value, and the value itself never reaches the output.
+    const force = await exec("/bin/launchctl", ["getenv", "CODEX_APP_SERVER_FORCE_CLI"]).then(result => result.stdout.trim(), () => undefined);
     const fromReceipt = !!registration.wrapper && cliPath === registration.wrapper;
     const owned = fromReceipt || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath));
     // Future launches use the registered wrapper, so an older one we still own is stale, not active. Ownership
     // only decides whether the legacy FORCE_CLI value is ours to clear.
-    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt,
-      legacyForceCli: owned && !!registration.wrapper && await environment("CODEX_APP_SERVER_FORCE_CLI") === "1",
+    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, forceCliSet: force !== undefined,
+      legacyForceCli: owned && !!registration.wrapper && force === "1",
       ...(owned && !fromReceipt ? { staleWrapper: true } : {}) };
   }
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
@@ -61,25 +64,38 @@ async function desktopOperation(action: string, configPath: string, app: string,
   if (action === "unregister") {
     if (unified || pending) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
     const cliPath = await environment("CODEX_CLI_PATH");
+    // FORCE_CLI is ours to clear only when the receipt names a wrapper. An own path beside an empty or missing
+    // receipt proves the path is ours, not that we ever exported the pair, so the 1 stays beside the path we
+    // just cleared. legacyForceCliKept says so: the next register refuses until the value is cleared by hand.
+    let legacyForceCliKept = false;
     if ((!!registration.wrapper && cliPath === registration.wrapper) || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath))) {
       await exec("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
-      // FORCE_CLI is ours only when the receipt names a wrapper. An own path beside an empty or missing receipt
-      // proves the path is ours, not that we ever exported the pair, so that value stays untouched.
-      if (registration.wrapper && await environment("CODEX_APP_SERVER_FORCE_CLI") === "1") await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
+      if (await environment("CODEX_APP_SERVER_FORCE_CLI") === "1") {
+        if (registration.wrapper) await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
+        else legacyForceCliKept = true;
+      }
     }
     if (existing) { await exec("/bin/launchctl", ["bootout", target]).catch(() => undefined); const trash = resolve(homedir(), ".Trash"); await mkdir(trash, { recursive: true }); await rename(path, resolve(trash, `${label}.${Date.now()}.plist`)); }
-    await writePrivateJson(receipt, {}); return { registered: false, nativeConfigUntouched: true };
+    await writePrivateJson(receipt, {});
+    return { registered: false, nativeConfigUntouched: true, ...(legacyForceCliKept ? { legacyForceCliKept: true } : {}) };
   }
   const { wrapper } = await prepareDesktop(configPath, app); const previous = await environment("CODEX_CLI_PATH");
   const ownPrevious = !!previous && await ownWrapper(config.stateDirectory, previous);
-  if (previous && previous !== wrapper && previous !== registration.wrapper && !ownPrevious) throw new Error("Another desktop CLI override is active; it was not replaced");
+  // The refusal names the variable it refuses, never its value, and gives the next step for an override the
+  // caller no longer uses.
+  if (previous && previous !== wrapper && previous !== registration.wrapper && !ownPrevious) throw new Error(
+    "Another desktop CLI override is active; it was not replaced. CODEX_CLI_PATH names a CLI this gateway did not register. If that override is no longer used, run `launchctl unsetenv CODEX_CLI_PATH`, then register again.");
   // Older gateways exported FORCE_CLI=1 beside CODEX_CLI_PATH. It is ours only when the receipt names a wrapper
   // and the CLI path is a gateway wrapper (the receipt's, the current one, or an older one in this state
   // directory); any other value, or a "1" without that proof, belongs to someone else.
   const force = await environment("CODEX_APP_SERVER_FORCE_CLI");
   if (force === "1" && ownPrevious && !registration.wrapper) throw new Error("CODEX_APP_SERVER_FORCE_CLI=1 is set beside a gateway wrapper, but no registration receipt proves the gateway set it. If it came from the gateway, run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI` and register again.");
   const ours = !!registration.wrapper && !!previous && (previous === registration.wrapper || previous === wrapper || ownPrevious);
-  if (force && !(force === "1" && ours)) throw new Error("Another desktop CLI mode is active; it was not replaced");
+  // A 1 that nothing proves is ours gets the remedy, not just a refusal; any other value stays nameless so a
+  // foreign setting is never echoed back.
+  if (force && !(force === "1" && ours)) throw new Error(force === "1"
+    ? "CODEX_APP_SERVER_FORCE_CLI=1 is set and nothing proves the gateway set it. Run `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`, then register again."
+    : "Another desktop CLI mode is active; it was not replaced");
   // Clearing ours returns durable chats and SSH rows to native execution; CODEX_CLI_PATH alone keeps local
   // chats on the gateway. Before the early return below so unified re-registration and upgrades clean it too.
   if (force) await exec("/bin/launchctl", ["unsetenv", "CODEX_APP_SERVER_FORCE_CLI"]);
