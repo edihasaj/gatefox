@@ -70,7 +70,20 @@ A Codex subscription request whose token refresh fails on the network, on a 429 
 on a 5xx (for example right after the Mac wakes) returns a retryable
 `upstream_unavailable`, so Codex reconnects instead of ending the chat. Only a
 missing login, missing scopes, an unreadable credential file, or a refresh rejected
-with HTTP 400, 401 or 403 reports "ChatGPT provider requires login".
+with HTTP 400, 401 or 403 reports "ChatGPT provider requires login". When the token
+endpoint names a reason, the message adds its OAuth error code, for example
+"(refresh rejected: refresh_token_reused)", and `request_failed` telemetry records it
+(see `docs/diagnostics.md`); the reply's description text is never read or shown.
+
+The refresh token is single-use, so only a real request or an explicit
+`gateway discover` ever spends it. The six-hour model-metadata refresh never refreshes
+the login: when a Codex access token has expired or is within two minutes of expiring,
+that provider is skipped for the round (`model_metadata_skipped`) without any network
+call, and the next real request refreshes it. This keeps a refresh from being started
+while the Mac is asleep, where the reply can be lost after the token was spent. When a
+refresh reply arrives, the replacement refresh token is written to the credential file
+(atomically, mode 0600) before the reply is checked for the required scopes, so a reply
+that fails that check never loses the rotated token.
 
 Responses upstream completion retains an actual boolean `end_turn` when present.
 An absent value remains absent. This lets the SDK distinguish a continuation

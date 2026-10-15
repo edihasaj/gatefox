@@ -1,4 +1,4 @@
-import { accessToken } from "./auth/chatgpt.js";
+import { accessToken, type AccessTokenOptions } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
 import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
@@ -48,11 +48,12 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
 }
 
 export interface DiscoveredModel { model: string; metadata: ModelMetadata }
-export async function discoverModels(provider: ProviderConfig): Promise<DiscoveredModel[]> {
+/** `options.refresh: false` lets a Codex login serve discovery only while its access token is still valid. */
+export async function discoverModels(provider: ProviderConfig, options: AccessTokenOptions = {}): Promise<DiscoveredModel[]> {
   if (provider.type === "claude-subscription") return discoverClaudeModels(provider);
   if (provider.type === "copilot-subscription") return discoverCopilotModels(provider);
   if (provider.type !== "codex-subscription" && provider.type !== "responses-api" && provider.type !== "chat-completions-api") throw new Error("This provider does not expose a verified model-discovery endpoint; declare its models explicitly");
-  const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!) : await apiCredential(provider);
+  const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!, options) : await apiCredential(provider);
   if (!token) throw new Error("Provider requires login or an API credential");
   const base = provider.type === "codex-subscription" ? "https://api.openai.com/v1" : provider.baseUrl!.replace(/\/$/, "");
   const response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15000) });

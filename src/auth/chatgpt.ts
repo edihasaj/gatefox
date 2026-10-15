@@ -30,13 +30,49 @@ interface TokenResponse {
   earliest_refresh_at?: number;
 }
 
+/** Where a failed authentication response came from; only fixed, non-secret values. */
+export interface OAuthFailureDetail { httpStatus?: number; oauthError?: string }
+
 /** The stored login cannot work again without the user: missing, rejected or lacking scopes. Other failures are temporary. */
-export class ChatGPTLoginRequired extends Error {}
+export class ChatGPTLoginRequired extends Error {
+  constructor(message: string, readonly detail: OAuthFailureDetail = {}) { super(message); }
+}
+/** A temporary authentication failure (429, 5xx or an unreadable reply); the same detail, but Codex may retry. */
+export class ChatGPTRefreshFailed extends Error {
+  constructor(message: string, readonly detail: OAuthFailureDetail = {}) { super(message); }
+}
+/** Background work asked for a token that needs a refresh. Only a real request or an explicit command may spend the rotating refresh token. */
+export class ChatGPTRefreshDeferred extends Error {
+  constructor() { super("ChatGPT access token needs a refresh; background work does not refresh the login"); }
+}
+
+/** OAuth error codes worth keeping; anything else is recorded as "other" so reply text never reaches logs. */
+export const oauthErrorCodes: ReadonlySet<string> = new Set([
+  "invalid_request", "invalid_client", "invalid_grant", "unauthorized_client", "unsupported_grant_type", "invalid_scope", "access_denied",
+  "server_error", "temporarily_unavailable", "slow_down", "rate_limit_exceeded",
+  "refresh_token_reused", "refresh_token_expired", "refresh_token_invalidated", "token_expired", "invalid_token",
+]);
+/** Reads only the OAuth error code of a failed reply: `{"error":"code"}`, `{"error":{"code":"code"}}` or `{"code":"code"}`. */
+export function oauthErrorCode(text: string): string {
+  let code: unknown;
+  try {
+    const body = JSON.parse(text) as { error?: unknown; code?: unknown } | null;
+    const error = body?.error;
+    code = typeof error === "string" ? error : error && typeof error === "object" ? (error as { code?: unknown }).code : body?.code;
+  } catch { return "none"; }
+  if (typeof code !== "string" || !code) return "none";
+  return oauthErrorCodes.has(code) ? code : "other";
+}
 
 async function json<T>(url: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(url, { ...options, redirect: "error", signal: AbortSignal.timeout(15000) });
-  // 400/401/403 mean the grant was rejected (revoked or reused); 429 and 5xx clear by themselves.
-  if (!response.ok) throw new ([400, 401, 403].includes(response.status) ? ChatGPTLoginRequired : Error)(`OpenAI authentication returned HTTP ${response.status}; sign in again if access was revoked`);
+  if (!response.ok) {
+    const oauthError = oauthErrorCode(await response.text().then(text => text.slice(0, 8192), () => ""));
+    const detail: OAuthFailureDetail = { httpStatus: response.status, oauthError };
+    const message = `OpenAI authentication returned HTTP ${response.status} (${oauthError}); sign in again if access was revoked`;
+    // 400/401/403 mean the grant was rejected (revoked or reused); 429 and 5xx clear by themselves.
+    throw [400, 401, 403].includes(response.status) ? new ChatGPTLoginRequired(message, detail) : new ChatGPTRefreshFailed(message, detail);
+  }
   return await response.json() as T;
 }
 
@@ -141,10 +177,19 @@ export async function signIn(path: string, agentName: string, onAuthorize: (url:
 }
 
 const refreshing = new Map<string, Promise<string>>();
-export async function accessToken(path: string): Promise<string> {
+export interface AccessTokenOptions {
+  /**
+   * Default true. Background work passes false: an expired or near-expiry token then throws
+   * ChatGPTRefreshDeferred without any network call, because the refresh token is single-use
+   * and a refresh interrupted by sleep can leave the stored one spent.
+   */
+  refresh?: boolean;
+}
+export async function accessToken(path: string, options: AccessTokenOptions = {}): Promise<string> {
   const credentials = await readCredentials(path);
   if (!credentials || requiredScopes.some(scope => !credentials.scopes?.includes(scope))) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
   if (credentials.expires_at > Date.now() + 120000 || (credentials.earliest_refresh_at && credentials.earliest_refresh_at * 1000 > Date.now() && credentials.expires_at > Date.now())) return credentials.access_token;
+  if (options.refresh === false) throw new ChatGPTRefreshDeferred();
   const existing = refreshing.get(path); if (existing) return existing;
   const operation = refresh(path);
   refreshing.set(path, operation);
@@ -176,10 +221,19 @@ async function refresh(path: string): Promise<string> {
     const token = await json<TokenResponse>(`${issuer}/api/accounts/oauth/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "refresh_token", client_id: credentials.client_id, refresh_token: credentials.refresh_token, resource }),
     });
-    const scopes = grantedScopes(token);
+    // The old refresh token is spent once this reply arrives. Persist the replacement before
+    // any validation, so a rejected reply can never lose it; the new access token is kept only
+    // when it validates, otherwise the stored (expired) one stays and the next request retries.
+    let scopes: string[] | undefined; let invalid: unknown;
+    try { scopes = grantedScopes(token); } catch (error) { invalid = error; }
+    if (typeof token.refresh_token === "string" && token.refresh_token) {
+      await writePrivateJson(path, scopes
+        ? { ...credentials, access_token: token.access_token, refresh_token: token.refresh_token, id_token: token.id_token || credentials.id_token,
+          scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at }
+        : { ...credentials, refresh_token: token.refresh_token });
+    }
+    if (invalid) throw invalid;
     if (!token.refresh_token) throw new Error("OpenAI did not return a replacement refresh token");
-    await writePrivateJson(path, { ...credentials, access_token: token.access_token, refresh_token: token.refresh_token,
-      id_token: token.id_token || credentials.id_token, scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at });
     return token.access_token;
   } finally { await file.close(); await unlink(lock); }
 }

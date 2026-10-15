@@ -1,3 +1,4 @@
+import { oauthErrorCodes } from "./auth/chatgpt.js";
 import { ProviderError } from "./providers/provider.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
@@ -114,8 +115,8 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   const upstream = own(failure, "upstream");
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
-    if (typeof upstreamCode === "string" && upstreamCodes.has(upstreamCode)) result.upstreamCode = upstreamCode;
-    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "claude.tool_use", "claude.assistant", "claude.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result"].includes(event)) result.upstreamEvent = event;
     if (typeof subtype === "string" && ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(subtype)) result.upstreamSubtype = subtype;
     if (typeof upstreamRequestId === "string" && /^[a-z0-9_-]{1,128}$/i.test(upstreamRequestId)) result.upstreamRequestId = upstreamRequestId;
     const stream = own(upstream, "stream");

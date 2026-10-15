@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
+import { ChatGPTRefreshDeferred } from "./auth/chatgpt.js";
 import { discoverModels, type DiscoveredModel } from "./catalog.js";
 import { loadConfig, validateConfig, writePrivateJson, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
+import { telemetry } from "./telemetry.js";
 
 type Windows = Record<string, Record<string, number>>;
 const discoverable = new Set(["codex-subscription", "claude-subscription", "copilot-subscription", "responses-api", "chat-completions-api"]);
@@ -36,8 +38,12 @@ export class ObservedContextWindows {
  * Updates metadata for already configured models from each provider's own catalog,
  * then applies context windows the provider reported in real responses. The model
  * set is unchanged: adding or removing routes stays an explicit `gateway discover`.
+ *
+ * This runs on a timer, possibly while the Mac sleeps, so it never refreshes a login: a
+ * provider whose access token has expired is skipped for the round and refreshed by the
+ * next real request or an explicit `gateway discover`.
  */
-export async function refreshModelMetadata(path: string, discover: (provider: ProviderConfig) => Promise<DiscoveredModel[]> = discoverModels): Promise<string[]> {
+export async function refreshModelMetadata(path: string, discover: (provider: ProviderConfig, options: { refresh: false }) => Promise<DiscoveredModel[]> = discoverModels): Promise<string[]> {
   const config = await loadConfig(path);
   if (config.clientOnly) return [];
   const observed = await readWindows(config.stateDirectory);
@@ -45,7 +51,8 @@ export async function refreshModelMetadata(path: string, discover: (provider: Pr
   for (const provider of config.providers) {
     if (!discoverable.has(provider.type)) continue;
     let discovered: DiscoveredModel[];
-    try { discovered = await discover(provider); } catch { continue; }
+    try { discovered = await discover(provider, { refresh: false }); }
+    catch (error) { telemetry("model_metadata_skipped", { provider: provider.id, reason: error instanceof ChatGPTRefreshDeferred ? "refresh_deferred" : "discovery_failed" }); continue; }
     const fresh = new Map(discovered.map(entry => [entry.model, entry.metadata]));
     const metadata = { ...provider.modelMetadata };
     for (const [alias, model] of Object.entries(provider.models)) {
