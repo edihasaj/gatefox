@@ -1,6 +1,6 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayToken, validateConfig } from "../config.js";
@@ -14,8 +14,15 @@ const usage = { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_to
 const accounting: UsageAccounting = { cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "complete" };
 type Kind = "copilot-subscription" | "claude-subscription" | "codex-subscription";
 
-async function start(type: Kind, events: (signal: AbortSignal) => AsyncGenerator<InferenceEvent>) {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-")); resetUsageLedger(); configureTelemetry(directory, "test");
+/** A state folder for one test, removed once the test has ended (after its gateway closed), however it ended. */
+async function scratch(t: TestContext, prefix: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), prefix));
+  t.after(async () => { await flushUsageLedger(); await flushTelemetry(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); });
+  return directory;
+}
+
+async function start(t: TestContext, type: Kind, events: (signal: AbortSignal) => AsyncGenerator<InferenceEvent>) {
+  const directory = await scratch(t, "gateway-ledger-"); resetUsageLedger(); configureTelemetry(directory, "test");
   const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "fake", type, models: { alias: "actual" }, ...(type === "codex-subscription" ? { credentialFile: join(directory, "credentials.json") } : {}) }] });
   const server = await startGateway(config, () => ({ infer: (_request: unknown, signal: AbortSignal) => events(signal) }) as Provider);
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -28,8 +35,8 @@ const answer = (): (() => AsyncGenerator<InferenceEvent>) => async function* () 
 };
 const rows = async (directory: string) => { await flushUsageLedger(); return readUsageLedger(directory, 0); };
 
-test("a Copilot failure after billed usage keeps the spend in telemetry and the ledger", async () => {
-  const gateway = await start("copilot-subscription", async function* () {
+test("a Copilot failure after billed usage keeps the spend in telemetry and the ledger", async t => {
+  const gateway = await start(t, "copilot-subscription", async function* () {
     yield { type: "usage", usage, accounting }; throw new ProviderError("model_route", "Copilot returned an unexpected model instead of the requested model");
   });
   try {
@@ -44,9 +51,9 @@ test("a Copilot failure after billed usage keeps the spend in telemetry and the 
   } finally { await gateway.close(); }
 });
 
-test("billing detail never reaches the client and the response id carries the ledger marker", async () => {
+test("billing detail never reaches the client and the response id carries the ledger marker", async t => {
   for (const [type, marked] of [["copilot-subscription", true], ["claude-subscription", true], ["codex-subscription", false]] as const) {
-    const gateway = await start(type, answer());
+    const gateway = await start(t, type, answer());
     try {
       for (const stream of [false, true]) {
         const response = await gateway.post({ input: "hi", stream }); const requestId = response.headers.get("x-request-id")!.replaceAll("-", ""); const text = await response.text();
@@ -58,9 +65,9 @@ test("billing detail never reaches the client and the response id carries the le
   }
 });
 
-test("the off switch removes the marker, the directory and every row", async () => {
+test("the off switch removes the marker, the directory and every row", async t => {
   process.env.GATEWAY_USAGE_LEDGER = "off";
-  const gateway = await start("copilot-subscription", answer());
+  const gateway = await start(t, "copilot-subscription", answer());
   try {
     const response = await gateway.post({ input: "hi" }); const body = await response.json() as { id: string };
     assert.match(body.id, /^resp_[0-9a-f]{32}$/);
@@ -69,8 +76,8 @@ test("the off switch removes the marker, the directory and every row", async () 
   } finally { delete process.env.GATEWAY_USAGE_LEDGER; await gateway.close(); }
 });
 
-test("the ledger holds only counts and identifiers, privately", async () => {
-  const gateway = await start("copilot-subscription", answer());
+test("the ledger holds only counts and identifiers, privately", async t => {
+  const gateway = await start(t, "copilot-subscription", answer());
   try {
     const response = await gateway.post({ instructions: "SENTINEL_INSTRUCTIONS", tools: [{ type: "function", name: "lookup_tool", parameters: { type: "object", properties: {} } }],
       input: [{ type: "message", role: "user", content: "SENTINEL_PROMPT" }, { type: "function_call", call_id: "c1", name: "lookup_tool", arguments: '{"a":"SENTINEL_ARGS"}' }, { type: "function_call_output", call_id: "c1", output: "SENTINEL_OUTPUT" }] });
@@ -89,8 +96,8 @@ test("the ledger holds only counts and identifiers, privately", async () => {
   } finally { await gateway.close(); }
 });
 
-test("rows rotate by UTC month and months older than a year are pruned", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-rotate-")); resetUsageLedger();
+test("rows rotate by UTC month and months older than a year are pruned", async t => {
+  const directory = await scratch(t, "gateway-ledger-rotate-"); resetUsageLedger();
   const folder = join(directory, "usage"); await mkdir(folder, { recursive: true });
   for (const month of ["2025-01", "2025-02", "2025-03"]) await writeFile(join(folder, `usage-${month}.jsonl`), "{}\n");
   const row = { status: "completed" as const, inputTokens: 1 };
@@ -103,8 +110,8 @@ test("rows rotate by UTC month and months older than a year are pruned", async (
   assert.deepEqual((await readUsageLedger(directory, Date.parse("2026-03-01T00:00:00Z"))).map(entry => entry.requestId), ["b"]);
 });
 
-test("the telemetry history is imported once, without zero-token rows", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-import-")); resetUsageLedger();
+test("the telemetry history is imported once, without zero-token rows", async t => {
+  const directory = await scratch(t, "gateway-ledger-import-"); resetUsageLedger();
   const day = new Date().toISOString().slice(0, 10); const at = new Date().toISOString();
   await mkdir(join(directory, "telemetry"), { recursive: true });
   const line = (fields: Record<string, unknown>) => JSON.stringify({ at, host: "mac", component: "gateway", pid: 1, ...fields });
@@ -131,8 +138,8 @@ async function telemetryHistory(directory: string, ids: string[]): Promise<void>
   await writeFile(join(directory, "telemetry", `events-${day}.jsonl`), ids.map(requestId => JSON.stringify({ at, host: "mac", component: "gateway", pid: 1, event: "request_completed", requestId, provider: "copilot", model: "m", inputTokens: 50, outputTokens: 3 })).join("\n") + "\n");
 }
 
-test("two requests that finish while the telemetry import runs each get exactly one gateway row", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-race-")); resetUsageLedger();
+test("two requests that finish while the telemetry import runs each get exactly one gateway row", async t => {
+  const directory = await scratch(t, "gateway-ledger-race-"); resetUsageLedger();
   // Both requests are already in telemetry when the first write triggers the one-time import.
   await telemetryHistory(directory, ["a", "b", "old"]);
   recordUsage(directory, { requestId: "a", status: "completed", inputTokens: 7 });
@@ -145,8 +152,8 @@ test("two requests that finish while the telemetry import runs each get exactly 
   assert.equal(lines.length, 3, "no request is written twice");
 });
 
-test("an import that failed before its marker is retried without repeating rows, and readers keep the gateway row", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-retry-")); resetUsageLedger();
+test("an import that failed before its marker is retried without repeating rows, and readers keep the gateway row", async t => {
+  const directory = await scratch(t, "gateway-ledger-retry-"); resetUsageLedger();
   await telemetryHistory(directory, ["x", "y"]);
   // A first run appended x but died before writing the marker; its copy of y was lost.
   await mkdir(join(directory, "usage"), { recursive: true });
@@ -159,9 +166,9 @@ test("an import that failed before its marker is retried without repeating rows,
   assert.equal(all.find(entry => entry.requestId === "x")?.inputTokens, 51, "the gateway row wins over the imported one");
 });
 
-test("usage a provider reports after the client disconnected is still recorded", async () => {
+test("usage a provider reports after the client disconnected is still recorded", async t => {
   let began!: () => void; const started = new Promise<void>(resolve => { began = resolve; });
-  const gateway = await start("copilot-subscription", async function* (signal) {
+  const gateway = await start(t, "copilot-subscription", async function* (signal) {
     began(); await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
     // The provider had already paid for this call when the caller left.
     yield { type: "usage", usage, accounting }; yield { type: "done", usage, accounting };
@@ -179,8 +186,8 @@ test("usage a provider reports after the client disconnected is still recorded",
   } finally { await gateway.close(); }
 });
 
-test("the telemetry import keeps cache-write, reasoning and credit figures that the event carries", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-ledger-figures-")); resetUsageLedger();
+test("the telemetry import keeps cache-write, reasoning and credit figures that the event carries", async t => {
+  const directory = await scratch(t, "gateway-ledger-figures-"); resetUsageLedger();
   const at = new Date().toISOString();
   await mkdir(join(directory, "telemetry"), { recursive: true });
   await writeFile(join(directory, "telemetry", `events-${at.slice(0, 10)}.jsonl`), JSON.stringify({ at, host: "mac", component: "gateway", pid: 1, event: "request_completed", requestId: "k", provider: "copilot", model: "m",
