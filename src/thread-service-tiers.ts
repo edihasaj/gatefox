@@ -102,7 +102,15 @@ export class ThreadServiceTiers {
         emittedAtMs = selected.emittedAtMs;
       }
       if (current && current.model === selected.model && current.serviceTier === selected.serviceTier && current.emittedAtMs === emittedAtMs && current.uncertainBeforeMs === uncertainBeforeMs) return true;
-      if (!current && Object.keys(saved.threads).length >= maxThreads) throw invalid();
+      if (!current) {
+        // A full store drops the chat whose record was stamped longest ago, like the reasoning store.
+        while (Object.keys(saved.threads).length >= maxThreads) {
+          let oldest: string | undefined; let atMs = Number.POSITIVE_INFINITY;
+          for (const [id, entry] of Object.entries(saved.threads)) { const time = entry.emittedAtMs ?? 0; if (time < atMs) { atMs = time; oldest = id; } }
+          if (oldest === undefined) throw invalid();
+          delete saved.threads[oldest];
+        }
+      }
       const revision = (current?.revision ?? 0) + 1; if (!integer(revision)) throw invalid();
       saved.threads[threadId] = { model: selected.model, serviceTier: selected.serviceTier, revision, ...(emittedAtMs !== undefined ? { emittedAtMs } : {}), ...(uncertainBeforeMs !== undefined ? { uncertainBeforeMs } : {}) };
       if (Buffer.byteLength(JSON.stringify(saved, null, 2) + "\n") > maxBytes) throw invalid();

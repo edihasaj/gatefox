@@ -34,7 +34,9 @@ the desktop's projectless `~` that is not absolute), `prediction_fork_overrides`
 `prediction_fork_parent`, `no_active_process`, `process_not_running`,
 `duplicate_process_handle`, `spawn_failed`, `rollout_not_found`, `thread_not_loaded`,
 `thread_not_persisted`, `engine_closed`, `engine_timeout`, or `other`. `gateway
-diagnostics` groups RPC errors by `rejection` when it is more specific than `other`.
+diagnostics` groups non-routing RPC errors by `rejection` when it is more specific
+than `other` (and by `errorClass` otherwise); adapter routing errors stay grouped by
+their fixed `reason`.
 
 A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403
 for a rejected login; any other HTTP error status, for example 429 or 5xx, for a temporary

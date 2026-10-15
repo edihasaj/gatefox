@@ -505,6 +505,15 @@ this, the adapter added a native chat's saved reasoning effort to the fork, so e
 suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
 above. The change applies to the next adapter connection after an update.
 
+A prediction fork is also not recorded durably. Its result writes no reasoning
+record and no service-tier row, and a later turn or applied settings change on it
+writes none either. The adapter keeps only an in-memory route, so a turn started on
+the fork reaches the owning engine without a chat-read probe. The newest 256 such
+fork ids stay routed this way, and `thread/closed` or `thread/unsubscribe` for one
+of them forgets its route at once. The private service-tier store is now bounded by
+record time like the reasoning store: when it is full, the row stamped longest ago is
+evicted instead of the write failing.
+
 Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
 can be told apart without storing error text; see [diagnostics](diagnostics.md).
 

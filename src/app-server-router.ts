@@ -30,6 +30,8 @@ const requestedEffort = (params: ObjectValue): unknown => params.effort ?? objec
 const configEffort = (params: ObjectValue): unknown => object(params.config).model_reasoning_effort;
 const enumEffort = (value: unknown): string | undefined => typeof value === "string" && ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(value) ? value : undefined;
 type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
+// Throwaway prediction forks are tracked in this order-bounded set while they may still be routed.
+const maxEphemeralThreads = 256;
 
 /**
  * A prediction fork (the desktop's composer suggestions) starts from the loaded parent's
@@ -54,6 +56,7 @@ export class AppServerRouter {
   private readonly chatSnapshots = new Map<string, ThreadReasonSnapshot>();
   private readonly tierRecords = new Map<string, ThreadServiceTier | undefined>();
   private readonly settingsVersions = new Map<string, number>();
+  private readonly ephemeralThreads = new Set<string>();
   private preferences: ObjectValue = {};
   private writes: Promise<unknown> = Promise.resolve();
   private readonly preferencesPath: string;
@@ -84,9 +87,12 @@ export class AppServerRouter {
       if (Object.keys(desktop).length) this.preferences.desktop = desktop;
     } catch { throw new AppServerRoutingError("Gateway desktop display preferences are invalid"); }
   }
-  private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number): Promise<void> {
+  private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number, inherited = false): Promise<void> {
     const thread = object(result.thread);
-    if (typeof thread.id === "string") {
+    // A prediction fork is throwaway: only its in-memory route is kept, never a durable record.
+    const ephemeral = inherited || thread.ephemeral === true;
+    if (typeof thread.id === "string" && ephemeral) this.trackEphemeral(thread.id);
+    if (typeof thread.id === "string" && !ephemeral) {
       const config = object(params.config);
       await this.recordReasoning(thread.id, { model: typeof result.model === "string" ? result.model : params.model,
         effort: result.reasoningEffort ?? config.model_reasoning_effort, summary: result.reasoningSummary ?? config.model_reasoning_summary }, requestStartedAtMs);
@@ -97,7 +103,7 @@ export class AppServerRouter {
         ...(tier === null || typeof tier === "string" ? { serviceTier: tierId(tier) as string | null } : {}) };
       this.routes.set(thread.id, route);
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
-      if (route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
+      if (!ephemeral && route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
         const record = { model: route.model, serviceTier: savedTier(result.serviceTier) };
         await this.threadTiers.write(thread.id, record, thread.id === params.threadId ? expected ?? null : null, requestStartedAtMs);
         const current = await this.threadTiers.read(thread.id);
@@ -118,7 +124,7 @@ export class AppServerRouter {
       this.routes.set(threadId, route);
       this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
     }
-    if (route.provider === gatewayProvider) {
+    if (route.provider === gatewayProvider && !this.ephemeralThreads.has(threadId)) {
       const current = await this.threadTiers.read(threadId);
       if (current && (!this.tierRecords.has(threadId) || JSON.stringify(current) !== JSON.stringify(this.tierRecords.get(threadId)))) {
         route.model = current.model; route.serviceTier = current.serviceTier;
@@ -126,6 +132,14 @@ export class AppServerRouter {
       this.tierRecords.set(threadId, current);
     }
     return route;
+  }
+  private trackEphemeral(threadId: string): void {
+    this.ephemeralThreads.delete(threadId); this.ephemeralThreads.add(threadId);
+    while (this.ephemeralThreads.size > maxEphemeralThreads) this.forgetEphemeral(this.ephemeralThreads.values().next().value as string);
+  }
+  private forgetEphemeral(threadId: string): void {
+    this.ephemeralThreads.delete(threadId); this.routes.delete(threadId); this.tierRecords.delete(threadId);
+    this.activeTurns.delete(threadId); this.settingsVersions.delete(threadId);
   }
   /** Provider family and model for diagnostics; no settings or content. */
   describeThread(threadId: string): { provider?: string; model?: string } {
@@ -135,11 +149,19 @@ export class AppServerRouter {
   /** Only applied thread settings are durable; active-turn settings remain connection-local. */
   async observeNotification(message: ObjectValue): Promise<void> {
     const params = object(message.params);
+    if (message.method === "thread/closed" && typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId)) this.forgetEphemeral(params.threadId);
     if (message.method === "thread/settings/updated" && typeof params.threadId === "string") {
       // The pinned SDK stamps the envelope before fan-out to clients on this host.
       const emittedAtMs = message.emittedAtMs;
       if (!Number.isSafeInteger(emittedAtMs) || Number(emittedAtMs) <= 0 || Number(emittedAtMs) > Date.now() + 1000) return;
       const settings = object(params.threadSettings);
+      if (this.ephemeralThreads.has(params.threadId)) {
+        // A throwaway fork's applied settings stay in its route; nothing about it is recorded durably.
+        this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
+        if (settings.modelProvider === gatewayProvider && typeof settings.model === "string" && (settings.serviceTier === null || typeof settings.serviceTier === "string"))
+          this.routes.set(params.threadId, { provider: gatewayProvider, model: settings.model, serviceTier: savedTier(settings.serviceTier) });
+        return;
+      }
       await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
@@ -381,11 +403,11 @@ export class AppServerRouter {
       catch { return result; }
     }
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
-      await this.remember(result, forwarded, expectedTier, requestStartedAtMs);
+      await this.remember(result, forwarded, expectedTier, requestStartedAtMs, inherited);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
-    if (typeof params.threadId === "string" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
+    if (typeof params.threadId === "string" && !this.ephemeralThreads.has(params.threadId) && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
       await this.recordReasoning(params.threadId, { model: requestedModel(params) ?? this.routes.get(params.threadId)?.model, effort: requestedEffort(params), summary: params.summary }, requestStartedAtMs);
     }
     const selected = requestedModel(params);
@@ -411,6 +433,7 @@ export class AppServerRouter {
         ...(typeof selected === "string" ? { model: selected } : {}),
         ...(tier && (tier.value === null || typeof tier.value === "string") ? { serviceTier: tierId(tier.value) as string | null } : {}) } });
     }
+    if (method === "thread/unsubscribe" && typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId)) this.forgetEphemeral(params.threadId);
     if (method === "config/read") {
       await this.readPreferences();
       const { desktop, ...modelPreferences } = this.preferences;
