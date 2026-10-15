@@ -30,3 +30,13 @@ test("gateway chats share the native hooks and saved prompts, so client hooks fi
     assert.equal(await readFile(join(home, "prompts", "review.md"), "utf8"), "Review prompt");
   } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
 });
+
+test("a native default speed is never copied into a gateway executor's configuration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gateway-speed-home-")); const native = join(root, "native"); await mkdir(native);
+  const previous = process.env.CODEX_HOME; process.env.CODEX_HOME = native;
+  try {
+    const home = await gatewayEngineHome(join(root, "state"), { model: "native", service_tier: "fast", model_reasoning_effort: "high" });
+    const copied = await readFile(join(home, "config.toml"), "utf8");
+    assert.ok(!copied.includes("service_tier")); assert.ok(copied.includes('"model_reasoning_effort" = "high"'));
+  } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
+});

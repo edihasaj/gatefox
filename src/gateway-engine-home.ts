@@ -42,7 +42,8 @@ export async function gatewayEngineHome(state: string, settings: Message, option
       if (!(await lstat(path)).isSymbolicLink() || resolve(home, await readlink(path)) !== target) throw new Error("Gateway instructions point to a different native home");
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path); }
   }
-  const excluded = new Set(["model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "openai_api_key", "model_provider", "model_catalog_json"]);
+  // A native default speed never becomes a gateway chat's default: a tier-less start or cold resume would run Fast.
+  const excluded = new Set(["model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "openai_api_key", "model_provider", "model_catalog_json", "service_tier"]);
   const copied = Object.fromEntries(Object.entries(normalizeCodexFeatureConfig(settings)).filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined));
   copied.sqlite_home = typeof settings.sqlite_home === "string" ? settings.sqlite_home : nativeHome;
   const content = Object.entries(copied).map(([key, value]) => `${JSON.stringify(key)} = ${toml(value)}\n`).join("");

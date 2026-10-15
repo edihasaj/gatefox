@@ -51,9 +51,13 @@ Explicit stop or uninstall still stops the service and cancels active work.
 The stdio adapter keeps one original native app-server connection. Account
 requests and native chats use that connection. Gateway chats use separate
 executors with private configuration homes. The adapter reads effective native
-settings for a private snapshot, excludes native provider authentication settings,
-and never copies the primary auth file. Automatic project-trust writes therefore
-land in the gateway executor's private configuration.
+settings for a private snapshot, excludes native provider authentication settings
+and the native default speed (`service_tier`), and never copies the primary auth
+file. A gateway executor therefore never applies a native Fast default on its
+own; a tier the client names is handled as described under
+[speed controls](app-server.md#speed-controls).
+Automatic project-trust writes land in the gateway executor's private
+configuration.
 
 Before creating a gateway executor, the adapter rereads client settings. Native
 agent limits and user-authored roles pass through unchanged. The gateway does not
