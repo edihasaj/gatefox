@@ -321,10 +321,9 @@ item for tool-call mapping, passes the item to the ChatGPT endpoint unchanged, a
 applies its own default namespace only to calls of top-level tools. Other
 providers skip the item when building their transcript.
 
-Picking a model in the desktop that lacks the chat's speed tier (a Fast Codex chat
-switched to Claude) moves the chat to Standard. Only that explicit settings change
-does this; turn starts, resumes, forks and active-turn updates still refuse a
-missing tier, so a stale peer cannot silently drop another client's Fast setting.
+A model that lacks the chat's speed tier (a Fast Codex chat switched to Claude)
+runs the chat as Standard on every routed request, as native Codex does. See
+"Speed controls" for the full rule.
 
 Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
 roles in the native configuration) inherit the gateway provider but take their
@@ -496,7 +495,14 @@ records a `service_tier_dropped` telemetry event with only the model, tier, and
 method. This covers `thread/start`, `turn/start`, `thread/resume`, `thread/fork`,
 `thread/settings/update`, `turn/settings/update`, and `serviceTierForTurn`. A tier the
 row offers is forwarded unchanged, and Fast is never added where it was not
-requested. A tier merely inherited from a chat still fails for a stale peer.
+requested. Native Codex never fails a request because the selected model lacks a
+tier, so neither does the gateway. A tier inherited from the chat that the selected
+row does not offer is sent as `serviceTier: null` and recorded as a
+`service_tier_reset` event (the previous tier, model, and method). This covers
+`turn/start`, `turn/settings/update`, `thread/settings/update`, `thread/resume`, and
+`thread/fork`, both when the model changes and when the chat's own row stopped
+offering the tier. Only a chat whose tier is unknown and whose target row offers a
+non-Standard tier still fails; a target with no such tier runs as Standard.
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
 original native home. Fresh connections reread this record. Runtime settings are
@@ -507,8 +513,9 @@ in the same millisecond resolve conservatively to Standard; an explicit confirme
 SDK snapshot can establish the current choice again. Clock uncertainty never
 restores Fast from an uncertain older notification.
 The adapter passes the known parent tier explicitly when forking because the SDK
-otherwise uses executor defaults. If that parent tier is unavailable, resume the
-parent or specify a tier before forking.
+otherwise uses executor defaults. If that parent tier is unknown and the fork's
+model offers a non-Standard tier, resume the parent or specify a tier before
+forking; a model without one opens the fork as Standard.
 The SDK's returned tier is authoritative. Resuming an already-loaded chat keeps
 its loaded settings even when resume parameters request another tier; change it
 through `thread/settings/update`. A cold resume can apply an explicit override.
@@ -517,11 +524,11 @@ Gateway executors enable the SDK's Fast feature when their validated catalog
 offers priority. Native feature flags and configuration files retain their values;
 enabling that private capability does not select Fast automatically.
 
-A loaded Fast chat cannot switch to an unsupported model without explicitly
-choosing Standard. When a connection cannot determine the saved tier, resume the
-chat to read its settings or explicitly choose Standard before changing models.
-These checks return application errors rather than a misleading native-config
-warning. Reasoning effort is independent of speed.
+A loaded Fast chat that switches to a model without Fast runs as Standard. When a
+connection cannot determine the saved tier and the new model offers a
+non-Standard tier, resume the chat to read its settings or explicitly choose
+Standard before changing models; that check returns an application error rather
+than a misleading native-config warning. Reasoning effort is independent of speed.
 
 Claude rows offer Fast when Claude's own model list marks the model as supporting
 fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for

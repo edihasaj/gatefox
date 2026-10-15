@@ -147,6 +147,11 @@ export class AppServerRouter {
   private offersServiceTier(model: string, tier: string): boolean {
     try { this.assertServiceTier(model, tier); return true; } catch { return false; }
   }
+  /** True when the row advertises any speed tier besides the implicit Standard. */
+  private offersNonStandardTier(model: string): boolean {
+    const metadata = this.extraModels.find(entry => entry.slug === model);
+    return !!metadata && !!readPublicServiceTierMetadata(metadata).serviceTiers?.length;
+  }
   private assertServiceTier(model: string, tier: unknown): void {
     if (tier === null || tier === "default") return;
     const metadata = this.extraModels.find(entry => entry.slug === model);
@@ -316,17 +321,15 @@ export class AppServerRouter {
       params = this.dropUnsupportedTier(params, selectedModel, method); forwarded = params;
       const tier = tierSelection(params);
       const turnTier = typeof params.serviceTierForTurn === "string" ? params.serviceTierForTurn : undefined;
-      if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
+      if (route.serviceTier === undefined && selectedModel !== route.model && !tier && turnTier === undefined) {
+        // A row that offers nothing beyond Standard cannot lose a tier this chat never recorded.
+        if (this.offersNonStandardTier(selectedModel)) throw new AppServerRoutingError("This chat's current service tier is unavailable. Resume the chat to read its settings or explicitly choose Standard before changing models.", -32002);
+        forwarded = { ...forwarded, serviceTier: null };
+      }
       if (tier) this.assertServiceTier(selectedModel, tier.value);
-      else if (turnTier === undefined && typeof route.serviceTier === "string") {
-        // Picking a model without the chat's tier (a Fast Codex chat to Claude)
-        // switches it to Standard; the picker shows no speed control for that model.
-        // Choosing an unsupported tier explicitly still fails.
-        // Only the picker's explicit settings change qualifies; a turn start from a
-        // stale peer still cannot drop another client's Fast setting.
-        if (method === "thread/settings/update" && selectedModel !== route.model && !this.offersServiceTier(selectedModel, route.serviceTier)) {
-          forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
-        } else this.assertServiceTier(selectedModel, route.serviceTier);
+      else if (turnTier === undefined && typeof route.serviceTier === "string" && !this.offersServiceTier(selectedModel, route.serviceTier)) {
+        // Native Codex runs Standard whenever the selected model lacks the chat's tier, so no routed request fails for a tier alone.
+        forwarded = { ...forwarded, serviceTier: null }; telemetry("service_tier_reset", { from: route.serviceTier, model: selectedModel, method });
       }
       if (turnTier !== undefined) this.assertServiceTier(selectedModel, turnTier);
       if (turnTier === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
@@ -335,8 +338,13 @@ export class AppServerRouter {
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
       if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
-      if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
-      const inherited = !tierSelection(params) && route.serviceTier !== undefined ? { ...params, serviceTier: route.serviceTier } : params;
+      if (method === "thread/fork" && !tierSelection(params) && route.serviceTier === undefined) {
+        if (this.offersNonStandardTier(model)) throw new AppServerRoutingError("The parent chat's service tier is unavailable. Resume it to read its settings or explicitly choose a tier for the fork.", -32002);
+        forwarded = { ...forwarded, serviceTier: null };
+      }
+      // A tier the opened row does not offer was already dropped to Standard above; copying it
+      // back here would fail a chat native Codex opens on Standard.
+      const inherited = !tierSelection(params) && route.serviceTier !== undefined && (route.serviceTier === null || this.offersServiceTier(model, route.serviceTier)) ? { ...forwarded, serviceTier: route.serviceTier } : forwarded;
       // A typed model override disables the engine's persisted-settings restore,
       // so the gateway supplies the chat's own reasoning for the model it keeps.
       let restored: ReasoningChoice | null | undefined = null;

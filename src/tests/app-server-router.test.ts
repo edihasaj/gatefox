@@ -309,15 +309,16 @@ test("declared gateway defaults apply only to new gateway chats and never overri
   await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
 });
 
-test("a Fast chat drops to Standard only when the picker selects a model without that tier", async () => {
+test("a Fast chat runs as Standard on every routed method when the selected model lacks that tier", async () => {
   const { router, calls } = await fastFixture();
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   const before = calls.length;
-  // Turn starts, active-turn updates, resumes and forks can come from a stale peer.
+  // Native Codex never fails a request over the tier alone, whichever client sent it.
   for (const method of ["turn/start", "turn/settings/update", "thread/resume", "thread/fork"]) {
-    await assert.rejects(router.request(method, { threadId: "test", turnId: "active", model: "claude/model" }), error => (error as { code: number }).code === -32002);
+    await router.request(method, { threadId: "test", turnId: "active", model: "claude/model" });
+    assert.equal(calls.at(-1)!.method, method); assert.equal(calls.at(-1)!.params.serviceTier, null, method);
   }
-  assert.equal(calls.length, before);
+  assert.ok(calls.length > before);
   await router.request("thread/settings/update", { threadId: "test", model: "claude/model" });
   assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
   await router.request("thread/settings/update", { threadId: "test", model: "codex/model", serviceTier: "priority" });
@@ -352,7 +353,8 @@ test("an explicit standard tier for one turn overrides Fast without changing the
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   await router.request("turn/start", { threadId: "test", model: "claude/model", serviceTierForTurn: "default", input: [] });
   assert.equal(calls.at(-1)!.params.serviceTierForTurn, "default");
-  await assert.rejects(router.request("turn/start", { threadId: "test", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "test", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTier, null, "the inherited Fast tier is not offered by the new row, so the turn runs as Standard");
   await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
   await appliedSettings(router, "test", "claude/model", null);
   await router.request("turn/start", { threadId: "test", input: [] });
@@ -363,7 +365,8 @@ test("active turn tiers remain separate from future thread settings during model
   await router.request("thread/start", { model: "codex/model" });
   await router.request("turn/start", { threadId: "test", input: [] });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  assert.equal(calls.at(-1)!.params.serviceTier, null, "the active turn's Fast is not offered by the new row");
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
   await router.request("turn/start", { threadId: "test", model: "codex/model", input: [] });
@@ -373,7 +376,8 @@ test("active turn tiers remain separate from future thread settings during model
   await router.request("turn/start", { threadId: "test", input: [] });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
-  await assert.rejects(router.request("turn/start", { threadId: "test", model: "claude/model", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "test", model: "claude/model", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTier, null);
 });
 
 test("one-turn Fast aliases normalize before reaching the SDK and targetUnavailable changes stay unapplied", async () => {
@@ -383,16 +387,18 @@ test("one-turn Fast aliases normalize before reaching the SDK and targetUnavaila
   await router.initialize(); await router.request("thread/start", { model: "codex/model" });
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "fast", input: [] });
   assert.equal(calls.at(-1)!.params.serviceTierForTurn, "priority");
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  assert.equal(calls.at(-1)!.params.serviceTier, null);
   unavailable = true;
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
 });
 
-test("a freshly attached gateway chat requires an explicit tier before switching an unread tier", async () => {
-  const { config, backend } = await fastFixture();
+test("a freshly attached gateway chat with an unread tier switches to a row without speed options as Standard", async () => {
+  const { config, backend, calls } = await fastFixture();
   const router = new AppServerRouter(config, backend); await router.initialize();
-  await assert.rejects(router.request("thread/settings/update", { threadId: "persisted", model: "claude/model" }), /current service tier is unavailable/);
+  await router.request("thread/settings/update", { threadId: "persisted", model: "claude/model" });
+  assert.equal(calls.at(-1)!.params.serviceTier, null);
   await router.request("thread/settings/update", { threadId: "persisted", model: "claude/model", serviceTier: null });
 });
 
@@ -402,7 +408,7 @@ test("steering an existing turn preserves its active model and temporary tier", 
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] });
   // The SDK returns the same turn ID while steering; only future thread settings change.
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "default", model: "claude/model", input: [] });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
 });
@@ -416,7 +422,8 @@ test("loaded resume's authoritative tier takes precedence when the SDK ignores a
   await router.initialize();
   const resumed = await router.request("thread/resume", { threadId: "persisted", serviceTier: null });
   assert.equal(calls.at(-1)!.params.serviceTier, null); assert.equal(resumed.serviceTier, "priority");
-  await assert.rejects(router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTier, null, "the authoritative Fast tier is not offered by the new row");
   await router.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
   await appliedSettings(router, "persisted", "codex/model", null);
   await router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] });
