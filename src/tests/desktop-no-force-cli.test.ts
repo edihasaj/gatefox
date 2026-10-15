@@ -145,6 +145,43 @@ test("registration refuses a FORCE_CLI set by something else and never touches i
   });
 });
 
+test("registration refuses a foreign FORCE_CLI value even beside a proven gateway pair", mac, async () => {
+  for (const restoreOnly of [true, false]) {
+    for (const foreign of ["other", "0"]) {
+      const name = `restoreOnly=${restoreOnly} value=${foreign}`;
+      const f = await fixture();
+      await inHome(f, async () => {
+        const { wrapper } = await legacyPair(f, "same"); f.values.set(FORCE, foreign);
+        await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec), /Another desktop CLI mode is active; it was not replaced/, name);
+        assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
+        assert.equal(f.values.get(FORCE), foreign, name);
+        assert.equal(f.values.get(PATH_KEY), wrapper, name + ": the proven CLI path is unchanged");
+      });
+    }
+  }
+});
+
+test("unregistration leaves a FORCE_CLI=1 it cannot prove it set", mac, async () => {
+  const unproven: Array<[string, (f: Fixture, wrapper: string) => Promise<void>]> = [
+    ["a receipt wrapper beside a foreign CODEX_CLI_PATH", async (f, wrapper) => {
+      await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() }); f.values.set(PATH_KEY, "/opt/other-cli");
+    }],
+    ["an empty receipt and no CODEX_CLI_PATH", async f => { await writePrivateJson(f.receipt, {}); }],
+  ];
+  for (const [name, seed] of unproven) {
+    const f = await fixture();
+    await inHome(f, async () => {
+      const { wrapper } = await prepareDesktop(f.config, f.app);
+      await seed(f, wrapper); f.values.set(FORCE, "1"); const cliPath = f.values.get(PATH_KEY);
+      const result = await macDesktop("unregister", f.config, f.app, false, f.exec);
+      assert.equal(result.registered, false, name);
+      assert.equal(f.calls.some(call => call.includes(FORCE) && !call.startsWith("getenv ")), false, name + ": no setenv or unsetenv");
+      assert.equal(f.calls.includes(`unsetenv ${PATH_KEY}`), false, name + ": a foreign CLI path is not ours");
+      assert.equal(f.values.get(FORCE), "1", name); assert.equal(f.values.get(PATH_KEY), cliPath, name);
+    });
+  }
+});
+
 test("status reports the legacy FORCE_CLI hook separately from the desktop registration", mac, async () => {
   const f = await fixture();
   await inHome(f, async () => {
