@@ -107,6 +107,9 @@ backend that bypasses the desktop adapter.
 
 For desktop SSH projects, run `gateway ssh register --codex ORIGINAL_PATH` on
 the remote Mac. Then add its existing host alias under the client's SSH connection
-settings. The app's Unix socket and native proxy must reach the gateway adapter;
-the built-in Control other devices connection currently bypasses it. See
+settings. Those rows are native SSH connections: the desktop runs Codex on the
+remote Mac, so the gateway models available in them come from that Mac's own
+`gateway ssh register` and gateway configuration, not from the client's catalog.
+The app's Unix socket and native proxy must reach the gateway adapter on that
+machine; the built-in Control other devices connection currently bypasses it. See
 [the adapter setup](app-server.md) for command protection and removal.

@@ -29,15 +29,26 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   return { binary, wrapper };
 }
 
+/**
+ * The launch environment for the desktop. `CODEX_CLI_PATH` is the only adapter hook:
+ * `CODEX_APP_SERVER_FORCE_CLI` would push durable chats and SSH rows through the CLI too,
+ * so it is removed when an older gateway set it and left alone when something else did.
+ */
+export function desktopEnvironment(base: NodeJS.ProcessEnv, wrapper: string, configPath: string, nativeHome?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, CODEX_CLI_PATH: wrapper, GATEWAY_CONFIG: configPath,
+    ...(nativeHome ? { CODEX_HOME: resolve(nativeHome) } : {}) };
+  if (env.CODEX_APP_SERVER_FORCE_CLI === "1") delete env.CODEX_APP_SERVER_FORCE_CLI;
+  // Preserve the desktop's saved login instead of a terminal's platform API overrides.
+  for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
+  return env;
+}
+
 export async function launchDesktop(configPath: string, nativeHome?: string, app = "/Applications/ChatGPT.app"): Promise<Record<string, unknown>> {
   const config = await loadConfig(configPath); const { binary, wrapper } = await prepareDesktop(configPath, app);
   if (execFileSync("ps", ["-axo", "comm="], { encoding: "utf8" }).split("\n").some(command => command.trim() === binary)) throw new Error("Quit ChatGPT normally with Command-Q, then run gateway desktop. The launcher never stops a running app.");
   const health = await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(5000) });
   if (!health.ok) throw new Error("Gateway is not healthy; check gateway service status before desktop activation");
-  const env = { ...process.env, CODEX_CLI_PATH: wrapper, CODEX_APP_SERVER_FORCE_CLI: "1", GATEWAY_CONFIG: configPath,
-    ...(nativeHome ? { CODEX_HOME: resolve(nativeHome) } : {}) };
-  // Preserve the desktop's saved login instead of a terminal's platform API overrides.
-  for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete (env as NodeJS.ProcessEnv)[key];
+  const env = desktopEnvironment(process.env, wrapper, configPath, nativeHome);
   const child = spawn(binary, [], { env, detached: true, stdio: "ignore" });
   let failure: Error | undefined; child.once("error", error => { failure = error; }); child.unref(); await delay(2000);
   if (failure || child.exitCode !== null || child.signalCode !== null) throw new Error("Desktop launch failed; no native settings were changed");

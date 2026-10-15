@@ -120,14 +120,23 @@ starting a chat. Preference updates use a shared file lock and merge the latest
 saved values. Two desktop connections cannot return a cached reasoning level or
 overwrite an unrelated preference change with an older snapshot.
 
-The installed desktop build recognizes `CODEX_CLI_PATH` and
-`CODEX_APP_SERVER_FORCE_CLI`. These are implementation hooks, not an established
-public desktop integration API. `scripts/codex-desktop-shim` is an executable
-wrapper for the first hook. The generated desktop wrapper sends only `app-server`
-commands through the adapter; other commands, such as the desktop's exec-server,
-run the original CLI directly with no extra process. The unified service
-re-registers the wrapper when it starts. It accepts `GATEWAY_CONFIG`, `GATEWAY_NODE_PATH`, and
-`GATEWAY_CODEX_PATH` when its defaults do not match the machine.
+The installed desktop build recognizes `CODEX_CLI_PATH`. This is an implementation
+hook, not an established public desktop integration API. `scripts/codex-desktop-shim`
+is an executable wrapper for it. The generated desktop wrapper sends only
+`app-server` commands through the adapter; other commands, such as the desktop's
+exec-server, run the original CLI directly with no extra process. The unified
+service re-registers the wrapper when it starts. It accepts `GATEWAY_CONFIG`,
+`GATEWAY_NODE_PATH`, and `GATEWAY_CODEX_PATH` when its defaults do not match the
+machine.
+
+The gateway no longer sets `CODEX_APP_SERVER_FORCE_CLI`. With `CODEX_CLI_PATH`
+alone, new local chats use the gateway catalog while durable chats and the
+desktop's SSH connection rows keep their native behavior: an SSH row runs Codex
+on the remote Mac, and gateway models reach it only through that Mac's own
+registration. `gateway desktop register` and the launcher clear a
+`CODEX_APP_SERVER_FORCE_CLI=1` left behind by an older gateway, but never a value
+set by something else; registration refuses a foreign value instead of replacing
+it. Quit and reopen ChatGPT once so the change applies.
 
 Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
@@ -163,10 +172,11 @@ original native account home. The launcher does not edit either native config
 or authentication files. LaunchServices can reuse an existing instance, so an
 `open -a` invocation alone is insufficient evidence that overrides took effect.
 
-`gateway desktop register` stores a managed per-user LaunchAgent and sets only
-the desktop CLI override variables for future launches. The agent restores them
-at login and does not open or quit the app. Registration refuses an unrelated
-existing CLI override. `gateway desktop unregister` removes its own overrides.
+`gateway desktop register` stores a managed per-user LaunchAgent and sets
+`CODEX_CLI_PATH` for future launches. The agent restores it at login and does not
+open or quit the app. Registration refuses an unrelated existing CLI override and
+clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` left by an older gateway.
+`gateway desktop unregister` removes its own overrides.
 This keeps normal Dock launches configured after initial activation without
 editing the Obsidian-managed native configuration.
 
