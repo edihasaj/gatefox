@@ -218,3 +218,33 @@ test("Stop during a pending metadata read prevents both compaction and the origi
     assert.equal(calls.some(call => ["thread/compact/start", "turn/start", "turn/interrupt"].includes(call.method)), false);
   } finally { await f.clean(); }
 });
+
+// The goal guard reads the per-chat override the executor remembered, so it shows whether the chat is still held.
+const override = { features: { goals: false } };
+const remembered = async (f: Awaited<ReturnType<typeof compactionSdkFixture>>, id: string) => {
+  const engine = (f.backends as unknown as { engines: Array<{ compaction?: { policy: { goalsEnabled(id: string): boolean } } }> }).engines.find(entry => entry.compaction);
+  return engine!.compaction!.policy.goalsEnabled(id) === false;
+};
+const startWithOverride = (f: Awaited<ReturnType<typeof compactionSdkFixture>>, id: string) =>
+  f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway", config: override });
+
+for (const method of ["thread/unsubscribe", "thread/archive", "thread/delete"]) test(`${method} forgets the executor's per-chat compaction overrides`, { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(); const id = `forget-${method.split("/")[1]}`;
+  try {
+    await startWithOverride(f, id);
+    assert.equal(await remembered(f, id), true, "the override is held while the chat is loaded");
+    await f.backends.request(method, { threadId: id });
+    assert.equal(await remembered(f, id), false);
+  } finally { await f.clean(); }
+});
+
+test("a thread/closed notification forgets the executor's per-chat compaction overrides", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(); const id = "forget-closed";
+  try {
+    await startWithOverride(f, id);
+    assert.equal(await remembered(f, id), true);
+    const engine = (f.backends as unknown as { engines: Array<{ connection: unknown; compaction?: unknown }> }).engines.find(entry => entry.compaction)!;
+    await (f.backends as unknown as { forward(connection: unknown, message: Message): Promise<void> }).forward(engine.connection, { method: "thread/closed", params: { threadId: id } });
+    assert.equal(await remembered(f, id), false);
+  } finally { await f.clean(); }
+});

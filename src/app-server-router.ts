@@ -123,6 +123,8 @@ export class AppServerRouter {
       route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
       this.routes.set(threadId, route);
       this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
+      // A forgotten throwaway fork can still be loaded in the engine; it must stay memory-only.
+      if (thread.ephemeral === true) this.trackEphemeral(threadId);
     }
     if (route.provider === gatewayProvider && !this.ephemeralThreads.has(threadId)) {
       const current = await this.threadTiers.read(threadId);
@@ -139,7 +141,7 @@ export class AppServerRouter {
   }
   private forgetEphemeral(threadId: string): void {
     this.ephemeralThreads.delete(threadId); this.routes.delete(threadId); this.tierRecords.delete(threadId);
-    this.activeTurns.delete(threadId); this.settingsVersions.delete(threadId);
+    this.activeTurns.delete(threadId); this.settingsVersions.delete(threadId); this.chatSnapshots.delete(threadId);
   }
   /** Provider family and model for diagnostics; no settings or content. */
   describeThread(threadId: string): { provider?: string; model?: string } {

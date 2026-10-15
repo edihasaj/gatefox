@@ -505,14 +505,25 @@ this, the adapter added a native chat's saved reasoning effort to the fork, so e
 suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
 above. The change applies to the next adapter connection after an update.
 
-A prediction fork is also not recorded durably. Its result writes no reasoning
-record and no service-tier row, and a later turn or applied settings change on it
-writes none either. The adapter keeps only an in-memory route, so a turn started on
-the fork reaches the owning engine without a chat-read probe. The newest 256 such
-fork ids stay routed this way, and `thread/closed` or `thread/unsubscribe` for one
-of them forgets its route at once. The private service-tier store is now bounded by
-record time like the reasoning store: when it is full, the row stamped longest ago is
-evicted instead of the write failing.
+Any ephemeral chat (prediction forks included) is memory-only. Its result writes no
+reasoning record and no service-tier row, and a later turn or applied settings change
+on it writes none either. The adapter keeps only an in-memory route, so a turn started
+on the chat reaches the owning engine without a service-tier or reasoning write. The
+newest 256 such chats stay tracked this way, and each one counts toward that cap
+whether it was started, resumed, forked, or first seen when a turn probed its owner.
+`thread/closed` or `thread/unsubscribe` for one of them forgets its route and chat
+snapshot at once; a later turn on a chat that is still loaded in the engine is
+recognized as ephemeral again from the engine's own chat read and stays memory-only.
+
+The private service-tier store is bounded the way the reasoning store is. When it holds
+16384 chats, or when a write would take the saved file past 4 MiB (long model names
+reach that limit first), the store evicts other chats instead of failing the write.
+It evicts rows that were never stamped with a record time first, then the rows stamped
+longest ago, and it never evicts the chat being written.
+
+The per-chat compaction overrides that a gateway executor remembers are forgotten when
+the chat closes or is unsubscribed, deleted or archived. If 4096 chats are still held,
+remembering another drops the one set longest ago instead of refusing the new chat.
 
 Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
 can be told apart without storing error text; see [diagnostics](diagnostics.md).

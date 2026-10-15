@@ -337,7 +337,7 @@ test("invalid UTF-8 cannot become substituted public model metadata", async () =
   } finally { await f.close(); }
 });
 
-test("a full store evicts the oldest chat and serialized byte limits reject overflow without partial writes", async () => {
+test("a full store evicts the oldest chat and the byte limit evicts instead of failing", async () => {
   const f = await fixture();
   try {
     await mkdir(f.state, { mode: 0o700 });
@@ -361,7 +361,10 @@ test("a full store evicts the oldest chat and serialized byte limits reject over
     assert.ok(Buffer.byteLength(dense) < maxBytes);
     assert.ok(Buffer.byteLength(JSON.stringify(JSON.parse(dense), null, 2) + "\n") > maxBytes);
     await writeFile(f.path, dense, { mode: 0o600 });
-    await assert.rejects(f.store.write("chat-0", standard), /invalid/);
-    assert.equal(await readFile(f.path, "utf8"), dense, "pretty serialization cannot exceed the byte limit");
+    assert.equal(await f.store.write("chat-0", standard), true, "pretty serialization over the byte limit evicts other chats instead of failing");
+    const trimmed = await readFile(f.path, "utf8");
+    assert.ok(Buffer.byteLength(trimmed) <= maxBytes, "the saved file never exceeds the byte limit");
+    const kept = JSON.parse(trimmed).threads;
+    assert.deepEqual(kept["chat-0"], { ...standard, revision: 1 }); assert.equal(kept["chat-1"], undefined);
   } finally { await f.close(); }
 });
