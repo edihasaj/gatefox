@@ -28,7 +28,7 @@ async function ledgerRows(state: string): Promise<LedgerRow[]> {
   return [];
 }
 
-test("a client that stops reading and then leaves still has the usage the CLI reported recorded, live or one-shot", { timeout: 30000 }, async () => {
+test("a client that stops reading and then leaves still has the usage the CLI reported recorded, live or one-shot", { timeout: 10000 }, async () => {
   for (const mode of ["live", "oneshot"] as const) {
     const h = await harness(); const server = await gateway(h, mode);
     try {
@@ -52,7 +52,7 @@ test("a client that stops reading and then leaves still has the usage the CLI re
   }
 });
 
-test("a cancelled one-shot request hands over the usage its CLI reported, though more text was read ahead of it", { timeout: 30000 }, async () => {
+test("a cancelled one-shot request hands over the usage its CLI reported, though more text was read ahead of it", { timeout: 10000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController(); const afterAbort: InferenceEvent[] = []; let failure: unknown;
@@ -72,7 +72,7 @@ test("a cancelled one-shot request hands over the usage its CLI reported, though
   } finally { await h.restore(); }
 });
 
-test("the end of a cancelled live request counts the usage that was queued when it was cancelled", { timeout: 30000 }, async () => {
+test("the end of a cancelled live request counts the usage that was queued when it was cancelled", { timeout: 10000 }, async () => {
   const h = await harness();
   try {
     const controller = new AbortController();
@@ -85,5 +85,43 @@ test("the end of a cancelled live request counts the usage that was queued when 
     } catch { /* Cancelled. */ }
     const interrupted = (await h.sessions()).find(entry => entry.outcome === "interrupted");
     assert.deepEqual([interrupted?.inputTokens, interrupted?.cacheWriteTokens, interrupted?.nanoAiu], [100, 100, 1e9]);
+  } finally { await h.restore(); }
+});
+
+test("a cancelled one-shot request hands over the usage when the CLI reports it, not when the CLI's stream ends", { timeout: 10000 }, async () => {
+  // The CLI answers session.abort only after 3 s, so its stream stays open until the gateway's own 2 s bound kills it. A process
+  // that exits before then must already have been told of the usage.
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "3000";
+  try {
+    const controller = new AbortController(); let abortedAt = 0; let usageAt = 0; let failure: unknown;
+    const input = restoreReasoning({ model: "fixture", input: [user("go [deltausage]")], tools } as ResponsesRequest, "scope");
+    try {
+      for await (const event of adapter({ mode: "oneshot" }).infer(input, controller.signal, thread)) {
+        if (controller.signal.aborted) { if (event.type === "usage" && !usageAt) usageAt = Date.now(); }
+        else if (event.type === "text") { abortedAt = Date.now(); controller.abort(); }
+      }
+    } catch (error) { failure = error; }
+    assert.ok(failure instanceof ProviderError && failure.code === "cancelled", String(failure));
+    assert.ok(abortedAt > 0 && usageAt > 0, "the usage was handed over");
+    // The fixture reports it 100 ms after the first text; the stream ends only after the 2 s abort bound.
+    assert.ok(usageAt - abortedAt < 1000, `the usage came when it was reported, not at the end of the stream (${usageAt - abortedAt} ms)`);
+  } finally { await h.restore(); }
+});
+
+test("a cancelled one-shot request hands over each usage as a running total", { timeout: 10000 }, async () => {
+  // The CLI is still alive for a second after the cancellation and reports its two calls 100 ms after the text.
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "1000";
+  try {
+    const controller = new AbortController(); const totals: number[] = []; let failure: unknown;
+    const input = restoreReasoning({ model: "fixture", input: [user("go [lateusage2]")], tools } as ResponsesRequest, "scope");
+    try {
+      for await (const event of adapter({ mode: "oneshot" }).infer(input, controller.signal, thread)) {
+        if (controller.signal.aborted) { if (event.type === "usage") totals.push(event.usage.input_tokens); }
+        else if (event.type === "text") controller.abort();
+      }
+    } catch (error) { failure = error; }
+    assert.ok(failure instanceof ProviderError && failure.code === "cancelled", String(failure));
+    // The CLI reports two calls (100 and 200 input tokens): each is handed over as it arrives, as the sum so far.
+    assert.deepEqual(totals, [100, 300]);
   } finally { await h.restore(); }
 });

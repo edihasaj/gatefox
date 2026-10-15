@@ -91,7 +91,9 @@ export class CopilotRPC {
   private fail(error: ProviderError): void {
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.reject(error); } this.pending.clear();
     this.failure ??= error; this.endEvents();
-    this.stop();
+    // A connection that failed (a backlog, an invalid frame, a closed pipe) may belong to a session that holds a tool request:
+    // it ends with SIGKILL, never SIGTERM, whose graceful exit lets the runtime fail that request and make a model call.
+    this.kill();
   }
   /**
    * Ends the event stream once the connection has failed and everything the CLI wrote was read. Destroying it would drop

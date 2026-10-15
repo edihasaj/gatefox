@@ -27,7 +27,8 @@ Routing never switches accounts or billing modes after a failure.
 
 Copilot uses the installed GitHub Copilot CLI's [SDK protocol](https://docs.github.com/en/copilot/how-tos/copilot-sdk/troubleshooting/compatibility) 3 and subscription
 login. Sessions expose only caller tools and disable local instruction
-discovery. One-shot sessions are deleted after inference; live sessions (the
+discovery. A one-shot session whose turn ended with a complete text answer is deleted
+after inference; any other one-shot end kills its CLI. Live sessions (the
 default) last until they park out, are evicted or are closed, and their CLI is
 then killed and its private folder removed (see
 [live Copilot sessions](docs/copilot-sessions.md)). Inherited BYOK settings and

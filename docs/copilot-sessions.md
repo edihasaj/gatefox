@@ -175,8 +175,14 @@ request: a turn that ended in tool calls, a tool request the gateway rejected (a
 or other tool than the required one, a native tool), any failure, a cancellation once its
 session exists, and a client that stops reading. Only a one-shot turn that ended idle with a
 complete text answer, and so nothing pending, is deleted (`session.delete`) and stopped
-with SIGTERM; no other end ever sends either, because a runtime that is told to exit can
-fail a pending call and make a model call of its own.
+with SIGTERM; once a session exists no other end ever sends either, because a runtime that
+is told to exit can fail a pending call and make a model call of its own. A connection that
+fails (an event backlog, an invalid frame) ends its CLI with SIGKILL. Only a CLI whose request
+is cancelled or fails while the connection is still being opened (before the handshake ends)
+has no session and nothing pending, and is stopped with SIGTERM. A request cancelled while its
+CLI is still ending sends nothing more: the prompt of a one-shot request, and the messages or
+tool results of a live one, are not sent after the cancellation, because each would start a
+model call nobody waits for.
 A cancelled request ends at once and its session is killed in the background; a reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
 request fails that request at once, or, before its first event, hands it to the one-shot
@@ -242,9 +248,11 @@ process leaves 1.5 seconds after the drain deadline at the latest. Before it lea
 writes a `failed` ledger row and a `request_failed` record for every request still
 running, with the usage its provider had reported so far, and then flushes telemetry and
 the ledger, so a request stopped at shutdown never loses what it had already cost. Usage
-that arrives after the process has left is not recorded. A cancelled live request hands
-its total over at once; a cancelled one-shot request hands it over once its CLI has been
-aborted and killed, which `session.abort` bounds to 2 seconds before SIGKILL.
+that arrives after the process has left is not recorded. A cancelled request hands
+its total over as the CLI reports it, live or one-shot: a one-shot request hands over the
+running total after each call it reads, without waiting for its CLI to be aborted and killed
+(`session.abort` is bounded to 2 seconds before SIGKILL), so a process that leaves in
+between has the usage already.
 
 `copilot_session` telemetry has one event per decision or end:
 

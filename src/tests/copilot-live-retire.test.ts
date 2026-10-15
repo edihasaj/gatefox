@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { gatewayToken, validateConfig, type GatewayConfig } from "../config.js";
 import { createGatewayHandler, startGateway } from "../server.js";
-import { CopilotSubscription } from "../providers/copilot.js";
+import { CopilotSubscription, retireUnconfiguredCopilotScopes } from "../providers/copilot.js";
 import type { Provider } from "../providers/provider.js";
-import { alive, harness, live, providerId, sleep, until, type Harness } from "./copilot-live-harness.js";
+import { adapter, alive, harness, live, providerId, registeredScopes, sleep, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 // A provider that a configuration no longer serves must not keep a live session, which holds a CLI process and the
 // conversation log: whether the configuration is reloaded while the session is still starting, or an in-place upgrade
@@ -51,4 +51,56 @@ test("a gateway generation that starts with a configuration which no longer serv
     assert.ok(await until(async () => !alive(pid) && live().sessions().length === 0 && (await h.liveDirs()).length === 0), "the adopted session of a removed provider is closed");
     assert.deepEqual((await h.sessions()).filter(entry => entry.outcome === "closed").map(entry => entry.missReason), ["provider_removed"]);
   } finally { await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); await h.restore(); }
+});
+
+// A session that is reseeded in place gets a new process for the same thread. The one it replaces ends while the new one is
+// being placed, and its end must not take the thread's provider scope with it: without a scope no reload retires the session.
+const outcomesOf = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
+
+test("a session reseeded in place is still retired by a reload that no longer serves its provider", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter();
+    await turn(provider, [user("hello")]);
+    // Unrelated input: the history does not extend what the session holds, so the thread starts over in a new process.
+    await turn(provider, [user("something else entirely")]);
+    assert.ok((await outcomesOf(h)).some(outcome => outcome.startsWith("reseeded")), (await outcomesOf(h)).join(","));
+    assert.equal(live().sessions().length, 1); const pid = (await h.pids()).at(-1)!;
+    assert.deepEqual([...registeredScopes().values()], [`${providerId}\0`], "the reseeded session has its provider scope");
+    retireUnconfiguredCopilotScopes([]);
+    assert.ok(await until(async () => !alive(pid) && live().sessions().length === 0 && (await h.liveDirs()).length === 0), "the reseeded session was retired");
+    assert.ok((await outcomesOf(h)).includes("closed:provider_removed"), (await outcomesOf(h)).join(","));
+  } finally { await h.restore(); }
+});
+
+test("a reload that arrives while a reseeded session is still starting retires it when its request ends", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter();
+    await turn(provider, [user("hello")]);
+    process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "800";
+    const answered = turn(provider, [user("something else entirely")]);
+    // The old session is gone and the new process has not answered session.create: the attach is starting it.
+    assert.ok(await until(async () => (await h.log()).filter(entry => entry.op === "create").length === 2));
+    assert.equal(live().sessions().length, 0, "the new session is not registered yet");
+    retireUnconfiguredCopilotScopes([]);
+    assert.match((await answered).text, /^answer/, "the request that was already running is still answered");
+    const pid = (await h.pids()).at(-1)!;
+    assert.ok(await until(async () => !alive(pid) && live().sessions().length === 0 && (await h.liveDirs()).length === 0), "its session is gone once the request ended");
+    assert.ok((await outcomesOf(h)).includes("closed:provider_removed"), (await outcomesOf(h)).join(","));
+  } finally { await h.restore(); }
+});
+
+test("an attach that falls back to the one-shot path leaves no provider scope behind", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    // One slot, and a running session is never evicted: the second thread cannot get one.
+    const provider = adapter({ mode: "live", max: 1 }); const controller = new AbortController();
+    const running = turn(provider, [user("go [hang]")], { controller, context: { threadId: "busy" } }).then(() => undefined, () => undefined);
+    assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages")));
+    assert.match((await turn(provider, [user("hello")], { context: { threadId: "other" } })).text, /^answer/, "the second thread is served one-shot");
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "capacity"), "it fell back for want of a slot");
+    assert.equal(registeredScopes().size, 1, "only the session that exists has a scope");
+    controller.abort(); await running;
+  } finally { await h.restore(); }
 });

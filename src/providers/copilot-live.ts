@@ -200,7 +200,9 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
       return { kind: "fallback", reason: error instanceof SessionStartFailure ? error.reason : "spawn_failed" };
     }
-    reg.sessions.set(key, session); reg.ended.delete(key);
+    // The scope goes with the session: the reseeded session's predecessor ended while this attach was starting and may have
+    // taken the entry `attach` made, and a session without a scope is one no reload or upgrade can retire.
+    reg.sessions.set(key, session); reg.scopes.set(key, input.scope); reg.ended.delete(key);
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   const events = start(reg, settings, session, input, entries.map(entry => entry.digest), plan, outputs, signal, {
@@ -237,7 +239,8 @@ function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiv
 
 function ended(reg: Registry, session: CopilotLiveSession, outcome: SessionEnd, reason?: string): void {
   if (reg.sessions.get(session.key) === session) reg.sessions.delete(session.key);
-  if (!reg.sessions.has(session.key)) reg.scopes.delete(session.key);
+  // A thread whose next session is starting keeps its scope: the attach that is starting it owns the entry.
+  if (!reg.sessions.has(session.key) && !reg.starting.has(session.key)) reg.scopes.delete(session.key);
   // Remember why the thread has no session, so its next spawn reports it.
   const why = endReason({ outcome, reason });
   if (why && !reg.sessions.has(session.key)) { reg.ended.delete(session.key); reg.ended.set(session.key, why); if (reg.ended.size > 256) reg.ended.delete(reg.ended.keys().next().value!); }

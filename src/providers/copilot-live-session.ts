@@ -221,7 +221,13 @@ export class CopilotLiveSession {
 
   private async begin(attached: Attached): Promise<void> {
     const { begin } = attached.live; const rpc = this.client!.rpc;
-    if (!("outputs" in begin)) { await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages: await begin.prompts(this.client!.directory) }, 30000); return; }
+    // A cancelled or failed request (or a session that closed) sends nothing more: the session is being aborted, and a message
+    // or a tool result delivered now would start a model call that nobody is waiting for. The check comes right before each send.
+    const stillWanted = () => { if (attached.error) throw attached.error; };
+    if (!("outputs" in begin)) {
+      const messages = await begin.prompts(this.client!.directory); stillWanted();
+      await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages }, 30000); return;
+    }
     // Anything but a confirmed delivery (a refusal, an error reply, no answer in time, a full connection) means the
     // session may not hold the result. Nothing has been streamed yet, so the request falls back to one-shot.
     const rejected = () => new ProviderError("cli_failed", "Copilot did not accept a tool result", 502, { code: "delivery_rejected" });
@@ -232,7 +238,7 @@ export class CopilotLiveSession {
       this.requests.delete(callId);
     };
     const outputs = [...begin.outputs];
-    for (let start = 0; start < outputs.length; start += deliveryBatch) await Promise.all(outputs.slice(start, start + deliveryBatch).map(deliver));
+    for (let start = 0; start < outputs.length; start += deliveryBatch) { stillWanted(); await Promise.all(outputs.slice(start, start + deliveryBatch).map(deliver)); }
   }
 
   /** The next event of the attached request, or undefined once `timeoutMs` passes without one. */

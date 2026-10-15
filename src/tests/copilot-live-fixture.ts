@@ -59,6 +59,8 @@ function late(text: string, toolCallId: string): void {
 function respond(text: string): void {
   const marker = (name: string) => text.includes(`[${name}]`);
   if (marker("hang")) return;
+  // A confirmation of the effort the session now has, long after the turn ended and nobody asked for it.
+  if (marker("stray")) setTimeout(() => event("session.model_change", { source: "sdk", newModel: config.model, reasoningEffort: config.reasoningEffort }), 300);
   // Output, then nothing: a request that is running when its session closes.
   if (marker("stall")) { usage(); event("assistant.message_delta", { deltaContent: "partial" }); return; }
   rejectNext = marker("reject"); errorNext = marker("rpcerror"); silentNext = marker("nodeliver");
@@ -126,17 +128,23 @@ for await (const frame of copilotFrames(process.stdin)) {
     if (silentNext) continue;
     if (errorNext) { send({ jsonrpc: "2.0", id, error: { code: -32000, message: "refused" } }); continue; }
     if (!known || rejectNext) { ok({ success: false }); continue; }
-    pending.delete(requestId); delivered.push(params.result); ok({ success: true });
-    event("external_tool.completed", { requestId });
-    if (!pending.size) {
-      const results = delivered.splice(0).map(value => typeof value === "string" ? value : String(record(value).textResultForLlm));
-      respond(results.some(value => value.includes("NEXT")) ? "[next]" : `final ${results.join("|")}`);
-    }
+    pending.delete(requestId); delivered.push(params.result);
+    // A CLI that takes a while to accept a result (SLOW_DELIVER): the answer and everything that follows from it come late.
+    later(Number(env("SLOW_DELIVER") ?? 0), () => {
+      ok({ success: true });
+      event("external_tool.completed", { requestId });
+      if (!pending.size) {
+        const results = delivered.splice(0).map(value => typeof value === "string" ? value : String(record(value).textResultForLlm));
+        respond(results.some(value => value.includes("NEXT")) ? "[next]" : `final ${results.join("|")}`);
+      }
+    });
   } else if (frame.method === "session.abort") { log({ op: "abort" }); later(Number(env("SLOW_ABORT") ?? 0), () => ok({ success: true })); }
   else if (frame.method === "session.model.switchTo") {
     log({ op: "switch", effort: params.reasoningEffort });
     const changed = eventMessage("session.model_change", { source: "sdk", previousModel: config.model, newModel: params.modelId, previousReasoningEffort: config.reasoningEffort, reasoningEffort: env("SWITCH_EFFORT") ?? params.reasoningEffort });
     config.reasoningEffort = params.reasoningEffort;
+    // A CLI that applies the change and says nothing about it.
+    if (env("SWITCH_NO_CONFIRM")) { ok({ status: "applied", deferred: false }); continue; }
     // The confirmation and the answer in one write, so the gateway reads them together and the confirmation is routed after the
     // change has returned, possibly after the next request attached.
     if (env("SWITCH_ONE_WRITE")) { send(changed, { jsonrpc: "2.0", id, result: { status: "applied", deferred: false } }, eventMessage("session.info", { infoType: "model" }, { ephemeral: true })); continue; }

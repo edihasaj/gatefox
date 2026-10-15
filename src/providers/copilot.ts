@@ -163,11 +163,17 @@ export class CopilotSubscription implements Provider {
     // A cancellation ends the CLI at once, the same way, while the request goes on reading what the CLI still reports (its usage).
     const onAbort = () => { void end(); };
     signal.addEventListener("abort", onAbort, { once: true });
+    // The connection stays open while the CLI is ending (up to `abortMs`), so a request sent then would still be served: and
+    // `session.sendMessages` is a billed model call. Once the request is cancelled or ending, nothing but the abort goes out.
+    const ask = (method: string, params: Record<string, unknown>, timeout?: number): Promise<Record<string, unknown>> =>
+      signal.aborted || ending ? Promise.reject(cancelled()) : client.rpc.request(method, params, timeout);
     try {
       // The abort may have come between the CLI's start and the listener above.
       if (signal.aborted) throw cancelled();
-      await client.rpc.request("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
-      await client.rpc.request("session.sendMessages", { sessionId, messages: await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory) }, 30000);
+      await ask("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
+      // Rendering the messages can take a while (images are written to files), and the abort can come during it.
+      const messages = await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory);
+      await ask("session.sendMessages", { sessionId, messages }, 30000);
       for (let event = await next(); event; event = await next()) {
         // A cancelled request yields nothing more, except the usage its CLI reported.
         if (signal.aborted) { yield* usageAfterAbort(turn, event, next); throw cancelled(); }
@@ -182,16 +188,16 @@ export class CopilotSubscription implements Provider {
 }
 
 /**
- * After a cancellation, which is ending the one-shot CLI (session.abort, then SIGKILL): the usage it reported (read, or still
- * arriving until its stream ends) is added to the request's totals and handed over as one running total. Nothing else is.
+ * After a cancellation, which is ending the one-shot CLI (session.abort, then SIGKILL): each usage it reports (already read, or
+ * arriving until its stream ends) is added to the request's totals and handed over at once as the running total, which replaces
+ * the one before it. A slow abort keeps the CLI's stream open for seconds; the usage must not wait for its end, or a shutdown
+ * that leaves before then would miss it. Nothing else is handed over.
  */
 async function* usageAfterAbort(turn: CopilotTurn, first: Record<string, unknown>, next: () => Promise<Record<string, unknown> | undefined>): AsyncGenerator<InferenceEvent> {
-  let last: InferenceEvent | undefined;
-  const take = (event: Record<string, unknown>) => {
-    if (event.type !== "assistant.usage") return;
-    try { last = turn.accept(event).events.at(-1) ?? last; } catch { /* The request is cancelled anyway; valid usage is still counted. */ }
+  const take = (event: Record<string, unknown>): InferenceEvent | undefined => {
+    if (event.type !== "assistant.usage") return undefined;
+    try { return turn.accept(event).events.at(-1); } catch { return undefined; /* The request is cancelled anyway; valid usage is still counted. */ }
   };
-  take(first);
-  try { for (let event = await next(); event; event = await next()) take(event); } catch { /* The stopped CLI's connection ended. */ }
-  if (last) yield last;
+  let total = take(first); if (total) yield total;
+  try { for (let event = await next(); event; event = await next()) { total = take(event); if (total) yield total; } } catch { /* The stopped CLI's connection ended. */ }
 }

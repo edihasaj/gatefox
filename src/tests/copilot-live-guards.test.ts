@@ -214,3 +214,17 @@ test("no prompt, tool argument or tool output reaches telemetry, the usage ledge
     assert.deepEqual(requests.map(entry => entry.initiator), ["user", "agent"], "each request says who started its model calls");
   } finally { await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }); await h.restore(); }
 });
+
+test("an effort change the CLI never confirmed is forgotten when the request ends: a later model change is not its confirmation", { timeout: 30000 }, async () => {
+  // The CLI applies the change and says nothing; 300 ms after the request's answer it reports a change to the same effort.
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_NO_CONFIRM = "1";
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const [pid] = await h.pids();
+    const b = await turn(provider, [...first, ...a.output, user("more [stray]")], { extra: { reasoning: { effort: "medium" } } });
+    assert.match(b.text, /^answer/); assert.equal(live().sessions()[0]?.effort, "medium", "the change was applied in place");
+    await closed(h, pid);
+    assert.ok((await kinds(h)).includes("crashed:unattended_output"), (await kinds(h)).join(","));
+  } finally { await h.restore(); }
+});

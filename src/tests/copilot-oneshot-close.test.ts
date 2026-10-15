@@ -108,3 +108,20 @@ test("a one-shot CLI that does not answer session.abort is killed once the abort
     assert.deepEqual((await operations(h, pid)).filter(op => op === "delete" || op === "sigterm"), []);
   } finally { await h.restore(); }
 });
+
+test("a one-shot request cancelled while its session is being created never sends its prompt, though the CLI is still ending", { timeout: 20000 }, async () => {
+  // The CLI answers session.create late and session.abort later still, so its connection is open when the creation finishes.
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "600"; process.env.GATEWAY_COPILOT_LIVE_SLOW_ABORT = "1500";
+  try {
+    const controller = new AbortController();
+    const running = turn(adapter({ mode: "oneshot" }), [user("hello")], { controller }).then(() => undefined, error => error as unknown);
+    assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "create")));
+    controller.abort();
+    const error = await running; assert.ok(error instanceof ProviderError && error.code === "cancelled", String(error));
+    const pid = (await h.pids()).at(-1)!; assert.ok(await until(() => !alive(pid), 5000), "the CLI is gone");
+    const ops = await operations(h, pid);
+    assert.ok(ops.includes("create") && ops.includes("abort"), ops.join(","));
+    // `session.sendMessages` is a billed model call: nothing may start one for a request nobody waits for.
+    assert.ok(!ops.includes("session.sendMessages"), `the prompt was sent after the cancellation: ${ops.join(",")}`);
+  } finally { await h.restore(); }
+});
