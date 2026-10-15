@@ -86,6 +86,9 @@ export class CopilotRPC {
     if (!this.events.destroyed) this.events.destroy(error);
     this.stop();
   }
+  get pid(): number | undefined { return this.child.pid; }
+  /** Ends the process at once, for a gateway that is itself exiting. */
+  kill(): void { this.stopping = true; try { this.child.kill("SIGKILL"); } catch { /* Already gone. */ } }
   stop(): void {
     if (this.stopping) return; this.stopping = true;
     this.child.stdin.end(); this.child.kill("SIGTERM");

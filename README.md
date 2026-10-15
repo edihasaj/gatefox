@@ -31,6 +31,9 @@ discovery, and are deleted after inference. Inherited BYOK settings and GitHub
 token overrides are removed. The adapter verifies the reported subscription
 route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
+By default every request starts its own session and resends the history, so Copilot's
+prompt cache never warms; set `copilotSessions.mode: "live"` on the provider to keep one
+session per Codex thread instead (see [live Copilot sessions](docs/copilot-sessions.md)).
 
 The Apple Silicon installer bundles a verified Node runtime. Subscription
 inference hosts also need the native CLI for each configured provider. Desktop

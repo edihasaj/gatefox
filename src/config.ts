@@ -19,6 +19,8 @@ export interface ProviderConfig {
   modelMetadata?: Record<string, ModelMetadata>;
   /** Claude subscription only: one-shot replay or a live CLI session per Codex thread. */
   claudeSessions?: ClaudeSessionConfig;
+  /** Copilot subscription only: one-shot requests or a live CLI session per Codex thread. */
+  copilotSessions?: CopilotSessionConfig;
 }
 export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; replayFormat?: "text" | "json" }
 export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
@@ -34,6 +36,13 @@ export function claudeSessionMax(memoryBytes = totalmem()): number {
 export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">, memoryBytes = totalmem()): ClaudeSessionSettings {
   const value = provider.claudeSessions || {};
   return { mode: value.mode ?? "replay", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
+}
+/** `replay` is accepted as another name for `oneshot`, matching claudeSessions. */
+export interface CopilotSessionConfig { mode?: "oneshot" | "replay" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
+export interface CopilotSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
+export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSessions">): CopilotSessionSettings {
+  const value = provider.copilotSessions || {};
+  return { mode: value.mode === "live" ? "live" : "oneshot", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
@@ -123,7 +132,17 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (sessions.max !== undefined && !integerIn(sessions.max, 1, 32)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 32`);
       if (sessions.parkMinutes !== undefined && !integerIn(sessions.parkMinutes, 5, 240)) throw new Error(`${provider.id}: claudeSessions parkMinutes must be 5 through 240`);
     }
-    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
+    const copilot = provider.copilotSessions;
+    if (copilot !== undefined) {
+      if (provider.type !== "copilot-subscription") throw new Error(`${provider.id}: copilotSessions is only valid for copilot-subscription providers`);
+      if (!copilot || typeof copilot !== "object" || Array.isArray(copilot)) throw new Error(`${provider.id}: copilotSessions must be an object`);
+      if (copilot.mode !== undefined && !["oneshot", "replay", "live"].includes(copilot.mode)) throw new Error(`${provider.id}: copilotSessions mode must be oneshot, replay or live`);
+      if (copilot.max !== undefined && !integerIn(copilot.max, 1, 16)) throw new Error(`${provider.id}: copilotSessions max must be 1 through 16`);
+      if (copilot.parkMinutes !== undefined && !integerIn(copilot.parkMinutes, 5, 240)) throw new Error(`${provider.id}: copilotSessions parkMinutes must be 5 through 240`);
+      // Copilot fails a pending tool call after 30 minutes and then calls the model on its own; the gateway closes the session first.
+      if (copilot.toolWaitMinutes !== undefined && !integerIn(copilot.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: copilotSessions toolWaitMinutes must be 1 through 25`);
+    }
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,

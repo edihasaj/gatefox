@@ -72,6 +72,12 @@ const escape = (text: string) => text.replace(/^(\\*)(<<item |<<\/item>>)/gm, "\
 // prefix whose last block ends in whitespace once more blocks follow, and tool output ends in "\n".
 const block = (header: string, body: string): ContentBlock => ({ type: "text", text: `<<item ${header}>>\n${escape(body)}\n<</item>>` });
 
+/**
+ * One conversation item in the text format as a single string: its blocks joined by newlines.
+ * Copilot sends each item as one user message, so both providers share one encoding.
+ */
+export function itemText(item: Item, number: number): string { return textBlocks(item, number).map(block => String(block.text)).join("\n"); }
+
 /** An item with images keeps its text once, from its parts, with each image at its place. */
 function body(item: Item): string {
   if (!item.parts) return item.content ?? "";

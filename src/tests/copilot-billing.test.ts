@@ -58,6 +58,16 @@ test("Copilot marks the credit total partial when only some calls were priced or
   });
 });
 
+test("a one-shot session still rejects permission and external tool requests, which only a live session may answer", async () => {
+  await withFixture(async (_directory, mode) => {
+    const adapter = new CopilotSubscription(provider);
+    for (const value of ["permission", "external"]) {
+      mode(value);
+      await assert.rejects(collect(adapter.infer(request, new AbortController().signal)), error => error instanceof Error && "code" in error && error.code === "invalid_tool_call", value);
+    }
+  });
+});
+
 test("Copilot reports usage before a rejected model route and keeps the temporary session private", async () => {
   await withFixture(async (directory, mode) => {
     const adapter = new CopilotSubscription(provider); const seen: InferenceEvent[] = [];
