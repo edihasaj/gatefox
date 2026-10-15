@@ -31,6 +31,14 @@ const configEffort = (params: ObjectValue): unknown => object(params.config).mod
 const enumEffort = (value: unknown): string | undefined => typeof value === "string" && ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(value) ? value : undefined;
 type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
 
+/**
+ * A prediction fork (the desktop's composer suggestions) starts from the loaded parent's
+ * effective settings, and the SDK refuses it with any override, including a config key.
+ * It therefore reaches the engine that owns the parent exactly as the desktop sent it.
+ */
+export const inheritsParentSettings = (method: string, params: ObjectValue): boolean =>
+  method === "thread/fork" && params.experimentalPredictionMode === true;
+
 export class AppServerRoutingError extends Error {
   constructor(message: string, readonly code: number = -32600) { super(message); }
 }
@@ -333,8 +341,10 @@ export class AppServerRouter {
     return forwarded;
   }
   async request(method: string, params: ObjectValue): Promise<ObjectValue> {
-    if (["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
-    if (this.source && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
+    // Neither gateway defaults nor the catalog apply to a fork that may carry no settings.
+    const inherited = inheritsParentSettings(method, params);
+    if (!inherited && ["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
+    if (this.source && !inherited && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
       const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
       this.extraModels = (await this.source.refresh(strict)).models;
@@ -357,7 +367,7 @@ export class AppServerRouter {
       const model = requestedModel(params) ?? this.preferences.model;
       if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(params, model, true);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
-    } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
+    } else if (!inherited && ["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.
       const threadRoute = await this.route(params.threadId);
       if (threadRoute) forwarded = await this.routedRequest(method, params, threadRoute);

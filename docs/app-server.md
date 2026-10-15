@@ -475,6 +475,39 @@ adapter cannot read is sent unchanged, so the SDK reports the same error as befo
 Executors that run under the app (per-connection engines) are not changed. Paths and
 file contents are never logged.
 
+## Processes and prediction forks on connected machines
+
+The desktop runs git commands (the branch and pull request chips) and terminals on a
+connected machine through the app-server's process API: `process/spawn`,
+`process/writeStdin`, `process/resizePty` and `process/kill`. A process handle belongs to
+one connection, and output arrives as `process/outputDelta` and `process/exited`
+notifications on that connection. The adapter sends these requests unchanged to that
+machine's native engine and returns its answer unchanged, as the native app-server does,
+for the relay and SSH paths alike. Nothing runs in the adapter or in a gateway executor.
+
+Some refusals come from the engine itself and also occur natively. The signed SDK
+(0.162.0-alpha.17.2) rejects a working directory that is not absolute with `-32600`
+"AbsolutePathBuf deserialized without a base path"; the desktop sends its projectless
+`~` placeholder when a remote composer has no project. The SDK answers `-32603` "failed
+to spawn process" for a directory that does not exist on that machine, and `-32600` "no
+active process for process handle" when the desktop stops a git command that has
+already exited. Deleting a chat that never wrote a rollout returns "no rollout found for
+thread id", which the desktop recognizes.
+
+The desktop's composer suggestions resume a chat and then fork it with
+`experimentalPredictionMode: true`, `ephemeral: true` and `excludeTurns: true`. Such a
+fork starts from the loaded parent's effective settings, and the SDK refuses it with
+`-32600` when the request carries any override, even a single `config` key. The adapter
+forwards a prediction fork exactly as the desktop sent it to the engine that owns the
+chat. It adds no restored reasoning, gateway model, provider, catalog or speed tier,
+applies no hooks-alias correction, and never refuses it over an unknown tier. Before
+this, the adapter added a native chat's saved reasoning effort to the fork, so every
+suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
+above. The change applies to the next adapter connection after an update.
+
+Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
+can be told apart without storing error text; see [diagnostics](diagnostics.md).
+
 ## Speed controls
 
 Gateway discovery retains the provider's public `service_tiers`,
