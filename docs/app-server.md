@@ -517,9 +517,16 @@ Copilot providers treat Flex as Standard; that handling ships in the same releas
 
 The SDK accepts any tier string inside a chat, including values such as `auto`, `Fast`
 or a very long id. The gateway's private tier record holds only lowercase ids of up to
-128 characters that are not `auto`. For any other tier the gateway writes nothing, keeps
-the previous record, and treats the chat's tier as unknown, so a later resume or fork
-adds no inherited tier. Such a tier never fails a settings notification or a resume.
+128 characters that are not `auto`. For any other tier the gateway records the chat's
+tier as unknown. It writes this through the same locked, timestamp-ordered path as a
+known tier: the chat's own record is removed, and a marker row holding the source
+time stays under a separate key derived from a hash of the chat id. A later resume or
+fork therefore adds no inherited tier, on this connection and on any fresh one, and an
+older notification that arrives late cannot bring a tier back. The marker is an
+ordinary row in the existing file format, so a 0.4.0 build still reads the whole file;
+it never looks the marker up and sees the chat as having no record, which is also an
+unknown tier. A tier the store can hold that is chosen later replaces the marker. Such
+a tier never fails a settings notification or a resume.
 
 Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
 the SDK accepted the request and only when its answer shows the chat started as Standard.

@@ -352,8 +352,8 @@ test("a tier the SDK keeps but the private store cannot hold never fails a notif
       // The announcement the SDK sent for it, and the same one again from a slower shared client.
       for (let again = 0; again < 2; again++) await f.router.observeNotification({ emittedAtMs: clock = Math.max(clock + 1, Date.now()), method: "thread/settings/updated",
         params: { threadId: "t", threadSettings: { modelProvider: gateway, model: codex, serviceTier: tier } } });
-      // The previous durable record is left alone rather than rewritten or cleared.
-      assert.equal((await f.store.read("t"))?.serviceTier, "priority", tier.slice(0, 12));
+      // The older Fast record is gone: the chat's tier is recorded as unknown, not left at Fast.
+      assert.equal(await f.store.read("t"), undefined, tier.slice(0, 12));
       f.control.loaded = true;
       for (const router of [f.router, await f.connect()]) {
         await router.request("thread/resume", { threadId: "t" });
@@ -372,7 +372,7 @@ test("a tier the SDK keeps but the private store cannot hold never fails a notif
   }
 });
 
-test("an odd tier on a Standard chat leaves its stored Standard and breaks neither a loaded resume nor the connection", async () => {
+test("an odd tier on a Standard chat records an unknown tier and breaks neither a loaded resume nor the connection", async () => {
   for (const tier of oddTiers) {
     const f = await fixture();
     await f.router.request("thread/start", { model: claude });
@@ -380,12 +380,12 @@ test("an odd tier on a Standard chat leaves its stored Standard and breaks neith
     const connection = await f.connect();
     await settingsTier({ ...f, router: connection }, tier);
     await connection.request("thread/resume", { threadId: "t" });
-    assert.equal((await f.store.read("t"))?.serviceTier, null, "nothing was written for a tier the store rejects");
+    assert.equal(await f.store.read("t"), undefined, "the stored Standard is replaced by an unknown tier");
     await connection.request("turn/start", { threadId: "t", input: [] });
   }
 });
 
-test("a stored tier survives an odd tier, and a valid tier after it is recorded and inherited again", async () => {
+test("a valid tier after an odd one is recorded and inherited again", async () => {
   const f = await fixture();
   await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
   await settingsTier(f, "Fast");

@@ -92,9 +92,10 @@ export class AppServerRouter {
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
       if (route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
         const record = { model: route.model, serviceTier: savedTier(result.serviceTier) };
-        // The SDK accepted a tier the private store cannot hold. The route above already leaves the chat's tier unknown.
-        if (!storableServiceTier(record.serviceTier)) return;
-        await this.threadTiers.write(thread.id, record, thread.id === params.threadId ? expected ?? null : null, requestStartedAtMs);
+        const against = thread.id === params.threadId ? expected ?? null : null;
+        // The SDK accepted a tier the private store cannot hold, so the chat's tier is recorded as unknown. The route above already leaves it out.
+        if (storableServiceTier(record.serviceTier)) await this.threadTiers.write(thread.id, record, against, requestStartedAtMs);
+        else await this.threadTiers.markUnknown(thread.id, { model: route.model }, against, requestStartedAtMs);
         const current = await this.threadTiers.read(thread.id);
         this.tierRecords.set(thread.id, current);
         if (current) { route.model = current.model; route.serviceTier = current.serviceTier; }
@@ -139,17 +140,15 @@ export class AppServerRouter {
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
-      if (!storableServiceTier(record.serviceTier)) {
-        // The SDK kept a tier the private store cannot hold, so the durable record is left alone and the chat's tier is unknown.
-        const route = this.routes.get(params.threadId);
-        if (route) { route.model = settings.model; delete route.serviceTier; }
-        this.tierRecords.set(params.threadId, await this.threadTiers.read(params.threadId));
-        return;
-      }
       // Duplicate notifications from slower shared clients cannot replace newer settings.
-      await this.threadTiers.write(params.threadId, record, this.tierRecords.get(params.threadId) ?? null);
+      const storable = storableServiceTier(record.serviceTier);
+      const applied = storable ? await this.threadTiers.write(params.threadId, record, this.tierRecords.get(params.threadId) ?? null)
+        // A tier the private store cannot hold is recorded as unknown, so no session start forwards an older tier.
+        : await this.threadTiers.markUnknown(params.threadId, { model: settings.model, emittedAtMs: record.emittedAtMs });
       const current = await this.threadTiers.read(params.threadId);
+      const route = this.routes.get(params.threadId);
       if (current) this.routes.set(params.threadId, { provider: gatewayProvider, ...current });
+      else if (!storable && applied && route) { route.model = settings.model; delete route.serviceTier; }
       this.tierRecords.set(params.threadId, current);
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
@@ -166,7 +165,7 @@ export class AppServerRouter {
   }
   /** Tier ids safe to log: the catalog's own plus the SDK's fixed names. Anything else is reported as "other". */
   private loggableTier(tier: string): string {
-    const known = new Set(["priority", "fast", "default"]);
+    const known = new Set(["priority", "fast"]);
     for (const metadata of this.extraModels) {
       try { for (const entry of readPublicServiceTierMetadata(metadata).serviceTiers ?? []) known.add(entry.id); } catch { /* an invalid row advertises nothing */ }
     }
