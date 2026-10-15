@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayToken, validateConfig, writePrivateJson, type GatewayConfig } from "../config.js";
@@ -86,26 +87,63 @@ test("a real request and an explicit discover still refresh an expired login", a
   });
 });
 
-test("the rotated refresh token is saved before the reply is validated", async () => {
+test("a refresh reply that cannot be used keeps the rotated token, asks for sign-in and never requests another token", async () => {
+  // [reply change, refresh token kept on file, scopes kept on file]
+  const cases: Array<[Record<string, unknown>, string, string[]]> = [
+    [{ scope: "openid offline_access" }, "new-refresh", ["openid", "offline_access"]],
+    [{ scope: undefined }, "new-refresh", []],
+    [{ token_type: "mac" }, "new-refresh", []],
+    [{ token_type: 5 }, "new-refresh", []],
+    [{ access_token: 5 }, "new-refresh", []],
+    [{ access_token: "" }, "new-refresh", []],
+    [{ expires_in: 0 }, "new-refresh", []],
+    [{ refresh_token: undefined }, "old-refresh", []],
+  ];
+  for (const [over, refreshToken, keptScopes] of cases) {
+    const { path } = await loginFile(0);
+    await withFetch(async () => refreshReply(over), async calls => {
+      await assert.rejects(accessToken(path), ChatGPTLoginRequired, `${JSON.stringify(over)} needs the user`);
+      // Later calls report the same without spending the rotated token.
+      await assert.rejects(accessToken(path), ChatGPTLoginRequired);
+      const error = await inferError(path);
+      assert.equal(error.code, "authentication"); assert.equal(error.status, 401); assert.equal(error.message, "ChatGPT provider requires login");
+      assert.equal(calls.urls.filter(url => url.endsWith("/oauth/token")).length, 1, `${JSON.stringify(over)} makes exactly one token request`);
+    });
+    const after = await stored(path);
+    assert.equal(after.refresh_token, refreshToken, "a reply that fails validation cannot lose the rotated token");
+    assert.equal(after.access_token, "old-access", "an unvalidated access token is not adopted");
+    assert.deepEqual(after.scopes, keptScopes, "only the scopes this reply granted stay on file");
+    assert.equal((await stat(path)).mode & 0o777, 0o600);
+  }
+});
+
+test("a process waiting on the refresh lock does not request a token after another process found the login unusable", async () => {
   const { path } = await loginFile(0);
-  await withFetch(async () => refreshReply({ scope: "openid" }), async () => {
-    await assert.rejects(accessToken(path), error => error instanceof Error && !(error instanceof ChatGPTLoginRequired));
+  const lock = `${path}.refresh-lock`;
+  await writeFile(lock, String(process.pid), { mode: 0o600 });
+  await withFetch(async () => refreshReply(), async calls => {
+    const waiting = accessToken(path);
+    await delay(150);
+    // What the other process leaves behind after a reply without the plan scope.
+    await writePrivateJson(path, { ...login(0), refresh_token: "new-refresh", scopes: ["openid"] });
+    await unlink(lock);
+    await assert.rejects(waiting, ChatGPTLoginRequired);
+    assert.deepEqual(calls.urls, [], "the waiting process makes no token request");
   });
-  const after = await stored(path);
-  assert.equal(after.refresh_token, "new-refresh", "a reply that fails validation cannot lose the rotated token");
-  assert.equal(after.access_token, "old-access", "an unvalidated access token is not adopted");
-  assert.deepEqual(after.scopes, scopes);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
-  // The next request spends the saved token, not the spent one.
-  let sent = "";
-  await withFetch(async (_url, init) => { sent = String((init?.body as URLSearchParams).get("refresh_token")); return refreshReply({ refresh_token: "newer-refresh" }); }, async () => {
-    assert.equal(await accessToken(path), "new-access");
-  });
-  assert.equal(sent, "new-refresh"); assert.equal((await stored(path)).refresh_token, "newer-refresh");
-  // A reply without a replacement token keeps the old one and still fails.
-  const second = await loginFile(0);
-  await withFetch(async () => refreshReply({ refresh_token: undefined }), async () => { await assert.rejects(accessToken(second.path)); });
-  assert.equal((await stored(second.path)).refresh_token, "old-refresh");
+  assert.equal((await stored(path)).refresh_token, "new-refresh");
+});
+
+test("an unreadable reply and any other HTTP error status are temporary", async () => {
+  for (const [status, body, upstreamCode] of [[200, "not json", undefined], [200, "null", undefined], [200, "[]", undefined], [404, JSON.stringify({ error: "invalid_request" }), "invalid_request"], [408, "", "none"]] as const) {
+    const { path } = await loginFile(0);
+    await withFetch(async () => new Response(body, { status }), async calls => {
+      const error = await inferError(path);
+      assert.equal(error.code, "upstream_unavailable"); assert.equal(error.status, 503);
+      assert.equal(error.upstream?.code, upstreamCode); assert.equal(error.upstream?.httpStatus, upstreamCode ? status : undefined);
+      assert.equal(calls.urls.filter(url => url.endsWith("/oauth/token")).length, 1);
+    });
+    assert.equal((await stored(path)).refresh_token, "old-refresh");
+  }
 });
 
 test("a rejected refresh records only a fixed OAuth error code", async () => {

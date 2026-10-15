@@ -66,12 +66,13 @@ nothing, and an item with no text adds no message. Author and recipient are neve
 rendered into the transcript as labels or prose. Any other part type, including an
 image, fails as a client error before a provider is invoked.
 
-A Codex subscription request whose token refresh fails on the network, on a 429 or
-on a 5xx (for example right after the Mac wakes) returns a retryable
+A Codex subscription request whose token refresh fails on the network, with an
+unreadable reply, or with any HTTP error status other than 400, 401 or 403 (for example
+a 429 or a 5xx, often right after the Mac wakes) returns a retryable
 `upstream_unavailable`, so Codex reconnects instead of ending the chat. Only a
-missing login, missing scopes, an unreadable credential file, or a refresh rejected
-with HTTP 400, 401 or 403 reports "ChatGPT provider requires login". When the token
-endpoint names a reason, the message adds its OAuth error code. A rejected login reads
+missing login, missing scopes, an unreadable credential file, a refresh rejected
+with HTTP 400, 401 or 403, or a successful refresh reply that cannot be used reports
+"ChatGPT provider requires login". When the token endpoint names a reason, the message adds its OAuth error code. A rejected login reads
 "ChatGPT provider requires login (refresh rejected: refresh_token_reused)" and a temporary failure
 reads "ChatGPT login refresh failed temporarily (temporarily_unavailable); retry shortly". A code
 outside the fixed list shows as `other`, and a reply without a code adds nothing. `request_failed`
@@ -87,8 +88,14 @@ that provider is skipped for the round (`model_metadata_skipped`) without any ne
 call, and the next real request refreshes it. This keeps a refresh from being started
 while the Mac is asleep, where the reply can be lost after the token was spent. When a
 refresh reply arrives, the replacement refresh token is written to the credential file
-(atomically, mode 0600) before the reply is checked for the required scopes, so a reply
-that fails that check never loses the rotated token.
+(atomically, mode 0600) in the same save that records the outcome, so a reply that fails a
+check never loses the rotated token. A reply that lacks the plan scope, is malformed (no
+bearer access token or no positive lifetime), or carries no replacement refresh token can only
+be fixed by signing in again (`gateway login ID` with plan usage enabled). The gateway
+then keeps the old access token and only the scopes that reply granted (none unless the
+plan scope was the one missing), so that request and every later one report "ChatGPT
+provider requires login" without another token request, in this process or another one
+waiting on the refresh lock.
 
 Responses upstream completion retains an actual boolean `end_turn` when present.
 An absent value remains absent. This lets the SDK distinguish a continuation

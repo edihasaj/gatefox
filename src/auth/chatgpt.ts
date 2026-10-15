@@ -33,11 +33,11 @@ interface TokenResponse {
 /** Where a failed authentication response came from; only fixed, non-secret values. */
 export interface OAuthFailureDetail { httpStatus?: number; oauthError?: string }
 
-/** The stored login cannot work again without the user: missing, rejected or lacking scopes. Other failures are temporary. */
+/** The stored login cannot work again without the user: missing, rejected, lacking scopes, or refreshed with a reply that cannot be used. Other failures are temporary. */
 export class ChatGPTLoginRequired extends Error {
   constructor(message: string, readonly detail: OAuthFailureDetail = {}) { super(message); }
 }
-/** A temporary authentication failure (429, 5xx or an unreadable reply); the same detail, but Codex may retry. */
+/** The token endpoint answered with an HTTP error status other than 400, 401 or 403 (for example 429 or 5xx): temporary, with the same detail, so Codex may retry. */
 export class ChatGPTRefreshFailed extends Error {
   constructor(message: string, readonly detail: OAuthFailureDetail = {}) { super(message); }
 }
@@ -101,9 +101,21 @@ export async function validateIdToken(token: string, clientId: string, nonce: st
   return { subject: claims.sub, ...(claims.email ? { email: claims.email } : {}) };
 }
 
+const lacksPlanScopes = (scopes: string[] | undefined) => requiredScopes.some(scope => !scopes?.includes(scope));
+/**
+ * Checks a token reply without throwing, so a refresh can save the rotated token whatever the reply holds.
+ * A reply that cannot be used names the scopes it granted, none when it is malformed.
+ */
+function checkReply(token: TokenResponse): { scopes: string[]; unusable?: ChatGPTLoginRequired } {
+  const scopes = typeof token.scope === "string" ? token.scope.split(/\s+/).filter(Boolean) : [];
+  if (lacksPlanScopes(scopes)) return { scopes, unusable: new ChatGPTLoginRequired("ChatGPT plan permission was not granted; enable plan usage during sign-in") };
+  if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" || typeof token.access_token !== "string" || !token.access_token ||
+    typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes: [], unusable: new ChatGPTLoginRequired("OpenAI returned an unusable access token; sign in again") };
+  return { scopes };
+}
 function grantedScopes(token: TokenResponse): string[] {
-  const scopes = typeof token.scope === "string" ? token.scope.split(/\s+/) : [];
-  if (token.token_type?.toLowerCase() !== "bearer" || !token.access_token || !Number.isFinite(token.expires_in) || token.expires_in <= 0 || requiredScopes.some(scope => !scopes.includes(scope))) throw new Error("ChatGPT plan permission was not granted; enable plan usage during sign-in");
+  const { scopes, unusable } = checkReply(token);
+  if (unusable) throw unusable;
   return scopes;
 }
 
@@ -187,7 +199,7 @@ export interface AccessTokenOptions {
 }
 export async function accessToken(path: string, options: AccessTokenOptions = {}): Promise<string> {
   const credentials = await readCredentials(path);
-  if (!credentials || requiredScopes.some(scope => !credentials.scopes?.includes(scope))) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
+  if (!credentials || lacksPlanScopes(credentials.scopes)) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
   if (credentials.expires_at > Date.now() + 120000 || (credentials.earliest_refresh_at && credentials.earliest_refresh_at * 1000 > Date.now() && credentials.expires_at > Date.now())) return credentials.access_token;
   if (options.refresh === false) throw new ChatGPTRefreshDeferred();
   const existing = refreshing.get(path); if (existing) return existing;
@@ -214,26 +226,30 @@ async function refresh(path: string): Promise<string> {
     }
   }
   try {
+    // Re-read under the lock: another process may have refreshed the login or found it unusable.
     const credentials = await readCredentials(path);
-    if (!credentials) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
+    if (!credentials || lacksPlanScopes(credentials.scopes)) throw new ChatGPTLoginRequired("ChatGPT provider requires login");
     if (credentials.expires_at > Date.now() + 120000) return credentials.access_token;
     if (!credentials.refresh_token) throw new ChatGPTLoginRequired("ChatGPT login expired; sign in again");
     const token = await json<TokenResponse>(`${issuer}/api/accounts/oauth/token`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ grant_type: "refresh_token", client_id: credentials.client_id, refresh_token: credentials.refresh_token, resource }),
     });
-    // The old refresh token is spent once this reply arrives. Persist the replacement before
-    // any validation, so a rejected reply can never lose it; the new access token is kept only
-    // when it validates, otherwise the stored (expired) one stays and the next request retries.
-    let scopes: string[] | undefined; let invalid: unknown;
-    try { scopes = grantedScopes(token); } catch (error) { invalid = error; }
-    if (typeof token.refresh_token === "string" && token.refresh_token) {
-      await writePrivateJson(path, scopes
-        ? { ...credentials, access_token: token.access_token, refresh_token: token.refresh_token, id_token: token.id_token || credentials.id_token,
-          scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at }
-        : { ...credentials, refresh_token: token.refresh_token });
+    // Like a reply that is not JSON at all, one that is not an object is unreadable and temporary.
+    if (!token || typeof token !== "object" || Array.isArray(token)) throw new Error("OpenAI returned an unreadable token reply");
+    // The old refresh token is spent once this reply arrives, so the replacement is written in the
+    // same save that records the outcome, before the reply is reported as unusable.
+    const replacement = typeof token.refresh_token === "string" && token.refresh_token ? token.refresh_token : undefined;
+    const { scopes, unusable } = checkReply(token);
+    if (!unusable && replacement) {
+      await writePrivateJson(path, { ...credentials, access_token: token.access_token, refresh_token: replacement, id_token: token.id_token || credentials.id_token,
+        scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at });
+      return token.access_token;
     }
-    if (invalid) throw invalid;
-    if (!token.refresh_token) throw new Error("OpenAI did not return a replacement refresh token");
-    return token.access_token;
+    // Only signing in again recovers from a reply without the plan scope, a malformed reply, or one
+    // without a replacement token. The file keeps any rotated token, the old access token and only
+    // the scopes this reply granted (none unless it lacked the plan scope), so every later request
+    // reports "requires login" without another token request.
+    await writePrivateJson(path, { ...credentials, refresh_token: replacement ?? credentials.refresh_token, scopes: unusable ? scopes : [] });
+    throw unusable ?? new ChatGPTLoginRequired("OpenAI did not return a replacement refresh token; sign in again");
   } finally { await file.close(); await unlink(lock); }
 }

@@ -26,18 +26,20 @@ only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` 
 | Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached and output tokens, whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry, `threadKey` — the same first 8 hex `claude_session` reports, when the request carried a thread id, so one thread's one-shot and live events line up — and `systemPrefixOnly` set when its cache read reached only the system prefix, the same test `claude_session` applies below; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `model_metadata_skipped` (the six-hour metadata refresh left one provider out: `provider` and a fixed `reason`, `refresh_deferred` when a Codex login's access token had expired and the refresh was left to the next real request, or `discovery_failed`), `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
 | Service | `component_exit`, `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` |
 
-A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403 for
-a rejected login, 429 or 5xx for a temporary failure) records `request_failed` with
-`upstreamEvent` `oauth_refresh` and `upstreamCode` set to the OAuth error code the token
+A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403
+for a rejected login; any other HTTP error status, for example 429 or 5xx, for a temporary
+failure) records `request_failed` with `upstreamEvent` `oauth_refresh` and `upstreamCode` set to the OAuth error code the token
 endpoint returned: one of `invalid_grant`, `refresh_token_reused`, `refresh_token_expired`,
 `refresh_token_invalidated`, `invalid_request`, `invalid_client`, `unauthorized_client`,
 `unsupported_grant_type`, `invalid_scope`, `access_denied`, `invalid_token`, `token_expired`,
 `server_error`, `temporarily_unavailable`, `slow_down`, `rate_limit_exceeded`, `other` for any
 code outside that list, or `none` when the reply carried no code. Only the code is read; the reply's
-description, body and tokens are never recorded. Other refresh failures (a network error, a busy
-refresh lock, a reply that fails the scope check or lacks a replacement token, a missing login)
-record only `code` and `status`. A failed refresh is never retried inside the request, so the
-single-use refresh token is spent once and no `provider_retry` follows it.
+description, body and tokens are never recorded. Other refresh failures record only `code` and
+`status`: a network error, a busy refresh lock or an unreadable reply as a temporary
+`upstream_unavailable` 503, and a missing login or a successful reply that cannot be used (it lacks
+the plan scope, is malformed, or carries no replacement refresh token) as `authentication` 401.
+A failed refresh is never retried inside the request, so the single-use refresh token is spent
+once and no `provider_retry` follows it.
 
 A request the gateway could not translate records the same `request_failed` event plus
 two fixed fields: `reason` is one of `invalid_shape`, `unsupported_input_item`,
