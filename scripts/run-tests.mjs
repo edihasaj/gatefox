@@ -25,6 +25,7 @@ import { connect } from "node:net";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { ownSocket, sdkSocketName } from "./stale-sockets.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const testsFolder = join(root, "dist", "tests");
@@ -79,13 +80,13 @@ async function removeStaleSockets() {
       const full = join(path, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isSymbolicLink()) {
-        try { const target = resolve(dirname(full), readlinkSync(full)); if (dirname(target) === rendezvous && /^[0-9a-f]{64}$/.test(basename(target))) targets.add(target); } catch { /* Not readable: not ours. */ }
+        try { const target = resolve(dirname(full), readlinkSync(full)); if (dirname(target) === rendezvous && sdkSocketName(basename(target))) targets.add(target); } catch { /* Not readable: not ours. */ }
       }
     }
   };
   walk(folder);
   for (const target of targets) {
-    try { const info = lstatSync(target); if (!info.isSocket() || info.uid !== process.getuid()) continue; } catch { continue; }
+    try { const info = lstatSync(target); if (!ownSocket(info, process.getuid())) continue; } catch { continue; }
     if (await refused(target)) { try { unlinkSync(target); } catch { /* Best effort. */ } }
   }
 }
