@@ -32,7 +32,8 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
  * off until tool_search passes through. comp_hash is never copied. The node_repl policy (both
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
- * requires_sandboxed_review, model_specialty) follow the native row too. Without a marker or a native
+ * requires_sandboxed_review, model_specialty) follow the native row too; requires_sandboxed_review
+ * is data only, because neither the pinned SDK nor ChatGPT 26.1007's codex reads it. Without a marker or a native
  * row for that slug the row stays as the gateway published it here; snapshot() then gives it nodeReplFallback().
  * `reviewers` are the reviewer slugs the inference host advertised; with none, review cannot run.
  */
@@ -152,20 +153,25 @@ export function sharedReviewMessages(native: readonly Row[]): { messages: Row; c
 }
 
 export interface NodeReplFallback extends NodeReplPolicy { review_messages: Row }
+/** Any guardian value other than null, including one that is not an object. */
+const guarded = (row: Row) => row.guardian !== undefined && row.guardian !== null;
 
 /**
  * The node_repl policy for a row with no native counterpart (Claude, Copilot, Qwen, API, or a Codex
  * row whose upstream is missing). Review is always required, the strictest policy, because these rows
  * carry no guardian and their model has no native policy. node_repl is on only if the reviewer runs,
- * every native row plainly enables node_repl, and the native rows agree on the shared review texts.
- * A sandboxed-review requirement carries over. The reviewer is the default one, which is OpenAI's, so
- * the actions it reviews and their context leave the chat's own provider (Edi accepted this on
- * 2026-10-15). With no native rows node_repl is off.
+ * every native row plainly enables node_repl, no native row sets a guardian, and the native rows agree
+ * on the shared review texts. A fallback row cannot mirror a guardian (its computer-use mode, scoring
+ * or other scopes), so a guardian on any native row turns node_repl off here: the stricter choice.
+ * requires_sandboxed_review is carried when a native row sets it, as data only: neither the pinned
+ * SDK nor ChatGPT 26.1007's codex reads it. The reviewer is the default one, which is OpenAI's, so
+ * the actions it reviews and their context leave the chat's own provider, as for every Auto-review
+ * approval in a gateway executor (Edi's decision; see src/auto-review.ts). With no native rows node_repl is off.
  */
 export function nodeReplFallback(native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): NodeReplFallback {
   const { messages, conflict } = sharedReviewMessages(native);
   return {
-    node_repl_disabled: !native.length || native.some(rawOff) || !reviewRuns({}, native, reviewers) || conflict,
+    node_repl_disabled: !native.length || native.some(rawOff) || native.some(guarded) || !reviewRuns({}, native, reviewers) || conflict,
     node_repl_auto_review_required: true,
     review_messages: conflict ? {} : messages,
     ...(native.some(entry => entry.requires_sandboxed_review === true) ? { requires_sandboxed_review: true as const } : {}),

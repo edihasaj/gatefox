@@ -135,6 +135,27 @@ test("a conflict between native rows turns the fallback rows off in the combined
   } finally { run.f.close(); }
 });
 
+test("a guardian on any native row turns node_repl off for every fallback row, whether code mode is on or off", async () => {
+  // A fallback row cannot mirror a guardian (computer-use mode, scoring, other scopes), so it takes the stricter choice.
+  for (const guardian of [{ computer_use: "adaptive" }, { computer_use: "disabled" }, { computer_use: null }, { shell: "synchronous" }, "all", []]) {
+    for (const codeMode of [true, false]) {
+      const rows = natives().map(row => row.slug === "gpt-6-luna" ? { ...row, guardian } : row);
+      const run = await live(rows, [codexAll, claude], { models: advertise }, codeMode);
+      try {
+        // An older host that omits upstream_slug on a Codex row: that row has no native counterpart either.
+        run.f.setCatalog(Object.assign(modelCatalog(run.f.value), { auto_review: { models: advertise } }, { models: modelCatalog(run.f.value).models.map(row => row.slug === "codex/five" ? (({ upstream_slug: _gone, ...rest }) => rest)(row) : row) }));
+        await run.read(); const policies = run.policies(); const why = `${JSON.stringify(guardian)} ${codeMode}`;
+        for (const slug of ["claude/opus", "claude/sonnet", "codex/next", "codex/five"]) assert.deepEqual(policies[slug], off, `${slug} ${why}`);
+        assert.deepEqual(policies["codex/sol"], unreviewed, `rows with a native counterpart keep their own policy ${why}`);
+        assert.deepEqual(policies["codex/five-luna"], on, why);
+      } finally { run.f.close(); }
+      assert.deepEqual(repl(withFallback({}, nodeReplFallback(rows, new Set(advertise)))), off, `nodeReplFallback ${JSON.stringify(guardian)}`);
+    }
+  }
+  // A null guardian, as on every real row, is no guardian.
+  assert.deepEqual(repl(withFallback({}, nodeReplFallback(natives(), new Set(advertise)))), unreviewed);
+});
+
 test("Claude rows get the native 6.x texts; the reviewer and luna rows equal the native rows, and no native row is modified", async () => {
   const rows = natives(); const before = structuredClone(rows);
   for (const codeMode of [true, false]) {

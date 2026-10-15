@@ -144,11 +144,11 @@ test("guardian shapes decide review the same way through withNativeRow, executor
   const runs: Case[] = [ // the reviewer runs
     [null, false, false, on, on, unreviewed, "a null guardian leaves the flag in charge; a fallback row requires review, which runs"],
     [null, false, true, unreviewed, unreviewed, unreviewed, "the flag is copied and node_repl stays on, as natively"],
-    [{ computer_use: "disabled" }, false, true, unreviewed, unreviewed, unreviewed, "a guardian that turns computer-use review off"],
-    [{ computer_use: null }, false, false, on, on, unreviewed, "a null computer_use mode is no review"],
-    [{ computer_use: "adaptive" }, false, false, on, on, unreviewed, "a guardian that reviews computer use is copied with the row, so node_repl stays on"],
-    ["all", false, false, unreviewed, unreviewed, unreviewed, "a guardian that is not an object is not copied, so the flag must require the review the reviewer runs"],
-    [[], false, false, unreviewed, unreviewed, unreviewed, "an array guardian"],
+    [{ computer_use: "disabled" }, false, true, unreviewed, unreviewed, off, "a guardian that turns computer-use review off; a fallback row cannot mirror any guardian, so it is off"],
+    [{ computer_use: null }, false, false, on, on, off, "a null computer_use mode is no review where the guardian travels"],
+    [{ computer_use: "adaptive" }, false, false, on, on, off, "a guardian that reviews computer use is copied with the row, so node_repl stays on there"],
+    ["all", false, false, unreviewed, unreviewed, off, "a guardian that is not an object is not copied, so the flag must require the review the reviewer runs"],
+    [[], false, false, unreviewed, unreviewed, off, "an array guardian"],
     [null, true, false, blocked, blocked, off, "a native row that turns node_repl off turns it off for a fallback row too"],
   ];
   const [row] = published(sol);
