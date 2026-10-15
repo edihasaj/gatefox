@@ -206,6 +206,6 @@ export async function installClaudeFixture(scenario: FixtureScenario = { replies
     directory,
     setScenario: value => writeFile(scenarioPath, JSON.stringify(value)),
     capture: async () => (await readFile(capturePath, "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as FixtureEntry),
-    restore: async () => { put("PATH", previous.PATH); put("CLAUDE_FIXTURE_SCENARIO", previous.scenario); put("CLAUDE_FIXTURE_CAPTURE", previous.capture); await rm(directory, { recursive: true, force: true }); },
+    restore: async () => { put("PATH", previous.PATH); put("CLAUDE_FIXTURE_SCENARIO", previous.scenario); put("CLAUDE_FIXTURE_CAPTURE", previous.capture); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); },
   };
 }

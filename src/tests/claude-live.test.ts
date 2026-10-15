@@ -52,7 +52,8 @@ async function setup(scenario: FixtureScenario): Promise<{ f: ClaudeFixture; sin
   configureTelemetry(f.directory, "test"); const since = Date.now();
   return { f, since, sessions: async () => { await flushTelemetry(); return (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session"); } };
 }
-async function teardown(f: ClaudeFixture): Promise<void> { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
+// Telemetry appends are asynchronous; let them land before the folder they write into goes.
+async function teardown(f: ClaudeFixture): Promise<void> { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await f.restore(); }
 const pids = async (f: ClaudeFixture, mode = "live") => (await f.capture()).filter(entry => entry.start === mode).map(entry => entry.pid);
 
 test("a tool loop keeps one CLI process, relays the caller's outputs verbatim and reports per-request usage", async () => {
