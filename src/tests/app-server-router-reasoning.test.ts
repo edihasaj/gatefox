@@ -40,7 +40,7 @@ async function fixture() {
   const store = new ThreadReasoningStore(state, native);
   let stamp = Date.now();
   const notify = async (threadId: string, settings: ObjectValue) => {
-    const r = await router(); await r.observeNotification({ method: "thread/settings/updated", emittedAtMs: Math.max(++stamp, Date.now()), params: { threadId, threadSettings: { model: "codex/model", ...settings } } });
+    const r = await router(); await r.observeNotification({ method: "thread/settings/updated", emittedAtMs: Math.max(++stamp, Date.now()), params: { threadId, threadSettings: { model: "codex/model", modelProvider: "subscription_gateway", ...settings } } });
   };
   const rollout = async (threadId: string, lines: string[]) => {
     const sessions = join(native, "sessions"); await mkdir(sessions, { recursive: true, mode: 0o700 });
@@ -195,4 +195,14 @@ test("a native fork reaches the engine exactly as sent, so the engine chooses it
     assert.deepEqual(f.forwarded(), params);
   }
   assert.equal((await f.events()).some(event => event.event === "reasoning_restored"), false);
+});
+
+test("a native chat's reasoning is never written to the gateway's store", async () => {
+  const f = await fixture();
+  const r = await f.router();
+  await r.observeNotification({ method: "thread/settings/updated", emittedAtMs: Date.now(), params: { threadId: "native-chat", threadSettings: { model: "native", modelProvider: "openai", effort: "high", summary: "detailed" } } });
+  await r.request("thread/start", { model: "native", config: { model_reasoning_effort: "high" } });
+  await r.request("turn/start", { threadId: "test", input: [], effort: "high" });
+  assert.equal(await f.store.read("native-chat"), undefined, "a native settings change records nothing");
+  assert.equal(await f.store.read("test"), undefined, "a native start and turn record nothing");
 });

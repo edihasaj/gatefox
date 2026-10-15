@@ -96,7 +96,8 @@ export class AppServerRouter {
     // A prediction fork is throwaway: only its in-memory route is kept, never a durable record.
     const ephemeral = inherited || thread.ephemeral === true || (typeof thread.id === "string" && this.evictedEphemeralIds.has(thread.id));
     if (typeof thread.id === "string" && ephemeral) this.trackEphemeral(thread.id);
-    if (typeof thread.id === "string" && !ephemeral) {
+    // Only a gateway chat's reasoning is ever read back; a native chat keeps its own in the SDK.
+    if (typeof thread.id === "string" && !ephemeral && result.modelProvider === gatewayProvider) {
       const config = object(params.config);
       await this.recordReasoning(thread.id, { model: typeof result.model === "string" ? result.model : params.model,
         effort: result.reasoningEffort ?? config.model_reasoning_effort, summary: result.reasoningSummary ?? config.model_reasoning_summary }, requestStartedAtMs);
@@ -184,7 +185,7 @@ export class AppServerRouter {
       }
       // A fork the cap evicted has no route to update, and nothing about it may be recorded.
       if (this.evictedEphemeralIds.has(params.threadId)) return;
-      await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
+      if (settings.modelProvider === gatewayProvider) await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: recordableTier(this.extraModels, settings.model, savedTier(settings.serviceTier)), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
@@ -422,7 +423,7 @@ export class AppServerRouter {
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
-    if (typeof params.threadId === "string" && !wasEphemeral && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
+    if (typeof params.threadId === "string" && !wasEphemeral && this.routes.get(params.threadId)?.provider === gatewayProvider && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
       await this.recordReasoning(params.threadId, { model: requestedModel(params) ?? this.routes.get(params.threadId)?.model, effort: requestedEffort(params), summary: params.summary }, requestStartedAtMs);
     }
     const selected = requestedModel(params);
