@@ -1,15 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writePrivateJson, type GatewayConfig } from "../config.js";
+import { gatewayToken, validateConfig, writePrivateJson, type GatewayConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired, ChatGPTRefreshDeferred, oauthErrorCode, type ChatGPTCredentials } from "../auth/chatgpt.js";
 import { discoverModels } from "../catalog.js";
 import { refreshModelMetadata } from "../model-refresh.js";
 import { providerFailureDiagnostic } from "../provider-failure.js";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
+import { startGateway } from "../server.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 const scopes = ["openid", "resource.invoke", "chatgpt.tokens.use.direct"];
@@ -131,4 +132,54 @@ test("a rejected refresh records only a fixed OAuth error code", async () => {
   assert.equal(oauthErrorCode(JSON.stringify({ code: "invalid_grant" })), "invalid_grant");
   assert.equal(oauthErrorCode(JSON.stringify({ error: 5 })), "none");
   assert.equal(oauthErrorCode("null"), "none");
+});
+
+test("a failed login refresh is never retried inside the provider, so the single-use token is spent once", async t => {
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => { logged.push(args.map(String).join(" ")); });
+  const directory = await mkdtemp(join(tmpdir(), "gateway-refresh-retry-"));
+  configureTelemetry(directory, "server");
+  for (const [status, expectedCode, expectedStatus] of [[500, "upstream_unavailable", 503], [503, "upstream_unavailable", 503], [400, "authentication", 401]] as const) {
+    const { path } = await loginFile(0);
+    await withFetch(async () => new Response(JSON.stringify({ error: "server_error" }), { status }), async calls => {
+      const started = Date.now();
+      const error = await inferError(path);
+      assert.equal(error.code, expectedCode); assert.equal(error.status, expectedStatus);
+      assert.equal(error.upstream?.code, "server_error"); assert.equal(error.upstream?.event, "oauth_refresh");
+      assert.equal(calls.urls.filter(url => url.endsWith("/oauth/token")).length, 1, `HTTP ${status} makes exactly one token request`);
+      assert.ok(Date.now() - started < 900, "no retry backoff is waited");
+    });
+  }
+  await flushTelemetry();
+  assert.equal((await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "provider_retry").length, 0);
+  assert.ok(!logged.some(line => line.includes("provider_retry")));
+});
+
+test("request_failed telemetry names the OAuth error code and holds no token or reply text", async () => {
+  const secret = "sk-secret-error-description";
+  const { directory, path } = await loginFile(0);
+  configureTelemetry(directory, "server");
+  const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "codex", type: "codex-subscription", credentialFile: path, models: { alias: "test" } }] });
+  const server = await startGateway(config, provider => new ResponsesAPI(provider), undefined, { onFailure: () => {} });
+  try {
+    const gateway = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const authorization = `Bearer ${await gatewayToken(directory)}`;
+    const real = globalThis.fetch;
+    await withFetch(async (url, init) => url.startsWith(gateway) ? real(url, init)
+      : new Response(JSON.stringify({ error: "refresh_token_reused", error_description: secret }), { status: 400 }), async calls => {
+      const reply = await globalThis.fetch(`${gateway}/v1/responses`, { method: "POST", headers: { authorization, "content-type": "application/json" }, body: JSON.stringify({ model: "alias", input: "hi" }) });
+      const body = await reply.text();
+      assert.equal(reply.status, 401);
+      assert.equal(calls.urls.filter(url => url.endsWith("/oauth/token")).length, 1);
+      for (const leak of [secret, "old-refresh", "old-access"]) assert.ok(!body.includes(leak), `${leak} must not reach the client`);
+    });
+    await flushTelemetry();
+    const failed = (await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "request_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].upstreamCode, "refresh_token_reused"); assert.equal(failed[0].upstreamEvent, "oauth_refresh");
+    assert.equal(failed[0].code, "authentication"); assert.equal(failed[0].status, 401);
+    const folder = join(directory, "telemetry"); let text = "";
+    for (const name of await readdir(folder)) text += await readFile(join(folder, name), "utf8");
+    for (const leak of [secret, "error_description", "old-refresh", "old-access", "new-refresh", "new-access"]) assert.ok(!text.includes(leak), `${leak} must not appear in telemetry`);
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await flushTelemetry(); }
 });

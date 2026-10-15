@@ -71,13 +71,18 @@ on a 5xx (for example right after the Mac wakes) returns a retryable
 `upstream_unavailable`, so Codex reconnects instead of ending the chat. Only a
 missing login, missing scopes, an unreadable credential file, or a refresh rejected
 with HTTP 400, 401 or 403 reports "ChatGPT provider requires login". When the token
-endpoint names a reason, the message adds its OAuth error code, for example
-"(refresh rejected: refresh_token_reused)", and `request_failed` telemetry records it
-(see `docs/diagnostics.md`); the reply's description text is never read or shown.
+endpoint names a reason, the message adds its OAuth error code. A rejected login reads
+"ChatGPT provider requires login (refresh rejected: refresh_token_reused)" and a temporary failure
+reads "ChatGPT login refresh failed temporarily (temporarily_unavailable); retry shortly". A code
+outside the fixed list shows as `other`, and a reply without a code adds nothing. `request_failed`
+telemetry records the same code (see `docs/diagnostics.md`); the reply's description text is never
+read or shown. A failed refresh is not retried inside the request, because a second token request
+could spend the single-use refresh token again; Codex reconnects on the retryable 503 instead.
 
 The refresh token is single-use, so only a real request or an explicit
 `gateway discover` ever spends it. The six-hour model-metadata refresh never refreshes
-the login: when a Codex access token has expired or is within two minutes of expiring,
+the login: whenever serving the Codex access token would need a refresh (it has expired, or
+it is within two minutes of expiring unless the issuer's `earliest_refresh_at` has not passed yet),
 that provider is skipped for the round (`model_metadata_skipped`) without any network
 call, and the next real request refreshes it. This keeps a refresh from being started
 while the Mac is asleep, where the reply can be lost after the token was spent. When a
