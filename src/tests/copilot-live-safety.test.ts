@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, stat, symlink, utimes } from "node:fs/promises";
+import { lstat, mkdir, stat, symlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { copilotSessionSettings, validateConfig } from "../config.js";
 import { ProviderError } from "../providers/provider.js";
@@ -37,10 +37,11 @@ test("a dead gateway's folders, live or one-shot, are swept; a living gateway's 
     await sweepCopilotDirectories(h.scratch);
     for (const name of [names.deadLive, names.deadRun, names.legacyOld, names.reusedLive, names.reusedOwn]) assert.equal(await exists(join(h.scratch, name)), false, `${name} belongs to nobody and holds a prompt log`);
     for (const name of [names.livingLive, names.livingRun, names.livingPidOnly, names.own, names.unrelated, names.legacyFresh]) assert.equal(await exists(join(h.scratch, name)), true, `${name} stays`);
-    // A symlink with a dead owner's name is not followed or removed: only real directories are the gateway's.
-    const target = join(h.scratch, "target"); await mkdir(target); await symlink(target, join(h.scratch, "gateway-copilot-run-zzzzzz-link"));
+    // A symlink with a dead owner's name (one the sweep matches) is not followed or removed: only real directories are the gateway's.
+    const link = join(h.scratch, "gateway-copilot-run-zzzzzz-link12");
+    const target = join(h.scratch, "target"); await mkdir(target); await symlink(target, link);
     await sweepCopilotDirectories(h.scratch);
-    assert.equal(await exists(join(h.scratch, "gateway-copilot-run-zzzzzz-link")), true); assert.equal(await exists(target), true);
+    assert.equal(await lstat(link).then(info => info.isSymbolicLink(), () => false), true); assert.equal(await exists(target), true);
     // A legacy folder is swept only once it is older than any request can run.
     legacyAgeMs.value = 0; try { await sweepCopilotDirectories(h.scratch); } finally { legacyAgeMs.value = 2 * 3600 * 1000; }
     assert.equal(await exists(join(h.scratch, names.legacyFresh)), false);
@@ -59,13 +60,17 @@ test("starting the gateway sweeps a dead gateway's folders before any Copilot re
 });
 
 test("a permission request, a foreign tool or a native tool call is rejected and ends the session completely", async () => {
-  for (const marker of ["permission", "native", "nativemsg", "foreignreq", "foreignstart"]) {
+  // The event router kills the session the moment the CLI asks for permission or uses another tool, and says why; a native
+  // call announced only in the model's message fails the request when it is read.
+  const reasons: Array<[string, string]> = [["permission", "permission"], ["native", "foreign_tool"], ["nativemsg", "invalid_tool_call"], ["foreignreq", "foreign_tool"], ["foreignstart", "foreign_tool"]];
+  for (const [marker, reason] of reasons) {
     const h = await harness();
     try {
       const error = await settled(turn(adapter(), [user(`do it [${marker}]`)]));
       assert.ok(error instanceof ProviderError && error.code === "invalid_tool_call", `${marker}: ${String(error)}`);
       const [pid] = await h.pids(); await closed(h, pid);
-      assert.ok((await h.sessions()).some(entry => entry.outcome === "crashed"), "the crash is recorded");
+      const crashed = (await h.sessions()).filter(entry => entry.outcome === "crashed").map(entry => entry.missReason);
+      assert.deepEqual(crashed, [reason], `${marker}: the crash and its reason are recorded`);
     } finally { await h.restore(); }
   }
 });

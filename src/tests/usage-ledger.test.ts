@@ -165,6 +165,9 @@ test("an import that failed before its marker is retried without repeating rows,
   const all = await readUsageLedger(directory, 0);
   assert.deepEqual(all.map(entry => [entry.requestId, entry.origin]).sort(), [["later", "gateway"], ["x", "gateway"], ["y", "telemetry"]]);
   assert.equal(all.find(entry => entry.requestId === "x")?.inputTokens, 51, "the gateway row wins over the imported one");
+  // Spend tools read the raw files, so the retry itself must not repeat a row: the two x rows, the imported y and the later row.
+  const lines = (await readFile(join(directory, "usage", `usage-${at.slice(0, 7)}.jsonl`), "utf8")).split("\n").filter(Boolean).map(line => JSON.parse(line) as { requestId: string; origin: string });
+  assert.deepEqual(lines.map(line => [line.requestId, line.origin]), [["x", "telemetry"], ["x", "gateway"], ["y", "telemetry"], ["later", "gateway"]]);
 });
 
 test("usage a provider reports after the client disconnected is still recorded", async t => {
