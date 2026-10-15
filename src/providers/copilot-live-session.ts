@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { rmSync } from "node:fs";
 import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent } from "../protocol/types.js";
 import { echoDigests, type LedgerState } from "./claude-ledger.js";
@@ -29,8 +28,11 @@ export const sessionLimits = {
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 // Between requests the model must do nothing, so only these housekeeping events are accepted; anything else
 // (output, a model call, a finished tool call, compaction) means the runtime is acting on its own and may be billing.
-const housekeeping = new Set(["session.info", "session.usage_info", "session.usage_checkpoint"]);
+// CLI 1.0.97 sends `session.idle` right after `assistant.idle`, so it arrives once the finished request has detached.
+const housekeeping = new Set(["session.info", "session.usage_info", "session.usage_checkpoint", "session.idle"]);
 const acceptedBetweenRequests = (type: string) => housekeeping.has(type) || (type.startsWith("model.") && type !== "model.call_start");
+// The CLI announces a new session right after `session.create` answers; these are accepted until the first request attaches.
+const lifecycle = new Set(["session.start", "session.managed_settings_resolved"]);
 const completions = new Set(["tool.execution_complete", "external_tool.completed"]);
 
 export interface SessionOptions {
@@ -46,8 +48,8 @@ export interface SessionOptions {
 
 /** One request served by the session. */
 export interface LiveTurn {
-  /** New conversation items as user messages, or the caller's tool outputs by call id. */
-  begin: { prompts: Prompt[] } | { outputs: Map<string, string | ToolResult> };
+  /** New conversation items as user messages (rendered into the session's folder, which holds their images), or the caller's tool outputs by call id. */
+  begin: { prompts: (directory: string) => Promise<Prompt[]> } | { outputs: Map<string, string | ToolResult> };
   /** Ledger digests of this request's canonical input. */
   prefix: string[];
   turn: CopilotTurn;
@@ -62,11 +64,13 @@ interface Attached { live: LiveTurn; queue: Array<Record<string, unknown>>; wake
  * One long-lived Copilot CLI process and session for one Codex thread. Native history stays in
  * the session: a caller tool call waits as a pending external tool request until Codex sends its
  * output. One event reader routes events to the attached request. Between requests only
- * housekeeping is accepted; model output, a permission request, a finished tool call or a foreign
- * tool kills the session.
+ * housekeeping is accepted, plus the CLI's start-up announcements before the first request and
+ * the confirmation of an effort change the gateway asked for; model output, a permission request,
+ * a finished tool call or a foreign tool kills the session.
  *
- * The CLI keeps a log of the conversation in the session's private directory for as long as the
- * session lives. That directory is 0700 and is removed whenever the session ends, however it ends.
+ * The CLI keeps a log of the conversation, and the gateway the history's images, in the session's
+ * private directory for as long as the session lives. That directory is 0700 and is removed
+ * whenever the session ends, however it ends.
  */
 export class CopilotLiveSession {
   state: SessionState = "starting";
@@ -78,7 +82,15 @@ export class CopilotLiveSession {
   private readonly requests = new Map<string, string>();
   private attached?: Attached; private readonly waiters = new Set<() => void>();
   private timer?: NodeJS.Timeout; private parkMs = 30 * 60000; private toolWaitMs = 25 * 60000;
-  private closing?: Promise<void>; private retiring?: string; private stopped = false;
+  private closing?: Promise<void>; private stopping?: Promise<void>; private retiring?: string; private stopped = false;
+  /** Handed to the registry; only then does its end reach `onClose`. */
+  private started = false;
+  /** Whether a request has attached yet: the CLI's own start-up announcements are accepted until then. */
+  private served = false;
+  /** An effort change in progress: the CLI confirms it with `session.model_change`, which may be routed after the change returns. */
+  private switching?: { model: string; effort: string };
+  /** How the session ended, set when it starts to close. */
+  end?: { outcome: SessionEnd; reason?: string };
   private constructor(private readonly options: SessionOptions) { this.key = options.key; this.fingerprint = options.fingerprint; this.window = options.window; this.effort = options.effort; }
 
   get pid(): number | undefined { return this.client?.rpc.pid; }
@@ -92,20 +104,25 @@ export class CopilotLiveSession {
     try {
       await session.boot(signal);
       if (signal.aborted) throw cancelled();
-      session.state = "turn_done";
+      // Something the session did during start-up already closed it; it is never handed out.
+      if (session.state === "closed") throw new SessionStartFailure("spawn_failed");
+      session.state = "turn_done"; session.started = true;
       return session;
     } catch (error) {
-      await session.stop();
+      await (session.closing ?? session.stop());
       if (signal.aborted) throw cancelled();
       throw new SessionStartFailure(error instanceof ProviderError && error.code === "timeout" ? "initialize_timeout" : "spawn_failed");
     } finally { signal.removeEventListener("abort", abort); }
   }
 
   private async boot(signal: AbortSignal): Promise<void> {
-    const client = this.client = await openCopilot(this.options.config, signal, { kind: "live", privateTmp: true });
+    const client = this.client = await openCopilot(this.options.config, signal, { kind: "live" });
     client.release();
     void this.pump(client);
     await client.rpc.request("session.create", { sessionId: this.sessionId, ...this.options.create, workingDirectory: client.directory, configDir: client.directory }, sessionLimits.startMs);
+    // Events reach the router a tick after the answer that followed them; route what the CLI sent so far while the
+    // session is still starting, so one that misbehaved now is caught here and never handed to a request.
+    await new Promise(resolve => setImmediate(resolve));
   }
 
   /** Sets how long the session waits when parked and when it waits for tool outputs (tool wait must stay under Copilot's 30 minutes). */
@@ -130,7 +147,11 @@ export class CopilotLiveSession {
   /** Changes effort between turns, keeping the cached prefix. */
   async applyEffort(model: string, effort: string): Promise<boolean> {
     if (this.state !== "turn_done" || !this.client) return false;
-    const result = await this.client.rpc.request("session.model.switchTo", { sessionId: this.sessionId, modelId: model, reasoningEffort: effort }, 10000).catch(() => undefined);
+    this.switching = { model, effort };
+    const rpc = this.client.rpc;
+    const result = await rpc.request("session.model.switchTo", { sessionId: this.sessionId, modelId: model, reasoningEffort: effort }, 10000).catch(() => undefined);
+    // A change that failed because the CLI is gone is the session's death, whether or not the event router has noticed yet.
+    if (!result && rpc.closed) this.crash(new ProviderError("cli_failed", "Copilot CLI closed before completion"), "exited");
     const ok = result?.status === "applied" && result.deferred !== true;
     if (ok) this.effort = effort;
     return ok && this.state === "turn_done";
@@ -147,10 +168,12 @@ export class CopilotLiveSession {
     return true;
   }
 
-  /** Attaches one request and starts it. The returned events end with `done`, or throw. */
+  /** Attaches one request and starts it. The returned events end with `done`, or throw; a closed session fails at once. */
   run(live: LiveTurn): AsyncIterable<InferenceEvent> {
+    if (this.state === "closed") return (async function* (): AsyncGenerator<InferenceEvent> { throw new ProviderError("cli_failed", "Copilot session closed", 502); })();
     const attached: Attached = { live, queue: [], onAbort: () => this.abort(attached) };
-    this.attached = attached; this.state = "generating"; this.arm();
+    // From here every event goes to the request, a late effort confirmation included.
+    this.attached = attached; this.state = "generating"; this.served = true; this.switching = undefined; this.arm();
     live.signal.addEventListener("abort", attached.onAbort, { once: true });
     return this.events(attached);
   }
@@ -193,7 +216,7 @@ export class CopilotLiveSession {
         if (answer.success !== true) throw rejected();
         this.requests.delete(callId);
       }));
-    } else await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages: begin.prompts }, 30000);
+    } else await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages: await begin.prompts(this.client!.directory) }, 30000);
   }
 
   /** The next event of the attached request, or undefined once `timeoutMs` passes without one. */
@@ -206,12 +229,17 @@ export class CopilotLiveSession {
     });
   }
 
-  /** The usage events that arrived but were not read when the request ended early. */
+  /**
+   * The usage that arrived but was not read when the request ended early, as one running total. Every queued call is
+   * added first: a caller that has gone records only the first usage event it gets, so it must be the whole sum.
+   */
   private *queuedUsage(attached: Attached): Generator<InferenceEvent> {
+    let last: InferenceEvent | undefined;
     for (const event of attached.queue.splice(0)) {
       if (event.type !== "assistant.usage") continue;
-      try { yield* attached.live.turn.accept(event).events; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
+      try { last = attached.live.turn.accept(event).events.at(-1) ?? last; } catch { /* The request is already failing; this usage is still counted if it was valid. */ }
     }
+    if (last) yield last;
   }
 
   /** Waits until Copilot has announced a pending request for every call it just made, so the next request can answer them. */
@@ -274,6 +302,14 @@ export class CopilotLiveSession {
     void this.close("crashed", reason, false);
   }
 
+  /** Whether a detached `session.model_change` confirms the effort change in progress (once). */
+  private confirmsSwitch(data: Record<string, unknown>): boolean {
+    const switching = this.switching;
+    if (!switching || data.reasoningEffort !== switching.effort || (data.newModel !== undefined && data.newModel !== switching.model)) return false;
+    this.switching = undefined;
+    return true;
+  }
+
   /** The session did something it must not: stop it before it can spend more (abort, then SIGKILL of the process group). */
   private violation(error: ProviderError, reason: string): void {
     if (this.attached) { this.attached.error = error; this.attached.wake?.(); }
@@ -300,6 +336,8 @@ export class CopilotLiveSession {
     const attached = this.attached;
     if (!attached) {
       if (acceptedBetweenRequests(type) || type === "tool.execution_start") return;
+      if (!this.served && lifecycle.has(type)) return;
+      if (type === "session.model_change" && this.confirmsSwitch(data)) return;
       // A finished tool call nobody answered is the 30-minute timeout (or a failure); the runtime's own model call follows within seconds.
       return reject(completions.has(type) ? "unattended_completion" : "unattended_output", "Copilot acted outside a request");
     }
@@ -314,24 +352,23 @@ export class CopilotLiveSession {
    */
   close(outcome: SessionEnd, reason?: string, abort = this.state === "generating" || this.state === "awaiting_outputs"): Promise<void> {
     if (this.closing) return this.closing;
-    this.state = "closed"; clearTimeout(this.timer);
+    this.state = "closed"; clearTimeout(this.timer); this.end = { outcome, reason };
     if (this.attached) { this.attached.error ??= new ProviderError("cli_failed", "Copilot session closed", 502); this.attached.wake?.(); }
     this.wakeWaiters();
-    return this.closing = this.stop(abort).then(() => this.options.onClose(this, outcome, reason));
+    return this.closing = this.stop(abort).then(() => { if (this.started) this.options.onClose(this, outcome, reason); });
   }
 
-  /** Aborts the running turn if asked (at most `abortMs`), kills the process group and removes the directory; idempotent. */
-  async stop(abort = false): Promise<void> {
+  /** Settles once a closing session's process is gone and its folder removed; at once for a session that is not closing. */
+  get finished(): Promise<void> { return this.closing ?? Promise.resolve(); }
+
+  /** Aborts the running turn if asked (at most `abortMs`), kills the process group and removes the directory; idempotent, and every caller waits for the same end. */
+  stop(abort = false): Promise<void> {
     this.stopped = true; clearTimeout(this.timer);
-    const client = this.client; if (!client) return;
-    if (abort) await client.rpc.request("session.abort", { sessionId: this.sessionId }, sessionLimits.abortMs).catch(() => {});
-    await client.close(undefined, true).catch(() => {});
-  }
-
-  /** For a gateway that is exiting right now: no awaiting, so only synchronous calls. */
-  emergencyStop(): void {
-    this.stopped = true;
-    this.client?.rpc.kill();
-    if (this.client) { try { rmSync(this.client.directory, { recursive: true, force: true }); } catch { /* Best effort; the next gateway sweeps it. */ } }
+    // Before the process exists there is nothing to wait for; a later call, once it does, still ends it.
+    const client = this.client; if (!client) return Promise.resolve();
+    return this.stopping ??= (async () => {
+      if (abort) await client.rpc.request("session.abort", { sessionId: this.sessionId }, sessionLimits.abortMs).catch(() => {});
+      await client.close(undefined, true).catch(() => {});
+    })();
   }
 }

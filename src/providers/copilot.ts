@@ -9,10 +9,11 @@ import { imageConversation } from "../protocol/images.js";
 import { CopilotTurn } from "./copilot-turn.js";
 import { sessionFingerprint, sessionParams } from "./copilot-create.js";
 import { choiceLine, copilotPrompts, copilotSystem, nativeCatalog, type NativeTool } from "./copilot-render.js";
-import { copilotLive, retireCopilotScope } from "./copilot-live.js";
+import { copilotLive, retireCopilotScope, type CopilotLiveOutcome } from "./copilot-live.js";
 import { sessionKey } from "./claude-live-contract.js";
 import { leadingInstructions, markCustomCalls, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { telemetry } from "../telemetry.js";
+import { reportException } from "../error-report.js";
 
 export { nativeCopilotCalls } from "./copilot-turn.js";
 
@@ -68,25 +69,30 @@ export class CopilotSubscription implements Provider {
     if (settings.mode !== "live") retireCopilotScope(this.scope(), "mode_oneshot");
     else {
       const threadKey = context.threadId ? sessionKey(this.scope(), context.threadId).slice(0, 8) : undefined;
-      let yielded = false;
-      try {
-        const outcome = await this.live(run, settings);
-        if (outcome.kind === "stream") {
-          try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
-          catch (error) {
-            // A session that dies before its first event falls back to one-shot. Limits, cancellation and caller errors would only repeat.
-            if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
-            if (yielded || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
-            telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", threadKey });
-          }
-        } else telemetry("copilot_session", { outcome: "fallback", missReason: outcome.reason, threadKey });
-      } catch (error) { if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499); throw error; }
+      let outcome: CopilotLiveOutcome;
+      try { outcome = await this.live(run, settings); }
+      catch (error) {
+        // Placing the request failed unexpectedly, before any session work: the one-shot path still serves it.
+        if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw new ProviderError("cancelled", "Request cancelled", 499);
+        if (!(error instanceof ProviderError)) reportException(error, "copilot_live_attach");
+        outcome = { kind: "fallback", reason: "attach_failed" };
+      }
+      if (outcome.kind === "stream") {
+        let yielded = false;
+        try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
+        catch (error) {
+          // A session that dies before its first event falls back to one-shot. Limits, cancellation and caller errors would only repeat.
+          if (signal.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
+          if (yielded || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
+          telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", threadKey });
+        }
+      } else telemetry("copilot_session", { outcome: "fallback", missReason: outcome.reason, threadKey });
     }
     yield* this.oneShot(run);
   }
 
   /** Serves the request from the thread's live session, or says why it cannot. */
-  private async live(run: Run, settings: ReturnType<typeof copilotSessionSettings>) {
+  private async live(run: Run, settings: ReturnType<typeof copilotSessionSettings>): Promise<CopilotLiveOutcome> {
     const { request, signal, context, tools, native, choice, effort, summary, conversation, images, leading, create } = run;
     const skip = (reason: "no_thread" | "request_kind") => ({ kind: "fallback" as const, reason });
     if (!context.threadId) return skip("no_thread");
@@ -103,7 +109,7 @@ export class CopilotSubscription implements Provider {
     const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
     try {
       await client.rpc.request("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
-      await client.rpc.request("session.sendMessages", { sessionId, messages: copilotPrompts(conversation, images, 0, choiceLine(choice, native)) }, 30000);
+      await client.rpc.request("session.sendMessages", { sessionId, messages: await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory) }, 30000);
       for await (const message of client.rpc.notifications()) {
         const params = record(message.params); if (params.sessionId !== sessionId) continue;
         const step = turn.accept(record(params.event));

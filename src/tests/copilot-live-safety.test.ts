@@ -4,7 +4,7 @@ import { mkdir, stat, symlink, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { copilotSessionSettings, validateConfig } from "../config.js";
 import { ProviderError } from "../providers/provider.js";
-import { legacyAgeMs, sweepCopilotDirectories } from "../providers/copilot-directories.js";
+import { legacyAgeMs, processStart, sweepCopilotDirectories } from "../providers/copilot-directories.js";
 import { runShutdownHooks } from "../runtime-activity.js";
 import { createGatewayHandler } from "../server.js";
 import { adapter, alive, callIds, harness, live, outputFor, thread, turn, until, user, type Harness } from "./copilot-live-harness.js";
@@ -20,16 +20,23 @@ const exists = (path: string) => stat(path).then(() => true, () => false);
 test("a dead gateway's folders, live or one-shot, are swept; a living gateway's folders and unrelated ones stay", async () => {
   const h = await harness();
   try {
+    const b36 = (value: number) => value.toString(36);
+    const parent = (await processStart(process.ppid))!; const own = (await processStart(process.pid))!;
+    assert.ok(parent && own, "ps reports when a process started");
     const names = {
-      deadLive: "gateway-copilot-live-zzzzzz-abc123", deadRun: "gateway-copilot-run-zzzzzz-abc123",
-      livingLive: `gateway-copilot-live-${process.ppid.toString(36)}-abc123`, livingRun: `gateway-copilot-run-${process.ppid.toString(36)}-abc123`,
-      own: `gateway-copilot-run-${process.pid.toString(36)}-abc123`, unrelated: "gateway-copilot-harness-abc123", legacyFresh: "gateway-copilot-abc123", legacyOld: "gateway-copilot-OLD123",
+      deadLive: `gateway-copilot-live-zzzzzz-${b36(parent)}-abc123`, deadRun: "gateway-copilot-run-zzzzzz-abc123",
+      livingLive: `gateway-copilot-live-${b36(process.ppid)}-${b36(parent)}-abc123`, livingRun: `gateway-copilot-run-${b36(process.ppid)}-${b36(parent)}-abc123`,
+      // A name from before the start time joined it: a living pid is trusted.
+      livingPidOnly: `gateway-copilot-run-${b36(process.ppid)}-abc123`,
+      // The pid lives, but it is another process now: the folder's owner started an hour before it.
+      reusedLive: `gateway-copilot-live-${b36(process.ppid)}-${b36(parent - 3600)}-abc123`, reusedOwn: `gateway-copilot-run-${b36(process.pid)}-${b36(own - 3600)}-abc123`,
+      own: `gateway-copilot-run-${b36(process.pid)}-${b36(own)}-abc123`, unrelated: "gateway-copilot-harness-abc123", legacyFresh: "gateway-copilot-abc123", legacyOld: "gateway-copilot-OLD123",
     };
     for (const name of Object.values(names)) await mkdir(join(h.scratch, name));
     const old = new Date(Date.now() - 3 * 3600 * 1000); await utimes(join(h.scratch, names.legacyOld), old, old);
     await sweepCopilotDirectories(h.scratch);
-    for (const name of [names.deadLive, names.deadRun, names.legacyOld]) assert.equal(await exists(join(h.scratch, name)), false, `${name} belongs to nobody and holds a prompt log`);
-    for (const name of [names.livingLive, names.livingRun, names.own, names.unrelated, names.legacyFresh]) assert.equal(await exists(join(h.scratch, name)), true, `${name} stays`);
+    for (const name of [names.deadLive, names.deadRun, names.legacyOld, names.reusedLive, names.reusedOwn]) assert.equal(await exists(join(h.scratch, name)), false, `${name} belongs to nobody and holds a prompt log`);
+    for (const name of [names.livingLive, names.livingRun, names.livingPidOnly, names.own, names.unrelated, names.legacyFresh]) assert.equal(await exists(join(h.scratch, name)), true, `${name} stays`);
     // A symlink with a dead owner's name is not followed or removed: only real directories are the gateway's.
     const target = join(h.scratch, "target"); await mkdir(target); await symlink(target, join(h.scratch, "gateway-copilot-run-zzzzzz-link"));
     await sweepCopilotDirectories(h.scratch);
@@ -87,16 +94,13 @@ test("a parked session, one waiting too long for tool outputs and a crashed CLI 
   } finally { await h.restore(); }
 });
 
-test("gateway shutdown closes every live session, and an exiting gateway can stop them synchronously", async () => {
+test("gateway shutdown closes every live session", async () => {
   const h = await harness();
   try {
     const provider = adapter();
     await turn(provider, [user("a [tool]")], { context: { threadId: "A" } }); await turn(provider, [user("b")], { context: { threadId: "B" } });
     await turn(provider, [user("c")], { context: { threadId: "C" } });
     const pids = await h.pids(); assert.equal(pids.length, 3); assert.equal((await h.liveDirs()).length, 3);
-    const [third] = live().sessions().slice(-1);
-    third.emergencyStop(); assert.ok(await until(() => !alive(pids[2])), "the exit handler kills the CLI at once");
-    assert.equal((await h.liveDirs()).length, 2, "and removes its folder without awaiting anything");
     await runShutdownHooks(3000);
     for (const pid of pids) assert.ok(await until(() => !alive(pid)));
     assert.deepEqual(await h.liveDirs(), []); assert.equal(live().sessions().length, 0);

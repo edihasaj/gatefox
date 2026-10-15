@@ -12,13 +12,17 @@ way the Copilot CLI runs on its own. The session holds the native history, the c
 tool calls wait inside it as pending external tool requests, and each gateway request
 sends only what is new. This is the default (`copilotSessions.mode: "live"`).
 
-Why: a new session on every request (`"oneshot"`) sends the whole history as new input,
-so each model call is user-initiated and the history is written to the prompt cache
-again every time. One tool loop of three rounds, measured on `gpt-6-luna` with a
-3.7k-token prompt, wrote 2,217 to 2,307 tokens to the cache per round and cost about
-30 million nano-AIU per round. The same loop in one native session reads the prefix from
-the cache and costs about a tenth of that (13.5 million nano-AIU for a 12k-token prefix).
-Observed gateway traffic cost about 9.5 times what the same work costs natively.
+Why: a new session on every request (`"oneshot"`) reads only the fixed system message and
+tool list from Copilot's prompt cache and writes the rest of the history to the cache
+again. In a three-round tool loop on `gpt-6-luna` with a 3.7k-token prompt, rounds 2 and 3
+each read 1.6k tokens from the cache, wrote 2.2k to 2.3k and cost about 30 million
+nano-AIU. In one session, every follow-up call reads the whole earlier prompt from the
+cache and writes only the new tail. With a 12k-token prompt, the first call wrote 12k
+tokens and cost 151 million nano-AIU, and each follow-up call cost about 13 million. In
+the live check on CLI 1.0.97, gateway rounds 2 and 3 of the 3.7k-token loop read 98% of
+their input from the cache, wrote under 60 tokens and cost 4.8 to 6.0 million nano-AIU.
+Observed gateway traffic before live sessions cost about 9.5 times what the same work
+costs natively.
 
 ```json
 { "id": "copilot", "type": "copilot-subscription", "copilotSessions": { "mode": "live", "max": 4, "parkMinutes": 30, "toolWaitMinutes": 25 } }
@@ -34,7 +38,7 @@ request falls back to whenever a live session cannot serve it.
 | --- | --- | --- |
 | `mode` | `live` | `live` keeps a session per thread; `oneshot` or `replay` starts a session per request |
 | `max` | 4 | Live sessions in the whole process (1–16). A session being started counts toward it |
-| `parkMinutes` | 30 | Idle time before a session closes (5–240). Copilot keeps its prompt cache 30 minutes |
+| `parkMinutes` | 30 | Idle time before a session closes (5–240). Copilot's prompt cache lasted 30 minutes for `gpt-6-luna` and 5 minutes for `claude-haiku-5.5` in the measurements; a session parked longer still continues, at about the price of a reseed, and keeps its native history |
 | `toolWaitMinutes` | 25 | How long a session waits for Codex to run a tool before it closes (1–25) |
 
 ## What a session is made of
@@ -47,9 +51,13 @@ what the model sees.
 - **History:** one user message per conversation item, oldest first, each between
   `<<item N role>>` and `<</item>>` lines. A seed sends all items with
   `session.sendMessages`; a continuation sends only the new ones.
-- **Images:** a user item's images are inline blob attachments on its message. A tool
-  output's images travel as binary results of the waiting call. The gateway writes no
-  image file.
+- **Images:** a history item's images are written (mode 0600) to the `images` folder of
+  the CLI's private folder and attached to the item's message as `file` attachments; the
+  message text names each one. Their bytes never travel inside a message, because one
+  RPC message to the CLI is limited to 16 MiB and a few screenshots pass that. The files
+  go with the folder. A tool output's images can only travel inline, as binary results
+  of the waiting call, so a tool result whose JSON exceeds 12 MiB is not handed over: the
+  thread reseeds (`large_tool_result`), and the seed sends those images as files.
 - **Tools:** the caller's whole catalog, always, whatever the tool choice. Each tool is an
   external tool the caller answers, named `tool_<name>_<hash>` after its identity, so
   reordering the catalog changes nothing. The list is sorted. `skipPermission` is on,
@@ -69,38 +77,48 @@ what the model sees.
   pending external tool requests with `session.tools.handlePendingToolCall`, each to the
   request of the call it answers, whatever order the outputs arrive in. The prefix is read
   from the cache, the follow-up model calls are agent-initiated, and the request is billed
-  for its own model calls only.
+  for its own model calls only. An effort change between turns keeps the session: the
+  gateway calls `session.model.switchTo`, which keeps the cache.
 - **Reseed** (a new process, one cache write, which a one-shot request pays on every
-  call). The old process and its folder are removed first, and a session that was waiting
-  for tools is aborted. The telemetry `missReason` is one of:
+  call). A session that was waiting for tools is aborted first, and the old process and
+  its folder are gone before the new process starts: the request waits for that, at most
+  2 seconds for the abort and then the SIGKILL. The telemetry `missReason` is one of:
   `fingerprint_changed` (model, summary mode, system message, tools, or whether a reasoning
   effort is set), `window_changed` (the context window changed), `prefix_diverged` (an
   earlier message was edited), `unexpected_tail` (for example a new message together with
   tool outputs, which is what Stop followed by a new message sends), `forced_choice`
   (tool outputs arrived with a forced, required or `none` choice, which a tool result
-  cannot carry), `effort_midturn` (an effort change while tools were pending),
+  cannot carry), `large_tool_result` (a tool result with images is too large to hand over
+  inline), `effort_midturn` (an effort change while tools were pending),
   `effort_rejected` (the CLI refused an in-place effort change),
   `tool_request_missing` (the session had no pending request for a call whose output
-  arrived), and, when the thread's previous session had ended, `session_dead`, `evicted`,
-  `reaped`, `interrupted`, `tool_wait_expired` or `idle_missing`. An effort change
-  between turns keeps the session and uses `session.model.switchTo`.
+  arrived), and, when the thread's previous session had ended or ended while the request
+  was being placed, `session_dead` (it crashed or was killed for a violation), `evicted`,
+  `reaped`, `interrupted`, `tool_wait_expired` or `idle_missing`.
 - **One-shot fallback** (the request is answered with its own session and no live session
   starts or changes): `no_thread` (no thread id), `request_kind` (compaction, prewarm and
-  memory requests), `concurrent` (a second request for a thread whose first still runs),
-  `capacity` (every slot is running a turn), `spawn_failed` or `initialize_timeout` (the
-  process or its handshake did not come up in time), `delivery_rejected` (the session
-  refused a tool result), and `stream_failed` (the session died before its first event).
+  memory requests), `concurrent` (a second request for a thread whose first still runs or
+  is still being placed), `capacity` (every slot is running a turn), `spawn_failed` or
+  `initialize_timeout` (the process or its handshake did not come up in time, or the
+  session misbehaved while starting), `delivery_rejected` (the session refused a tool
+  result), `stream_failed` (the session died before its first event), and `attach_failed`
+  (an unexpected error while placing the request; one that is not a provider error is
+  also reported as an exception).
   Images and forced choices are served live.
 
 ## Admission
 
-While every slot holds a session, a new thread takes the slot of the least recently used
-session that finished its turn, then of the least recently used one that waits for tool
-outputs. A running session is never evicted, and neither is one whose own request is being
-placed. When every session is running, the newcomer is served one-shot (`capacity`). An
-evicted thread reseeds on its next request (`evicted`). Sessions being started count
-toward `max`, in arrival order, so concurrent starts can never run more processes than the
-cap.
+While every slot holds a session, a new thread first waits for a session that is already
+closing, then takes the slot of the least recently used session that finished its turn,
+then of the least recently used one that waits for tool outputs. A running session is
+never evicted, and neither is one whose own request is being placed. When every session is
+running, the newcomer is served one-shot (`capacity`). An evicted session's process and
+folder are gone before its replacement starts, and the evicted thread reseeds on its next
+request (`evicted`). Sessions being started count toward `max`, in arrival order, so
+concurrent starts never hold more sessions than the cap. A session that is still closing
+when its thread's next request comes no longer holds the thread or a slot; the request
+waits until it is gone and starts a new session, reporting how the old one ended (for
+example `tool_wait_expired`).
 
 ## Waiting for tools
 
@@ -111,23 +129,33 @@ happens: `session.abort`, then SIGKILL. The next request reseeds (`tool_wait_exp
 
 Between requests the gateway accepts only housekeeping: the pending calls' own
 `tool.execution_start` and `external_tool.requested` events, `session.info`,
-`session.usage_info`, `session.usage_checkpoint`, and `model.*` events other than
-`model.call_start`. Anything else kills the session at once, before it can spend: a
-`tool.execution_complete` or `external_tool.completed` for a call nobody answered (the
-timeout, or a failed call), a model call, any assistant output or usage, compaction,
-truncation or an error, a permission request, a sub-agent event, or a tool request for
-a call that is not pending. A timer cannot be trusted alone, because a sleeping Mac
-stops it while the CLI's clock goes on.
+`session.usage_info`, `session.usage_checkpoint`, `session.idle` (CLI 1.0.97 sends it
+right after `assistant.idle`), and `model.*` events other than `model.call_start`. It also
+accepts the CLI's start-up announcements `session.start` and
+`session.managed_settings_resolved` until the session's first request, and a
+`session.model_change` that confirms the effort change the gateway asked for (the CLI
+sends it before it answers `session.model.switchTo`). Anything else kills the session at
+once, before it can spend: a `tool.execution_complete` or `external_tool.completed` for a
+call nobody answered (the timeout, or a failed call), a model call, any assistant output
+or usage, compaction, truncation or an error, a model change nobody asked for, a
+permission request, a sub-agent event, or a tool request for a call that is not pending.
+A session that misbehaves while it is starting is never handed to a request; the request
+is served one-shot (`spawn_failed`). A timer cannot be trusted alone, because a sleeping
+Mac stops it while the CLI's clock goes on.
 
 ## Stopping a session
 
-Cancelling a request, a reseed, a tool-wait expiry and any violation end the session the
-same way: `session.abort` (bounded to 2 seconds, errors ignored), then SIGKILL of the CLI's
-whole process group, which is its own group, and the removal of its folder. A parked
-session that is not running anything needs no abort and is killed the same way. The
-next request after a cancellation reseeds, because the half-written answer cannot be
-matched against what Codex replays. A request that has already finished is not affected
-when the client closes the connection afterwards.
+Cancelling a request, a reseed, an eviction, a tool-wait expiry and any violation end the
+session the same way: `session.abort` (bounded to 2 seconds, errors ignored), then SIGKILL
+of the CLI's whole process group, which is its own group, and the removal of its folder.
+A parked session that is not running anything needs no abort and is killed the same way.
+A cancelled request ends at once and its session is killed in the background; a reseed or
+an eviction waits for the old session to be gone. Closing a session under a running
+request fails that request at once, or, before its first event, hands it to the one-shot
+path (`stream_failed`). The next request after a cancellation reseeds,
+because the half-written answer cannot be matched against what Codex replays. A request
+that has already finished is not affected when the client closes the connection
+afterwards.
 
 A complete answer whose `assistant.idle` event does not follow within 5 seconds still
 ends the request normally; the session then closes (`idle_missing`).
@@ -143,15 +171,21 @@ ends the request normally; the session then closes (`idle_missing`).
   `~/.copilot`, and the CLI's configuration folder is private. The CLI does write a log of
   the conversation, including prompts and tool results, to `session-state/<id>/events.jsonl`
   in that folder. In one-shot mode it lives for seconds; in live mode it lives as long as
-  the session. The folder is `$TMPDIR/gateway-copilot-live-<owner pid>-<random>` (one-shot:
-  `gateway-copilot-run-<owner pid>-<random>`), mode 0700, and also holds the CLI's own
-  `TMPDIR`. It is removed when the session closes, parks out, is evicted, crashes, is
-  cancelled or is retired, and by every gateway shutdown hook. If the gateway exits some
-  other way, its exit handler kills the CLIs and removes the folders synchronously. If the
-  gateway is killed outright, the next gateway removes every folder whose owner pid is dead
-  when it starts, before its first request and whatever any provider's mode is. Folders
-  that older releases left without an owner pid (`gateway-copilot-<random>`) are removed
-  once they are more than two hours old, longer than any request runs.
+  the session. The folder is `$TMPDIR/gateway-copilot-live-<owner pid>-<owner start>-<random>`
+  (one-shot: `gateway-copilot-run-…`), with the gateway's pid and start time in base 36
+  (the start time is left out when `ps` cannot read it), mode 0700. It holds the CLI's own
+  `TMPDIR` and the history's images, for every CLI the gateway starts. It is removed when
+  the session closes, parks out, is evicted, crashes, is cancelled or is retired, and by
+  every gateway shutdown hook. If the gateway exits through `process.exit` or the end of
+  its event loop without closing them, an exit handler kills every Copilot CLI it started
+  (live, one-shot, starting or closing) and removes their folders synchronously. If the
+  gateway is killed outright, its CLIs exit when their input closes (measured on CLI
+  1.0.97), and the next gateway removes every folder whose owner no longer runs when it
+  starts, before its first request and whatever any provider's mode is. An owner no longer
+  runs when its pid is dead or now belongs to a process with another start time (`ps -o
+  lstart`), so a reused pid keeps nothing. Folders that older releases left without an
+  owner (`gateway-copilot-<random>`) are removed once they are more than two hours old,
+  longer than any request runs.
 - No caller prompt, tool argument or output goes to gateway logs, telemetry or the usage
   ledger.
 
@@ -160,7 +194,8 @@ ends the request normally; the session then closes (`idle_missing`).
 The usage ledger records one row per gateway request with that request's own cache read,
 cache write, reasoning and nano-AIU totals, so the saving shows directly in the cache-read
 share of `inputTokens` and in `nanoAiu` per request; see [diagnostics](diagnostics.md).
-Usage that the CLI reported before a request failed or was cancelled is still counted.
+Usage that the CLI reported before a request failed or was cancelled is still counted:
+the request reports it as one running total of every model call it made.
 
 `copilot_session` telemetry has one event per decision or end:
 
@@ -175,8 +210,10 @@ Usage that the CLI reported before a request failed or was cancelled is still co
 | `failed` | on a request that failed after reaching a session |
 | `initiator`, `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `nanoAiu`, `toolCalls` | the request's own totals; `initiator` is `user` (a new message started the first call), `agent` (the session's own follow-up) or `mixed` |
 
-`request_completed` and `request_failed` carry the same `initiator`, `cacheWriteTokens`,
-`reasoningTokens` and `nanoAiu` for every Copilot request.
+A session that never served a request (it failed while starting) has no end event; its
+request's `fallback` event says why. `request_completed` and `request_failed` carry the
+same `initiator`, `cacheWriteTokens`, `reasoningTokens` and `nanoAiu` for every Copilot
+request.
 
 ## Limits
 
@@ -184,6 +221,11 @@ A request that arrives with a tool output the session cannot match reseeds inste
 guessing. The protocol details come from measurements on Copilot CLI 1.0.97, and
 `session.sendMessages`, `session.tools.handlePendingToolCall`, `session.abort` and
 `session.model.switchTo` are experimental there; run a short live check against the
-installed CLI after upgrading it. Blob attachments, tool-output images and tool
-deferral above 30 tools are specified by the CLI's schema but were not measured against a
-vision model. A live session costs about 257 MB of memory, so `max: 4` is about 1 GB.
+installed CLI after upgrading it. The last check (October 2026) covered a three-round tool
+loop, an effort change between turns, Stop while a tool waited, a request without a
+thread id, shutdown with a parked session, and a gateway killed outright (see
+[verification](verification.md)). History images use the file attachments with which
+earlier releases passed real PNG checks. Tool-output images as binary results, and tool
+deferral above 30 tools, are specified by the CLI's schema but were not measured against
+a vision model. A
+live session costs about 257 MB of memory, so `max: 4` is about 1 GB.

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import { ProviderError } from "../providers/provider.js";
@@ -164,6 +165,33 @@ test("an effort change between turns switches in place; one while tools wait, or
   } finally { await h.restore(); }
 });
 
+test("the CLI's own confirmation of an effort change, which comes before its answer, keeps the session", async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
+    assert.match(b.text, /^answer/);
+    assert.equal((await h.pids()).length, 1, "one CLI process across the effort change");
+    const kinds = outcomes(await h.sessions());
+    assert.deepEqual(kinds.filter(kind => /^(spawned|continued|reseeded|crashed|fallback)/.test(kind)), ["spawned", "continued"], kinds.join(","));
+    assert.equal(live().sessions()[0].effort, "medium");
+  } finally { await h.restore(); }
+});
+
+test("an effort confirmation for another effort than the one asked for ends the session; the request is served by a new one", async () => {
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT = "xhigh";
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const [pid] = await h.pids();
+    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
+    assert.match(b.text, /^answer/); assert.ok(await until(() => !alive(pid)), "the session that changed to an effort nobody asked for is killed");
+    const kinds = outcomes(await h.sessions());
+    assert.ok(kinds.includes("crashed:unattended_output") && kinds.includes("reseeded:session_dead"), kinds.join(","));
+  } finally { await h.restore(); }
+});
+
 test("cancelling aborts the session, kills the process, removes its folder and the next request starts a new session", async () => {
   const h = await harness();
   try {
@@ -254,21 +282,26 @@ test("a session whose own next request is still being placed is not evicted for 
   } finally { await h.restore(); }
 });
 
-test("conversation images travel as blob attachments on their item, in a seed and in a continuation, on one process", async () => {
+test("conversation images travel as private file attachments on their item, in a seed and in a continuation, on one process", async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [imageUser("look")];
     const a = await turn(provider, first);
     await turn(provider, [...first, ...a.output, imageUser("and this")]);
-    const sends = (await h.log()).filter(entry => entry.op === "session.sendMessages");
+    const entries = await h.log(); const sends = entries.filter(entry => entry.op === "session.sendMessages");
+    const folder = entries.find(entry => entry.op === "create")!.directory as string;
     assert.equal((await h.pids()).length, 1, "a screenshot does not move the thread off its live session");
     assert.equal(sends.length, 2);
+    const sha = createHash("sha256").update(Buffer.from(png.split(",")[1], "base64")).digest("hex");
     for (const [index, send] of sends.entries()) {
-      const [attachment] = send.attachments[0];
-      assert.deepEqual([attachment.type, attachment.mimeType, attachment.data], ["blob", "image/png", png.split(",")[1]]);
+      const [attachment] = send.attachments[0]; const [file] = send.files[0];
+      assert.equal(attachment.type, "file"); assert.equal(attachment.data, undefined, "no image bytes in the message");
+      assert.ok(attachment.path.startsWith(join(folder, "images") + "/"), "the image lives in the session's private folder");
+      assert.deepEqual([file.sha, file.mode], [sha, 0o600], "the file holds the image's bytes and only its owner can read it");
       assert.match(attachment.displayName, new RegExp(`^conversation-message-${index === 0 ? 1 : 3}-part-2$`));
       assert.ok(send.prompts[0].includes(`[Attached image ${attachment.displayName}]`), "the text names the attachment it belongs to");
     }
+    await live().stop(); assert.deepEqual(await h.liveDirs(), [], "the images go with the folder");
   } finally { await h.restore(); }
 });
 

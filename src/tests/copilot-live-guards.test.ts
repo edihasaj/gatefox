@@ -25,6 +25,8 @@ const killers: Array<[string, string]> = [
   ["model.call_start", "unattended_output"], ["assistant.turn_start", "unattended_output"], ["assistant.message", "unattended_output"], ["assistant.message_delta", "unattended_output"],
   ["assistant.usage", "unattended_output"], ["session.compaction_start", "unattended_output"], ["session.truncation", "unattended_output"], ["session.error", "unattended_output"],
   ["tool.execution_progress", "unattended_output"],
+  // An effort change nobody asked for, and a start-up announcement once the session has served a request.
+  ["session.model_change", "unattended_output"], ["session.start", "unattended_output"], ["session.managed_settings_resolved", "unattended_output"],
 ];
 
 test("between requests, anything but housekeeping kills the session before it can spend: a timed-out or failed tool call, a model call, output", async () => {
@@ -47,12 +49,12 @@ test("between requests, anything but housekeeping kills the session before it ca
 test("housekeeping events between requests are accepted and the session lives on", async () => {
   const h = await harness();
   try {
-    const provider = adapter(); const types = ["session.info", "session.usage_info", "session.usage_checkpoint", "model.call_finished"];
+    const types = ["session.info", "session.usage_info", "session.usage_checkpoint", "session.idle", "model.call_finished"]; const provider = adapter({ mode: "live", max: types.length });
     const firsts = await Promise.all(types.map(async type => { const first = [user(`go [tool][late:${type}]`)]; return { type, first, a: await turn(provider, first, { context: { threadId: type } }) }; }));
     await sleep(700);
-    assert.equal(live().sessions().length, 4, "none of them was killed");
+    assert.equal(live().sessions().length, types.length, "none of them was killed");
     for (const { type, first, a } of firsts) await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")], { context: { threadId: type } });
-    assert.equal((await h.pids()).length, 4, "each thread kept its one process");
+    assert.equal((await h.pids()).length, types.length, "each thread kept its one process");
     assert.ok(!(await kinds(h)).some(value => value.startsWith("crashed")));
   } finally { await h.restore(); }
 });

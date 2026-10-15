@@ -87,6 +87,8 @@ export class CopilotRPC {
     this.stop();
   }
   get pid(): number | undefined { return this.child.pid; }
+  /** Whether the connection is over: stopped by the gateway, or the process has exited. */
+  get closed(): boolean { return this.stopping || this.child.exitCode !== null || this.child.signalCode !== null; }
   /** Signals the CLI's whole process group (it is its own group leader), or just the process if the group is gone. */
   private signal(name: NodeJS.Signals): void {
     const pid = this.child.pid;

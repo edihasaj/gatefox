@@ -6,7 +6,7 @@ import { decide, ledgerEntries, type LedgerPhase } from "./claude-ledger.js";
 import type { ClaudeConversation, ClaudeImages } from "./claude-render.js";
 import { sessionKey } from "./claude-live-contract.js";
 import { CopilotLiveSession, SessionStartFailure, sessionLimits, type SessionEnd, type SessionState } from "./copilot-live-session.js";
-import { choiceLine, copilotPrompts, copilotToolResult, imagesByItem, type NativeTool } from "./copilot-render.js";
+import { choiceLine, copilotPrompts, copilotToolResult, fitsInline, imagesByItem, type NativeTool, type ToolResult } from "./copilot-render.js";
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
 
@@ -16,8 +16,8 @@ import { ProviderError } from "./provider.js";
  * changed, the thread is reseeded in a new process (one cache write, which a one-shot request pays on
  * every call). Anything that fails before output falls back to the one-shot path.
  */
-export type CopilotMissReason = "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" | "delivery_rejected" | "stream_failed" |
-  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn" | "effort_rejected" | "tool_request_missing" |
+export type CopilotMissReason = "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" | "delivery_rejected" | "stream_failed" | "attach_failed" |
+  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn" | "effort_rejected" | "tool_request_missing" | "large_tool_result" |
   "session_dead" | "evicted" | "reaped" | "interrupted" | "tool_wait_expired" | "idle_missing";
 
 export interface CopilotLiveInput {
@@ -74,8 +74,7 @@ function registry(): Registry {
   registerActivityProbe("copilot_sessions", () => created.starting.size > 0 || [...created.sessions.values()].some(session => session.state === "generating" ||
     (session.state === "awaiting_outputs" && Date.now() - session.lastUse < recentToolWait)));
   registerShutdownHook("copilot_sessions", () => closeAll(created, "shutdown"));
-  // A gateway that exits without closing its sessions still must not leave a CLI or its prompt log behind.
-  process.once("exit", () => { for (const session of created.sessions.values()) session.emergencyStop(); });
+  // A gateway that exits without closing its sessions is covered by copilot-client.ts, whose exit handler kills every CLI it started.
   return created;
 }
 
@@ -114,12 +113,21 @@ function slotsTaken(reg: Registry, key: string): number {
 }
 
 /**
- * The session to make room: the least recently used one that is parked after a finished turn, else the least recently
- * used one waiting for tool outputs. A running session is never evicted, nor one whose own request is being placed.
+ * The session to make room: one that is already closing (waiting for it evicts nobody), else the least recently used
+ * one that is parked after a finished turn, else the least recently used one waiting for tool outputs. A running
+ * session is never evicted, nor one whose own request is being placed.
  */
 function evictable(reg: Registry): CopilotLiveSession | undefined {
   const idle = [...reg.sessions.values()].filter(session => session.state !== "generating" && session.state !== "starting" && !reg.starting.has(session.key)).sort((a, b) => a.lastUse - b.lastUse);
-  return idle.find(session => session.state === "turn_done") ?? idle.find(session => session.state === "awaiting_outputs");
+  return idle.find(session => session.state === "closed") ?? idle.find(session => session.state === "turn_done") ?? idle.find(session => session.state === "awaiting_outputs");
+}
+
+/** Why a thread has no session after its last one ended this way, for the next spawn to report; undefined when the end needs no explanation. */
+function endReason(end: CopilotLiveSession["end"]): CopilotMissReason | undefined {
+  if (!end) return undefined;
+  if (end.outcome === "crashed") return "session_dead";
+  if (end.reason === "interrupted" || end.reason === "tool_wait_expired" || end.reason === "idle_missing") return end.reason;
+  return end.outcome === "evicted" || end.outcome === "reaped" ? end.outcome : undefined;
 }
 
 async function place(reg: Registry, settings: CopilotLiveSettings, key: string, input: CopilotLiveInput, signal: AbortSignal): Promise<CopilotLiveOutcome> {
@@ -128,7 +136,13 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
   const { entries, messages } = ledgerEntries(input.request, input.catalog, input.leading);
   const window = input.windowId ?? "";
   let reason: CopilotMissReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined;
-  if (session && session.state !== "closed") {
+  let outputs: Map<string, string | ToolResult> | undefined;
+  if (session?.state === "closed") {
+    // It is still ending (an abort, then the kill). It no longer holds the thread or a slot, and how it ended is why
+    // this request starts over. Its process and folder are gone before a new one starts.
+    reg.sessions.delete(key); reason = endReason(session.end);
+    await session.finished; session = undefined;
+  } else if (session) {
     parkedMs = Date.now() - session.lastUse;
     const decision = decide(session.ledger, entries, messages, session.state as LedgerPhase, session.pending);
     if (session.fingerprint !== input.fingerprint) reason = "fingerprint_changed";
@@ -139,29 +153,34 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     else if (decision.kind === "continue_outputs" && decision.outputs.some(entry => { const message = input.conversation[entry.first]; return message?.role !== "tool" || message.tool_call_id !== entry.callId; })) reason = "unexpected_tail";
     // A tool result cannot carry the choice line, so a forced, required or disabled choice starts the thread over.
     else if (decision.kind === "continue_outputs" && input.choice !== undefined && input.choice !== "auto") reason = "forced_choice";
+    // Images in a tool result travel inline; past the budget they would not fit one RPC message, while a seed sends them as files.
+    else if (decision.kind === "continue_outputs" && ![...(outputs = toolResults(input, decision.outputs)).values()].every(fitsInline)) reason = "large_tool_result";
     else if (decision.kind === "continue_outputs" && !(await session.hasRequests(session.pending, sessionLimits.pendingMs))) reason = "tool_request_missing";
     else if (input.effort !== undefined && input.effort !== session.effort) {
       if (session.state === "awaiting_outputs") reason = "effort_midturn";
       else if (!(await session.applyEffort(input.model, input.effort))) reason = "effort_rejected";
     }
-    if (!reason && (session.state as SessionState) === "closed") reason = "session_dead";
+    // A crash, a violation or a timer can end the session during the waits above; that, not what the wait saw, is why the thread starts over.
+    if ((session.state as SessionState) === "closed") reason = endReason(session.end) ?? "session_dead";
     if (!reason && decision.kind !== "reseed") plan = decision;
     if (reason) {
-      // One new process costs the cache write that every one-shot request pays, and the thread then keeps it.
-      reg.sessions.delete(key); void session.close("closed", reason); session = undefined;
+      // One new process costs the cache write that every one-shot request pays, and the thread then keeps it. The old
+      // process and its folder are gone before the new one starts (at most `abortMs` for a running turn, then SIGKILL).
+      reg.sessions.delete(key); await session.close("closed", reason); session = undefined;
     }
   } else {
-    session = undefined;
     const ended = reg.ended.get(key);
     if (ended) reason = ended as CopilotMissReason;
   }
   if (signal.aborted) throw cancelled();
   if (!session || !plan) {
     // A session and an earlier attach that is still starting both hold a slot, so concurrent starts can never pass the cap.
+    // An evicted session is gone, process and folder, before its replacement starts.
     while (slotsTaken(reg, key) >= settings.max) {
       const victim = evictable(reg);
       if (!victim) return { kind: "fallback", reason: "capacity" };
-      reg.sessions.delete(victim.key); void victim.close("evicted");
+      reg.sessions.delete(victim.key); await victim.close("evicted");
+      if (signal.aborted) throw cancelled();
     }
     try {
       session = await CopilotLiveSession.start({ key, fingerprint: input.fingerprint, window, effort: input.effort, config: input.config, create: input.create, toolNames: new Set(input.native.map(({ name }) => name)),
@@ -174,16 +193,21 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     plan = { kind: "seed" }; parkedMs = undefined;
   }
   reg.scopes.set(key, input.scope);
-  return { kind: "stream", events: start(reg, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
+  return { kind: "stream", events: start(reg, settings, session, input, entries.map(entry => entry.digest), plan, outputs, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
   }) };
 }
 
-function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
-  plan: Plan, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
+/** The caller's tool outputs by call id, as `session.tools.handlePendingToolCall` takes them. */
+function toolResults(input: CopilotLiveInput, entries: Extract<Plan, { kind: "continue_outputs" }>["outputs"]): Map<string, string | ToolResult> {
   const owned = imagesByItem(input.images);
-  const begin = plan.kind === "continue_outputs" ? { outputs: new Map(plan.outputs.map(entry => [entry.callId!, copilotToolResult(input.conversation[entry.first], owned.get(entry.first))])) }
-    : { prompts: copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native)) };
+  return new Map(entries.map(entry => [entry.callId!, copilotToolResult(input.conversation[entry.first], owned.get(entry.first))]));
+}
+
+function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
+  plan: Plan, outputs: Map<string, string | ToolResult> | undefined, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
+  const begin = plan.kind === "continue_outputs" ? { outputs: outputs ?? toolResults(input, plan.outputs) }
+    : { prompts: (directory: string) => copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native), directory) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();
   return session.run({
@@ -201,7 +225,7 @@ function ended(reg: Registry, session: CopilotLiveSession, outcome: SessionEnd, 
   if (reg.sessions.get(session.key) === session) reg.sessions.delete(session.key);
   if (!reg.sessions.has(session.key)) reg.scopes.delete(session.key);
   // Remember why the thread has no session, so its next spawn reports it.
-  const why = outcome === "crashed" ? "session_dead" : reason === "interrupted" || reason === "tool_wait_expired" || reason === "idle_missing" ? reason : outcome === "evicted" || outcome === "reaped" ? outcome : undefined;
+  const why = endReason({ outcome, reason });
   if (why && !reg.sessions.has(session.key)) { reg.ended.delete(session.key); reg.ended.set(session.key, why); if (reg.ended.size > 256) reg.ended.delete(reg.ended.keys().next().value!); }
   telemetry("copilot_session", { outcome, missReason: reason, threadKey: session.key.slice(0, 8), liveSessions: reg.sessions.size, parkedMs: Date.now() - session.lastUse });
 }

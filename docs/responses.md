@@ -279,12 +279,14 @@ summaries stream separately; `auto` requests a concise summary. The adapter reje
 BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
 By default the thread keeps one live CLI session, and a request sends only the
-items that are new; see [live Copilot sessions](copilot-sessions.md). Cancellation
-aborts the session, stops its CLI process and waits for it to exit; the next request
-starts a new session and sends the caller-supplied history once. A request a live
-session cannot serve (no thread id, compaction, a concurrent request, every slot busy,
-or `copilotSessions.mode: "oneshot"`) gets its own session, with the same system
-message, the caller's whole tool catalog and one user message per history item.
+items that are new; see [live Copilot sessions](copilot-sessions.md). Cancelling a
+live request ends it at once; its session is aborted and its CLI process killed in the
+background, without the request waiting for the exit. The next request starts a new
+session and sends the caller-supplied history once. Cancelling a one-shot request stops
+its CLI process and waits for it to exit. A request a live session cannot serve (no
+thread id, compaction, a concurrent request, every slot busy, or
+`copilotSessions.mode: "oneshot"`) gets its own session, with the same system message,
+the caller's whole tool catalog and one user message per history item.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 Normal requests retain the selected model, reasoning, and subscription route.
@@ -407,8 +409,12 @@ update. Live sessions reseed once after an inference restart anyway, so they pay
 that same single write.
 
 Claude receives native image blocks through the official CLI's streamed input.
-Copilot receives images as inline blob attachments on the message that owns them, and
-tool-output images as binary results of the waiting tool call. The gateway writes no image file.
+Copilot receives a history item's images as file attachments on the message that owns
+them: the gateway writes each image (mode 0600) into the CLI's private folder, which is
+removed with the session, because one RPC message to the CLI is limited to 16 MiB.
+Tool-output images travel inline as binary results of the waiting tool call while the
+result stays within 12 MiB; a larger one starts the thread's session over, which sends
+those images as files too.
 Their text conversation contains labels for image ownership and order, never the
 image bytes. Each native harness controls its own image preprocessing. Codex and
 ordinary Responses upstreams retain the original image parts and detail setting.

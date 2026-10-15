@@ -499,6 +499,20 @@ only the four requested Copilot models. This test proves one model's full loop,
 not every discovered model's inference access. Rendered Copilot selection remains
 unverified.
 
+Copilot live sessions (`copilotSessions.mode: "live"`) passed a real check on CLI
+1.0.97 in October 2026, through an isolated test gateway with its own state folder and
+`TMPDIR`, on `gpt-6-luna`. A three-round tool loop stayed in one CLI process. Rounds 2
+and 3 read 98% of their input from the cache, wrote under 60 tokens and cost 4.8 to 6.0
+million nano-AIU each. An effort change between turns continued the same session with
+98.6% read from the cache. Stop while a tool waited reseeded the thread
+(`unexpected_tail`), and a request without a thread id ran one-shot. Every request wrote
+one content-free ledger row with complete credit figures. `~/.copilot` gained no session
+rows or session folders. A normal shutdown removed the parked session's process and
+folder. After the gateway was killed outright, its CLIs exited when their input closed,
+and the next gateway's startup sweep removed their folders. The check found that the CLI
+sends `session.idle` right after `assistant.idle`; the gateway first treated it as
+unrequested output, and now accepts it between requests.
+
 A real text sweep passed all 20 loaded Claude/Codex 2 routes. It found and verified
 a fix for the unsupported upstream `summary: "none"` value. Copilot passed 12 of
 13 routes in that earlier catalog. Its Opus 5 request returned Opus 4.8, so the

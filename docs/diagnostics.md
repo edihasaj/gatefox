@@ -105,11 +105,12 @@ a gateway request once, from the ledger, and skips the matching Codex record.
 
 **Telemetry import.** The first time the ledger is prepared, and
 `<state>/usage/telemetry-import.json` is absent, each `request_*` telemetry event with
-input or output tokens becomes one `origin: "telemetry"` row (no response id, credit
-amount `null`), and the marker file records the count. This keeps request history
-that telemetry would drop after its 14 days. An imported row keeps the cache-write,
-reasoning and credit figures its event carries (`cacheWriteTokens`, `reasoningTokens`,
-`nanoAiu`, `nanoAiuStatus`; older events have none, so those read 0 or `null`).
+input or output tokens becomes one `origin: "telemetry"` row (no response id), and the
+marker file records the count. This keeps request history that telemetry would drop
+after its 14 days. An imported row keeps the cache-write, reasoning and credit figures
+its event carries (`cacheWriteTokens`, `reasoningTokens`, `nanoAiu`, `nanoAiuStatus`);
+an event from before those fields existed has none, so its row reads 0 for the token
+figures and `null` for `nanoAiu`.
 `providerType` is set only for providers in the current configuration. The import skips
 every request this process records and any request already in the ledger, and writes in
 one append per month, so a request is never counted twice; a reader also keeps one row

@@ -1,6 +1,9 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { ChatToolSelection, OpenAITool } from "../protocol/types.js";
 import { claudeToolName } from "./claude-tool-names.js";
 import { itemText, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
+import { ProviderError } from "./provider.js";
 
 /** What the caller's history looks like to Copilot, shared by the live seed and the one-shot fallback. */
 
@@ -45,7 +48,7 @@ export function choiceLine(choice: ChatToolSelection | undefined, catalog: Nativ
   return `Use the required caller tool ${native ?? choice.function.name}.`;
 }
 
-export interface Attachment { type: "blob"; data: string; mimeType: string; displayName: string }
+export interface Attachment { type: "file"; path: string; displayName: string }
 export interface Prompt { prompt: string; attachments?: Attachment[] }
 type Item = ClaudeConversation[number];
 
@@ -59,17 +62,35 @@ export function imagesByItem(images: ClaudeImages): Map<number, ClaudeImages> {
   return byItem;
 }
 
+const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+
 /**
- * One user message per conversation item from `from`, oldest first, with each item's images as attachments and the
- * choice line closing the last message. Item numbers count from the start of the conversation, so a continuation
- * numbers its items the way a seed would have.
+ * Writes one image (0600) into the `images` folder of the CLI's private folder and returns it as a `file` attachment.
+ * Images never travel inline in a prompt: one RPC message is limited to 16 MiB, and a few screenshots pass that.
+ * The folder goes with the CLI's folder, so no image outlives the session.
  */
-export function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line?: string): Prompt[] {
+async function stage(directory: string, { label, image }: ClaudeImages[number]): Promise<Attachment> {
+  const folder = join(directory, "images"); const path = join(folder, `${label}.${extensions[image.mediaType] ?? "img"}`);
+  try {
+    await mkdir(folder, { recursive: true, mode: 0o700 });
+    await writeFile(path, Buffer.from(image.data, "base64"), { mode: 0o600 });
+  } catch { throw new ProviderError("cli_failed", "Copilot image attachment could not be written"); }
+  return { type: "file", path, displayName: label };
+}
+
+/**
+ * One user message per conversation item from `from`, oldest first, with each item's images as file attachments in
+ * `directory` (the CLI's private folder) and the choice line closing the last message. Item numbers count from the
+ * start of the conversation, so a continuation numbers its items the way a seed would have.
+ */
+export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string): Promise<Prompt[]> {
   const owned = imagesByItem(images);
-  const prompts: Prompt[] = conversation.slice(from).map((item, offset) => {
-    const attachments = (owned.get(from + offset) || []).map(({ label, image }): Attachment => ({ type: "blob", data: image.data, mimeType: image.mediaType, displayName: label }));
-    return { prompt: itemText(item, from + offset + 1), ...(attachments.length ? { attachments } : {}) };
-  });
+  const prompts: Prompt[] = [];
+  for (const [offset, item] of conversation.slice(from).entries()) {
+    const attachments: Attachment[] = [];
+    for (const image of owned.get(from + offset) || []) attachments.push(await stage(directory, image));
+    prompts.push({ prompt: itemText(item, from + offset + 1), ...(attachments.length ? { attachments } : {}) });
+  }
   if (!prompts.length) prompts.push({ prompt: "(the conversation has no items)" });
   if (line) prompts[prompts.length - 1].prompt += `\n${line}`;
   return prompts;
@@ -83,3 +104,11 @@ export function copilotToolResult(item: Item, images: ClaudeImages = []): string
   if (!images.length) return text;
   return { textResultForLlm: text, resultType: "success", binaryResultsForLlm: images.map(({ image }) => ({ type: "image", data: image.data, mimeType: image.mediaType })) };
 }
+
+/**
+ * The largest tool result with images that is handed to a waiting call inline (its images can only travel as base64
+ * there). It stays well below the 16 MiB limit of one RPC message; a larger one starts the thread over, where the
+ * images become file attachments.
+ */
+export const inlineResultBytes = 12 * 1024 * 1024;
+export const fitsInline = (result: string | ToolResult): boolean => typeof result === "string" || Buffer.byteLength(JSON.stringify(result)) <= inlineResultBytes;
