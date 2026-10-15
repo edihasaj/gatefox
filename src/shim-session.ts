@@ -1,6 +1,6 @@
 import type { Readable } from "node:stream";
 import type { GatewayConfig } from "./config.js";
-import { AppServerRouter, AppServerRoutingError } from "./app-server-router.js";
+import { AppServerRouter, AppServerRoutingError, inheritsParentSettings } from "./app-server-router.js";
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
@@ -11,6 +11,7 @@ import { reportException } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
 import { ThreadStartOrder } from "./thread-start-order.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
+import { rpcRejection } from "./rpc-rejection.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
@@ -51,6 +52,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {
+    // The parent already runs with corrected hooks; the SDK refuses any override on this fork.
+    if (inheritsParentSettings(method, params)) return params;
     const threadConfig = ["thread/start", "thread/resume", "thread/fork"].includes(method);
     const legacy = threadConfig ? hasLegacyCodexHookConfig(object(params.config)) : method === "experimentalFeature/enablement/set" && Object.hasOwn(object(params.enablement), "codex_hooks");
     if (!legacy && !(threadConfig && rewrittenHooks.size)) return normalizeCodexFeatureRequest(method, params);
@@ -93,7 +96,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
           // Routing errors carry fixed gateway text; other failures are classified only.
           const routing = error instanceof AppServerRoutingError;
           if (failure.code === undefined && !routing) reportException(failure, `rpc:${message.method}`);
-          telemetry("rpc_error", { method: message.method, code: failure.code || -32603, ...(routing ? { reason: failure.message } : { errorClass: errorClass(failure.message) }) });
+          telemetry("rpc_error", { method: message.method, code: failure.code || -32603, ...(routing ? { reason: failure.message } : { errorClass: errorClass(failure.message) }),
+            rejection: rpcRejection(String(message.method), failure, routing) });
           return answer({ id: message.id, error: { code: failure.code || -32603, message: failure.message, ...(failure.data === undefined ? {} : { data: failure.data }) } });
         });
         tasks.add(task); void task.finally(() => tasks.delete(task)).catch(stop);

@@ -321,10 +321,9 @@ item for tool-call mapping, passes the item to the ChatGPT endpoint unchanged, a
 applies its own default namespace only to calls of top-level tools. Other
 providers skip the item when building their transcript.
 
-Picking a model in the desktop that lacks the chat's speed tier (a Fast Codex chat
-switched to Claude) moves the chat to Standard. Only that explicit settings change
-does this; turn starts, resumes, forks and active-turn updates still refuse a
-missing tier, so a stale peer cannot silently drop another client's Fast setting.
+A model that lacks the chat's speed tier (a Fast Codex chat switched to Claude)
+runs its requests as Standard while the chat keeps its tier, as native Codex does.
+See "Speed controls" for the full rule.
 
 Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
 roles in the native configuration) inherit the gateway provider but take their
@@ -475,6 +474,69 @@ adapter cannot read is sent unchanged, so the SDK reports the same error as befo
 Executors that run under the app (per-connection engines) are not changed. Paths and
 file contents are never logged.
 
+## Processes and prediction forks on connected machines
+
+The desktop runs git commands (the branch and pull request chips) and terminals on a
+connected machine through the app-server's process API: `process/spawn`,
+`process/writeStdin`, `process/resizePty` and `process/kill`. A process handle belongs to
+one connection, and output arrives as `process/outputDelta` and `process/exited`
+notifications on that connection. The adapter sends these requests unchanged to that
+machine's native engine and returns its answer unchanged, as the native app-server does,
+for the relay and SSH paths alike. Nothing runs in the adapter or in a gateway executor.
+
+Some refusals come from the engine itself and also occur natively. The signed SDK
+(0.162.0-alpha.17.2) rejects a working directory that is not absolute with `-32600`
+"AbsolutePathBuf deserialized without a base path"; the desktop sends its projectless
+`~` placeholder when a remote composer has no project. The SDK answers `-32603` "failed
+to spawn process" for a directory that does not exist on that machine, and `-32600` "no
+active process for process handle" when the desktop stops a git command that has
+already exited. Deleting a chat that never wrote a rollout returns "no rollout found for
+thread id", which the desktop recognizes.
+
+The desktop's composer suggestions resume a chat and then fork it with
+`experimentalPredictionMode: true`, `ephemeral: true` and `excludeTurns: true`. Such a
+fork starts from the loaded parent's effective settings, and the SDK refuses it with
+`-32600` when the request carries any override, even a single `config` key. The adapter
+forwards a prediction fork exactly as the desktop sent it to the engine that owns the
+chat. It adds no restored reasoning, gateway model, provider, catalog or speed tier,
+applies no hooks-alias correction, and never refuses it over an unknown tier. Before
+this, the adapter added a native chat's saved reasoning effort to the fork, so every
+suggestion fork failed. Ordinary forks keep the reasoning and tier handling described
+above. The change applies to the next adapter connection after an update.
+
+Any ephemeral chat (prediction forks included) is memory-only. Its result writes no
+reasoning record and no service-tier row, and a later turn or applied settings change
+on it writes none either. The adapter keeps only an in-memory route, so a turn started
+on the chat reaches the owning engine without a service-tier or reasoning write. The
+newest 256 such chats stay tracked this way, and each one counts toward that cap
+whether it was started, resumed, forked, or first seen when a turn probed its owner.
+`thread/closed` or `thread/unsubscribe` for one of them forgets its route and chat
+snapshot at once; a later turn on a chat that is still loaded in the engine is
+recognized as ephemeral again from the engine's own chat read and stays memory-only.
+
+When the 256 cap pushes a chat out, its route and snapshot go but its id is kept in a
+second set of the newest 4096 evicted ids, because the engine may still have the chat
+subscribed. A settings notification for one of those ids writes nothing durable, and
+neither does the result of a resume of one. A turn that is already running when its chat
+is closed, unsubscribed or evicted writes no reasoning record when the engine answers.
+
+The private stores have different bounds. The service-tier store holds at most 16384
+chats and its file at most 4 MiB (long model names reach that limit first). When a write
+would pass either limit, it evicts other chats instead of failing: rows that were never
+stamped with a record time first, then the rows stamped longest ago, and never the chat
+being written. A chat's row and its unknown-tier marker (below) count as rows, each by its
+exact size, and leave together: chats go oldest first by the newest stamp of either, so an
+older row never outlives a newer marker. The reasoning store also holds at most 16384 chats and evicts the chat
+observed longest ago when it is full, but its 4 MiB file limit is a hard one: a write
+that would pass it is refused rather than making room.
+
+The per-chat compaction overrides that a gateway executor remembers are forgotten when
+the chat closes or is unsubscribed, deleted or archived. If 4096 chats are still held,
+remembering another drops the one set longest ago instead of refusing the new chat.
+
+Each `rpc_error` event records a fixed `rejection` name for the refusal, so these cases
+can be told apart without storing error text; see [diagnostics](diagnostics.md).
+
 ## Speed controls
 
 Gateway discovery retains the provider's public `service_tiers`,
@@ -489,6 +551,59 @@ preferences restore a saved new-chat default for the exact selected model. An ex
 `serviceTier` or `config.service_tier` takes precedence, including explicit null
 for Standard. A model-only preference change clears the preceding model's tier.
 Resume and fork inherit their chat's tier; new-chat preferences never replace it.
+A tier the selected gateway row does not offer is handled as the pinned SDK handles it,
+and the SDK treats opening a session differently from running inside one. Flex is the
+exception: the SDK keeps and sends it for every model, so the gateway never drops it.
+
+| Request | What the gateway sends | What happens |
+| --- | --- | --- |
+| `thread/start`, `thread/resume`, `thread/fork` naming a tier the row lacks (`serviceTier` or `config.service_tier`), or inheriting a chat tier the row lacks | `serviceTier: null` and no `config.service_tier` | The chat starts as Standard, as the SDK does when it builds a session. |
+| `thread/resume`, `thread/fork` for a chat whose tier the gateway never read | No tier | The SDK applies its own default and drops what the model lacks. |
+| `turn/start`, `thread/settings/update`, `turn/settings/update` | The request as the caller sent it, whatever the tier | The SDK accepts any tier string, keeps it as the chat's chosen tier, and leaves it off the outgoing request while the model lacks it. |
+
+At session start the gateway applies a saved new-chat default first and then checks it
+against the row, so a saved Fast default for a row that no longer offers Fast starts
+Standard instead of failing. Inside a chat the gateway never sends `serviceTier: null`
+for a tier, never clears the chosen tier, and adds no inherited tier. A Fast chat that
+runs a turn on a Claude row therefore runs that turn as Standard, and the next turn on a
+Fast row runs Fast again. `serviceTierForTurn` changes one turn only and never the chat's
+tier; the gateway maps its legacy value `fast` to `priority`. A tier that is not a string
+is passed through unchanged, and the SDK answers it as invalid parameters. The
+`serviceTierForTurn` field exists only on `turn/start`, so a session start passes it
+through untouched. Saving a gateway default tier that the chosen row does not offer is
+the one tier check left: that configuration write fails with error `-32002` and asks
+the user to choose Standard or another model. Flex is the one tier that check accepts
+for every row, so a Flex default can be saved for any model. Flex is passed to the
+provider at session start and inside a chat, as native Codex sends it. The Codex
+subscription provider forwards it without checking the row's tier list. The Claude and
+Copilot providers treat Flex as Standard; that handling ships in the same release.
+
+The SDK accepts any tier string inside a chat, including values such as `auto`, `Fast`
+or a very long id. The gateway's private tier record holds only lowercase ids of up to
+128 characters that are not `auto`. For any other tier the gateway records the chat's
+tier as unknown. It writes this through the same locked, timestamp-ordered path as a
+known tier: the chat's own record is removed, and a marker row holding the source
+time stays under a separate key derived from a hash of the chat id. A later resume or
+fork therefore adds no inherited tier, on this connection and on any fresh one, and an
+older notification that arrives late cannot bring a tier back. The marker is an
+ordinary row in the existing file format, so a 0.4.0 build still reads the whole file;
+it never looks the marker up and sees the chat as having no record, which is also an
+unknown tier. A marker also wins over a non-Standard row that falls inside its
+uncertainty window, because a 0.4.0 build wrote that row without knowing the watermark.
+A newer Standard row from a 0.4.0 build is trusted over the marker, and it keeps the
+marker's window, so a late non-Standard notification is still rejected. A marker that
+outvotes a 0.4.0 row keeps that row's window too. A tier the store can hold
+that is chosen later replaces the marker. Such a tier never fails a settings notification
+or a resume, and recording it makes room like any other write. When a peer connection
+has marked the chat unknown, this connection also stops forwarding the tier it held,
+whether its own notification was rejected as older or its resume was in flight.
+
+Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
+the SDK accepted the request and only when its answer shows the chat started as Standard.
+A loaded chat with another subscriber ignores the override on a resume and answers with
+the tier it kept, and no drop is recorded then. See
+[diagnostics](diagnostics.md#local-telemetry) for its fields.
+
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
 original native home. Fresh connections reread this record. Runtime settings are
@@ -499,8 +614,8 @@ in the same millisecond resolve conservatively to Standard; an explicit confirme
 SDK snapshot can establish the current choice again. Clock uncertainty never
 restores Fast from an uncertain older notification.
 The adapter passes the known parent tier explicitly when forking because the SDK
-otherwise uses executor defaults. If that parent tier is unavailable, resume the
-parent or specify a tier before forking.
+otherwise uses executor defaults. If the gateway never read the parent's tier, the
+fork carries no tier and the SDK chooses its own default.
 The SDK's returned tier is authoritative. Resuming an already-loaded chat keeps
 its loaded settings even when resume parameters request another tier; change it
 through `thread/settings/update`. A cold resume can apply an explicit override.
@@ -509,11 +624,10 @@ Gateway executors enable the SDK's Fast feature when their validated catalog
 offers priority. Native feature flags and configuration files retain their values;
 enabling that private capability does not select Fast automatically.
 
-A loaded Fast chat cannot switch to an unsupported model without explicitly
-choosing Standard. When a connection cannot determine the saved tier, resume the
-chat to read its settings or explicitly choose Standard before changing models.
-These checks return application errors rather than a misleading native-config
-warning. Reasoning effort is independent of speed.
+A loaded Fast chat that switches to a model without Fast keeps its Fast tier, and the
+SDK runs the new model's requests as Standard. A connection that cannot determine the
+saved tier sends none, so a model change never clears or invents it. Reasoning effort is
+independent of speed.
 
 Claude rows offer Fast when Claude's own model list marks the model as supporting
 fast mode (currently the Opus models). Fast turns on Claude Code's fast mode for

@@ -22,7 +22,8 @@ export class ResponsesAPI implements Provider {
     const requestedTier = request.service_tier;
     if (requestedTier !== undefined && requestedTier !== null && !publicServiceTier(requestedTier)) throw new ProviderError("invalid_request", "Invalid Responses service tier", 400);
     const tier = requestedTier === "fast" && this.config.type === "codex-subscription" ? "priority" : requestedTier;
-    if (this.config.type === "codex-subscription" && tier && !["auto", "default"].includes(String(tier))) {
+    // Native Codex never refuses Flex: the SDK sends it for every model, so it is exempt from the catalog check.
+    if (this.config.type === "codex-subscription" && tier && !["auto", "default", "flex"].includes(String(tier))) {
       const metadata = Object.entries(this.config.models).filter(([, model]) => model === request.model).map(([alias]) => this.config.modelMetadata?.[alias]);
       const declared = metadata.filter(entry => entry?.serviceTiers !== undefined);
       if (declared.length && !declared.some(entry => entry?.serviceTiers?.some(option => option.id === tier))) throw new ProviderError("invalid_request", "Selected Codex model does not offer this service tier", 400);

@@ -309,28 +309,32 @@ test("declared gateway defaults apply only to new gateway chats and never overri
   await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
 });
 
-test("a Fast chat drops to Standard only when the picker selects a model without that tier", async () => {
+test("a Fast chat keeps its tier inside the chat and starts Standard only when a session opens on a row without it", async () => {
   const { router, calls } = await fastFixture();
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
-  const before = calls.length;
-  // Turn starts, active-turn updates, resumes and forks can come from a stale peer.
-  for (const method of ["turn/start", "turn/settings/update", "thread/resume", "thread/fork"]) {
-    await assert.rejects(router.request(method, { threadId: "test", turnId: "active", model: "claude/model" }), error => (error as { code: number }).code === -32002);
+  // The SDK keeps the chosen tier and leaves it off a request itself, so the gateway sends no tier at all.
+  for (const method of ["turn/start", "turn/settings/update", "thread/settings/update"]) {
+    await router.request(method, { threadId: "test", turnId: "active", model: "claude/model" });
+    assert.equal(calls.at(-1)!.method, method); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, method);
   }
-  assert.equal(calls.length, before);
-  await router.request("thread/settings/update", { threadId: "test", model: "claude/model" });
-  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
+  // A session start drops the tier, as the SDK does when it builds the session.
+  for (const method of ["thread/resume", "thread/fork"]) {
+    await router.request(method, { threadId: "test", model: "claude/model" });
+    assert.equal(calls.at(-1)!.method, method); assert.equal(calls.at(-1)!.params.serviceTier, null, method);
+  }
   await router.request("thread/settings/update", { threadId: "test", model: "codex/model", serviceTier: "priority" });
-  await assert.rejects(router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: "priority" }), /does not support/, "an explicit unsupported tier still fails");
+  await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: "priority" });
+  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: "priority" }, "an explicit unsupported tier reaches the SDK, which accepts and keeps it");
   await router.request("thread/settings/update", { threadId: "test", model: "claude/model", serviceTier: null });
-  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null });
-  await appliedSettings(router, "test", "claude/model", null);
+  assert.deepEqual(calls.at(-1)!.params, { threadId: "test", model: "claude/model", serviceTier: null }, "the caller's own null is forwarded, not invented");
+  await appliedSettings(router, "test", "claude/model", "priority");
   await router.request("turn/start", { threadId: "test", input: [] });
+  await router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] });
+  assert.equal(calls.at(-1)!.params.serviceTierForTurn, "priority", "a per-turn tier passes through unchanged");
   const after = calls.length;
-  await assert.rejects(router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] }), /does not support/);
   await assert.rejects(router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
-  ] }), /does not support/);
+  ] }), error => (error as { code: number }).code === -32002 && /does not offer that speed.*save again/.test((error as Error).message));
   assert.equal(calls.length, after);
 });
 
@@ -350,7 +354,8 @@ test("an explicit standard tier for one turn overrides Fast without changing the
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   await router.request("turn/start", { threadId: "test", model: "claude/model", serviceTierForTurn: "default", input: [] });
   assert.equal(calls.at(-1)!.params.serviceTierForTurn, "default");
-  await assert.rejects(router.request("turn/start", { threadId: "test", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "test", input: [] });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the chat's Fast tier is neither cleared nor re-sent");
   await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
   await appliedSettings(router, "test", "claude/model", null);
   await router.request("turn/start", { threadId: "test", input: [] });
@@ -361,7 +366,8 @@ test("active turn tiers remain separate from future thread settings during model
   await router.request("thread/start", { model: "codex/model" });
   await router.request("turn/start", { threadId: "test", input: [] });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: "priority" });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the active turn keeps its Fast tier; the SDK leaves it off the request");
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
   await router.request("turn/start", { threadId: "test", model: "codex/model", input: [] });
@@ -371,7 +377,8 @@ test("active turn tiers remain separate from future thread settings during model
   await router.request("turn/start", { threadId: "test", input: [] });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
-  await assert.rejects(router.request("turn/start", { threadId: "test", model: "claude/model", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "test", model: "claude/model", input: [] });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
 });
 
 test("one-turn Fast aliases normalize before reaching the SDK and targetUnavailable changes stay unapplied", async () => {
@@ -381,16 +388,20 @@ test("one-turn Fast aliases normalize before reaching the SDK and targetUnavaila
   await router.initialize(); await router.request("thread/start", { model: "codex/model" });
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "fast", input: [] });
   assert.equal(calls.at(-1)!.params.serviceTierForTurn, "priority");
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   unavailable = true;
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
 });
 
-test("a freshly attached gateway chat requires an explicit tier before switching an unread tier", async () => {
-  const { config, backend } = await fastFixture();
+test("a freshly attached gateway chat with an unread tier changes models without a tier being sent", async () => {
+  const { config, backend, calls } = await fastFixture();
   const router = new AppServerRouter(config, backend); await router.initialize();
-  await assert.rejects(router.request("thread/settings/update", { threadId: "persisted", model: "claude/model" }), /current service tier is unavailable/);
+  await router.request("thread/settings/update", { threadId: "persisted", model: "claude/model" });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the gateway does not know the chat's tier, so it leaves the SDK's own in place");
+  await router.request("thread/settings/update", { threadId: "persisted", model: "codex/model" });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await router.request("thread/settings/update", { threadId: "persisted", model: "claude/model", serviceTier: null });
 });
 
@@ -400,7 +411,7 @@ test("steering an existing turn preserves its active model and temporary tier", 
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "priority", input: [] });
   // The SDK returns the same turn ID while steering; only future thread settings change.
   await router.request("turn/start", { threadId: "test", serviceTierForTurn: "default", model: "claude/model", input: [] });
-  await assert.rejects(router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" }), /does not support/);
+  await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", serviceTier: null });
   await router.request("turn/settings/update", { threadId: "test", turnId: "active", model: "claude/model" });
 });
@@ -414,7 +425,8 @@ test("loaded resume's authoritative tier takes precedence when the SDK ignores a
   await router.initialize();
   const resumed = await router.request("thread/resume", { threadId: "persisted", serviceTier: null });
   assert.equal(calls.at(-1)!.params.serviceTier, null); assert.equal(resumed.serviceTier, "priority");
-  await assert.rejects(router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] }), /does not support/);
+  await router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the authoritative Fast tier stays on the chat; nothing clears it");
   await router.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
   await appliedSettings(router, "persisted", "codex/model", null);
   await router.request("turn/start", { threadId: "persisted", model: "claude/model", input: [] });
@@ -450,7 +462,10 @@ test("gateway forks inherit the authoritative parent tier rather than private or
   await appliedSettings(router, "test", "codex/model", null);
   await router.request("thread/fork", { threadId: "test" }); assert.equal(calls.at(-1)!.params.serviceTier, null);
   const other = new AppServerRouter(config, backend); await other.initialize();
-  await assert.rejects(other.request("thread/fork", { threadId: "unknown-parent" }), /parent chat's service tier is unavailable/);
+  await other.request("thread/fork", { threadId: "unknown-parent" });
+  assert.equal(calls.at(-1)!.method, "thread/fork"); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "an unread parent tier is left to the SDK, with no error");
+  await other.request("thread/fork", { threadId: "unknown-parent", model: "claude/model" });
+  assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await other.request("thread/fork", { threadId: "unknown-parent", config: { service_tier: "default" } });
   assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
 });

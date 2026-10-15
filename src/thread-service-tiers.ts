@@ -15,10 +15,38 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 const fields = (value: Record<string, unknown>, keys: string[], optional: string[] = []) => keys.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => keys.includes(key) || optional.includes(key));
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+/**
+ * A chat whose tier the SDK kept but the store cannot hold ("auto", "Fast", a long id) has an unknown tier. It is
+ * recorded as a marker row under this separate key and the chat's own row is removed. Both are ordinary rows, so a
+ * 0.4.0 build still reads the whole file; it never looks the marker up and sees the chat as having no record,
+ * which is exactly an unknown tier. The marker also holds the watermark that keeps an older notification from
+ * bringing a tier back.
+ */
+const markerKey = (threadId: string) => `tier-unknown:${createHash("sha256").update(threadId).digest("hex")}`;
+/** A pending record. An undefined tier means unknown. */
+interface Pending { model: string; serviceTier: string | null | undefined; emittedAtMs?: number; uncertainBeforeMs?: number }
+interface ChatState { live?: ThreadServiceTier; marker?: ThreadServiceTier; unknown: boolean; known?: ThreadServiceTier; base?: ThreadServiceTier }
+/** The newer of the chat's own row and its marker wins; a tie is unknown, which forwards no tier. */
+function chatState(saved: Snapshot, threadId: string): ChatState {
+  const live = saved.threads[threadId]; const marker = saved.threads[markerKey(threadId)];
+  // A row 0.4.0 wrote inside the marker's uncertainty window is not trusted either: 0.4.0 knew nothing of the watermark.
+  const unknown = !!marker && (!live || (marker.emittedAtMs ?? 0) >= (live.emittedAtMs ?? 0) ||
+    (live.serviceTier !== null && marker.uncertainBeforeMs !== undefined && (live.emittedAtMs ?? 0) <= marker.uncertainBeforeMs));
+  // A known row that beats the marker still carries the marker's window, so a stale notification stays rejected.
+  const window = Math.max(live?.uncertainBeforeMs ?? -1, marker?.uncertainBeforeMs ?? -1);
+  const known = unknown || !live ? undefined : window < 0 || live.uncertainBeforeMs === window ? live : { ...live, uncertainBeforeMs: window };
+  // A marker that outvotes a 0.4.0 row still keeps that row's window: the row's stale Fast must stay rejected.
+  const merged = unknown && marker && window >= 0 && marker.uncertainBeforeMs !== window ? { ...marker, uncertainBeforeMs: window } : marker;
+  return { live, marker, unknown, known, base: unknown ? merged : known };
+}
+
+/** Whether the private store can hold this tier. The SDK keeps other strings ("auto", "Fast", a long value) that the store rejects. */
+export const storableServiceTier = (tier: unknown): tier is string | null => tier === null || (typeof tier === "string" && /^[a-z][a-z0-9_-]{0,127}$/.test(tier) && tier !== "auto");
+
 function row(value: unknown): ThreadServiceTier {
   if (!object(value) || !fields(value, ["model", "serviceTier"], ["revision", "emittedAtMs", "uncertainBeforeMs"]) || !text(value.model)) throw invalid();
   const tier = value.serviceTier;
-  if (tier !== null && (typeof tier !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(tier) || tier === "auto")) throw invalid();
+  if (!storableServiceTier(tier)) throw invalid();
   for (const key of ["revision", "emittedAtMs", "uncertainBeforeMs"]) if (Object.hasOwn(value, key) && !integer(value[key])) throw invalid();
   return { model: value.model, serviceTier: tier === "fast" ? "priority" : tier === "default" || tier === "standard" ? null : tier,
     ...(Object.hasOwn(value, "revision") ? { revision: Number(value.revision) } : {}), ...(Object.hasOwn(value, "emittedAtMs") ? { emittedAtMs: Number(value.emittedAtMs) } : {}),
@@ -32,6 +60,47 @@ function snapshot(value: unknown): Snapshot {
   const threads: Record<string, ThreadServiceTier> = Object.create(null);
   for (const [id, value] of entries) { if (!text(id)) throw invalid(); threads[id] = row(value); }
   return { version: 1, threads };
+}
+
+const serializedBytes = (value: Snapshot): number => Buffer.byteLength(JSON.stringify(value, null, 2) + "\n");
+/** What dropping one row saves in the indented file: its lines plus the separator after it (the file always keeps the row being written). */
+const rowBytes = (id: string, entry: ThreadServiceTier): number =>
+  Buffer.byteLength("    " + JSON.stringify(id) + ": " + JSON.stringify(entry, null, 2).replace(/\n/g, "\n    ") + ",\n");
+/**
+ * Other chats from oldest to newest, each as the keys of its row and its marker so they leave together; an older
+ * row can then never outlive a newer marker. A chat is as new as the newest stamp of either, and chats with no stamp go first.
+ */
+function evictionGroups(threads: Record<string, ThreadServiceTier>, keep: Set<string>): string[][] {
+  const grouped = new Set<string>(); const groups: Array<{ ids: string[]; stamp: number }> = [];
+  const stamp = (ids: string[]) => Math.max(...ids.map(id => threads[id].emittedAtMs ?? -1));
+  for (const id of Object.keys(threads)) {
+    const marker = markerKey(id);
+    if (keep.has(id) || grouped.has(id) || !Object.hasOwn(threads, marker)) continue;
+    grouped.add(id); grouped.add(marker); groups.push({ ids: [id, marker], stamp: stamp([id, marker]) });
+  }
+  for (const id of Object.keys(threads)) if (!keep.has(id) && !grouped.has(id)) groups.push({ ids: [id], stamp: stamp([id]) });
+  return groups.sort((a, b) => a.stamp - b.stamp).map(group => group.ids);
+}
+
+/**
+ * Keeps the store within its row and byte limits by dropping other chats, oldest first, never the chat just written
+ * (its row and marker are in `keep`). Rows and markers count alike, each by its exact size. One chat's entries are far
+ * below the limits and every other chat can go, so running out of chats to drop cannot happen; it fails closed regardless.
+ */
+function makeRoom(saved: Snapshot, keep: Set<string>): void {
+  let count = Object.keys(saved.threads).length; let over = serializedBytes(saved) - maxBytes;
+  if (count <= maxThreads && over <= 0) return;
+  const oldest = evictionGroups(saved.threads, keep); let next = 0;
+  while (count > maxThreads || over > 0) {
+    if (next >= oldest.length) throw invalid();
+    // Each row's exact indented size is counted, so this drops no more than needed; the
+    // serialization below is the final check and the loop only repeats if it is still over.
+    let freed = 0;
+    do {
+      for (const id of oldest[next++]) { freed += rowBytes(id, saved.threads[id]); delete saved.threads[id]; count--; }
+    } while ((count > maxThreads || freed < over) && next < oldest.length);
+    over = serializedBytes(saved) - maxBytes;
+  }
 }
 
 /** Private chat metadata, isolated from native configuration, authentication, and history. */
@@ -70,22 +139,36 @@ export class ThreadServiceTiers {
   }
   async read(threadId: string): Promise<ThreadServiceTier | undefined> {
     if (!text(threadId)) throw invalid();
-    const value = (await this.load()).threads[threadId];
+    const value = chatState(await this.load(), threadId).known;
     return value ? { ...value, revision: value.revision ?? 0 } : undefined;
   }
   /** SDK snapshots use revision CAS; notifications use their source time and uncertainty watermark. */
   async write(threadId: string, value: ThreadServiceTier, expected?: ThreadServiceTier | null, confirmedSnapshotAtMs?: number): Promise<boolean> {
     if (!text(threadId) || (confirmedSnapshotAtMs !== undefined && !integer(confirmedSnapshotAtMs))) throw invalid();
     const selected = row(value); const previous = expected === undefined || expected === null ? expected : row(expected);
+    return this.apply(threadId, selected, previous, confirmedSnapshotAtMs);
+  }
+  /**
+   * Records that the chat's tier is unknown, through the same locked, timestamp-ordered path as a known tier. The
+   * chat's own row is removed, so a later session start forwards no tier, and an older notification stays rejected.
+   */
+  async markUnknown(threadId: string, value: { model: string; emittedAtMs?: number }, expected?: ThreadServiceTier | null, confirmedSnapshotAtMs?: number): Promise<boolean> {
+    if (!text(threadId) || !text(value.model) || (value.emittedAtMs !== undefined && !integer(value.emittedAtMs)) || (confirmedSnapshotAtMs !== undefined && !integer(confirmedSnapshotAtMs))) throw invalid();
+    const previous = expected === undefined || expected === null ? expected : row(expected);
+    return this.apply(threadId, { model: value.model, serviceTier: undefined, ...(value.emittedAtMs !== undefined ? { emittedAtMs: value.emittedAtMs } : {}) }, previous, confirmedSnapshotAtMs);
+  }
+  private async apply(threadId: string, selected: Pending, previous: ThreadServiceTier | null | undefined, confirmedSnapshotAtMs?: number): Promise<boolean> {
     await mkdir(this.directory, { recursive: true, mode: 0o700 });
     await this.checkDirectory();
     return withPrivateFileLock(this.path, async () => {
-      const saved = await this.load(); const current = saved.threads[threadId];
-      if (selected.emittedAtMs === undefined && previous !== undefined && (previous === null ? !!current : !current || current.model !== previous.model || current.serviceTier !== previous.serviceTier ||
-        (previous.revision !== undefined && (current.revision ?? 0) !== previous.revision) || (previous.emittedAtMs !== undefined && current.emittedAtMs !== previous.emittedAtMs) ||
-        (previous.uncertainBeforeMs !== undefined && current.uncertainBeforeMs !== previous.uncertainBeforeMs))) return false;
-      let emittedAtMs = current?.emittedAtMs;
-      let uncertainBeforeMs = selected.uncertainBeforeMs === undefined ? current?.uncertainBeforeMs : Math.max(current?.uncertainBeforeMs ?? 0, selected.uncertainBeforeMs);
+      const saved = await this.load(); const { live, marker, known, base } = chatState(saved, threadId);
+      if (selected.emittedAtMs === undefined && previous !== undefined && (previous === null ? !!known : !known || known.model !== previous.model || known.serviceTier !== previous.serviceTier ||
+        (previous.revision !== undefined && (known.revision ?? 0) !== previous.revision) || (previous.emittedAtMs !== undefined && known.emittedAtMs !== previous.emittedAtMs) ||
+        (previous.uncertainBeforeMs !== undefined && known.uncertainBeforeMs !== previous.uncertainBeforeMs))) return false;
+      // The chat's known tier; undefined while it is unknown or has no record.
+      const currentTier = known?.serviceTier;
+      let emittedAtMs = base?.emittedAtMs;
+      let uncertainBeforeMs = selected.uncertainBeforeMs === undefined ? base?.uncertainBeforeMs : Math.max(base?.uncertainBeforeMs ?? 0, selected.uncertainBeforeMs);
       if (selected.emittedAtMs === undefined && confirmedSnapshotAtMs !== undefined) {
         if (emittedAtMs !== undefined && emittedAtMs - confirmedSnapshotAtMs > 1000) {
           uncertainBeforeMs = Math.max(uncertainBeforeMs ?? 0, emittedAtMs); emittedAtMs = confirmedSnapshotAtMs;
@@ -94,18 +177,21 @@ export class ThreadServiceTiers {
       if (selected.emittedAtMs !== undefined) {
         if (uncertainBeforeMs !== undefined && selected.emittedAtMs <= uncertainBeforeMs && selected.serviceTier !== null) return false;
         if (emittedAtMs !== undefined && selected.emittedAtMs < emittedAtMs) return false;
-        if (current && selected.emittedAtMs === emittedAtMs && (selected.model !== current.model || selected.serviceTier !== current.serviceTier)) {
-          if (current.serviceTier === null && selected.serviceTier !== null) return false;
-          // Ambiguous non-Standard ties retain the current model and resolve speed to Standard.
-          if (current.serviceTier !== null && selected.serviceTier !== null) { selected.model = current.model; selected.serviceTier = null; }
+        if (base && selected.emittedAtMs === emittedAtMs && (selected.model !== base.model || selected.serviceTier !== currentTier)) {
+          if (currentTier === null && selected.serviceTier !== null) return false;
+          // Ambiguous non-Standard ties, including an unknown tier, retain the current model and resolve speed to Standard.
+          if (currentTier !== null && selected.serviceTier !== null) { selected.model = base.model; selected.serviceTier = null; }
         }
         emittedAtMs = selected.emittedAtMs;
       }
-      if (current && current.model === selected.model && current.serviceTier === selected.serviceTier && current.emittedAtMs === emittedAtMs && current.uncertainBeforeMs === uncertainBeforeMs) return true;
-      if (!current && Object.keys(saved.threads).length >= maxThreads) throw invalid();
-      const revision = (current?.revision ?? 0) + 1; if (!integer(revision)) throw invalid();
-      saved.threads[threadId] = { model: selected.model, serviceTier: selected.serviceTier, revision, ...(emittedAtMs !== undefined ? { emittedAtMs } : {}), ...(uncertainBeforeMs !== undefined ? { uncertainBeforeMs } : {}) };
-      if (Buffer.byteLength(JSON.stringify(saved, null, 2) + "\n") > maxBytes) throw invalid();
+      if (base && base.model === selected.model && currentTier === selected.serviceTier && base.emittedAtMs === emittedAtMs && base.uncertainBeforeMs === uncertainBeforeMs) return true;
+      // The revision never repeats across a swap between the chat's row and its marker, so a stale CAS cannot match.
+      const revision = Math.max(live?.revision ?? 0, marker?.revision ?? 0) + 1; if (!integer(revision)) throw invalid();
+      const next: ThreadServiceTier = { model: selected.model, serviceTier: selected.serviceTier ?? null, revision, ...(emittedAtMs !== undefined ? { emittedAtMs } : {}), ...(uncertainBeforeMs !== undefined ? { uncertainBeforeMs } : {}) };
+      if (selected.serviceTier === undefined) { delete saved.threads[threadId]; saved.threads[markerKey(threadId)] = next; }
+      else { saved.threads[threadId] = next; delete saved.threads[markerKey(threadId)]; }
+      // The chat now has one entry, so a chat that only had a marker (or only a row) changes no count. Other chats make room.
+      makeRoom(saved, new Set([threadId, markerKey(threadId)]));
       await writePrivateJson(this.path, saved);
       return true;
     });

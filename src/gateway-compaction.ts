@@ -56,6 +56,7 @@ export class GatewayCompactionSession {
 
   observe(message: Message): void { this.recovery.observe(message); }
   remember(threadId: string, params: Message): void { this.policy.remember(threadId, object(params.config)); }
+  forget(threadId: string): void { this.policy.forget(threadId); }
   close(): Promise<void> {
     this.closed = true;
     for (const checks of this.checks.values()) for (const check of checks) check.cancelled = true;

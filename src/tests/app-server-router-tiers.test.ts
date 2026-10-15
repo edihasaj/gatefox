@@ -153,9 +153,9 @@ test("active-turn Standard cannot clear a saved Fast chat's durable guard", asyn
   await first.router.request("turn/settings/update", { threadId: id, turnId: (result.turn as ObjectValue).id, serviceTier: null });
   const fresh = await f.connect(); await fresh.router.request("thread/resume", { threadId: id });
   assert.equal(last(fresh, "thread/resume").serviceTier, "priority");
-  const count = fresh.calls.length;
-  await assert.rejects(fresh.router.request("turn/start", { threadId: id, model: standardModel, input: [] }), /does not support/);
-  assert.equal(fresh.calls.length, count); assert.equal((await f.store().read(id))!.serviceTier, "priority");
+  await fresh.router.request("turn/start", { threadId: id, model: standardModel, input: [] });
+  assert.equal(Object.hasOwn(last(fresh, "turn/start"), "serviceTier"), false, "no tier is sent: the SDK keeps Fast and runs this row as Standard itself");
+  assert.equal((await f.store().read(id))!.serviceTier, "priority", "the durable guard is untouched by a turn on another row");
 });
 
 test("a stale SDK resume snapshot cannot replace a newer peer Standard setting", async () => {
@@ -241,7 +241,8 @@ test("a delayed Standard snapshot cannot undo Fast after a peer changes Fast to 
   assert.equal((await pending).serviceTier, null, "the stale SDK response actually contains Standard");
   assert.deepEqual(await f.store().read(id), latest); assert.equal(await f.ledgerBytes(), bytes);
   await old.router.request("thread/fork", { threadId: id }); assert.equal(last(old, "thread/fork").serviceTier, "priority");
-  await assert.rejects(old.router.request("turn/start", { threadId: id, model: standardModel, input: [] }), /does not support/);
+  await old.router.request("turn/start", { threadId: id, model: standardModel, input: [] });
+  assert.equal(Object.hasOwn(last(old, "turn/start"), "serviceTier"), false);
 });
 
 test("same-millisecond Fast and Standard conflicts resolve to Standard in either delivery order", async () => {

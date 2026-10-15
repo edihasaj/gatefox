@@ -2,6 +2,7 @@ import { object, type Message } from "./app-server-connection.js";
 import { compactionDecision, type CompactionDecision, type CompactionState, type CompactionTarget } from "./compaction-state.js";
 
 const numericKeys = ["model_context_window", "model_auto_compact_token_limit"] as const;
+const maxThreads = 4096;
 const unknown = Symbol("unknown numeric override");
 type Numeric = number | typeof unknown | null;
 type Overrides = Partial<Record<typeof numericKeys[number], Numeric>> & { goals?: boolean; scope?: unknown };
@@ -72,10 +73,13 @@ export class CompactionPolicy {
     const goals = goalValue(configOverrides); if (goals !== undefined) selected.goals = goals;
     if (!Object.keys(selected).length) this.threads.delete(threadId);
     else {
-      if (!this.threads.has(threadId) && this.threads.size >= 4096) throw new Error("Compaction policy chat bound exceeded");
-      this.threads.set(threadId, selected);
+      // Insertion order tracks recency, so a full table drops the chat that was set longest ago.
+      this.threads.delete(threadId); this.threads.set(threadId, selected);
+      while (this.threads.size > maxThreads) this.threads.delete(this.threads.keys().next().value as string);
     }
   }
+  /** A chat the engine no longer holds keeps no per-chat overrides. */
+  forget(threadId: string): void { this.threads.delete(threadId); }
   goalsEnabled(threadId: string): boolean { return this.threads.get(threadId)?.goals ?? this.base.goals ?? true; }
   sourceHash(model: string): string | null {
     const hash = this.models.get(model)?.comp_hash;
