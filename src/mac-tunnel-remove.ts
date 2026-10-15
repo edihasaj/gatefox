@@ -31,6 +31,8 @@ export async function removeTunnelComponent(state: string, plan: ServicePlan, id
     throw new Error(`No tunnel ${id} in the unified service plan`);
   }
   if (plan.components.length === 1) throw new Error(`Tunnel ${id} is the only unified service component; uninstall the gateway service instead of removing it`);
+  // The forward parsing and `ssh -G` are OpenSSH's; another binary (autossh, a Homebrew ssh) gets no guess.
+  if (component.command !== "/usr/bin/ssh") throw new Error(`Cannot determine tunnel ${id}'s local port; edit the service plan manually`);
   const config = await loadConfig(plan.config);
   const ports = await tunnelListeners(component, seams.resolveSsh);
   if (!ports) throw new Error(`Cannot determine tunnel ${id}'s local port; edit the service plan manually`);

@@ -1,14 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { join } from "node:path";
 import { macTunnel } from "../mac-tunnel.js";
 import { removeTunnelComponent } from "../mac-tunnel-remove.js";
+import { pendingLoginConsolidationPath } from "../mac-login-consolidate.js";
 import { readServicePlan, servicePlanPath, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
-import { api, fixture, forward, ids, noBackups, noSsh, none, remove, running, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
+import { api, fixture, forward, ids, noBackups, noSsh, none, remove, removeAllRoots, running, sshConfigFile, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
 
 
 test("removing a tunnel keeps every other component and archives the plan it replaced", async () => {
@@ -370,4 +371,54 @@ test("a removal waits for the plan-file lock the other plan writers hold and the
     assert.deepEqual(await readServicePlan(f.state), changed, "the other writer's plan survives");
     await noBackups(f.state);
   } finally { await f.stop(); }
+});
+
+const exists = (path: string) => access(path).then(() => true, () => false);
+const darwin = async <T>(action: () => Promise<T>): Promise<T> => {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!; Object.defineProperty(process, "platform", { value: "darwin" });
+  try { return await action(); } finally { Object.defineProperty(process, "platform", original); }
+};
+
+test("a pending next-login consolidation refuses a tunnel removal and changes nothing", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    // The staged plan no longer lists tunnel-studio, so activating it later would fail against a plan that changed in between.
+    const staged: ServicePlan = { ...f.plan, components: f.plan.components.filter(component => component.id !== "tunnel-studio") };
+    const primaryLabel = "com.edihasaj.subscription-gateway";
+    await writePrivateJson(pendingLoginConsolidationPath(f.state), { version: 1, phase: "ready", config: f.plan.config, plan: staged, primaryLabel, primaryPlistDigest: "a".repeat(64),
+      removedLabels: [], backup: join(f.state, "service-backups", "login-consolidation-test.json"), sources: [{ label: primaryLabel, digest: "b".repeat(64), mode: 0o600 }] });
+    await darwin(async () => {
+      for (const id of ["spark", "studio", "missing"]) {
+        await assert.rejects(macTunnel("uninstall", { id }, f.state, none, { resolveSsh: noSsh }), /^Error: Tunnel startup is staged under the unified service at next login; its separate registration was not changed$/, id);
+      }
+    });
+    assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+    await noBackups(f.state);
+    assert.equal(await exists(join(f.state, "service-backups")), false);
+  } finally { await f.stop(); }
+});
+
+test("a tunnel that does not run /usr/bin/ssh is refused instead of being read as ssh would be", async () => {
+  for (const command of ["/opt/homebrew/bin/autossh", "/opt/homebrew/bin/ssh", "/usr/bin/ssh2", "/usr/bin/SSH"]) {
+    const f = await fixture({ active: 0, status: "ok" });
+    try {
+      const plan: ServicePlan = { ...f.plan, components: f.plan.components.map(component => component.id === "tunnel-spark" ? { ...component, command } : component) };
+      await writePrivateJson(servicePlanPath(f.state), plan);
+      await assert.rejects(remove(f.state, "spark"), /^Error: Cannot determine tunnel spark's local port; edit the service plan manually$/, command);
+      assert.deepEqual(await readServicePlan(f.state), plan, "the plan is untouched");
+      await noBackups(f.state);
+      // Another tunnel in the same plan that does run /usr/bin/ssh still retires.
+      assert.equal((await remove(f.state, "studio")).removed, true);
+    } finally { await f.stop(); }
+  }
+});
+
+test("fixtures and ssh_config files leave no temporary directory behind", async () => {
+  const f = await fixture({ active: 0, status: "ok" }); const g = await transportFixture(18301, true); const h = await transportFixture(18301, true); const config = await sshConfigFile("Host x");
+  for (const path of [f.root, g.root, h.root, config]) assert.equal(await exists(path), true, path);
+  await f.stop(); await g.stop();
+  assert.equal(await exists(f.root), false); assert.equal(await exists(g.root), false);
+  assert.equal(await exists(h.root), true, "a fixture whose test never calls stop() is still registered");
+  await removeAllRoots();
+  for (const path of [h.root, config]) assert.equal(await exists(path), false, path);
 });

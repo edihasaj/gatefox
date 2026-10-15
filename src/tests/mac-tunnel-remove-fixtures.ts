@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { after } from "node:test";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -8,6 +9,20 @@ import { removeTunnelComponent, type TunnelRemoveSeams } from "../mac-tunnel-rem
 import type { SshResolver } from "../mac-tunnel-ssh.js";
 import { readServicePlan, servicePlanPath, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
+
+const roots = new Set<string>();
+/** A private temporary directory that is removed by `removeRoot`, or at the end of the test file at the latest. */
+export async function tempRoot(prefix: string): Promise<string> { const root = await mkdtemp(join(tmpdir(), prefix)); roots.add(root); return root; }
+export async function removeRoot(root: string): Promise<void> { roots.delete(root); await rm(root, { recursive: true, force: true }); }
+/** Removes every root still registered; a test that never calls its fixture's stop() leaves nothing behind. */
+export async function removeAllRoots(): Promise<void> { await Promise.all([...roots].map(removeRoot)); }
+after(removeAllRoots);
+
+/** An ssh_config file in its own removable directory. */
+export async function sshConfigFile(...lines: string[]): Promise<string> {
+  const path = join(await tempRoot("gw-tunnel-ssh-"), "ssh_config");
+  await writeFile(path, lines.join("\n") + "\n"); return path;
+}
 
 const bind = async (server: { once(event: "error", cb: () => void): unknown; listen(port: number, host: string, cb: () => void): unknown }): Promise<boolean> =>
   new Promise(done => { server.once("error", () => done(false)); server.listen(0, "127.0.0.1", () => done(true)); });
@@ -41,7 +56,7 @@ export const api = (baseUrl: string) => ({ id: "spark_api", type: "responses-api
 
 /** A plan with inference, the tunnel under test, and a reverse tunnel that must survive. */
 export async function fixture(answer: Record<string, unknown> | null, provider?: Record<string, unknown>, forwards = ["-L", forward]) {
-  const root = await mkdtemp(join(tmpdir(), "gw-tunnel-remove-")); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
+  const root = await tempRoot("gw-tunnel-remove-"); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
   const listener = await health(answer); const config = join(root, "gateway.json");
   await writeFile(config, JSON.stringify({ version: 1, port: listener.port, stateDirectory: state,
     providers: [{ id: "claude", type: "claude-subscription", models: { claude: "claude" } }, ...(provider ? [provider] : [])] }));
@@ -53,12 +68,12 @@ export async function fixture(answer: Record<string, unknown> | null, provider?:
     tunnel("tunnel-studio", ["-N", "-T", "-R", "3459:127.0.0.1:3457", "mac-studio"]),
   ] };
   await writePrivateJson(servicePlanPath(state), plan);
-  return { state, plan, stop: () => listener.stop() };
+  return { root, state, plan, stop: async () => { await listener.stop(); await removeRoot(root); } };
 }
 
 /** A plan whose tunnels stand alone: no inference component and no local listener to probe. */
 export async function transportFixture(port: number, clientOnly: boolean, forwards = ["-L", `127.0.0.1:${port}:127.0.0.1:18300`], only = false, hostLast = true) {
-  const root = await mkdtemp(join(tmpdir(), "gw-tunnel-remove-")); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
+  const root = await tempRoot("gw-tunnel-remove-"); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
   const config = join(root, "gateway.json");
   await writeFile(config, JSON.stringify(clientOnly
     ? { version: 1, port, stateDirectory: state, providers: [], clientOnly: true }
@@ -72,7 +87,7 @@ export async function transportFixture(port: number, clientOnly: boolean, forwar
   ];
   const plan: ServicePlan = { version: 1, config, sharedExecutors: !only, components };
   await writePrivateJson(servicePlanPath(state), plan);
-  return { state, plan };
+  return { root, state, plan, stop: () => removeRoot(root) };
 }
 
 /** ssh resolves nothing beyond the tunnel's own arguments: no ssh_config forwards and no GatewayPorts. */

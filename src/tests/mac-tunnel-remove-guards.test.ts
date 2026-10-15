@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
+import { readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 import { reachesListener } from "../mac-tunnel-local.js";
@@ -11,7 +11,7 @@ import type { TunnelRemoveSeams } from "../mac-tunnel-remove.js";
 import { readServicePlan, servicePlanPath } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
-import { api, fixture, ids, noBackups, noSsh, none, remove, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
+import { api, fixture, sshConfigFile as sshConfig, ids, noBackups, noSsh, none, remove, transportFixture, unusedPort } from "./mac-tunnel-remove-fixtures.js";
 
 const ok = { active: 0, status: "ok" };
 const withSsh = (resolveSsh: SshResolver): TunnelRemoveSeams => ({ resolveSsh });
@@ -21,10 +21,6 @@ const realSsh = { skip: existsSync("/usr/bin/ssh") ? false : "no /usr/bin/ssh" }
 const ownIPv4 = Object.values(networkInterfaces()).flat().find(entry => entry && !entry.internal && entry.family === "IPv4")?.address;
 const ownHosts = [ownIPv4, hostname()].filter((host): host is string => !!host && (() => { try { return !!new URL(`http://${host}:18301`); } catch { return false; } })());
 
-async function sshConfig(...lines: string[]): Promise<string> {
-  const path = join(await mkdtemp(join(tmpdir(), "gw-tunnel-ssh-")), "ssh_config");
-  await writeFile(path, lines.join("\n") + "\n"); return path;
-}
 const qwenHost = (...forwards: string[]) => ["Host qwen-spark", "  HostName example.invalid", ...forwards.map(line => "  " + line)];
 
 test("a provider on a later forward port of the same tunnel blocks its removal", async () => {

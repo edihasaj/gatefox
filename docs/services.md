@@ -173,9 +173,14 @@ checked. It refuses when:
   `ssh -G` cannot resolve the arguments (for example an unreadable `-F` file). It
   fails with `Cannot determine tunnel <id>'s local port`; edit the service plan
   manually;
+- the component's command is not `/usr/bin/ssh` (for example a hand-edited plan
+  that runs `autossh` or a Homebrew `ssh`), because its options would be read with
+  OpenSSH's table and guessed. It fails with the same `Cannot determine tunnel
+  <id>'s local port` error;
 - neither the arguments nor ssh's resolved configuration declare any forward (no
   `-L`, `-D`, `-R`, `LocalForward`, `DynamicForward` or `RemoteForward`);
 - the tunnel is the plan's only component; uninstall the gateway service instead.
+- a next-login consolidation is pending (`service-login-pending.json`): the command fails with `Tunnel startup is staged under the unified service at next login` before it reads or changes the plan, whatever tunnel id was given, so the staged plan can still be activated.
 
 The plan it replaces is saved first to a private
 `service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
