@@ -130,8 +130,9 @@ another Claude account. There is no recent-use tracker.
 Standard remains the default speed. Codex 2 discovery retains offered Fast tiers
 for local and connected-machine model lists. Claude models that support fast mode
 (Opus) offer Fast too, billed to Claude usage credits. Speed is independent of reasoning.
-The current Copilot CLI has no selected-model Fast tier; unsupported requests
-fail before inference. See [speed controls](docs/app-server.md#speed-controls).
+The current Copilot CLI has no selected-model Fast tier. A Fast tier named on a
+chat start, turn, resume or fork runs as Standard; a settings update or
+configuration write that asks for it is rejected before inference. See [speed controls](docs/app-server.md#speed-controls).
 
 On macOS, install an explicit user service to keep the daemon alive independently
 of terminals and the Codex app:
