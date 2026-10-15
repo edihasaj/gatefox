@@ -1,9 +1,12 @@
 /**
- * The model the SDK asks for when a gateway executor reviews a node_repl action. It is the SDK's
+ * The model the SDK asks for whenever a gateway executor runs an Auto-review approval: node_repl
+ * (browser, Chrome, computer use), shell and exec escalations, apply_patch, network, MCP and
+ * permission requests all resolve their reviewer the same way (core/src/guardian). It is the SDK's
  * DEFAULT_APPROVAL_REVIEW_PREFERRED_MODEL (model-provider/src/provider.rs). A provider returns the
- * API-key reviewer only when auth is cached on the turn provider, and an executor's provider authenticates
- * with a command, whose AuthManager never caches auth there, so executors always ask for this slug.
- * Only slugs listed here are ever served as a reviewer; the SDK writes the review text itself.
+ * API-key reviewer only when auth is cached on the turn provider, and an executor's provider
+ * authenticates with a command, whose AuthManager never caches auth there, so executors always ask
+ * for this slug. Only slugs listed here are ever served as a reviewer; the SDK writes the review text.
+ * The gateway cannot tell a node_repl review from any other without reading request bodies.
  */
 export const autoReviewModels = ["codex-auto-review"] as const;
 const allowed: ReadonlySet<string> = new Set(autoReviewModels);

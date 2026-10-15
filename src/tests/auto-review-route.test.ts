@@ -44,6 +44,17 @@ async function withDirectory(run: (directory: string) => Promise<void>) {
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
 }
 
+test("by default, with one Codex route and a plan login, the reviewer is advertised and served through that route", () => withDirectory(async directory => {
+  const credentialFile = join(directory, "login.json"); await writeFile(credentialFile, JSON.stringify(login), { mode: 0o600 });
+  const g = await gateway(directory, [claude, codex("codex", { "codex/sol": "gpt-6.1-sol" }, credentialFile)]);
+  try {
+    const body = (await (await g.get("/v1/model-catalog")).json()) as Record<string, unknown>;
+    assert.deepEqual(body.auto_review, { models: ["codex-auto-review"] }, "advertised with no option set");
+    assert.equal((await g.post(reviewRequest("codex-auto-review"))).status, 200);
+    assert.deepEqual([...g.seen.keys()], ["codex"], "the review goes to the Codex subscription, never to the chat's own provider");
+  } finally { await g.close(); }
+}));
+
 test("the reviewer slug is served through the one Codex route with the request unchanged apart from the model", () => withDirectory(async directory => {
   const g = await gateway(directory, [claude, codex("codex", { "codex/sol": "gpt-6.1-sol" })]);
   try {
@@ -139,7 +150,9 @@ test("telemetry marks reviewer requests with fixed fields only, on success, on 4
   const failing = await gateway(directory, [codex("a", { "a/sol": "gpt-6.1-sol" })], true);
   try { assert.equal((await failing.post({ ...reviewRequest("codex-auto-review"), stream: false })).status, 503); } finally { await failing.close(); }
   await flushTelemetry();
-  const events = (await readTelemetry(directory, since)).filter(event => event.event.startsWith("request_"));
+  const all = await readTelemetry(directory, since);
+  assert.equal(all.some(event => event.event === "model_alias_resolved" && event.requested === "codex-auto-review"), false, "a reviewer request served by the reviewer route resolves no alias");
+  const events = all.filter(event => event.event.startsWith("request_"));
   const marked = events.filter(event => event.autoReview === true);
   assert.deepEqual(marked.map(event => [event.event, event.model, event.code ?? null]), [["request_completed", "codex-auto-review", null], ["request_failed", "codex-auto-review", "model_not_found"], ["request_failed", "codex-auto-review", "upstream_unavailable"]]);
   assert.equal(events.filter(event => event.autoReview === undefined).length, 2, "ordinary requests and other names lack the field");

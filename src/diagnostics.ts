@@ -12,9 +12,11 @@ const percentile = (values: number[], p: number) => { if (!values.length) return
 export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Record<string, unknown> {
   const turns: Record<string, Counts> = {}; const turnFailures: Counts = {};
   const requests: Record<string, Counts & { input?: number; cached?: number }> = {}; const firstEvent: Record<string, number[]> = {};
-  const autoReview: Counts = {}; const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
+  const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
   const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
   const recent: Array<Record<string, unknown>> = [];
+  // Every Auto-review request from a gateway executor (node_repl, shell, apply_patch, network, MCP, permissions).
+  const autoReview: Counts = {};
   for (const event of events) {
     const model = String(event.model ?? "unknown");
     if (event.event.startsWith("turn_")) {
@@ -28,7 +30,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       const entry = requests[model] ||= {};
       // Translation failures also carry their fixed reason, so a 400 is separable per model.
       bump(entry, event.event === "request_failed" ? `failed:${event.code}${event.reason ? ":" + event.reason : ""}` : event.event.slice(8));
-      // Reviews of node_repl actions in gateway executors, counted apart from chat requests.
+      // Auto-review requests, of any kind, counted apart from chat requests.
       if (event.autoReview === true) bump(autoReview, event.event === "request_failed" ? `failed:${event.code}` : event.event.slice(8));
       if (typeof event.inputTokens === "number") entry.input = (entry.input || 0) + event.inputTokens;
       if (typeof event.cachedTokens === "number") entry.cached = (entry.cached || 0) + event.cachedTokens;
