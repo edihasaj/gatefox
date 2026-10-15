@@ -1,9 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { uninstallGateway, uninstallFailure, uninstallResult, type UninstallDeps } from "../uninstall.js";
+import { macDesktop, planDesktopUnregister } from "../mac-desktop.js";
+import { writePrivateJson } from "../config.js";
+import { desktopFixture } from "./desktop-fixture.js";
+
+const mac = { skip: process.platform !== "darwin" };
 
 // The result shape and the failure wording are the uninstall contract, so both are checked here as pure helpers.
 // Only the pure-helper tests below reach neither launchctl, the Trash, nor the filesystem; the `uninstallGateway`
@@ -58,11 +63,15 @@ function fakes(desktopResult: Record<string, unknown> = {}, runDesktop?: (action
  * managed command beside `<root>/../share/subscription-gateway/.gateway-installation`, and an empty
  * LaunchAgents directory. `install` rebuilds the managed files for a second uninstall, and `cleanup` belongs in
  * the test's `finally` so a temp HOME never leaks into the next test.
+ * The layout is the macOS one, so it also pins the platform to darwin: off macOS the uninstaller skips the
+ * desktop preflight entirely, and every order asserted below would change with the host that runs the test.
+ * A test that needs another platform overrides the pin after this helper has run and restores it before cleanup.
  */
 async function installedGateway() {
   const home = await mkdtemp(join(tmpdir(), "gateway-uninstall-"));
   const command = join(home, "bin", "gateway");
-  const saved = { HOME: process.env.HOME, installed: process.env.GATEWAY_INSTALLED, command: process.env.GATEWAY_COMMAND };
+  const saved = { HOME: process.env.HOME, installed: process.env.GATEWAY_INSTALLED, command: process.env.GATEWAY_COMMAND, platform: Object.getOwnPropertyDescriptor(process, "platform") };
+  Object.defineProperty(process, "platform", { value: "darwin", enumerable: true, configurable: true });
   const install = async () => {
     await mkdir(join(home, "bin"), { recursive: true });
     await writeFile(command, "#!/bin/sh\n# Managed by subscription-gateway installer\n");
@@ -75,6 +84,7 @@ async function installedGateway() {
     if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME;
     if (saved.installed === undefined) delete process.env.GATEWAY_INSTALLED; else process.env.GATEWAY_INSTALLED = saved.installed;
     if (saved.command === undefined) delete process.env.GATEWAY_COMMAND; else process.env.GATEWAY_COMMAND = saved.command;
+    if (saved.platform) Object.defineProperty(process, "platform", saved.platform);
     await rm(home, { recursive: true, force: true });
   };
   return { home, command, config: join(home, "gateway.json"), install, cleanup };
@@ -110,7 +120,7 @@ test("a desktop unregister plan that fails stops the uninstall before anything i
     assert.notEqual(message, "uninstallGateway resolved", "a failed plan must fail the whole uninstall");
     assert.match(message, /unregister preflight failed before anything was removed/, "the message says nothing is gone yet");
     assert.match(message, /desktop session could not be read/, "and names the cause");
-    assert.match(message, /resolve the cause above, then rerun `gateway uninstall`/i, "and gives the next step");
+    assert.match(message, /resolve that cause, then rerun `gateway uninstall`/i, "and gives the next step");
     assert.deepEqual(failed.calls, ["desktop:plan"], "a failed plan must not remove the service, native files, or SSH");
     assert.equal(await readFile(gateway.command, "utf8").then(() => true, () => false), true, "the command is still installed");
   } finally { await gateway.cleanup(); }
@@ -152,7 +162,7 @@ test("a corrupt receipt is reported as invalid JSON, never as the text that fail
 
 test("the failure helper names the step, what is still installed, and never the JSON text", () => {
   const message = uninstallFailure(new SyntaxError('Unexpected token <, "<!-- managed -->" is not valid JSON'), "preflight").message;
-  assert.equal(message, 'Desktop unregister preflight failed before anything was removed: Invalid JSON data. Resolve the cause above, then rerun `gateway uninstall`.');
+  assert.equal(message, 'Desktop unregister preflight failed before anything was removed: Invalid JSON data. Resolve that cause, then rerun `gateway uninstall`.');
   assert.equal(message.includes("<!--"), false, "the quoted snippet never survives the helper");
   assert.match(uninstallFailure(new Error("boom"), "unregister").message, /^Desktop unregister failed after the service and native components were already removed: boom\./);
   assert.match(uninstallFailure("not an error", "preflight").message, /The desktop registration could not be removed/);
@@ -171,7 +181,71 @@ test("a failed unregister says what the uninstall already removed and skips SSH"
     for (const pattern of [/desktop unregister/i, /already removed/i, /boom/, /gateway uninstall/]) {
       assert.match(message, pattern, "the message names the step, what is gone, the cause, and the remedy");
     }
-    assert.match(message, /resolve the cause above, then rerun `gateway uninstall`/i, "and the next step");
+    assert.match(message, /resolve that cause, then rerun `gateway uninstall`/i, "and the next step");
     assert.deepEqual(failed.calls, ["desktop:plan", "service", "native", "desktop:unregister"], "SSH never runs after it");
   } finally { await gateway.cleanup(); }
+});
+
+/** The unified service's plan, which `gateway service uninstall` moves to the Trash. */
+const servicePlan = (state: string, config: string, gateway: string) => writePrivateJson(join(state, "service-plan.json"),
+  { version: 1, config, components: [{ id: "inference", kind: "inference", command: gateway, args: [], log: join(state, "inference.log") }] });
+
+/**
+ * A refusal the preflight must not make: a Mac that still carries its unified service plan. The plan runs first,
+ * and the service uninstall that follows is the step that trashes that file, so the preflight must not refuse the
+ * removal it is describing. Real plan and real desktop unregister run over the fixture's launchctl seam; only the
+ * service step is faked, and it does with the plan file what `macService("uninstall")` does: moves it aside.
+ */
+test("the uninstaller plans past a service plan its service step then removes", mac, async () => {
+  const gateway = await installedGateway();
+  const f = await desktopFixture("uninstall-desktop");
+  const calls: string[] = [];
+  try {
+    await servicePlan(f.state, f.config, f.gateway);
+    const deps: UninstallDeps = {
+      macService: async () => { calls.push("service"); await rename(join(f.state, "service-plan.json"), join(f.root, "trashed-service-plan.json")); return {}; },
+      macNative: async () => { calls.push("native"); return {}; },
+      macSsh: async () => { calls.push("ssh"); return {}; },
+      macTunnel: async () => { calls.push("tunnel"); return {}; },
+      macDesktop: async (action) => { calls.push(`desktop:${action}`); return macDesktop(action, f.config, f.app, false, f.exec); },
+      planDesktopUnregister: async (configPath, exec, options) => {
+        calls.push("desktop:plan");
+        assert.equal(configPath, gateway.config, "the uninstaller plans the config it was given");
+        assert.equal(exec, undefined, "and leaves the desktop launchctl seam to the desktop");
+        assert.equal(options?.serviceRemovedFirst, true, "saying up front that the service goes first");
+        return planDesktopUnregister(f.config, f.exec, options);
+      },
+    };
+    assert.equal((await uninstallGateway(gateway.config, deps)).uninstalled, true, "the uninstall finishes instead of refusing");
+    assert.deepEqual(calls, ["desktop:plan", "service", "native", "desktop:unregister", "ssh"]);
+    assert.equal(await readFile(join(f.state, "service-plan.json"), "utf8").then(() => true, () => false), false, "the service step, not the desktop step, took that plan out of the state directory");
+    assert.equal(await readFile(join(f.root, "trashed-service-plan.json"), "utf8").then(() => true, () => false), true, "and the file it moved is the one the plan had refused on");
+    assert.deepEqual(JSON.parse(await readFile(f.receipt, "utf8")), {}, "and the real unregister cleared the receipt it found");
+    assert.equal(f.calls.every(call => call.startsWith("getenv ")), true, "the desktop path only read this session: " + f.calls.join(" | "));
+  } finally { await gateway.cleanup(); await rm(f.root, { recursive: true, force: true }); }
+});
+
+/**
+ * Off macOS there is no desktop registration to plan, so the uninstaller must not let the desktop answer for the
+ * platform. The service step's own message about what it supports is what the operator should see.
+ */
+test("a non-macOS host skips the desktop preflight and hears it from the service step", async () => {
+  const gateway = await installedGateway();
+  const saved = Object.getOwnPropertyDescriptor(process, "platform");
+  try {
+    Object.defineProperty(process, "platform", { value: "win32", enumerable: true, configurable: true });
+    const recorder = fakes();
+    recorder.deps.macService = async () => {
+      recorder.calls.push("service");
+      throw new Error("User service setup currently supports macOS; use gateway serve on other systems");
+    };
+    const message = await uninstallGateway(gateway.config, recorder.deps).then(
+      () => "uninstallGateway resolved", (cause: unknown) => cause instanceof Error ? cause.message : String(cause));
+    assert.equal(message, "User service setup currently supports macOS; use gateway serve on other systems", "the service answers for the platform, unwrapped");
+    assert.deepEqual(recorder.calls, ["service"], "no desktop plan ran on a host with no macOS session");
+    assert.equal(await readFile(gateway.command, "utf8").then(() => true, () => false), true, "and the install is left alone");
+  } finally {
+    if (saved) Object.defineProperty(process, "platform", saved);
+    await gateway.cleanup();
+  }
 });

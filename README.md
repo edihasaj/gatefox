@@ -186,11 +186,15 @@ worker, or agent-only tools. Saved gateway chats remain readable before model
 discovery and resume through the registered provider.
 
 `gateway uninstall` moves the installed files to Trash, removes managed services
-and desktop registration, and preserves the data directory and credentials. It
-first runs a read-only desktop preflight, which reads the desktop state and stops
-before anything is removed. A `launchctl getenv` that fails stops it the same way.
-If a desktop step fails once removal has started, the error names what is already
-gone: resolve the cause above, then rerun `gateway uninstall`.
+and desktop registration, and preserves the data directory and credentials. On
+macOS it first runs a read-only desktop preflight, which reads the desktop state
+and stops before anything is removed. A `launchctl getenv` that fails stops it the
+same way, and so does a gateway login promotion staged for the next login. A
+unified service plan does not stop it, because the service step moves that file to
+Trash with the service. Elsewhere there is no desktop registration to plan, so the
+service step answers with its own platform message. If a desktop step fails once
+removal has started, the error names what is already gone: resolve that cause,
+then rerun `gateway uninstall`.
 
 Inline image attachments and image tool results use native provider image inputs.
 The verified formats are PNG, JPEG, GIF, and WebP. See [Responses support](docs/responses.md)

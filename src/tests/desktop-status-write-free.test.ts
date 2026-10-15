@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { macDesktop } from "../mac-desktop.js";
 import { prepareDesktop } from "../desktop-launch.js";
@@ -44,6 +44,12 @@ const launchAgents = (f: Fixture) => join(f.home, "Library/LaunchAgents");
 const bytes = async (path: string) => readFile(path).catch(error => {
   if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error;
 });
+/**
+ * What the receipt file itself is, not only what it holds: equal bytes can still be a rewrite, either in place (new
+ * times) or by a temporary file moved over it (new inode). All three would be writes, and status makes none.
+ */
+const stamp = async (path: string) => lstat(path).then(info => ({ ino: info.ino, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs }),
+  error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
 
 test("status answers every receipt and session shape with two getenvs and no write at all", mac, async () => {
   for (const receipt of ["none", "empty", "current wrapper", "older wrapper"] as const) {
@@ -52,11 +58,12 @@ test("status answers every receipt and session shape with two getenvs and no wri
       const f = await fixture();
       await inDesktopHome(f, async () => {
         const named = await seed(f, receipt, session);
-        const [beforeReceipt, beforeState, beforeAgents] = [await bytes(f.receipt), await listing(f.state), await listing(launchAgents(f))];
+        const [beforeReceipt, beforeStamp, beforeState, beforeAgents] = [await bytes(f.receipt), await stamp(f.receipt), await listing(f.state), await listing(launchAgents(f))];
         const status = await macDesktop("status", f.config, f.app, false, f.exec);
 
         assert.deepEqual(f.calls, [`getenv ${PATH_KEY}`, `getenv ${FORCE}`], name + ": the two reads, in that order, and nothing else");
         assert.deepStrictEqual(await bytes(f.receipt), beforeReceipt, name + ": the receipt bytes are untouched, absent still if it was absent");
+        if (beforeStamp) assert.deepStrictEqual(await stamp(f.receipt), beforeStamp, name + ": and the same bytes were not rewritten in place or swapped in under us");
         assert.deepEqual(await listing(f.state), beforeState, name + ": nothing appeared in or left the state directory");
         assert.deepEqual(await listing(launchAgents(f)), beforeAgents, name + ": status never writes a desktop LaunchAgent");
 

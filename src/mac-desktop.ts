@@ -42,10 +42,21 @@ const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&
  * value. The value itself is only ever compared, never reported.
  */
 const getenv = async (exec: LaunchctlExec, name: string) => (await exec("/bin/launchctl", ["getenv", name])).stdout.replace(/\n$/, "");
-/** The last registration's receipt, or nothing where unregister cleared it or it never existed. Unreadable JSON fails the caller. */
+/**
+ * The last registration's receipt, or nothing where unregister cleared it or it never existed. Unreadable JSON fails
+ * the caller, and so does JSON that parses into anything but the shape register writes: an object whose wrapper, if
+ * it names one, is a path. null, an array, or a wrapper that is not a string is somebody else's file, and reading it
+ * as "no receipt" would let unregister clear a session it never registered.
+ */
 async function readReceipt(receipt: string): Promise<{ wrapper?: string }> {
-  try { return JSON.parse(await readFile(receipt, "utf8")) as { wrapper?: string }; }
+  let value: unknown;
+  try { value = JSON.parse(await readFile(receipt, "utf8")); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; return {}; }
+  const wrapper = (value as { wrapper?: unknown } | null)?.wrapper;
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !(wrapper === undefined || typeof wrapper === "string")) {
+    throw new Error("Desktop registration receipt is invalid");
+  }
+  return value as { wrapper?: string };
 }
 /** The desktop LaunchAgent's contents, or none where the file is absent. A plist without our marker is not ours to change. */
 async function readDesktopPlist(path: string): Promise<string | undefined> {
@@ -59,6 +70,14 @@ export async function macDesktop(action: string, configPath: string, app = "/App
   return withLoginRegistrationLock(config.stateDirectory, () => desktopOperation(action, configPath, app, restoreOnly, exec));
 }
 
+/** How the caller owns the removal this plan describes. */
+export type DesktopUnregisterOptions = {
+  /**
+   * Set by a caller whose next step removes the unified service along with its plan, which today means only
+   * `gateway uninstall`. That plan file is part of the removal, not another owner of this registration.
+   */
+  serviceRemovedFirst?: boolean;
+};
 /** What unregister has found about the session, before any of it is changed. */
 type UnregisterPlan = {
   /** The receipt that unregister clears. */
@@ -78,8 +97,13 @@ type UnregisterPlan = {
  * The marker is checked before a single launchctl call, so an unmanaged desktop LaunchAgent refuses while nothing
  * of ours has been touched.
  */
-async function planUnregister(stateDirectory: string, exec: LaunchctlExec): Promise<UnregisterPlan> {
-  if (await readServicePlan(stateDirectory) || await readPendingLoginConsolidation(stateDirectory)) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
+async function planUnregister(stateDirectory: string, exec: LaunchctlExec, options: DesktopUnregisterOptions = {}): Promise<UnregisterPlan> {
+  // `gateway uninstall` sets serviceRemovedFirst because its very next step runs the service uninstall, and that
+  // moves the unified service plan to the Trash. The plan file it sees here is one the removal already owns, not
+  // another owner of this registration. A staged next-login promotion survives the service uninstall, so it is
+  // refused either way, and a standalone `desktop unregister`, which removes no service, still refuses both.
+  const unified = options.serviceRemovedFirst ? undefined : await readServicePlan(stateDirectory);
+  if (unified || await readPendingLoginConsolidation(stateDirectory)) throw new Error("Desktop registration is owned by the unified service or its pending login plan. Finish that migration before unregistering the desktop adapter");
   const receipt = resolve(stateDirectory, "desktop-registration.json");
   const plist = resolve(homedir(), "Library/LaunchAgents", label + ".plist");
   const existing = await readDesktopPlist(plist);
@@ -116,12 +140,13 @@ async function applyUnregister(plan: UnregisterPlan, exec: LaunchctlExec): Promi
  * The preflight form of `gateway desktop unregister`: the same reads, under the same lock, with no writes at all.
  * `gateway uninstall` runs it before it removes anything, so a refusal lands while the service and native
  * components are still in place. The answer describes what unregister would do, in words: no path and no variable
- * value leaves this function.
+ * value leaves this function. `options` is how that caller says which removal it belongs to; a standalone
+ * unregister leaves it empty and is held to both refusals.
  */
-export async function planDesktopUnregister(configPath: string, exec: LaunchctlExec = launchctlExec): Promise<Record<string, unknown>> {
+export async function planDesktopUnregister(configPath: string, exec: LaunchctlExec = launchctlExec, options: DesktopUnregisterOptions = {}): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Choose gateway desktop register, unregister or status on macOS");
   const config = await loadConfig(configPath);
-  const plan = await withLoginRegistrationLock(config.stateDirectory, () => planUnregister(config.stateDirectory, exec));
+  const plan = await withLoginRegistrationLock(config.stateDirectory, () => planUnregister(config.stateDirectory, exec, options));
   // The same truthiness the apply step uses to decide whether there is a plist to move, so the plan cannot
   // promise to trash a file it would then leave alone.
   return { unregisterReady: true, loginAgent: plan.existing ? "managed" : "absent", cliPathOurs: plan.ownPath,

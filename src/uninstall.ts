@@ -34,7 +34,7 @@ const failureStage = {
 export function uninstallFailure(error: unknown, stage: keyof typeof failureStage): Error {
   const reason = error instanceof SyntaxError ? "Invalid JSON data"
     : error instanceof Error ? error.message : "The desktop registration could not be removed";
-  return new Error(`${failureStage[stage]}: ${reason}. Resolve the cause above, then rerun \`gateway uninstall\`.`, { cause: error });
+  return new Error(`${failureStage[stage]}: ${reason}. Resolve that cause, then rerun \`gateway uninstall\`.`, { cause: error });
 }
 
 export async function uninstallGateway(configPath: string, deps: UninstallDeps = defaultDeps): Promise<Record<string, unknown>> {
@@ -45,8 +45,14 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
   // Plan the desktop unregister first, and write nothing: the plan reads the config, the receipt, the desktop
   // LaunchAgent and its managed marker, and the GUI session, so an unmanaged plist, an unreadable registration,
   // or an unreachable session fails here, while the service and native components are still there to clean up,
-  // rather than halfway through the removal below.
-  await deps.planDesktopUnregister(configPath).catch((error: unknown) => { throw uninstallFailure(error, "preflight"); });
+  // rather than halfway through the removal below. macOS owns that session; on any other host this install has no
+  // desktop registration to plan, so the preflight is skipped and the service step below gives its own answer.
+  // serviceRemovedFirst tells the plan that the step right after it removes the unified service plan along with
+  // the service, so a plan file on disk is not a reason to refuse this removal.
+  if (process.platform === "darwin") {
+    await deps.planDesktopUnregister(configPath, undefined, { serviceRemovedFirst: true })
+      .catch((error: unknown) => { throw uninstallFailure(error, "preflight"); });
+  }
   await deps.macService("uninstall", configPath);
   await deps.macNative("uninstall", configPath);
   // Unregister reports legacyForceCliKept when it cleared our CODEX_CLI_PATH but a legacy FORCE_CLI=1 stayed
