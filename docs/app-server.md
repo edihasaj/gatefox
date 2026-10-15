@@ -489,7 +489,8 @@ preferences restore a saved new-chat default for the exact selected model. An ex
 for Standard. A model-only preference change clears the preceding model's tier.
 Resume and fork inherit their chat's tier; new-chat preferences never replace it.
 A tier the selected gateway row does not offer is handled as the pinned SDK handles it,
-and the SDK treats opening a session differently from running inside one:
+and the SDK treats opening a session differently from running inside one. Flex is the
+exception: the SDK keeps and sends it for every model, so the gateway never drops it.
 
 | Request | What the gateway sends | What happens |
 | --- | --- | --- |
@@ -508,14 +509,23 @@ is passed through unchanged, and the SDK answers it as invalid parameters. The
 `serviceTierForTurn` field exists only on `turn/start`, so a session start passes it
 through untouched. Saving a gateway default tier that the chosen row does not offer is
 the one tier check left: that configuration write fails with error `-32002` and asks
-the user to choose Standard or another model. Flex is the one tier the SDK sends for
-every model. The gateway drops it at session start like any other tier a row does not
-list, but inside a chat it is forwarded, and a provider that does not offer Flex then
-answers that request with its own error.
+the user to choose Standard or another model. Flex is the one tier that check accepts
+for every row, so a Flex default can be saved for any model. Flex is passed to the
+provider at session start and inside a chat, as native Codex sends it. The Codex
+subscription provider forwards it without checking the row's tier list. The Claude and
+Copilot providers treat Flex as Standard; that handling ships in the same release.
+
+The SDK accepts any tier string inside a chat, including values such as `auto`, `Fast`
+or a very long id. The gateway's private tier record holds only lowercase ids of up to
+128 characters that are not `auto`. For any other tier the gateway writes nothing, keeps
+the previous record, and treats the chat's tier as unknown, so a later resume or fork
+adds no inherited tier. Such a tier never fails a settings notification or a resume.
 
 Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
-the SDK accepted the request. See [diagnostics](diagnostics.md#local-telemetry) for its
-fields.
+the SDK accepted the request and only when its answer shows the chat started as Standard.
+A loaded chat with another subscriber ignores the override on a resume and answers with
+the tier it kept, and no drop is recorded then. See
+[diagnostics](diagnostics.md#local-telemetry) for its fields.
 
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the

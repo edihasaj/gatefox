@@ -48,6 +48,30 @@ test("Codex Fast aliases use priority on the wire and preserve the tier actually
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("Flex passes the Codex-subscription path for any model, as native Codex sends it, while other unlisted tiers are refused", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-flex-test-"));
+  const credentialFile = join(directory, "registration.json");
+  await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
+  const bodies: Record<string, unknown>[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => {
+    bodies.push(JSON.parse(String(options.body)));
+    return new Response(`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed", usage, service_tier: "flex" } })}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  });
+  try {
+    for (const serviceTiers of [[], [{ id: "priority", name: "Fast", description: "Fixture" }], undefined]) {
+      const provider = new ResponsesAPI({ id: "secondary", type: "codex-subscription", credentialFile, models: { "secondary/upstream": "upstream" },
+        modelMetadata: { "secondary/upstream": serviceTiers ? { serviceTiers } : {} } });
+      const before = bodies.length;
+      assert.deepEqual((await collect(provider, "flex")).at(-1), { type: "done", usage, serviceTier: "flex" });
+      assert.equal(bodies.length, before + 1); assert.equal(bodies.at(-1)?.service_tier, "flex");
+    }
+    const count = bodies.length;
+    const declared = new ResponsesAPI({ id: "secondary", type: "codex-subscription", credentialFile, models: { "secondary/upstream": "upstream" }, modelMetadata: { "secondary/upstream": { serviceTiers: [] } } });
+    await assert.rejects(collect(declared, "scale"), { code: "invalid_request", status: 400 });
+    assert.equal(bodies.length, count, "an unlisted tier other than Flex must not send inference");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("invalid tier input fails before authentication or inference; ordinary API tiers keep their wire values", async t => {
   const env = "GATEWAY_SERVICE_TIER_FIXTURE_KEY";
   const config: ProviderConfig = { id: "api", type: "responses-api", models: { fixture: "upstream" }, baseUrl: "http://127.0.0.1:1", apiKeyEnv: env };

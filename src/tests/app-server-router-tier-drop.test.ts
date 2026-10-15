@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ThreadServiceTiers } from "../thread-service-tiers.js";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
@@ -16,7 +17,8 @@ let clock = Date.now();
 /**
  * The backend models the pinned SDK: a session start drops a tier the model lacks, a running chat keeps the
  * tier it was given (any string is accepted, null clears to Standard), and a request carries the kept tier only
- * while the model offers it. It announces each accepted change the way the SDK does.
+ * while the model offers it. It announces each accepted change the way the SDK does. Flex is kept for every
+ * model. A loaded chat ignores a session-start override and answers with the tier it kept.
  */
 async function fixture(readModel = claude) {
   const state = await mkdtemp(join(tmpdir(), "gateway-tier-drop-"));
@@ -30,11 +32,12 @@ async function fixture(readModel = claude) {
   ] };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
   const ran: Ran[] = []; const sdk = { model: readModel, tier: undefined as unknown };
-  const control = { fail: false };
-  const offers = (model: string, tier: unknown) => (model === codex && (tier === "priority" || tier === "fast")) || (model === "turbo/model" && tier === "turbo");
+  const control = { fail: false, loaded: false, silent: false, provider: gateway, answer: undefined as undefined | ((result: ObjectValue) => ObjectValue) };
+  const offers = (model: string, tier: unknown) => tier === "flex" || (model === codex && (tier === "priority" || tier === "fast")) || (model === "turbo/model" && tier === "turbo");
   const normal = (tier: unknown) => tier === "fast" ? "priority" : tier;
   let router: AppServerRouter;
-  const announce = () => router.observeNotification({ emittedAtMs: clock = Math.max(clock + 1, Date.now()), method: "thread/settings/updated",
+  const announce = async () => { if (!control.silent) await announce_(); };
+  const announce_ = () => router.observeNotification({ emittedAtMs: clock = Math.max(clock + 1, Date.now()), method: "thread/settings/updated",
     params: { threadId: "t", threadSettings: { modelProvider: gateway, model: sdk.model, serviceTier: sdk.tier ?? null } } });
   const applyTier = (params: ObjectValue) => { if (Object.hasOwn(params, "serviceTier")) sdk.tier = normal(params.serviceTier); };
   const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
@@ -44,11 +47,13 @@ async function fixture(readModel = claude) {
     if (tier !== undefined && tier !== null && typeof tier !== "string") throw new Error("invalid params: serviceTier");
     if (method === "model/list") return { data: [], nextCursor: null };
     if (method === "config/read") return { config: { model: "native", model_provider: "openai" }, origins: {}, layers: null };
-    if (method === "thread/read") return { thread: { id: "t", modelProvider: gateway, model: readModel } };
+    if (method === "thread/read") return { thread: { id: "t", modelProvider: control.provider, model: readModel } };
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
+      if (control.loaded) return { thread: { id: "t" }, modelProvider: gateway, model: sdk.model, serviceTier: sdk.tier ?? null };
       sdk.model = String(params.model);
       sdk.tier = tier === undefined || tier === null || offers(sdk.model, tier) ? normal(tier) ?? null : null;
-      return { thread: { id: "t" }, modelProvider: params.modelProvider, model: params.model, serviceTier: sdk.tier };
+      const answer = { thread: { id: "t" }, modelProvider: params.modelProvider, model: params.model, serviceTier: sdk.tier };
+      return control.answer ? control.answer(answer) : answer;
     }
     if (method === "turn/start" || method === "thread/settings/update") {
       if (typeof params.model === "string") sdk.model = params.model;
@@ -60,13 +65,16 @@ async function fixture(readModel = claude) {
     }
     return { status: "applied" };
   };
-  router = new AppServerRouter(config, backend); await router.initialize();
+  const nativeHome = join(state, "native-home");
+  const connect = async () => { const connected = new AppServerRouter(config, backend, undefined, undefined, nativeHome); await connected.initialize(); return connected; };
+  router = await connect();
+  const store = new ThreadServiceTiers(state, nativeHome);
   const recorded = async (name: string) => { await flushTelemetry(); return (await readTelemetry(state, Date.now() - 60_000)).filter(event => event.event === name); };
   const events = async () => (await recorded("service_tier_dropped")).map(event => Object.fromEntries(Object.entries(event).filter(([key]) => !["at", "host", "component", "pid"].includes(key))));
   // The mid-chat reset event no longer exists; asserting it stays absent keeps it from coming back.
   const resets = () => recorded("service_tier_reset");
   const last = () => calls.at(-1)!;
-  return { router, calls, ran, events, resets, config, backend, last, control };
+  return { router, calls, ran, events, resets, config, backend, last, control, connect, store };
 }
 const dropped = (method: string, model: string, tier: string) => ({ event: "service_tier_dropped", method, model, tier });
 const noTier = (params: ObjectValue) => !Object.hasOwn(params, "serviceTier");
@@ -92,7 +100,7 @@ test("a saved Fast default for a row that no longer offers it starts the chat as
   ] });
   // The catalog changed after the default was saved.
   delete f.config.providers[1].modelMetadata![codex].serviceTiers;
-  const later = new AppServerRouter(f.config, f.backend); await later.initialize();
+  const later = await f.connect();
   for (const params of [{}, { model: codex }]) {
     await later.request("thread/start", params);
     assert.equal(f.last().method, "thread/start"); assert.equal(f.last().params.serviceTier, null, JSON.stringify(params));
@@ -135,7 +143,7 @@ test("a chat whose own row stopped offering its tier resumes as Standard", async
   await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
   // The catalog changed under the chat: its own row is still selected, but advertises no tiers.
   delete f.config.providers[1].modelMetadata![codex].serviceTiers;
-  const later = new AppServerRouter(f.config, f.backend); await later.initialize();
+  const later = await f.connect();
   await later.request("thread/resume", { threadId: "t" });
   assert.equal(f.last().params.serviceTier, null); assert.equal(f.last().params.model, codex, "the chat keeps its own row");
   assert.deepEqual(await f.events(), [dropped("thread/resume", codex, "priority")]);
@@ -194,7 +202,7 @@ test("a Fast chat run on a Claude row and then on a Fast row runs Fast again, as
     for (const call of f.calls.filter(call => ["turn/start", "thread/settings/update"].includes(call.method))) assert.notEqual(call.params.serviceTier, null, change);
     assert.deepEqual(await f.events(), []); assert.deepEqual(await f.resets(), []);
     // A new connection reads the same chat from the notification the SDK sent, still carrying Fast.
-    const later = new AppServerRouter(f.config, f.backend); await later.initialize();
+    const later = await f.connect();
     await later.request("turn/start", { threadId: "t", model: claude, input: [] }); await later.request("turn/start", { threadId: "t", model: codex, input: [] });
     assert.deepEqual(f.ran.at(-1), { model: codex, tier: "priority" }, change);
   }
@@ -243,7 +251,7 @@ test("a wrongly typed tier is passed to the SDK unchanged and the SDK answers it
 
 test("tier telemetry logs only known tier ids and carries exactly the model, tier and method", async () => {
   const { router, events } = await fixture();
-  const cases: Array<[string, string]> = [["priority", "priority"], ["fast", "fast"], ["flex", "flex"], ["turbo", "turbo"], ["sk-live-secret-1234", "other"], ["PRIORITY", "other"], ["", "other"], ["a b/c", "other"]];
+  const cases: Array<[string, string]> = [["priority", "priority"], ["fast", "fast"], ["turbo", "turbo"], ["sk-live-secret-1234", "other"], ["PRIORITY", "other"], ["", "other"], ["a b/c", "other"]];
   for (const [tier] of cases) await router.request("thread/start", { model: claude, serviceTier: tier });
   await router.request("thread/start", { model: claude, serviceTier: "default" });
   assert.deepEqual(await events(), cases.map(([, logged]) => dropped("thread/start", claude, logged)));
@@ -260,9 +268,162 @@ test("a drop is recorded only after the SDK accepted the request", async () => {
   assert.deepEqual(await f.events(), [dropped("thread/start", claude, "priority")]);
 });
 
-test("a per-turn field on a session start is not a tier the gateway interprets", async () => {
+test("a per-turn field on a session start is not a tier the gateway interprets, whatever its value", async () => {
   const { router, last, events } = await fixture();
-  await router.request("thread/resume", { threadId: "t", model: claude, serviceTierForTurn: "priority" });
-  assert.equal(last().params.serviceTierForTurn, "priority");
+  for (const method of ["thread/resume", "thread/fork"]) {
+    for (const value of ["priority", "fast"]) {
+      await router.request(method, { threadId: "t", model: claude, serviceTierForTurn: value });
+      assert.equal(last().method, method); assert.equal(last().params.serviceTierForTurn, value, `${method} ${value}`);
+    }
+  }
   assert.deepEqual(await events(), []);
+});
+
+test("a native chat's per-turn fast is passed to the SDK unchanged; only gateway chats map it to priority", async () => {
+  const f = await fixture(); f.control.provider = "openai";
+  await f.router.request("turn/start", { threadId: "t", serviceTierForTurn: "fast", input: [] });
+  assert.equal(f.last().method, "turn/start"); assert.equal(f.last().params.serviceTierForTurn, "fast");
+  const gatewayChat = await fixture();
+  await gatewayChat.router.request("thread/start", { model: codex });
+  await gatewayChat.router.request("turn/start", { threadId: "t", serviceTierForTurn: "fast", input: [] });
+  assert.equal(gatewayChat.last().params.serviceTierForTurn, "priority");
+});
+
+test("Flex is never dropped: a session start keeps it on a row that does not list it, as the SDK does", async () => {
+  const f = await fixture();
+  await f.router.request("thread/start", { model: claude, serviceTier: "flex" });
+  assert.equal(f.last().params.serviceTier, "flex");
+  await f.router.request("thread/start", { model: claude, config: { service_tier: "flex" } });
+  assert.equal((f.last().params.config as ObjectValue).service_tier, "flex"); assert.ok(noTier(f.last().params));
+  for (const method of ["thread/resume", "thread/fork"]) {
+    await f.router.request(method, { threadId: "t", model: claude, serviceTier: "flex" });
+    assert.equal(f.last().method, method); assert.equal(f.last().params.serviceTier, "flex", method);
+  }
+  // The chat's own Flex is inherited by the next session start on a row that lacks Fast.
+  await f.router.request("thread/start", { model: claude, serviceTier: "flex" });
+  await f.router.request("thread/fork", { threadId: "t", model: claude });
+  assert.equal(f.last().params.serviceTier, "flex");
+  assert.deepEqual(await f.events(), []);
+});
+
+test("a saved Flex default is accepted for a row that does not list it", async () => {
+  const f = await fixture();
+  await f.router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: claude, mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "flex", mergeStrategy: "upsert" },
+  ] });
+  await f.router.request("thread/start", {});
+  assert.equal(f.last().params.serviceTier, "flex"); assert.deepEqual(await f.events(), []);
+});
+
+test("no drop is recorded when the SDK kept the tier, as a loaded chat does with a resume override", async () => {
+  const f = await fixture();
+  await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+  f.control.loaded = true;
+  await f.router.request("thread/resume", { threadId: "t", model: claude, serviceTier: "priority" });
+  assert.equal(f.last().params.serviceTier, null, "the gateway still sent Standard");
+  await f.router.request("thread/resume", { threadId: "t", model: claude });
+  assert.equal(f.last().params.serviceTier, null, "an inherited tier the row lacks is also dropped in the request");
+  await f.router.request("thread/fork", { threadId: "t", model: claude, config: { service_tier: "priority" } });
+  assert.deepEqual(await f.events(), [], "the SDK answered with the tier it kept");
+});
+
+test("a drop is recorded when the SDK answers Standard in any form: null, default, or no tier at all", async () => {
+  for (const answer of [(result: ObjectValue) => ({ ...result, serviceTier: null }), (result: ObjectValue) => ({ ...result, serviceTier: "default" }),
+    (result: ObjectValue) => { const { serviceTier: _omitted, ...rest } = result; return rest; }]) {
+    const f = await fixture(); f.control.answer = answer;
+    await f.router.request("thread/start", { model: claude, serviceTier: "priority" });
+    assert.deepEqual(await f.events(), [dropped("thread/start", claude, "priority")]);
+  }
+  const kept = await fixture(); kept.control.answer = result => ({ ...result, serviceTier: "priority" });
+  await kept.router.request("thread/start", { model: claude, serviceTier: "priority" });
+  assert.deepEqual(await kept.events(), []);
+});
+
+const oddTiers = ["auto", "Fast", "PRIORITY", "x".repeat(200)];
+const settingsTier = (f: Awaited<ReturnType<typeof fixture>>, tier: string) => f.router.request("thread/settings/update", { threadId: "t", serviceTier: tier });
+const turnTier = (f: Awaited<ReturnType<typeof fixture>>, tier: string) => f.router.request("turn/start", { threadId: "t", serviceTier: tier, input: [] });
+
+test("a tier the SDK keeps but the private store cannot hold never fails a notification, a turn or a loaded resume", async () => {
+  for (const change of [settingsTier, turnTier]) {
+    for (const tier of oddTiers) {
+      const f = await fixture();
+      await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+      await change(f, tier);
+      // The announcement the SDK sent for it, and the same one again from a slower shared client.
+      for (let again = 0; again < 2; again++) await f.router.observeNotification({ emittedAtMs: clock = Math.max(clock + 1, Date.now()), method: "thread/settings/updated",
+        params: { threadId: "t", threadSettings: { modelProvider: gateway, model: codex, serviceTier: tier } } });
+      // The previous durable record is left alone rather than rewritten or cleared.
+      assert.equal((await f.store.read("t"))?.serviceTier, "priority", tier.slice(0, 12));
+      f.control.loaded = true;
+      for (const router of [f.router, await f.connect()]) {
+        await router.request("thread/resume", { threadId: "t" });
+        assert.equal(f.last().method, "thread/resume");
+        await router.request("turn/start", { threadId: "t", input: [] });
+        // What the SDK answered on the resume is a tier the gateway cannot store, so it is unknown rather than inherited.
+        await router.request("thread/fork", { threadId: "t", model: codex });
+        assert.ok(noTier(f.last().params), tier.slice(0, 12));
+      }
+      // The chat's tier is unknown, so a later session start adds none of its own.
+      f.control.loaded = false;
+      await f.router.request("thread/fork", { threadId: "t", model: codex });
+      assert.ok(noTier(f.last().params), tier.slice(0, 12));
+      assert.deepEqual(await f.events(), [], tier.slice(0, 12));
+    }
+  }
+});
+
+test("an odd tier on a Standard chat leaves its stored Standard and breaks neither a loaded resume nor the connection", async () => {
+  for (const tier of oddTiers) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: claude });
+    f.control.loaded = true;
+    const connection = await f.connect();
+    await settingsTier({ ...f, router: connection }, tier);
+    await connection.request("thread/resume", { threadId: "t" });
+    assert.equal((await f.store.read("t"))?.serviceTier, null, "nothing was written for a tier the store rejects");
+    await connection.request("turn/start", { threadId: "t", input: [] });
+  }
+});
+
+test("a stored tier survives an odd tier, and a valid tier after it is recorded and inherited again", async () => {
+  const f = await fixture();
+  await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+  await settingsTier(f, "Fast");
+  await f.router.request("thread/settings/update", { threadId: "t", serviceTier: "priority" });
+  assert.equal((await f.store.read("t"))?.serviceTier, "priority");
+  await f.router.request("thread/fork", { threadId: "t", model: codex });
+  assert.equal(f.last().params.serviceTier, "priority", "a valid later tier is recorded and inherited again");
+});
+
+test("a turn that sets an odd tier before the SDK announces it leaves the chat's tier unknown, not the odd tier", async () => {
+  for (const tier of oddTiers) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+    f.control.silent = true;
+    await turnTier(f, tier);
+    await f.router.request("thread/fork", { threadId: "t", model: codex });
+    assert.ok(noTier(f.last().params), tier.slice(0, 12));
+    assert.deepEqual(await f.events(), []);
+  }
+});
+
+test("an odd tier announced with a model change still moves the chat to that model", async () => {
+  const f = await fixture();
+  await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+  await f.router.request("thread/settings/update", { threadId: "t", model: claude, serviceTier: "auto" });
+  await f.router.request("thread/resume", { threadId: "t" });
+  assert.equal(f.last().params.model, claude);
+  assert.ok(noTier(f.last().params));
+});
+
+test("an odd tier announced to a fresh connection leaves an unknown tier, not the stale stored one", async () => {
+  for (const tier of oddTiers) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+    const fresh = await f.connect();
+    await fresh.observeNotification({ emittedAtMs: clock = Math.max(clock + 1, Date.now()), method: "thread/settings/updated",
+      params: { threadId: "t", threadSettings: { modelProvider: gateway, model: codex, serviceTier: tier } } });
+    await fresh.request("thread/fork", { threadId: "t", model: codex });
+    assert.ok(noTier(f.last().params), tier.slice(0, 12));
+  }
 });

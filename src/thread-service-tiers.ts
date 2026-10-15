@@ -15,10 +15,13 @@ const text = (value: unknown): value is string => typeof value === "string" && v
 const fields = (value: Record<string, unknown>, keys: string[], optional: string[] = []) => keys.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => keys.includes(key) || optional.includes(key));
 const integer = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+/** Whether the private store can hold this tier. The SDK keeps other strings ("auto", "Fast", a long value) that the store rejects. */
+export const storableServiceTier = (tier: unknown): tier is string | null => tier === null || (typeof tier === "string" && /^[a-z][a-z0-9_-]{0,127}$/.test(tier) && tier !== "auto");
+
 function row(value: unknown): ThreadServiceTier {
   if (!object(value) || !fields(value, ["model", "serviceTier"], ["revision", "emittedAtMs", "uncertainBeforeMs"]) || !text(value.model)) throw invalid();
   const tier = value.serviceTier;
-  if (tier !== null && (typeof tier !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(tier) || tier === "auto")) throw invalid();
+  if (!storableServiceTier(tier)) throw invalid();
   for (const key of ["revision", "emittedAtMs", "uncertainBeforeMs"]) if (Object.hasOwn(value, key) && !integer(value[key])) throw invalid();
   return { model: value.model, serviceTier: tier === "fast" ? "priority" : tier === "default" || tier === "standard" ? null : tier,
     ...(Object.hasOwn(value, "revision") ? { revision: Number(value.revision) } : {}), ...(Object.hasOwn(value, "emittedAtMs") ? { emittedAtMs: Number(value.emittedAtMs) } : {}),

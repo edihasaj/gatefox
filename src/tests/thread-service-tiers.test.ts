@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ThreadServiceTiers, type ThreadServiceTier } from "../thread-service-tiers.js";
+import { storableServiceTier, ThreadServiceTiers, type ThreadServiceTier } from "../thread-service-tiers.js";
 
 const execute = promisify(execFile); const maxBytes = 4 * 1024 * 1024;
 const fast = { model: "gateway/model", serviceTier: "priority" };
@@ -359,4 +359,13 @@ test("row and serialized byte limits allow existing updates and reject overflow 
     await assert.rejects(f.store.write("chat-0", standard), /invalid/);
     assert.equal(await readFile(f.path, "utf8"), dense, "pretty serialization cannot exceed the byte limit");
   } finally { await f.close(); }
+});
+
+test("the exported validity check matches exactly what the store accepts", async () => {
+  const f = await fixture();
+  const cases: unknown[] = [null, "priority", "flex", "default", "standard", "a", "a_b-9", "x".repeat(128), "auto", "Fast", "PRIORITY", "", "1abc", "a b", "x".repeat(129), "x".repeat(200), 5, undefined, {}];
+  for (const tier of cases) {
+    const accepted = await f.store.write("chat", { model: "gateway/model", serviceTier: tier as string | null }).then(() => true, () => false);
+    assert.equal(storableServiceTier(tier), accepted, JSON.stringify(tier)?.slice(0, 20));
+  }
 });

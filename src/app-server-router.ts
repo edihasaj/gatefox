@@ -8,7 +8,7 @@ import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
-import { ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
+import { storableServiceTier, ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
 import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummary, type ThreadReasoningSelection } from "./thread-reasoning.js";
 import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
 import { homedir } from "node:os";
@@ -87,11 +87,13 @@ export class AppServerRouter {
     if (typeof thread.id === "string" && typeof result.modelProvider === "string") {
       const tier = Object.hasOwn(result, "serviceTier") ? result.serviceTier : tierSelection(params)?.value;
       const route: ThreadRoute = { provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
-        ...(tier === null || typeof tier === "string" ? { serviceTier: tierId(tier) as string | null } : {}) };
+        ...(tier === null || (typeof tier === "string" && storableServiceTier(tierId(tier))) ? { serviceTier: tierId(tier) as string | null } : {}) };
       this.routes.set(thread.id, route);
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
       if (route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
         const record = { model: route.model, serviceTier: savedTier(result.serviceTier) };
+        // The SDK accepted a tier the private store cannot hold. The route above already leaves the chat's tier unknown.
+        if (!storableServiceTier(record.serviceTier)) return;
         await this.threadTiers.write(thread.id, record, thread.id === params.threadId ? expected ?? null : null, requestStartedAtMs);
         const current = await this.threadTiers.read(thread.id);
         this.tierRecords.set(thread.id, current);
@@ -137,6 +139,13 @@ export class AppServerRouter {
       if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: savedTier(settings.serviceTier), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
+      if (!storableServiceTier(record.serviceTier)) {
+        // The SDK kept a tier the private store cannot hold, so the durable record is left alone and the chat's tier is unknown.
+        const route = this.routes.get(params.threadId);
+        if (route) { route.model = settings.model; delete route.serviceTier; }
+        this.tierRecords.set(params.threadId, await this.threadTiers.read(params.threadId));
+        return;
+      }
       // Duplicate notifications from slower shared clients cannot replace newer settings.
       await this.threadTiers.write(params.threadId, record, this.tierRecords.get(params.threadId) ?? null);
       const current = await this.threadTiers.read(params.threadId);
@@ -145,23 +154,30 @@ export class AppServerRouter {
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
   }
-  /** Mirrors the SDK's catalog check: Standard is always offered, any other tier only if the row lists it. */
+  /**
+   * The gateway's view of the SDK's session-start check. Standard is always offered, and so is Flex: the SDK sends
+   * Flex for every model and native Codex never refuses it. Any other tier is offered only if the row lists it.
+   */
   private offersServiceTier(model: string, tier: string): boolean {
-    if (tier === "default") return true;
+    if (tier === "default" || tier === "flex") return true;
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) return false;
     try { return !!readPublicServiceTierMetadata(metadata).serviceTiers?.some(entry => entry.id === tierId(tier)); } catch { return false; }
   }
   /** Tier ids safe to log: the catalog's own plus the SDK's fixed names. Anything else is reported as "other". */
   private loggableTier(tier: string): string {
-    const known = new Set(["priority", "fast", "default", "flex"]);
+    const known = new Set(["priority", "fast", "default"]);
     for (const metadata of this.extraModels) {
       try { for (const entry of readPublicServiceTierMetadata(metadata).serviceTiers ?? []) known.add(entry.id); } catch { /* an invalid row advertises nothing */ }
     }
     return known.has(tier) ? tier : "other";
   }
-  /** Recorded only once the SDK accepted the request, so a rejected request leaves no event. */
-  private recordTierDrops(drops: TierDrop[]): void {
+  /**
+   * Recorded only once the SDK accepted the request, so a rejected request leaves no event. A loaded chat
+   * ignores a session-start override and answers with the tier it kept, so nothing was dropped then.
+   */
+  private recordTierDrops(drops: TierDrop[], result: ObjectValue): void {
+    if (result.serviceTier !== undefined && result.serviceTier !== null && result.serviceTier !== "default") return;
     for (const drop of drops) telemetry("service_tier_dropped", { model: drop.model, tier: this.loggableTier(drop.tier), method: drop.method });
   }
   /**
@@ -331,7 +347,7 @@ export class AppServerRouter {
     // Inside a running chat the SDK keeps the chat's chosen tier and leaves it off an outgoing request only
     // while the model lacks it, so the gateway neither clears nor injects a tier here. The SDK also accepts a
     // tier the model does not offer. Its per-turn field reads "priority", so the legacy "fast" alias is mapped.
-    if (route.provider === gatewayProvider && !sessionStart && params.serviceTierForTurn === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
+    if (route.provider === gatewayProvider && params.serviceTierForTurn === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
     if (sessionStart && route.provider === gatewayProvider) {
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
@@ -385,7 +401,7 @@ export class AppServerRouter {
     const settingsVersion = typeof params.threadId === "string" ? this.settingsVersions.get(params.threadId) || 0 : 0;
     const requestStartedAtMs = Date.now();
     const result = await this.backend(method, forwarded);
-    this.recordTierDrops(drops);
+    this.recordTierDrops(drops, result);
     if (method === "account/rateLimits/read") {
       try { return mergeGatewayUsage(result, await gatewayUsage(this.config)); }
       catch { return result; }
@@ -407,7 +423,10 @@ export class AppServerRouter {
     const sentTier = tierSelection(forwarded);
     if (settingsUnchanged && method === "turn/start" && typeof params.threadId === "string") {
       const route = this.routes.get(params.threadId);
-      if (route && sentTier && (sentTier.value === null || typeof sentTier.value === "string")) route.serviceTier = tierId(sentTier.value) as string | null;
+      if (route && sentTier && (sentTier.value === null || typeof sentTier.value === "string")) {
+        const sent = tierId(sentTier.value);
+        if (storableServiceTier(sent)) route.serviceTier = sent; else delete route.serviceTier;
+      }
     }
     if (method === "turn/start" && typeof params.threadId === "string" && typeof object(result.turn).id === "string") {
       const route = this.routes.get(params.threadId);
