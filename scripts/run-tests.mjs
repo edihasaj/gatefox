@@ -61,7 +61,7 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(signal, () => {
 child.once("error", error => { process.stderr.write(`Could not start the test run: ${error.message}\n`); remove(); process.exit(2); });
 /** Whether nothing listens on this socket file: a connection to it is refused. */
 const refused = path => new Promise(settle => {
-  const socket = connect(path); const timer = setTimeout(() => { socket.destroy(); settle(false); }, 1500);
+  const socket = connect(path); const timer = setTimeout(() => setImmediate(() => { socket.destroy(); settle(false); }), 1500);
   socket.once("connect", () => { clearTimeout(timer); socket.destroy(); settle(false); });
   socket.once("error", error => { clearTimeout(timer); settle(error.code === "ECONNREFUSED"); });
 });
