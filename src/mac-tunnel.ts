@@ -3,11 +3,12 @@ import { promisify } from "node:util";
 import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { readServicePlan } from "./service-plan.js";
+import { readServicePlan, type ServicePlan } from "./service-plan.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
+import { removeTunnelComponent, pendingMessage, type TunnelRemoveSeams } from "./mac-tunnel-remove.js";
 
 const exec = promisify(execFile); const marker = "<!-- Managed by subscription-gateway tunnel -->";
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
@@ -18,17 +19,39 @@ export function tunnelArguments(options: TunnelOptions): string[] {
   return ["/usr/bin/ssh", "-N", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "ConnectionAttempts=1", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "RequestTTY=no", "-o", "RemoteCommand=none",
     ...(options.sshConfig ? ["-F", resolve(options.sshConfig)] : []), options.reverse ? "-R" : "-L", `127.0.0.1:${options.port}:127.0.0.1:${options.remotePort}`, options.host];
 }
-export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
+/** Returned inside the login lock when a unified plan appeared, so the removal retries without holding that lock. */
+const unifiedPlan: Record<string, unknown> = {};
+export async function macTunnel(action: string | undefined, options: TunnelOptions, state: string, listProcesses?: Parameters<typeof removeTunnelComponent>[3], seams?: TunnelRemoveSeams): Promise<Record<string, unknown>> {
+  validate(action, options);
   if (action === "status") return tunnelOperation(action, options, state);
-  return withLoginRegistrationLock(state, () => tunnelOperation(action, options, state));
+  // One lock order everywhere: the plan lock first, then the login lock, as shared-executors, shared-native
+  // and shared-disable take them. A unified-plan removal never holds the login lock: removeTunnelComponent
+  // takes the plan lock and re-checks the pending login consolidation inside it.
+  const remove = async (plan: ServicePlan) => {
+    if (await readPendingLoginConsolidation(state)) throw new Error(pendingMessage);
+    return removeTunnelComponent(state, plan, options.id, listProcesses, seams);
+  };
+  const plan = await readServicePlan(state);
+  if (action === "uninstall" && plan) return remove(plan);
+  const result = await withLoginRegistrationLock(state, () => tunnelOperation(action, options, state));
+  if (result !== unifiedPlan) return result;
+  // A unified plan appeared while waiting for the login lock, which is released now.
+  await seams?.planAppeared?.();
+  const appeared = await readServicePlan(state);
+  if (!appeared) throw new Error("Gateway service plan changed; repeat the tunnel removal");
+  return remove(appeared);
 }
-async function tunnelOperation(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
+function validate(action: string | undefined, options: TunnelOptions): void {
   if (process.platform !== "darwin") throw new Error("Managed SSH tunnels currently support macOS");
   if (!/^[a-z][a-z0-9-]{0,63}$/.test(options.id) || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose tunnel install/status/uninstall and a lowercase --tunnel-id");
+}
+/** Runs one tunnel action with the login lock held. A unified plan's removal is deferred to `macTunnel`'s retry, which takes the plan lock without this one. */
+async function tunnelOperation(action: string | undefined, options: TunnelOptions, state: string): Promise<Record<string, unknown>> {
   const plan = await readServicePlan(state);
-  if (action !== "status" && await readPendingLoginConsolidation(state)) throw new Error("Tunnel startup is staged under the unified service at next login; its separate registration was not changed");
+  if (action !== "status" && await readPendingLoginConsolidation(state)) throw new Error(pendingMessage);
   if (plan) {
     if (action === "status") return { ...await consolidatedStatus(state), component: plan.components.find(component => component.id === "tunnel-" + options.id)?.id || null };
+    if (action === "uninstall") return unifiedPlan;
     throw new Error("Tunnels are owned by the unified service. Finish chats and uninstall that service before changing its tunnel configuration");
   }
   const label = `com.edihasaj.subscription-gateway.tunnel.${options.id}`; const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;

@@ -97,11 +97,143 @@ Macs do not get the drain. The drain deadline in `cli.ts` and the supervisor tak
 effect only after a service or inference restart; an in-place upgrade keeps the
 running process's previous deadline.
 
-After consolidation, the separate native and tunnel installers refuse changes
-that would create competing jobs. Their status commands inspect the unified
+After consolidation, a separate native install or `gateway tunnel install` refuses
+changes that would create competing jobs. Their status commands inspect the unified
 service. Desktop registration can refresh the launch environment without creating
-another login job. Transport changes currently require stopping the unified
-service and registering the required components again before reconsolidation.
+another login job. Transport changes other than tunnel removal currently require
+stopping the unified service and registering the required components again before
+reconsolidation.
+
+Retire one tunnel the unified service owns:
+
+```sh
+gateway tunnel uninstall --tunnel-id spark
+```
+
+This edits the service plan rather than registering another LaunchAgent. It
+refuses a tunnel name that is not in the plan, and it refuses a component of that
+name that is not a tunnel. Repeating a removal that already landed reports
+`alreadyRemoved` instead of failing again. A repeat is recognised only from the
+removal record the command writes after the plan edit succeeds
+(`service-backups/tunnel-removals.json`, private), by an exact comparison of the
+recorded tunnel id, and only while the plan file is the one that removal left
+(the record stores its content hash, inode, modification time and change time, so
+even a copy with identical content and modification time is another file). Removing another tunnel
+with this command keeps earlier records valid; restoring a saved plan, editing
+it by hand, replacing it, or `gateway service uninstall` followed by a new
+consolidation ends them, so such a plan reports `No tunnel <id>` again. A backup
+file by itself, whatever its name, proves nothing: a failed edit, or a plan
+someone changed by hand, never makes an unknown name look removed, and
+`spark-2026` never makes `spark` look removed. If only the record write fails, the
+removal still succeeds and the result says a repeat will not be recognised. A
+record that cannot be read counts as no record, so an unknown or repeated name is
+still refused as `No tunnel <id>`.
+
+Before it writes anything, it runs the same maintenance check as `gateway service
+restart` on a unified plan and consolidation: the ChatGPT desktop must be quit,
+and when the plan runs inference, `/health` must answer with status `ok` and no
+active inference (a busy, unhealthy or unreachable gateway is refused). The
+refusals say `Quit ChatGPT normally after local and remote chats finish` or
+`Gateway inference is busy or unhealthy`, each followed by `the tunnel was not
+removed`; they do not use the consolidation wording. A plan
+with no inference component, and a remote-client configuration, have nothing
+listening locally, so no probe is made and it never depends on the tunnel being
+removed. A remote-client configuration is never probed even when its plan still
+lists an inference component (a Mac that moved from standalone to client).
+
+It checks the tunnel's local listeners, which are its `-L` and `-D` forwards (also
+written as `-o LocalForward` or `DynamicForward`, attached to the flag, clustered
+like `-NTL`, or with a bracketed IPv6 bind). It reads the ssh arguments with the
+same option table the service uses for ssh (so `-P tag` and `-PLab` are a tag, not
+a forward) and stops at `--`. It also asks `/usr/bin/ssh -G` with the same
+arguments what ssh resolves (it does not connect), and merges that with the
+arguments: forwards that `-F` or the host alias add through ssh_config count as
+the tunnel's own, and so does `GatewayPorts`. Because `ssh -G` evaluates the
+ssh configuration, a `Match exec` line in it runs, as it does whenever that tunnel
+starts. A reverse `-R` forward only listens on the other machine, so it is not
+checked. It refuses when:
+
+- a configured provider's `baseUrl` connects to one of those ports, naming the
+  provider; point that provider at another endpoint or remove it from the gateway
+  configuration, then repeat the removal. A forward bound to loopback (the default)
+  is reached through every spelling of this machine: `localhost` (with or without
+  a trailing dot, and `*.localhost`), the whole `127.0.0.0/8` range, `0.0.0.0`,
+  `::`, `::1`, and IPv4-mapped forms such as `[::ffff:127.0.0.1]`. A forward bound
+  to every interface (`*`, `0.0.0.0`, an empty bind such as `:port`, any other
+  non-loopback bind address, or `GatewayPorts yes` or `-g` without a bind
+  address) is also reached through this machine's hostname and interface
+  addresses. That name counts in either spelling: the full `hostname()`
+  (`Mac-Studio.local`) or its bare first label (`Mac-Studio`), and an interface
+  address counts in its IPv4-mapped spelling (`[::ffff:192.0.2.7]`) as well as in
+  the dotted one. A provider host that is a name is also resolved (the system
+  resolver, so DNS and `/etc/hosts`, every address it returns), but only when its
+  port is the tunnel's: any loopback address reaches a loopback forward, and a
+  loopback or own-interface address reaches a wildcard one. So `qwen.internal`
+  mapped to `127.0.0.1` is refused, and one that resolves to a remote address is
+  not. A lookup that fails or takes more than 3 seconds fails with `Cannot
+  determine whether provider <id>'s host <name> reaches tunnel <id>'s local port
+  <port>; the tunnel was not removed`, because the answer is unknown. A slow
+  lookup is refused after 3 seconds, but the resolver call is not cancelled, so
+  the command can still take until that system lookup ends to exit. A provider
+  that plainly matches is reported before any name is looked up;
+- on a remote client, one of those ports is the configured `port`, because that
+  tunnel is how the client reaches its gateway; stop the client with `gateway
+  service uninstall` instead. Another tunnel on the same machine still retires
+  normally;
+- the tunnel's local port cannot be determined, because the checks above cannot
+  run: a forward's port cannot be identified (a socket path, a malformed spec, port
+  0, which asks ssh for a free port), a trailing `-L`, `-D` or `-R` has no value, or
+  `ssh -G` cannot resolve the arguments (for example an unreadable `-F` file). It
+  fails with `Cannot determine tunnel <id>'s local port`; edit the service plan
+  manually;
+- the component's command is not `/usr/bin/ssh` (for example a hand-edited plan
+  that runs `autossh` or a Homebrew `ssh`), because its options would be read with
+  OpenSSH's table and guessed. It fails with the same `Cannot determine tunnel
+  <id>'s local port` error;
+- neither the arguments nor ssh's resolved configuration declare any forward (no
+  `-L`, `-D`, `-R`, `LocalForward`, `DynamicForward` or `RemoteForward`). It
+  fails with `Cannot determine tunnel <id>'s local port`, like the cases above;
+- the tunnel is the plan's only component; uninstall the gateway service instead;
+- a next-login consolidation is pending (`service-login-pending.json`): the
+  command fails with `Tunnel startup is staged under the unified service at next
+  login` before it looks the tunnel up in the plan or changes the plan, whatever
+  well-formed tunnel id was given, so the staged plan can still be activated. The
+  check runs again under the plan lock and the login lock, so a consolidation
+  staged while the command waited for either of them is refused too.
+
+The plan it replaces is saved first to a private
+`service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
+check that the plan did not change since it was read, the backup, the plan write
+and the record all happen under the same plan-file lock `service shared-executors`,
+`service shared-native` and their disable commands hold, so a concurrent change
+is never overwritten: the removal refuses with `Gateway service plan changed`, or
+waits up to 5 seconds for the lock and then fails with `Gateway service plan is busy;
+the tunnel was not removed`. The removal takes the plan lock first and the login
+registration lock second, the order `service shared-executors`, `service
+shared-native` and their disable commands use, so it never holds the login lock
+while it waits for the plan lock. The commands that move the plan itself are not
+plan-lock writers: `service uninstall` trashes the plan and `service consolidate
+--next-login` stages one, each under the login lock alone, so a plan that was
+moved or staged while this removal waited is caught by that second lock and
+refused instead of written back. A lock that cannot be created at all (for
+example an unwritable state directory) fails with `Cannot lock the gateway
+service plan (<code>); the tunnel was not removed`, or `Cannot lock the gateway
+service registration (<code>)` once the plan lock is held; a login lock still
+held after 5 seconds fails as `Gateway service registration is busy; the tunnel
+was not removed`. The `(<code>)` suffix appears only when the system reports an
+error code; a lock file that is not a private regular file owned by you gives
+the same message with no code. Either way nothing was backed up or written.
+A plan write that fails after the backup leaves the backup in place and records
+nothing, so a plan someone later edits by hand is still refused as `No tunnel <id>`.
+
+Nothing restarts: the result says `appliesAt: next service restart`, and a repeat
+says the same. The tunnel stops when the unified service next starts from the
+shorter plan. That is any restart, not only one you run: `gateway service
+restart`, an idle self-upgrade restart after an update, a launchd restart after a
+crash, or the next login. Until then `gateway tunnel status --tunnel-id <id>`
+shows `component: null` because the tunnel is gone from the plan, but its ssh
+process keeps running. Restore the saved file over `service-plan.json` and restart
+to bring the tunnel back.
 
 Consolidation is opt-in. Installing an updated CLI prepares the command but does
 not migrate a running service or interrupt an open chat.

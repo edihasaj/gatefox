@@ -1,6 +1,9 @@
+/** The ssh options that take an argument (the rest of the cluster or the next word); one list for every parser of tunnel arguments. */
+export const sshOptionsWithArgument = "BbcDEeFIiJLlmOoPpQRSWw";
+
 /** Add outage defaults to new managed SSH children without changing explicit options. */
 export function serviceTunnelArguments(args: readonly string[]): string[] {
-  const supplied = new Set<string>(); const withValue = "BbcDEeFIiJLlmOoPpQRSWw";
+  const supplied = new Set<string>(); const withValue = sshOptionsWithArgument;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index]; if (arg === "--" || !arg.startsWith("-") || arg === "-") break;
     for (let position = 1; position < arg.length; position++) {
