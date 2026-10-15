@@ -98,6 +98,12 @@ export const remoteLookup = async () => ["203.0.113.7"];
 export const remove = async (state: string, id: string, listProcesses = none, seams: TunnelRemoveSeams = { resolveSsh: noSsh }) =>
   removeTunnelComponent(state, (await readServicePlan(state))!, id, listProcesses, { lookup: remoteLookup, ...seams });
 
+/** Runs an action with HOME inside a fixture root, so a tunnel command that falls back to its separate LaunchAgent can only ever touch that fixture. */
+export const homeIn = async <T>(root: string, action: () => Promise<T>): Promise<T> => {
+  const original = process.env.HOME; process.env.HOME = root;
+  try { return await action(); } finally { if (original === undefined) delete process.env.HOME; else process.env.HOME = original; }
+};
+
 /** Runs an action as if on macOS, which `gateway tunnel` requires. */
 export const darwin = async <T>(action: () => Promise<T>): Promise<T> => {
   const original = Object.getOwnPropertyDescriptor(process, "platform")!; Object.defineProperty(process, "platform", { value: "darwin" });

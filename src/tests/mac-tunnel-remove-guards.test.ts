@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, rename, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
-import { providerReaches, reachesListener, systemLookup } from "../mac-tunnel-local.js";
+import { isLoopbackHost, providerReaches, reachesListener, systemLookup } from "../mac-tunnel-local.js";
 import { parseSshConfigDump, type SshResolver } from "../mac-tunnel-ssh.js";
 import { planKey } from "../mac-tunnel-removals.js";
 import type { TunnelRemoveSeams } from "../mac-tunnel-remove.js";
@@ -47,6 +47,19 @@ test("an own interface address reaches a wildcard listener in every spelling", {
   for (const host of ownHosts) assert.equal(reachesListener(`http://${host}:18301/v1`, { port: 18301, wildcard: true }), true, host);
   for (const host of ownHosts) assert.equal(reachesListener(`http://${host}:18301/v1`, { port: 18301, wildcard: false }), false, `loopback listener: ${host}`);
 });
+
+const parses = (url: string) => { try { return !!new URL(url).hostname; } catch { return false; } };
+/** A machine's hostname is usually dotted (`Mac-Studio.local`); providers write its bare first label just as often. */
+const shortHost = hostname().split(".")[0];
+test("the first label of this machine's hostname is its own name, so it reaches a wildcard listener and no loopback one",
+  { skip: shortHost && !isLoopbackHost(shortHost) && parses(`http://${shortHost}:18301/v1`) ? false : "this machine has no own name to check" }, () => {
+  if (shortHost === hostname()) console.log("note: this hostname is already a bare label, so name and first label are the same");
+    for (const url of [`http://${shortHost}:18301/v1`, `http://${shortHost.toUpperCase()}:18301/v1`]) {
+      assert.equal(reachesListener(url, { port: 18301, wildcard: true }), true, url);
+      assert.equal(reachesListener(url, { port: 18301, wildcard: false }), false, `${url} reaches nothing bound to loopback`);
+    }
+    assert.equal(reachesListener(`http://not-${shortHost}:18301/v1`, { port: 18301, wildcard: true }), false, "another name that starts with it is not this machine");
+  });
 
 test("a forward bound beyond loopback is reached through this machine's own name and addresses", async () => {
   const binds = [["-L", "*:18301:127.0.0.1:18300"], ["-L", ":18301:127.0.0.1:18300"], ["-L", "0.0.0.0:18301:127.0.0.1:18300"], ["-D", "*:18301"],

@@ -16,7 +16,9 @@ type ListProcesses = Parameters<typeof requireMaintenanceWindow>[1];
 // No consolidation is running here, so the shared guard's consolidation wording is replaced.
 const blocks = { desktop: "Quit ChatGPT normally after local and remote chats finish", busy: "Gateway inference is busy or unhealthy" };
 /** Test seams: how ssh resolves the tunnel's forwards, how the plan is written, how long the plan lock is awaited, and how provider hostnames resolve. */
-export interface TunnelRemoveSeams { resolveSsh?: SshResolver; writePlan?: (path: string, plan: ServicePlan) => Promise<void>; lockTimeoutMs?: number; lookup?: HostLookup; lookupTimeoutMs?: number }
+export interface TunnelRemoveSeams { resolveSsh?: SshResolver; writePlan?: (path: string, plan: ServicePlan) => Promise<void>; lockTimeoutMs?: number; lookup?: HostLookup; lookupTimeoutMs?: number;
+  /** `gateway tunnel uninstall` awaits this after it found a unified plan while it held the login lock and before it re-reads that plan without the lock. */
+  planAppeared?: () => Promise<void> }
 
 /**
  * Removes one SSH tunnel component from a unified service plan. Takes the plan lock first and

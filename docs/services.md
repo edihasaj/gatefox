@@ -162,7 +162,10 @@ checked. It refuses when:
   to every interface (`*`, `0.0.0.0`, an empty bind such as `:port`, any other
   non-loopback bind address, or `GatewayPorts yes` or `-g` without a bind
   address) is also reached through this machine's hostname and interface
-  addresses. A provider host that is a name is also resolved (the system
+  addresses. That name counts in either spelling: the full `hostname()`
+  (`Mac-Studio.local`) or its bare first label (`Mac-Studio`), and an interface
+  address counts in its IPv4-mapped spelling (`[::ffff:192.0.2.7]`) as well as in
+  the dotted one. A provider host that is a name is also resolved (the system
   resolver, so DNS and `/etc/hosts`, every address it returns), but only when its
   port is the tunnel's: any loopback address reaches a loopback forward, and a
   loopback or own-interface address reaches a wildcard one. So `qwen.internal`
@@ -193,10 +196,10 @@ checked. It refuses when:
 - the tunnel is the plan's only component; uninstall the gateway service instead;
 - a next-login consolidation is pending (`service-login-pending.json`): the
   command fails with `Tunnel startup is staged under the unified service at next
-  login` before it reads or changes the plan, whatever tunnel id was given, so
-  the staged plan can still be activated. The check runs again under the plan
-  lock and the login lock, so a consolidation staged while the command waited for
-  either of them is refused too.
+  login` before it validates the tunnel or changes the plan, whatever tunnel id
+  was given, so the staged plan can still be activated. The check runs again
+  under the plan lock and the login lock, so a consolidation staged while the
+  command waited for either of them is refused too.
 
 The plan it replaces is saved first to a private
 `service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
