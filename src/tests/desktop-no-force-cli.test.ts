@@ -216,6 +216,18 @@ test("unregistration clears our FORCE_CLI and leaves a foreign value", mac, asyn
   }
 });
 
+test("registration still refuses a foreign CODEX_CLI_PATH and never replaces it", mac, async () => {
+  for (const restoreOnly of [true, false]) {
+    const f = await fixture();
+    await inHome(f, async () => {
+      f.values.set(PATH_KEY, "/opt/other-cli");
+      await assert.rejects(macDesktop("register", f.config, f.app, restoreOnly, f.exec), /Another desktop CLI override is active/);
+      assert.equal(f.calls.some(call => call.startsWith(`setenv ${PATH_KEY}`) || call.startsWith(`unsetenv ${PATH_KEY}`)), false, `restoreOnly=${restoreOnly}`);
+      assert.equal(f.values.get(PATH_KEY), "/opt/other-cli");
+    });
+  }
+});
+
 test("the desktop launch environment uses CODEX_CLI_PATH alone", () => {
   const base: NodeJS.ProcessEnv = { PATH: "/usr/bin", CODEX_API_KEY: "a", OPENAI_API_KEY: "b", OPENAI_BASE_URL: "http://c" };
   const env = desktopEnvironment(base, "/tmp/wrapper", "/tmp/gateway.json");
@@ -228,6 +240,10 @@ test("the desktop launch environment uses CODEX_CLI_PATH alone", () => {
   assert.equal(desktopEnvironment({ [PATH_KEY]: "/s/desktop-wrapper-0123456789abcdef", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], undefined, "an older wrapper counts as ours");
   assert.equal(desktopEnvironment({ [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", "a 1 without our wrapper is the user's");
   assert.equal(desktopEnvironment({ [PATH_KEY]: "/opt/other-cli", [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", "a 1 beside a foreign CLI path is the user's");
+  // Only an exact gateway wrapper name counts as ours: look-alike paths belong to the user.
+  for (const lookalike of ["/opt/notdesktop-wrapper-0123456789abcdef", "/s/desktop-wrapper-0123456789abcdef.sh", "/s/desktop-wrapper-0123", "/opt/my-desktop-wrapper-tool"]) {
+    assert.equal(desktopEnvironment({ [PATH_KEY]: lookalike, [FORCE]: "1" }, "/tmp/wrapper", "/tmp/gateway.json")[FORCE], "1", `a 1 beside ${lookalike} is the user's`);
+  }
   assert.equal(desktopEnvironment({ [FORCE]: "other" }, "/tmp/wrapper", "/tmp/gateway.json", "/tmp/native")[FORCE], "other", "a foreign value survives");
   assert.equal(desktopEnvironment({}, "/tmp/wrapper", "/tmp/gateway.json", "/tmp/native/../other").CODEX_HOME, "/tmp/other", "native home is resolved");
 });
