@@ -1,8 +1,9 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { macTunnel } from "../mac-tunnel.js";
+import { servicePlanPath } from "../service-plan.js";
 import { darwin, fixture, homeIn, none, tempRoot, removeAllRoots, removeRoot } from "./mac-tunnel-remove-fixtures.js";
 
 after(removeAllRoots);
@@ -33,9 +34,11 @@ test("a bad tunnel action or id is refused without creating the state directory 
 test("a bad tunnel id is refused even when a unified plan is present, leaving that plan untouched", async () => {
   const f = await fixture({ active: 0, status: "ok" });
   try {
+    const before = readFileSync(servicePlanPath(f.state), "utf8");
     await darwin(async () => homeIn(f.root, async () => {
       await assert.rejects(macTunnel("uninstall", { id: "Spark" }, f.state, none), usageError);
     }));
+    assert.equal(readFileSync(servicePlanPath(f.state), "utf8"), before, "the plan is byte-for-byte unchanged");
   } finally { await f.stop(); }
 });
 
