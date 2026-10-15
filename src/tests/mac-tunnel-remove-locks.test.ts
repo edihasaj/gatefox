@@ -63,6 +63,11 @@ test("a login consolidation staged while the uninstall waits for the plan lock i
 
 test("a unified plan that appears while the uninstall waits for the login lock is removed without that lock", async () => {
   const f = await fixture(ok);
+  // No machine registers a tunnel named after this process, so the registration fallback cannot touch a real one.
+  const id = `zz-test-${process.pid}`;
+  const plan: ServicePlan = { ...f.plan, components: f.plan.components.map(component =>
+    component.id === "tunnel-spark" ? { ...component, id: `tunnel-${id}`, log: join(f.state, `tunnel-${id}.log`) } : component) };
+  await writePrivateJson(servicePlanPath(f.state), plan);
   try {
     // The plan is hidden first, so the command takes the registration path and waits for the login lock.
     const path = servicePlanPath(f.state);
@@ -72,7 +77,7 @@ test("a unified plan that appears while the uninstall waits for the login lock i
       // This holder keeps the plan lock from here on, so once it frees the login lock the uninstall waits for the plan.
       await withPrivateFileLock(path, async () => {
         await withLoginRegistrationLock(f.state, async () => {
-          removal = macTunnel("uninstall", { id: "spark" }, f.state, none, seams()); outcome = settle(removal);
+          removal = macTunnel("uninstall", { id }, f.state, none, seams()); outcome = settle(removal);
           await delay(150); assert.equal(outcome.done, false, "the uninstall waits for the login lock");
           await rename(path + ".hidden", path);
           // Read back under the login lock: the uninstall cannot reach its plan check until this holder releases it.
@@ -87,13 +92,18 @@ test("a unified plan that appears while the uninstall waits for the login lock i
       assert.ok(waited < 1000, `the login lock was free while the uninstall waited for the plan lock (took ${waited} ms)`);
       assert.equal((await removal).removed, true);
     }));
-    assert.deepEqual(ids((await readServicePlan(f.state))!), ids(f.plan).filter(id => id !== "tunnel-spark"));
+    assert.deepEqual(ids((await readServicePlan(f.state))!), ids(plan).filter(componentId => componentId !== `tunnel-${id}`));
   } finally { await f.stop(); }
 });
 
 /** The plan can also move away again in the moment between the uninstall seeing it under the login lock and reading it once that lock is gone. */
 test("a unified plan that appeared and moved again before its re-read is refused, never treated as a separate tunnel", async () => {
   const f = await fixture(ok);
+  // No machine registers a tunnel named after this process, so the registration fallback cannot touch a real one.
+  const id = `zz-test-${process.pid}`;
+  const plan: ServicePlan = { ...f.plan, components: f.plan.components.map(component =>
+    component.id === "tunnel-spark" ? { ...component, id: `tunnel-${id}`, log: join(f.state, `tunnel-${id}.log`) } : component) };
+  await writePrivateJson(servicePlanPath(f.state), plan);
   try {
     // Hidden at the start, so the command takes the registration path and waits for the login lock.
     const path = servicePlanPath(f.state);
@@ -102,7 +112,7 @@ test("a unified plan that appeared and moved again before its re-read is refused
       let removal!: Promise<unknown>; let outcome!: ReturnType<typeof settle>;
       await withLoginRegistrationLock(f.state, async () => {
         // The seam runs once the uninstall has seen the plan under this lock and let that lock go: the plan moves away there.
-        removal = macTunnel("uninstall", { id: "spark" }, f.state, none, { ...seams(), planAppeared: async () => { await rename(path, path + ".hidden"); } });
+        removal = macTunnel("uninstall", { id }, f.state, none, { ...seams(), planAppeared: async () => { await rename(path, path + ".hidden"); } });
         outcome = settle(removal);
         await delay(150);
         assert.equal(outcome.done, false, "the uninstall waits for the login lock");
@@ -112,7 +122,7 @@ test("a unified plan that appeared and moved again before its re-read is refused
       await assert.rejects(removal, /^Error: Gateway service plan changed; repeat the tunnel removal$/);
     }));
     assert.equal(await readServicePlan(f.state), undefined, "no plan was written back");
-    assert.deepEqual(JSON.parse(await readFile(path + ".hidden", "utf8")), f.plan, "the plan the other command moved is untouched");
+    assert.deepEqual(JSON.parse(await readFile(path + ".hidden", "utf8")), plan, "the plan the other command moved is untouched");
     await noBackups(f.state);
   } finally { await f.stop(); }
 });

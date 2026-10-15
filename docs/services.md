@@ -196,10 +196,10 @@ checked. It refuses when:
 - the tunnel is the plan's only component; uninstall the gateway service instead;
 - a next-login consolidation is pending (`service-login-pending.json`): the
   command fails with `Tunnel startup is staged under the unified service at next
-  login` before it validates the tunnel or changes the plan, whatever tunnel id
-  was given, so the staged plan can still be activated. The check runs again
-  under the plan lock and the login lock, so a consolidation staged while the
-  command waited for either of them is refused too.
+  login` before it looks the tunnel up in the plan or changes the plan, whatever
+  well-formed tunnel id was given, so the staged plan can still be activated. The
+  check runs again under the plan lock and the login lock, so a consolidation
+  staged while the command waited for either of them is refused too.
 
 The plan it replaces is saved first to a private
 `service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
@@ -220,7 +220,9 @@ example an unwritable state directory) fails with `Cannot lock the gateway
 service plan (<code>); the tunnel was not removed`, or `Cannot lock the gateway
 service registration (<code>)` once the plan lock is held; a login lock still
 held after 5 seconds fails as `Gateway service registration is busy; the tunnel
-was not removed`. Either way nothing was backed up or written.
+was not removed`. The `(<code>)` suffix appears only when the system reports an
+error code; a lock file that is not a private regular file owned by you gives
+the same message with no code. Either way nothing was backed up or written.
 A plan write that fails after the backup leaves the backup in place and records
 nothing, so a plan someone later edits by hand is still refused as `No tunnel <id>`.
 

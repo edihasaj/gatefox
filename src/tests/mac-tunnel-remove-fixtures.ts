@@ -98,7 +98,7 @@ export const remoteLookup = async () => ["203.0.113.7"];
 export const remove = async (state: string, id: string, listProcesses = none, seams: TunnelRemoveSeams = { resolveSsh: noSsh }) =>
   removeTunnelComponent(state, (await readServicePlan(state))!, id, listProcesses, { lookup: remoteLookup, ...seams });
 
-/** Runs an action with HOME inside a fixture root, so a tunnel command that falls back to its separate LaunchAgent can only ever touch that fixture. */
+/** Runs an action with HOME inside a fixture root, so a tunnel command keeps its LaunchAgent plist and anything it trashes under that fixture. launchd itself is per user and is not isolated. */
 export const homeIn = async <T>(root: string, action: () => Promise<T>): Promise<T> => {
   const original = process.env.HOME; process.env.HOME = root;
   try { return await action(); } finally { if (original === undefined) delete process.env.HOME; else process.env.HOME = original; }
