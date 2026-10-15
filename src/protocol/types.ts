@@ -88,7 +88,9 @@ export type ResponsesRequest = {
 };
 export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number } };
 /** Billing detail the gateway records locally; never sent to clients. */
-export type UsageAccounting = { cacheWriteTokens?: number; reasoningTokens?: number; nanoAiu?: number; nanoAiuStatus?: "complete" | "partial" | "unavailable" };
+export type UsageAccounting = { cacheWriteTokens?: number; reasoningTokens?: number; nanoAiu?: number; nanoAiuStatus?: "complete" | "partial" | "unavailable";
+  /** Who started the request's model calls (Copilot): `user` for a new message, `agent` for a follow-up inside a live session, `mixed` for both. */
+  initiator?: "user" | "agent" | "mixed" };
 export type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
 export type PublicServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast";
 const publicServiceTiers = new Set<string>(["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"]);

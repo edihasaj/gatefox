@@ -278,8 +278,13 @@ SDK custom tools and returns their real calls before any execution. SDK reasonin
 summaries stream separately; `auto` requests a concise summary. The adapter rejects
 BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
-Cancellation stops the request's CLI process and waits for it to exit. The next
-request starts a separate session and replays caller-supplied history.
+By default the thread keeps one live CLI session, and a request sends only the
+items that are new; see [live Copilot sessions](copilot-sessions.md). Cancellation
+aborts the session, stops its CLI process and waits for it to exit; the next request
+starts a new session and sends the caller-supplied history once. A request a live
+session cannot serve (no thread id, compaction, a concurrent request, every slot busy,
+or `copilotSessions.mode: "oneshot"`) gets its own session, with the same system
+message, the caller's whole tool catalog and one user message per history item.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 Normal requests retain the selected model, reasoning, and subscription route.
@@ -402,7 +407,8 @@ update. Live sessions reseed once after an inference restart anyway, so they pay
 that same single write.
 
 Claude receives native image blocks through the official CLI's streamed input.
-Copilot receives private SDK image attachments, deleted with the request session.
+Copilot receives images as inline blob attachments on the message that owns them, and
+tool-output images as binary results of the waiting tool call. The gateway writes no image file.
 Their text conversation contains labels for image ownership and order, never the
 image bytes. Each native harness controls its own image preprocessing. Codex and
 ordinary Responses upstreams retain the original image parts and detail setting.

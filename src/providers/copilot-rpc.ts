@@ -37,7 +37,7 @@ export class CopilotRPC {
   private sequence = 0; private stopping = false; private queuedBytes = 0;
   readonly exited: Promise<void>;
   constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams) {
-    this.child = child || spawn("copilot", ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"] });
+    this.child = child || spawn("copilot", ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stderr.resume(); this.events.on("error", () => {});
     this.exited = new Promise(resolve => this.child.once("close", () => { this.fail(new ProviderError("cli_failed", "Copilot CLI closed before completion")); resolve(); }));
     this.child.once("error", () => this.fail(new ProviderError("cli_failed", "Copilot CLI is unavailable; run gateway doctor")));
@@ -87,12 +87,18 @@ export class CopilotRPC {
     this.stop();
   }
   get pid(): number | undefined { return this.child.pid; }
-  /** Ends the process at once, for a gateway that is itself exiting. */
-  kill(): void { this.stopping = true; try { this.child.kill("SIGKILL"); } catch { /* Already gone. */ } }
+  /** Signals the CLI's whole process group (it is its own group leader), or just the process if the group is gone. */
+  private signal(name: NodeJS.Signals): void {
+    const pid = this.child.pid;
+    if (pid && this.child.exitCode === null && this.child.signalCode === null) { try { process.kill(-pid, name); return; } catch { /* Fall back to the process itself. */ } }
+    try { this.child.kill(name); } catch { /* Already gone. */ }
+  }
+  /** Ends the process and anything it started at once, with no grace: a session that must not make another model call. */
+  kill(): void { this.stopping = true; this.signal("SIGKILL"); }
   stop(): void {
     if (this.stopping) return; this.stopping = true;
-    this.child.stdin.end(); this.child.kill("SIGTERM");
-    const timer = setTimeout(() => this.child.kill("SIGKILL"), 1500).unref();
+    this.child.stdin.end(); this.signal("SIGTERM");
+    const timer = setTimeout(() => this.signal("SIGKILL"), 1500).unref();
     this.child.once("close", () => clearTimeout(timer));
   }
 }

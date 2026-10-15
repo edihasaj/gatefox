@@ -3,9 +3,10 @@ import type { ChatToolSelection, InferenceEvent, OpenAITool, ResponsesRequest } 
 import { registerActivityProbe, registerShutdownHook } from "../runtime-activity.js";
 import { telemetry } from "../telemetry.js";
 import { decide, ledgerEntries, type LedgerPhase } from "./claude-ledger.js";
-import { itemText, type ClaudeConversation } from "./claude-render.js";
+import type { ClaudeConversation, ClaudeImages } from "./claude-render.js";
 import { sessionKey } from "./claude-live-contract.js";
-import { CopilotLiveSession, SessionStartFailure, sweepLiveDirectories, type SessionEnd, type SessionState } from "./copilot-live-session.js";
+import { CopilotLiveSession, SessionStartFailure, sessionLimits, type SessionEnd, type SessionState } from "./copilot-live-session.js";
+import { choiceLine, copilotPrompts, copilotToolResult, imagesByItem, type NativeTool } from "./copilot-render.js";
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
 
@@ -15,8 +16,9 @@ import { ProviderError } from "./provider.js";
  * changed, the thread is reseeded in a new process (one cache write, which a one-shot request pays on
  * every call). Anything that fails before output falls back to the one-shot path.
  */
-export type CopilotMissReason = "no_thread" | "request_kind" | "images" | "forced_choice" | "concurrent" | "capacity" | "spawn_failed" | "stream_failed" |
-  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "effort_midturn" | "effort_rejected" | "session_dead" | "evicted" | "reaped" | "interrupted";
+export type CopilotMissReason = "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" | "delivery_rejected" | "stream_failed" |
+  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn" | "effort_rejected" | "tool_request_missing" |
+  "session_dead" | "evicted" | "reaped" | "interrupted" | "tool_wait_expired" | "idle_missing";
 
 export interface CopilotLiveInput {
   /** Provider identity; a session never crosses it. */
@@ -29,14 +31,16 @@ export interface CopilotLiveInput {
   /** `session.create` parameters without the id and directories. */
   create: Record<string, unknown>;
   config: ProviderConfig;
-  /** The full caller catalog, for the ledger; the session's own tools are `create.tools`. */
+  /** The full caller catalog, for the ledger. */
   catalog: OpenAITool[];
-  toolCount: number;
+  /** The same tools under the names the CLI sees (the session's own tools are `create.tools`). */
+  native: NativeTool[];
   choice?: ChatToolSelection;
   /** The restored Responses request. */
   request: ResponsesRequest;
-  /** The translated messages after the leading instructions, with tool calls marked (no images). */
+  /** The translated messages after the leading instructions, with tool calls marked and images replaced by labels. */
   conversation: ClaudeConversation;
+  images: ClaudeImages;
   /** Translated messages that moved into the system message; the ledger skips them. */
   leading: number;
   newTurn(): CopilotTurn;
@@ -44,10 +48,6 @@ export interface CopilotLiveInput {
 export type CopilotLiveOutcome = { kind: "stream"; events: AsyncIterable<InferenceEvent> } | { kind: "fallback"; reason: CopilotMissReason };
 
 export interface CopilotLiveSettings { max: number; parkMinutes: number; toolWaitMinutes: number }
-/** A session idle this long has lost its cache (Copilot keeps it 30 minutes), so it is the one to evict. */
-export const liveLimits = { coldMs: 30 * 60000 };
-/** Lets a test run the once-per-process sweep of a dead gateway's session folders again. */
-export function resetLiveSweep(): void { swept = undefined; }
 
 interface Registry {
   interfaceVersion: 1;
@@ -63,7 +63,6 @@ type Plan = Exclude<ReturnType<typeof decide>, { kind: "reseed" }> | { kind: "se
 const symbol = Symbol.for("harness-gateway/copilot-sessions/v1");
 const recentToolWait = 10 * 60 * 1000;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
-let swept: Promise<void> | undefined;
 
 function registry(): Registry {
   const scope = globalThis as unknown as Record<symbol, Registry | undefined>;
@@ -86,12 +85,6 @@ export function copilotLive(settings: CopilotLiveSettings) {
   const reg = registry();
   return {
     attach: (input: CopilotLiveInput, signal: AbortSignal) => attach(reg, settings, input, signal),
-    /** Ends a thread's session at once (a request that cannot use it, such as a forced tool choice). */
-    release: async (scope: string, threadId: string, reason: string) => {
-      const key = sessionKey(scope, threadId); const session = reg.sessions.get(key);
-      if (!session || session.state === "generating") return;
-      reg.sessions.delete(key); await session.close("closed", reason);
-    },
     /** Closes every session and forgets how earlier ones ended (tests; shutdown uses the registry hook). */
     stop: async () => { await closeAll(reg, "stopped"); reg.ended.clear(); reg.scopes.clear(); },
     sessions: (): CopilotLiveSession[] => [...reg.sessions.values()],
@@ -110,7 +103,7 @@ async function attach(reg: Registry, settings: CopilotLiveSettings, input: Copil
   const key = sessionKey(input.scope, input.threadId);
   if (reg.starting.has(key)) return { kind: "fallback", reason: "concurrent" };
   reg.starting.add(key);
-  try { await (swept ??= sweepLiveDirectories()); return await place(reg, settings, key, input, signal); } finally { reg.starting.delete(key); }
+  try { return await place(reg, settings, key, input, signal); } finally { reg.starting.delete(key); }
 }
 
 /** Slots in use as the attach for `key` sees them: every session, plus each earlier attach that has no session yet. */
@@ -120,10 +113,13 @@ function slotsTaken(reg: Registry, key: string): number {
   return taken;
 }
 
-/** The least recently used session whose cache has gone cold; a warm session is worth more parked than rewritten. */
+/**
+ * The session to make room: the least recently used one that is parked after a finished turn, else the least recently
+ * used one waiting for tool outputs. A running session is never evicted, nor one whose own request is being placed.
+ */
 function evictable(reg: Registry): CopilotLiveSession | undefined {
-  const cold = [...reg.sessions.values()].filter(session => session.state !== "generating" && Date.now() - session.lastUse >= liveLimits.coldMs).sort((a, b) => a.lastUse - b.lastUse);
-  return cold.find(session => session.state === "turn_done") ?? cold[0];
+  const idle = [...reg.sessions.values()].filter(session => session.state !== "generating" && session.state !== "starting" && !reg.starting.has(session.key)).sort((a, b) => a.lastUse - b.lastUse);
+  return idle.find(session => session.state === "turn_done") ?? idle.find(session => session.state === "awaiting_outputs");
 }
 
 async function place(reg: Registry, settings: CopilotLiveSettings, key: string, input: CopilotLiveInput, signal: AbortSignal): Promise<CopilotLiveOutcome> {
@@ -141,6 +137,9 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
     // The tail renders from the conversation; a count that does not match the translation is not trusted.
     else if (decision.kind === "continue_user" && messages !== input.conversation.length) reason = "unexpected_tail";
     else if (decision.kind === "continue_outputs" && decision.outputs.some(entry => { const message = input.conversation[entry.first]; return message?.role !== "tool" || message.tool_call_id !== entry.callId; })) reason = "unexpected_tail";
+    // A tool result cannot carry the choice line, so a forced, required or disabled choice starts the thread over.
+    else if (decision.kind === "continue_outputs" && input.choice !== undefined && input.choice !== "auto") reason = "forced_choice";
+    else if (decision.kind === "continue_outputs" && !(await session.hasRequests(session.pending, sessionLimits.pendingMs))) reason = "tool_request_missing";
     else if (input.effort !== undefined && input.effort !== session.effort) {
       if (session.state === "awaiting_outputs") reason = "effort_midturn";
       else if (!(await session.applyEffort(input.model, input.effort))) reason = "effort_rejected";
@@ -165,7 +164,7 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
       reg.sessions.delete(victim.key); void victim.close("evicted");
     }
     try {
-      session = await CopilotLiveSession.start({ key, fingerprint: input.fingerprint, window, effort: input.effort, config: input.config, create: input.create, toolCount: input.toolCount,
+      session = await CopilotLiveSession.start({ key, fingerprint: input.fingerprint, window, effort: input.effort, config: input.config, create: input.create, toolNames: new Set(input.native.map(({ name }) => name)),
         onClose: (closed, outcome, why) => ended(reg, closed, outcome, why) }, signal);
     } catch (error) {
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
@@ -180,14 +179,11 @@ async function place(reg: Registry, settings: CopilotLiveSettings, key: string, 
   }) };
 }
 
-const prompts = (input: CopilotLiveInput, from: number) => input.conversation.slice(from).map((item, offset) => itemText(item, from + offset + 1));
-
 function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
   plan: Plan, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
-  // The CLI takes a result string; an empty one gets a placeholder so the pending request is still answered.
-  const text = (index: number) => { const message = input.conversation[index]; return (message.content ?? message.parts?.map(part => "text" in part ? part.text : "").join("\n") ?? "") || "(no output)"; };
-  const begin = plan.kind === "continue_outputs" ? { outputs: new Map<string, string>(plan.outputs.map(entry => [entry.callId!, text(entry.first)])) }
-    : { prompts: prompts(input, plan.kind === "continue_user" ? plan.from : 0) };
+  const owned = imagesByItem(input.images);
+  const begin = plan.kind === "continue_outputs" ? { outputs: new Map(plan.outputs.map(entry => [entry.callId!, copilotToolResult(input.conversation[entry.first], owned.get(entry.first))])) }
+    : { prompts: copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native)) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();
   return session.run({
@@ -196,7 +192,7 @@ function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiv
       const done = turn.done() as Extract<InferenceEvent, { type: "done" }>;
       telemetry("copilot_session", { ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined, liveSessions: reg.sessions.size,
         inputTokens: done.usage.input_tokens, cacheReadTokens: done.usage.input_tokens_details?.cached_tokens, cacheWriteTokens: done.accounting?.cacheWriteTokens,
-        outputTokens: done.usage.output_tokens, nanoAiu: done.accounting?.nanoAiu, toolCalls: turn.calls.length });
+        outputTokens: done.usage.output_tokens, reasoningTokens: done.accounting?.reasoningTokens, nanoAiu: done.accounting?.nanoAiu, initiator: done.accounting?.initiator, toolCalls: turn.calls.length });
     },
   });
 }
@@ -205,7 +201,7 @@ function ended(reg: Registry, session: CopilotLiveSession, outcome: SessionEnd, 
   if (reg.sessions.get(session.key) === session) reg.sessions.delete(session.key);
   if (!reg.sessions.has(session.key)) reg.scopes.delete(session.key);
   // Remember why the thread has no session, so its next spawn reports it.
-  const why = outcome === "crashed" ? "session_dead" : outcome === "evicted" || outcome === "reaped" ? outcome : reason === "interrupted" ? "interrupted" : undefined;
+  const why = outcome === "crashed" ? "session_dead" : reason === "interrupted" || reason === "tool_wait_expired" || reason === "idle_missing" ? reason : outcome === "evicted" || outcome === "reaped" ? outcome : undefined;
   if (why && !reg.sessions.has(session.key)) { reg.ended.delete(session.key); reg.ended.set(session.key, why); if (reg.ended.size > 256) reg.ended.delete(reg.ended.keys().next().value!); }
   telemetry("copilot_session", { outcome, missReason: reason, threadKey: session.key.slice(0, 8), liveSessions: reg.sessions.size, parkedMs: Date.now() - session.lastUse });
 }

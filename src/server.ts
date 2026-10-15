@@ -4,6 +4,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
 import { CopilotSubscription } from "./providers/copilot.js";
+import { sweepCopilotDirectories } from "./providers/copilot-directories.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
@@ -140,6 +141,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const heartbeatMs = options.heartbeatMs ?? 15000;
   if (!Number.isFinite(heartbeatMs) || heartbeatMs < 1) throw new Error("Heartbeat interval must be positive");
   if (config.clientOnly) throw new Error("This is a remote client configuration; start its SSH tunnel instead of a local inference daemon");
+  // A gateway that was killed left its Copilot CLIs' prompt logs in the temp folder; remove them before the first request, whatever any provider's mode.
+  await sweepCopilotDirectories();
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
@@ -193,7 +196,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
-      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
+      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
     // Content-free record of what the request cost, appended once per finished request.
     const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
       inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens,

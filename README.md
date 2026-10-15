@@ -26,14 +26,16 @@ endpoint. Each account has its own provider ID, model aliases, and credentials.
 Routing never switches accounts or billing modes after a failure.
 
 Copilot uses the installed GitHub Copilot CLI's [SDK protocol](https://docs.github.com/en/copilot/how-tos/copilot-sdk/troubleshooting/compatibility) 3 and subscription
-login. Per-request sessions expose only caller tools, disable local instruction
+login. Sessions expose only caller tools, disable local instruction
 discovery, and are deleted after inference. Inherited BYOK settings and GitHub
 token overrides are removed. The adapter verifies the reported subscription
 route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
-By default every request starts its own session and resends the history, so Copilot's
-prompt cache never warms; set `copilotSessions.mode: "live"` on the provider to keep one
-session per Codex thread instead (see [live Copilot sessions](docs/copilot-sessions.md)).
+By default the gateway keeps one live Copilot session per Codex thread, so Copilot's
+prompt cache stays warm across a tool loop; the same history sent as a new session on
+every request costs about ten times as much. Set `copilotSessions.mode: "oneshot"` on
+the provider to turn that off, which is also what a request falls back to when a live
+session cannot serve it (see [live Copilot sessions](docs/copilot-sessions.md)).
 
 The Apple Silicon installer bundles a verified Node runtime. Subscription
 inference hosts also need the native CLI for each configured provider. Desktop

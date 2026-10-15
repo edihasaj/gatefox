@@ -37,12 +37,12 @@ export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSess
   const value = provider.claudeSessions || {};
   return { mode: value.mode ?? "replay", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
 }
-/** `replay` is accepted as another name for `oneshot`, matching claudeSessions. */
+/** `live` is the default; `replay` is accepted as another name for `oneshot`, matching claudeSessions. */
 export interface CopilotSessionConfig { mode?: "oneshot" | "replay" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
 export interface CopilotSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
 export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSessions">): CopilotSessionSettings {
   const value = provider.copilotSessions || {};
-  return { mode: value.mode === "live" ? "live" : "oneshot", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
+  return { mode: value.mode === "oneshot" || value.mode === "replay" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Readable } from "node:stream";
-import { mkdtemp, chmod, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, chmod, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import type { ProviderConfig } from "../config.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import { ProviderError } from "../providers/provider.js";
 import { streamFailureCode } from "../provider-failure.js";
+import { claudeToolName } from "../providers/claude-tool-names.js";
 
 const provider: ProviderConfig = { id: "copilot", type: "copilot-subscription", models: { alias: "fixture" }, modelMetadata: { alias: { reasoningEfforts: ["low", "high", "max"] } } };
 const collect = async (input: AsyncIterable<InferenceEvent>) => { const events = []; for await (const event of input) events.push(event); return events; };
@@ -48,7 +49,7 @@ test("Copilot rejects unsupported service tiers and preserves ordinary defaults"
 
 test("Copilot native calls preserve custom-tool identities and reject native actions or duplicate IDs", () => {
   const tools = [{ type: "function" as const, function: { name: "tools.patch", responseTool: { type: "custom" as const, name: "patch", namespace: "tools" } } }];
-  const call = { name: "gateway_tool_0", type: "function", toolCallId: "call1", arguments: { input: "patch" } };
+  const call = { name: claudeToolName(tools[0]), type: "function", toolCallId: "call1", arguments: { input: "patch" } };
   assert.deepEqual(nativeCopilotCalls([call], tools)[0].responseTool, tools[0].function.responseTool);
   assert.throws(() => nativeCopilotCalls([{ ...call, name: "shell" }], tools), /unknown/);
   assert.throws(() => nativeCopilotCalls([call, call], tools), /duplicate/);
@@ -63,7 +64,7 @@ test("Copilot environment excludes BYOK and inherited account selectors", () => 
 });
 
 test("Copilot SDK inference streams, confines tools, sanitizes failures, and releases cancelled workers", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-copilot-fixture-"));
+  const directory = await mkdtemp(join(tmpdir(), "gateway-test-copilot-fixture-"));
   // Preserve module resolution when the fixture is launched as an executable.
   const fixture = fileURLToPath(new URL("./copilot-fixture.js", import.meta.url));
   const quote = (value: string) => "'" + value.replace(/'/g, "'\\''") + "'";
@@ -78,6 +79,8 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     const last = normal.at(-1); assert.equal(last?.type === "done" && last.usage.total_tokens, 13);
     const receipt = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
     assert.deepEqual(receipt.availableTools, []); assert.deepEqual(receipt.allowedModels, ["fixture"]); assert.equal(receipt.enableConfigDiscovery, false); assert.equal(receipt.enableFileHooks, false); assert.equal(receipt.reasoningSummary, "concise");
+    assert.deepEqual([receipt.toolSearch, receipt.largeOutput], [{ enabled: false }, { enabled: false }]);
+    assert.equal(receipt.sentMessages.length, 1); assert.match(receipt.sentMessages[0].prompt, /^<<item 1 user>>\nhello\n<<\/item>>$/);
     for (const service_tier of ["priority", "fast"]) {
       await writeFile(join(directory, "receipt.json"), "worker-not-started");
       await assert.rejects(collect(adapter.infer({ ...request, service_tier }, new AbortController().signal)), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
@@ -115,5 +118,6 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
     assert.equal((await collect(adapter.infer(request, new AbortController().signal))).at(-1)?.type, "done");
   } finally {
     for (const [key, value] of [["PATH", previous.PATH], ["GATEWAY_COPILOT_FIXTURE_MODE", previous.mode], ["GATEWAY_COPILOT_FIXTURE_RECEIPT", previous.receipt]]) { if (value === undefined) delete process.env[key!]; else process.env[key!] = value; }
+    await rm(directory, { recursive: true, force: true });
   }
 });

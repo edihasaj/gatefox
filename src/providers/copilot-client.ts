@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ProviderConfig } from "../config.js";
 import { CopilotRPC } from "./copilot-rpc.js";
+import { directoryPrefix, type DirectoryKind } from "./copilot-directories.js";
 import { ProviderError } from "./provider.js";
 
 export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
@@ -15,8 +16,8 @@ export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
 }
 
 export interface OpenOptions {
-  /** Directory name prefix under the temp dir (a live session adds its owner's pid, so a sweep can tell a dead gateway's leftovers). */
-  prefix?: string;
+  /** `live` for a long-lived session, `run` (the default) for a single request; both folder names carry this gateway's pid, so a later gateway can sweep a dead one's leftovers. */
+  kind?: DirectoryKind;
   /** Point the CLI's TMPDIR at a private folder inside its directory, so nothing it stages outside the directory survives the session. */
   privateTmp?: boolean;
 }
@@ -24,15 +25,17 @@ export interface OpenOptions {
 export async function openCopilot(config: ProviderConfig, signal?: AbortSignal, options: OpenOptions = {}) {
   if (signal?.aborted) throw new ProviderError("cancelled", "Request cancelled", 499);
   // mkdtemp creates the directory 0700. The CLI writes its event log (which holds prompts) here, so the mode is also enforced.
-  const directory = await mkdtemp(join(tmpdir(), options.prefix ?? "gateway-copilot-"));
+  const directory = await mkdtemp(join(tmpdir(), directoryPrefix(options.kind ?? "run")));
   let rpc: CopilotRPC | undefined;
   const abort = () => rpc?.stop(); signal?.addEventListener("abort", abort, { once: true });
   let closed = false;
-  const close = async (sessionId?: string) => {
+  // `hard` ends the process at once (SIGKILL of its group) instead of asking it to exit: a live session being closed must not make another model call.
+  const close = async (sessionId?: string, hard = false) => {
     if (closed) return; closed = true;
     signal?.removeEventListener("abort", abort);
-    if (sessionId && !signal?.aborted) await rpc?.request("session.delete", { sessionId }, 3000).catch(() => {});
-    rpc?.stop(); await rpc?.exited; await rm(directory, { recursive: true, force: true });
+    if (sessionId && !signal?.aborted && !hard) await rpc?.request("session.delete", { sessionId }, 3000).catch(() => {});
+    if (hard) rpc?.kill(); else rpc?.stop();
+    await rpc?.exited; await rm(directory, { recursive: true, force: true });
   };
   try {
     await chmod(directory, 0o700);
