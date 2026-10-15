@@ -139,6 +139,7 @@ file other users can read is ignored. Without it nothing is sent.
 | --- | --- |
 | Uncaught exception or rejection in the server, adapter or service | `fatal`, written synchronously to `<state>/error-spool/` and sent by the next process start |
 | Untyped provider failure (`provider_failed`), internal adapter RPC failure, adapter start failure, execution host start failure | `error`, sent in the background with a five-second timeout |
+| A live Copilot session's own bookkeeping failing: `copilot_live_attach` (placing a request in its session raised something other than a provider failure; the request is served one-shot), `copilot_live_close` (closing a session or reporting its end failed), `copilot_live_abort` (ending a cancelled request failed) | `error`, sent in the background like the row above |
 
 Typed provider and protocol failures (including malformed stream frames and
 invalid historical tool arguments), cancellations and turn anomalies stay in the

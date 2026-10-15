@@ -15,12 +15,13 @@ download cache.
 
 The `verify` job uses Ubuntu 24.04 ARM and runs the unchanged source gate:
 `npm ci`, `npm run build`, `npm run check`, the executable CI-policy guard, and
-`npm test`, which runs the suite under a private temporary folder, so the
-runner's real one is left as it was. It also fails a test that hangs (120 s by default for a test with no timeout of
+`npm test`, which runs the suite under a private temporary folder and a private
+home folder (`HOME` is `<folder>/home`, so execution hosts keep nothing in `~/.local/state/gw-exec`), so the
+real ones are left as they were. It also fails a test that hangs (120 s by default for a test with no timeout of
 its own), lets a test file exit once its tests have ended, and stops every test process
 when the run is signalled: the test processes exit on the signal, which stops the Copilot CLIs
 they started (those run in process groups of their own), and the runner removes the stale
-sockets its run linked to in `/tmp/codex-daemon-<uid>`. Six tests require macOS and retain
+sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders. The tests that need macOS retain
 their explicit platform guards.
 
 `macos-native` uses GitHub's macOS 15 Apple Silicon runner only for an intentional
