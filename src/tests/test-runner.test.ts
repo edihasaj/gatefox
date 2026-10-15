@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { realpathSync } from "node:fs";
-import { copyFile, chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { copyFile, chmod, lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, connect, type Server } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, join } from "node:path";
@@ -163,8 +163,10 @@ test("a stopped run removes the stale execution sockets its folder links to, and
   const rendezvous = join(realpathSync("/tmp"), `codex-daemon-${process.getuid!()}`);
   const name = () => createHash("sha256").update(randomUUID()).digest("hex");
   const stale = join(rendezvous, name()); const live = join(rendezvous, name()); const unlinked = join(rendezvous, name()); const elsewhere = join(w.work, "elsewhere.sock");
-  // A stale socket whose name is not a 64-character hash, and a plain file whose name is one: neither is the SDK's socket.
-  const oddName = join(rendezvous, `not-a-hash-${randomUUID()}`); const plain = join(rendezvous, name());
+  // A stale socket whose name is not a 64-character hash, a plain file whose name is one, and a symbolic link whose name is one, to a
+  // socket nobody listens on: none of them is the SDK's socket. (Where a connection to a plain file is refused, as it is on Linux,
+  // only the check of the file's type keeps it; on macOS only the symbolic link shows that check.)
+  const oddName = join(rendezvous, `not-a-hash-${randomUUID()}`); const plain = join(rendezvous, name()); const linked = join(rendezvous, name());
   let server: Server | undefined;
   try {
     // The folder the SDK uses is made by it, private; it exists on a machine that ran any execution-host test.
@@ -177,11 +179,12 @@ test("a stopped run removes the stale execution sockets its folder links to, and
       await once(maker, "exit");
     }
     assert.ok(await exists(stale) && await exists(unlinked) && await exists(elsewhere) && await exists(oddName), "the stale sockets exist");
+    await symlink(elsewhere, linked);
     // The suite links to the stale one, the live one, and a socket elsewhere, and waits for ever.
     const file = await w.suite("links", `import { renameSync, symlinkSync, writeFileSync } from "node:fs"; import { join } from "node:path"; import { tmpdir } from "node:os";
 test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNER_LINKS).entries()) symlinkSync(target, join(tmpdir(), "link-" + index));
   writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD); return new Promise(() => {}); });`);
-    const run = await startedRun(w, file, { RUNNER_LINKS: JSON.stringify([stale, live, elsewhere, oddName, plain]) }); child = run.child; started = run.started;
+    const run = await startedRun(w, file, { RUNNER_LINKS: JSON.stringify([stale, live, elsewhere, oddName, plain, linked]) }); child = run.child; started = run.started;
     child.kill("SIGTERM"); const [code] = await run.exited; assert.equal(code, 128 + 15);
     assert.equal(await exists(stale), false, "the stale socket the run linked to is removed");
     assert.equal(await exists(live), true, "a socket that is listening is kept");
@@ -189,13 +192,14 @@ test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNE
     assert.equal(await exists(elsewhere), true, "so is a stale one outside the folder the SDK uses, though the run linked to it");
     assert.equal(await exists(oddName), true, "a stale socket in that folder whose name is not a hash is kept");
     assert.equal(await exists(plain), true, "and so is a file with a hash for a name that is not a socket");
+    assert.equal(await lstat(linked).then(() => true, () => false), true, "and a link with a hash for a name, though what it points to is a stale socket");
     assert.equal(await new Promise(resolve => connect(live).once("connect", () => resolve(true)).once("error", () => resolve(false))), true, "and it still accepts connections");
     assert.equal(await exists(started.tmpdir), false, "the temp folder is removed");
     passed = true;
   } finally {
     if (!passed) await cleanUp(child, started);
     server?.close();
-    for (const path of [stale, live, unlinked, oddName, plain]) await rm(path, { force: true });
+    for (const path of [stale, live, unlinked, oddName, plain, linked]) await rm(path, { force: true });
     await rm(w.work, { recursive: true, force: true });
   }
 });
