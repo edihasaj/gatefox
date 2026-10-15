@@ -67,12 +67,12 @@ rendered into the transcript as labels or prose. Any other part type, including 
 image, fails as a client error before a provider is invoked.
 
 A Codex subscription request whose token refresh fails on the network, with an
-unreadable reply, or with any HTTP error status other than 400, 401 or 403 (for example
+unreadable or malformed reply, or with any HTTP error status other than 400, 401 or 403 (for example
 a 429 or a 5xx, often right after the Mac wakes) returns a retryable
 `upstream_unavailable`, so Codex reconnects instead of ending the chat. Only a
-missing login, missing scopes, an unreadable credential file, a refresh rejected
-with HTTP 400, 401 or 403, or a successful refresh reply that cannot be used reports
-"ChatGPT provider requires login". When the token endpoint names a reason, the message adds its OAuth error code. A rejected login reads
+missing login, a stored login without a refresh token, an unreadable credential file, a stored
+login or refresh reply without the plan scopes, or a refresh rejected with HTTP 400, 401 or 403
+reports "ChatGPT provider requires login". When the token endpoint names a reason, the message adds its OAuth error code. A rejected login reads
 "ChatGPT provider requires login (refresh rejected: refresh_token_reused)" and a temporary failure
 reads "ChatGPT login refresh failed temporarily (temporarily_unavailable); retry shortly". A code
 outside the fixed list shows as `other`, and a reply without a code adds nothing. `request_failed`
@@ -82,20 +82,29 @@ could spend the single-use refresh token again; Codex reconnects on the retryabl
 
 The refresh token is single-use, so only a real request or an explicit
 `gateway discover` ever spends it. The six-hour model-metadata refresh never refreshes
-the login: whenever serving the Codex access token would need a refresh (it has expired, or
+the Codex login: whenever serving the Codex access token would need a refresh (it has expired, or
 it is within two minutes of expiring unless the issuer's `earliest_refresh_at` has not passed yet),
 that provider is skipped for the round (`model_metadata_skipped`) without any network
 call, and the next real request refreshes it. This keeps a refresh from being started
-while the Mac is asleep, where the reply can be lost after the token was spent. When a
-refresh reply arrives, the replacement refresh token is written to the credential file
-(atomically, mode 0600) in the same save that records the outcome, so a reply that fails a
-check never loses the rotated token. A reply that lacks the plan scope, is malformed (no
-bearer access token or no positive lifetime), or carries no replacement refresh token can only
-be fixed by signing in again (`gateway login ID` with plan usage enabled). The gateway
-then keeps the old access token and only the scopes that reply granted (none unless the
-plan scope was the one missing), so that request and every later one report "ChatGPT
-provider requires login" without another token request, in this process or another one
-waiting on the refresh lock.
+while the Mac is asleep, where the reply can be lost after the token was spent. Claude and
+Copilot discovery in the same refresh still run their own CLI or SDK, which may refresh its
+own login; guarding them is left to a later release. When a refresh reply arrives, any
+replacement refresh token is written to the credential file (atomically, mode 0600) in the
+same save that records the outcome, so a reply that fails a check never loses the rotated
+token. How the reply is handled:
+
+- A reply without the plan scope can only be fixed by signing in again (`gateway login ID`
+  with plan usage enabled). The gateway keeps the old access token and only the scopes that
+  reply granted, so that request and every later one report "ChatGPT provider requires
+  login" without another token request, in this process or another one waiting on the
+  refresh lock.
+- A malformed reply (no bearer access token or no positive lifetime) is temporary. The
+  request returns the retryable `upstream_unavailable`, the stored access token, scopes and
+  expiry stay as they were, and the next real request refreshes again with the saved
+  replacement token, or with the stored one when the reply carried none.
+- A valid reply without a replacement refresh token is used. The new access token is saved
+  and the stored refresh token stays, because a server may keep a refresh token instead of
+  rotating it (RFC 6749 section 6).
 
 Responses upstream completion retains an actual boolean `end_turn` when present.
 An absent value remains absent. This lets the SDK distinguish a continuation

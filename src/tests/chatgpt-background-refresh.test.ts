@@ -54,23 +54,53 @@ test("a background token request never refreshes an expired or near-expiry login
   });
 });
 
-test("the six-hour metadata refresh skips an expired Codex login without a token request and records why", async () => {
-  const { directory, path } = await loginFile(0);
+async function metadataConfig(directory: string, credentialFile: string): Promise<string> {
   const configPath = join(directory, "gateway.json");
   await writePrivateJson(configPath, { version: 1, port: 3457, stateDirectory: directory, providers: [
-    { id: "codex", type: "codex-subscription", credentialFile: path, models: { "codex/test": "test" } },
+    { id: "codex", type: "codex-subscription", credentialFile, models: { "codex/test": "test" } },
   ] } satisfies GatewayConfig);
+  return configPath;
+}
+const skippedEvents = async (directory: string) => { await flushTelemetry(); return (await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "model_metadata_skipped"); };
+async function telemetryText(directory: string): Promise<string> {
+  const folder = join(directory, "telemetry"); let text = "";
+  for (const name of await readdir(folder)) text += await readFile(join(folder, name), "utf8");
+  return text;
+}
+
+test("the six-hour metadata refresh skips an expired Codex login without a token request and records why", async () => {
+  const { directory, path } = await loginFile(0);
+  const configPath = await metadataConfig(directory, path);
   configureTelemetry(directory, "server");
   await withFetch(async () => refreshReply(), async calls => {
     assert.deepEqual(await refreshModelMetadata(configPath), []);
     assert.deepEqual(calls.urls, [], "neither the token endpoint nor the model catalog is called");
   });
   assert.equal((await stored(path)).refresh_token, "old-refresh");
-  await flushTelemetry();
-  const skipped = (await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "model_metadata_skipped");
+  const skipped = await skippedEvents(directory);
   assert.equal(skipped.length, 1);
   assert.equal(skipped[0].provider, "codex"); assert.equal(skipped[0].reason, "refresh_deferred");
   assert.deepEqual(Object.keys(skipped[0]).sort(), ["at", "component", "event", "host", "pid", "provider", "reason"]);
+});
+
+test("the six-hour metadata refresh records any other failure as discovery_failed without its text", async () => {
+  const secret = "sk-secret-discovery-text";
+  const { directory, path } = await loginFile(Date.now() + 3_600_000);
+  const configPath = await metadataConfig(directory, path);
+  configureTelemetry(directory, "server");
+  await withFetch(async () => new Response(secret, { status: 500 }), async calls => {
+    assert.deepEqual(await refreshModelMetadata(configPath), []);
+    assert.deepEqual(calls.urls, ["https://api.openai.com/v1/models"], "a valid login is used without a token request");
+  });
+  assert.deepEqual(await refreshModelMetadata(configPath, async () => { throw new Error(secret); }), []);
+  const skipped = await skippedEvents(directory);
+  assert.equal(skipped.length, 2);
+  for (const event of skipped) {
+    assert.equal(event.provider, "codex"); assert.equal(event.reason, "discovery_failed");
+    assert.deepEqual(Object.keys(event).sort(), ["at", "component", "event", "host", "pid", "provider", "reason"]);
+  }
+  const text = await telemetryText(directory);
+  for (const leak of [secret, "old-access", "old-refresh"]) assert.ok(!text.includes(leak), `${leak} must not appear in telemetry`);
 });
 
 test("a real request and an explicit discover still refresh an expired login", async () => {
@@ -87,17 +117,13 @@ test("a real request and an explicit discover still refresh an expired login", a
   });
 });
 
-test("a refresh reply that cannot be used keeps the rotated token, asks for sign-in and never requests another token", async () => {
+test("a refresh reply without the plan scope keeps the rotated token, asks for sign-in and never requests another token", async () => {
   // [reply change, refresh token kept on file, scopes kept on file]
   const cases: Array<[Record<string, unknown>, string, string[]]> = [
     [{ scope: "openid offline_access" }, "new-refresh", ["openid", "offline_access"]],
     [{ scope: undefined }, "new-refresh", []],
-    [{ token_type: "mac" }, "new-refresh", []],
-    [{ token_type: 5 }, "new-refresh", []],
-    [{ access_token: 5 }, "new-refresh", []],
-    [{ access_token: "" }, "new-refresh", []],
-    [{ expires_in: 0 }, "new-refresh", []],
-    [{ refresh_token: undefined }, "old-refresh", []],
+    [{ scope: "openid", token_type: "mac" }, "new-refresh", ["openid"]],
+    [{ scope: "openid", refresh_token: undefined }, "old-refresh", ["openid"]],
   ];
   for (const [over, refreshToken, keptScopes] of cases) {
     const { path } = await loginFile(0);
@@ -115,6 +141,43 @@ test("a refresh reply that cannot be used keeps the rotated token, asks for sign
     assert.deepEqual(after.scopes, keptScopes, "only the scopes this reply granted stay on file");
     assert.equal((await stat(path)).mode & 0o777, 0o600);
   }
+});
+
+test("a malformed refresh reply is temporary: the rotated token is saved and the next real request refreshes with it", async () => {
+  const malformed: Array<Record<string, unknown>> = [{ token_type: "mac" }, { token_type: 5 }, { token_type: undefined }, { access_token: 5 },
+    { access_token: "" }, { access_token: undefined }, { expires_in: 0 }, { expires_in: "3600" }];
+  for (const over of malformed) for (const rotated of ["rotated-refresh", undefined]) {
+    const { path } = await loginFile(0);
+    const sent: Array<string | null> = [];
+    await withFetch(async (_url, init) => {
+      sent.push(new URLSearchParams(String(init?.body)).get("refresh_token"));
+      return sent.length === 1 ? refreshReply({ ...over, refresh_token: rotated }) : refreshReply();
+    }, async () => {
+      const error = await inferError(path);
+      assert.equal(error.code, "upstream_unavailable", `${JSON.stringify(over)} is temporary`); assert.equal(error.status, 503); assert.equal(error.upstream, undefined);
+      const after = await stored(path);
+      assert.equal(after.refresh_token, rotated ?? "old-refresh", "a reply that fails validation cannot lose the rotated token");
+      assert.equal(after.access_token, "old-access", "an unvalidated access token is not adopted");
+      assert.deepEqual(after.scopes, scopes); assert.equal(after.expires_at, 0);
+      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.equal(await accessToken(path), "new-access", "the next real request refreshes again");
+      assert.deepEqual(sent, ["old-refresh", rotated ?? "old-refresh"], "one token request per request, the second with the saved token");
+    });
+    assert.equal((await stored(path)).refresh_token, "new-refresh");
+  }
+});
+
+test("a valid refresh reply without a new refresh token is used and the stored refresh token kept", async () => {
+  const { path } = await loginFile(0);
+  await withFetch(async () => refreshReply({ refresh_token: undefined }), async calls => {
+    assert.equal(await accessToken(path), "new-access");
+    assert.equal(await accessToken(path), "new-access", "the saved access token serves later requests");
+    assert.equal(calls.urls.filter(url => url.endsWith("/oauth/token")).length, 1);
+  });
+  const after = await stored(path);
+  assert.equal(after.refresh_token, "old-refresh"); assert.equal(after.access_token, "new-access"); assert.equal(after.id_token, "id2");
+  assert.deepEqual(after.scopes, scopes); assert.ok(after.expires_at > Date.now() + 3_000_000);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 
 test("a process waiting on the refresh lock does not request a token after another process found the login unusable", async () => {
@@ -216,8 +279,7 @@ test("request_failed telemetry names the OAuth error code and holds no token or 
     assert.equal(failed.length, 1);
     assert.equal(failed[0].upstreamCode, "refresh_token_reused"); assert.equal(failed[0].upstreamEvent, "oauth_refresh");
     assert.equal(failed[0].code, "authentication"); assert.equal(failed[0].status, 401);
-    const folder = join(directory, "telemetry"); let text = "";
-    for (const name of await readdir(folder)) text += await readFile(join(folder, name), "utf8");
+    const text = await telemetryText(directory);
     for (const leak of [secret, "error_description", "old-refresh", "old-access", "new-refresh", "new-access"]) assert.ok(!text.includes(leak), `${leak} must not appear in telemetry`);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await flushTelemetry(); }
 });

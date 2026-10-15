@@ -33,7 +33,7 @@ interface TokenResponse {
 /** Where a failed authentication response came from; only fixed, non-secret values. */
 export interface OAuthFailureDetail { httpStatus?: number; oauthError?: string }
 
-/** The stored login cannot work again without the user: missing, rejected, lacking scopes, or refreshed with a reply that cannot be used. Other failures are temporary. */
+/** The stored login cannot work again without the user: missing, rejected, or lacking the plan scopes (also when a refresh reply lacks them). Other failures are temporary. */
 export class ChatGPTLoginRequired extends Error {
   constructor(message: string, readonly detail: OAuthFailureDetail = {}) { super(message); }
 }
@@ -102,20 +102,23 @@ export async function validateIdToken(token: string, clientId: string, nonce: st
 }
 
 const lacksPlanScopes = (scopes: string[] | undefined) => requiredScopes.some(scope => !scopes?.includes(scope));
+const planScopeMissing = "ChatGPT plan permission was not granted; enable plan usage during sign-in";
 /**
  * Checks a token reply without throwing, so a refresh can save the rotated token whatever the reply holds.
- * A reply that cannot be used names the scopes it granted, none when it is malformed.
+ * `plan_scope`: the reply lacks the plan scopes, which only a new sign-in grants. `malformed`: it holds
+ * no usable bearer access token or lifetime, which is treated as temporary.
  */
-function checkReply(token: TokenResponse): { scopes: string[]; unusable?: ChatGPTLoginRequired } {
+function checkReply(token: TokenResponse): { scopes: string[]; problem?: "plan_scope" | "malformed" } {
   const scopes = typeof token.scope === "string" ? token.scope.split(/\s+/).filter(Boolean) : [];
-  if (lacksPlanScopes(scopes)) return { scopes, unusable: new ChatGPTLoginRequired("ChatGPT plan permission was not granted; enable plan usage during sign-in") };
+  if (lacksPlanScopes(scopes)) return { scopes, problem: "plan_scope" };
   if (typeof token.token_type !== "string" || token.token_type.toLowerCase() !== "bearer" || typeof token.access_token !== "string" || !token.access_token ||
-    typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes: [], unusable: new ChatGPTLoginRequired("OpenAI returned an unusable access token; sign in again") };
+    typeof token.expires_in !== "number" || !Number.isFinite(token.expires_in) || token.expires_in <= 0) return { scopes, problem: "malformed" };
   return { scopes };
 }
 function grantedScopes(token: TokenResponse): string[] {
-  const { scopes, unusable } = checkReply(token);
-  if (unusable) throw unusable;
+  const { scopes, problem } = checkReply(token);
+  if (problem === "plan_scope") throw new ChatGPTLoginRequired(planScopeMissing);
+  if (problem === "malformed") throw new Error("OpenAI returned an unusable access token; sign in again");
   return scopes;
 }
 
@@ -239,17 +242,24 @@ async function refresh(path: string): Promise<string> {
     // The old refresh token is spent once this reply arrives, so the replacement is written in the
     // same save that records the outcome, before the reply is reported as unusable.
     const replacement = typeof token.refresh_token === "string" && token.refresh_token ? token.refresh_token : undefined;
-    const { scopes, unusable } = checkReply(token);
-    if (!unusable && replacement) {
-      await writePrivateJson(path, { ...credentials, access_token: token.access_token, refresh_token: replacement, id_token: token.id_token || credentials.id_token,
-        scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at });
-      return token.access_token;
+    const { scopes, problem } = checkReply(token);
+    if (problem === "plan_scope") {
+      // Only signing in again with plan usage grants the scopes. The file keeps any rotated token, the
+      // old access token and only the scopes this reply granted, so this and every later request
+      // report "requires login" without another token request.
+      await writePrivateJson(path, { ...credentials, refresh_token: replacement ?? credentials.refresh_token, scopes });
+      throw new ChatGPTLoginRequired(planScopeMissing);
     }
-    // Only signing in again recovers from a reply without the plan scope, a malformed reply, or one
-    // without a replacement token. The file keeps any rotated token, the old access token and only
-    // the scopes this reply granted (none unless it lacked the plan scope), so every later request
-    // reports "requires login" without another token request.
-    await writePrivateJson(path, { ...credentials, refresh_token: replacement ?? credentials.refresh_token, scopes: unusable ? scopes : [] });
-    throw unusable ?? new ChatGPTLoginRequired("OpenAI did not return a replacement refresh token; sign in again");
+    if (problem === "malformed") {
+      // Temporary: the access token, scopes and expiry stay as they were, and the next real request
+      // refreshes again with the rotated token when the reply carried one.
+      if (replacement) await writePrivateJson(path, { ...credentials, refresh_token: replacement });
+      throw new Error("OpenAI returned an unusable access token; retry shortly");
+    }
+    // A server may keep the refresh token instead of rotating it (RFC 6749 section 6); the stored one
+    // then stays in use.
+    await writePrivateJson(path, { ...credentials, access_token: token.access_token, refresh_token: replacement ?? credentials.refresh_token,
+      id_token: token.id_token || credentials.id_token, scopes, expires_at: Date.now() + token.expires_in * 1000, earliest_refresh_at: token.earliest_refresh_at });
+    return token.access_token;
   } finally { await file.close(); await unlink(lock); }
 }

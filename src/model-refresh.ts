@@ -39,9 +39,11 @@ export class ObservedContextWindows {
  * then applies context windows the provider reported in real responses. The model
  * set is unchanged: adding or removing routes stays an explicit `gateway discover`.
  *
- * This runs on a timer, possibly while the Mac sleeps, so it never refreshes a login: a
- * provider whose access token has expired is skipped for the round and refreshed by the
- * next real request or an explicit `gateway discover`.
+ * This runs on a timer, possibly while the Mac sleeps, so it never refreshes a Codex login: a
+ * codex-subscription provider whose access token would need a refresh is skipped for the round
+ * and refreshed by the next real request or an explicit `gateway discover`. Claude and Copilot
+ * discovery still run their own CLI or SDK, which may refresh its own login; guarding them is
+ * left to a later release.
  */
 export async function refreshModelMetadata(path: string, discover: (provider: ProviderConfig, options: { refresh: false }) => Promise<DiscoveredModel[]> = discoverModels): Promise<string[]> {
   const config = await loadConfig(path);
