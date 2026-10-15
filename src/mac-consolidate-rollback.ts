@@ -1,5 +1,6 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { safeErrorMessage } from "./error-message.js";
 
 export interface RollbackJob { path: string; label: string; text: string; loaded: boolean }
 export interface RollbackLaunchctl { bootout(label: string): Promise<void>; isLoaded(label: string): Promise<boolean>; bootstrap(path: string): Promise<void> }
@@ -43,7 +44,8 @@ export function rollbackFailureSummary(failures: RollbackFailure[]): string {
 
 /** Describe a failed consolidation whose rollback did not finish. Only fixed failure classes and the backup location are added, never a request value or secret. */
 export function consolidationFailureMessage(error: unknown, failures: RollbackFailure[], backup: string): string {
-  let message = error instanceof Error && error.message ? error.message : "Consolidation failed";
+  // A SyntaxError quotes the JSON it tripped on, which can be a file holding a credential, so it collapses to a fixed string.
+  let message = error instanceof Error && !error.message ? "Consolidation failed" : safeErrorMessage(error, "Consolidation failed");
   // Nothing was restored when the replacement is still loaded, so any promise that the previous jobs will be restored has to go.
   if (failures.some(failure => failure.step === "replacement_still_loaded")) {
     message = `${message.replace(/\s*;?\s*previous jobs will be restored/gi, "").replace(/[\s;]+$/, "")}; `

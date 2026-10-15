@@ -10,8 +10,18 @@ import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js"
 import { sharedServiceRegistration, stopSharedServiceReplacement } from "./mac-shared-native.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 import { executionHostHome } from "./execution-host.js";
+import { safeErrorMessage } from "./error-message.js";
 
 export type SharingMode = "shared-executors" | "shared-native";
+
+/**
+ * Why turning a sharing mode off failed, and how to recover. The reason goes through
+ * safeErrorMessage: a JSON parse error quotes a slice of the plan it tripped over, which can
+ * hold a credential, so the snippet never reaches the terminal.
+ */
+export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, backup: string, restarted: boolean): string {
+  return `Turning off ${mode} failed (${safeErrorMessage(error, "Unknown failure")}). The previous plan is restored from ${backup}${restarted ? " and the service was restarted" : "; start it with gateway service install"}.`;
+}
 
 /**
  * Turns one sharing mode off again. It uses the same path as a failed migration's
@@ -53,7 +63,7 @@ export async function disableSharing(configPath: string, mode: SharingMode, appl
       let restarted = false;
       try { await writeFile(path, original, { mode: 0o600 }); await macService("install", configPath); restarted = true; } catch { /* Reported below. */ }
       telemetry("sharing_disable_failed", { mode, restarted }); await flushTelemetry();
-      throw new Error(`Turning off ${mode} failed (${(error as Error).message}). The previous plan is restored from ${backup}${restarted ? " and the service was restarted" : "; start it with gateway service install"}.`);
+      throw new Error(sharingDisableFailureMessage(mode, error, backup, restarted));
     }
     telemetry("sharing_disabled", { mode }); await flushTelemetry();
     return { ...preview, applied: true, backup, ...await consolidatedStatus(config.stateDirectory) };

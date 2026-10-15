@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateJson } from "../config.js";
 import { servicePlanPath } from "../service-plan.js";
-import { disableSharing } from "../mac-shared-disable.js";
+import { disableSharing, sharingDisableFailureMessage } from "../mac-shared-disable.js";
 
 test("disabling a sharing mode previews the remaining plan without touching the service", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-disable-"));
@@ -20,4 +20,17 @@ test("disabling a sharing mode previews the remaining plan without touching the 
       next: "gateway service shared-executors --disable --apply after local and remote chats finish" });
     assert.deepEqual((await disableSharing(config, "shared-native")).remaining, { sharedNativeExecutor: false, sharedExecutors: true });
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("the failure message collapses a JSON parse error but keeps an ordinary reason", () => {
+  let syntax: unknown = new Error("expected JSON.parse to throw");
+  try { JSON.parse('{"pid": SECRET_TOKEN_FROM_PLAN'); } catch (error) { syntax = error; }
+  assert.ok(syntax instanceof SyntaxError);
+  const fromParse = sharingDisableFailureMessage("shared-executors", syntax, "/tmp/backup", true);
+  assert.match(fromParse, /Invalid JSON data/);
+  assert.doesNotMatch(fromParse, /SECRET|pid/);
+  assert.match(fromParse, /^Turning off shared-executors failed \(Invalid JSON data\)\. The previous plan is restored from \/tmp\/backup and the service was restarted\.$/);
+  assert.equal(sharingDisableFailureMessage("shared-native", new Error("launchctl bootstrap failed"), "/tmp/backup", false),
+    "Turning off shared-native failed (launchctl bootstrap failed). The previous plan is restored from /tmp/backup; start it with gateway service install.");
+  assert.match(sharingDisableFailureMessage("shared-native", "not an error", "/tmp/backup", false), /failed \(Unknown failure\)\./);
 });

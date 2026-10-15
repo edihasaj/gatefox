@@ -84,3 +84,15 @@ test("one failing restart step does not skip the others, and the failure is name
   for (const job of f.jobs) assert.equal(await readFile(job.path, "utf8"), job.text);
   assert.doesNotMatch(JSON.stringify(failures), /secret|private/);
 });
+
+test("a JSON parse failure names Invalid JSON data, never the plan text it quoted", () => {
+  let syntax: unknown = new Error("expected JSON.parse to throw");
+  try { JSON.parse('{"pid": SECRET'); } catch (error) { syntax = error; }
+  assert.ok(syntax instanceof SyntaxError);
+  const message = consolidationFailureMessage(syntax, [{ step: "retire_plan" }], "/state/service-backups/1");
+  assert.match(message, /Invalid JSON data; rollback incomplete \(retire_plan\)/);
+  assert.doesNotMatch(message, /SECRET|pid/);
+  // Non-Errors and errors without a message still fall back to the original wording.
+  assert.match(consolidationFailureMessage(new Error(""), [{ step: "retire_plan" }], "/b"), /^Consolidation failed; rollback incomplete/);
+  assert.match(consolidationFailureMessage("boom", [{ step: "retire_plan" }], "/b"), /^Consolidation failed; rollback incomplete/);
+});
