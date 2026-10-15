@@ -127,7 +127,7 @@ export class AppServerRouter {
       this.routes.set(threadId, route);
       this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
       // A forgotten throwaway fork can still be loaded in the engine; it must stay memory-only.
-      if (thread.ephemeral === true) this.trackEphemeral(threadId);
+      if (thread.ephemeral === true || this.evictedEphemeralIds.has(threadId)) this.trackEphemeral(threadId);
     }
     if (route.provider === gatewayProvider && !this.ephemeralThreads.has(threadId)) {
       const current = await this.threadTiers.read(threadId);

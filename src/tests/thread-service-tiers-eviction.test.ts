@@ -77,9 +77,9 @@ for (const [label, model] of [["ASCII", longModel("m")], ["multi-byte", "m".repe
     assert.equal(Buffer.byteLength(model), 1024);
     const without = Object.fromEntries(Object.entries(rows).slice(1));
     const oldestSaving = size(rows) - size(without);
-    // The compact JSON length of a row understates what dropping it saves in the indented file by a few
-    // bytes per line, so sweeping the overshoot down from the full saving must cross every size where it matters.
-    for (let below = 0; below < 40; below++) {
+    // Any undercount of a row's saving drops a second row when the overshoot equals the full saving;
+    // one byte less checks the neighbouring size.
+    for (const below of [0, 1]) {
       const overshoot = oldestSaving - below;
       const { id, row } = newRowOfSize(rows, maxBytes - size(rows) + overshoot);
       assert.ok(size({ ...rows, [id]: row }) - maxBytes === overshoot && size({ ...without, [id]: row }) <= maxBytes, "dropping the oldest row is enough, and nothing less is");

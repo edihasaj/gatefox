@@ -133,6 +133,14 @@ test("a fork the cap evicted that is resumed is still memory-only even if its re
   assert.ok(tracked(f.router).includes("fork-0"), "it is tracked again");
 });
 
+test("a fork the cap evicted that gets a turn is still memory-only even if the engine's read is not flagged", async () => {
+  const f = await fixture({ forkIds: Array.from({ length: 257 }, (_, i) => `fork-${i}`), read: () => ({ ephemeral: false }) });
+  for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
+  await f.router.request("turn/start", { threadId: "fork-0", input: [], effort: "high", model: "codex/model" });
+  await assertNothingDurable(f, "fork-0", "a turn on a fork the cap evicted");
+  assert.ok(tracked(f.router).includes("fork-0"), "it is tracked again");
+});
+
 test("the ids of cap-evicted forks are themselves bounded to the newest 4096", async () => {
   const total = 256 + 4096 + 1;
   const f = await fixture({ forkIds: Array.from({ length: total }, (_, i) => `fork-${i}`) });
