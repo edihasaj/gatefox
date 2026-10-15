@@ -138,7 +138,7 @@ export class AppServerBackends {
       const confirmed = await Promise.race([this.nativeHost?.client.confirmedNativeDeath(this.nativeHost.record), this.nativeClosing.then(() => false)]);
       if (this.closing || !confirmed) return;
     }
-    const error = { message: "Native Codex executor exited while this turn was running. Reconnect this chat's computer connection to continue from its saved history.", codexErrorInfo: "internalServerError", additionalDetails: null };
+    const error = { message: "The Codex engine stopped while this turn was running (the app may have restarted it). The chat's history is saved; send a message to continue, or reconnect this chat's computer if it stays unavailable.", codexErrorInfo: "internalServerError", additionalDetails: null };
     for (const [threadId, turn] of active) {
       if (this.closing) break;
       try { await Promise.race([this.emit({ method: "error", params: { threadId, turnId: turn.id, error, willRetry: false } }), this.nativeClosing]); } catch { /* The client may already be gone. */ }
@@ -422,7 +422,8 @@ export class AppServerBackends {
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
       const target = engine;
       const result = target.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => target.connection.request(method, staged)) : await target.connection.request(method, params);
-      await engine.compaction?.after(method, params);
+      // A throwaway chat has no compaction row, and a rollback must not write a reset row for it.
+      if (!(typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId))) await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
         const id = String(object(result.thread).id); engine.threads.add(id); this.bindings.set(id, engine);
         if (object(result.thread).ephemeral === true || (method === "thread/fork" && params.experimentalPredictionMode === true) || (method !== "thread/resume" && params.ephemeral === true)) this.ephemeralThreads.add(id);

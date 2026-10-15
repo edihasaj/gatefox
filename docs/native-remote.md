@@ -79,7 +79,12 @@ being starved by continuous child output.
 
 The adapter reports a genuine unfinished native executor exit as an error and
 failed turn before shutting its client down. Buffered SDK completion events are
-drained first, and intentional shutdown does not manufacture a failure. A relay
+drained first, and intentional shutdown does not manufacture a failure. The error
+says the Codex engine stopped (the app may have restarted it), that the chat's history
+is saved, and that sending a message continues it; a chat on a connected machine
+reconnects that computer if it stays unavailable. The same text serves local chats,
+whose engine the app restarts by itself, for example on "Authenticated workspace
+changed". A relay
 disconnect alone does not establish whether shared work stopped, so the relay
 does not manufacture a completed or failed task from that observation.
 

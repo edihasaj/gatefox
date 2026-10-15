@@ -39,6 +39,33 @@ test("a throwaway chat's turns write no compaction row, however the gateway lear
   } finally { await f.clean(); }
 });
 
+test("a rollback writes a reset row for an ordinary chat but none for a throwaway chat", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture();
+  try {
+    await f.start("parent"); await turn(f, "parent");
+    await fork(f, "throwaway", { experimentalPredictionMode: true, ephemeral: true, excludeTurns: true });
+    await fork(f, "plain", {});
+    for (const id of ["throwaway", "plain"]) await f.backends.request("thread/rollback", { threadId: id, numTurns: 1 });
+    assert.equal(await row(f, "throwaway"), undefined, "a throwaway chat is memory-only, rollback included");
+    assert.ok(await row(f, "plain"), "an ordinary chat records the reset");
+  } finally { await f.clean(); }
+});
+
+test("a durable chat resumed with ephemeral: true is not throwaway, so its turns are still saved", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture();
+  try {
+    await f.start("durable"); await turn(f, "durable");
+    const first = (await row(f, "durable"))!.emittedAtMs;
+    // The executor answers a resume with the chat's own flags, which are durable; the request flag does not make it throwaway.
+    await f.backends.request("thread/resume", { threadId: "durable", ephemeral: true });
+    const done = () => f.events.filter(event => event.method === "turn/completed" && (event.params as Message)?.threadId === "durable").length;
+    const before = done();
+    await f.backends.request("turn/start", { threadId: "durable", model: largeModel, input });
+    await until(() => done() > before);
+    assert.ok((await row(f, "durable"))!.emittedAtMs > first, "the turn after the resume was saved");
+  } finally { await f.clean(); }
+});
+
 test("a throwaway chat is forgotten when it is closed, unsubscribed or deleted, and a new chat never inherits it", { timeout: 15000 }, async () => {
   const f = await compactionSdkFixture();
   try {

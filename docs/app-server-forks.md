@@ -81,7 +81,9 @@ The backends recognize a gateway executor's throwaway chats in three ways: the e
 `thread/fork` marks the chat `ephemeral`, or the request is a `thread/fork` with
 `experimentalPredictionMode` (or a start or fork with `ephemeral: true`). The turn and
 token events of such a chat are not written to the on-disk compaction store, which holds
-the compaction recovery state of every gateway chat. The newest 4096 such ids are tracked, and an id is forgotten when its chat is
+the compaction recovery state of every gateway chat, and neither is the reset a
+`thread/rollback` would write. A resume never makes a chat throwaway from its own
+`ephemeral` flag, so a durable chat resumed with `ephemeral: true` is saved as usual. The newest 4096 such ids are tracked, and an id is forgotten when its chat is
 closed, unsubscribed, deleted or archived. The store itself holds at most 4096 chats and
 4 MiB. When a write would pass either limit, for a new chat or for an existing chat whose
 row grows past the byte bound, it drops the chats observed longest ago instead of

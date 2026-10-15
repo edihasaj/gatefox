@@ -59,7 +59,10 @@ test("unexpected native exit delivers actual active IDs and awaited failure befo
     const errors = f.events.filter(message => message.method === "error"); const failed = f.events.filter(message => object(object(message.params).turn).status === "failed");
     assert.deepEqual(errors.map(message => [object(message.params).threadId, object(message.params).turnId]), [["chat-a", "turn-a"], ["chat-b", "turn-b"]]);
     assert.deepEqual(failed.map(message => [object(message.params).threadId, object(object(message.params).turn).id]), [["chat-a", "turn-a"], ["chat-b", "turn-b"]]);
-    for (const message of errors) { assert.equal(object(message.params).willRetry, false); assert.equal(object(object(message.params).error).codexErrorInfo, "internalServerError"); }
+    // The text is right for a local chat, whose engine the app restarts by itself, and for a connected machine.
+    const text = "The Codex engine stopped while this turn was running (the app may have restarted it). The chat's history is saved; send a message to continue, or reconnect this chat's computer if it stays unavailable.";
+    for (const message of errors) { assert.equal(object(message.params).willRetry, false); assert.equal(object(object(message.params).error).codexErrorInfo, "internalServerError"); assert.equal(object(object(message.params).error).message, text); }
+    for (const message of failed) assert.equal(object(object(object(message.params).turn).error).message, text);
     for (const message of failed) { const turn = object(object(message.params).turn); assert.equal(turn.itemsView, "notLoaded"); assert.equal(turn.rootTurnId, "root-" + turn.id); assert.deepEqual(turn.items, []); }
     await stopped.promise;
     assert.deepEqual(f.order.slice(-2), ["native-exit", "stopped"]);
