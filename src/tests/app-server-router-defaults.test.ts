@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
+import type { DesktopCatalog } from "../desktop-catalog.js";
 
 type ObjectValue = Record<string, unknown>;
 
@@ -61,12 +62,11 @@ test("saved preferences and explicit choices still outrank the row's defaults", 
 test("Fast is never a new-chat default from a row or a saved preference", async () => {
   const f = await fixture();
   await f.router.request("thread/start", { model: "codex/model" });
-  assert.equal(Object.hasOwn(f.forwarded(), "serviceTier"), false, "a row's default_service_tier does not start a chat in Fast");
+  assert.equal(f.forwarded().serviceTier, null, "a row's default_service_tier does not start a chat in Fast; the start is sent as Standard");
   // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
   await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: "codex/model", service_tier: "fast" }));
-  assert.equal(JSON.parse(await readFile(join(f.directory, "desktop-preferences.json"), "utf8")).service_tier, "fast");
   await f.router.request("thread/start", {});
-  assert.equal(Object.hasOwn(f.forwarded(), "serviceTier"), false, "a saved tier does not start a chat in Fast either");
+  assert.equal(f.forwarded().serviceTier, null, "a saved tier does not start a chat in Fast either");
   await f.router.request("thread/start", { serviceTier: null });
   assert.equal(f.forwarded().serviceTier, null, "an explicit Standard still passes through");
   await f.router.request("thread/start", { serviceTier: "fast" });
@@ -81,7 +81,26 @@ test("a new chat after a Fast chat starts Standard while the Fast chat keeps Fas
   const fast = await f.router.request("thread/start", { model: "codex/model", serviceTier: "fast" });
   assert.equal(fast.serviceTier, "fast");
   await f.router.request("thread/start", { model: "codex/model" });
-  assert.equal(Object.hasOwn(f.forwarded(), "serviceTier"), false, "the next new chat is Standard");
+  assert.equal(f.forwarded().serviceTier, null, "the next new chat is Standard");
   await f.router.request("thread/resume", { threadId: "test" });
   assert.equal(f.forwarded().serviceTier, "priority", "resuming the Fast chat restores its own tier");
+});
+
+test("the default effort a discovered gateway row advertises is the effort a new chat gets", async () => {
+  const f = await fixture();
+  const level = (effort: string) => ({ effort, description: effort });
+  // Discovery can omit the default, or name one the row does not offer; the static catalog never does.
+  const rows = [
+    { slug: "codex/undeclared", display_name: "Undeclared", description: "", supported_reasoning_levels: ["low", "medium", "high"].map(level), default_reasoning_level: null, input_modalities: ["text"] },
+    { slug: "codex/unoffered", display_name: "Unoffered", description: "", supported_reasoning_levels: ["low", "medium"].map(level), default_reasoning_level: "xhigh", input_modalities: ["text"] },
+  ];
+  const source = { isNative: (model: string) => model === "native", nativeRow: () => undefined, refresh: async () => ({ models: rows }) } as unknown as DesktopCatalog;
+  const router = new AppServerRouter(f.config, f.backend, undefined, source, join(f.directory, "native-home")); await router.initialize();
+  const listed = (await router.request("model/list", {})).data as ObjectValue[];
+  for (const slug of ["codex/undeclared", "codex/unoffered"]) {
+    const advertised = listed.find(row => row.model === slug)!.defaultReasoningEffort;
+    assert.equal(advertised, "medium", `${slug} advertises an effort it offers`);
+    await router.request("thread/start", { model: slug });
+    assert.equal(f.forwardedConfig().model_reasoning_effort, advertised, `${slug} starts with the advertised effort`);
+  }
 });

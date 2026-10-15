@@ -189,9 +189,13 @@ test("remote tier metadata survives offline restoration and model/list without p
     assert.deepEqual(model.serviceTiers, [tier]); assert.deepEqual(model.additionalSpeedTiers, ["fast"]); assert.equal(model.defaultServiceTier, null);
     await live.stop(); live = undefined; f.close();
     const cache = await readFile(f.cachePath, "utf8"); assert.equal(cache.includes("excluded-tier-auth"), false);
+    // model/list hides a gateway row's default speed; the cache and the restored catalog still keep it.
+    const sol = (rows: Array<{ slug: string; default_service_tier?: unknown }>) => rows.find(row => row.slug === "codex/sol")!;
+    assert.equal(sol(JSON.parse(cache).models).default_service_tier, "priority");
     restarted = await adapter(f);
     const restored = (await restarted.rpc("model/list")).data.find((row: { model: string }) => row.model === "codex/sol");
     assert.deepEqual(restored.serviceTiers, [tier]); assert.deepEqual(restored.additionalSpeedTiers, ["fast"]); assert.equal(restored.defaultServiceTier, null);
+    assert.equal(sol(JSON.parse(await readFile(join(f.value.stateDirectory, "desktop-models.json"), "utf8")).models).default_service_tier, "priority");
   } finally { await live?.stop(); await restarted?.stop(); f.close(); }
 });
 

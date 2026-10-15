@@ -98,7 +98,7 @@ test("Fast saved chats resume and fork after new-chat preferences change to Stan
   // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
   await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: fastModel, service_tier: "priority" }));
   const newChat = await fresh.router.request("thread/start", {});
-  assert.equal(Object.hasOwn(last(fresh, "thread/start"), "serviceTier"), false, "a legacy Fast default never starts a new chat in Fast");
+  assert.equal(last(fresh, "thread/start").serviceTier, null, "a legacy Fast default never starts a new chat in Fast");
   assert.equal(newChat.serviceTier, null);
 });
 
@@ -113,7 +113,7 @@ test("saved Standard survives a Fast preference change across connections, which
   assert.equal(last(fresh, "thread/fork").serviceTier, null);
   assert.deepEqual(choice(await f.store().read(threadId(fork))), { model: fastModel, serviceTier: null });
   const freshStart = await fresh.router.request("thread/start", {});
-  assert.equal(Object.hasOwn(last(fresh, "thread/start"), "serviceTier"), false, "a saved Fast default never starts a new chat in Fast");
+  assert.equal(last(fresh, "thread/start").serviceTier, null, "a saved Fast default never starts a new chat in Fast");
   assert.equal(freshStart.serviceTier, null);
 });
 

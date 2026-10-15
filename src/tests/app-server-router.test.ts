@@ -278,7 +278,7 @@ test("saved Fast preferences never start new chats in Fast while explicit overri
   const params = { cwd: directory, config: { trusted: true, model_reasoning_effort: "none", model_reasoning_summary: "concise" } };
   await second.request("thread/start", params);
   const started = calls.at(-1)!.params;
-  assert.equal(Object.hasOwn(started, "serviceTier"), false, "a saved tier no longer makes a new chat Fast"); assert.equal(started.cwd, directory);
+  assert.equal(started.serviceTier, null, "a saved tier no longer makes a new chat Fast; it starts Standard"); assert.equal(started.cwd, directory);
   assert.equal((started.config as ObjectValue).model_reasoning_effort, "none");
   assert.equal((started.config as ObjectValue).model_reasoning_summary, "concise");
   assert.equal((started.config as ObjectValue).trusted, true);
@@ -287,7 +287,7 @@ test("saved Fast preferences never start new chats in Fast while explicit overri
   await second.request("thread/start", { model: "codex/model", serviceTier: "default" }); assert.equal(calls.at(-1)!.params.serviceTier, "default");
   await second.request("thread/start", { model: "codex/model", config: { service_tier: null } });
   assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false); assert.equal((calls.at(-1)!.params.config as ObjectValue).service_tier, null);
-  await second.request("thread/start", { model: "claude/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await second.request("thread/start", { model: "claude/model" }); assert.equal(calls.at(-1)!.params.serviceTier, null);
   await second.request("thread/start", { model: "native", serviceTier: "flex", config: { service_tier: "default" } });
   assert.equal(calls.at(-1)!.params.serviceTier, "flex"); assert.equal((calls.at(-1)!.params.config as ObjectValue).service_tier, "default");
 });
@@ -296,14 +296,14 @@ test("declared gateway defaults and saved tiers never enter new gateway chats", 
   const { config, backend, calls } = await fastFixture();
   config.providers[1].modelMetadata!["codex/model"].defaultServiceTier = "priority";
   const router = new AppServerRouter(config, backend); await router.initialize();
-  await router.request("thread/start", { model: "codex/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "a row default tier never starts a chat in Fast");
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, null, "a row default tier never starts a chat in Fast");
   await router.request("thread/start", { model: "codex/model", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
   await router.request("thread/resume", { threadId: "persisted" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await router.request("thread/start", { model: "native" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
   await router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "default", mergeStrategy: "upsert" },
   ] });
-  await router.request("thread/start", { model: "codex/model" }); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "a saved tier is not injected either");
+  await router.request("thread/start", { model: "codex/model" }); assert.equal(calls.at(-1)!.params.serviceTier, null, "a saved tier is not injected either");
 });
 
 test("a Fast chat switches to Standard on a model change only when the picker makes it, and stale peers still fail", async () => {
@@ -339,7 +339,7 @@ test("changing the saved default model does not transfer the previous model's Fa
   const other = new AppServerRouter(config, backend); await other.initialize();
   await other.request("config/value/write", { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" });
   assert.equal(Object.hasOwn((await router.request("config/read", {})).config as ObjectValue, "service_tier"), false);
-  await router.request("thread/start", {}); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
+  await router.request("thread/start", {}); assert.equal(calls.at(-1)!.params.serviceTier, null);
 });
 
 test("an explicit standard tier for one turn overrides Fast without changing the thread's saved tier", async () => {
@@ -433,7 +433,7 @@ test("private Fast defaults cannot replace a saved or parent chat's Standard tie
     await other.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
     await appliedSettings(other, "persisted", "codex/model", null);
   }
-  await other.request("thread/start", {}); assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false, "the saved Fast default never starts a new chat in Fast");
+  await other.request("thread/start", {}); assert.equal(calls.at(-1)!.params.serviceTier, null, "the saved Fast default never starts a new chat in Fast");
 });
 
 test("gateway forks inherit the authoritative parent tier rather than private or executor defaults", async () => {

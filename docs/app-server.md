@@ -306,10 +306,12 @@ applies its own default namespace only to calls of top-level tools. Other
 providers skip the item when building their transcript.
 
 Picking a model in the desktop that lacks the chat's speed tier (a Fast Codex chat
-switched to Claude) moves the chat to Standard. A request that names a tier the
-model does not offer is also treated as Standard (see Speed controls). A request
-that names no tier but changes the model of a Fast chat is still refused, so a
-stale peer cannot silently drop another client's Fast setting.
+switched to Claude) moves the chat to Standard; the picker sends that change as
+`thread/settings/update`. A start, turn, resume or fork that names a tier the
+model does not offer is also treated as Standard (see Speed controls). A turn,
+resume, fork or active-turn settings change that names no tier but switches a
+Fast chat to a model without Fast is refused, so a stale peer cannot silently drop
+another client's Fast setting.
 
 Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
 roles in the native configuration) inherit the gateway provider but take their
@@ -478,11 +480,12 @@ capabilities in local and connected-machine `model/list` responses. Native rows
 retain their original capabilities. No speed tier is inferred from a model name.
 
 Standard remains the default in this installation. Choose Fast only for a model
-that advertises it; the pinned SDK identifies Fast as `priority`. Fast is never a
-new-chat default for a gateway model, and the user turns it on only for the chat
-that needs it. The desktop sends its speed explicitly on every start and turn, so
-the adapter works on what the desktop sees and saves rather than on what it
-injects:
+that advertises it; the pinned SDK identifies Fast as `priority`. The intent is
+that Fast is never a new-chat default for a gateway model and that the user turns
+it on only for the chat that needs it; the open limitation below lists where the
+desktop can still send a Fast default. The desktop sends its speed explicitly on
+every start and turn, so the adapter works on what the desktop sees and saves
+rather than on what it injects:
 
 - A gateway `model/list` row reports no default speed (`defaultServiceTier` is
   null) and keeps Fast in `serviceTiers`, so the picker still offers it. The
@@ -498,10 +501,9 @@ injects:
 - A Fast pick made in a draft, in Settings or on a banner applies to the chat it
   starts. It is accepted but not saved while the default model is a gateway model:
   the saved tier stays as it was if that was Standard or another non-Fast tier,
-  and is otherwise removed. Standard (`default` or null) is always saved.
-  One limit remains: the desktop keeps an accepted speed in memory for the rest of
-  the app session, so later drafts show and use Fast until Standard is chosen or
-  the app restarts.
+  and is otherwise removed. Standard (`default` or null) is always saved. The
+  desktop still keeps the accepted Fast in memory for the rest of the app session;
+  see the open limitation below.
 - When the default model is a native model, native behaviour is unchanged. A
   Fast default is saved, and a `thread/start` for that model that carries no
   `serviceTier` receives the saved tier, as before. The one exception is a Fast
@@ -529,24 +531,45 @@ injects:
   edit) is Standard, as natively. `thread/settings/update`,
   `turn/settings/update`, a per-turn `serviceTierForTurn` and configuration writes
   still fail on an explicit unsupported tier, so a user's direct choice is never
-  silently changed. A request that names no tier still fails with `-32002` when it
-  changes the model of a Fast chat, or when it is a turn that inherits a tier its
-  row no longer offers.
+  silently changed. A turn, resume, fork or active-turn settings change that names
+  no tier (neither `serviceTier` nor a per-turn `serviceTierForTurn`) still fails
+  with `-32002` when it switches a chat to a model that lacks the chat's tier. A
+  turn on the same model also fails when the row no longer offers the chat's tier;
+  resume and fork open that chat as Standard instead.
 
-Known limit, decided for this release: if the saved default is already Fast for a
-native model (or the native `config.toml` sets Fast) and the user then starts a
-chat with a gateway model, the desktop sends Fast explicitly on that start and on
-its first turn, as it would for a Fast pick. The adapter cannot tell the two apart
-(the desktop sends no default write when the default is already Fast) and the
-desktop shows Fast as selected, so the chat starts Fast; the user can switch it to
-Standard in the chat. The same holds inside one app session after a Fast pick
-while the default model was native, if the default model is then switched to a
-gateway model. Starting such a chat as Standard would also need the first turn
-and every later resume to be rewritten, and would silently refuse a deliberate
-pick, so the adapter keeps the explicit tier as sent.
+Open limitation, not yet decided by the owner. The adapter forwards a tier the
+desktop names explicitly, and the desktop names its shared default speed whenever
+the user has not picked one. While that default is Fast, gateway chats can
+therefore run Fast without a pick for that chat:
 
-A row's `default_service_tier` and the saved tier therefore never start a gateway
-chat in Fast. Resume and fork inherit their chat's own tier, so a Fast chat keeps
+- If the default speed is Fast for a native default model (saved, or set in the
+  native `config.toml`) and the user starts a chat with a gateway model, the
+  desktop sends Fast on that start and on its first turn, and the chat runs Fast.
+  The same holds within one app session after a Fast pick while the default model
+  was native, if the default model then changes to a gateway model.
+- After a Fast pick in a draft, in Settings or on a banner while the default model
+  is a gateway model, the desktop keeps Fast as its default in memory until
+  Standard is chosen or the app restarts. Later drafts show Fast and start Fast.
+- Desktop requests that take the shared default instead of the chat's own speed
+  carry that Fast as well: a reply sent from a notification, a queued message
+  without options of its own, a message one chat sends to another, a chat created
+  by the `create_thread` tool, and the resume after a reconnect. These can start a
+  gateway chat in Fast or move an existing Standard gateway chat to Fast.
+
+While the default is already Fast, a deliberate Fast pick in a draft sends
+nothing the adapter can see, so the adapter cannot tell a pick from the default.
+The choices are to keep this behaviour; to run such chats as Standard (which also
+means rewriting their first turn and the requests above) while the draft still
+shows Fast; or to refuse a draft Fast pick while the default model is a gateway
+model, so that Fast is chosen inside a chat after it starts. The test named
+"open limitation" in `src/tests/app-server-router-speed-edges.test.ts` records the
+current behaviour until that decision is made.
+
+The adapter itself never injects a row's `default_service_tier` or a saved tier
+into a gateway start. A gateway `thread/start` that names no tier is sent with
+`serviceTier: null` (Standard), so an executor's configured default cannot apply
+either, and gateway executors never copy the native `service_tier` into their
+configuration. Resume and fork inherit their chat's own tier, so a Fast chat keeps
 Fast; new-chat settings never replace it.
 The pinned SDK does not restore speed from saved history. The gateway therefore
 keeps public per-chat model/tier metadata in its own private state, scoped to the
@@ -568,10 +591,12 @@ Gateway executors enable the SDK's Fast feature when their validated catalog
 offers priority. Native feature flags and configuration files retain their values;
 enabling that private capability does not select Fast automatically.
 
-A request that changes the model of a loaded Fast chat and names no tier is
-refused rather than dropping Fast; a picker change (`thread/settings/update`) or
-a request that names a tier moves the chat to Standard when the new model lacks
-it. When a connection cannot determine the saved tier, resume the chat to read its
+A turn, resume, fork or active-turn settings change that names no tier and
+switches a loaded chat to a model without the chat's tier is refused rather than
+dropping Fast. A picker change (`thread/settings/update`) that names no tier moves
+the chat to Standard instead. A start, turn, resume or fork that names a tier the
+new model lacks runs as Standard, while a settings change that names it is
+refused. When a connection cannot determine the saved tier, resume the chat to read its
 settings or explicitly choose Standard before changing models. These checks return
 application errors rather than a misleading native-config warning. Reasoning
 effort is independent of speed.

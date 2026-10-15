@@ -406,7 +406,8 @@ export class AppServerRouter {
     let forwarded = params;
     if (method === "thread/start") {
       const model = requestedModel(params) ?? this.preferences.model;
-      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(this.offeredTier(params, model, method), model);
+      // A gateway start that names no tier is Standard: an omitted tier would let the executor's configured default apply.
+      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(this.offeredTier(tierSelection(params) ? params : { ...params, serviceTier: null }, model, method), model);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
     } else if (["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.

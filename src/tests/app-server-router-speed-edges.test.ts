@@ -113,11 +113,32 @@ test("a chat whose row stopped offering its tier still resumes and forks, as Sta
   await fresh.request("thread/fork", { threadId: chat }); assert.equal(f.last("thread/fork").serviceTier, null);
 });
 
-test("a saved native Fast default is not detected for gateway starts; an explicit Fast reaches the chat as sent", async () => {
+// Open limitation pending the owner's decision (docs/app-server.md, Speed controls): this pins today's behaviour, not a requirement.
+test("open limitation: a Fast that the desktop sends from its shared default still starts a gateway chat in Fast", async () => {
   const f = await fixture({ model: "native", service_tier: "priority" });
-  assert.equal(await configTier(f.router), "priority");
+  assert.equal(await configTier(f.router), "priority", "a native Fast default is reported, so the desktop sends Fast for every draft");
   await start(f.router, "codex/model", "priority"); assert.equal(f.last("thread/start").serviceTier, "priority");
   await start(f.router, "codex/model", null); assert.equal(f.last("thread/start").serviceTier, null);
+  const draft = await fixture();
+  await modelWrite(draft.router, "codex/model", "high"); await defaultWrite(draft.router, "priority");
+  await start(draft.router, "codex/model", "priority"); assert.equal(draft.last("thread/start").serviceTier, "priority", "the draft pick");
+  await start(draft.router, "codex/model", "priority");
+  assert.equal(draft.last("thread/start").serviceTier, "priority", "a later draft in the same app session, without a pick");
+});
+
+test("a gateway start that names no tier is sent as Standard, so no configured default can make it Fast", async () => {
+  const f = await fixture();
+  f.native.config = { model: "native", service_tier: "priority" };
+  assert.equal(await configTier(f.router), "priority", "the native default speed is Fast");
+  await f.router.request("thread/start", { model: "codex/model" });
+  assert.ok(Object.hasOwn(f.last("thread/start"), "serviceTier")); assert.equal(f.last("thread/start").serviceTier, null);
+  await modelWrite(f.router, "codex/model", "high");
+  await f.router.request("thread/start", {}); assert.equal(f.last("thread/start").serviceTier, null, "the saved gateway default model");
+  await f.router.request("thread/start", { model: "codex/model", config: { service_tier: "priority" } });
+  assert.equal(Object.hasOwn(f.last("thread/start"), "serviceTier"), false, "a tier named in config is kept as sent");
+  assert.equal(object(f.last("thread/start").config).service_tier, "priority");
+  await f.router.request("thread/start", { model: "native" });
+  assert.equal(Object.hasOwn(f.last("thread/start"), "serviceTier"), false, "a native start keeps native behaviour");
 });
 
 test("service_tier_reset names only known tiers", async () => {
