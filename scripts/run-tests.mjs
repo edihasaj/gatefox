@@ -16,7 +16,8 @@
 // Two limits keep a regression from hanging the run: every test that sets no timeout of its own fails after
 // GATEWAY_TEST_TIMEOUT_MS (default 120000), and a test file's process exits once its tests have ended, so a fixture server or CLI
 // handle left open cannot hold it. The suite runs in its own process group, and a signal to the runner is passed to the whole
-// group (and escalated to SIGKILL), so a stopped run leaves no test process behind; the runner then exits with 128 plus the signal.
+// group (and escalated to SIGKILL after a grace); the runner waits for the group to leave, so that the test processes finish their
+// exit handlers, and then exits with 128 plus the signal, with no test process left behind.
 // Each test process also exits on the signal instead of dying of it (scripts/test-preload.mjs), so the Copilot CLIs it started,
 // which run in groups of their own, are stopped with it; the fixture CLIs leave when their parent does as well.
 import { spawn } from "node:child_process";
@@ -86,7 +87,11 @@ async function removeStaleSockets() {
   }));
 }
 child.once("exit", async (code, signal) => {
-  // Whatever the leader left running in its group goes with it.
+  // The leader leaves as soon as it is signalled, while the test processes in its group are still running their exit handlers, which
+  // stop the Copilot CLIs they started (those run in groups of their own). A run that was stopped gives them the time to finish, up to
+  // the kill grace, which also sends SIGKILL to the group when it ends.
+  if (stopped && grouped && child.pid) await groupGone(child.pid, killGrace);
+  // Whatever is left running in the group goes with the run.
   send("SIGKILL");
   // Nothing of the run is left running when its folder goes, and a socket is looked at only after its owner is gone. (A killed process
   // leaves its group before the kernel has closed its sockets, so removeStaleSockets also asks a socket again before it believes it.)

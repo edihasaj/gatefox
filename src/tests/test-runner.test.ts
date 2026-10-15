@@ -287,3 +287,19 @@ test("a socket is stale when nothing listens on it, also when its owner was kill
     assert.equal(await isStale(plain, 300), false, "a file that is no socket is not stale");
   } finally { await folder.remove(); }
 });
+
+test("a stopped run waits for a test process to finish its exit handlers, which stop what it started, instead of killing it when the leader has left", { skip: process.platform === "win32", timeout: 90000 }, async () => {
+  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
+  try {
+    // The leader leaves at once when it is signalled. The test process takes 2 s in an exit handler, and then records that it finished.
+    const marker = join(w.work, "finished");
+    const file = await w.suite("slow-exit", `import { renameSync, writeFileSync } from "node:fs"; import { tmpdir } from "node:os";
+process.on("exit", () => { const end = Date.now() + 2000; while (Date.now() < end) { /* Busy. */ } writeFileSync(${JSON.stringify(marker)}, "x"); });
+test("waits", () => { writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD); return new Promise(() => {}); });`);
+    const run = await startedRun(w, file, { GATEWAY_TEST_KILL_GRACE_MS: "60000" }); child = run.child; started = run.started;
+    child.kill("SIGTERM"); const [code] = await run.exited; assert.equal(code, 128 + 15, "the runner's exit code");
+    assert.equal(await exists(marker), true, "the test process finished its exit handler before the runner ended the run");
+    assert.equal(alive(started.pids[0]), false, "and it is gone");
+    passed = true;
+  } finally { if (!passed) await cleanUp(child, started); await rm(w.work, { recursive: true, force: true }); }
+});
