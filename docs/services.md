@@ -116,22 +116,33 @@ name that is not a tunnel. Repeating a removal that already landed reports
 `alreadyRemoved` instead of failing again. A repeat is recognised only from the
 removal record the command writes after the plan edit succeeds
 (`service-backups/tunnel-removals.json`, private), by an exact comparison of the
-recorded tunnel id. A backup file by itself, whatever its name, proves nothing:
-a failed edit, or a plan someone changed by hand, never makes an unknown name
-look removed, and `spark-2026` never makes `spark` look removed. If only the
-record write fails, the removal still succeeds and the result says a repeat will
-not be recognised.
+recorded tunnel id, and only while the plan file is the one that removal left
+(the record stores its content, inode and timestamps). Removing another tunnel
+with this command keeps earlier records valid; restoring a saved plan, editing
+it by hand, replacing it, or `gateway service uninstall` followed by a new
+consolidation ends them, so such a plan reports `No tunnel <id>` again. A backup
+file by itself, whatever its name, proves nothing: a failed edit, or a plan
+someone changed by hand, never makes an unknown name look removed, and
+`spark-2026` never makes `spark` look removed. If only the record write fails, the
+removal still succeeds and the result says a repeat will not be recognised. A
+record that cannot be read counts as no record, so an unknown or repeated name is
+still refused as `No tunnel <id>`.
 
 Before it writes anything, it runs the same maintenance check as `gateway service
 restart` on a unified plan and consolidation: the ChatGPT desktop must be quit,
 and when the plan runs inference, `/health` must answer with status `ok` and no
-active inference (a busy, unhealthy or unreachable gateway is refused). A plan
+active inference (a busy, unhealthy or unreachable gateway is refused). The
+refusals say `Quit ChatGPT normally after local and remote chats finish` or
+`Gateway inference is busy or unhealthy`, each followed by `the tunnel was not
+removed`; they do not use the consolidation wording. A plan
 with no inference component, and a remote-client configuration, have nothing
 listening locally, so no probe is made and it never depends on the tunnel being
 removed. It checks the tunnel's local listeners, which are its `-L` and `-D`
 forwards (also written as `-o LocalForward` or `DynamicForward`, attached to the
-flag, clustered like `-NTL`, or with a bracketed IPv6 bind). A reverse `-R`
-forward only listens on the other machine, so it is not checked. It refuses when:
+flag, clustered like `-NTL`, or with a bracketed IPv6 bind). It reads the ssh
+arguments with the same option table the service uses for ssh (so `-P tag` and
+`-PLab` are a tag, not a forward) and stops at `--`. A reverse `-R` forward only
+listens on the other machine, so it is not checked. It refuses when:
 
 - a configured provider's loopback `baseUrl` (`127.0.0.1`, `localhost`, `[::1]`)
   uses one of those ports, naming the provider; point that provider at another
@@ -140,12 +151,22 @@ forward only listens on the other machine, so it is not checked. It refuses when
   tunnel is how the client reaches its gateway; stop the client with `gateway
   service uninstall` instead. Another tunnel on the same machine still retires
   normally;
-- a local forward's port cannot be identified (a socket path, a malformed spec),
-  because the checks above cannot run; edit the service plan manually;
+- a local forward's port cannot be identified (a socket path, a malformed spec, a
+  `-L` or `-D` with no value), because the checks above cannot run; edit the
+  service plan manually;
+- the arguments declare no forward at all (no `-L`, `-D`, `-R` or `-o
+  Local/Dynamic/RemoteForward`), so its forwards come from ssh_config through `-F`
+  or the host alias, which the command cannot see. Forwards that ssh_config adds
+  to explicit ones are not seen either; keep tunnel forwards on the command line;
 - the tunnel is the plan's only component; uninstall the gateway service instead.
 
 The plan it replaces is saved first to a private
-`service-backups/tunnel-removed-<id>-<timestamp>.json` file.
+`service-backups/tunnel-removed-<id>-<timestamp>.json` file. The re-read, the
+check that the plan did not change since it was read, the backup, the plan write
+and the record all happen under the same plan-file lock `service shared-executors`,
+`service shared-native` and their disable commands hold, so a concurrent change
+is never overwritten: the removal refuses with `Gateway service plan changed`, or
+waits up to 5 seconds for the lock and then fails as busy.
 
 Nothing restarts: the result says `appliesAt: next service restart`, and a repeat
 says the same. The tunnel stops when the unified service next starts from the

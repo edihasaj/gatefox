@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { macTunnel } from "../mac-tunnel.js";
 import { removeTunnelComponent } from "../mac-tunnel-remove.js";
 import { readServicePlan, servicePlanPath, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
+import { withPrivateFileLock } from "../private-file-lock.js";
 
 const bind = async (server: { once(event: "error", cb: () => void): unknown; listen(port: number, host: string, cb: () => void): unknown }): Promise<boolean> =>
   new Promise(done => { server.once("error", () => done(false)); server.listen(0, "127.0.0.1", () => done(true)); });
@@ -58,16 +60,17 @@ async function fixture(answer: Record<string, unknown> | null, provider?: Record
 }
 
 /** A plan whose tunnels stand alone: no inference component and no local listener to probe. */
-async function transportFixture(port: number, clientOnly: boolean, forwards = ["-L", `127.0.0.1:${port}:127.0.0.1:18300`], only = false) {
+async function transportFixture(port: number, clientOnly: boolean, forwards = ["-L", `127.0.0.1:${port}:127.0.0.1:18300`], only = false, hostLast = true) {
   const root = await mkdtemp(join(tmpdir(), "gw-tunnel-remove-")); const state = join(root, "state"); await mkdir(state, { recursive: true, mode: 0o700 });
   const config = join(root, "gateway.json");
   await writeFile(config, JSON.stringify(clientOnly
     ? { version: 1, port, stateDirectory: state, providers: [], clientOnly: true }
     : { version: 1, port, stateDirectory: state, providers: [{ id: "claude", type: "claude-subscription", models: { claude: "claude" } }] }));
   const tunnel = (id: string, args: string[]) => ({ id, kind: "tunnel" as const, command: "/usr/bin/ssh", args, log: join(state, `${id}.log`) });
-  const components = only ? [tunnel("tunnel-spark", sparkArgs(...forwards))] : [
+  const spark = tunnel("tunnel-spark", hostLast ? sparkArgs(...forwards) : ["-N", "-T", ...forwards]);
+  const components = only ? [spark] : [
     { id: "desktop", kind: "desktop" as const, command: "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT", args: ["--app", "/Applications/ChatGPT.app"], log: join(state, "desktop.log") },
-    tunnel("tunnel-spark", sparkArgs(...forwards)),
+    spark,
     tunnel("tunnel-studio", ["-N", "-T", "-R", "3459:127.0.0.1:3457", "mac-studio"]),
   ];
   const plan: ServicePlan = { version: 1, config, sharedExecutors: !only, components };
@@ -163,7 +166,7 @@ test("a removal whose plan write failed is not later reported as already removed
   try {
     await mkdir(join(f.state, "service-backups"), { mode: 0o700 }); await chmod(f.state, 0o500);
     try { await assert.rejects(remove(f.state, "spark")); } finally { await chmod(f.state, 0o700); }
-    assert.equal((await readdir(join(f.state, "service-backups"))).filter(name => name.startsWith("tunnel-removed-spark-")).length, 1, "the backup was written first");
+    assert.ok(!(await readdir(join(f.state, "service-backups"))).includes("tunnel-removals.json"), "nothing was recorded");
     assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan was not changed");
     // The operator later drops the tunnel by hand: no removal was ever recorded for it.
     await writePrivateJson(servicePlanPath(f.state), { ...f.plan, components: f.plan.components.filter(component => component.id !== "tunnel-spark") });
@@ -182,7 +185,7 @@ test("a removal that cannot be recorded still succeeds and says repeating it wil
 });
 
 test("busy, unhealthy or unreachable inference blocks a tunnel removal before anything is written", async () => {
-  for (const [answer, message] of [[{ active: 2, status: "ok" }, /Gateway inference is busy or unhealthy/], [{ active: 0, status: "configuration_error" }, /Gateway inference is busy or unhealthy/], [null, /Cannot verify the running gateway is idle/]] as const) {
+  for (const [answer, message] of [[{ active: 2, status: "ok" }, /^Error: Gateway inference is busy or unhealthy; the tunnel was not removed$/], [{ active: 0, status: "configuration_error" }, /^Error: Gateway inference is busy or unhealthy; the tunnel was not removed$/], [null, /Cannot verify the running gateway is idle/]] as const) {
     const f = await fixture(answer);
     try {
       await assert.rejects(remove(f.state, "spark"), message);
@@ -195,7 +198,7 @@ test("busy, unhealthy or unreachable inference blocks a tunnel removal before an
 test("a running ChatGPT desktop blocks a tunnel removal before anything is written", async () => {
   const f = await fixture({ active: 0, status: "ok" });
   try {
-    await assert.rejects(remove(f.state, "spark", running), /quit ChatGPT normally/);
+    await assert.rejects(remove(f.state, "spark", running), /^Error: Quit ChatGPT normally after local and remote chats finish; the tunnel was not removed$/);
     assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
     await noBackups(f.state);
   } finally { await f.stop(); }
@@ -248,7 +251,8 @@ test("the tunnel carrying a remote client's gateway connection cannot be removed
 
 test("every spelling of a forward to the client's port is recognised, including later and bracketed ones", async () => {
   const forms = [["-L", "[::1]:18301:127.0.0.1:18300"], ["-L18301:127.0.0.1:18300"], ["-NTL", "18301:127.0.0.1:18300"], ["-o", "LocalForward=127.0.0.1:18301 127.0.0.1:18300"],
-    ["-oLocalForward=18301 127.0.0.1:18300"], ["-o", "localforward [::1]:18301 [::1]:18300"], ["-L", "18400:127.0.0.1:1", "-L", "*:18301:127.0.0.1:18300"], ["-D", "18301"], ["-L", ":18301:[::1]:18300"]];
+    ["-oLocalForward=18301 127.0.0.1:18300"], ["-o", "localforward [::1]:18301 [::1]:18300"], ["-L", "18400:127.0.0.1:1", "-L", "*:18301:127.0.0.1:18300"], ["-D", "18301"], ["-L", ":18301:[::1]:18300"], ["-o", "DynamicForward=18301"],
+    ["-P", "x", "-L", "18301:127.0.0.1:18300"], ["-Pdev", "-L", "18301:127.0.0.1:18300"], ["-PLab", "-L", "18301:127.0.0.1:18300"], ["-P", "-L", "-L", "18301:127.0.0.1:18300"]];
   for (const form of forms) {
     const f = await transportFixture(18301, true, form);
     await assert.rejects(remove(f.state, "spark"), /carries this client's gateway connection on port 18301/, form.join(" "));
@@ -259,7 +263,9 @@ test("every spelling of a forward to the client's port is recognised, including 
 });
 
 test("a forward whose local port cannot be identified is refused instead of passing the safety checks", async () => {
-  const forms = [["-L", "18301"], ["-L"], ["-L", "/tmp/forward.sock:127.0.0.1:18300"], ["-L", "127.0.0.1:18301:/tmp/remote.sock"], ["-o", "LocalForward=nonsense"], ["-L", "99999:127.0.0.1:1"], ["-D", "x:y:z"]];
+  const forms = [["-L", "18301"], ["-L"], ["-L", "/tmp/forward.sock:127.0.0.1:18300"], ["-L", "127.0.0.1:18301:/tmp/remote.sock"], ["-o", "LocalForward=nonsense"], ["-L", "99999:127.0.0.1:1"], ["-D", "x:y:z"],
+    // No forward is declared, so any listener comes from ssh_config (-F or the host alias), which is not visible here.
+    [], ["-F", "/tmp/ssh-config"], ["-PLab"], ["-o", "RemoteCommand=none"], ["--", "-L", "18301:127.0.0.1:18300"]];
   for (const form of forms) {
     const f = await transportFixture(18301, true, form);
     await assert.rejects(remove(f.state, "spark"), /Cannot determine tunnel spark's local port; edit the service plan manually/, form.join(" "));
@@ -273,7 +279,7 @@ test("gateway tunnel uninstall edits the unified plan end to end on any platform
   Object.defineProperty(process, "platform", { value: "darwin" });
   try {
     // The plan branch runs before any launchctl call, so this reaches the real hook on Linux as well.
-    await assert.rejects(macTunnel("uninstall", { id: "spark" }, f.state, running), /quit ChatGPT normally/);
+    await assert.rejects(macTunnel("uninstall", { id: "spark" }, f.state, running), /Quit ChatGPT normally/);
     assert.deepEqual(await readServicePlan(f.state), f.plan, "the guard ran through the CLI path");
     const result = await macTunnel("uninstall", { id: "spark" }, f.state, none);
     assert.equal(result.tunnel, "spark"); assert.equal(result.removed, true);
@@ -281,4 +287,115 @@ test("gateway tunnel uninstall edits the unified plan end to end on any platform
     assert.deepEqual(ids((await readServicePlan(f.state))!), ["inference", "desktop", "tunnel-studio"]);
     await assert.rejects(macTunnel("install", { id: "spark", host: "qwen-spark", port: 18301, remotePort: 18300 }, f.state), /Tunnels are owned by the unified service/);
   } finally { Object.defineProperty(process, "platform", original); await f.stop(); }
+});
+
+test("a missing -L, -D or -R value at the end of the arguments is refused", async () => {
+  for (const flag of ["-L", "-D", "-R"]) {
+    // An earlier complete forward must not excuse the dangling one.
+    const f = await transportFixture(18301, true, ["-L", "18400:127.0.0.1:1", flag], false, false);
+    await assert.rejects(remove(f.state, "spark"), /Cannot determine tunnel spark's local port/, flag);
+    assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+    await noBackups(f.state);
+  }
+});
+
+test("a tunnel whose forwards live only in ssh_config is refused even when a provider uses the port", async () => {
+  for (const forwards of [[], ["-F", "/tmp/ssh-config"]]) {
+    const f = await fixture({ active: 0, status: "ok" }, { ...api("http://127.0.0.1:18301/v1"), id: "qwen" }, forwards);
+    try {
+      await assert.rejects(remove(f.state, "spark"), /Cannot determine tunnel spark's local port; edit the service plan manually/, forwards.join(" "));
+      assert.deepEqual(await readServicePlan(f.state), f.plan, "the plan is untouched");
+      await noBackups(f.state);
+    } finally { await f.stop(); }
+  }
+});
+
+test("arguments after -- are the remote command, not forwards", async () => {
+  const f = await transportFixture(18301, true, ["-R", "3459:127.0.0.1:3457", "--", "echo", "-L", "18301:127.0.0.1:18300"]);
+  assert.equal((await remove(f.state, "spark")).removed, true);
+});
+
+test("a provider base URL without a port uses the scheme's default port", async () => {
+  for (const [baseUrl, port] of [["http://localhost/v1", 80], ["https://localhost/v1", 443]] as const) {
+    const f = await fixture({ active: 0, status: "ok" }, api(baseUrl), ["-L", `${port}:127.0.0.1:18300`]);
+    try { await assert.rejects(remove(f.state, "spark"), /Provider spark_api uses this tunnel's local port/, baseUrl); } finally { await f.stop(); }
+  }
+  // The other scheme's default port is not the provider's.
+  for (const [baseUrl, port] of [["http://localhost/v1", 443], ["https://localhost/v1", 80]] as const) {
+    const f = await fixture({ active: 0, status: "ok" }, api(baseUrl), ["-L", `${port}:127.0.0.1:18300`]);
+    try { assert.equal((await remove(f.state, "spark")).removed, true, baseUrl); } finally { await f.stop(); }
+  }
+});
+
+test("an unreadable removal record never changes an unknown or repeated tunnel into a read error", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    await mkdir(join(f.state, "service-backups", "tunnel-removals.json"), { recursive: true, mode: 0o700 });
+    assert.equal((await remove(f.state, "spark")).removed, true);
+    await assert.rejects(remove(f.state, "spark"), /^Error: No tunnel spark in the unified service plan$/);
+    await assert.rejects(remove(f.state, "other"), /^Error: No tunnel other in the unified service plan$/);
+  } finally { await f.stop(); }
+});
+
+test("a restored backup that is then edited by hand does not make the id look removed again", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    const result = await remove(f.state, "spark");
+    assert.equal((await remove(f.state, "spark")).alreadyRemoved, true);
+    // The operator restores the saved plan, as the docs describe, then drops the tunnel by hand.
+    await delay(50); await writePrivateJson(servicePlanPath(f.state), JSON.parse(await readFile(String(result.backup), "utf8")));
+    await delay(50); await writePrivateJson(servicePlanPath(f.state), { ...f.plan, components: f.plan.components.filter(component => component.id !== "tunnel-spark") });
+    await assert.rejects(remove(f.state, "spark"), /^Error: No tunnel spark in the unified service plan$/);
+  } finally { await f.stop(); }
+});
+
+test("a plan that someone else replaced after the removal does not keep the id removed", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    await remove(f.state, "spark");
+    await delay(50); await writePrivateJson(servicePlanPath(f.state), { ...(await readServicePlan(f.state))!, sharedExecutors: false });
+    await assert.rejects(remove(f.state, "spark"), /^Error: No tunnel spark in the unified service plan$/);
+  } finally { await f.stop(); }
+});
+
+test("an earlier removal stays recognised after a later removal by the same command", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    await remove(f.state, "spark"); await remove(f.state, "studio");
+    assert.equal((await remove(f.state, "spark")).alreadyRemoved, true);
+    assert.equal((await remove(f.state, "studio")).alreadyRemoved, true);
+    await assert.rejects(remove(f.state, "other"), /No tunnel other in the unified service plan/);
+  } finally { await f.stop(); }
+});
+
+test("removing again after a restore carries only the records that describe the plan it started from", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    const first = await remove(f.state, "spark");
+    await delay(50); await writePrivateJson(servicePlanPath(f.state), JSON.parse(await readFile(String(first.backup), "utf8")));
+    await remove(f.state, "studio");
+    // spark's record described a plan that was replaced by the restore; it is not carried forward.
+    await assert.rejects(remove(f.state, "gone"), /No tunnel gone/);
+    assert.equal((await remove(f.state, "studio")).alreadyRemoved, true);
+    assert.equal((await remove(f.state, "spark")).removed, true, "spark is back in the plan and is removed again");
+  } finally { await f.stop(); }
+});
+
+test("a removal waits for the plan-file lock the other plan writers hold and then refuses a plan they changed", async () => {
+  const f = await fixture({ active: 0, status: "ok" });
+  try {
+    const changed = { ...f.plan, sharedExecutors: false };
+    let removal!: Promise<unknown>; const outcome = { settled: false };
+    await withPrivateFileLock(servicePlanPath(f.state), async () => {
+      removal = remove(f.state, "spark").then(() => { outcome.settled = true; }, () => { outcome.settled = true; });
+      await delay(150);
+      assert.equal(outcome.settled, false, "the removal is waiting for the lock");
+      assert.deepEqual(await readServicePlan(f.state), f.plan);
+      await noBackups(f.state);
+      await writePrivateJson(servicePlanPath(f.state), changed);
+    });
+    await removal;
+    assert.deepEqual(await readServicePlan(f.state), changed, "the other writer's plan survives");
+    await noBackups(f.state);
+  } finally { await f.stop(); }
 });
