@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
-import { CopilotSubscription } from "./providers/copilot.js";
+import { CopilotSubscription, retireUnconfiguredCopilotScopes } from "./providers/copilot.js";
 import { sweepCopilotDirectories } from "./providers/copilot-directories.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
@@ -174,7 +174,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   let current = config; let routes = buildRoutes(config);
   const snapshot = async () => {
     const next = reload ? await reload() : current;
-    if (next !== current) { const updated = buildRoutes(next); routes = updated; current = next; }
+    if (next !== current) {
+      const updated = buildRoutes(next); routes = updated; current = next;
+      // Live Copilot sessions of a provider the new configuration removed or changed would otherwise live out their timers.
+      retireUnconfiguredCopilotScopes(next.providers);
+    }
     return { config: current, routes };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();

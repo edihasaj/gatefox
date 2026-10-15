@@ -90,12 +90,15 @@ export function copilotLive(settings: CopilotLiveSettings) {
   };
 }
 
-/** Retires every live session one provider scope owns, without creating the registry: a provider switched to one-shot calls this. */
-export function retireCopilotScope(scope: string, reason: string): void {
+/** Retires every live session whose provider scope `reason` names, without creating the registry. */
+export function retireCopilotScopes(reason: (scope: string) => string | undefined): void {
   const reg = (globalThis as unknown as Record<symbol, Registry | undefined>)[symbol];
   if (reg?.interfaceVersion !== 1) return;
-  for (const [key, session] of reg.sessions) if (reg.scopes.get(key) === scope) void session.retire(reason);
+  for (const [key, session] of reg.sessions) { const scope = reg.scopes.get(key); const why = scope === undefined ? undefined : reason(scope); if (why) void session.retire(why); }
 }
+
+/** Retires every live session one provider scope owns: a provider switched to one-shot calls this. */
+export const retireCopilotScope = (scope: string, reason: string): void => retireCopilotScopes(owner => owner === scope ? reason : undefined);
 
 async function attach(reg: Registry, settings: CopilotLiveSettings, input: CopilotLiveInput, signal: AbortSignal): Promise<CopilotLiveOutcome> {
   if (signal.aborted) throw cancelled();

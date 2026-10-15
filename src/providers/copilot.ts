@@ -10,7 +10,7 @@ import { CopilotTurn } from "./copilot-turn.js";
 import { sessionLimits } from "./copilot-live-session.js";
 import { sessionFingerprint, sessionParams } from "./copilot-create.js";
 import { choiceLine, copilotPrompts, copilotSystem, nativeCatalog, type NativeTool } from "./copilot-render.js";
-import { copilotLive, retireCopilotScope, type CopilotLiveInput, type CopilotLiveOutcome } from "./copilot-live.js";
+import { copilotLive, retireCopilotScope, retireCopilotScopes, type CopilotLiveInput, type CopilotLiveOutcome } from "./copilot-live.js";
 import { sessionKey } from "./claude-live-contract.js";
 import { leadingInstructions, markCustomCalls, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { telemetry } from "../telemetry.js";
@@ -66,6 +66,19 @@ export function copilotRun(config: ProviderConfig, request: ResponsesRequest, si
 
 /** The provider half of a live session key; the thread's half is whatever the caller added. */
 const copilotScope = (config: ProviderConfig): string => `${config.id}\0${config.authDirectory ?? ""}`;
+
+/**
+ * After a configuration reload: closes the live sessions of every provider scope the new configuration no longer serves live.
+ * A removed provider, or one whose id or auth directory changed, never receives a request that could retire its sessions
+ * (`provider_removed`); a provider switched to one-shot keeps its scope, and its parked sessions go now (`mode_oneshot`)
+ * instead of at its next request.
+ */
+export function retireUnconfiguredCopilotScopes(providers: ProviderConfig[]): void {
+  const copilot = providers.filter(provider => provider.type === "copilot-subscription");
+  const live = new Set(copilot.filter(provider => copilotSessionSettings(provider).mode === "live").map(copilotScope));
+  const configured = new Set(copilot.map(copilotScope));
+  retireCopilotScopes(scope => live.has(scope) ? undefined : configured.has(scope) ? "mode_oneshot" : "provider_removed");
+}
 
 /** What a live session needs to place a request of a thread (`threadId` is required). */
 export function copilotLiveInput(config: ProviderConfig, run: CopilotRun, threadId: string): CopilotLiveInput {

@@ -31,7 +31,11 @@ costs natively.
 Every field is optional, and a provider with no `copilotSessions` at all runs live with
 the defaults below. The daemon reads a change on its next request. `"oneshot"` (or
 `"replay"`, accepted as another name) turns live sessions off: running turns finish, and
-the provider's parked sessions close on its next request. One-shot is also what a
+the provider's parked sessions close on its next request, or at once when the daemon
+reloads the configuration (`mode_oneshot`). A reload also closes the sessions of a Copilot
+provider that was removed or whose `id` or `authDirectory` changed (`provider_removed`):
+no request would ever reach it again, and the session folders hold the conversation log.
+A session whose turn is running closes when the turn ends. One-shot is also what a
 request falls back to whenever a live session cannot serve it.
 
 | Setting | Default | Meaning |
@@ -228,7 +232,7 @@ about 1.5 seconds after SIGTERM.
 | Field | Values |
 | --- | --- |
 | `outcome` | `spawned`, `continued`, `reseeded`, `fallback`, `interrupted` (the request was cancelled), `reaped` (parked or tool-wait timer), `evicted`, `crashed`, `closed` (ended on purpose) |
-| `missReason` | on `reseeded` and `fallback`: the reasons above. On an end (`closed`, `reaped`, `evicted`, `crashed`): why it ended — a reseed reason, `interrupted`, `idle_missing`, `tool_wait_expired`, `mode_oneshot` (the provider switched to one-shot), `shutdown`, `stopped`, or for `crashed`: `foreign_tool`, `permission`, `sub_agent`, `unannounced_tool`, `unattended_output`, `unattended_completion`, `backlog`, `exited`, `delivery_rejected` (a tool result was not confirmed), or the code of the error that failed the request |
+| `missReason` | on `reseeded` and `fallback`: the reasons above. On an end (`closed`, `reaped`, `evicted`, `crashed`): why it ended — a reseed reason, `interrupted`, `idle_missing`, `tool_wait_expired`, `mode_oneshot` (the provider switched to one-shot), `provider_removed` (a reload removed the provider or changed its id or auth directory), `shutdown`, `stopped`, or for `crashed`: `foreign_tool`, `permission`, `sub_agent`, `unannounced_tool`, `unattended_output`, `unattended_completion`, `backlog`, `exited`, `delivery_rejected` (a tool result was not confirmed), or the code of the error that failed the request |
 | `threadKey` | the first 8 hex of the thread's session key |
 | `liveSessions` | live sessions after the event |
 | `divergedAt` | on `prefix_diverged` and `unexpected_tail`: the index of the first item that did not match |
