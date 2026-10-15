@@ -1,8 +1,8 @@
 // Waits for a process group to be empty, for the test runner (scripts/run-tests.mjs).
 
 /**
- * Settles with true once no process is left in the process group led by `leader`, or with false after `ms`. A process that was sent
- * SIGKILL is gone when the kernel has torn it down, which is after the signal was sent; the sockets it listened on close only then.
+ * Settles with true once no process is left in the process group led by `leader`, or with false after `ms`. A process leaves its
+ * group while it is being torn down, so this says that nothing of the group runs any more, not that its sockets are closed.
  */
 export async function groupGone(leader, ms) {
   const end = Date.now() + ms;
