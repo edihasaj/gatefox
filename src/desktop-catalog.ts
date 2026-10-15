@@ -112,7 +112,7 @@ export class DesktopCatalog {
     // Only gateway executors load this catalog. Sub-agents that name a native model directly use
     // these rows, so an executor without Codex's code-mode host gives them direct tools instead of
     // failing every command; the native engine keeps its own catalog unchanged.
-    // The same executors cannot run the auto review some native rows need, so those rows carry node_repl off.
+    // These rows take the Codex 2 rows' node_repl rule: off where review cannot run here or no policy is stated.
     const native = this.native.map(model => {
       const row = executorNativeRow(model);
       return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;

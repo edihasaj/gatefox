@@ -356,28 +356,27 @@ local native catalog it loaded at startup and copies these fields:
   alone, 2,554 characters (about 550 input tokens) on every request. Without a
   native template the gateway values stay;
 - `tool_mode`, `apply_patch_tool_type` and `shell_type`;
-- the `default_reasoning_level`, `default_verbosity` and `default_reasoning_summary`
-  defaults, and `support_verbosity`. A default effort the route does not offer is
-  not copied;
+- the `default_reasoning_level` (only an effort the route offers), `default_verbosity`
+  and `default_reasoning_summary` defaults, and `support_verbosity`;
 - `effective_context_window_percent` and `truncation_policy`;
-- `context_window`, but only when the native value is at or below the upstream's
-  `max_context_window`. Otherwise, or when the upstream reports no maximum, the
-  upstream window stays.
+- `context_window`, if the native value is within the upstream's `max_context_window`;
+  otherwise, or when the upstream reports no maximum, the upstream window stays;
+- `node_repl_disabled`, `node_repl_auto_review_required`, `guardian`,
+  `auto_review_model_override` and `requires_sandboxed_review`. Executors turn
+  node_repl off where a row needs review they cannot run ([node_repl](node-repl.md)).
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
 `comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
 web search disabled, because `tool_search` does not pass through the gateway. A
-slug without a native row, and every Claude, Copilot or other row, keeps the
-published fields except the two node_repl fields, which take the strictest native
-policy described below. The rows the adapter builds drop `upstream_slug`. At each
-launch the native-catalog preflight first writes `desktop-models.json` with the
-plain gateway rows, marker included; the adapter replaces that file with the
-copied rows on its first successful cache restore or host refresh, and every
-gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
-ignore the marker, as they do in the plain catalog that CLI and remote clients
-read. Those clients have no native catalog, so they keep the gateway rows
-unchanged.
+slug without a native row, and every Claude, Copilot or other row, keeps the gateway
+row but takes the strictest native node_repl policy. The rows the adapter builds
+drop `upstream_slug`. At each launch the native-catalog preflight first writes
+`desktop-models.json` with the plain gateway rows, marker included; the adapter
+replaces that file with the copied rows on its first successful cache restore or
+host refresh, and every gateway chat start refreshes first. Codex 0.160.0 and the
+gateway SDK ignore the marker, as in the plain catalog that CLI and remote clients
+read; those clients have no native catalog and keep the gateway rows unchanged.
 
 The inference host still never supplies instructions. The offline cache stores
 only the host's public rows; the adapter rebuilds the copy from the native catalog
@@ -394,47 +393,6 @@ executor catalog carries for sub-agents naming a model directly (a role's model,
 `default_subagent_model` or Ultra delegation): without the host those rows get
 `direct` tools in executors, so their commands run instead of failing with "failed
 to spawn code-mode host". The native engine keeps its own catalog unchanged.
-
-node_repl (the browser, Chrome and computer-use tools) follows the ModelInfo fields
-`node_repl_disabled`, `node_repl_auto_review_required`, `guardian` and
-`auto_review_model_override` (the native catalog also has `requires_sandboxed_review`, which
-the gateway SDK ignores). Observed read-only on ChatGPT 26.1007:
-
-- It does not depend on code mode: the bundled `unified-computer-use` plugin declares
-  `cua_repl` with `omit_tools_from: ["code_mode", "deferred"]`, and `~/.codex/config.toml`
-  runs `[mcp_servers.node_repl]` from the app. Only `tool_mode` follows code mode.
-- Every native row has `node_repl_disabled: false`. Review is required on `gpt-6-astra`,
-  `gpt-6.1-sol` and `gpt-6-sol`; the other three fields are null or absent.
-- The rows that require review carry only `auto_review.rejection_instructions`. The
-  node_repl review text (`node_repl_policy`) is on the hidden reviewer row
-  `codex-auto-review`, which the executor catalog carries as a native row. The four 6.x rows
-  share `confirmation_policies` and `guardian_v2`, which a Codex 2 row gets with its
-  copied `model_messages`; Claude, Copilot and API rows have neither.
-
-Rules:
-
-- A Codex 2 row copies the review flag, `guardian`, `auto_review_model_override` and
-  `requires_sandboxed_review` from its native row, with code mode on or off. A value that is
-  not plainly typed is not copied, and a flag that is not a boolean becomes `true`.
-- Auto review cannot run in a gateway executor, so a row that needs it (the flag, or a
-  `guardian` that reviews computer use) has node_repl off there. That covers `gpt-6.1-sol`,
-  `gpt-6-astra`, `gpt-6-sol` and the same native rows when sub-agents name them; rows such as
-  `gpt-6-luna` keep it on. The reviewer runs through the gateway, which answers the SDK's
-  `codex-auto-review` with 404 `model_not_found` unless exactly one Codex subscription alias
-  serves it (the live config has none), and review errors fail closed. This comes from source
-  and config, not a live run. Routing that slug would send a Claude or Copilot chat's actions
-  to an OpenAI reviewer, which is Edi's decision (`executorRunsAutoReview`).
-- A row with no native counterpart (Claude, Copilot, API, or a Codex row whose upstream is
-  missing) takes the strictest native policy: off when any is off or needs review, review
-  required when any requires it, sandboxed review when any does; with no native catalog both
-  are `true`. Off, it has nothing to review, so it gets neither the confirmation and classifier
-  texts nor `guardian`. The plain catalog (CLI, remote clients) publishes `true` and `true`.
-- Executors start from the machine with the native catalog and settings, so the node_repl
-  server resolves as natively; none was found that cannot start it.
-
-`node scripts/check-node-repl.mjs catalog.json` prints both fields per row of a copy of an
-executor home's combined catalog and counts the rows that keep node_repl off and those that
-enable it without review. It is advisory and exits 0, also for unreadable or malformed input.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global

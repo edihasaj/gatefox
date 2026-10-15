@@ -75,23 +75,25 @@ export interface NodeReplPolicy { node_repl_disabled: boolean; node_repl_auto_re
 
 /**
  * Mirrors ModelInfo::computer_use_review_required: a guardian policy, when present, overrides the
- * flag. A flag that is not plainly a boolean counts as requiring review when strict, as the SDK's
- * own default (no review) otherwise.
+ * flag, and reviews computer use unless its mode is absent, null or "disabled". A guardian that is
+ * not an object, or a flag that is not plainly a boolean, cannot be shown to skip review, so it
+ * counts as requiring it.
  */
-export function computerUseReviewRequired(row: Row, strict = true): boolean {
+export function computerUseReviewRequired(row: Row): boolean {
   if (row.guardian !== undefined && row.guardian !== null) {
     const guardian = plain(row.guardian);
-    // An unparseable policy cannot be shown to skip review, so it counts as requiring it.
     if (!guardian) return true;
     return guardian.computer_use !== undefined && guardian.computer_use !== null && guardian.computer_use !== "disabled";
   }
-  return strict ? row.node_repl_auto_review_required !== false : row.node_repl_auto_review_required === true;
+  return row.node_repl_auto_review_required !== false;
 }
 
 /**
- * One row's node_repl policy. A field that is not plainly a boolean gets the stricter value. The
- * auto review flag is the row's own. node_repl is off when the row turns it off, and also when the
- * row needs review in an executor that cannot run it, so no action waits on a reviewer that fails.
+ * One row's node_repl policy in a gateway executor. Codex 2 rows and the native rows the executor
+ * catalog carries for sub-agents both use it, so one upstream model gets one policy there. A field
+ * that is not plainly a boolean gets the stricter value. The auto review flag is the row's own.
+ * node_repl is off when the row turns it off, and also when the row needs review in an executor
+ * that cannot run it, so no action waits on a reviewer that fails.
  */
 export function nodeReplPolicy(row: Row): NodeReplPolicy {
   const off = typeof row.node_repl_disabled === "boolean" ? row.node_repl_disabled : true;
@@ -103,25 +105,30 @@ export function nodeReplPolicy(row: Row): NodeReplPolicy {
 
 /**
  * The node_repl policy for a row with no native counterpart (Claude, Copilot, API, or a Codex row whose
- * upstream is missing). It is never weaker than any native row: node_repl stays disabled when any native
- * row's effective policy disables it, auto review is required when any native row requires it, and a
- * sandboxed-review requirement carries over. With no native rows both are true. These rows also receive
- * none of a native row's model messages or guardian settings; with node_repl disabled they have no
- * computer-use action to review, so the strictest policy needs neither.
+ * upstream is missing). It is never weaker than any native row. These rows carry no guardian, so their
+ * flag alone decides review: it is required when any native row needs review or has a flag that is not
+ * plainly false (even where that row's guardian skips computer-use review), and node_repl is off when
+ * any native row's policy turns it off or review is required where it cannot run. A sandboxed-review requirement carries over. With no native
+ * rows both are true. These rows receive none of a native row's model messages or guardian settings;
+ * with node_repl off they have no computer-use action to review, so the strictest policy needs neither.
  */
 export function nodeReplFallback(native: readonly Row[]): NodeReplPolicy {
   const policies = native.map(nodeReplPolicy);
+  const review = !native.length || native.some(row => computerUseReviewRequired(row)) || policies.some(policy => policy.node_repl_auto_review_required);
   return {
-    node_repl_disabled: !native.length || policies.some(policy => policy.node_repl_disabled),
-    node_repl_auto_review_required: !native.length || policies.some(policy => policy.node_repl_auto_review_required),
+    node_repl_disabled: !native.length || policies.some(policy => policy.node_repl_disabled) || (!executorRunsAutoReview && review),
+    node_repl_auto_review_required: review,
     ...(native.some(entry => entry.requires_sandboxed_review === true) ? { requires_sandboxed_review: true as const } : {}),
   };
 }
 
 /**
- * A native row carried into the executor catalog keeps its own values, except that node_repl is off
- * where the row requires review the executor cannot run. A row that states no policy keeps the SDK default.
+ * A native row carried into the executor catalog keeps its own values apart from the two node_repl
+ * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. A row with a plain
+ * policy and no review keeps both; one that states no policy gets node_repl off here, never the SDK
+ * default. The native engine's own catalog is unchanged.
  */
 export function executorNativeRow(model: Row): Row {
-  return !executorRunsAutoReview && model.node_repl_disabled !== true && computerUseReviewRequired(model, false) ? { ...model, node_repl_disabled: true } : model;
+  const policy = nodeReplPolicy(model);
+  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required ? model : { ...model, ...policy };
 }
