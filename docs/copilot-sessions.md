@@ -35,7 +35,11 @@ the provider's parked sessions close on its next request, or at once when the da
 reloads the configuration (`mode_oneshot`). A reload also closes the sessions of a Copilot
 provider that was removed or whose `id` or `authDirectory` changed (`provider_removed`):
 no request would ever reach it again, and the session folders hold the conversation log.
-A session whose turn is running closes when the turn ends. One-shot is also what a
+A session whose turn is running closes when the turn ends, and so does one that was still
+starting when its provider was removed (it closes when the request that started it ends).
+A gateway generation that an in-place upgrade starts does the same for the sessions it
+adopts from the release before it: those whose provider its configuration no longer serves
+close at once. One-shot is also what a
 request falls back to whenever a live session cannot serve it.
 
 | Setting | Default | Meaning |
@@ -124,13 +128,15 @@ never evicted, and neither is one whose own request is being placed. When no slo
 freed, because every slot is held by a running session, a session whose own request is
 being placed, or a session still starting (another thread's attach that has no session
 yet), the newcomer is served one-shot (`capacity`). An evicted session's process and
-folder are gone before its replacement starts, and the evicted thread reseeds on its next
-request (`evicted`), even one that arrives while the old session is still ending: the
-evicted session keeps its slot until it is gone, and that request waits for it. Sessions being started count toward `max`, in arrival order, so
-concurrent starts never hold more sessions than the cap. A session that is still closing
-when its thread's next request comes no longer holds the thread or a slot; the request
-waits until it is gone and starts a new session, reporting how the old one ended (for
-example `tool_wait_expired`).
+folder are gone before its replacement starts. The evicted thread reseeds on its next
+request (`evicted`). If that request arrives while the old session is still ending, it
+takes over the slot: the old session stops counting toward `max` and the request waits
+until its process and folder are gone before it starts its new session. Sessions being
+started count toward `max`, in arrival order, so concurrent starts never hold more sessions
+than the cap. Any session that is still closing when its thread's next request comes
+no longer holds the thread or a slot in the same way; the request waits until it is gone
+and starts a new session, reporting how the old one ended (for example
+`tool_wait_expired`).
 
 ## Waiting for tools
 
@@ -146,7 +152,10 @@ right after `assistant.idle`), and `model.*` events other than `model.call_start
 accepts the CLI's start-up announcements `session.start` and
 `session.managed_settings_resolved` until the session's first request, and a
 `session.model_change` that confirms the effort change the gateway asked for (the CLI
-sends it before it answers `session.model.switchTo`). Anything else kills the session at
+sends it before it answers `session.model.switchTo`; the gateway recognizes it even when
+it is read after the next request attached). A confirmation for another effort than the one
+asked for ends the session (`effort_mismatch`), and the request is served one-shot. Anything
+else kills the session at
 once, before it can spend: a `tool.execution_complete` or `external_tool.completed` for a
 call nobody answered (the timeout, or a failed call), a model call, any assistant output
 or usage, compaction, truncation or an error, a model change nobody asked for, a
@@ -161,9 +170,13 @@ Cancelling a request, a reseed, an eviction, a tool-wait expiry and any violatio
 session the same way: `session.abort` (bounded to 2 seconds, errors ignored), then SIGKILL
 of the CLI's whole process group, which is its own group, and the removal of its folder.
 A parked session that is not running anything needs no abort and is killed the same way.
-A one-shot request is closed the same way when its CLI holds an unanswered tool request,
-that is, when the turn ended in tool calls or was cancelled after the CLI announced one;
-only a one-shot turn that ended in text is deleted (`session.delete`) and stopped with SIGTERM.
+A one-shot request is closed the same way whenever its CLI may hold an unanswered tool
+request: a turn that ended in tool calls, a tool request the gateway rejected (a disabled
+or other tool than the required one, a native tool), any failure, a cancellation once its
+session exists, and a client that stops reading. Only a one-shot turn that ended idle with a
+complete text answer, and so nothing pending, is deleted (`session.delete`) and stopped
+with SIGTERM; no other end ever sends either, because a runtime that is told to exit can
+fail a pending call and make a model call of its own.
 A cancelled request ends at once and its session is killed in the background; a reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
 request fails that request at once, or, before its first event, hands it to the one-shot
@@ -180,8 +193,9 @@ ends the request normally; the session then closes (`idle_missing`).
 - The CLI sees only the gateway's tools. A permission request, a tool start or request for
   any other name, a sub-agent event, BYOK usage, another model or output with no request
   attached kills the session and fails the request. The gateway still answers no host
-  request, and the CLI is spawned with `--disable-builtin-mcps`, `--no-custom-instructions`,
-  `--no-remote` and the session store off.
+  request, and the CLI is spawned with `--no-auto-update`, `--disable-builtin-mcps`,
+  `--no-custom-instructions`, `--no-remote` and `--no-remote-export`, and the session
+  store off.
 - The session store stays off, so no session rows or session folders are added to
   `~/.copilot`, and the CLI's configuration folder is private. The CLI does write a log of
   the conversation, including prompts and tool results, to `session-state/<id>/events.jsonl`
@@ -200,13 +214,15 @@ ends the request normally; the session then closes (`idle_missing`).
   folders synchronously. If the gateway is killed outright, its CLIs exit when their input
   closes (measured on CLI 1.0.97), and the next gateway removes every folder whose owner no
   longer runs when it starts, before its first request and whatever any provider's mode is.
-  It reads only the parent folder, never the whole OS temp folder, which can hold hundreds
-  of thousands of entries. An owner no longer runs when its pid is dead or now belongs to a
-  process with another start time (`ps -o lstart`), so a reused pid keeps nothing; folders
-  that another user owns are never removed. Folders that older releases left straight in the
-  OS temp folder without an owner (`gateway-copilot-<random>`) are removed once they are
-  more than two hours old, longer than any request runs; the OS temp folder is read for
-  them once and again after a week (the `.legacy-scan` file in the parent records when).
+  Each sweep reads the parent folder; it does not read the whole OS temp folder, which can
+  hold hundreds of thousands of entries, except once and then again after a week, for the
+  folders of older releases (below). An owner no longer runs when its pid is dead or now
+  belongs to a process with another start time (`ps -o lstart`), so a reused pid keeps
+  nothing; folders that another user owns are never removed, and a parent that is not a
+  real folder you own is neither read nor trusted. Folders that older releases left straight
+  in the OS temp folder without an owner (`gateway-copilot-<random>`) are removed once they
+  are more than two hours old, longer than any request runs; that weekly read of the OS temp
+  folder is recorded by the `.legacy-scan` file in the parent.
 - No caller prompt, tool argument or output goes to gateway logs, telemetry or the usage
   ledger.
 
@@ -222,10 +238,13 @@ request stops early (the caller left, it was cancelled or timed out, or the gate
 shutting down), the server keeps reading the provider for up to 3 seconds, for usage
 only, even if it was waiting for a slow client to take earlier output. At shutdown it
 waits for those requests to write their ledger rows before its final flush, but the
-process leaves 1.5 seconds after the drain deadline at the latest, flushing telemetry
-and the ledger first. A cancelled live request hands its total over at once; a cancelled
-one-shot request hands it over once its stopped CLI has exited, which SIGKILL bounds to
-about 1.5 seconds after SIGTERM.
+process leaves 1.5 seconds after the drain deadline at the latest. Before it leaves, it
+writes a `failed` ledger row and a `request_failed` record for every request still
+running, with the usage its provider had reported so far, and then flushes telemetry and
+the ledger, so a request stopped at shutdown never loses what it had already cost. Usage
+that arrives after the process has left is not recorded. A cancelled live request hands
+its total over at once; a cancelled one-shot request hands it over once its CLI has been
+aborted and killed, which `session.abort` bounds to 2 seconds before SIGKILL.
 
 `copilot_session` telemetry has one event per decision or end:
 
