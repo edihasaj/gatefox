@@ -138,7 +138,7 @@ name still fails with `model_not_found`. Each resolution is logged as
 the 404 five times and ended the turn with nothing.
 
 Resuming or forking a gateway chat on the same model restores the chat's own
-reasoning. The adapter records the effort and summary each chat last ran with in
+reasoning. The adapter records the effort and summary each gateway chat last ran with in
 a private `desktop-thread-reasoning-<scope>.json` under its state directory,
 fed by applied thread settings, turns that carry an effort, and chat
 start/resume/fork results; an unknown (null) value never erases a saved level,

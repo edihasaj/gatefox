@@ -274,3 +274,23 @@ test("an unknown chat keeps a Standard row for 0.4.0 that never outranks the mar
     assert.equal(Object.keys((await f.file()).threads).length, 1, "the marker is gone once the tier is known");
   } finally { await f.close(); }
 });
+
+test("the Standard row beside an unknown marker keeps the marker's watermark, so a build that reads only the row rejects a stale Fast", async () => {
+  const f = await fixture();
+  try {
+    await f.store.write("chat", { ...fast, emittedAtMs: 10000 });
+    const current = (await f.store.read("chat"))!;
+    // A snapshot from 5000 marks the chat unknown: everything up to 10000 is uncertain.
+    assert.equal(await f.store.markUnknown("chat", unknown, current, 5000), true);
+    const saved = await f.file();
+    const marker = saved.threads[markerOf("chat")]!;
+    assert.equal(marker.uncertainBeforeMs, 10000);
+    assert.deepEqual(saved.threads.chat, { ...marker }, "the row holds Standard with the marker's stamp and watermark");
+    oldBuildAccepts(saved);
+    // A rolled-back 0.4.0 never looks the marker up; it sees only the row. Drop the marker to read the file the way it does.
+    const { [markerOf("chat")]: _marker, ...rowOnly } = saved.threads;
+    await writeFile(f.path, JSON.stringify({ ...saved, threads: rowOnly }), { mode: 0o600 });
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 7000 }), false, "a stale Fast inside the window is rejected");
+    assert.equal((await f.store.read("chat"))?.serviceTier, null);
+  } finally { await f.close(); }
+});

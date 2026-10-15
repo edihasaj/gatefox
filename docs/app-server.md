@@ -232,7 +232,8 @@ the adapter never adds or changes `model`, `modelProvider`, `config.model` or
 `config.model_reasoning_effort`. A fork that names the chat's model without an effort
 therefore gets the SDK's own effort, as it does natively. Gateway chats are different:
 the SDK cannot restore a gateway alias, so the adapter still restores a gateway chat's
-reasoning ([compaction](app-server-compaction.md)). Releases 0.3.9 and 0.4.0 added the
+reasoning ([compaction](app-server-compaction.md)), and only gateway chats are written to that
+reasoning store. Releases 0.3.9 and 0.4.0 added the
 saved effort to the desktop's resume, whose null model is no override, so after every
 engine restart a chat on GPT-6.1-Sol came back on the configured default model with
 its saved effort. Release 0.4.1 first limited that to requests naming the chat's model
