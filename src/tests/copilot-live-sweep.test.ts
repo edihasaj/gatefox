@@ -142,3 +142,15 @@ test("only a real directory the user owns is a usable folder", () => {
   assert.equal(ownedDirectory(directory, 501), true); assert.equal(ownedDirectory(directory, 502), false, "another user's");
   assert.equal(ownedDirectory(link, 501), false, "a symlink, a file or anything but a directory"); assert.equal(ownedDirectory(directory, undefined), true, "without uids, any real directory");
 });
+
+test("a gateway given a temp folder sweeps that one and leaves the process's own temp folder alone", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    // A second temp folder: the gateway is told to sweep it, so the folders of the process's own (here the private one) are not its business.
+    const elsewhere = join(h.directory, "elsewhere"); await mkdir(elsewhere); await ensureCopilotParent(elsewhere); await ensureCopilotParent(h.scratch);
+    const mine = join(copilotParent(elsewhere), "gateway-copilot-run-zzzzzz-abc123"); const ours = join(h.parent, "gateway-copilot-run-zzzzzz-abc123");
+    await mkdir(mine); await mkdir(ours);
+    await createGatewayHandler({ version: 1, port: 0, stateDirectory: join(h.directory, "state"), providers: [{ id: "c", type: "copilot-subscription", models: { a: "x" }, copilotSessions: { mode: "oneshot" } }] }, undefined, undefined, { copilotTempBase: elsewhere });
+    assert.equal(await exists(mine), false, "the folder in the given temp folder was swept"); assert.equal(await exists(ours), true, "the process's own temp folder was not read");
+  } finally { await h.restore(); }
+});
