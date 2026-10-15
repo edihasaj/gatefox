@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
-import { macDesktop, type LaunchctlExec } from "../mac-desktop.js";
+import { launchctlRunner, macDesktop, type LaunchctlExec } from "../mac-desktop.js";
 import { desktopEnvironment, launchDesktop, prepareDesktop } from "../desktop-launch.js";
 import { writePrivateJson } from "../config.js";
 
@@ -84,6 +84,21 @@ test("registration clears a FORCE_CLI left by an older gateway, including a rest
       assert.equal(f.values.get(PATH_KEY), wrapper, "CODEX_CLI_PATH still points at the current wrapper");
     });
   }
+});
+
+test("registration clears our FORCE_CLI when the session already names the current wrapper but the receipt an older one", mac, async () => {
+  const f = await fixture();
+  await inHome(f, async () => {
+    const { wrapper } = await prepareDesktop(f.config, f.app);
+    await writePrivateJson(f.receipt, { wrapper: join(f.state, "desktop-wrapper-0123456789abcdef"), registeredAt: new Date().toISOString() });
+    f.values.set(PATH_KEY, wrapper); f.values.set(FORCE, "1");
+    const result = await macDesktop("register", f.config, f.app, true, f.exec);
+    assert.equal(result.registered, true);
+    assert.ok(f.calls.includes(`unsetenv ${FORCE}`), "the current wrapper proves the pair");
+    assert.equal(f.calls.some(call => call.startsWith(`setenv ${FORCE}`)), false);
+    assert.equal(f.values.has(FORCE), false);
+    assert.equal(f.values.get(PATH_KEY), wrapper);
+  });
 });
 
 test("registration refuses a FORCE_CLI=1 it cannot prove it set", mac, async () => {
@@ -210,4 +225,11 @@ test("launchDesktop starts the app with CODEX_CLI_PATH and no FORCE_CLI", mac, a
       assert.equal(seen![FORCE], expected, name);
     });
   }
+});
+
+test("the default launchctl runner bounds every call with a timeout", async () => {
+  const seen: Array<[string, string[], { timeout: number }]> = [];
+  const run = launchctlRunner(async (file, args, options) => { seen.push([file, args, options]); return { stdout: "value\n" }; });
+  assert.deepEqual(await run("/bin/launchctl", ["getenv", PATH_KEY]), { stdout: "value\n" });
+  assert.deepEqual(seen, [["/bin/launchctl", ["getenv", PATH_KEY], { timeout: 10000 }]]);
 });

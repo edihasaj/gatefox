@@ -14,7 +14,11 @@ import { withLoginRegistrationLock } from "./login-registration-lock.js";
 const execFileAsync = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 /** Seam for every launchctl call so a registration test can observe the GUI session without changing it. */
 export type LaunchctlExec = (file: string, args: string[]) => Promise<{ stdout: string }>;
-const launchctlExec: LaunchctlExec = (file, args) => execFileAsync(file, args);
+type ExecFileWithTimeout = (file: string, args: string[], options: { timeout: number }) => Promise<{ stdout: string }>;
+/** The real session's launchctl: every call, including enable and bootstrap, is bounded by the same 10 s timeout. */
+export const launchctlRunner = (run: ExecFileWithTimeout = (file, args, options) => execFileAsync(file, args, options)): LaunchctlExec =>
+  (file, args) => run(file, args, { timeout: 10000 });
+const launchctlExec = launchctlRunner();
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 export async function macDesktop(action: string, configPath: string, app = "/Applications/ChatGPT.app", restoreOnly = false, exec: LaunchctlExec = launchctlExec): Promise<Record<string, unknown>> {
   if (action === "status") return desktopOperation(action, configPath, app, restoreOnly, exec);
@@ -60,7 +64,7 @@ async function desktopOperation(action: string, configPath: string, app: string,
   if (restoreOnly || unified || pending) return { registered: true, activeForFutureLaunches: true, nativeConfigUntouched: true, loginHook: pending ? "unified service at next login" : "unified service" };
   if (existing !== contents) { if (existing) await exec("/bin/launchctl", ["bootout", target]).catch(() => undefined); await mkdir(dirname(path), { recursive: true }); await writeFile(path, contents, { mode: 0o600 }); }
   let loaded = false; try { await exec("/bin/launchctl", ["print", target]); loaded = true; } catch { /* Restore an explicitly registered login hook. */ }
-  // The real session keeps the timeout-wrapped launcher inside ensureLaunchAgent; a seam must see every call.
-  await ensureLaunchAgent(domain, label, path, loaded, exec === launchctlExec ? undefined : args => exec("/bin/launchctl", args));
+  // One path for production and tests: every launchctl call goes through exec, so no branch decides whether a test reaches the real session.
+  await ensureLaunchAgent(domain, label, path, loaded, args => exec("/bin/launchctl", args));
   return { registered: true, activeForFutureLaunches: true, freshAppLaunchRequired: true, nativeConfigUntouched: true };
 }
