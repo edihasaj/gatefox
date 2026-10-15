@@ -18,10 +18,13 @@ import { reportException } from "../error-report.js";
 
 export { nativeCopilotCalls } from "./copilot-turn.js";
 
-/** Protocol 3 supports Auto routing profiles, but no selected-model service tier. */
+/**
+ * Protocol 3 supports Auto routing profiles, but no selected-model service tier. Flex is not refused: a native Codex chat that
+ * moved to this row keeps asking for it, and the turn runs as Standard.
+ */
 export function validateCopilotServiceTier(request: ResponsesRequest): void {
   const tier = request.service_tier;
-  if (tier === undefined || tier === null || tier === "auto" || tier === "default") return;
+  if (tier === undefined || tier === null || tier === "auto" || tier === "default" || tier === "flex") return;
   if (tier === "priority" || tier === "fast") throw new ProviderError("invalid_request", "Copilot Fast mode is unavailable: its CLI does not support a priority tier for the selected model", 400);
   throw new ProviderError("invalid_request", "Copilot does not support the requested service tier", 400);
 }

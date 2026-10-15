@@ -37,13 +37,14 @@ test("Copilot discovery respects policy and default context limits without guess
   assert.throws(() => copilotEffort(provider, { model: "fixture", input: "", reasoning: { effort: "medium" } }), /reasoning/);
 });
 
-test("Copilot rejects unsupported service tiers and preserves ordinary defaults", () => {
+test("Copilot rejects Fast and unknown service tiers, runs Flex as Standard and preserves ordinary defaults", () => {
   const request: ResponsesRequest = { model: "fixture", input: "hello", reasoning: { effort: "high" } };
-  for (const service_tier of [undefined, null, "auto", "default"]) assert.doesNotThrow(() => validateCopilotServiceTier({ ...request, service_tier }));
+  // Flex is not refused: a native Codex chat that moved to this row keeps sending it, and the turn runs as Standard.
+  for (const service_tier of [undefined, null, "auto", "default", "flex"]) assert.doesNotThrow(() => validateCopilotServiceTier({ ...request, service_tier }));
   for (const service_tier of ["priority", "fast"]) {
     assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400 && /Copilot Fast mode is unavailable/.test(error.message));
   }
-  for (const service_tier of ["flex", "scale", "unknown", false, {}]) assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
+  for (const service_tier of ["scale", "unknown", false, {}]) assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
 });
 
 test("Copilot native calls preserve custom-tool identities and reject native actions or duplicate IDs", () => {
@@ -79,7 +80,7 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
       await assert.rejects(collect(adapter.infer({ ...request, service_tier }, new AbortController().signal)), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
       assert.equal(await readFile(join(directory, "receipt.json"), "utf8"), "worker-not-started");
     }
-    for (const service_tier of ["auto", "default"]) {
+    for (const service_tier of ["auto", "default", "flex"]) {
       assert.equal((await collect(adapter.infer({ ...request, service_tier }, new AbortController().signal))).at(-1)?.type, "done");
       const ordinary = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
       assert.equal(ordinary.reasoningEffort, "high"); assert.deepEqual(ordinary.allowedModels, ["fixture"]);

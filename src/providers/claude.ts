@@ -33,10 +33,13 @@ export function claudeEffort(config: ProviderConfig | undefined, request: Respon
   return effort === "ultra" ? "max" : effort;
 }
 
-/** Fast (Codex's priority tier) turns on Claude Code's fast mode; Standard leaves it off. */
+/**
+ * Fast (Codex's priority tier) turns on Claude Code's fast mode; Standard leaves it off. Claude has no Flex tier, and a native
+ * Codex chat that moved to this row keeps asking for it, so Flex runs as Standard instead of failing the turn.
+ */
 export function claudeFastMode(config: ProviderConfig | undefined, request: ResponsesRequest): boolean {
   const tier = request.service_tier;
-  if (tier === undefined || tier === null || tier === "auto" || tier === "default") return false;
+  if (tier === undefined || tier === null || tier === "auto" || tier === "default" || tier === "flex") return false;
   if (tier !== "priority" && tier !== "fast") throw new ProviderError("invalid_request", "Claude does not support the requested service tier", 400);
   const alias = Object.entries(config?.models || {}).find(([, model]) => model === request.model)?.[0];
   const tiers = alias ? config?.modelMetadata?.[alias]?.serviceTiers : undefined;

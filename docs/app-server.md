@@ -526,6 +526,11 @@ configured models expose no speed options. A direct Fast request is rejected
 before starting the CLI. The integrator-only Auto Fast API is a different route
 and is not enabled by this installation.
 
+Neither Claude nor Copilot rows have a Flex tier, but a native Codex chat that
+moves to one keeps sending Flex mid-chat. A Flex request is therefore served as
+Standard on both: it neither fails nor turns Fast mode on. Any other tier they do
+not offer (`scale`, an unknown name) is still refused.
+
 Installing updated adapter code preserves open apps and running services.
 Already-loaded older adapters need their next normal launch to expose these new
 fields. Catalog updates use the usual live discovery path after activation.

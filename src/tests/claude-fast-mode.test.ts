@@ -33,7 +33,9 @@ test("Fast maps to Claude fast mode only for models that offer it", () => {
   assert.equal(claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "priority" }), true);
   assert.equal(claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "fast" }), true);
   assert.throws(() => claudeFastMode(config, { model: "claude-haiku-5-5", input: "x", service_tier: "priority" }), /does not offer Fast/);
-  assert.throws(() => claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "flex" }), /service tier/);
+  // Claude has no Flex tier, and a native Codex chat that moved to this row keeps sending it: it runs as Standard, never as a 400.
+  for (const model of ["claude-opus-5-5", "claude-haiku-5-5"]) assert.equal(claudeFastMode(config, { model, input: "x", service_tier: "flex" }), false, model);
+  assert.throws(() => claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "scale" }), /service tier/);
 });
 
 test("Claude fast mode is enabled through settings and the served tier follows the CLI's state", async () => {
@@ -56,9 +58,11 @@ out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:
     assert.equal((await run("on cooldown", { service_tier: "priority" }) as { serviceTier?: string }).serviceTier, "default", "a fast turn that fell back after init reports Standard");
     assert.equal((await run("cooldown", { service_tier: "priority" }) as { serviceTier?: string }).serviceTier, "default", "a refused fast turn reports Standard");
     assert.equal((await run("off", {}) as { serviceTier?: string }).serviceTier, undefined);
-    const [withEffort, fastOnly, , standard] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.equal((await run("off", { service_tier: "flex" }) as { serviceTier?: string }).serviceTier, undefined, "a Flex turn is served as Standard");
+    const [withEffort, fastOnly, , standard, flex] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
     assert.deepEqual(JSON.parse(withEffort[withEffort.indexOf("--settings") + 1]), { alwaysThinkingEnabled: true, fastMode: true });
     assert.deepEqual(JSON.parse(fastOnly[fastOnly.indexOf("--settings") + 1]), { fastMode: true });
     assert.equal(standard.includes("--settings"), false);
+    assert.equal(flex.includes("--settings"), false, "and without Fast mode turned on");
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
 });
