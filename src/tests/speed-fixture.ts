@@ -9,14 +9,14 @@ export type ObjectValue = Record<string, unknown>;
 export const gateway = "subscription_gateway";
 
 // The codex row advertises Fast and names it its default; the claude row has no Fast.
-export async function fixture(saved?: ObjectValue) {
+export async function fixture(saved?: ObjectValue, codexTiers: Array<{ id: string; name: string; description: string }> = [{ id: "priority", name: "Fast", description: "Priority routing" }]) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-speed-"));
   if (saved) await writeFile(join(directory, "desktop-preferences.json"), JSON.stringify(saved));
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: directory, providers: [
     { id: "claude", type: "claude-subscription", label: "Claude", models: { "claude/model": "model" }, modelMetadata: { "claude/model": { reasoningEfforts: ["low", "high"] } } },
     { id: "codex", type: "codex-subscription", label: "Codex", credentialFile: "unused", models: { "codex/model": "model" },
       modelMetadata: { "codex/model": { reasoningEfforts: ["low", "medium", "high", "xhigh"], defaultReasoningEffort: "high",
-        serviceTiers: [{ id: "priority", name: "Fast", description: "Priority routing" }], defaultServiceTier: "priority" } } },
+        serviceTiers: codexTiers, defaultServiceTier: codexTiers[0]?.id ?? null } } },
   ] };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
   const threads = new Map<string, { modelProvider: string; model: string }>(); let counter = 0;
@@ -58,8 +58,18 @@ export const start = (r: R, model: string, serviceTier: string | null, effort?: 
   config: effort === undefined ? {} : { model_reasoning_effort: effort }, personality: null, ephemeral: null, baseInstructions: null, threadSource: "user", experimentalRawEvents: false, dynamicTools: null });
 export const turn = (r: R, threadId: string, serviceTier: string | null, effort: string) => r.request("turn/start", { threadId, turnTrigger: "composer", model: null, serviceTier, effort, summary: "none",
   input: [{ type: "text", text: "hi", text_elements: [] }], collaborationMode: null });
+// The desktop's resume after a reconnect, a voice session or heartbeat hydration names a speed it did not pick for the chat.
+export const reconnect = (r: R, threadId: string, serviceTier: string | null) => r.request("thread/resume", { threadId, history: null, path: null, model: null,
+  modelProvider: gateway, serviceTier, cwd: "/tmp/project", personality: null, excludeTurns: true });
+// A notification reply or queued message without options names the shared default speed.
+export const sharedTurn = (r: R, threadId: string, serviceTier: string | null, turnTrigger = "notification_reply") => r.request("turn/start", { threadId, turnTrigger,
+  input: [{ type: "text", text: "ok", text_elements: [] }], model: null, serviceTier, effort: null, summary: "none", collaborationMode: null });
+// The desktop's fork carries the configuration it read, including the default speed.
+export const fork = (r: R, threadId: string, serviceTier?: string) => r.request("thread/fork", { threadId, path: null, cwd: "/tmp/project", threadSource: "user",
+  config: { model_catalog_json: "/tmp/catalog.json", ...(serviceTier === undefined ? {} : { service_tier: serviceTier }) }, excludeTurns: true });
+export const omitsTier = (params: ObjectValue) => !Object.hasOwn(params, "serviceTier") && !Object.hasOwn(object(params.config ?? {}), "service_tier");
 export const id = (result: ObjectValue) => String(object(result.thread).id);
-export const refused = (error: unknown) => (error as { code?: number }).code === -32002 && /Fast stays with the chat/.test((error as Error).message);
+export const refused = (error: unknown) => (error as { code?: number }).code === -32002 && /Fast is chosen inside a chat/.test((error as Error).message);
 export const savedTier = async (f: F) => ({ file: (await f.file()).service_tier, read: object((await f.router.request("config/read", {})).config).service_tier });
 export const settled = (threadId: string, model: string, serviceTier: string | null) => ({ method: "thread/settings/updated", emittedAtMs: Date.now(),
   params: { threadId, threadSettings: { model, modelProvider: gateway, serviceTier } } });

@@ -85,7 +85,7 @@ function deferred<T>() {
 
 test("Fast saved chats resume and fork after new-chat preferences change to Standard", async () => {
   const f = await fixture(); const first = await f.connect();
-  await preferences(first, "priority");
+  await assert.rejects(preferences(first, "priority"), /Fast is chosen inside a chat/, "a gateway Fast default is never saved");
   const id = await start(first, "priority");
   assert.deepEqual(choice(await f.store().read(id)), { model: fastModel, serviceTier: "priority" });
   await preferences(first, null);
@@ -232,8 +232,9 @@ test("late duplicate Fast notifications cannot undo another connection's newer S
 
 test("a delayed Standard snapshot cannot undo Fast after a peer changes Fast to Standard to Fast", async () => {
   const f = await fixture(); const entered = deferred<void>(); const release = deferred<void>(); let hold = true;
+  // The held resume returns the SDK's stale Standard snapshot; the adapter itself asks for the chat's Fast.
   const old = await f.connect(f.nativeHome, async (method, _params, result) => {
-    if (method === "thread/resume" && hold) { hold = false; entered.resolve(); await release.promise; }
+    if (method === "thread/resume" && hold) { hold = false; entered.resolve(); await release.promise; return { ...result, serviceTier: null }; }
     return result;
   });
   const id = await start(old, "priority"); const peer = await f.connect();
@@ -330,8 +331,9 @@ test("same-millisecond Standard wins even when its receiver still knows an older
 
 test("a confirmed Standard snapshot fences out Fast emitted before that resume RPC began", async () => {
   const f = await fixture(); const entered = deferred<void>(); const release = deferred<void>(); let sdkEnteredAt = 0;
+  // The SDK confirms Standard for the chat (its loaded settings), whatever tier the resume asked for.
   const first = await f.connect(f.nativeHome, async (method, _params, result) => {
-    if (method === "thread/resume") { sdkEnteredAt = Date.now(); entered.resolve(); await release.promise; }
+    if (method === "thread/resume") { sdkEnteredAt = Date.now(); entered.resolve(); await release.promise; return { ...result, serviceTier: null }; }
     return result;
   });
   const id = await start(first, "priority"); const previous = (await f.store().read(id))!;
@@ -350,7 +352,7 @@ test("a confirmed Standard snapshot fences out Fast emitted before that resume R
 test("Fast emitted after resume RPC start survives delivery after its delayed Standard response", async () => {
   const f = await fixture(); const entered = deferred<void>(); const release = deferred<void>(); let sdkEnteredAt = 0;
   const first = await f.connect(f.nativeHome, async (method, _params, result) => {
-    if (method === "thread/resume") { sdkEnteredAt = Date.now(); entered.resolve(); await release.promise; }
+    if (method === "thread/resume") { sdkEnteredAt = Date.now(); entered.resolve(); await release.promise; return { ...result, serviceTier: null }; }
     return result;
   });
   const id = await start(first, "priority");
@@ -366,7 +368,7 @@ test("Fast emitted after resume RPC start survives delivery after its delayed St
 
 test("a different native home cannot restore a paid tier from the same gateway state", async () => {
   const f = await fixture(); const first = await f.connect(); const id = await start(first, "priority");
-  await preferences(first, "priority"); const otherHome = join(f.directory, "other-native-home");
+  await writeFile(join(f.directory, "desktop-preferences.json"), JSON.stringify({ model: fastModel, service_tier: "priority" })); const otherHome = join(f.directory, "other-native-home");
   const other = await f.connect(otherHome); const resumed = await other.router.request("thread/resume", { threadId: id });
   assert.equal(resumed.serviceTier, null); assert.equal(Object.hasOwn(last(other, "thread/resume"), "serviceTier"), false);
   assert.deepEqual(choice(await f.store(otherHome).read(id)), { model: fastModel, serviceTier: null });

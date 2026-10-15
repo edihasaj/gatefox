@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
-import { batch, defaultWrite, fixture, id, modelWrite, object, pick, refused, savedTier, start, turn } from "./speed-fixture.js";
+import { batch, defaultWrite, fixture, id, modelWrite, object, omitsTier, pick, refused, savedTier, start } from "./speed-fixture.js";
 
 const configTier = async (router: AppServerRouter) => object((await router.request("config/read", {})).config).service_tier;
 
@@ -35,20 +35,14 @@ test("a Fast pick in a gateway chat is refused as a default even when the defaul
   assert.deepEqual(await savedTier(f), { file: "default", read: "default" });
 });
 
-test("a Fast default accepted for a gateway model keeps a previous Standard, even when the same write changes the model", async () => {
-  const f = await fixture();
-  await modelWrite(f.router, "native", "high"); await defaultWrite(f.router, "default");
-  await batch(f.router, ["model", "codex/model"], ["service_tier", "priority"]);
-  assert.deepEqual(await savedTier(f), { file: "default", read: "default" });
-  assert.equal((await f.file()).model, "codex/model");
-});
-
-test("a Fast default accepted for a gateway model never keeps a previous Fast or invents a saved tier", async () => {
+test("a Fast default write while the default model is a gateway model is refused and changes nothing", async () => {
   const legacy = await fixture({ model: "codex/model", service_tier: "priority" });
-  await defaultWrite(legacy.router, "priority");
-  assert.equal(Object.hasOwn(await legacy.file(), "service_tier"), false);
+  await assert.rejects(defaultWrite(legacy.router, "priority"), refused);
+  assert.equal((await legacy.file()).service_tier, "priority", "an older file is left as it was and stays hidden");
+  assert.equal(await configTier(legacy.router), undefined);
   const fresh = await fixture();
-  await modelWrite(fresh.router, "codex/model", "high"); await defaultWrite(fresh.router, "priority");
+  await modelWrite(fresh.router, "codex/model", "high");
+  await assert.rejects(defaultWrite(fresh.router, "priority"), refused);
   assert.equal(Object.hasOwn(await fresh.file(), "service_tier"), false);
 });
 
@@ -93,11 +87,11 @@ test("an unoffered tier named by a fork or in start config becomes Standard", as
   assert.equal(object(forwarded.config).trusted, true);
 });
 
-test("a turn keeps its one-turn Fast while its unoffered chat tier becomes Standard, and records Standard", async () => {
+test("a turn keeps its one-turn Fast while the chat keeps its own Standard", async () => {
   const f = await fixture();
   const chat = id(await start(f.router, "codex/model", null, "high"));
   await f.router.request("turn/start", { threadId: chat, serviceTier: "flex", serviceTierForTurn: "fast", input: [] });
-  assert.equal(f.last("turn/start").serviceTier, null);
+  assert.ok(omitsTier(f.last("turn/start")));
   assert.equal(f.last("turn/start").serviceTierForTurn, "priority");
   await f.router.request("turn/start", { threadId: chat, input: [] }); // fails if the turn recorded the unoffered tier
 });
@@ -111,19 +105,6 @@ test("a chat whose row stopped offering its tier still resumes and forks, as Sta
   await assert.rejects(fresh.request("thread/resume", { threadId: chat, model: "claude/model" }), /does not support/, "a model switch from a stale peer still fails");
   await fresh.request("thread/resume", { threadId: chat }); assert.equal(f.last("thread/resume").serviceTier, null);
   await fresh.request("thread/fork", { threadId: chat }); assert.equal(f.last("thread/fork").serviceTier, null);
-});
-
-// Open limitation pending the owner's decision (docs/app-server.md, Speed controls): this pins today's behaviour, not a requirement.
-test("open limitation: a Fast that the desktop sends from its shared default still starts a gateway chat in Fast", async () => {
-  const f = await fixture({ model: "native", service_tier: "priority" });
-  assert.equal(await configTier(f.router), "priority", "a native Fast default is reported, so the desktop sends Fast for every draft");
-  await start(f.router, "codex/model", "priority"); assert.equal(f.last("thread/start").serviceTier, "priority");
-  await start(f.router, "codex/model", null); assert.equal(f.last("thread/start").serviceTier, null);
-  const draft = await fixture();
-  await modelWrite(draft.router, "codex/model", "high"); await defaultWrite(draft.router, "priority");
-  await start(draft.router, "codex/model", "priority"); assert.equal(draft.last("thread/start").serviceTier, "priority", "the draft pick");
-  await start(draft.router, "codex/model", "priority");
-  assert.equal(draft.last("thread/start").serviceTier, "priority", "a later draft in the same app session, without a pick");
 });
 
 test("a gateway start that names no tier is sent as Standard, so no configured default can make it Fast", async () => {
@@ -146,9 +127,9 @@ test("service_tier_reset names only known tiers", async () => {
   configureTelemetry(f.directory, "test");
   await start(f.router, "claude/model", "priority"); await start(f.router, "claude/model", "caller-supplied-id");
   const chat = id(await start(f.router, "claude/model", null));
-  await turn(f.router, chat, "priority", "high");
+  await f.router.request("thread/fork", { threadId: chat, model: "codex/model", serviceTier: "caller-supplied-id" });
   await flushTelemetry();
   const events = (await readTelemetry(f.directory, since)).filter(event => event.event === "service_tier_reset");
-  assert.deepEqual(events.map(event => [event.from, event.model, event.method]), [
-    ["priority", "claude/model", "thread/start"], ["other", "claude/model", "thread/start"], ["priority", "claude/model", "turn/start"]]);
+  assert.deepEqual(events.map(event => [event.from, event.model, event.method, event.reason]), [
+    ["priority", "claude/model", "thread/start", "unoffered"], ["other", "claude/model", "thread/start", "unoffered"], ["other", "codex/model", "thread/fork", "unoffered"]]);
 });

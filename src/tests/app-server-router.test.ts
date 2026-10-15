@@ -332,10 +332,12 @@ test("a Fast chat switches to Standard on a model change only when the picker ma
 });
 
 test("changing the saved default model does not transfer the previous model's Fast preference", async () => {
-  const { router, config, backend, calls } = await fastFixture();
-  await router.request("config/batchWrite", { edits: [
+  const { router, config, backend, calls, directory } = await fastFixture();
+  await assert.rejects(router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: "codex/model", mergeStrategy: "upsert" }, { keyPath: "service_tier", value: "priority", mergeStrategy: "upsert" },
-  ] });
+  ] }), /Fast is chosen inside a chat/);
+  // A gateway Fast default is no longer saved, so an older file stands in for a saved one.
+  await writeFile(join(directory, "desktop-preferences.json"), JSON.stringify({ model: "codex/model", service_tier: "priority" }));
   const other = new AppServerRouter(config, backend); await other.initialize();
   await other.request("config/value/write", { keyPath: "model", value: "claude/model", mergeStrategy: "upsert" });
   assert.equal(Object.hasOwn((await router.request("config/read", {})).config as ObjectValue, "service_tier"), false);
@@ -429,7 +431,7 @@ test("private Fast defaults cannot replace a saved or parent chat's Standard tie
     if (method === "thread/resume") assert.equal(Object.hasOwn(calls.at(-1)!.params, "serviceTier"), false);
     else assert.equal(calls.at(-1)!.params.serviceTier, null);
     await other.request(method, { threadId: "persisted", serviceTier: "priority" });
-    assert.equal(calls.at(-1)!.params.serviceTier, "priority");
+    assert.equal(calls.at(-1)!.params.serviceTier, null, "a tier the request names does not replace the chat's recorded Standard");
     await other.request("thread/settings/update", { threadId: "persisted", serviceTier: null });
     await appliedSettings(other, "persisted", "codex/model", null);
   }
@@ -440,7 +442,7 @@ test("gateway forks inherit the authoritative parent tier rather than private or
   const { router, config, backend, calls } = await fastFixture();
   await router.request("thread/start", { model: "codex/model", serviceTier: "priority" });
   await router.request("thread/fork", { threadId: "test" }); assert.equal(calls.at(-1)!.params.serviceTier, "priority");
-  await router.request("thread/fork", { threadId: "test", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, null);
+  await router.request("thread/fork", { threadId: "test", serviceTier: null }); assert.equal(calls.at(-1)!.params.serviceTier, "priority", "a fork keeps its parent's Fast");
   await router.request("thread/settings/update", { threadId: "test", serviceTier: null });
   await appliedSettings(router, "test", "codex/model", null);
   await router.request("thread/fork", { threadId: "test" }); assert.equal(calls.at(-1)!.params.serviceTier, null);
