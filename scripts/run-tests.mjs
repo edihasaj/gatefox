@@ -1,8 +1,11 @@
 #!/usr/bin/env node
-// Runs the compiled test suite in its own process group under a private temp folder, so that the real one is left as it was and
-// a broken test fails the run instead of hanging it. (One thing stays outside it: the fixed `/tmp/codex-daemon-<uid>` socket
-// rendezvous the pinned SDK uses, where the execution-host tests remove what they make. A run that was stopped may leave a socket
-// there; the runner removes each one that the run's folder links to and that no process listens on.)
+// Runs the compiled test suite in its own process group under a private temp folder and a private home folder, so that the real
+// ones are left as they were and a broken test fails the run instead of hanging it. The execution-host tests keep their host
+// folders, receipts and socket links under the home folder (`$HOME/.local/state/gw-exec`), so HOME points at `<folder>/home`
+// for the whole suite and nothing of theirs reaches the real one. (One thing stays outside: the fixed `/tmp/codex-daemon-<uid>`
+// socket rendezvous the pinned SDK uses for the sockets themselves, where the execution-host tests remove what they make. A run
+// that was stopped may leave a socket there; the runner removes each one that the run's folder links to and that no process
+// listens on.)
 //
 // Several tests start gateways and fixture Copilot CLIs. Their startup sweep and their folders live under
 // `<TMPDIR>/harness-gateway-copilot-<uid>`, and a test that wrote there would delete a running gateway's leftovers or leave
@@ -17,7 +20,7 @@
 // Each test process also exits on the signal instead of dying of it (scripts/test-preload.mjs), so the Copilot CLIs it started,
 // which run in groups of their own, are stopped with it; the fixture CLIs leave when their parent does as well.
 import { spawn } from "node:child_process";
-import { lstatSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { connect } from "node:net";
 import { constants, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -36,13 +39,15 @@ const timeout = Number(process.env.GATEWAY_TEST_TIMEOUT_MS) > 0 ? Math.round(Num
 // The path is short on purpose: tests put Unix sockets deep under this folder, and a socket path cannot exceed 104 bytes on
 // macOS, where the user's temp folder alone is 48. So on Unix the folder lives in /tmp, not in the user's temp folder.
 const folder = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "gwt-"));
+// The home folder is private (0700) and inside it, so the execution-host folders the tests make go with the run's folder.
+const home = join(folder, "home"); mkdirSync(home, { mode: 0o700 });
 const remove = () => { try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Best effort; it is one folder under the temp folder. */ } };
 const grouped = process.platform !== "win32";
 // How long a stopped suite may take to end before its group gets SIGKILL.
 const killGrace = Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) > 0 ? Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) : 10000;
 const preload = pathToFileURL(join(root, "scripts", "test-preload.mjs")).href;
 const child = spawn(process.execPath, ["--import", preload, "--test", "--test-force-exit", `--test-timeout=${timeout}`, ...files], { cwd: root, stdio: "inherit", detached: grouped,
-  env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, GATEWAY_TEST_TMPDIR: folder } });
+  env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, HOME: home, USERPROFILE: home, GATEWAY_TEST_TMPDIR: folder } });
 /** Signals the suite's whole process group (the child leads it), or just the child where there are no groups. */
 const send = signal => { try { if (grouped && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already gone. */ } };
 let stopped;
