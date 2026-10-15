@@ -4,10 +4,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { gatewayToken, validateConfig } from "../config.js";
-import { startGateway } from "../server.js";
+import { adoptGatewayHandler, startGateway } from "../server.js";
 import { stopServing } from "../serve-shutdown.js";
 import type { Provider } from "../providers/provider.js";
 import type { InferenceEvent, UsageAccounting } from "../protocol/types.js";
@@ -20,7 +19,7 @@ import { configureTelemetry } from "../telemetry.js";
 const usage = { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_tokens_details: { cached_tokens: 80 } };
 const accounting: UsageAccounting = { cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "complete" };
 
-async function gateway(t: TestContext, infer: Provider["infer"]) {
+async function gateway(t: TestContext, infer: Provider["infer"], release: () => void = () => {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-serve-shutdown-")); resetUsageLedger(); configureTelemetry(directory, "test");
   const previous = process.env.GATEWAY_SHUTDOWN_DRAIN_MS; process.env.GATEWAY_SHUTDOWN_DRAIN_MS = "100";
   t.after(async () => {
@@ -29,6 +28,8 @@ async function gateway(t: TestContext, infer: Provider["infer"]) {
   });
   const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "fake", type: "copilot-subscription", models: { alias: "actual" } }] });
   const server = await startGateway(config, () => ({ infer }) as Provider, undefined, { onFailure: () => {} });
+  // A failed assertion must not leave a silent provider and a listening server behind: they would keep the test process alive.
+  t.after(async () => { release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { Authorization: `Bearer ${await gatewayToken(directory)}`, "Content-Type": "application/json" };
   // What the files hold right now, read without any flush of this test.
@@ -54,7 +55,7 @@ function silentProvider() {
 }
 
 test("the exit deadline records the requests still running, with the usage they reported, before the process exits", { timeout: 20000 }, async t => {
-  const provider = silentProvider(); const gw = await gateway(t, provider.infer);
+  const provider = silentProvider(); const gw = await gateway(t, provider.infer, provider.release);
   const response = await gw.post(); const reader = response.body!.getReader(); await reader.read(); await provider.reported;
   const exits: Array<{ code: number; ledger: Array<Record<string, unknown>>; events: Array<Record<string, unknown>> }> = [];
   const exited = new Promise<void>(resolve => stopServing(gw.server, code => { exits.push({ code, ledger: gw.ledger(), events: gw.events() }); resolve(); }, 400));
@@ -78,7 +79,7 @@ test("the exit deadline records the requests still running, with the usage they 
 });
 
 test("recordPending writes a running request's record once, and its late end does not write another", { timeout: 20000 }, async t => {
-  const provider = silentProvider(); const gw = await gateway(t, provider.infer);
+  const provider = silentProvider(); const gw = await gateway(t, provider.infer, provider.release);
   const response = await gw.post(); const reader = response.body!.getReader(); await reader.read(); await provider.reported;
   assert.equal(gw.server.recordPending(), 1);
   assert.equal(gw.server.recordPending(), 0, "a request already recorded is not recorded again");
@@ -89,7 +90,19 @@ test("recordPending writes a running request's record once, and its late end doe
   await reader.cancel().catch(() => {});
   await flushRecords();
   assert.equal(gw.ledger().length, 1); assert.equal(gw.events().filter(event => event.event === "request_completed" || event.event === "request_empty").length, 0, "the request that completed afterwards left no second outcome");
-  const closed = once(gw.server, "close"); gw.server.close(); await closed;
+});
+
+// The drain records what still runs when its wait is over, just before its final flush.
+test("the drain records the requests still running before it flushes and reports the server closed", { timeout: 20000 }, async t => {
+  const provider = silentProvider(); const gw = await gateway(t, provider.infer, provider.release);
+  let stillRunning = 0; let recorded = 0; let flushedBefore = false;
+  // A request that no abort reaches: the handler of an older generation, say, that reports itself busy until the drain gives up on it.
+  adoptGatewayHandler(gw.server, { handle: () => {}, isIdle: () => false, abortAll: () => 0, recordPending: () => { recorded++; stillRunning = 1; flushedBefore = gw.events().some(event => event.event === "server_drain"); return 1; } });
+  let atClose: Array<Record<string, unknown>> = [];
+  await new Promise<void>(resolve => gw.server.close(() => { atClose = gw.events(); resolve(); }));
+  assert.equal(recorded, 1, "recordPending ran once, in the drain"); assert.equal(stillRunning, 1);
+  assert.equal(flushedBefore, false, "and before the drain's own record and flush");
+  assert.ok(atClose.some(event => event.event === "server_drain"), "the drain's record was flushed when the server reported itself closed");
 });
 
 // Whoever starts the server waits for its "Listening" line and may stop it at once (a test, a supervisor). A signal that
