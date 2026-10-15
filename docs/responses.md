@@ -262,7 +262,8 @@ request; the gateway preserves that result and does not retry to chase Fast.
 
 Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
 setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
-other tiers are rejected before the CLI starts. The CLI reports its fast mode
+`flex` has no Claude equivalent, so it runs the turn as Standard with no fast mode
+setting; other tiers are rejected before the CLI starts. The CLI reports its fast mode
 state. When fast mode stays on, the completion reports `priority`. When Claude
 refuses it (for example, no usage credits) and falls back to standard speed, the
 turn still completes and reports `default`.
@@ -276,6 +277,7 @@ Cancellation stops the request's CLI process and waits for it to exit. The next
 request starts a separate session and replays caller-supplied history.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
+`flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
 
 ## Ordinary Anthropic API

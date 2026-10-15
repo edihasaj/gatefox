@@ -14,6 +14,8 @@ import { copilotContextFailure } from "./context-errors.js";
 export function validateCopilotServiceTier(request: ResponsesRequest): void {
   const tier = request.service_tier;
   if (tier === undefined || tier === null || tier === "auto" || tier === "default") return;
+  // The CLI has no flex processing; a Flex request runs as Standard, with no tier sent.
+  if (tier === "flex") return;
   if (tier === "priority" || tier === "fast") throw new ProviderError("invalid_request", "Copilot Fast mode is unavailable: its CLI does not support a priority tier for the selected model", 400);
   throw new ProviderError("invalid_request", "Copilot does not support the requested service tier", 400);
 }

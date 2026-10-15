@@ -43,7 +43,9 @@ test("Copilot rejects unsupported service tiers and preserves ordinary defaults"
   for (const service_tier of ["priority", "fast"]) {
     assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400 && /Copilot Fast mode is unavailable/.test(error.message));
   }
-  for (const service_tier of ["flex", "scale", "unknown", false, {}]) assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
+  // Flex is served as Standard, so it is not one of the tiers Copilot rejects.
+  assert.doesNotThrow(() => validateCopilotServiceTier({ ...request, service_tier: "flex" }));
+  for (const service_tier of ["scale", "unknown", false, {}]) assert.throws(() => validateCopilotServiceTier({ ...request, service_tier }), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
 });
 
 test("Copilot native calls preserve custom-tool identities and reject native actions or duplicate IDs", () => {
@@ -83,7 +85,7 @@ test("Copilot SDK inference streams, confines tools, sanitizes failures, and rel
       await assert.rejects(collect(adapter.infer({ ...request, service_tier }, new AbortController().signal)), error => error instanceof ProviderError && error.code === "invalid_request" && error.status === 400);
       assert.equal(await readFile(join(directory, "receipt.json"), "utf8"), "worker-not-started");
     }
-    for (const service_tier of ["auto", "default"]) {
+    for (const service_tier of ["auto", "default", "flex"]) {
       assert.equal((await collect(adapter.infer({ ...request, service_tier }, new AbortController().signal))).at(-1)?.type, "done");
       const ordinary = JSON.parse(await readFile(join(directory, "receipt.json"), "utf8"));
       assert.equal(ordinary.reasoningEffort, "high"); assert.deepEqual(ordinary.allowedModels, ["fixture"]);

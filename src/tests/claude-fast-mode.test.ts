@@ -33,7 +33,33 @@ test("Fast maps to Claude fast mode only for models that offer it", () => {
   assert.equal(claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "priority" }), true);
   assert.equal(claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "fast" }), true);
   assert.throws(() => claudeFastMode(config, { model: "claude-haiku-5-5", input: "x", service_tier: "priority" }), /does not offer Fast/);
-  assert.throws(() => claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "flex" }), /service tier/);
+  // Claude has no flex processing, so Flex is served as Standard rather than rejected.
+  for (const model of ["claude-opus-5-5", "claude-haiku-5-5"]) assert.equal(claudeFastMode(config, { model, input: "x", service_tier: "flex" }), false);
+  assert.throws(() => claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "scale" }), /service tier/);
+});
+
+test("A Flex request runs Claude as Standard: the CLI gets no fast mode setting", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-claude-flex-"));
+  const capture = join(directory, "argv.jsonl");
+  // The fixture answers one stream-json turn and records the argv each CLI was started with.
+  const script = `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';for await(const _ of process.stdin){}appendFileSync(${JSON.stringify(capture)},JSON.stringify(process.argv.slice(2))+'\\n');
+const out=value=>console.log(JSON.stringify(value));const event=value=>out({type:'stream_event',event:value});
+out({type:'system',subtype:'init',fast_mode_state:'off'});event({type:'message_start',message:{id:'msg_1',usage:{input_tokens:1,output_tokens:1}}});
+event({type:'content_block_start',index:0,content_block:{type:'text',text:''}});event({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'ok'}});
+event({type:'content_block_stop',index:0});event({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:1}});event({type:'message_stop'});
+out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:'off',usage:{input_tokens:1,output_tokens:1}});\n`;
+  await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
+  const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
+  try {
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { opus: "claude-opus-5-5" }, modelMetadata: { opus: { serviceTiers: [claudeFastTier] } } });
+    const run = async (request: Record<string, unknown>) => (await drain(adapter.infer({ model: "claude-opus-5-5", input: "x", ...request }, new AbortController().signal))).at(-1);
+    // A Flex turn that even reports fast mode on still reports Standard, because the gateway never asked for it.
+    assert.equal((await run({ service_tier: "flex" }) as { serviceTier?: string }).serviceTier, undefined);
+    assert.equal((await run({ service_tier: "flex", reasoning: { effort: "high" } }) as { serviceTier?: string }).serviceTier, undefined);
+    const [standard, withEffort] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line) as string[]);
+    assert.equal(standard.includes("--settings"), false, "a Flex turn with no effort writes no settings at all");
+    assert.deepEqual(JSON.parse(withEffort[withEffort.indexOf("--settings") + 1]), { alwaysThinkingEnabled: true }, "an effort's settings carry thinking only, never fastMode");
+  } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
 });
 
 test("Claude fast mode is enabled through settings and the served tier follows the CLI's state", async () => {
