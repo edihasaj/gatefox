@@ -131,22 +131,38 @@ export class CopilotSubscription implements Provider {
   private async *oneShot(run: CopilotRun): AsyncGenerator<InferenceEvent> {
     const { request, signal, tools, native, choice, summary, conversation, images, create } = run;
     const client = await openCopilot(this.config, signal); const sessionId = randomUUID();
+    // From here the request ends the CLI, not the client's startup guard: that guard stops it with SIGTERM, which a CLI that may
+    // hold a pending tool request must never get.
+    client.release();
     const turn = new CopilotTurn({ model: request.model, offered: Object.values(this.config.models), tools, choice, summary });
     const notifications = client.rpc.notifications();
-    // Whether the session may still be working: a tool call was made or requested, and the CLI holds its external tool request
-    // unanswered. Closing such a session must not let the runtime fail the call and make a model call of its own.
-    let working = false;
+    // Whether the turn ended idle: the answer is complete and the CLI holds no external tool request. Only then may the CLI be
+    // asked to exit (`session.delete`, SIGTERM). Any other end - a tool call, a tool request the gateway rejects, a failure, a
+    // cancellation, a consumer that stops reading - leaves a CLI that may hold a request unanswered, and closing it must not let
+    // the runtime fail the call and make a model call of its own.
+    let idle = false;
     /** The session's next event, or undefined once the CLI's stream has ended. */
     const next = async (): Promise<Record<string, unknown> | undefined> => {
       for (;;) {
         const { value, done } = await notifications.next(); if (done) return undefined;
         const params = record(value.params); if (params.sessionId !== sessionId) continue;
-        const event = record(params.event);
-        if (event.type === "tool.execution_start" || event.type === "external_tool.requested") working = true;
-        return event;
+        return record(params.event);
       }
     };
+    let ending: Promise<void> | undefined;
+    const end = (): Promise<void> => ending ??= (async () => {
+      if (idle) { await notifications.return(undefined); await client.close(sessionId); return; }
+      // Like a live session that ends: abort (bounded), then SIGKILL of the process group, never session.delete and SIGTERM.
+      // The event stream stays open until then: a closed one makes the connection treat the CLI's next event as an overflow and stop it.
+      await client.rpc.request("session.abort", { sessionId }, sessionLimits.abortMs).catch(() => {}); await client.close(undefined, true);
+      await notifications.return(undefined);
+    })();
+    // A cancellation ends the CLI at once, the same way, while the request goes on reading what the CLI still reports (its usage).
+    const onAbort = () => { void end(); };
+    signal.addEventListener("abort", onAbort, { once: true });
     try {
+      // The abort may have come between the CLI's start and the listener above.
+      if (signal.aborted) throw cancelled();
       await client.rpc.request("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
       await client.rpc.request("session.sendMessages", { sessionId, messages: await copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory) }, 30000);
       for (let event = await next(); event; event = await next()) {
@@ -154,24 +170,17 @@ export class CopilotSubscription implements Provider {
         if (signal.aborted) { yield* usageAfterAbort(turn, event, next); throw cancelled(); }
         const step = turn.accept(event);
         yield* step.events;
-        if (step.end) { working ||= step.end === "tools"; yield turn.done(); return; }
+        if (step.end) { idle = step.end === "idle" && turn.calls.length === 0; yield turn.done(); return; }
       }
       throw new ProviderError("incomplete", "Copilot stream ended without completion");
     } catch (error) { if (signal.aborted) throw cancelled(); throw error; }
-    finally {
-      if (working) {
-        // Like a live session that ends: abort (bounded), then SIGKILL of the process group, never session.delete and SIGTERM.
-        // The event stream stays open until then: a closed one makes the connection treat the CLI's next event as an overflow and stop it.
-        await client.rpc.request("session.abort", { sessionId }, sessionLimits.abortMs).catch(() => {}); await client.close(undefined, true);
-        await notifications.return(undefined);
-      } else { await notifications.return(undefined); await client.close(sessionId); }
-    }
+    finally { signal.removeEventListener("abort", onAbort); await end(); }
   }
 }
 
 /**
- * After a cancellation, which already stopped the one-shot CLI: the usage it reported (read, or still arriving before it
- * exits) is added to the request's totals and handed over as one running total. Nothing else is.
+ * After a cancellation, which is ending the one-shot CLI (session.abort, then SIGKILL): the usage it reported (read, or still
+ * arriving until its stream ends) is added to the request's totals and handed over as one running total. Nothing else is.
  */
 async function* usageAfterAbort(turn: CopilotTurn, first: Record<string, unknown>, next: () => Promise<Record<string, unknown> | undefined>): AsyncGenerator<InferenceEvent> {
   let last: InferenceEvent | undefined;
