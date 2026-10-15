@@ -15,7 +15,9 @@ const frame = (value: unknown) => { const body = JSON.stringify(value); return `
 /** One write, so the messages can reach the gateway as one chunk. */
 const send = (...values: unknown[]) => { process.stdout.write(values.map(frame).join("")); };
 const log = (entry: Record<string, unknown>) => { if (process.env.GATEWAY_COPILOT_LIVE_LOG) appendFileSync(process.env.GATEWAY_COPILOT_LIVE_LOG, JSON.stringify({ pid: process.pid, ...entry }) + "\n"); };
-let sessionId = ""; let config: Record<string, unknown> = {}; let calls = 0; let sequence = 0; let rejectNext = false;
+let sessionId = ""; let config: Record<string, unknown> = {}; let calls = 0; let sequence = 0;
+/** How the next tool result is answered: refused, with a JSON-RPC error, or never. */
+let rejectNext = false; let errorNext = false; let silentNext = false;
 const pending = new Map<string, { toolCallId: string }>(); const delivered: unknown[] = [];
 const eventMessage = (type: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => ({ jsonrpc: "2.0", method: "session.event", params: { sessionId, event: { type, data, ...extra } } });
 const event = (type: string, data: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) => send(eventMessage(type, data, extra));
@@ -59,7 +61,7 @@ function respond(text: string): void {
   if (marker("hang")) return;
   // Output, then nothing: a request that is running when its session closes.
   if (marker("stall")) { usage(); event("assistant.message_delta", { deltaContent: "partial" }); return; }
-  rejectNext = marker("reject");
+  rejectNext = marker("reject"); errorNext = marker("rpcerror"); silentNext = marker("nodeliver");
   if (marker("die") && process.env.GATEWAY_COPILOT_LIVE_DIE && !existsSync(process.env.GATEWAY_COPILOT_LIVE_DIE)) { writeFileSync(process.env.GATEWAY_COPILOT_LIVE_DIE, "x"); process.exit(1); }
   if (marker("permission")) { event("permission.requested", { requestId: "permission" }); return; }
   if (marker("lateusage")) { event("assistant.message_delta", { deltaContent: "partial" }); setTimeout(usage, 100); return; }
@@ -73,7 +75,7 @@ function respond(text: string): void {
   if (marker("slow")) { event("assistant.message_delta", { deltaContent: `answer ${calls}` }); setTimeout(() => { message({ content: `answer ${calls}` }); idle(); }, 400); return; }
   if (marker("nativemsg")) { message({ toolRequests: [{ toolCallId: "call_native", name: "shell", arguments: {}, type: "function" }] }); return; }
   const foreign = marker("foreignreq") ? "request" : marker("foreignstart") ? "start" : marker("native") ? "both" : undefined;
-  const count = foreign ? 1 : Number(/\[tools:(\d)\]/.exec(text)?.[1] ?? (marker("tool") ? 1 : 0));
+  const count = foreign ? 1 : Number(/\[tools:(\d+)\]/.exec(text)?.[1] ?? (marker("tool") ? 1 : 0));
   if (marker("next") || count) {
     const ids = Array.from({ length: marker("next") ? 1 : count }, () => `call_${process.pid}_${++sequence}`);
     message({ toolRequests: ids.map(toolCallId => ({ toolCallId, name: toolName(), arguments: { id: toolCallId }, type: "function" })) });
@@ -121,6 +123,8 @@ for await (const frame of copilotFrames(process.stdin)) {
   } else if (frame.method === "session.tools.handlePendingToolCall") {
     const requestId = String(params.requestId); const known = pending.get(requestId);
     log({ op: "deliver", requestId, toolCallId: known?.toolCallId, result: params.result });
+    if (silentNext) continue;
+    if (errorNext) { send({ jsonrpc: "2.0", id, error: { code: -32000, message: "refused" } }); continue; }
     if (!known || rejectNext) { ok({ success: false }); continue; }
     pending.delete(requestId); delivered.push(params.result); ok({ success: true });
     event("external_tool.completed", { requestId });

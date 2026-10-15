@@ -75,7 +75,9 @@ what the model sees.
 - **Continue:** the request carries the history the session already has plus new items.
   New user items are sent as user messages. Tool outputs are handed to the session's
   pending external tool requests with `session.tools.handlePendingToolCall`, each to the
-  request of the call it answers, whatever order the outputs arrive in. The prefix is read
+  request of the call it answers, whatever order the outputs arrive in, at most 16 at a
+  time (the CLI connection takes 32 requests in flight). An empty output is handed over
+  as `(no output)`, so the waiting call is still answered. The prefix is read
   from the cache, the follow-up model calls are agent-initiated, and the request is billed
   for its own model calls only. An effort change between turns keeps the session: the
   gateway calls `session.model.switchTo`, which keeps the cache.
@@ -100,8 +102,10 @@ what the model sees.
   memory requests), `concurrent` (a second request for a thread whose first still runs or
   is still being placed), `capacity` (every slot is running a turn), `spawn_failed` or
   `initialize_timeout` (the process or its handshake did not come up in time, or the
-  session misbehaved while starting), `delivery_rejected` (the session refused a tool
-  result), `stream_failed` (the session died before its first event), and `attach_failed`
+  session misbehaved while starting), `delivery_rejected` (the session did not confirm a
+  tool result: it refused it, answered with an error, did not answer within 15 seconds,
+  or had no pending request for the call; the session is then closed), `stream_failed`
+  (the session died before its first event), and `attach_failed`
   (an unexpected error while placing the request; one that is not a provider error is
   also reported as an exception).
   Images and forced choices are served live.
@@ -208,7 +212,7 @@ stopped CLI has exited, which SIGKILL bounds to about 1.5 seconds after SIGTERM.
 | Field | Values |
 | --- | --- |
 | `outcome` | `spawned`, `continued`, `reseeded`, `fallback`, `interrupted` (the request was cancelled), `reaped` (parked or tool-wait timer), `evicted`, `crashed`, `closed` (ended on purpose) |
-| `missReason` | on `reseeded` and `fallback`: the reasons above. On an end (`closed`, `reaped`, `evicted`, `crashed`): why it ended — a reseed reason, `interrupted`, `idle_missing`, `tool_wait_expired`, `mode_oneshot` (the provider switched to one-shot), `shutdown`, `stopped`, or for `crashed`: `foreign_tool`, `permission`, `sub_agent`, `unannounced_tool`, `unattended_output`, `unattended_completion`, `backlog`, `exited`, or the code of the error that failed the request |
+| `missReason` | on `reseeded` and `fallback`: the reasons above. On an end (`closed`, `reaped`, `evicted`, `crashed`): why it ended — a reseed reason, `interrupted`, `idle_missing`, `tool_wait_expired`, `mode_oneshot` (the provider switched to one-shot), `shutdown`, `stopped`, or for `crashed`: `foreign_tool`, `permission`, `sub_agent`, `unannounced_tool`, `unattended_output`, `unattended_completion`, `backlog`, `exited`, `delivery_rejected` (a tool result was not confirmed), or the code of the error that failed the request |
 | `threadKey` | the first 8 hex of the thread's session key |
 | `liveSessions` | live sessions after the event |
 | `divergedAt` | on `prefix_diverged` and `unexpected_tail`: the index of the first item that did not match |

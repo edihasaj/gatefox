@@ -24,7 +24,11 @@ export const sessionLimits = {
   idleMs: 5000,
   /** How long a continuation waits for the pending requests of the calls it answers. */
   pendingMs: 2000,
+  /** How long the CLI may take to accept one tool result. */
+  deliverMs: 15000,
 };
+/** Tool results handed over at once: well below the connection's limit of 32 requests in flight. */
+const deliveryBatch = 16;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 // Between requests the model must do nothing, so only these housekeeping events are accepted; anything else
 // (output, a model call, a finished tool call, compaction) means the runtime is acting on its own and may be billing.
@@ -214,16 +218,18 @@ export class CopilotLiveSession {
 
   private async begin(attached: Attached): Promise<void> {
     const { begin } = attached.live; const rpc = this.client!.rpc;
-    if ("outputs" in begin) {
-      await Promise.all([...begin.outputs].map(async ([callId, result]) => {
-        const requestId = this.requests.get(callId);
-        const rejected = () => new ProviderError("cli_failed", "Copilot did not accept a tool result", 502, { code: "delivery_rejected" });
-        if (!requestId) throw rejected();
-        const answer = await rpc.request("session.tools.handlePendingToolCall", { sessionId: this.sessionId, requestId, result }, 15000);
-        if (answer.success !== true) throw rejected();
-        this.requests.delete(callId);
-      }));
-    } else await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages: await begin.prompts(this.client!.directory) }, 30000);
+    if (!("outputs" in begin)) { await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages: await begin.prompts(this.client!.directory) }, 30000); return; }
+    // Anything but a confirmed delivery (a refusal, an error reply, no answer in time, a full connection) means the
+    // session may not hold the result. Nothing has been streamed yet, so the request falls back to one-shot.
+    const rejected = () => new ProviderError("cli_failed", "Copilot did not accept a tool result", 502, { code: "delivery_rejected" });
+    const deliver = async ([callId, result]: [string, string | ToolResult]) => {
+      const requestId = this.requests.get(callId); if (!requestId) throw rejected();
+      const answer = await rpc.request("session.tools.handlePendingToolCall", { sessionId: this.sessionId, requestId, result }, sessionLimits.deliverMs).catch(() => undefined);
+      if (answer?.success !== true) throw rejected();
+      this.requests.delete(callId);
+    };
+    const outputs = [...begin.outputs];
+    for (let start = 0; start < outputs.length; start += deliveryBatch) await Promise.all(outputs.slice(start, start + deliveryBatch).map(deliver));
   }
 
   /** The next event of the attached request, or undefined once `timeoutMs` passes without one. */
