@@ -186,7 +186,8 @@ has no session and nothing pending, and is stopped with SIGTERM. A request cance
 CLI is still ending sends nothing more: the prompt of a one-shot request, and the messages or
 tool results of a live one, are not sent after the cancellation, because each would start a
 model call nobody waits for.
-A cancelled request ends at once and its session is killed in the background; a reseed or
+A cancelled request stops reading the model at once but ends only when its session is gone
+(at most the 2 seconds above), handing over the usage the CLI reports meanwhile; a reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
 request fails that request at once, or, before its first event, hands it to the one-shot
 path (`stream_failed`). The next request after a cancellation reseeds,

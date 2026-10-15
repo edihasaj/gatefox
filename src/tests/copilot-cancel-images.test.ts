@@ -190,3 +190,15 @@ test("closing a CLI whose folder cannot be removed neither rejects nor forgets t
     assert.equal(await exists(client.directory), false, "and the exit handler removed it");
   } finally { await h.restore(); }
 });
+
+test("closing a CLI retries the removal of its folder while something is still writing into it", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const client = await openCopilot(config); const noise = join(client.directory, "noise"); await mkdir(noise);
+    // Something keeps adding files for a while (a write still going on, or a child of the CLI), then stops: the first removal runs into it.
+    let stop = false; const writer = (async () => { for (let index = 0; !stop; index++) await writeFile(join(noise, String(index)), "x"); })();
+    setTimeout(() => { stop = true; }, 150);
+    await client.close(undefined, true); await writer;
+    assert.equal(await exists(client.directory), false, "the folder was removed once the writer had stopped");
+  } finally { stopCopilotClientsNow(); await h.restore(); }
+});
