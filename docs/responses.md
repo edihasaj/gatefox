@@ -76,8 +76,8 @@ reports "ChatGPT provider requires login". When the token endpoint names a reaso
 "ChatGPT provider requires login (refresh rejected: refresh_token_reused)" and a temporary failure
 reads "ChatGPT login refresh failed temporarily (temporarily_unavailable); retry shortly". A code
 outside the fixed list shows as `other`, and a reply without a code adds nothing. `request_failed`
-telemetry records the same code (see `docs/diagnostics.md`); the reply's description text is never
-read or shown. A failed refresh is not retried inside the request, because a second token request
+telemetry records the same code (see `docs/diagnostics.md`); only the code is kept, and the reply's
+description, body and tokens are never recorded or shown. A failed refresh is not retried inside the request, because a second token request
 could spend the single-use refresh token again; Codex reconnects on the retryable 503 instead.
 
 The refresh token is single-use, so only a real request or an explicit

@@ -235,6 +235,16 @@ test("an unreadable reply and any other HTTP error status are temporary", async 
   }
 });
 
+test("the failure diagnostic keeps an oauth_refresh code only from the fixed list", () => {
+  const leak = new ProviderError("authentication", "ChatGPT provider requires login", 401, { code: "sk-leak", event: "oauth_refresh", httpStatus: 400 });
+  const kept = new ProviderError("authentication", "ChatGPT provider requires login", 401, { code: "invalid_grant", event: "oauth_refresh", httpStatus: 400 });
+  const leaked = providerFailureDiagnostic({ requestId: "00000000-0000-4000-8000-000000000000", durationMs: 1, failure: leak }) as Record<string, unknown>;
+  assert.equal(leaked.upstreamCode, undefined, "a code outside the list never reaches the diagnostic");
+  assert.ok(!JSON.stringify(leaked).includes("sk-leak"));
+  const ok = providerFailureDiagnostic({ requestId: "00000000-0000-4000-8000-000000000000", durationMs: 1, failure: kept }) as Record<string, unknown>;
+  assert.equal(ok.upstreamCode, "invalid_grant"); assert.equal(ok.upstreamEvent, "oauth_refresh");
+});
+
 test("a rejected refresh records only a fixed OAuth error code", async () => {
   const secret = "sk-secret-description refresh_token=old-refresh";
   const cases: Array<[number, string, string, string, number]> = [
