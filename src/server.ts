@@ -18,8 +18,8 @@ import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, 
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
-import { flushTelemetry, telemetry } from "./telemetry.js";
-import { flushUsageLedger, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
+import { telemetry } from "./telemetry.js";
+import { flushRecords, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
@@ -121,10 +121,12 @@ async function drain(target: HandledServer, close: Server["close"]): Promise<Err
   const startedAt = Date.now(); const active = total(handlers().map(entry => entry.beginDrain?.()));
   await settle(startedAt + shutdownDrainMs());
   const drainedMs = Date.now() - startedAt; const aborted = total(handlers().map(entry => entry.abortAll("shutdown")));
-  await Promise.all([runShutdownHooks(1000), settle(Date.now() + 1000)]);
+  // An aborted request keeps reading its provider for up to usageDrainMs, for usage only, and then records its ledger row:
+  // the final flush waits for that, so the spend of a request that stopped at shutdown is not left out.
+  await Promise.all([runShutdownHooks(1000), settle(Date.now() + usageDrainMs)]);
   telemetry("server_drain", { active, drainedMs, aborted });
   // An idle restart exits straight from its callback, so the record is written first.
-  await flushTelemetry(); await flushUsageLedger();
+  await flushRecords();
   return closed;
 }
 

@@ -11,7 +11,8 @@ import { signIn } from "./auth/chatgpt.js";
 import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js";
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { codexShim } from "./codex-shim.js";
-import { readTelemetry, telemetry, flushTelemetry } from "./telemetry.js";
+import { readTelemetry, telemetry } from "./telemetry.js";
+import { flushRecords } from "./usage-ledger.js";
 import { shutdownDrainMs } from "./runtime-activity.js";
 import { summarizeTelemetry } from "./diagnostics.js";
 import { startServeRuntime } from "./serve-runtime.js";
@@ -243,7 +244,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (closing) return; closing = true;
     telemetry("server_shutdown_signal", { signal });
     // Takes effect after an inference process restart; a hot swap keeps the old handler.
-    const exit = () => { void flushTelemetry().finally(() => process.exit(0)); };
+    const exit = () => { void flushRecords().finally(() => process.exit(0)); };
     const deadline = setTimeout(() => { server.closeAllConnections(); exit(); }, shutdownDrainMs() + 1500).unref();
     server.close(() => { clearTimeout(deadline); exit(); });
   };

@@ -8,8 +8,8 @@ import { gatewayToken, validateConfig } from "../config.js";
 import { startGateway } from "../server.js";
 import { ProviderError, type Provider } from "../providers/provider.js";
 import type { InferenceEvent, UsageAccounting } from "../protocol/types.js";
-import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
-import { flushUsageLedger, ledgerFields, readUsageLedger, recordUsage, resetUsageLedger } from "../usage-ledger.js";
+import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
+import { flushRecords, flushUsageLedger, ledgerFields, readUsageLedger, recordUsage, resetUsageLedger } from "../usage-ledger.js";
 
 const usage = { input_tokens: 100, output_tokens: 5, total_tokens: 105, input_tokens_details: { cached_tokens: 80 } };
 const accounting: UsageAccounting = { cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "complete" };
@@ -222,4 +222,13 @@ test("the telemetry import keeps cache-write, reasoning and credit figures that 
   recordUsage(directory, { requestId: "later", status: "completed", inputTokens: 1 }); await flushUsageLedger();
   const row = (await readUsageLedger(directory, 0)).find(entry => entry.requestId === "k");
   assert.deepEqual([row?.origin, row?.cacheWriteTokens, row?.reasoningTokens, row?.nanoAiu, row?.nanoAiuStatus], ["telemetry", 6, 2, 2.5e9, "partial"]);
+});
+
+test("flushRecords, which a stopping process runs last, writes the queued ledger rows and telemetry", async t => {
+  const directory = await scratch(t, "gateway-ledger-exit-"); resetUsageLedger(); configureTelemetry(directory, "test");
+  telemetry("exit_probe"); recordUsage(directory, { requestId: "queued-at-exit", status: "failed", inputTokens: 7 });
+  await flushRecords();
+  // Read with no flush of its own: a process that exits right after flushRecords has nothing else to rely on.
+  assert.deepEqual((await readUsageLedger(directory, 0)).map(row => row.requestId), ["queued-at-exit"]);
+  assert.ok((await readTelemetry(directory, 0)).some(event => event.event === "exit_probe"));
 });

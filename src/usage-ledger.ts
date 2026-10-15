@@ -1,7 +1,7 @@
 import { appendFile, chmod, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
-import { readTelemetry, safeTelemetryValue } from "./telemetry.js";
+import { flushTelemetry, readTelemetry, safeTelemetryValue } from "./telemetry.js";
 
 /**
  * Content-free usage ledger. One JSON line per finished request is appended to
@@ -135,6 +135,9 @@ export function recordUsage(stateDirectory: string, fields: UsageFields, now: Da
 
 /** Waits for queued writes; tests and short-lived commands call this before exiting. */
 export async function flushUsageLedger(): Promise<void> { await writes; }
+
+/** Writes the telemetry and the ledger rows still queued; a process calls this just before it exits, whichever of the two fails. */
+export async function flushRecords(): Promise<void> { await Promise.allSettled([flushTelemetry(), flushUsageLedger()]); }
 
 /** Forgets per-process directory state; tests use it to start from a clean process view. */
 export function resetUsageLedger(): void { prepared.clear(); lastMonth.clear(); fileModes.clear(); recorded.clear(); }

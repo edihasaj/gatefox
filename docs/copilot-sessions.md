@@ -212,9 +212,12 @@ live or one-shot: the request reports it as one running total of every model cal
 made, and the `interrupted` or failed `copilot_session` event already includes it. When a
 request stops early (the caller left, it was cancelled or timed out, or the gateway is
 shutting down), the server keeps reading the provider for up to 3 seconds, for usage
-only, even if it was waiting for a slow client to take earlier output. A cancelled live
-request hands its total over at once; a cancelled one-shot request hands it over once its
-stopped CLI has exited, which SIGKILL bounds to about 1.5 seconds after SIGTERM.
+only, even if it was waiting for a slow client to take earlier output. At shutdown it
+waits for those requests to write their ledger rows before its final flush, but the
+process leaves 1.5 seconds after the drain deadline at the latest, flushing telemetry
+and the ledger first. A cancelled live request hands its total over at once; a cancelled
+one-shot request hands it over once its stopped CLI has exited, which SIGKILL bounds to
+about 1.5 seconds after SIGTERM.
 
 `copilot_session` telemetry has one event per decision or end:
 

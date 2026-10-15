@@ -95,8 +95,11 @@ provider reported it, so a Copilot call that is billed and then rejected or aban
 still shows up. When a request stops early (the caller left, it was cancelled or timed
 out, or the gateway is shutting down), even while the gateway waits for a slow client to
 take earlier output, the server reads the provider on for up to 3 seconds, for usage
-only, so usage the provider received before the stop is not lost. A row with no tokens
-and no credit amount is not written.
+only, so usage the provider received before the stop is not lost. At shutdown the
+server waits for those requests to write their rows before it flushes telemetry and the
+ledger, but a stopping process leaves 1.5 seconds after the drain deadline at the
+latest (it flushes both first), so usage that arrives later than that is not recorded.
+A row with no tokens and no credit amount is not written.
 
 Never stored: prompts, instructions, messages, tool names, arguments or outputs,
 images, thread, session or turn ids, account ids, credentials, error text or
