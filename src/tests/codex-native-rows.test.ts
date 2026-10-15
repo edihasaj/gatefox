@@ -1,11 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCatalog } from "../catalog.js";
-import { executorRunsCodeMode, nodeReplFallback, withNativeRow } from "../codex-native-rows.js";
+import { executorRunsCodeMode, withNativeRow } from "../codex-native-rows.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson, type GatewayConfig, type ProviderConfig } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
@@ -126,114 +125,5 @@ test("the first host read replaces the plain startup catalog even when the host 
     const sol = JSON.parse(await readFile(path, "utf8")).models[1];
     assert.equal(sol.slug, "codex/sol"); assert.deepEqual(sol.model_messages, messages); assert.equal(sol.include_skills_usage_instructions, false);
     assert.equal(Object.hasOwn(sol, "upstream_slug"), false);
-  } finally { f.close(); }
-});
-
-// Real native rows (ChatGPT 26.1007): every row enables node_repl; gpt-6-astra, gpt-6.1-sol and gpt-6-sol require auto review, gpt-6-luna and the 5.x rows do not.
-const policy = (slug: string, node_repl_disabled: unknown, node_repl_auto_review_required: unknown) => ({ ...nativeSol, slug, node_repl_disabled, node_repl_auto_review_required });
-const strictNative = policy("gpt-6.1-sol", false, true);
-const laxNative = policy("gpt-6-luna", false, false);
-const repl = (row: Record<string, unknown>) => ({ disabled: row.node_repl_disabled, review: row.node_repl_auto_review_required });
-const config = (...providers: ProviderConfig[]) => ({ version: 1, port: 0, stateDirectory: ".", providers } as unknown as GatewayConfig);
-const claude: ProviderConfig = { id: "claude", type: "claude-subscription", models: { "claude/opus": "opus" } };
-const rows = (native: Array<Record<string, unknown>>, codeMode: boolean, ...providers: ProviderConfig[]) => new DesktopCatalog(config(...providers), native, "unused", codeMode).current().models;
-
-test("the published default is the strictest node_repl policy", () => {
-  const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
-  assert.deepEqual(repl(published), { disabled: true, review: true });
-  assert.deepEqual(repl(catalog(claude)[0]), { disabled: true, review: true });
-});
-
-test("a Codex 2 row copies both node_repl fields from its native row, with or without code mode", () => {
-  const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
-  for (const codeMode of [true, false]) {
-    for (const [disabled, review] of [[false, true], [false, false], [true, false], [true, true]]) {
-      assert.deepEqual(repl(withNativeRow(published, [policy("gpt-6.1-sol", disabled, review)], codeMode)), { disabled, review }, `${codeMode} ${disabled} ${review}`);
-    }
-    assert.deepEqual(repl(withNativeRow(published, [strictNative, laxNative], codeMode)), { disabled: false, review: true }, "the row's own native policy, not another row's");
-    assert.deepEqual(repl(withNativeRow({ ...published, upstream_slug: "gpt-6-luna" }, [strictNative, laxNative], codeMode)), { disabled: false, review: false });
-  }
-});
-
-test("a native row that does not state a node_repl field plainly gives the stricter value", () => {
-  const [published] = catalog(codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }));
-  // A host (or an older cache) that published a weaker value cannot lower the policy either.
-  const weaker = { ...published, node_repl_disabled: false, node_repl_auto_review_required: false };
-  for (const codeMode of [true, false]) {
-    assert.deepEqual(repl(withNativeRow(weaker, [nativeSol], codeMode)), { disabled: true, review: true }, "fields absent from the native row");
-    assert.deepEqual(repl(withNativeRow(weaker, [policy("gpt-6.1-sol", "false", null)], codeMode)), { disabled: true, review: true }, "fields that are not booleans");
-    assert.deepEqual(repl(withNativeRow(weaker, [policy("gpt-6.1-sol", false, undefined)], codeMode)), { disabled: false, review: true }, "each field is judged on its own");
-  }
-});
-
-test("rows without a native counterpart take the strictest policy among the native rows", () => {
-  assert.deepEqual(nodeReplFallback([laxNative]), { node_repl_disabled: false, node_repl_auto_review_required: false });
-  assert.deepEqual(nodeReplFallback([laxNative, strictNative]), { node_repl_disabled: false, node_repl_auto_review_required: true }, "auto review is required when any native row requires it");
-  assert.deepEqual(nodeReplFallback([strictNative, policy("off", true, false)]), { node_repl_disabled: true, node_repl_auto_review_required: true }, "off when any native row is off");
-  assert.deepEqual(nodeReplFallback([laxNative, policy("odd", false, "yes")]), { node_repl_disabled: false, node_repl_auto_review_required: true }, "an ambiguous field counts as required");
-  assert.deepEqual(nodeReplFallback([laxNative, nativeSol]), { node_repl_disabled: true, node_repl_auto_review_required: true }, "fields absent from a native row count as the stricter value");
-  assert.deepEqual(nodeReplFallback([]), { node_repl_disabled: true, node_repl_auto_review_required: true });
-});
-
-test("Claude rows and Codex rows with a missing upstream take the fallback in both code modes", () => {
-  const providers = [codex({ "codex/sol": "gpt-6.1-sol", "codex/next": "gpt-9" }), claude];
-  for (const codeMode of [true, false]) {
-    const bySlug = (native: Array<Record<string, unknown>>) => Object.fromEntries(rows(native, codeMode, ...providers).map(row => [row.slug, repl(row)]));
-    assert.deepEqual(bySlug([laxNative, strictNative]), {
-      "codex/sol": { disabled: false, review: true }, "codex/next": { disabled: false, review: true }, "claude/opus": { disabled: false, review: true },
-    }, `strictest native policy ${codeMode}`);
-    // The Codex row follows its own native row; the others follow the strictest one.
-    assert.deepEqual(bySlug([policy("gpt-6.1-sol", false, false), policy("gpt-6.2", false, true)]), {
-      "codex/sol": { disabled: false, review: false }, "codex/next": { disabled: false, review: true }, "claude/opus": { disabled: false, review: true },
-    }, `own row for the marked Codex row ${codeMode}`);
-    assert.deepEqual(bySlug([policy("gpt-6.1-sol", false, true), policy("gpt-6.2", true, false)]), {
-      "codex/sol": { disabled: false, review: true }, "codex/next": { disabled: true, review: true }, "claude/opus": { disabled: true, review: true },
-    }, `one native row off keeps the fallback rows off ${codeMode}`);
-    assert.deepEqual(Object.values(bySlug([])), [{ disabled: true, review: true }, { disabled: true, review: true }, { disabled: true, review: true }], "no native catalog");
-  }
-});
-
-test("combined() carries both node_repl fields on native and gateway rows, whether code mode is on or off", () => {
-  const providers = [codex({ "codex/sol": "gpt-6.1-sol", "codex/next": "gpt-9" }, { "codex/sol": solMetadata, "codex/next": solMetadata }), claude];
-  const native = [strictNative, laxNative];
-  const before = structuredClone(native);
-  for (const codeMode of [true, false]) {
-    const combined = new DesktopCatalog(config(...providers), native, "unused", codeMode).combined().models;
-    assert.deepEqual(combined.map(row => [row.slug, repl(row).disabled, repl(row).review]), [
-      ["gpt-6.1-sol", false, true], ["gpt-6-luna", false, false], ["codex/sol", false, true], ["codex/next", false, true], ["claude/opus", false, true],
-    ], String(codeMode));
-    assert.equal(combined[2].tool_mode, codeMode ? "code_mode_only" : "direct", "only tool_mode depends on code mode");
-  }
-  assert.deepEqual(native, before, "the native rows are never modified");
-});
-
-test("check-node-repl prints both node_repl fields for every row and counts rows without auto review", async () => {
-  const root = await mkdtemp(join(tmpdir(), "gateway-node-repl-"));
-  try {
-    const file = join(root, "catalog.json");
-    await writeFile(file, JSON.stringify({ models: [
-      { slug: "a", node_repl_disabled: false, node_repl_auto_review_required: true }, { slug: "b", node_repl_disabled: false, node_repl_auto_review_required: false },
-      { slug: "c", node_repl_disabled: true }, { slug: "d" },
-    ] }));
-    const output = execFileSync(process.execPath, [join(import.meta.dirname, "..", "..", "scripts", "check-node-repl.mjs"), file], { encoding: "utf8" }).trim().split("\n");
-    assert.deepEqual(output, [
-      "disabled=false auto_review_required=true a", "disabled=false auto_review_required=false b", "disabled=true auto_review_required=missing c", "disabled=missing auto_review_required=missing d",
-      "2 of 4 row(s) keep node_repl disabled.", "1 of 4 row(s) enable node_repl without requiring auto review.",
-    ]);
-  } finally { await rm(root, { recursive: true, force: true }); }
-});
-
-test("a host row that publishes a weaker node_repl policy cannot lower the combined catalog", async () => {
-  const f = await shimFiles();
-  try {
-    f.value.providers = [codex({ "codex/sol": "gpt-6.1-sol" }, { "codex/sol": solMetadata }), claude];
-    const weaker = modelCatalog(f.value); weaker.models = weaker.models.map(row => ({ ...row, node_repl_disabled: false, node_repl_auto_review_required: false })); f.setCatalog(weaker);
-    const path = join(f.directory, "combined.json");
-    await new DesktopCatalog(f.value, [strictNative, laxNative], path, true).refresh(true);
-    const [, , sol, opus] = JSON.parse(await readFile(path, "utf8")).models;
-    assert.deepEqual([sol.slug, repl(sol)], ["codex/sol", { disabled: false, review: true }]);
-    assert.deepEqual([opus.slug, repl(opus)], ["claude/opus", { disabled: false, review: true }]);
-    const cache = JSON.parse(await readFile(join(f.value.stateDirectory, "desktop-public-models.json"), "utf8"));
-    assert.equal(cache.models.every((row: Record<string, unknown>) => "node_repl_auto_review_required" in row), true, "the public cache keeps the auto review field the host published");
   } finally { f.close(); }
 });

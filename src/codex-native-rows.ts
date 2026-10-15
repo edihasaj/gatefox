@@ -28,19 +28,21 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * messages with their usage flags, tool mode (a code mode only where the executor runs it),
  * defaults, window share and truncation. Account capabilities keep the upstream values: service
  * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
- * off until tool_search passes through. comp_hash is never copied.
- * Without a marker or a native row for that slug the row stays as the gateway published it.
+ * off until tool_search passes through. comp_hash is never copied. The review fields (node_repl
+ * policy, guardian, auto_review_model_override, requires_sandboxed_review) follow the native row too.
+ * Without a marker or a native row for that slug the row stays as the gateway published it here;
+ * snapshot() then gives it nodeReplFallback(), which replaces the two node_repl fields.
  */
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
-  const copy: Row = {};
-  // node_repl (browser, Chrome, computer use) is a direct plugin MCP server, independent of code mode,
-  // so both of its policy fields follow the native row whatever the executor's code mode is. A native
-  // row that does not state a field plainly gets the stricter value, never the SDK default.
-  copy.node_repl_disabled = typeof source.node_repl_disabled === "boolean" ? source.node_repl_disabled : true;
-  copy.node_repl_auto_review_required = typeof source.node_repl_auto_review_required === "boolean" ? source.node_repl_auto_review_required : true;
+  const copy: Row = { ...nodeReplPolicy(source) };
+  // The review fields shape the same review as the node_repl policy, so a native row's value is
+  // not left to drift from the Codex 2 row's. Only plainly typed values are copied.
+  if (source.guardian === null || plain(source.guardian)) copy.guardian = structuredClone(source.guardian);
+  if (typeof source.auto_review_model_override === "string" || source.auto_review_model_override === null) copy.auto_review_model_override = source.auto_review_model_override;
+  if (typeof source.requires_sandboxed_review === "boolean") copy.requires_sandboxed_review = source.requires_sandboxed_review;
   const messages = plain(source.model_messages);
   // The usage flags travel with the template; the gateway's own would repeat guidance the template holds.
   if (messages) { copy.model_messages = structuredClone(messages); for (const key of usageFlags) if (typeof source[key] === "boolean") copy[key] = source[key]; }
@@ -59,17 +61,67 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   return { ...row, ...copy };
 }
 
-export interface NodeReplPolicy { node_repl_disabled: boolean; node_repl_auto_review_required: boolean }
+/**
+ * Whether a gateway executor can run the auto review that node_repl actions need. Review runs a
+ * reviewer model through the executor's own provider, which is the gateway; the SDK asks it for
+ * "codex-auto-review" (the preferred reviewer in the native catalog), and the gateway answers that
+ * name with 404 model_not_found unless one Codex subscription alias serves it. Review errors fail
+ * closed, so every node_repl action that needs review would be rejected. Routing that slug is a
+ * privacy decision (a Claude or Copilot transcript would reach an OpenAI reviewer), so it stays off.
+ */
+export const executorRunsAutoReview = false;
+
+export interface NodeReplPolicy { node_repl_disabled: boolean; node_repl_auto_review_required: boolean; requires_sandboxed_review?: true }
+
+/**
+ * Mirrors ModelInfo::computer_use_review_required: a guardian policy, when present, overrides the
+ * flag. A flag that is not plainly a boolean counts as requiring review when strict, as the SDK's
+ * own default (no review) otherwise.
+ */
+export function computerUseReviewRequired(row: Row, strict = true): boolean {
+  if (row.guardian !== undefined && row.guardian !== null) {
+    const guardian = plain(row.guardian);
+    // An unparseable policy cannot be shown to skip review, so it counts as requiring it.
+    if (!guardian) return true;
+    return guardian.computer_use !== undefined && guardian.computer_use !== null && guardian.computer_use !== "disabled";
+  }
+  return strict ? row.node_repl_auto_review_required !== false : row.node_repl_auto_review_required === true;
+}
+
+/**
+ * One row's node_repl policy. A field that is not plainly a boolean gets the stricter value. The
+ * auto review flag is the row's own. node_repl is off when the row turns it off, and also when the
+ * row needs review in an executor that cannot run it, so no action waits on a reviewer that fails.
+ */
+export function nodeReplPolicy(row: Row): NodeReplPolicy {
+  const off = typeof row.node_repl_disabled === "boolean" ? row.node_repl_disabled : true;
+  return {
+    node_repl_disabled: off || (!executorRunsAutoReview && computerUseReviewRequired(row)),
+    node_repl_auto_review_required: typeof row.node_repl_auto_review_required === "boolean" ? row.node_repl_auto_review_required : true,
+  };
+}
 
 /**
  * The node_repl policy for a row with no native counterpart (Claude, Copilot, API, or a Codex row whose
- * upstream is missing). It is never weaker than any native row: node_repl stays disabled unless every
- * native row enables it, and auto review is required when any native row requires it. With no native
- * rows, or a field that is not a plain boolean, the stricter value applies.
+ * upstream is missing). It is never weaker than any native row: node_repl stays disabled when any native
+ * row's effective policy disables it, auto review is required when any native row requires it, and a
+ * sandboxed-review requirement carries over. With no native rows both are true. These rows also receive
+ * none of a native row's model messages or guardian settings; with node_repl disabled they have no
+ * computer-use action to review, so the strictest policy needs neither.
  */
 export function nodeReplFallback(native: readonly Row[]): NodeReplPolicy {
+  const policies = native.map(nodeReplPolicy);
   return {
-    node_repl_disabled: !native.length || native.some(entry => entry.node_repl_disabled !== false),
-    node_repl_auto_review_required: !native.length || native.some(entry => entry.node_repl_auto_review_required !== false),
+    node_repl_disabled: !native.length || policies.some(policy => policy.node_repl_disabled),
+    node_repl_auto_review_required: !native.length || policies.some(policy => policy.node_repl_auto_review_required),
+    ...(native.some(entry => entry.requires_sandboxed_review === true) ? { requires_sandboxed_review: true as const } : {}),
   };
+}
+
+/**
+ * A native row carried into the executor catalog keeps its own values, except that node_repl is off
+ * where the row requires review the executor cannot run. A row that states no policy keeps the SDK default.
+ */
+export function executorNativeRow(model: Row): Row {
+  return !executorRunsAutoReview && model.node_repl_disabled !== true && computerUseReviewRequired(model, false) ? { ...model, node_repl_disabled: true } : model;
 }

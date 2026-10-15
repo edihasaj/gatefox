@@ -38,7 +38,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       supports_search_tool: false, supports_experimental_context: false,
-      // The strictest node_repl policy; the desktop adapter replaces it with the native rows' values.
+      // The strictest node_repl policy; the desktop adapter replaces it with the native rows' policy.
       node_repl_disabled: true, node_repl_auto_review_required: true,
       ...(metadata?.multiAgentVersion ? { multi_agent_version: metadata.multiAgentVersion } : {}),
       ...(metadata?.multiAgentReasoningEffort ? { multi_agent_reasoning_effort: metadata.multiAgentReasoningEffort } : {}),

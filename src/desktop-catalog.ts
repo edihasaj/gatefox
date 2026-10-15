@@ -6,7 +6,7 @@ import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
-import { executorRunsCodeMode, nodeReplFallback, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
+import { executorNativeRow, executorRunsCodeMode, nodeReplFallback, upstreamSlugField, withNativeRow } from "./codex-native-rows.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -112,7 +112,11 @@ export class DesktopCatalog {
     // Only gateway executors load this catalog. Sub-agents that name a native model directly use
     // these rows, so an executor without Codex's code-mode host gives them direct tools instead of
     // failing every command; the native engine keeps its own catalog unchanged.
-    const native = this.codeMode ? this.native : this.native.map(model => typeof model.tool_mode === "string" && model.tool_mode !== "direct" ? { ...model, tool_mode: "direct" } : model);
+    // The same executors cannot run the auto review some native rows need, so those rows carry node_repl off.
+    const native = this.native.map(model => {
+      const row = executorNativeRow(model);
+      return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
+    });
     return { models: [...native, ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
   refresh(strict = false): Promise<DesktopCatalogSnapshot> {
