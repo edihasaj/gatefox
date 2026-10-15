@@ -27,3 +27,8 @@ for (const m of rows) console.log(`disabled=${flag(m.node_repl_disabled)} auto_r
 console.log(`${rows.filter(disabled).length} of ${rows.length} row(s) keep node_repl disabled.`);
 // A native row may enable node_repl without auto review; a gateway row must not unless its native row does.
 console.log(`${rows.filter(m => !disabled(m) && !reviewed(m)).length} of ${rows.length} row(s) enable node_repl without requiring auto review.`);
+// The reviewer row gateway executors rely on: the SDK lists it for API-key auth only when supported_in_api is true,
+// and its review text is auto_review.node_repl_policy (missing means the SDK's bundled default).
+const reviewer = rows.find(m => m.slug === "codex-auto-review");
+const policy = reviewer?.model_messages?.auto_review?.node_repl_policy;
+console.log(reviewer ? `reviewer codex-auto-review: supported_in_api=${flag(reviewer.supported_in_api)} node_repl_policy=${typeof policy === "string" && policy ? "present" : "missing"}` : "reviewer codex-auto-review: missing");

@@ -2,6 +2,8 @@ import { accessSync, constants, lstatSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { autoReviewModels } from "./auto-review.js";
+
 type Row = Record<string, unknown>;
 
 /** Codex 2 rows name the upstream model they serve, so the desktop adapter can find that model's row in its own native catalog. */
@@ -32,15 +34,15 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
  * requires_sandboxed_review) follow the native row too. Without a marker or a native row for that
  * slug the row stays as the gateway published it here; snapshot() then gives it nodeReplFallback().
- * The route says which reviewer models the executor's provider can serve; without one none can be.
+ * `reviewers` are the reviewer slugs the inference host advertised; with none, review cannot run.
  */
-export function withNativeRow(model: Row, native: readonly Row[], codeMode = true, route: ReviewRoute = noReviewRoute): Row {
+export function withNativeRow(model: Row, native: readonly Row[], codeMode = true, reviewers: ReadonlySet<string> = noReviewers): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
   if (!source) return row;
   // Both node_repl fields come from the native row's policy; the review fields shape the same review,
   // so they are copied with it. Only plainly typed values are copied.
-  const copy: Row = { ...nodeReplPolicy(source, route) };
+  const copy: Row = { ...nodeReplPolicy(source, native, reviewers) };
   if (source.guardian === null || plain(source.guardian)) copy.guardian = structuredClone(source.guardian);
   if (typeof source.auto_review_model_override === "string" || source.auto_review_model_override === null) copy.auto_review_model_override = source.auto_review_model_override;
   if (typeof source.requires_sandboxed_review === "boolean") copy.requires_sandboxed_review = source.requires_sandboxed_review;
@@ -62,73 +64,31 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   return { ...row, ...copy };
 }
 
-/**
- * The SDK reviews a node_repl action with a reviewer model that it requests from the executor's own
- * provider, which is the gateway. Gateway executors authenticate with a provider command, which the
- * SDK treats as API-key auth, and under that auth the preferred reviewer is "gpt-5.6-luna" (the
- * model-provider's API_KEY_APPROVAL_REVIEW_PREFERRED_MODEL), not "codex-auto-review". A row's own
- * auto_review_model_override replaces it. The reviewer must be in the executor's catalog, because
- * its row supplies the review text, and the gateway must be able to serve it.
- */
-export const apiKeyReviewModel = "gpt-5.6-luna";
-/** The reviewer row native Codex uses with ChatGPT auth; it carries the review text for node_repl. */
-export const nativeReviewModel = "codex-auto-review";
-
-/** Whether a model name is one the executor's catalog offers and the gateway serves. */
-export type ReviewRoute = (model: string) => boolean;
-/** The strict route: no reviewer can run, so every row that needs review keeps node_repl off. */
-export const noReviewRoute: ReviewRoute = () => false;
+/** No reviewer is reachable: every row that needs review keeps node_repl off. */
+export const noReviewers: ReadonlySet<string> = new Set();
 
 /**
- * The reviewers an executor can use, from the native rows its catalog carries and the rows the
- * gateway published. The gateway serves a bare OpenAI model name (what the SDK requests) like
- * nativeModelAlias in server.ts: as an alias with that exact name, or as the one Codex subscription
- * alias whose upstream model it is. Only Codex rows publish upstream_slug. Two accounts serving the
- * same model make the name ambiguous, and an ambiguous name is not served.
+ * Which reviewer the SDK asks for on behalf of a row (select_review_model): the row's own
+ * auto_review_model_override when it is a non-empty string, otherwise the default reviewer
+ * "codex-auto-review", which gateway executors always get (see src/auto-review.ts). Any other
+ * override value names no model, so there is no reviewer.
  */
-export function reviewRoute(native: readonly Row[], published: readonly Row[]): ReviewRoute {
-  return model => {
-    const offered = [...native, ...published].some(row => row.slug === model && row.supported_in_api !== false);
-    const vendor = /^(gpt-|o\d|codex-)/.test(model);
-    return offered && (published.some(row => row.slug === model) || (vendor && published.filter(row => row[upstreamSlugField] === model).length === 1));
-  };
-}
-
-/**
- * Whether the reviewer the SDK would pick for a row can run: the row's auto_review_model_override
- * when one is set, otherwise the API-key reviewer. An override that is not a string cannot be shown
- * to name a model, so it counts as unable. When the reviewer is not offered the SDK would fall back to
- * the parent model, whose messages carry no reviewer policy; that counts as unable too.
- */
-export function reviewerCanRun(row: Row, route: ReviewRoute): boolean {
+export function reviewerFor(row: Row): string | undefined {
   const override = row.auto_review_model_override;
-  if (override === undefined || override === null) return route(apiKeyReviewModel);
-  return typeof override === "string" && route(override);
+  if (override === undefined || override === null) return autoReviewModels[0];
+  return typeof override === "string" && override ? override : undefined;
 }
 
-const nodeReplText = (row: Row) => {
-  const text = plain(plain(plain(row.model_messages)?.auto_review))?.node_repl_policy;
-  return typeof text === "string" ? text : undefined;
-};
-
 /**
- * The reviewer row supplies the node_repl review text. Native Codex with ChatGPT auth reviews with
- * the hidden "codex-auto-review" row, which carries it; a catalog can leave the same text off the
- * API-key reviewer, and the SDK would then review with its bundled default instead. A reviewer row
- * that lacks the text gets the native reviewer's. Nothing else on any row changes, and a row that
- * states its own text, even an empty one, keeps it.
+ * Whether that reviewer runs in this executor. The inference host must advertise the slug, and the
+ * executor catalog must offer its row to API-key auth (`supported_in_api` exactly true), because the
+ * SDK lists models for a command-authenticated provider that way. A reviewer missing from the list
+ * makes the SDK fall back to the parent model with the parent's own messages, which is not the
+ * native review, so a missing or hidden reviewer row counts as unable.
  */
-export function withReviewerPolicy(native: readonly Row[]): Row[] {
-  const donor = native.find(row => row.slug === nativeReviewModel);
-  const text = donor ? nodeReplText(donor) : undefined;
-  if (!text) return [...native];
-  const reviewers = new Set([apiKeyReviewModel, ...native.map(row => row.auto_review_model_override).filter((name): name is string => typeof name === "string")]);
-  return native.map(row => {
-    const messages = plain(row.model_messages);
-    const review = messages?.auto_review === undefined ? {} : plain(messages.auto_review);
-    if (!messages || !review || typeof row.slug !== "string" || !reviewers.has(row.slug) || nodeReplText(row) !== undefined) return row;
-    return { ...row, model_messages: { ...messages, auto_review: { ...review, node_repl_policy: text } } };
-  });
+export function reviewRuns(row: Row, native: readonly Row[], reviewers: ReadonlySet<string>): boolean {
+  const slug = reviewerFor(row);
+  return slug !== undefined && reviewers.has(slug) && native.some(entry => entry.slug === slug && entry.supported_in_api === true);
 }
 
 export interface NodeReplPolicy { node_repl_disabled: boolean; node_repl_auto_review_required: boolean; requires_sandboxed_review?: true }
@@ -149,43 +109,72 @@ export function computerUseReviewRequired(row: Row): boolean {
 }
 
 /** A native row turns node_repl off itself unless it plainly says it is enabled. */
-const turnsNodeReplOff = (row: Row) => typeof row.node_repl_disabled === "boolean" ? row.node_repl_disabled : true;
+const rawOff = (row: Row) => typeof row.node_repl_disabled === "boolean" ? row.node_repl_disabled : true;
 
 /**
  * One row's node_repl policy in a gateway executor. Codex 2 rows and the native rows the executor
  * catalog carries for sub-agents both use it, so one upstream model gets one policy there, as the
  * native row has it. Each field is copied; one that is not plainly a boolean gets the stricter value.
  * Two things are stricter than a copy. node_repl is also off when the row needs review and its
- * reviewer cannot run in this executor, so no action waits on a reviewer that fails. And a guardian
+ * reviewer does not run in this executor, so no action waits on a reviewer that fails. And a guardian
  * that is not an object is never copied to a Codex 2 row, so the flag alone must then require review.
  */
-export function nodeReplPolicy(row: Row, route: ReviewRoute = noReviewRoute): NodeReplPolicy {
+export function nodeReplPolicy(row: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): NodeReplPolicy {
   const flag = typeof row.node_repl_auto_review_required === "boolean" ? row.node_repl_auto_review_required : true;
   const unreadable = row.guardian !== undefined && row.guardian !== null && !plain(row.guardian);
   return {
-    node_repl_disabled: turnsNodeReplOff(row) || (computerUseReviewRequired(row) && !reviewerCanRun(row, route)),
+    node_repl_disabled: rawOff(row) || (computerUseReviewRequired(row) && !reviewRuns(row, native, reviewers)),
     node_repl_auto_review_required: flag || unreadable,
   };
 }
 
+/** The review texts of a row that a Claude, Copilot or API row can share (see sharedReviewMessages). */
+const sharedMessageKeys = ["confirmation_policies", "guardian_v2"] as const;
+const canonical = (value: unknown): string => JSON.stringify(value, (_key, entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry) ? Object.fromEntries(Object.entries(entry as Row).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
+
 /**
- * The node_repl policy for a row with no native counterpart (Claude, Copilot, API, or a Codex row whose
- * upstream is missing). It is never weaker than any native row. Auto review is required when any
- * native row needs review or has a flag that is not plainly false, even where that row's guardian skips
- * computer-use review, because these rows carry no guardian. node_repl is off when any native row turns
- * it off and whenever review is required. These rows are not given a reviewer: a native row's reviewer
- * is chosen for that model, and for a Claude, Copilot or API chat it would be an OpenAI model that
- * receives the transcript. A sandboxed-review requirement carries over. With no native rows both are
- * true. With node_repl off these rows have no action to review, so they need neither a native row's
- * model messages nor its guardian settings.
+ * The confirmation and classifier texts the native rows share. A value present on several rows must be
+ * the same on all of them, compared as canonical JSON, or the rows disagree and nothing is shared.
+ * A key no row states is left out. Without the shared texts, node_repl would read an empty
+ * `openai/confirmation_policies` on a row that has none, which clears the connector defaults.
  */
-export function nodeReplFallback(native: readonly Row[]): NodeReplPolicy {
-  const review = !native.length || native.some(row => computerUseReviewRequired(row) || nodeReplPolicy(row).node_repl_auto_review_required);
+export function sharedReviewMessages(native: readonly Row[]): { messages: Row; conflict: boolean } {
+  const messages: Row = {}; let conflict = false;
+  for (const key of sharedMessageKeys) {
+    const present = native.map(row => plain(row.model_messages)?.[key]).filter(value => value !== undefined && value !== null);
+    if (!present.length) continue;
+    if (present.some(value => canonical(value) !== canonical(present[0]))) conflict = true;
+    else messages[key] = structuredClone(present[0]);
+  }
+  return { messages, conflict };
+}
+
+export interface NodeReplFallback extends NodeReplPolicy { review_messages: Row }
+
+/**
+ * The node_repl policy for a row with no native counterpart (Claude, Copilot, Qwen, API, or a Codex
+ * row whose upstream is missing). Review is always required, the strictest policy, because these rows
+ * carry no guardian and their model has no native policy. node_repl is on only if the reviewer runs,
+ * every native row plainly enables node_repl, and the native rows agree on the shared review texts.
+ * A sandboxed-review requirement carries over. The reviewer is the default one, which is OpenAI's, so
+ * the actions it reviews and their context leave the chat's own provider (Edi accepted this on
+ * 2026-10-15). With no native rows node_repl is off.
+ */
+export function nodeReplFallback(native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): NodeReplFallback {
+  const { messages, conflict } = sharedReviewMessages(native);
   return {
-    node_repl_disabled: review || native.some(turnsNodeReplOff),
-    node_repl_auto_review_required: review,
+    node_repl_disabled: !native.length || native.some(rawOff) || !reviewRuns({}, native, reviewers) || conflict,
+    node_repl_auto_review_required: true,
+    review_messages: conflict ? {} : messages,
     ...(native.some(entry => entry.requires_sandboxed_review === true) ? { requires_sandboxed_review: true as const } : {}),
   };
+}
+
+/** Applies a fallback to a gateway row: the policy fields, and the shared review texts next to its own messages. */
+export function withFallback(model: Row, fallback: NodeReplFallback): Row {
+  const { review_messages, ...policy } = fallback;
+  const messages = plain(model.model_messages);
+  return { ...model, ...policy, ...(Object.keys(review_messages).length ? { model_messages: { ...messages, ...structuredClone(review_messages) } } : {}) };
 }
 
 /**
@@ -194,7 +183,7 @@ export function nodeReplFallback(native: readonly Row[]): NodeReplPolicy {
  * policy and a reviewer that runs keeps both; one that states no policy gets node_repl off here,
  * never the SDK default. The native engine's own catalog is unchanged.
  */
-export function executorNativeRow(model: Row, route: ReviewRoute = noReviewRoute): Row {
-  const policy = nodeReplPolicy(model, route);
+export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): Row {
+  const policy = nodeReplPolicy(model, native, reviewers);
   return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required ? model : { ...model, ...policy };
 }

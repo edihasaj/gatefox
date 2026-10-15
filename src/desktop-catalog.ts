@@ -6,7 +6,8 @@ import { modelCatalog } from "./catalog.js";
 import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
-import { executorNativeRow, executorRunsCodeMode, noReviewRoute, nodeReplFallback, reviewRoute, upstreamSlugField, withNativeRow, withReviewerPolicy, type ReviewRoute } from "./codex-native-rows.js";
+import { executorNativeRow, executorRunsCodeMode, noReviewers, nodeReplFallback, upstreamSlugField, withFallback, withNativeRow } from "./codex-native-rows.js";
+import { readAutoReviewAdvertisement } from "./auto-review.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -70,8 +71,8 @@ export class DesktopCatalog {
   private checkedAt = 0;
   // prepareNativeCatalog writes the gateway rows without native copies; replace that file once.
   private written = false;
-  // Which reviewers the gateway serves, as seen when each snapshot was built; combined() applies the same ones to the native rows.
-  private readonly routes = new WeakMap<DesktopCatalogSnapshot, ReviewRoute>();
+  // The reviewer slugs the inference host advertised when each snapshot was built; combined() applies the same set to the native rows.
+  private readonly reviewers = new WeakMap<DesktopCatalogSnapshot, ReadonlySet<string>>();
   constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private readonly codeMode = executorRunsCodeMode()) {
     this.value = this.snapshot(modelCatalog(config).models);
   }
@@ -96,30 +97,34 @@ export class DesktopCatalog {
     } catch { /* Unavailable, malformed or differently owned caches leave native discovery usable. */ }
     finally { await file?.close(); }
   }
-  private snapshot(published: Message[]): DesktopCatalogSnapshot {
-    // A row without a native counterpart takes the strictest node_repl policy of the native rows.
-    const fallback = nodeReplFallback(this.native);
-    // The reviewer the SDK picks must be offered and served by this gateway, or review would fail closed.
-    const route = reviewRoute(this.native, published);
+  /**
+   * `reviewers` come only from a live read of the host's catalog. The cached public rows do not prove
+   * that a reviewer is reachable now, so a restored or reset snapshot has none and keeps node_repl off
+   * wherever a row needs review until the next successful read.
+   */
+  private snapshot(published: Message[], reviewers: ReadonlySet<string> = noReviewers): DesktopCatalogSnapshot {
+    // A row without a native counterpart takes the strictest node_repl policy and the shared review texts.
+    const fallback = nodeReplFallback(this.native, reviewers);
     const models = published.map(model => {
-      const row = withNativeRow(model, this.native, this.codeMode, route);
-      return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : { ...row, ...fallback };
+      const row = withNativeRow(model, this.native, this.codeMode, reviewers);
+      return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : withFallback(row, fallback);
     });
-    // The native rows carried for sub-agents change with the route too, so a new generation starts when they do.
-    const revision = createHash("sha256").update(JSON.stringify([models, this.executorNative(route)])).digest("hex");
+    // The native rows carried for sub-agents change with the reviewers too, so a new generation starts when they do.
+    const revision = createHash("sha256").update(JSON.stringify([models, [...reviewers].sort()])).digest("hex");
     const snapshot = { models, path: this.path, revision };
-    this.routes.set(snapshot, route);
+    this.reviewers.set(snapshot, reviewers);
     return snapshot;
   }
   /**
    * The native rows as gateway executors load them. Sub-agents that name a native model directly use
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
-   * cannot run here or no policy is stated. The native engine keeps its own catalog unchanged.
+   * does not run here or no policy is stated. The reviewer row is carried unchanged, like every other
+   * row, and its review text stays the SDK's own. The native engine keeps its own catalog unchanged.
    */
-  private executorNative(route: ReviewRoute): Message[] {
-    return withReviewerPolicy(this.native).map(model => {
-      const row = executorNativeRow(model, route);
+  private executorNative(reviewers: ReadonlySet<string>): Message[] {
+    return this.native.map(model => {
+      const row = executorNativeRow(model, this.native, reviewers);
       return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
     });
   }
@@ -129,7 +134,7 @@ export class DesktopCatalog {
   nativeRow(model: string): Message | undefined { return this.native.find(entry => entry.slug === model); }
   combined(snapshot = this.value): { models: Message[] } {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
-    return { models: [...this.executorNative(this.routes.get(snapshot) ?? noReviewRoute), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
+    return { models: [...this.executorNative(this.reviewers.get(snapshot) ?? noReviewers), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
   refresh(strict = false): Promise<DesktopCatalogSnapshot> {
     return this.initialize().then(() => this.refreshInitialized(strict));
@@ -168,7 +173,8 @@ export class DesktopCatalog {
     const cache = { version: 1, source, models };
     const encoded = JSON.stringify(cache, null, 2) + "\n";
     if (Buffer.byteLength(encoded) > maxCatalogBytes || encoded.includes(token)) throw new Error("Gateway public metadata cannot be cached safely");
-    const next = this.snapshot(models);
+    // Only this live 200 response says which reviewers the host serves right now.
+    const next = this.snapshot(models, readAutoReviewAdvertisement(parsed.auto_review));
     await writePrivateJson(resolve(this.config.stateDirectory, "desktop-public-models.json"), cache);
     if (next.revision !== this.value.revision || !this.written) await writePrivateJson(this.path, this.combined(next));
     this.value = next; this.sourceIdentity = source; this.checkedAt = Date.now(); this.written = true; return next;

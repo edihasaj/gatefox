@@ -22,6 +22,8 @@ import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 import { runShutdownHooks, runtimeBusy, shutdownDrainMs } from "./runtime-activity.js";
+import { autoReviewModels, isAutoReviewModel } from "./auto-review.js";
+import { hasPlanLogin } from "./auth/chatgpt.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
@@ -35,6 +37,34 @@ export function nativeModelAlias(config: GatewayConfig, model: string): string |
   if (!vendor) return;
   const matches = config.providers.filter(provider => provider.type === vendor).flatMap(provider => Object.entries(provider.models).filter(([, upstream]) => upstream === model).map(([alias]) => alias));
   return matches.length === 1 ? matches[0] : undefined;
+}
+
+/**
+ * The Codex subscription provider that serves a reviewer slug when no alias names it: the only one the
+ * gateway has. With none or several, which account's data the review would use is not decided, so no
+ * provider serves it (fail closed).
+ */
+export function autoReviewProvider(config: GatewayConfig, slug: string): ProviderConfig | undefined {
+  if (!isAutoReviewModel(slug)) return;
+  const codex = config.providers.filter(provider => provider.type === "codex-subscription");
+  return codex.length === 1 ? codex[0] : undefined;
+}
+/** Where a reviewer slug goes: an alias for it keeps its precedence, as for any bare model name, and otherwise the one Codex subscription. */
+export function autoReviewTarget(config: GatewayConfig, slug: string): ProviderConfig | undefined {
+  if (!isAutoReviewModel(slug)) return;
+  const alias = config.providers.some(provider => Object.hasOwn(provider.models, slug)) ? slug : nativeModelAlias(config, slug);
+  return (alias ? config.providers.find(provider => Object.hasOwn(provider.models, alias)) : undefined) ?? autoReviewProvider(config, slug);
+}
+/** The reviewer slugs this gateway can serve to a Codex login right now; any failure advertises nothing. */
+async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
+  try {
+    const served: string[] = [];
+    for (const slug of autoReviewModels) {
+      const target = autoReviewTarget(config, slug);
+      if (target?.type === "codex-subscription" && target.credentialFile && await hasPlanLogin(target.credentialFile)) served.push(slug);
+    }
+    return served;
+  } catch { return []; }
 }
 
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
@@ -142,15 +172,21 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
-  const buildRoutes = (current: GatewayConfig) => new Map(current.providers.flatMap(provider => {
-    const adapter = factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window));
-    return Object.entries(provider.models).map(([alias, model]) => [alias, { adapter, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const);
-  }));
-  let current = config; let routes = buildRoutes(config);
+  const buildRoutes = (current: GatewayConfig) => {
+    const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window))] as const));
+    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, model, id: provider.id, reasoningScope: reasoningScope(provider) }] as const)));
+    // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and reasoning scope match.
+    const reviewers = new Map(autoReviewModels.flatMap(slug => {
+      const provider = autoReviewProvider(current, slug);
+      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, model: slug as string, id: provider.id, reasoningScope: reasoningScope(provider) }] as const] : [];
+    }));
+    return { routes, reviewers };
+  };
+  let current = config; let { routes, reviewers } = buildRoutes(config);
   const snapshot = async () => {
     const next = reload ? await reload() : current;
-    if (next !== current) { const updated = buildRoutes(next); routes = updated; current = next; }
-    return { config: current, routes };
+    if (next !== current) { const updated = buildRoutes(next); routes = updated.routes; reviewers = updated.reviewers; current = next; }
+    return { config: current, routes, reviewers };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
   const admitted = new Set<AbortController>(); let draining = false;
@@ -177,7 +213,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     try { state = await snapshot(); }
     catch { send(res, 503, { error: { code: "configuration_error", message: "Gateway configuration is invalid; fix it before retrying" } }); return; }
     if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
-    if (req.method === "GET" && path === "/v1/model-catalog") { send(res, 200, modelCatalog(state.config)); return; }
+    if (req.method === "GET" && path === "/v1/model-catalog") { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
     if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
     if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
@@ -190,6 +226,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const startedAt = Date.now();
     let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
+      autoReview: model !== undefined && isAutoReviewModel(model) ? true : undefined,
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
     // timeoutMs bounds silence, not total length: it covers the upload and queue
@@ -214,9 +251,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
       const alias = state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model);
-      const route = alias ? state.routes.get(alias) : undefined;
+      const route = (alias ? state.routes.get(alias) : undefined) ?? state.reviewers.get(request.model);
+      // Only an allowlisted reviewer slug is recorded for a request that has no route; any other name stays out of telemetry.
+      if (!route && isAutoReviewModel(request.model)) model = request.model;
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
-      if (alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
+      if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
       const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();

@@ -30,6 +30,7 @@ test("check-node-repl prints both node_repl fields for every row and counts rows
       'disabled=false auto_review_required=true guardian={"computer_use":5} j', 'disabled="true" auto_review_required="true" k',
       // A missing node_repl_disabled means enabled (the SDK default), so row d counts as enabled without review.
       "1 of 11 row(s) keep node_repl disabled.", "7 of 11 row(s) enable node_repl without requiring auto review.",
+      "reviewer codex-auto-review: missing",
     ]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -45,7 +46,24 @@ test("check-node-repl is advisory: unreadable or oddly shaped input exits 0 with
     }
     const run = check(await write("mixed.json", JSON.stringify({ models: [null, "x", [], { slug: "a", node_repl_disabled: false, node_repl_auto_review_required: true }] })));
     assert.equal(run.status, 0); assert.equal(run.stderr, "");
-    assert.deepEqual(run.stdout.trim().split("\n"), ["3 entry(ies) that are not rows were ignored.", "disabled=false auto_review_required=true a", "0 of 1 row(s) keep node_repl disabled.", "0 of 1 row(s) enable node_repl without requiring auto review."]);
+    assert.deepEqual(run.stdout.trim().split("\n"), ["3 entry(ies) that are not rows were ignored.", "disabled=false auto_review_required=true a", "0 of 1 row(s) keep node_repl disabled.", "0 of 1 row(s) enable node_repl without requiring auto review.", "reviewer codex-auto-review: missing"]);
     assert.equal(check().status, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("check-node-repl reports whether the reviewer row is present, offered to API-key auth, and carries its review text", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gateway-node-repl-"));
+  try {
+    const last = async (reviewer: object) => {
+      const file = join(root, "reviewer.json"); await writeFile(file, JSON.stringify({ models: [{ slug: "a", node_repl_disabled: false, node_repl_auto_review_required: false }, { slug: "codex-auto-review", ...reviewer }] }));
+      return check(file).stdout.trim().split("\n").at(-1);
+    };
+    const messages = (node_repl_policy: unknown) => ({ model_messages: { instructions_template: "", auto_review: { node_repl_policy } } });
+    assert.equal(await last({ supported_in_api: true, ...messages("reviewer text") }), "reviewer codex-auto-review: supported_in_api=true node_repl_policy=present");
+    assert.equal(await last({ supported_in_api: false, ...messages("reviewer text") }), "reviewer codex-auto-review: supported_in_api=false node_repl_policy=present");
+    assert.equal(await last({ ...messages("reviewer text") }), "reviewer codex-auto-review: supported_in_api=missing node_repl_policy=present");
+    assert.equal(await last({ supported_in_api: true, model_messages: { instructions_template: "" } }), "reviewer codex-auto-review: supported_in_api=true node_repl_policy=missing");
+    assert.equal(await last({ supported_in_api: true, ...messages("") }), "reviewer codex-auto-review: supported_in_api=true node_repl_policy=missing");
+    assert.equal(await last({ supported_in_api: "true", model_messages: "x" }), 'reviewer codex-auto-review: supported_in_api="true" node_repl_policy=missing');
   } finally { await rm(root, { recursive: true, force: true }); }
 });

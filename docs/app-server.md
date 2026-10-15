@@ -3,8 +3,6 @@ summary: 'Experimental Codex desktop adapter: additive model catalog and per-cha
 read_when:
   - Connecting the gateway to the Codex desktop app
   - Changing app-server routing, model selection, or configuration writes
-  - Changing node_repl, auto review or guardian fields on gateway or native catalog rows
-  - Investigating why browser, Chrome or computer use is on or off in a gateway chat
 ---
 
 # Codex app-server adapter
@@ -189,7 +187,11 @@ Gateway executors enable Codex's active-step model switching. The adapter forwar
 with their original turn IDs and authorization fields. A thread-level model
 selection remains the default after a saved chat resumes. An active-turn model
 update applies at the next inference step. A captured tool step keeps its approval
-requirements; changing thread access updates subsequent turns.
+requirements; changing thread access updates subsequent turns. Between turns,
+Claude and Codex 2 rows switch freely. During a running turn the SDK rejects a
+model switch between rows whose node_repl or auto review settings differ, and the
+adapter forwards its error; the desktop picker does not trigger this
+([details](node-repl.md#switching-models-during-a-running-turn)).
 
 These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol.
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
@@ -374,8 +376,9 @@ window maximum, the auto-compaction limit, input modalities and reasoning levels
 `comp_hash` is never copied. `supports_search_tool` stays off and the adapter keeps
 web search disabled, because `tool_search` does not pass through the gateway. A
 slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it, apart from the strictest native node_repl policy. The rows the adapter builds drop `upstream_slug`. At each
-launch the native-catalog preflight first writes `desktop-models.json` with the
+gateway published it, apart from the strictest native node_repl policy and the
+native confirmation and classifier texts ([node_repl](node-repl.md)). The rows the
+adapter builds drop `upstream_slug`. At each launch the native-catalog preflight first writes `desktop-models.json` with the
 plain gateway rows, marker included; the adapter replaces that file with the
 copied rows on its first successful cache restore or host refresh, and every
 gateway chat start refreshes first. Codex 0.160.0 and the gateway SDK both
@@ -402,71 +405,16 @@ to spawn code-mode host". The native engine keeps its own catalog unchanged.
 ### node_repl (browser, Chrome and computer use)
 
 Gateway chats get the same node_repl capability and safety policy as native rows,
-never a weaker one (`src/codex-native-rows.ts`, `src/desktop-catalog.ts`).
-Evidence, read-only, from ChatGPT 26.1007 and the pinned gateway SDK (Codex
-0.162.0-alpha.17.2):
-
-- node_repl does not depend on code mode. The bundled `unified-computer-use`
-  plugin declares `cua_repl` with `omit_tools_from: ["code_mode", "deferred"]`, and
-  `~/.codex/config.toml` runs `[mcp_servers.node_repl]` from
-  `/Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl`. Only
-  `tool_mode` follows code mode, so every rule below holds with it on or off.
-- The built `gateway-codex` binary contains the `ModelInfo` fields
-  `node_repl_disabled`, `node_repl_auto_review_required`, `guardian` and
-  `auto_review_model_override`, so the SDK honours them. A set `guardian` decides
-  review instead of the flag (`computer_use_review_required`): computer use is
-  reviewed unless `guardian.computer_use` is absent, null or `disabled`.
-- Every native row has `node_repl_disabled: false`. `gpt-6-astra`, `gpt-6.1-sol`
-  and `gpt-6-sol` set `node_repl_auto_review_required: true`, the rest false, and
-  every listed row has `guardian` and `auto_review_model_override` null.
-- Executors authenticate with a provider command, which the SDK treats as API-key
-  auth. Its reviewer is then the row's `auto_review_model_override`, else
-  `gpt-5.6-luna` if the executor catalog offers it, else the parent model
-  (`approval_review_preferred_model`, `select_review_model`). `codex-auto-review` is
-  the ChatGPT-auth reviewer. This is from the SDK source and binary, not a live run.
-- Review text comes from the reviewer row. In `models_cache.json`, which the
-  adapter loads, only the hidden `codex-auto-review` row has
-  `auto_review.node_repl_policy`; `gpt-5.6-luna` has no `auto_review` text. The
-  embedded catalog gives it to `gpt-5.6-luna` and the 6.x rows too. Without text the
-  SDK uses a bundled default that differs from the native one.
-
-Rules:
-
-- A Codex 2 row copies both fields, `guardian`, `auto_review_model_override` and
-  `requires_sandboxed_review` from its native row, with code mode on or off. A
-  value that is not plainly typed is not copied, and a field that is not a boolean
-  gets the stricter value.
-- A reviewer must be offered in the executor catalog and served by the gateway as
-  an alias with that exact name or as the one Codex alias for that upstream
-  (the routing of `nativeModelAlias`), judged from the host's published catalog.
-  If not, a row that needs review keeps node_repl off, because a failed review
-  rejects every action. With the usual `codex/gpt-5.6-luna` alias, review-required
-  rows keep both fields as natively, and a new alias starts a new executor generation.
-- A reviewer row without `auto_review.node_repl_policy` gets the one from
-  `codex-auto-review`. Nothing else on any row changes.
-- The native rows carried for sub-agents follow the Codex 2 rule for their model,
-  so one model has one policy in an executor. A native row that states no policy
-  gets node_repl off there. The native engine's catalog is unchanged.
-- A row with no native counterpart (Claude, Copilot, API, or a Codex row whose
-  upstream is missing) takes the strictest native policy: review is required when
-  any native row needs it or has a flag that is not plainly `false` (these rows
-  carry no `guardian`), and node_repl is off when any native row turns it off or
-  review is required. They get no reviewer, because a Claude, Copilot or API
-  transcript would go to an OpenAI model. With no native catalog both fields are
-  `true`, and the plain catalog (CLI and remote clients) publishes `true` for both.
-- Every executor that loads this catalog starts on the machine whose native app
-  supplied the catalog and settings; the adapter, its native engine and the
-  execution host share it over a private Unix socket. Its `config.toml` comes from
-  the native `config/read` settings and keeps `mcp_servers`, so `node_repl` resolves
-  as natively. A machine without the app has no such server and no desktop
-  adapter. No executor was found that cannot start it, so none is disabled.
-
-`node scripts/check-node-repl.mjs catalog.json` reads a copy of an executor home's
-combined catalog and prints `disabled=` and `auto_review_required=` (`missing` when
-absent) for every row, plus `guardian` when set, then counts the rows that keep
-node_repl off and the rows that enable it without review, as the SDK reads them.
-It is advisory and exits 0, also for unreadable input. Pass it a copy, never the
-installed app's live state.
+never a weaker one (`src/codex-native-rows.ts`, `src/desktop-catalog.ts`). A Codex 2
+row copies its native row's policy and review fields. A row with no native
+counterpart (Claude, Copilot, Qwen) always requires review and takes the native
+confirmation and classifier texts when the native rows agree on them. Review runs
+as it does natively: the gateway serves the SDK's reviewer `codex-auto-review`
+through the Codex subscription and advertises it in `/v1/model-catalog`, and a row
+that needs review has node_repl on only while the live catalog advertises it.
+Without the route those rows stay off. Actions from Claude, Copilot and Qwen chats
+are therefore reviewed by an OpenAI model. The rules, evidence, telemetry, fail-closed
+cases and model-switch behaviour are in [node_repl on gateway rows](node-repl.md).
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global
