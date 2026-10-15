@@ -163,18 +163,17 @@ test("a stopped run removes the stale execution sockets its folder links to, and
   const rendezvous = join(realpathSync("/tmp"), `codex-daemon-${process.getuid!()}`);
   const name = () => createHash("sha256").update(randomUUID()).digest("hex");
   const stale = join(rendezvous, name()); const live = join(rendezvous, name()); const unlinked = join(rendezvous, name()); const elsewhere = join(w.work, "elsewhere.sock");
-  let server: Server | undefined; let other: Server | undefined;
+  let server: Server | undefined;
   try {
     // The folder the SDK uses is made by it, private; it exists on a machine that ran any execution-host test.
     await mkdir(rendezvous, { recursive: true, mode: 0o700 });
     server = createServer(socket => socket.end()); await new Promise<void>(resolve => server!.listen(live, resolve));
-    other = createServer(); await new Promise<void>(resolve => other!.listen(elsewhere, resolve));
     // A socket nobody listens on any more: the process that made it is killed.
-    for (const path of [stale, unlinked]) {
+    for (const path of [stale, unlinked, elsewhere]) {
       const maker = spawn(process.execPath, ["-e", `require("node:net").createServer().listen(${JSON.stringify(path)}, () => process.kill(process.pid, "SIGKILL"))`], { stdio: "ignore" });
       await once(maker, "exit");
     }
-    assert.ok(await exists(stale) && await exists(unlinked), "the stale sockets exist");
+    assert.ok(await exists(stale) && await exists(unlinked) && await exists(elsewhere), "the stale sockets exist");
     // The suite links to the stale one, the live one, and a socket elsewhere, and waits for ever.
     const file = await w.suite("links", `import { renameSync, symlinkSync, writeFileSync } from "node:fs"; import { join } from "node:path"; import { tmpdir } from "node:os";
 test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNER_LINKS).entries()) symlinkSync(target, join(tmpdir(), "link-" + index));
@@ -184,13 +183,13 @@ test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNE
     assert.equal(await exists(stale), false, "the stale socket the run linked to is removed");
     assert.equal(await exists(live), true, "a socket that is listening is kept");
     assert.equal(await exists(unlinked), true, "a stale socket the run did not link to is kept");
-    assert.equal(await exists(elsewhere), true, "so is one outside the folder the SDK uses");
+    assert.equal(await exists(elsewhere), true, "so is a stale one outside the folder the SDK uses, though the run linked to it");
     assert.equal(await new Promise(resolve => connect(live).once("connect", () => resolve(true)).once("error", () => resolve(false))), true, "and it still accepts connections");
     assert.equal(await exists(started.tmpdir), false, "the temp folder is removed");
     passed = true;
   } finally {
     if (!passed) await cleanUp(child, started);
-    server?.close(); other?.close();
+    server?.close();
     for (const path of [stale, live, unlinked]) await rm(path, { force: true });
     await rm(w.work, { recursive: true, force: true });
   }

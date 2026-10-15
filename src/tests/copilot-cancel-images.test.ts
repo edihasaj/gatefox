@@ -137,6 +137,24 @@ for (const mode of modes) {
   });
 }
 
+test("a live session that dies while its images are being written serves the request one-shot, not as a cancellation nobody asked for", { skip: process.platform === "win32", timeout: 60000 }, async () => {
+  const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = join(h.directory, "create-gate");
+  let held: Held | undefined; let running: Promise<unknown> | undefined;
+  try {
+    running = turn(adapter({ mode: "live" }), withImages(3, 500_000)).then(result => result, error => error as unknown);
+    const pipe = held = await heldWrite(h); await pipe.go();
+    assert.ok(await until(() => pipe.writing()), "the first image is being written");
+    // The live CLI dies under the write. The session's end, not a cancellation, is why the rendering stops, and it is the request's error.
+    const [pid] = await h.pids(); process.kill(pid, "SIGKILL");
+    await pipe.drain();
+    const result = await running;
+    assert.ok(!(result instanceof Error), `the request was served: ${String(result)}`);
+    assert.match((result as { text: string }).text, /^answer/);
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "stream_failed"), "by the one-shot path, after the live session failed");
+    assert.deepEqual((await h.pids()).length, 2, "a live CLI and a one-shot CLI");
+  } finally { held?.keepDraining(); await release(join(h.directory, "create-gate")); await running; await h.restore(); await held?.close(); }
+});
+
 test("staging an image into a folder that was removed fails and recreates nothing", async () => {
   const folder = await shortFolder("gw-stage-");
   try {
