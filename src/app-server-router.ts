@@ -7,7 +7,7 @@ import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
-import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
+import { loggableTier, offersServiceTier } from "./app-server-tier-offers.js";
 import { storableServiceTier, ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
 import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummary, type ThreadReasoningSelection } from "./thread-reasoning.js";
 import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
@@ -115,7 +115,9 @@ export class AppServerRouter {
         else await this.threadTiers.markUnknown(thread.id, { model: route.model }, against, requestStartedAtMs);
         const current = await this.threadTiers.read(thread.id);
         this.tierRecords.set(thread.id, current);
+        // No readable tier means a peer marked it unknown (a failed CAS), so the answer's tier must not be forwarded again.
         if (current) { route.model = current.model; route.serviceTier = current.serviceTier; }
+        else delete route.serviceTier;
       }
     }
   }
@@ -191,28 +193,11 @@ export class AppServerRouter {
       const current = await this.threadTiers.read(params.threadId);
       const route = this.routes.get(params.threadId);
       if (current) this.routes.set(params.threadId, { provider: gatewayProvider, ...current });
-      else if (!storable && applied && route) { route.model = settings.model; delete route.serviceTier; }
+      // No readable tier: unknown (this notification or a newer one from a peer), so the route must not keep an older tier.
+      else if (route) { if (!storable && applied) route.model = settings.model; delete route.serviceTier; }
       this.tierRecords.set(params.threadId, current);
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
-  }
-  /**
-   * The gateway's view of the SDK's session-start check. Standard is always offered, and so is Flex: the SDK sends
-   * Flex for every model and native Codex never refuses it. Any other tier is offered only if the row lists it.
-   */
-  private offersServiceTier(model: string, tier: string): boolean {
-    if (tier === "default" || tier === "flex") return true;
-    const metadata = this.extraModels.find(entry => entry.slug === model);
-    if (!metadata) return false;
-    try { return !!readPublicServiceTierMetadata(metadata).serviceTiers?.some(entry => entry.id === tierId(tier)); } catch { return false; }
-  }
-  /** Tier ids safe to log: the catalog's own plus the SDK's fixed names. Anything else is reported as "other". */
-  private loggableTier(tier: string): string {
-    const known = new Set(["priority", "fast"]);
-    for (const metadata of this.extraModels) {
-      try { for (const entry of readPublicServiceTierMetadata(metadata).serviceTiers ?? []) known.add(entry.id); } catch { /* an invalid row advertises nothing */ }
-    }
-    return known.has(tier) ? tier : "other";
   }
   /**
    * Recorded only once the SDK accepted the request, so a rejected request leaves no event. A loaded chat
@@ -220,7 +205,7 @@ export class AppServerRouter {
    */
   private recordTierDrops(drops: TierDrop[], result: ObjectValue): void {
     if (result.serviceTier !== undefined && result.serviceTier !== null && result.serviceTier !== "default") return;
-    for (const drop of drops) telemetry("service_tier_dropped", { model: drop.model, tier: this.loggableTier(drop.tier), method: drop.method });
+    for (const drop of drops) telemetry("service_tier_dropped", { model: drop.model, tier: loggableTier(this.extraModels, drop.tier), method: drop.method });
   }
   /**
    * At session start the SDK drops a tier the model lacks and starts Standard, so the gateway sends
@@ -228,7 +213,7 @@ export class AppServerRouter {
    */
   private dropUnsupportedTier(params: ObjectValue, model: string, method: string, drops: TierDrop[]): ObjectValue {
     const tier = tierSelection(params);
-    if (!tier || typeof tier.value !== "string" || this.offersServiceTier(model, tier.value)) return params;
+    if (!tier || typeof tier.value !== "string" || offersServiceTier(this.extraModels, model, tier.value)) return params;
     const { service_tier: _dropped, ...config } = object(params.config);
     drops.push({ model, tier: tier.value, method });
     return { ...params, serviceTier: null, ...(params.config === undefined ? {} : { config }) };
@@ -236,7 +221,7 @@ export class AppServerRouter {
   /** A resumed or forked chat starts with its own tier; one its row lacks starts Standard. A tier the gateway never read is left to the SDK. */
   private inheritedTier(params: ObjectValue, route: ThreadRoute, model: string, method: string, drops: TierDrop[]): ObjectValue {
     if (tierSelection(params) || route.serviceTier === undefined) return params;
-    if (route.serviceTier !== null && !this.offersServiceTier(model, route.serviceTier)) {
+    if (route.serviceTier !== null && !offersServiceTier(this.extraModels, model, route.serviceTier)) {
       drops.push({ model, tier: route.serviceTier, method });
       return { ...params, serviceTier: null };
     }
@@ -311,7 +296,7 @@ export class AppServerRouter {
     if (params.expectedVersion !== undefined && params.expectedVersion !== null) throw new AppServerRoutingError("Gateway default writes do not support a native config version guard");
     for (const edit of local) {
       if (!["replace", "upsert"].includes(String(edit.mergeStrategy)) || (edit.value !== null && typeof edit.value !== "string")) throw new AppServerRoutingError("Gateway defaults require string values with replace or upsert merge strategy");
-      if (edit.keyPath === "service_tier" && edit.value !== null && typeof chosen === "string" && this.aliases.has(chosen) && !this.offersServiceTier(chosen, edit.value as string)) {
+      if (edit.keyPath === "service_tier" && edit.value !== null && typeof chosen === "string" && this.aliases.has(chosen) && !offersServiceTier(this.extraModels, chosen, edit.value as string)) {
         throw new AppServerRoutingError("This gateway model does not offer that speed, so it cannot be the saved default. Choose Standard, or pick a model that offers it, then save again.", -32002);
       }
     }

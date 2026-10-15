@@ -140,3 +140,25 @@ test("an unknown tier rejects an invalid model or timestamp without writing", as
     await assert.rejects(readFile(f.path), /ENOENT/);
   } finally { await f.close(); }
 });
+
+test("a row 0.4.0 wrote inside the marker's uncertainty window does not outvote the marker", async () => {
+  const f = await fixture();
+  try {
+    await mkdir(f.state, { mode: 0o700 });
+    const key = `tier-unknown:${createHash("sha256").update("chat").digest("hex")}`;
+    const marker = { ...standard, revision: 2, emittedAtMs: 1000, uncertainBeforeMs: 9000 };
+    const put = (row: Record<string, unknown>) => writeFile(f.path, JSON.stringify({ version: 1, threads: { [key]: marker, chat: row } }), { mode: 0o600 });
+    // 0.4.0 knew nothing of the watermark: its Fast row at 5000 is newer than the marker's 1000 but older than the window's end.
+    await put({ ...fast, revision: 3, emittedAtMs: 5000 });
+    assert.equal(await f.store.read("chat"), undefined, "the unknown tier still wins");
+    await put({ ...fast, revision: 3 });
+    assert.equal(await f.store.read("chat"), undefined, "an unstamped Fast row is inside the window");
+    await put({ ...standard, revision: 3, emittedAtMs: 5000 });
+    assert.equal((await f.store.read("chat"))?.serviceTier, null, "Standard is always safe to trust");
+    await put({ ...fast, revision: 3, emittedAtMs: 9500 });
+    assert.equal((await f.store.read("chat"))?.serviceTier, "priority", "a row past the window wins");
+    await put({ ...fast, revision: 3, emittedAtMs: 5000 });
+    assert.equal(await f.store.write("chat", { ...fast, emittedAtMs: 8000 }), false, "a write cannot bring the tier back inside the window");
+    assert.equal(await f.store.read("chat"), undefined);
+  } finally { await f.close(); }
+});

@@ -524,7 +524,9 @@ The private stores have different bounds. The service-tier store holds at most 1
 chats and its file at most 4 MiB (long model names reach that limit first). When a write
 would pass either limit, it evicts other chats instead of failing: rows that were never
 stamped with a record time first, then the rows stamped longest ago, and never the chat
-being written. The reasoning store also holds at most 16384 chats and evicts the chat
+being written. A chat's row and its unknown-tier marker (below) count as rows, each by its
+exact size, and leave together: chats go oldest first by the newest stamp of either, so an
+older row never outlives a newer marker. The reasoning store also holds at most 16384 chats and evicts the chat
 observed longest ago when it is full, but its 4 MiB file limit is a hard one: a write
 that would pass it is refused rather than making room.
 
@@ -586,8 +588,14 @@ fork therefore adds no inherited tier, on this connection and on any fresh one, 
 older notification that arrives late cannot bring a tier back. The marker is an
 ordinary row in the existing file format, so a 0.4.0 build still reads the whole file;
 it never looks the marker up and sees the chat as having no record, which is also an
-unknown tier. A tier the store can hold that is chosen later replaces the marker. Such
-a tier never fails a settings notification or a resume.
+unknown tier. A marker also wins over a non-Standard row that falls inside its
+uncertainty window, because a 0.4.0 build wrote that row without knowing the watermark.
+A tier the store can hold that is chosen later replaces the marker. Such a tier never
+fails a settings notification or a resume, and recording it makes room like any other
+write. If a marker could not fit even then, which a store this size cannot reach, the
+chat's row is still removed and a full store keeps no watermark for it. When a peer
+connection has marked the chat unknown, this connection also stops forwarding the tier
+it held, whether its own notification was rejected as older or its resume was in flight.
 
 Each dropped tier is recorded as a `service_tier_dropped` telemetry event, only after
 the SDK accepted the request and only when its answer shows the chat started as Standard.

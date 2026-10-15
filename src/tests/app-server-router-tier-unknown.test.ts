@@ -27,12 +27,13 @@ async function fixture() {
   ] };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
   const sdk = { tier: null as unknown };
-  const control = { loaded: false, answerId: "t" };
+  const control = { loaded: false, answerId: "t", during: undefined as (() => Promise<void>) | undefined };
   const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
     calls.push({ method, params: structuredClone(params) });
     if (method === "model/list") return { data: [], nextCursor: null };
     if (method === "thread/read") return { thread: { id: "t", modelProvider: gateway, model: codex } };
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
+      await control.during?.();
       if (control.loaded) return { thread: { id: control.answerId }, modelProvider: gateway, model: codex, serviceTier: sdk.tier };
       sdk.tier = Object.hasOwn(params, "serviceTier") ? params.serviceTier ?? null : null;
       return { thread: { id: control.answerId }, modelProvider: params.modelProvider, model: params.model, serviceTier: sdk.tier };
@@ -151,5 +152,33 @@ test("the file written after an odd tier is accepted by the 0.4.0 parser and sho
     const accepted = oldBuildAccepts(JSON.parse(await readFile(await f.file(), "utf8")));
     assert.equal(Object.hasOwn(accepted, "t"), false, `0.4.0 would still find a record for the chat after ${label(tier)}`);
     assert.ok(Object.keys(accepted).length > 0, "the watermark is stored as a row 0.4.0 accepts");
+  }
+});
+
+test("a connection that held Fast stops forwarding it when the store rejects its older notification because a peer marked the chat unknown", async () => {
+  for (const tier of oddTiers) for (const method of methods) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+    const t0 = Date.now() + 100; const t1 = Date.now() + 400;
+    await f.announce(await f.connect(), tier, t1);
+    // The older Fast reaches the connection that still holds Fast; the store rejects it and has no tier to give back.
+    await f.announce(f.router, "priority", t0);
+    assert.equal(await f.store.read("t"), undefined);
+    await f.router.request(method, { threadId: "t", model: codex });
+    assert.ok(noTier(f.last().params), `${method} sent ${String(f.last().params.serviceTier)} after ${label(tier)}`);
+  }
+});
+
+test("a resume in flight while a peer marks the chat unknown does not keep the tier the answer carried", async () => {
+  for (const tier of oddTiers) for (const method of methods) {
+    const f = await fixture();
+    await f.router.request("thread/start", { model: codex, serviceTier: "priority" });
+    const peer = await f.connect();
+    f.sdk.tier = "priority"; f.control.loaded = true;
+    f.control.during = async () => { f.control.during = undefined; await f.announce(peer, tier, Date.now() + 100); };
+    await f.router.request("thread/resume", { threadId: "t" });
+    assert.equal(await f.store.read("t"), undefined, "the peer's unknown tier stands");
+    await f.router.request(method, { threadId: "t", model: codex });
+    assert.ok(noTier(f.last().params), `${method} sent ${String(f.last().params.serviceTier)} after ${label(tier)}`);
   }
 });
