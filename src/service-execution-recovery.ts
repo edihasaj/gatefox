@@ -23,7 +23,9 @@ export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity
   }
   return withPrivateFileLock(receipt, async () => {
     const stored = await readOwnerRecord(receipt); const owner = stored.owner; if (!owner) return;
-    for (const key of ["configPath", "nativeHome", "codex", "sdkSha256"] as const) if (owner[key] !== identity[key]) throw new Error("Execution rollback ownership does not match this migration; it was preserved");
+    // A gateway-only host runs its pinned runtime, so the app's codex is not part of its identity: an app update must not block rollback.
+    const keys = owner.capabilities?.includes("native") ? ["configPath", "nativeHome", "codex", "sdkSha256"] as const : ["configPath", "nativeHome"] as const;
+    for (const key of keys) if (owner[key] !== identity[key]) throw new Error("Execution rollback ownership does not match this migration; it was preserved");
     if (owner.socketPath !== resolve(home, "host.sock") || owner.state !== "stopped" || owner.pid !== 0) throw new Error("Execution host must be fully stopped before restoring legacy writers");
     for (const engine of owner.generations) {
       if (!engine || !/^[a-f0-9]{64}$/.test(engine.revision) || !Number.isSafeInteger(engine.pid) || engine.pid < 0 || engine.socketPath !== resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) throw new Error("Execution rollback generation identity is invalid; it was preserved");

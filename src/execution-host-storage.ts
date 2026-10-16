@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, unlink } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { connect } from "node:net";
@@ -26,9 +26,14 @@ export function executionCapabilities(value?: unknown): ExecutionCapability[] {
   if (!Array.isArray(value) || !value.length || value.length > 2 || value.some(item => item !== "native" && item !== "gateway") || new Set(value).size !== value.length) throw new Error("Execution host capabilities are invalid");
   return [...value] as ExecutionCapability[];
 }
+let executionHostRootOverride: string | undefined;
+/** The folder that holds every configuration's host home. Production: `~/.local/state/gw-exec`. */
+export function executionHostRoot(): string { return executionHostRootOverride ?? resolve(homedir(), ".local/state/gw-exec"); }
+/** Tests keep host homes in a folder of their own; production never calls it. Undefined restores the real root. */
+export function setExecutionHostRootForTests(root?: string): void { executionHostRootOverride = root ? resolve(root) : undefined; }
 export function executionHostHome(configPath: string, nativeHome: string): string {
   const scope = createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);
-  return resolve(homedir(), ".local/state/gw-exec", scope);
+  return resolve(executionHostRoot(), scope);
 }
 export function livePid(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid < 1) return false;
@@ -159,44 +164,102 @@ export async function removeOwnedSocket(path: string, expected?: SocketIdentity,
     if (physical?.isSocket() && String(physical.ino) === current.targetInode && String(physical.dev) === current.targetDevice) await unlink(current.targetPath);
   }
 }
-/** The fixed links a host receipt can own, independent of whatever its unreadable body claimed. */
-function hostLinks(home: string): string[] { return [resolve(home, "host.sock"), resolve(home, "native.sock")]; }
+/** Every link a host home can hold, recorded or not: its control link, its native link and each generation link. */
+async function homeLinks(home: string): Promise<string[]> {
+  const names = await readdir(home).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return [] as string[]; throw error; });
+  return [resolve(home, "host.sock"), resolve(home, "native.sock"), ...names.filter(name => /^e-[0-9a-f]{16}\.sock$/.test(name)).sort().map(name => resolve(home, name))];
+}
+/** A link answers when it, or the SDK socket it names, accepts a connect: a link can be gone while its listener still serves. */
+export async function linkAnswers(path: string): Promise<boolean> {
+  return await socketAnswers(path) || await socketAnswers(await sdkSocketTarget(path).catch(() => path));
+}
 async function receiptMtime(path: string): Promise<number> { return (await lstat(path).catch(() => undefined))?.mtimeMs ?? Number.POSITIVE_INFINITY; }
-/** A dead owner never blocks: its processes are gone and nothing it advertised answers a connect. */
 function ownerRecords(owner: HostOwner): ReceiptOwner[] { return [owner, ...owner.generations.filter(Boolean), ...(owner.native ? [owner.native] : [])]; }
 function ownerLinks(home: string, owner: HostOwner): string[] {
   return [typeof owner.socketPath === "string" ? owner.socketPath : resolve(home, "host.sock"),
     ...owner.generations.filter(engine => engine && /^[a-f0-9]{64}$/.test(engine.revision)).map(engine => resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)),
     ...(owner.native ? [resolve(home, "native.sock")] : [])];
 }
-async function ownerIsDead(home: string, owner: HostOwner, mtimeMs: number): Promise<OwnerLiveness> {
-  if (await fromPreviousBoot({ ...(owner.bootId ? { bootId: owner.bootId } : {}) }, mtimeMs)) return "previous_boot";
-  for (const record of ownerRecords(owner)) if (await receiptPidAlive(record, mtimeMs)) return "live";
-  for (const path of ownerLinks(home, owner)) if (await socketAnswers(path)) return "live";
-  return "dead_pids";
+/**
+ * A dead owner never blocks, and a live one is never displaced. An owner is live while a process it names can
+ * still be its own, or while anything it advertised or its home holds answers a connect. An earlier boot ends
+ * every process at once, but a listener that answers still keeps the owner: the two rules always agree.
+ */
+async function ownerLiveness(home: string, records: ReceiptOwner[], links: string[], bootId: string | undefined, mtimeMs: number): Promise<OwnerLiveness> {
+  const previous = await fromPreviousBoot(bootId ? { bootId } : {}, mtimeMs);
+  if (!previous) for (const record of records) if (await receiptPidAlive(record, mtimeMs)) return "live";
+  for (const path of new Set([...links, ...await homeLinks(home)])) if (await linkAnswers(path)) return "live";
+  return previous ? "previous_boot" : "dead_pids";
 }
-/** Nothing a receipt named is alive, and nothing it advertised answers. */
-async function orphanReceiptIsDead(links: string[]): Promise<boolean> {
-  for (const path of links) if (await socketAnswers(path) || await socketAnswers(await sdkSocketTarget(path).catch(() => path))) return false;
-  return true;
+/** A field of an invalid receipt that still names a process: its pid, with the boot and start it was stamped with. */
+export function lenientRecord(value: unknown, pidKey = "pid", bootKey = "bootId", startKey = "startedAtMs"): ReceiptOwner | undefined {
+  if (!value || typeof value !== "object") return;
+  const fields = value as Record<string, unknown>; const pid = fields[pidKey]; const bootId = fields[bootKey]; const started = fields[startKey];
+  if (!Number.isSafeInteger(pid) || (pid as number) < 1) return;
+  return { pid: pid as number, ...(typeof bootId === "string" ? { bootId } : {}), ...(Number.isSafeInteger(started) && (started as number) >= 0 ? { startedAtMs: started as number } : {}) };
 }
-/** An owner this machine no longer has leaves its receipt behind in `<folder>/stale/`, never deleted. */
+/** Whatever JSON object an invalid receipt still holds, read without following a link or blocking on a special file. */
+export async function readLenientJson(path: string): Promise<Record<string, unknown> | undefined> {
+  let file;
+  try {
+    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK || 0));
+    const info = await file.stat();
+    if (!info.isFile() || info.uid !== process.getuid?.() || info.size > 65536) return;
+    const value: unknown = JSON.parse(await file.readFile("utf8"));
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+  } catch { return; }
+  finally { await file?.close(); }
+}
+/** What an invalid host receipt still says: every process it names, and the boot it was stamped with. */
+function lenientHostOwner(body: Record<string, unknown> | undefined): { records: ReceiptOwner[]; bootId?: string } {
+  if (!body) return { records: [] };
+  const generations = Array.isArray(body.generations) ? body.generations.slice(0, 8) : [];
+  const records = [lenientRecord(body), ...generations.map(engine => lenientRecord(engine)), lenientRecord(body.native)].filter((record): record is ReceiptOwner => !!record);
+  return { records, ...(typeof body.bootId === "string" ? { bootId: body.bootId } : {}) };
+}
+/**
+ * A dead owner's link nobody recorded: removed when it is the SDK's rendezvous for this path and nothing answers it.
+ * A direct socket nobody recorded is never removed. At the control socket it refuses the claim, as the host could not
+ * start beside it; anywhere else it is left where it is and only its own generation stays unavailable.
+ */
+async function removeUnrecordedLink(path: string, controlSocket: string): Promise<void> {
+  const actual = await inspectSocket(path, true);
+  if (actual && !actual.targetPath && path !== controlSocket) return;
+  await removeOwnedSocket(path, undefined, true);
+}
+const maxArchiveCopyBytes = 1024 * 1024;
+/** An owner this machine no longer has leaves its receipt behind in `<folder>/stale/`, never deleted; the newest five are kept. */
 export async function archiveStaleReceipt(receiptPath: string, scope: "host" | "native_home", reason: OwnerReclaim): Promise<void> {
-  const folder = resolve(dirname(receiptPath), "stale");
+  const folder = resolve(dirname(receiptPath), "stale"); const stem = basename(receiptPath, ".json");
   await privateDirectory(folder);
-  const archive = resolve(folder, `${basename(receiptPath, ".json")}-${Date.now()}.json`);
-  try { await copyFile(receiptPath, archive); }
-  catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return; // Another writer already replaced it: there is nothing left to keep.
-    // An unreadable body is still a receipt: move it aside instead of reporting a copy failure as nothing to keep.
-    if (code !== "EACCES" && code !== "EIO") throw error;
-    await rename(receiptPath, archive);
+  const info = await lstat(receiptPath).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; });
+  if (!info) return; // Another writer already replaced it: there is nothing left to keep.
+  let archive: string | undefined;
+  for (let ms = Date.now(), attempt = 0; !archive && attempt < 64; attempt++, ms++) {
+    const candidate = resolve(folder, `${stem}-${ms}.json`);
+    if (!await lstat(candidate).then(() => true, error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; })) archive = candidate;
   }
-  await chmod(archive, 0o600);
-  const names = (await readdir(folder)).filter(name => name.startsWith(`${basename(receiptPath, ".json")}-`)).sort();
+  if (!archive) throw new Error("Execution ownership archive is full; the receipt was preserved");
+  // Only a plain file is read: a link, a pipe or a device is moved aside whole, so archiving never follows or blocks on it.
+  if (!info.isFile() || info.size > maxArchiveCopyBytes || !await copyReceipt(receiptPath, archive, info)) await rename(receiptPath, archive);
+  const names = (await readdir(folder)).filter(name => name.startsWith(`${stem}-`)).sort();
   for (const name of names.slice(0, Math.max(0, names.length - 5))) await unlink(resolve(folder, name)).catch(() => {});
   telemetry("execution_owner_reclaimed", { scope, reason });
+}
+/** Copies a plain receipt into its private archive; false when it cannot be read as the same plain file. */
+async function copyReceipt(receiptPath: string, archive: string, expected: { ino: number; dev: number }): Promise<boolean> {
+  let file;
+  try { file = await open(receiptPath, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK || 0)); }
+  catch (error) { if (["EACCES", "EIO", "ELOOP", "EPERM", "ENXIO", "EOPNOTSUPP"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+  try {
+    const opened = await file.stat();
+    if (!opened.isFile() || opened.ino !== expected.ino || opened.dev !== expected.dev || opened.size > maxArchiveCopyBytes) return false;
+    let bytes: Buffer;
+    try { bytes = await file.readFile(); }
+    catch (error) { if (["EACCES", "EIO"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
+    await writeFile(archive, bytes, { mode: 0o600, flag: "wx" });
+    return true;
+  } finally { await file.close(); }
 }
 /** The receipt plus the file time a bootless receipt needs for its previous-boot comparison. */
 export async function readOwnerRecord(receipt: string): Promise<{ owner?: HostOwner; mtimeMs: number; invalid: boolean }> {
@@ -213,12 +276,14 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
     const stored = await readOwnerRecord(receipt);
     let reclaim: OwnerReclaim | undefined;
     if (stored.invalid) {
-      // A garbled receipt only stops a claim while something it could have named is still answering.
-      if (await orphanReceiptIsDead(hostLinks(home))) { await removeOwnedSocket(identity.socketPath, undefined, true); reclaim = "invalid_receipt"; }
-      else throw new Error("Execution host ownership receipt is invalid");
+      // A receipt this release cannot validate still names processes, and its home still holds links: any of them alive keeps it.
+      const lenient = lenientHostOwner(await readLenientJson(receipt));
+      if (await ownerLiveness(home, lenient.records, [], lenient.bootId, stored.mtimeMs) === "live") throw new Error("Execution host ownership receipt is invalid");
+      for (const path of await homeLinks(home)) await removeUnrecordedLink(path, identity.socketPath);
+      reclaim = "invalid_receipt";
     } else if (stored.owner) {
       const previous = stored.owner;
-      const dead = await ownerIsDead(home, previous, stored.mtimeMs);
+      const dead = await ownerLiveness(home, ownerRecords(previous), ownerLinks(home, previous), previous.bootId, stored.mtimeMs);
       if (dead === "live") {
         for (const key of ["configPath", "nativeHome", "codex", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
         if (await receiptPidAlive(previous, stored.mtimeMs)) throw new Error("An execution host already owns this configuration");
@@ -239,9 +304,12 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
       // A stopped or dead owner keeps only the identity that says which configuration and home this is:
       // the app's SDK path and checksum move with an update, and the generations below were proven gone.
       for (const key of ["configPath", "nativeHome", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
-      for (const engine of previous.generations) if (engine && /^[a-f0-9]{64}$/.test(engine.revision) && engine.socketPath === resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) await removeOwnedSocket(engine.socketPath, engine.socket, true);
-      if (previous.native?.socketPath === resolve(home, "native.sock")) await removeOwnedSocket(previous.native.socketPath, previous.native.socket, true);
-      await removeOwnedSocket(identity.socketPath, previous.socket, true);
+      const recorded = new Set<string>();
+      for (const engine of previous.generations) if (engine && /^[a-f0-9]{64}$/.test(engine.revision) && engine.socketPath === resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) { recorded.add(engine.socketPath); await removeOwnedSocket(engine.socketPath, engine.socket, true); }
+      if (previous.native?.socketPath === resolve(home, "native.sock")) { recorded.add(previous.native.socketPath); await removeOwnedSocket(previous.native.socketPath, previous.native.socket, true); }
+      await removeOwnedSocket(identity.socketPath, previous.socket, true); recorded.add(identity.socketPath);
+      // A generation the dead owner never got to record still left its link behind: it would block that revision for ever.
+      for (const path of await homeLinks(home)) if (!recorded.has(path)) await removeUnrecordedLink(path, identity.socketPath);
       // A receipt that never claimed a process is an ordinary handover, so it is not worth a reclaim record.
       if (previous.state === "running" || previous.pid > 0 || previous.generations.some(engine => (engine?.pid ?? 0) > 0) || (previous.native?.pid ?? 0) > 0) reclaim = dead;
     } else await removeOwnedSocket(identity.socketPath);

@@ -153,7 +153,7 @@ export class NativeExecutionEngine {
       });
     });
     this.owner.pid = child.pid || 0; this.record.pid = this.owner.pid;
-    if (child.pid) Object.assign(this.owner, await spawnStamp());
+    if (child.pid) Object.assign(this.owner, await spawnStamp(child.pid));
     await changed();
     const deadline = Date.now() + 10000;
     for (;;) {

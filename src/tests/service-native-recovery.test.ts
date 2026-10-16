@@ -8,7 +8,9 @@ import { nativeHomeOwnerPath, type NativeHomeOwner } from "../native-execution-h
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
 import { writePrivateJson } from "../config.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function fixture() {

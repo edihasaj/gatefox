@@ -1,19 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
 import { readOwner, sdkIdentity } from "../execution-host-storage.js";
+import { ExecutionHostClient } from "../execution-host-client.js";
 import { readNativeHomeOwner, nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import type { GatewayConfig } from "../config.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 // The app's native codex may be any version; the gateway runtime is the pinned fixture SDK that generations really run.
@@ -173,4 +176,40 @@ test("a runtime that cannot be resolved falls back to pinning the app codex, as 
     const host = await startExecutionHost({ ...f.options, gatewayRuntime: failing("damaged runtime") });
     await host.close();
   } finally { await f.clean(); }
+});
+
+// D5 and A4: a gateway-only host runs its pinned runtime, so an app update that removes, moves or relinks the app's codex must
+// neither stop the host from starting nor make adapters reject it as foreign (they used to compare the app's codex path and
+// fail with "ownership does not match" for as long as that host ran).
+test("a gateway-only host and its adapters do not depend on the app's codex being present, in place or unchanged", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; const clients: ExecutionHostClient[] = [];
+  const discover = async (codex: string) => { const client = await ExecutionHostClient.discover(f.options.configPath, f.nativeHome, codex, "gateway", true); assert.ok(client); clients.push(client!); return client!; };
+  try {
+    await rm(f.appCodex); // Mid-update: the app's codex is gone.
+    host = await startExecutionHost(f.options);
+    const owner = await readOwner(join(f.hostHome, "owner.json"));
+    assert.equal(owner?.codex, f.runtime.executable); assert.equal(owner?.sdkSha256, f.runtime.binarySha256);
+    assert.deepEqual((await discover(f.appCodex)).capabilities, ["gateway"]);
+    await f.writeApp("codex-cli 0.164.0"); // The update finished: a different binary at the same path.
+    await discover(f.appCodex);
+    const moved = join(f.directory, "Moved.app-codex"); await rename(f.appCodex, moved); // Moved elsewhere.
+    await discover(moved);
+    await symlink(moved, f.appCodex); // Relinked: the configured path is now a link to the new place.
+    await discover(f.appCodex);
+    // Generations still run the runtime the host pinned.
+    const client = await control(join(f.hostHome, "host.sock"));
+    try { assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor() })).revision, "a".repeat(64)); }
+    finally { await client.close(); }
+    assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "runtime");
+  } finally { for (const client of clients) client.close(); await host?.close(); await f.clean(); }
+});
+
+test("a host that shares native execution still has to match the app's codex", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host;
+  try {
+    await f.writeApp(pinned);
+    host = await startExecutionHost({ ...f.options, capabilities: ["native", "gateway"], nativeSdkVerifier: sameNative });
+    const other = join(f.directory, "other-codex"); await writeFile(other, "#!/bin/sh\n", { mode: 0o700 });
+    await assert.rejects(ExecutionHostClient.discover(f.options.configPath, f.nativeHome, other, "gateway", true), /ownership does not match/);
+  } finally { await host?.close(); await f.clean(); }
 });

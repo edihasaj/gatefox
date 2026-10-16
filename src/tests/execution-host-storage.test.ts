@@ -7,6 +7,9 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
 import { removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketIdentity } from "../execution-host-storage.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 
 async function fixture() {
   // The rendezvous is a machine-wide fixed folder: a run only ever uses a short folder of its own.
@@ -16,7 +19,7 @@ async function fixture() {
   const path = join(directory, "engine.sock"); const target = await sdkSocketTarget(path);
   const info = await lstat(dirname(target));
   assert.equal(info.uid, process.getuid?.()); assert.equal(info.mode & 0o777, 0o700);
-  return { directory, path, target, clean: async () => { setSdkSocketRootForTests(); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, path, target, clean: async () => { roots.restore(); await rm(directory, { recursive: true, force: true }); } };
 }
 async function childSocket(path: string): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["-e", "const fs=require('node:fs');require('node:net').createServer().listen(process.argv[1],()=>{fs.chmodSync(process.argv[1],0o600);console.log('ready')})", path], { stdio: ["ignore", "pipe", "ignore"] });

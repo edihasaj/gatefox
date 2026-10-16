@@ -22,9 +22,10 @@ const bootIdPattern = /^[0-9a-fA-F][0-9a-fA-F-]{6,63}$/;
 let identity: Promise<BootIdentity> | undefined;
 let injected: BootIdentity | undefined;
 let startReader: ProcessStartReader | undefined;
+let ownStart: Promise<number> | undefined;
 let ownPidForTests: number | undefined;
 
-/** When this process started, which is what a receipt records for its own owner. */
+/** An estimate of when this process started, used only when the operating system will not say. */
 export function thisProcessStartMs(): number { return Math.round(Date.now() - Math.max(0, process.uptime() * 1000)) }
 
 export function bootIdentity(): Promise<BootIdentity> {
@@ -33,8 +34,8 @@ export function bootIdentity(): Promise<BootIdentity> {
 }
 /** Tests pin the boot and never touch a real machine's identity. Undefined restores the probe. */
 export function setBootIdentityForTests(value?: BootIdentity): void { injected = value; identity = undefined; }
-/** `ps` is not always runnable, so callers under test supply the start time instead. */
-export function setProcessStartReaderForTests(reader?: ProcessStartReader): void { startReader = reader; }
+/** `ps` is not always runnable, so callers under test supply the start time instead. It also restamps this process. */
+export function setProcessStartReaderForTests(reader?: ProcessStartReader): void { startReader = reader; ownStart = undefined; }
 /** The pid whose receipts are this process's own leftovers. Production: always this process. */
 export function ownPid(): number { return ownPidForTests ?? process.pid; }
 /**
@@ -44,10 +45,27 @@ export function ownPid(): number { return ownPidForTests ?? process.pid; }
  */
 export function setOwnPidForTests(pid?: number): void { ownPidForTests = pid; }
 
+/** When the operating system says the process started, from the one source every liveness check reads. */
+export function processStartMs(pid: number): Promise<number | undefined> { return (startReader ?? readProcessStartMs)(pid); }
+/**
+ * This process's own start, read once from the same source a checker uses. A start computed from the
+ * uptime drifts from the kernel's record by a few parts per million, which outgrows the skew in days.
+ */
+export function ownStartMs(): Promise<number> {
+  ownStart ??= processStartMs(process.pid).catch(() => undefined).then(started => started ?? thisProcessStartMs());
+  return ownStart;
+}
+
 /** The fields a new receipt records about the process it names. */
 export async function ownerStamp(): Promise<{ bootId?: string; startedAtMs: number }> {
   const boot = await bootIdentity();
-  return { ...(boot.id ? { bootId: boot.id } : {}), startedAtMs: thisProcessStartMs() };
+  return { ...(boot.id ? { bootId: boot.id } : {}), startedAtMs: await ownStartMs() };
+}
+/** What a receipt records about a child it started just now: the kernel's start when it answers, else the time of the spawn. */
+export async function spawnStamp(pid?: number): Promise<{ bootId?: string; startedAtMs: number }> {
+  const spawnedAtMs = Date.now(); const boot = await bootIdentity();
+  const started = pid ? await processStartMs(pid).catch(() => undefined) : undefined;
+  return { ...(boot.id ? { bootId: boot.id } : {}), startedAtMs: started ?? spawnedAtMs };
 }
 
 /** True when the receipt cannot belong to this boot. `mtimeMs` is the receipt file's own time. */
@@ -60,6 +78,14 @@ export async function fromPreviousBoot(record: { bootId?: string }, mtimeMs = Nu
 /** True only when the named process can still be this machine's own owner right now. */
 export async function ownerAlive(record: OwnerRecord, mtimeMs = Number.POSITIVE_INFINITY): Promise<boolean> {
   if (await fromPreviousBoot({ bootId: record.bootId }, mtimeMs)) return false;
+  return processAlive(record);
+}
+/**
+ * The process half of the rule, with no file time in it: a pid that is gone, somebody else's, this very
+ * process, or a different process that reused the pid is not alive. Locks use only this half, because a
+ * clock that steps forward makes a live lock's file time look older than the boot.
+ */
+export async function processAlive(record: { pid: number; startedAtMs?: number }): Promise<boolean> {
   if (!Number.isSafeInteger(record.pid) || record.pid < 1) return false;
   if (record.pid === ownPid()) return false; // A leftover from an earlier attempt inside this very process.
   try { process.kill(record.pid, 0); }
@@ -69,7 +95,7 @@ export async function ownerAlive(record: OwnerRecord, mtimeMs = Number.POSITIVE_
     return true; // An unexpected answer is not proof of death.
   }
   if (record.startedAtMs !== undefined) {
-    const started = await (startReader ?? readProcessStartMs)(record.pid);
+    const started = await processStartMs(record.pid).catch(() => undefined);
     if (started !== undefined && Math.abs(started - record.startedAtMs) > startSkewMs) return false; // The pid was reused.
   }
   return true;
@@ -77,8 +103,23 @@ export async function ownerAlive(record: OwnerRecord, mtimeMs = Number.POSITIVE_
 
 /** True when the pid cannot be the writer of a lock file last touched at `writtenAtMs`. */
 export async function processStartedAfter(pid: number, writtenAtMs: number): Promise<boolean> {
-  const started = await (startReader ?? readProcessStartMs)(pid);
+  const started = await processStartMs(pid).catch(() => undefined);
   return started !== undefined && started > writtenAtMs + startSkewMs;
+}
+
+const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/**
+ * Reads `ps -o lstart=` output that was printed in UTC with the C locale ("Sat Oct 17 01:08:03 2026").
+ * Parsing it as UTC keeps a daylight-saving fall-back hour or a time-zone change from moving it.
+ */
+export function parsePsStart(text: string): number | undefined {
+  const match = /^(?:[A-Z][a-z]{2})\s+([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(text.trim());
+  if (!match) return;
+  const month = months.indexOf(match[1]); if (month < 0) return;
+  const [day, hour, minute, second, year] = [match[2], match[3], match[4], match[5], match[6]].map(Number);
+  if (day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60) return;
+  const started = Date.UTC(year, month, day, hour, minute, second);
+  return Number.isFinite(started) ? started : undefined;
 }
 
 async function readBootIdentity(): Promise<BootIdentity> {
@@ -101,19 +142,15 @@ async function fileBootId(): Promise<string | undefined> {
   return id && bootIdPattern.test(id) ? id : undefined;
 }
 async function readProcessStartMs(pid: number): Promise<number | undefined> {
+  if (process.platform !== "darwin" && process.platform !== "linux") return undefined;
   try {
-    const { stdout } = await execute("/bin/ps", ["-o", "lstart=", "-p", String(pid)]);
-    const started = Date.parse(stdout.trim());
-    return Number.isFinite(started) ? started : undefined;
+    // The C locale and UTC make the output one fixed format whatever this process's zone or language is.
+    const { stdout } = await execute("/bin/ps", ["-o", "lstart=", "-p", String(pid)], { LC_ALL: "C", TZ: "UTC" });
+    return parsePsStart(stdout);
   } catch { return undefined; }
 }
-function execute(command: string, args: string[]): Promise<{ stdout: string }> {
+function execute(command: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ stdout: string }> {
   return new Promise((done, failed) => {
-    execFile(command, args, { timeout: 2000, maxBuffer: 8192 }, (error, stdout) => error ? failed(error) : done({ stdout }));
+    execFile(command, args, { timeout: 2000, maxBuffer: 8192, ...(env ? { env } : {}) }, (error, stdout) => error ? failed(error) : done({ stdout }));
   });
-}
-/** What a receipt records about a process it started just now. */
-export async function spawnStamp(): Promise<{ bootId?: string; startedAtMs: number }> {
-  const boot = await bootIdentity();
-  return { ...(boot.id ? { bootId: boot.id } : {}), startedAtMs: Date.now() };
 }

@@ -6,7 +6,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
-import { readNativeHomeOwner, readNativeHomeOwnerRecord } from "./native-execution-host-storage.js";
+import { nativeHomeOwnership } from "./native-execution-host-storage.js";
 import { acquireNativeCompatible } from "./native-execution-compat.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
 /** A receipt left by an owner that is gone must not look alive: its pid alone is not proof. */
@@ -23,10 +23,10 @@ export class ExecutionHostClient {
   get closed(): boolean { return this.connection.closed; }
   static async assertNativeUnowned(configPath: string | undefined, nativeHome: string): Promise<void> {
     const blocked = () => { throw Object.assign(new Error("A managed shared native executor still owns this native home. Finish the sharing-mode migration before reconnecting; its chats were preserved."), { code: -32001 }); };
-    const stored = await readNativeHomeOwnerRecord(nativeHome);
-    if (stored.owner && (await receiptAlive(stored.owner, stored.mtimeMs)
-      || await receiptAlive({ pid: stored.owner.pid, socketPath: stored.owner.socketPath, ...(stored.owner.sdkBootId ? { bootId: stored.owner.sdkBootId } : {}), ...(stored.owner.sdkStartedAtMs !== undefined ? { startedAtMs: stored.owner.sdkStartedAtMs } : {}) }, stored.mtimeMs)
-      || (stored.owner.state === "running" && stored.owner.sdkState === "starting" && await receiptPidAlive({ pid: stored.owner.hostPid, ...(stored.owner.bootId ? { bootId: stored.owner.bootId } : {}) }, stored.mtimeMs)))) blocked();
+    // The same verdict a host's claim gets: a live host (even with its SDK idle), a launch still inside its startup grace, or a
+    // receipt nothing can prove dead all keep a private writer out, so one native home never has two writers.
+    const ownership = await nativeHomeOwnership(nativeHome, configPath ? executionHostHome(configPath, nativeHome) : undefined);
+    if (ownership === "live" || ownership === "unconfirmed") blocked();
     if (!configPath) return;
     const owner = await readOwnerRecord(resolve(executionHostHome(configPath, nativeHome), "owner.json"));
     if (owner.owner && owner.owner.configPath === resolve(configPath) && owner.owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.owner.capabilities).includes("native")
@@ -45,7 +45,10 @@ export class ExecutionHostClient {
       return;
     }
     const socketPath = resolve(home, "host.sock");
-    if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.codex !== await realpath(codex) || owner.socketPath !== socketPath) throw new Error("Shared executor ownership does not match this adapter");
+    if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) throw new Error("Shared executor ownership does not match this adapter");
+    // Only native sharing runs the app's own engine. A gateway-only host runs its pinned runtime, guarded by that runtime's
+    // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
+    if (capabilities.includes("native") && owner.codex !== await realpath(codex)) throw new Error("Shared executor ownership does not match this adapter");
     if (owner.state !== "running" || !(await receiptPidAlive(owner, receiptMtime))) throw new Error("Shared executor host is unavailable; check gateway service status");
     const socket = await socketIdentity(socketPath);
     if (!socket || !owner.socket || !sameSocketIdentity(owner.socket, socket)) throw new Error("Shared executor socket ownership changed; it was preserved");

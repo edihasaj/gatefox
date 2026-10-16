@@ -5,6 +5,9 @@ import { CompactionStateStore } from "../compaction-state.js";
 import { BoundedIdSet } from "../bounded-id-set.js";
 import type { Message } from "../app-server-connection.js";
 import { compactionSdkFixture, largeModel, until } from "./compaction-sdk-fixture.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 
 type Fixture = Awaited<ReturnType<typeof compactionSdkFixture>>;
 const input = [{ type: "text", text: "go" }];

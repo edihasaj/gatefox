@@ -108,22 +108,44 @@ The execution host belongs to the unified service and owns its SDK children. The
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 
-An owner is dead when its receipt belongs to an earlier boot, when every process
-it names is gone in this boot, or when its receipt cannot be read and none of the
-sockets it could name answers a connect. A live process or an answering socket
-keeps the owner alive and its chats protected. A dead owner never blocks a start:
-its claim removes the socket links that are safe to remove, moves the old receipt
-aside under the host folder's `stale/` directory, and records one
-`execution_owner_reclaimed` event with the scope and the reason. Receipts written
-before this boot stamp are judged by their file time. A receipt naming the very
-process that is claiming is its own leftover from an attempt that never finished,
-so it is dead, and the claim goes on to take the home.
+An owner is dead when nothing it names can still be running and nothing it
+advertised answers a connect. Its processes are gone when its receipt belongs to an
+earlier boot, or when every pid it names is gone, belongs to another user, is the
+claiming process itself, or belongs to a process that started at another time. Its
+sockets are the links its receipt records and every link its host folder holds
+(`host.sock`, `native.sock` and each `e-*.sock` generation link), each asked both
+through the link and at the SDK socket it names. An answering socket keeps an owner
+alive even when its receipt is from an earlier boot, so the two rules always agree.
+A receipt this release cannot validate, such as a newer release's or a damaged one,
+is judged by whatever pids, stamps and socket path it still contains.
+
+A dead owner never blocks a start. Its claim removes the socket links that are safe
+to remove (an SDK link to its own target that nothing answers; a direct socket that
+nobody recorded stays), moves the old receipt aside under the folder's `stale/`
+directory, and records one `execution_owner_reclaimed` event with the scope and the
+reason. Archiving copies a plain receipt and moves anything else, such as a link or
+a pipe, aside whole without reading it; `stale/` keeps the five newest receipts of
+each name. Receipts written before 0.4.4 carry no boot stamp and are judged by their
+file time. A receipt naming the claiming process itself is its own leftover from an
+attempt that never finished, so the claim goes on to take the home.
+
+Process start times come from the operating system (`ps`, read in UTC with the C
+locale) both for the stamp a process records about itself and for every check, so a
+long-running supervisor never drifts away from its own receipt, and a daylight-saving
+change cannot move a start by an hour. Private file locks follow the same process rule
+but never the file-time boot rule, because a clock that steps forward would otherwise
+free a live lock. Only the caller that created a lock removes it, and only while the
+path still names its file; one breaker at a time removes a stale lock.
 
 A native launch that a dead host recorded as `starting` may have left an SDK
 child that is still coming up. Its receipt is reclaimed only when it is from an
-earlier boot, or when it is older than 60 seconds and nothing answers a connect
-at the native socket or its SDK target. Until then the claim is refused as
-unconfirmed, so two writers never share a chat.
+earlier boot, or when it is older than 60 seconds, and in both cases only when nothing
+answers a connect at the native socket or its SDK target. Until then the claim is
+refused as unconfirmed, so two writers never share a chat. A native-home receipt that
+cannot be read at all is given up only when its file is from an earlier boot and no
+host folder's native socket answers. A private, unshared native writer obeys the same
+verdict as a claim: a live host (even with its SDK idle), a launch inside its startup
+grace, or a receipt nothing can prove dead keeps it from starting.
 
 The host pins the binary its gateway generations actually run: the release's own
 gateway SDK (`gateway-sdk/gateway-codex`, 0.162.0-alpha.17.2), not the app's
@@ -133,7 +155,11 @@ every generation descriptor, guards the binary. A host that pinned its runtime
 refuses a descriptor without that checksum instead of spawning the app's unchecked
 codex. Only a layout without a gateway SDK (or a runtime that cannot be resolved)
 pins the app's codex at start, as releases before 0.4.3 did; then that codex must
-report the pinned version and stay unchanged while the host runs.
+report the pinned version and stay unchanged while the host runs. Because a
+gateway-only host runs the pinned runtime, adapters and rollback do not compare the
+app's codex with its receipt: an update that removes, moves or relinks that codex
+neither stops the host from starting nor makes adapters reject it. A host that shares
+native execution still has to match the app's codex.
 
 Native ownership can also be shared independently of gateway generations. Its
 one original signed SDK keeps the original native home and normal authentication;

@@ -7,10 +7,14 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { claimNativeHome, nativeHomeOwnerPath, readNativeHomeOwner, setNativeStartupGraceForTests, type NativeHomeOwner } from "../native-execution-host-storage.js";
-import { executionHostMarker, privateDirectory, sdkSocketTarget, setSdkSocketRootForTests, type HostIdentity } from "../execution-host-storage.js";
+import { executionHostMarker, executionHostRoot, privateDirectory, sdkSocketTarget, setSdkSocketRootForTests, type HostIdentity } from "../execution-host-storage.js";
+import { ExecutionHostClient } from "../execution-host-client.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { setBootIdentityForTests } from "../boot-identity.js";
 import { writePrivateJson } from "../config.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 
 const current = { id: "11111111-1111-4111-8111-111111111111", bootedAtMs: 1_700_000_000_000 };
 const earlier = "22222222-2222-4222-8222-222222222222";
@@ -26,18 +30,21 @@ async function fixture() {
     nativeSdkExecutable: join(directory, "codex"), nativeSdkSha256: "a".repeat(64) };
   const path = nativeHomeOwnerPath(nativeHome);
   configureTelemetry(join(directory, "state"), "test");
-  const receipt = async (fields: Partial<NativeHomeOwner>) => writePrivateJson(path, {
-    version: 1, managed: "subscription-gateway-native-execution-owner", configPath: identity.configPath, nativeHome, codex: identity.codex, sdkSha256: identity.sdkSha256,
-    hostPid: 4242, pid: 0, socketPath: resolve(hostHome, "native.sock"), state: "running", sdkState: "idle", bootId: current.id, startedAtMs: current.bootedAtMs + 2000,
-    nativeSdkExecutable: identity.nativeSdkExecutable, nativeSdkSha256: identity.nativeSdkSha256, ...fields });
-  const reclaims = async () => { await flushTelemetry(); return (await readTelemetry(join(directory, "state"), current.bootedAtMs - 1000)).filter(event => event.event === "execution_owner_reclaimed"); };
   // A process that ran and is gone: its pid is a real one that this boot could reuse.
   const exitedPid = async () => {
     const child = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], { stdio: "ignore" });
     const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; return child.pid!;
   };
-  return { directory, path, hostHome, nativeHome, identity, receipt, reclaims, exitedPid,
-    clean: async () => { setSdkSocketRootForTests(); setBootIdentityForTests(); process.env.HOME = previousHome; await rm(directory, { recursive: true, force: true }); } };
+  const gone = await exitedPid();
+  const receipt = async (fields: Partial<NativeHomeOwner> | Record<string, unknown>) => writePrivateJson(path, {
+    version: 1, managed: "subscription-gateway-native-execution-owner", configPath: identity.configPath, nativeHome, codex: identity.codex, sdkSha256: identity.sdkSha256,
+    hostPid: gone, pid: 0, socketPath: resolve(hostHome, "native.sock"), state: "running", sdkState: "idle", bootId: current.id, startedAtMs: current.bootedAtMs + 2000,
+    nativeSdkExecutable: identity.nativeSdkExecutable, nativeSdkSha256: identity.nativeSdkSha256, ...fields });
+  const reclaims = async () => { await flushTelemetry(); return (await readTelemetry(join(directory, "state"), current.bootedAtMs - 1000)).filter(event => event.event === "execution_owner_reclaimed"); };
+  // A listener that keeps serving while the test looks at what a claim does around it.
+  const listener = async (socket: string) => { const server = createServer(); server.listen(socket); await once(server, "listening"); await chmod(socket, 0o600); return server; };
+  return { directory, path, hostHome, nativeHome, identity, receipt, reclaims, exitedPid, listener,
+    clean: async () => { roots.restore(); setBootIdentityForTests(); process.env.HOME = previousHome; await rm(directory, { recursive: true, force: true }); } };
 }
 
 test("an app update cannot block a native home whose owner is gone", { skip: process.platform === "win32", timeout: 20000 }, async () => {
@@ -110,7 +117,7 @@ test("a native home from a previous boot is reclaimed and its receipt is kept", 
   const f = await fixture();
   try {
     setBootIdentityForTests(current);
-    await f.receipt({ bootId: earlier, hostPid: 99_999, pid: 99_998, sdkState: "running" });
+    await f.receipt({ bootId: earlier, hostPid: await f.exitedPid(), pid: await f.exitedPid(), sdkState: "running" });
     await claimNativeHome(f.identity, f.hostHome);
     const stale = await readdir(join(dirname(f.path), "stale"));
     assert.equal(stale.length, 1); assert.equal(JSON.parse(await readFile(join(dirname(f.path), "stale", stale[0]), "utf8")).bootId, earlier);
@@ -118,12 +125,16 @@ test("a native home from a previous boot is reclaimed and its receipt is kept", 
   } finally { await f.clean(); }
 });
 
-test("a garbled native receipt is reclaimed only when its socket answers nothing", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+test("a garbled native receipt is reclaimed once it is from an earlier boot and nothing answers", { skip: process.platform === "win32", timeout: 20000 }, async () => {
   const f = await fixture();
   try {
     setBootIdentityForTests(current);
     await mkdir(dirname(f.path), { recursive: true, mode: 0o700 });
     await writeFile(f.path, "{ not json at all", { mode: 0o600 });
+    // Written this boot it says nothing about who owns the home, so nothing but a reboot can prove its owner gone.
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    await assert.rejects(readdir(join(dirname(f.path), "stale")), { code: "ENOENT" });
+    const old = new Date(current.bootedAtMs - 120_000); await utimes(f.path, old, old);
     await claimNativeHome(f.identity, f.hostHome);
     assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
     assert.equal((await readdir(join(dirname(f.path), "stale"))).length, 1);
@@ -164,5 +175,70 @@ test("a stopped native handover changes nothing it does not have to", { skip: pr
     await assert.rejects(readdir(join(dirname(f.path), "stale")), { code: "ENOENT" });
     const target = await sdkSocketTarget(join(f.hostHome, "native.sock"));
     void target;
+  } finally { await f.clean(); }
+});
+
+const close = (server: ReturnType<typeof createServer>) => new Promise<void>(done => server.listening ? server.close(() => done()) : done());
+
+// D3: a receipt this release cannot read names no socket, so the native socket of every host home on this machine is asked.
+test("a garbled native receipt from an earlier boot is still kept while any host home's native socket answers", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); let server: ReturnType<typeof createServer> | undefined;
+  try {
+    setBootIdentityForTests(current);
+    const other = join(executionHostRoot(), "0123456789abcdef"); await privateDirectory(other);
+    server = await f.listener(join(other, "native.sock")); // Another configuration's host, whose writer is live.
+    await mkdir(dirname(f.path), { recursive: true, mode: 0o700 }); await writeFile(f.path, "\u0000garbled", { mode: 0o600 });
+    const old = new Date(current.bootedAtMs - 120_000); await utimes(f.path, old, old);
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    assert.ok(server.listening); assert.equal(await readFile(f.path, "utf8"), "\u0000garbled");
+    await close(server); server = undefined;
+    await claimNativeHome(f.identity, f.hostHome);
+    assert.deepEqual((await f.reclaims()).map(event => event.reason), ["invalid_receipt"]);
+  } finally { if (server) await close(server); await f.clean(); }
+});
+
+test("a receipt this release cannot validate is judged by the processes and socket it still names", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); let server: ReturnType<typeof createServer> | undefined;
+  try {
+    setBootIdentityForTests(current);
+    const elsewhere = join(f.directory, "other-host"); await privateDirectory(elsewhere);
+    server = await f.listener(join(elsewhere, "native.sock"));
+    // Its processes are gone, but the socket it recorded still answers.
+    await f.receipt({ hostPid: await f.exitedPid(), pid: await f.exitedPid(), socketPath: join(elsewhere, "native.sock"), sdkState: "paused" });
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    await close(server); server = undefined;
+    await claimNativeHome(f.identity, f.hostHome); // Nothing it names is alive any more.
+    assert.deepEqual((await f.reclaims()).map(event => event.reason), ["invalid_receipt"]);
+  } finally { if (server) await close(server); await f.clean(); }
+});
+
+// L2: an earlier boot ended every process, but a socket that answers is something this boot serves.
+test("a native receipt from an earlier boot is kept while its socket answers", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); let server: ReturnType<typeof createServer> | undefined;
+  try {
+    setBootIdentityForTests(current);
+    server = await f.listener(join(f.hostHome, "native.sock"));
+    await f.receipt({ bootId: earlier, hostPid: await f.exitedPid(), pid: 0 });
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /already owns this native home/);
+    assert.ok(server.listening); await assert.rejects(readdir(join(dirname(f.path), "stale")), { code: "ENOENT" });
+  } finally { if (server) await close(server); await f.clean(); }
+});
+
+// D7 with D2: a private writer obeys the same verdict as a claim, the startup grace included.
+test("a private native writer waits out a launch a dead host left unconfirmed, and starts once the owner is proven gone", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    setBootIdentityForTests(current);
+    const dead = await f.exitedPid();
+    await f.receipt({ hostPid: dead, pid: 0, sdkState: "starting" });
+    await assert.rejects(ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome), /still owns this native home/);
+    const old = new Date(Date.now() - 120_000); await utimes(f.path, old, old);
+    await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome); // Past the grace and nothing answers.
+    await f.receipt({ hostPid: dead, pid: 0, sdkState: "idle" });
+    await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome);
+    await f.receipt({ state: "stopped", sdkState: "stopped", hostPid: 0, pid: 0 });
+    await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome);
+    await writeFile(f.path, "{ garbled", { mode: 0o600 }); // Nothing says who owns it, and it is from this boot.
+    await assert.rejects(ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome), /still owns this native home/);
   } finally { await f.clean(); }
 });

@@ -112,7 +112,7 @@ export class ExecutionEngine {
       child.once("error", () => { this.closed = true; });
       child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); void changed().catch(() => {}); resolve(); });
     });
-    this.owner.pid = child.pid || 0; Object.assign(this.owner, child.pid ? await spawnStamp() : {}); await changed();
+    this.owner.pid = child.pid || 0; Object.assign(this.owner, child.pid ? await spawnStamp(child.pid) : {}); await changed();
     const deadline = Date.now() + 10000;
     for (;;) {
       if (this.closed || this.stopped) throw new Error("Execution SDK exited before initialization");
