@@ -69,7 +69,12 @@ Unix listener. The managed command uses a gateway-owned control home under
 It redirects only the original `app-server proxy` child's control home to that
 socket. Inference and account discovery retain the original native home. Codex's
 own daemon socket is not replaced. A live gateway listener is reused; a crashed
-socket is recovered only when its private ownership record matches.
+socket is recovered only when its private ownership record matches. A bootstrap
+that finds a swap cut off halfway by a crash (the record names a new listener that
+never took over the address) restores the previous record and continues, so a
+crash never leaves SSH refused. Under the same lock it removes dead private
+`.gw-*` sockets and links and stale lease temp files, only in the managed
+`gw-ssh` folder or during a replacement, never for a custom `--listen` path.
 Add the host under Settings, Connections, SSH, then select its workspace.
 The built-in Control other devices connection reaches the native engine directly
 and bypasses a desktop or SSH wrapper. The separate

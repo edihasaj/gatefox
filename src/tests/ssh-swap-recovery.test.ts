@@ -47,6 +47,8 @@ net.connect = (...args) => {
 };
 syncBuiltinESMExports();
 const heal = () => { fault.rename = false; fault.record = "off"; recordOpens = 0; };
+// A test that times out never reaches its own finally; reset injected faults after every test regardless.
+test.afterEach(() => { heal(); unknownAnswer.clear(); });
 
 /** A live listener published at `path` (default: the folder's usual alias). */
 async function listener(folder: Folder, release: string, file = "app-server-control.sock", sub = "c") {
