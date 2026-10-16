@@ -126,13 +126,21 @@ nothing is respelled. Inside a value the SDK keeps keys literal, so a dotted key
 a `features` or profile table is a name, not a path, and only a profile's own
 `features` table is trimmed.
 
+Trimming never widens what a chat may do. `network_proxy` limits network access, so
+it is never changed in any form: a value the pinned SDK cannot read fails the chat with
+the SDK's own error instead of running it with fewer limits.
+
 Static rules cannot know new enum values, the SDK's range checks or fields added
 later. If the SDK still refuses a gateway `thread/start`, `thread/resume` or
-`thread/fork` with `failed to load configuration` (code -32600) while the request
-carries non-boolean feature values, the adapter retries once with a strict form:
-each feature becomes its boolean `enabled` or is removed, and `tool_registry` is
-removed. A failed configuration load creates no thread, so the retry has no side
-effects. If the retry fails too, the original error is returned.
+`thread/fork` with `failed to load configuration` (code -32600) at a `features` or
+`profiles.<name>.features` path, and the strict form differs from the request, the
+adapter retries once with that strict form: each feature becomes its boolean `enabled`
+or is removed, `tool_registry` is removed, `guardianv2` is turned off (actions go back
+to the user's own approval rather than a reviewer with default thresholds), and
+`network_proxy` stays as sent. A failure at any other path, or one the SDK marks as an
+unavailable cloud configuration bundle, is not retried. A failed configuration load
+creates no thread, so the retry has no side effects. If the retry fails too, the
+original error is returned.
 
 Native chats and native launches are never changed or retried. The
 `gateway_features_trimmed` event records only the site and how many entries changed.

@@ -1,9 +1,17 @@
 import type { Message } from "./app-server-connection.js";
 import { strictGatewayFeatureRequest, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 
-/** The pinned SDK refused the request's configuration, which is how a feature value newer than its schema surfaces. */
+/**
+ * The pinned SDK refused a feature setting in the request's configuration. Its message names the failing path
+ * (``in `features` ``, ``in `features.multi_agent_v2` ``, ``in `profiles.w.features` ``). Any other configuration
+ * failure, such as an unavailable cloud configuration bundle, is not about features and is never retried.
+ */
+const featurePath = /\bin `(?:features|profiles\.[^`]+\.features)(?:\.[^`]*)?`/;
 export function isConfigLoadFailure(error: unknown): boolean {
-  return error instanceof Error && (error as { code?: unknown }).code === -32600 && error.message.startsWith("failed to load configuration");
+  if (!(error instanceof Error) || (error as { code?: unknown }).code !== -32600) return false;
+  const data = (error as { data?: unknown }).data;
+  if (data && typeof data === "object" && (data as { reason?: unknown }).reason === "cloudConfigBundle") return false;
+  return error.message.startsWith("failed to load configuration") && featurePath.test(error.message);
 }
 
 /**
