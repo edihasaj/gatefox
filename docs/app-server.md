@@ -37,9 +37,15 @@ Stdout carries JSON-RPC only. The adapter forwards notifications, maps server
 request IDs for approvals, bounds frames to 16 MiB, and stops its child on exit.
 Non-server commands, including `--version`, pass through unchanged. The adapter
 accepts `stdio://` and private `unix://` listeners. A Unix listener serves the
-WebSocket protocol used by desktop SSH connections. It gives each connection its
-own native connection. Gateway executors are shared when the unified service has
-shared execution enabled; legacy installations keep per-connection executors.
+WebSocket protocol used by desktop SSH connections. A listener started with
+`--ssh`, which gives it a gateway control home, retires itself once a newer
+release is installed and it holds no session; the next connection then starts
+it on the installed release. A listener started with a custom
+`--listen unix://PATH`, which has no control home, keeps its previous
+behavior: it does not exit on its own after an install. The adapter gives each
+connection its own native connection. Gateway executors are shared when the
+unified service has shared execution enabled; legacy installations keep
+per-connection executors.
 It refuses occupied sockets, requires a
 user-owned directory without group/world write access, and sets the socket to
 mode 0600. Network WebSocket listeners are rejected.
@@ -63,7 +69,12 @@ Unix listener. The managed command uses a gateway-owned control home under
 It redirects only the original `app-server proxy` child's control home to that
 socket. Inference and account discovery retain the original native home. Codex's
 own daemon socket is not replaced. A live gateway listener is reused; a crashed
-socket is recovered only when its private ownership record matches.
+socket is recovered only when its private ownership record matches. A bootstrap
+that finds a swap cut off halfway by a crash (the record names a new listener that
+never took over the address) restores the previous record and continues, so a
+crash never leaves SSH refused. Under the same lock it removes dead private
+`.gw-*` sockets and links and stale lease temp files, only in the managed
+`gw-ssh` folder or during a replacement, never for a custom `--listen` path.
 Add the host under Settings, Connections, SSH, then select its workspace.
 The built-in Control other devices connection reaches the native engine directly
 and bypasses a desktop or SSH wrapper. The separate

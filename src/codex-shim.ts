@@ -5,14 +5,15 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { loadConfig } from "./config.js";
-import { configureTelemetry } from "./telemetry.js";
+import { configureTelemetry, telemetry } from "./telemetry.js";
 import { startErrorReports } from "./error-report.js";
 import { prepareNativeCatalog } from "./native-catalog.js";
 import { emitMessage } from "./app-server-connection.js";
 import { gatewayCommand } from "./command.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
-import { sshControlHome, reuseSshSocket } from "./ssh-socket.js";
+import { watchForUpgrade } from "./self-update.js";
+import { sshControlHome, reuseSshSocket, type SshSocketReuse, type SshSocketReplacement } from "./ssh-socket.js";
 import { nativeRegistration } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 
@@ -24,6 +25,24 @@ export function appServerIndex(args: string[]): number {
     return args[index] === "app-server" ? index : -1;
   }
   return -1;
+}
+
+/**
+ * Keep a listener running. Another bootstrap can bind the socket while this process prepares
+ * its metadata; then reuse that listener when it is current, and when the check only recovered
+ * a dead or replaced socket, bind once more with the same wiring. A lost socket outside the
+ * SSH mode still fails as before.
+ */
+export async function serveWithRecovery(socketPath: string, sshMode: boolean, serve: () => Promise<void>,
+  recovered?: (reuse: SshSocketReuse) => void): Promise<void> {
+  try { await serve(); }
+  catch (error) {
+    if (!sshMode) throw error;
+    const reuse = await reuseSshSocket(socketPath);
+    recovered?.(reuse);
+    if (reuse.reused) return;
+    await serve();
+  }
 }
 
 export async function codexShim(argv: string[]): Promise<void> {
@@ -52,7 +71,14 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (typeof listen !== "string" || (listen !== "stdio://" && !listen.startsWith("unix://"))) throw new Error("codex-shim supports stdio:// and private unix:// transports only");
   if (controlHome && listen.startsWith("unix://") && listen !== "unix://") throw new Error("The SSH adapter uses its managed Unix socket; omit a custom listen path");
   const socketPath = listen.startsWith("unix://") ? unixSocketPath(controlHome ? "unix://" + resolve(controlHome, "app-server-control/app-server-control.sock") : listen) : undefined;
-  if (controlHome && socketPath && await reuseSshSocket(socketPath)) return;
+  // A live listener on another release is retired only at bind time, after everything that can
+  // fail has prepared: a bootstrap that fails its preparation leaves the old listener serving.
+  let replacement: SshSocketReplacement | undefined;
+  if (controlHome && socketPath) {
+    const reuse = await reuseSshSocket(socketPath);
+    if (reuse.reused) return;
+    replacement = reuse.replace;
+  }
   const preflightArgs = [...forwarded];
   const nativeListenIndex = preflightArgs.findIndex(arg => arg === "--listen" || arg.startsWith("--listen="));
   if (nativeListenIndex >= 0) {
@@ -77,11 +103,23 @@ export async function codexShim(argv: string[]): Promise<void> {
     const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
       shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path, preflightArgs);
     if (socketPath) {
-      try { await serveUnix(socketPath, controller.signal, session); }
-      catch (error) {
-        // Another bootstrap can finish while this process prepares metadata.
-        if (!controlHome || !await reuseSshSocket(socketPath)) throw error;
-      }
+      // One listener serves every reconnect for as long as it lives. An SSH listener follows
+      // installs itself, because the next connection's bootstrap binds the installed release;
+      // a custom listen path has no such bootstrap, so nothing retires it after an install.
+      await serveWithRecovery(socketPath, !!controlHome, async () => {
+        // Hand the deferred swap to serveUnix, which takes the lease lock, re-checks the alias,
+        // and unlinks it only there, after this process has bound its own socket. The
+        // replacement stays pending, and is logged and cleared only when serveUnix reports it
+        // actually dropped the alias; if someone else already did, this bootstrap logs nothing.
+        const pending = replacement;
+        let stopWatching: (() => void) | undefined;
+        try {
+          await serveUnix(socketPath, controller.signal, session, undefined, (listener, replaced) => {
+            if (replaced && pending) { telemetry("ssh_listener_replaced", { from: pending.from, to: pending.to }); replacement = undefined; }
+            if (controlHome) stopWatching = watchForUpgrade("ssh_listener", () => listener.sessions() === 0, () => listener.retire());
+          }, pending);
+        } finally { stopWatching?.(); }
+      }, reuse => { replacement = reuse.replace; });
     }
     else process.exitCode = await session(process.stdin, emitMessage, controller.signal);
   }

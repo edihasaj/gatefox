@@ -11,6 +11,10 @@ import { telemetry } from "./telemetry.js";
  */
 export interface ReleaseState { running: string; installed?: string }
 
+/** Release names an ownership lease may record. Writers omit anything else, and readers
+ * accept only this shape, so a listener's release is never silently judged differently. */
+export const releasePattern = /^[0-9A-Za-z._-]{1,64}$/;
+
 /** The release this process runs and the one `current` points to now. */
 export function releaseState(moduleUrl = import.meta.url): ReleaseState | undefined {
   let release: string;

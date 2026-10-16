@@ -3,10 +3,18 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { writeFile, readFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 import { combinedNativeCatalog } from "../native-catalog.js";
 import { loadConfig } from "../config.js";
+import { serveUnix } from "../unix-transport.js";
+import { reuseSshSocket, type SshSocketReuse } from "../ssh-socket.js";
+import { shortFolder } from "./short-folder.js";
+import { releaseState } from "../self-update.js";
+import { codexShim, serveWithRecovery } from "../codex-shim.js";
 
 import { shimFiles as files } from "./shim-fixture.js";
 
@@ -81,4 +89,155 @@ test("shim bounds unterminated client frames without echoing their contents", { 
     await closed; assert.equal(child.exitCode, 2);
     assert.match(diagnostics, /frame exceeds 16 MiB/); assert.ok(!diagnostics.includes("private-client-content"));
   } finally { child.kill("SIGKILL"); }
+});
+
+/** A listener started before this bootstrap, its lease recording `release`. */
+async function staleListener(path: string, release: string) {
+  const controller = new AbortController();
+  const serving = serveUnix(path, controller.signal, async () => {}, release);
+  serving.catch(() => {});
+  for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving.finally(() => {}); throw new Error("Listener socket never appeared"); }
+  return { stop: async () => { controller.abort(); await serving.finally(() => {}); } };
+}
+
+/** One release directory of this checkout's dist, without touching `current`. */
+async function addRelease(directory: string, version: string) {
+  // The layout must hold a real copy: releaseState() resolves symlinks, so a linked dist
+  // could never report a release directory.
+  const release = join(directory, "releases", version); const pkg = join(release, "package");
+  await mkdir(pkg, { recursive: true });
+  await cp(fileURLToPath(new URL("../", import.meta.url)), join(pkg, "dist"), { recursive: true });
+  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version, type: "module" }));
+  await symlink(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(pkg, "node_modules"));
+  return { release, cli: join(pkg, "dist", "cli.js") };
+}
+
+/** Point `current` at an added release the way an install switch does: a pending symlink, then a rename. */
+async function setCurrentRelease(directory: string, version: string) {
+  const pending = join(directory, "current.pending");
+  await symlink(join(directory, "releases", version), pending);
+  await rename(pending, join(directory, "current"));
+}
+
+/**
+ * This checkout's dist laid out as installed release `version`, so a bootstrap run from it is the
+ * installed release. `install(next)` adds a second release and repoints `current` at it, which is
+ * how a later release becomes installed while this process keeps running.
+ */
+async function installedRelease(version: string) {
+  const folder = await shortFolder("gw-rel-");
+  const added = await addRelease(folder.directory, version);
+  await setCurrentRelease(folder.directory, version);
+  return {
+    cli: added.cli, directory: folder.directory, remove: folder.remove,
+    install: async (next: string) => { const other = await addRelease(folder.directory, next); await setCurrentRelease(folder.directory, next); return other; },
+  };
+}
+
+/** Replacement events the given state directory recorded so far. */
+async function replacementEvents(stateDirectory: string, withinMs = 3000, event = "ssh_listener_replaced") {
+  let events: Record<string, any>[] = [];
+  for (let i = 0; i < Math.max(1, withinMs / 20); i++) {
+    const dir = join(stateDirectory, "telemetry");
+    const lines = await Promise.all((await readdir(dir).catch(() => [] as string[])).map(name => readFile(join(dir, name), "utf8").catch(() => "")));
+    events = lines.join("").split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return undefined; } })
+      .filter((e): e is Record<string, any> => e?.event === event);
+    if (events.length) break;
+    await delay(20);
+  }
+  return events;
+}
+
+test("an SSH bootstrap logs a replaced listener exactly once, only after telemetry is configured", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-ssh-log-");
+  const path = join(control.directory, "app-server-control/app-server-control.sock");
+  const listener = await staleListener(path, "0.4.0");
+  const release = await installedRelease("0.4.2");
+  const args = [release.cli, "codex-shim", "--ssh", "--ssh-home", control.directory, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
+  const child = spawn(process.execPath, args, { env: f.env, stdio: "ignore" }); const exited = once(child, "close");
+  try {
+    const events = await replacementEvents(f.value.stateDirectory, 15000);
+    assert.equal(events.length, 1, "the replacement is recorded exactly once");
+    const [event] = events;
+    assert.equal(event.from, "0.4.0"); assert.equal(event.to, "0.4.2"); assert.equal(event.component, "adapter");
+    assert.deepEqual(Object.keys(event).filter(key => !["at", "host", "component", "pid"].includes(key)).sort(), ["event", "from", "to"], "no paths or extra fields");
+    for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(20);
+    assert.equal((await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" })).reused, true, "the bootstrap became the live listener");
+    assert.equal(child.exitCode, null);
+    await delay(1500); await listener.stop();
+    assert.equal((await replacementEvents(f.value.stateDirectory, 500)).length, 1, "the current listener is reused, not replaced again");
+  } finally { child.kill("SIGTERM"); await exited; await listener.stop().catch(() => {}); await release.remove(); await control.remove(); f.close(); }
+});
+
+test("a bootstrap whose preparation fails leaves the old listener serving", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-ssh-kept-");
+  const path = join(control.directory, "app-server-control/app-server-control.sock");
+  const listener = await staleListener(path, "0.4.0");
+  const release = await installedRelease("0.4.2");
+  // The reuse decision runs before the config is read; this config then fails the fixed-port
+  // preparation after telemetry is set up but before anything binds or unlinks.
+  const config = join(control.directory, "no-port.json");
+  await writeFile(config, JSON.stringify({ version: 1, port: 0, stateDirectory: f.value.stateDirectory, providers: f.value.providers }));
+  const args = [release.cli, "codex-shim", "--ssh", "--ssh-home", control.directory, "--config", config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
+  const before = await lstat(path, { bigint: true });
+  const child = spawn(process.execPath, args, { env: f.env, stdio: "ignore" });
+  try {
+    const [code] = await once(child, "close");
+    assert.equal(code, 2, "preparation failed, so this bootstrap never reached the bind");
+    const kept = await lstat(path, { bigint: true });
+    assert.equal(kept.isSocket(), true); assert.equal(String(kept.ino), String(before.ino)); assert.equal(String(kept.dev), String(before.dev), "the old listener still owns the public alias");
+    const reuse = await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" });
+    assert.equal(reuse.reused, false); assert.equal(reuse.replace?.from, "0.4.0"); assert.equal(reuse.replace?.to, "0.4.2", "the live old listener is still there to replace");
+    assert.deepEqual(await replacementEvents(f.value.stateDirectory, 500), [], "a bootstrap that replaced nothing logs nothing");
+  } finally { child.kill("SIGTERM"); await listener.stop(); await release.remove(); await control.remove(); f.close(); }
+});
+
+test("listener startup reuses a raced listener and binds once more only after recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const folder = await shortFolder("gw-recover-"); const path = join(folder.directory, "rpc.sock");
+  let attempts = 0;
+  await serveWithRecovery(path, true, async () => {
+    attempts++; if (attempts === 1) throw new Error("Unix socket path is occupied; the existing listener was not replaced");
+  });
+  assert.equal(attempts, 2, "a bootstrap that only recovered a dead socket binds once more");
+
+  attempts = 0;
+  await assert.rejects(serveWithRecovery(path, false, async () => { attempts++; throw new Error("occupied"); }), /occupied/);
+  assert.equal(attempts, 1, "outside SSH mode the original error still fails fast");
+
+  attempts = 0;
+  await assert.rejects(serveWithRecovery(path, true, async () => { attempts++; throw new Error("occupied"); }), /occupied/);
+  assert.equal(attempts, 2, "a second bind failure surfaces instead of looping");
+
+  const controller = new AbortController();
+  const serving = serveUnix(path, controller.signal, async () => {}, releaseState()?.running ?? "0.4.2");
+  try {
+    for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+    attempts = 0; let report: SshSocketReuse | undefined;
+    await serveWithRecovery(path, true, async () => { attempts++; throw new Error("occupied"); }, reuse => { report = reuse; });
+    assert.equal(attempts, 1, "a live current listener from the race is kept without another bind");
+    assert.equal(report?.reused, true); assert.equal(report?.replace, undefined, "nothing was replaced, so nothing is logged again");
+  } finally { controller.abort(); await serving; await folder.remove(); }
+});
+
+test("a custom --listen unix listener survives an install switch", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-listen-");
+  const path = join(control.directory, "rpc.sock");
+  const release = await installedRelease("0.9.0");
+  // A fast upgrade check, so a listener that did follow the install would retire inside this window.
+  const child = spawn(process.execPath,
+    [release.cli, "codex-shim", "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://" + path],
+    { env: { ...f.env, GATEWAY_UPGRADE_CHECK_MS: "100" }, stdio: "ignore" });
+  const exited = once(child, "close");
+  try {
+    for (let i = 0; i < 500 && !await lstat(path).then(() => true, () => false); i++) await delay(20);
+    assert.equal(await lstat(path).then(() => true, () => false), true, "the listener bound the path the caller chose");
+    await release.install("0.9.1");
+    await delay(1500);
+    // Only the SSH socket has a bootstrap on the installed release to hand it over; a caller's own
+    // listener keeps running, because retiring it would take the endpoint away with nothing behind it.
+    assert.equal(child.exitCode, null, "the listener is not retired by an install it was never part of");
+    assert.equal(await lstat(path).then(() => true, () => false), true, "the socket stays on the path it was given");
+    assert.deepEqual(await replacementEvents(f.value.stateDirectory, 500, "self_upgrade"), [], "no self upgrade is claimed for a listener that moved to nothing");
+  } finally { child.kill("SIGTERM"); await exited; await release.remove(); await control.remove(); f.close(); }
 });
