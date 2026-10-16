@@ -34,6 +34,7 @@ export const gatewayCatalogMessage = "The gateway catalog cannot be saved into n
 export const invalidKeyPathMessage = "This configuration key is not valid";
 export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
 export const inspectBudgetMessage = "This configuration write names too many different paths to check";
+export const pathTooLongMessage = "This configuration write names a path too long to check";
 export const windowsCatalogMessage = "A catalog file path cannot be saved into native Codex configuration on Windows, where the gateway cannot check which file it names";
 
 /** What counts as gateway identity, supplied by the router. Paths are compared as files, so a
@@ -106,7 +107,9 @@ const expandEnginePath = (value: string, identity: GatewayIdentity, base: string
 
 /** A path longer than this is judged on its spelling alone; walking it would cost more than it can tell.
  * 4096 is the longest path any platform the engine runs on accepts (Linux; macOS stops at 1024), and a
- * path nothing can open is judged on its spelling alone anyway, so one cutoff serves every platform. */
+ * path nothing can open is judged on its spelling alone anyway, so one cutoff serves every platform.
+ * A value so long that its size charge alone could never fit the budget is not judged at all: the
+ * request is refused with its own message (see `pathTooLongMessage`). */
 const inspectPathBytes = 4096;
 /** How many paths one prepared guard remembers; a batch that names more recomputes rather than grows.
  * The memo only caches: a full memo never changes what an answer is, only what it costs. */
@@ -115,13 +118,18 @@ const guardMemoLimit = 4096;
  * path walk — one folder passed, whether its answer was remembered or not —, one file-system read
  * (`stat`, `lstat` or `readlink`), or, for every path value judged, a size charge of one per 64
  * characters of its text (see `pathValueUnits`), paid each time the value is judged against a base
- * whether or not its answer was remembered. So the budget counts the string work of a path as well as
- * its reads: a long path costs by its length even when its first folder does not exist, and a long path
- * repeated a thousand times costs a thousand times. A real batch names a handful of paths about ten
- * folders deep, which costs a few hundred units; 50 edits at 33 folders each stay under half of the
- * budget. A request that spends it is refused whole, because a spelling-only check could be walked
- * around. */
+ * whether or not its answer was remembered. A value whose verdict is not yet remembered also pays one
+ * unit per base, so a long run of different short values spends the budget while a repeated one does
+ * not. So the budget counts the string work of a path as well as its reads: a long path costs by its
+ * length even when its first folder does not exist, and a long path repeated a thousand times costs a
+ * thousand times. A real batch names a handful of paths about ten folders deep, which costs a few
+ * hundred units; 50 edits at 33 folders each stay under half of the budget. A request that spends it is
+ * refused whole, because a spelling-only check could be walked around. */
 const inspectBudget = 16384;
+/** How many times one request may judge a path value against a base, remembered answers included: a
+ * judgment that is only a lookup is cheap, but a frame can carry hundreds of thousands of them. 20k
+ * profiles judged against both spellings of the native home make 40k, which fits. */
+const inspectJudgments = 65536;
 /** The size charge of one path value, in units: one per full 64 characters of its text, so a short name
  * is free and a 4000-byte path costs 62. Characters are the measure, not bytes: the string work of a path
  * follows its characters, and a character is never more than its bytes. The text is measured before any
@@ -135,12 +143,20 @@ const maxLinks = 40;
 
 /** What one prepared guard may spend and remember; a test lowers these to reach the limits cheaply,
  * and may observe each file-system read the guard actually makes. */
-export type GuardLimits = { memo: number; budget: number; observe?: (operation: "stat" | "lstat" | "readlink") => void };
+export type GuardLimits = {
+  memo: number;
+  budget: number;
+  /** Most judgments of a path value against a base one request may make; `inspectJudgments` when omitted. */
+  judgments?: number;
+  observe?: (operation: "stat" | "lstat" | "readlink") => void;
+};
 /** The limits a request is judged under unless a test supplies its own. */
 export const defaultGuardLimits: GuardLimits = { memo: guardMemoLimit, budget: inspectBudget };
 
 /** Thrown when a request names more paths than the budget lets the guard read; never carries a path. */
 class InspectBudgetExhausted extends Error {}
+/** Thrown when one path value alone is too long for the budget to ever cover its size. */
+class PathTooLongToCheck extends Error {}
 const spend = (guard: GatewayPathGuard, units = 1): void => {
   if (guard.budget < units) throw new InspectBudgetExhausted();
   guard.budget -= units;
@@ -293,15 +309,19 @@ export type GatewayPathGuard = {
   steps: Map<string, Step | undefined>;
   ids: Map<string, FileId | undefined>;
   found: Map<string, boolean>;
+  /** What each exact path value turned out to be, so a repeated value is answered by one lookup. */
+  verdicts: Map<string, boolean>;
   limits: GuardLimits;
   /** Units of work this request may still spend on the paths its edits name. */
   budget: number;
+  /** Judgments of a path value against a base this request has made so far. */
+  judgments: number;
 };
 
 export const prepareGatewayPaths = (identity: GatewayIdentity, limits: GuardLimits): GatewayPathGuard => {
   const guard: GatewayPathGuard = {
     identity, catalog: [], catalogId: undefined, state: [], stateId: undefined, homes: [],
-    real: new Map(), resolved: new Map(), steps: new Map(), ids: new Map(), found: new Map(), limits, budget: Infinity,
+    real: new Map(), resolved: new Map(), steps: new Map(), ids: new Map(), found: new Map(), verdicts: new Map(), limits, budget: Infinity, judgments: 0,
   };
   const catalog = resolve(identity.catalogPath);
   const state = resolve(identity.stateDirectory);
@@ -337,16 +357,36 @@ const isGatewayFile = (guard: GatewayPathGuard, target: string): boolean => {
  * `null` that clears the key, is not a path and is still forwarded. */
 const catalogPathUnreadable = (value: unknown): boolean => process.platform === "win32" && typeof value === "string";
 
+/** Counts one judgment of a value per base and refuses the request past the cap, before any work. A value
+ * whose size alone exceeds the whole budget could never be paid for, so it is refused with its own message. */
+const chargeJudgments = (guard: GatewayPathGuard, units: number): void => {
+  guard.judgments += guard.homes.length;
+  if (guard.judgments > (guard.limits.judgments ?? inspectJudgments)) throw new InspectBudgetExhausted();
+  if (units * guard.homes.length > guard.limits.budget) throw new PathTooLongToCheck();
+};
+
 /** True when a string names the gateway catalog or anything inside the gateway's state directory.
  * The engine opens a file, not a spelling, so the guard reads the file a path reaches: every base a
  * relative value can read against is tried, and each spelling it lands on is judged both as a path and,
  * where it exists, by identity. A path too long to walk is judged on its spelling alone. Each time the
  * value is tried against a base it is charged for its size, before any of it is resolved, whether or not
- * the answer is remembered, so the string work a path costs is bounded by the budget. */
+ * the answer is remembered, so the string work a path costs is bounded by the budget. The verdict is
+ * remembered per exact value: a repeat is one lookup and pays only the size charge, while a value not yet
+ * remembered also pays one unit per base, so many different short values cannot pass for free. */
 const holdsGatewayCatalogPath = (value: unknown, guard: GatewayPathGuard): boolean => {
   if (typeof value !== "string") return false;
+  const units = pathValueUnits(value);
+  chargeJudgments(guard, units);
+  const known = guard.verdicts.get(value);
+  if (known !== undefined) { spend(guard, units * guard.homes.length); return known; }
+  const verdict = judgeCatalogPath(value, guard, units);
+  if (guard.verdicts.size < guard.limits.memo) guard.verdicts.set(value, verdict);
+  return verdict;
+};
+
+const judgeCatalogPath = (value: string, guard: GatewayPathGuard, units: number): boolean => {
   for (const base of guard.homes) {
-    spend(guard, pathValueUnits(value));
+    spend(guard, units + 1);
     const lexical = expandEnginePath(value, guard.identity, base);
     if (Buffer.byteLength(lexical) > inspectPathBytes) { if (spelledAsGateway(guard, lexical)) return true; continue; }
     for (const target of pathFormsOf(guard, lexical)) {
@@ -390,7 +430,11 @@ const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Find
 export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity, prepared?: GatewayPathGuard): string | undefined => {
   if (!plain(edit)) return undefined; // forwarded to the engine as sent; it is not an edit this module can read
   try { return editViolation(edit, identity, prepared ?? prepareGatewayPaths(identity, defaultGuardLimits)); }
-  catch (error) { if (error instanceof InspectBudgetExhausted) return inspectBudgetMessage; throw error; }
+  catch (error) {
+    if (error instanceof InspectBudgetExhausted) return inspectBudgetMessage;
+    if (error instanceof PathTooLongToCheck) return pathTooLongMessage;
+    throw error;
+  }
 };
 
 const editViolation = (edit: ObjectValue, identity: GatewayIdentity, guard: GatewayPathGuard): string | undefined => {

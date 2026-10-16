@@ -5,6 +5,7 @@ import { link, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/prom
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { AppServerRouter } from "../app-server-router.js";
+import { defaultGuardLimits, nativeWritesViolation, type GatewayIdentity, type GuardLimits } from "../app-server-config-writes.js";
 import type { GatewayConfig } from "../config.js";
 
 /**
@@ -49,6 +50,16 @@ async function fixture(nativeHome?: string) {
   /** The forwarded calls only, so a refusal that sent something anyway cannot hide. */
   const forwarded = () => calls.filter(call => call.method.startsWith("config/"));
   return { root, state, config, backend, router, calls, forwarded };
+}
+
+/** The identity the router builds for this fixture, and a counter of the file-system reads a guard makes. Cost is
+ * asserted in reads, never in milliseconds, which a loaded machine stretches. */
+const identityOf = (f: Awaited<ReturnType<typeof fixture>>): GatewayIdentity => ({ provider: "subscription_gateway", isGatewayModel: () => false,
+  stateDirectory: f.state, catalogPath: f.router.catalogPath, homeDirectory: homedir(), nativeHome: f.root });
+function counted() {
+  const reads = { stat: 0, lstat: 0, readlink: 0 };
+  const limits: GuardLimits = { ...defaultGuardLimits, observe: operation => { reads[operation]++; } };
+  return { limits, total: () => reads.stat + reads.lstat + reads.readlink };
 }
 
 const exists = async (path: string) => { try { await stat(path); return true; } catch { return false; } };
@@ -100,13 +111,17 @@ test("a firmlink spelling of the gateway catalog is refused", async () => {
 test("the catalog guard judges a long path without walking it", async () => {
   const f = await fixture();
   const deep = "/" + Array.from({ length: 32_000 }, (_, index) => `p${index}`).join("/"); // 64k path components
-  let started = performance.now();
   assert.equal(await f.router.request("config/value/write", value(deep)), nativeAnswer, "64k components of the caller's own tree stay native");
-  const deepMs = performance.now() - started;
-  started = performance.now();
   assert.equal(await f.router.request("config/value/write", value("/" + "x".repeat(128 * 1024))), nativeAnswer, "a 128 KB name is the caller's own");
-  const longMs = performance.now() - started;
-  assert.ok(deepMs < 200 && longMs < 200, `a long value was judged in ${deepMs.toFixed(0)}ms and ${longMs.toFixed(0)}ms`);
+  // Neither is walked: a path past the cutoff is judged on its spelling, so the file system is not read at all.
+  const identity = identityOf(f);
+  const baseline = counted(); // preparing the guard reads the gateway's own paths, whatever the batch holds
+  nativeWritesViolation([], identity, baseline.limits);
+  const reads = counted();
+  const edit = (path: string) => [{ keyPath: "model_catalog_json", value: path, mergeStrategy: "upsert" }];
+  assert.equal(nativeWritesViolation(edit(deep), identity, reads.limits), undefined);
+  assert.equal(nativeWritesViolation(edit("/" + "x".repeat(128 * 1024)), identity, reads.limits), undefined);
+  assert.equal(reads.total(), 2 * baseline.total(), "a path too long to walk costs no file-system read beyond preparing the guard");
   // The spelling alone still decides what a walk would have: below the state directory is gateway state.
   await assert.rejects(f.router.request("config/value/write", value(join(f.state, "x".repeat(4096)))),
     { message: catalog }, "a gateway path that is merely long is refused on its spelling");
@@ -116,17 +131,17 @@ test("a batch of 20k profiles is guarded in one pass", async () => {
   const f = await fixture();
   const edits = (relative: string) => Array.from({ length: 20_000 }, (_, index) =>
     ({ keyPath: `profiles.p${index}.model_catalog_json`, value: relative, mergeStrategy: "upsert" }));
-  let started = performance.now();
   assert.equal(await f.router.request("config/batchWrite", { edits: edits("own/catalog.json") }), nativeAnswer,
     "a relative file of the caller's own is forwarded for every profile");
-  const forwardedMs = performance.now() - started;
   assert.equal(f.calls.length, 1, "the whole batch reached the engine once");
-  started = performance.now();
   await assert.rejects(f.router.request("config/batchWrite", { edits: edits("state/codex-models.json") }),
     { message: catalog }, "the catalog spelled below the native home is refused however many profiles carry it");
-  const refusedMs = performance.now() - started;
   assert.equal(f.calls.length, 1, "the refused batch forwarded nothing more");
-  assert.ok(forwardedMs < 200 && refusedMs < 200, `20k profiles were guarded in ${forwardedMs.toFixed(0)}ms and ${refusedMs.toFixed(0)}ms`);
+  // One pass: 20k profiles that repeat a path read the file system exactly as often as one profile does.
+  const identity = identityOf(f);
+  const reads = (count: number) => { const c = counted(); nativeWritesViolation(edits("own/catalog.json").slice(0, count), identity, c.limits); return c.total(); };
+  assert.ok(reads(1) > 0, "the one profile does read the tree");
+  assert.equal(reads(20_000), reads(1), "20k copies of one path add no read to the first");
 });
 
 test("the native home is the only base a relative catalog path reads against", async () => {
