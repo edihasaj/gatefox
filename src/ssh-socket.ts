@@ -31,21 +31,6 @@ export interface SshSocketReuse { reused: boolean; replace?: SshSocketReplacemen
  * inode/device the public alias had when the decision was made. */
 export interface SshSocketReplacement { from: string; to: string; inode: string; device: string }
 
-/**
- * Validate a deferred replacement without changing anything: report whether the public alias
- * still points at the recorded listener (a private socket owned by this user, matching the
- * recorded inode/device). The unlink itself now happens inside `serveUnix`'s publish lock, so
- * this remains a check for callers that want to know whether a replacement decision is still
- * live. A false return means the alias is gone or already belongs to another listener.
- */
-export async function replaceSshListener(path: string, target: SshSocketReplacement): Promise<boolean> {
-  return withPrivateFileLock(path + ".gateway-lease", async () => {
-    const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
-    if (!info || !info.isSocket() || info.uid !== BigInt(process.getuid!()) || (info.mode & 0o077n) !== 0n) return false;
-    return String(info.ino) === target.inode && String(info.dev) === target.device;
-  });
-}
-
 async function inspectSshSocket(path: string, state: ReleaseState | undefined): Promise<SshSocketReuse> {
   const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
   if (!info) return { reused: false };

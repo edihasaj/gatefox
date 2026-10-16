@@ -5,12 +5,13 @@ import { once } from "node:events";
 import { lstat, writeFile, readFile, rename, readdir, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { connect } from "node:net";
 import { WebSocket } from "ws";
 import { unixSocketPath, serveUnix } from "../unix-transport.js";
 import { shimFiles } from "./shim-fixture.js";
 import { shortFolder } from "./short-folder.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
-import { replaceSshListener, reuseSshSocket } from "../ssh-socket.js";
+import { reuseSshSocket } from "../ssh-socket.js";
 import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
 import { releaseState, watchForUpgrade } from "../self-update.js";
 
@@ -126,7 +127,6 @@ test("a listener replaced by a bootstrap retires without logging a self upgrade"
     const reuse = await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" });
     assert.equal(reuse.reused, false, "a bootstrap on the installed release does not reuse another release's listener");
     assert.ok(reuse.replace); assert.deepEqual([reuse.replace.from, reuse.replace.to], ["0.4.1", "0.4.2"], "the decision names the releases on either side of the swap");
-    assert.ok(await replaceSshListener(path, reuse.replace), "the decision still matches the live alias");
     const oldInode = String((await lstat(path, { bigint: true })).ino);
     replacement = serveUnix(path, fresh.signal, async () => {}, "0.4.2",
       (_listener, replaced) => { if (replaced) telemetry("ssh_listener_replaced", { from: reuse.replace!.from, to: reuse.replace!.to }); }, reuse.replace);
@@ -203,6 +203,48 @@ test("two bootstraps racing to replace the same old listener produce one event a
     first.abort(); second.abort();
     await Promise.allSettled([swap1, swap2, listener.stop()].filter(Boolean) as Promise<unknown>[]);
     await listener.folder.remove();
+  }
+});
+
+test("replacing a listener never leaves the public alias missing for a client", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const listener = await ownedListener("0.4.0");
+  const controllers: AbortController[] = []; const servings: Promise<void>[] = [];
+  let polling = true; let missing = 0; let probes = 0;
+  // A separate client that never stops looking for the alias, by path and by connecting to it.
+  const poller = (async () => {
+    while (polling) {
+      if (await lstat(listener.path).then(() => false, error => error.code === "ENOENT")) missing++;
+      await new Promise<void>(resolve => {
+        const socket = connect(listener.path);
+        socket.once("connect", () => { probes++; socket.destroy(); resolve(); });
+        socket.once("error", error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") missing++; socket.destroy(); resolve(); });
+      });
+    }
+  })();
+  try {
+    for (let i = 0; i < 15; i++) {
+      const release = `0.5.${i}`;
+      const before = await lstat(listener.path, { bigint: true });
+      const reuse = await reuseSshSocket(listener.path, { running: release, installed: release });
+      assert.ok(reuse.replace, `swap ${i} replaces the previous listener`);
+      const controller = new AbortController(); controllers.push(controller);
+      let replaced = false;
+      const serving = serveUnix(listener.path, controller.signal, echoSession, release, (_control, swapped) => { replaced = swapped; }, reuse.replace);
+      serving.catch(() => {}); servings.push(serving);
+      for (let wait = 0; wait < 400 && !replaced; wait++) await delay(5);
+      assert.equal(replaced, true, `swap ${i} completed`);
+      const after = await lstat(listener.path, { bigint: true });
+      assert.notEqual(String(after.ino), String(before.ino), `swap ${i} moved the alias to the new listener`);
+    }
+    polling = false; await poller;
+    assert.equal(missing, 0, "no client ever found the alias missing during 15 swaps");
+    assert.ok(probes > 15, "the poller kept connecting throughout");
+    assert.equal(JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8")).release, "0.5.14", "the last swap owns the ownership record");
+    assert.deepEqual((await readdir(listener.folder.directory)).filter(name => name.endsWith(".alias")), [], "no staged link is left behind");
+  } finally {
+    polling = false; await poller;
+    for (const controller of controllers) controller.abort();
+    await Promise.allSettled(servings); await listener.stop(); await listener.folder.remove();
   }
 });
 

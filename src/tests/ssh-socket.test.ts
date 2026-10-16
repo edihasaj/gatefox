@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
-import { reuseSshSocket, replaceSshListener, sshControlHome } from "../ssh-socket.js";
+import { reuseSshSocket, sshControlHome } from "../ssh-socket.js";
 import { serveUnix } from "../unix-transport.js";
 import { writePrivateJson } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
@@ -131,7 +131,15 @@ test("the bind-time swap leaves an alias that already moved on", { skip: process
     await listener.stop();
     const raced = await ownedListener("0.4.2", listener.folder);
     try {
-      assert.equal(await replaceSshListener(listener.path, reuse.replace), false, "a different listener holds the alias now, so nothing is unlinked here");
+      const racedInode = await lstat(listener.path, { bigint: true });
+      const late = new AbortController(); let replaced = false;
+      try {
+        await assert.rejects(serveUnix(listener.path, late.signal, async () => {}, "0.4.2", (_control, swapped) => { replaced = swapped; }, reuse.replace), /occupied/,
+          "the stale decision no longer matches the alias, so the late bootstrap replaces nothing");
+      } finally { late.abort(); }
+      assert.equal(replaced, false, "the late bootstrap reports no replacement");
+      const kept = await lstat(listener.path, { bigint: true });
+      assert.equal(String(kept.ino), String(racedInode.ino)); assert.equal(String(kept.dev), String(racedInode.dev), "the raced listener's alias is unchanged");
       assert.equal((await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" })).reused, true, "the bootstrap keeps the current listener it raced");
     } finally { await raced.stop(); }
   } finally { await listener.folder.remove(); }

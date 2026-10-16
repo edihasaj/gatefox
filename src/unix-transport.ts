@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { mkdir, lstat, chmod, link, unlink } from "node:fs/promises";
+import { mkdir, lstat, chmod, link, unlink, rename, readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -107,19 +107,33 @@ export async function serveUnix(path: string, signal: AbortSignal,
     const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
     let replaced = false;
     await withPrivateFileLock(path + ".gateway-lease", async () => {
-      // The atomic swap: drop the retired listener's alias here, never before this lock, so a
-      // bind that fails for any other reason leaves the old listener published and serving.
+      // The atomic swap: the retired listener's alias is replaced here, never before this lock, so
+      // a bind that fails for any other reason leaves the old listener published and serving.
       const alias = await lstat(path, { bigint: true }).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
       if (alias) {
         if (!replace || String(alias.ino) !== replace.inode || String(alias.dev) !== replace.device
           || !alias.isSocket() || alias.uid !== BigInt(process.getuid!())) throw occupied();
-        await unlink(path); replaced = true;
+        replaced = true;
       }
-      // Publish the ownership record first. The alias is the readiness signal. The release
-      // name is capped, so the record stays well under the 4096 byte limit readers enforce.
-      await writePrivateJson(path + ".gateway-lease",
-        { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}) });
-      await link(boundPath, path);
+      // Stage the new alias beside the old one and rename it over the old one, so the public
+      // path never stops resolving: a client connecting mid-swap reaches the old listener or the
+      // new one, never ENOENT. The ownership record is written before the rename, because the
+      // alias is the readiness signal and a reader must find the record as soon as it appears.
+      // The release name is capped, so the record stays well under the 4096 byte limit readers enforce.
+      const leasePath = path + ".gateway-lease"; const staged = boundPath + ".alias";
+      const previous = await readFile(leasePath, "utf8").catch(() => undefined);
+      await link(boundPath, staged);
+      try {
+        await writePrivateJson(leasePath,
+          { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}) });
+        await rename(staged, path);
+      } catch (error) {
+        // Nothing was swapped: drop the staged link and put the previous ownership record back.
+        await unlink(staged).catch(() => {});
+        if (previous === undefined) await unlink(leasePath).catch(() => {});
+        else { try { await writePrivateJson(leasePath, JSON.parse(previous)); } catch { /* the previous record was unreadable already */ } }
+        throw error;
+      }
     });
     onListen?.({ sessions: () => active.size, retire }, replaced);
     leaseTimer = setInterval(() => {
@@ -133,6 +147,10 @@ export async function serveUnix(path: string, signal: AbortSignal,
   } finally {
     clearInterval(leaseTimer); signal.removeEventListener("abort", close); close();
     await Promise.allSettled([...active]); sockets.close();
-    if (inode !== undefined && await lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false)) await unlink(path).catch(() => {});
+    // Under the same lock as retire() and the publish, so the alias is never removed from between
+    // a newer listener's check and its own swap.
+    if (inode !== undefined) await withPrivateFileLock(path + ".gateway-lease", async () => {
+      if (await lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false)) await unlink(path).catch(() => {});
+    }).catch(() => {});
   }
 }
