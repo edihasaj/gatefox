@@ -3,3 +3,6 @@ export { loadConfig, validateConfig } from "./config.js";
 export type { GatewayConfig, ProviderConfig } from "./config.js";
 export type { Provider } from "./providers/provider.js";
 export type { ResponsesRequest, InferenceEvent } from "./protocol/types.js";
+export { messagesToResponses } from "./protocol/messages-request.js";
+export { MessagesWriter } from "./protocol/messages.js";
+export { claudeSettings, remoteClaudeSettings } from "./claude-config.js";

@@ -86,7 +86,7 @@ export type ResponsesRequest = {
   tools?: ResponsesTool[];
   [option: string]: unknown;
 };
-export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number } };
+export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number; cache_creation_tokens?: number } };
 export type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
 export type PublicServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast";
 const publicServiceTiers = new Set<string>(["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"]);
@@ -97,7 +97,7 @@ export type InferenceEvent =
   | { text: string; type: "text"; messageId?: string; phase?: AssistantMessagePhase }
   | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase; status?: "completed" | "incomplete" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string }
   | { item: Record<string, unknown>; type: "reasoning-state" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
   /** Response-header data from the upstream; the server consumes it and never forwards it as output. */

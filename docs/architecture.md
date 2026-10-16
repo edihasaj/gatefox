@@ -7,11 +7,15 @@ read_when:
 
 # Architecture
 
-The HTTP daemon accepts authenticated OpenAI Responses requests. Configuration
-maps each public model alias to one provider, account, and upstream model.
-Provider adapters own authentication and inference. The Responses translator
-owns request compilation, replay, and streamed output. Codex executes file and
-command tools; providers receive their results through replay.
+The HTTP daemon accepts authenticated OpenAI Responses and Anthropic Messages
+requests. Configuration maps each public model alias to one provider, account,
+and upstream model, independently of the caller's wire protocol. Messages ingress
+compiles into the existing internal request contract; it does not force the
+upstream to use the Responses API. Provider adapters retain their Responses,
+Anthropic, Chat Completions, or subscription transport. Protocol writers produce
+the caller's native JSON or streamed output. Each client executes its file and
+command tools; providers receive their results through replay. See
+[Messages compatibility](messages.md) for Claude Code setup and protocol limits.
 
 The gateway does not assign agent jobs, select worker models, inject task
 instructions, or execute caller tools. The client owns orchestration, permissions,

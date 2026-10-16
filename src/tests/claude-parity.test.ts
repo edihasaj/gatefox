@@ -184,7 +184,7 @@ test("a one-shot text turn ends at its end_turn delta with that usage, keeping a
       for await (const event of adapter.infer({ model: "fixture", input: "hello" }, new AbortController().signal)) events.push(event);
       // A turn that never got a result ended at its end_turn delta: the answer cannot have waited for one.
       if (resultMs === "hold") await assert.rejects(readFile(f.resultPath, "utf8"), { code: "ENOENT" }, "no result was sent, yet the turn completed");
-      assert.deepEqual(events, [{ type: "text", text: "Hi" }, { type: "done", usage: { input_tokens: 60, output_tokens: 5, total_tokens: 65, input_tokens_details: { cached_tokens: 50 } } }]);
+      assert.deepEqual(events, [{ type: "text", text: "Hi" }, { type: "done", usage: { input_tokens: 60, output_tokens: 5, total_tokens: 65, input_tokens_details: { cached_tokens: 50, cache_creation_tokens: 7 } } }]);
     }
     assert.deepEqual(limits.map(limit => limit.status), ["allowed_warning", "allowed_warning"], "the rate limit printed right after the turn is kept");
     assert.deepEqual(windows, [["fixture", 300000]], "a result that follows promptly still reports its window");

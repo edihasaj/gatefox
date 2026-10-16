@@ -2,7 +2,8 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
-import { ProviderError, type Provider } from "./provider.js";
+import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { generationOptions } from "./generation-options.js";
 
 function historicalArguments(text: string): unknown {
   try { return JSON.parse(text); } catch { throw new ProviderError("invalid_request", "Historical tool arguments are not valid JSON", 400); }
@@ -13,7 +14,8 @@ import { responsesHttpError } from "./responses-errors.js";
 
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
-  async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+  async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+    const options = generationOptions(request, 1);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Anthropic API credential is missing", 401);
     const normalized = responsesToChatRequest(request);
@@ -31,8 +33,14 @@ export class AnthropicAPI implements Provider {
     };
     const messages: Array<{ role: "user" | "assistant"; content: Array<Record<string, unknown>> }> = [];
     const system: string[] = [];
+    let sawConversation = false;
     for (const message of normalized.messages) {
-      if (message.role === "system" || message.role === "developer") { if (message.content) system.push(message.content); continue; }
+      if (message.role === "system" || message.role === "developer") {
+        if (context.clientProtocol === "messages" && sawConversation) throw new ProviderError("invalid_request", "Anthropic Messages requests cannot represent mid-conversation system instructions", 400);
+        if (message.content) system.push(message.content);
+        continue;
+      }
+      sawConversation = true;
       const role = message.role === "assistant" ? "assistant" : "user";
       const content: Array<Record<string, unknown>> = [];
       if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.parts ? anthropicParts(message) : message.content || "" });
@@ -50,10 +58,17 @@ export class AnthropicAPI implements Provider {
     if (!Number.isInteger(maxTokens) || Number(maxTokens) < 1) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
     const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/messages`, {
       method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: request.model, stream: true, max_tokens: maxTokens, system: system.join("\n"), messages,
+      body: JSON.stringify({ model: request.model, stream: true, max_tokens: maxTokens, system: system.map(text => ({ type: "text", text })), messages,
         tools: tools.map((tool, index) => ({ name: `tool_${index}`, description: tool.function.description || "", input_schema: tool.function.parameters || { type: "object", properties: {} } })),
         ...(effort !== undefined && !noEffort ? { output_config: { effort } } : {}),
-        ...(choice ? { tool_choice: typeof choice === "object" ? { type: "tool", name: nativeName(choice.function.name) } : { type: choice === "required" ? "any" : choice } } : {}),
+        ...(choice || options.parallelToolCalls === false ? { tool_choice: {
+          ...(choice ? (typeof choice === "object" ? { type: "tool", name: nativeName(choice.function.name) } : { type: choice === "required" ? "any" : choice }) : { type: "auto" }),
+          ...(options.parallelToolCalls === false ? { disable_parallel_tool_use: true } : {}),
+        } } : {}),
+        ...(options.stop === undefined ? {} : { stop_sequences: options.stop }),
+        ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+        ...(options.topP === undefined ? {} : { top_p: options.topP }),
+        ...(context.clientProtocol === "messages" && context.adaptiveThinking ? { thinking: { type: "adaptive" } } : {}),
       }),
     });
     if (!response.ok) {
@@ -66,11 +81,17 @@ export class AnthropicAPI implements Provider {
     const blocks = new Map<number, { id: string; name: string; input: unknown; partial: string }>();
     const indices = new Set<number>(); const callIds = new Set<string>();
     const usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-    let stopReason: string | undefined; let done = false;
+    let stopReason: string | undefined; let stopSequence: unknown; let done = false;
     for await (const event of readEvents(response.body)) {
       if (event.type === "message_start") {
         const message = event.message as { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
-        usage.input_tokens = (message.usage?.input_tokens || 0) + (message.usage?.cache_creation_input_tokens || 0) + (message.usage?.cache_read_input_tokens || 0);
+        const cacheRead = message.usage?.cache_read_input_tokens || 0;
+        const cacheCreation = message.usage?.cache_creation_input_tokens || 0;
+        usage.input_tokens = (message.usage?.input_tokens || 0) + cacheCreation + cacheRead;
+        if (cacheRead || cacheCreation) usage.input_tokens_details = {
+          cached_tokens: cacheRead,
+          ...(cacheCreation ? { cache_creation_tokens: cacheCreation } : {}),
+        };
       } else if (event.type === "content_block_start") {
         const block = event.content_block as { type: string; id: string; name: string; input: unknown };
         if (!["text", "thinking", "redacted_thinking", "tool_use"].includes(block.type)) throw new ProviderError("unsupported_output", "Anthropic returned an unsupported content block");
@@ -104,7 +125,9 @@ export class AnthropicAPI implements Provider {
           blocks.delete(Number(event.index));
         }
       } else if (event.type === "message_delta") {
-        stopReason = (event.delta as { stop_reason?: string }).stop_reason;
+        const delta = event.delta as { stop_reason?: string; stop_sequence?: unknown };
+        stopReason = delta.stop_reason;
+        if (delta.stop_sequence !== undefined) stopSequence = delta.stop_sequence;
         usage.output_tokens = (event.usage as { output_tokens?: number })?.output_tokens || 0;
       } else if (event.type === "error") {
         const context = anthropicContextFailure(event); if (context) throw context;
@@ -112,11 +135,21 @@ export class AnthropicAPI implements Provider {
       }
       else if (event.type === "message_stop") {
         if (stopReason === "model_context_window_exceeded") throw contextWindowFailure();
-        if (!stopReason || !["end_turn", "stop_sequence", "tool_use"].includes(stopReason) || blocks.size) throw new ProviderError("incomplete", "Anthropic response was incomplete, paused, or refused");
+        const messagesClient = context.clientProtocol === "messages";
+        const capped = messagesClient && stopReason === "max_tokens";
+        const stopped = messagesClient && stopReason === "stop_sequence";
+        const complete = !!stopReason && (["end_turn", "stop_sequence", "tool_use"].includes(stopReason) || capped);
+        if (!complete || blocks.size) throw new ProviderError("incomplete", "Anthropic response was incomplete, paused, or refused");
+        if ((capped || stopped) && callIds.size) throw new ProviderError("incomplete", "Anthropic stopped with tool calls");
+        if (stopped && typeof stopSequence !== "string") throw new ProviderError("incomplete", "Anthropic did not provide its stop sequence");
         if (stopReason === "tool_use" && !callIds.size) throw new ProviderError("invalid_tool_call", "Anthropic stopped for a tool without returning one");
         if ((choice === "required" || typeof choice === "object") && !callIds.size) throw new ProviderError("invalid_tool_call", "Anthropic did not return the required tool call");
         usage.total_tokens = usage.input_tokens + usage.output_tokens;
-        done = true; yield { type: "done", usage }; break;
+        const nativeStopSequence = stopped ? stopSequence as string : undefined;
+        done = true; yield { type: "done", usage,
+          ...(capped ? { stopReason: "max_tokens" as const } : {}),
+          ...(stopped ? { stopReason: "stop_sequence" as const, stopSequence: nativeStopSequence! } : {}),
+        }; break;
       }
     }
     if (!done) throw new ProviderError("incomplete", "Anthropic stream ended without completion");

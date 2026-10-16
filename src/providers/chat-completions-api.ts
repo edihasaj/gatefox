@@ -2,13 +2,32 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
-import { ProviderError, type Provider } from "./provider.js";
+import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { generationOptions } from "./generation-options.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
+
+function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string) {
+  const replay = messages.filter(message => message.role !== "system" && message.role !== "developer").map(({ parts: _parts, name: _name, tool_calls, role, ...message }) => ({ ...message, role,
+    ...(tool_calls ? { tool_calls: tool_calls.map(({ id, function: fn }) => ({ id, type: "function" as const, function: { name: nativeName(fn.name), arguments: fn.arguments } })) } : {}),
+  }));
+  const compacted: typeof replay = [];
+  for (const message of replay) {
+    const previous = compacted.at(-1);
+    if (previous?.role !== "assistant" || message.role !== "assistant") { compacted.push(message); continue; }
+    const before = typeof previous.content === "string" ? previous.content : "";
+    const next = typeof message.content === "string" ? message.content : "";
+    previous.content = before || next ? before + next : null;
+    const calls = [...(previous.tool_calls || []), ...(message.tool_calls || [])];
+    if (calls.length) previous.tool_calls = calls;
+  }
+  return compacted;
+}
 
 /** Chat Completions transport for local vLLM and compatible API servers. */
 export class ChatCompletionsAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
-  async *infer(request: ResponsesRequest, signal: AbortSignal): AsyncGenerator<InferenceEvent> {
+  async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+    const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Chat API credential is missing", 401);
     const normalized = responsesToChatRequest(request); const tools = normalized.tools || [];
@@ -25,9 +44,11 @@ export class ChatCompletionsAPI implements Provider {
     const levels = alias ? this.config.modelMetadata?.[alias]?.reasoningEfforts : undefined;
     if (reasoning?.effort !== undefined && (typeof reasoning.effort !== "string" || !levels?.includes(reasoning.effort))) throw new ProviderError("invalid_request", "Selected chat model does not support this reasoning effort", 400);
     const choice = normalized.tool_choice;
+    // Use the same leading-system normalization for both ingress protocols.
+    // Strict chat templates reject later system messages. Keep every instruction
+    // at system priority and in source order; conversation replay keeps its order.
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
-    const messages = normalized.messages.filter(message => message.role !== "system" && message.role !== "developer").map(({ parts: _parts, name: _name, tool_calls, role, ...message }) => ({ ...message, role,
-      ...(tool_calls ? { tool_calls: tool_calls.map(({ id, function: fn }) => ({ id, type: "function", function: { name: nativeName(fn.name), arguments: fn.arguments } })) } : {}) }));
+    const messages = compactAssistantReplay(normalized.messages, nativeName);
     if (system) messages.unshift({ role: "system", content: system });
     const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`, { method: "POST", redirect: "error", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body: JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
@@ -35,6 +56,10 @@ export class ChatCompletionsAPI implements Provider {
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "function", function: { name: nativeName(choice.function.name) } } : choice } : {}),
         ...(reasoning?.effort !== undefined ? { reasoning_effort: reasoning.effort } : {}),
         ...(request.max_output_tokens !== undefined ? { max_tokens: request.max_output_tokens } : {}),
+        ...(options.stop === undefined ? {} : { stop: options.stop }),
+        ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
+        ...(options.topP === undefined ? {} : { top_p: options.topP }),
+        ...(options.parallelToolCalls === undefined ? {} : { parallel_tool_calls: options.parallelToolCalls }),
       }) });
     if (!response.ok) {
       const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
@@ -50,7 +75,9 @@ export class ChatCompletionsAPI implements Provider {
         throw new ProviderError("inference_failed", "Chat API inference failed");
       }
       if (event.type === "chat.done") {
-        if (!finish || !["stop", "tool_calls"].includes(finish) || ((finish === "tool_calls") !== (calls.size > 0))) throw new ProviderError("incomplete", "Chat API response was incomplete or refused");
+        const capped = context.clientProtocol === "messages" && finish === "length";
+        const complete = !!finish && (["stop", "tool_calls"].includes(finish) || capped);
+        if (!complete || ((finish === "tool_calls") !== (calls.size > 0)) || (capped && calls.size > 0)) throw new ProviderError("incomplete", "Chat API response was incomplete or refused");
         if ((choice === "required" || typeof choice === "object") && !calls.size) throw new ProviderError("invalid_tool_call", "Chat API omitted the required tool");
         const ids = new Set<string>();
         for (const call of calls.values()) {
@@ -60,7 +87,7 @@ export class ChatCompletionsAPI implements Provider {
           if (!input || typeof input !== "object" || Array.isArray(input) || (definition.responseTool?.type === "custom" && typeof (input as { input?: unknown }).input !== "string")) throw new ProviderError("invalid_tool_call", "Chat API returned invalid tool input");
           ids.add(call.id); yield { type: "tool", call: { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: call.arguments } } };
         }
-        done = true; yield { type: "done", usage }; break;
+        done = true; yield { type: "done", usage, ...(capped ? { stopReason: "max_tokens" as const } : {}) }; break;
       }
       if (event.model !== undefined && event.model !== request.model) throw new ProviderError("model_route", "Chat API returned a different model", 502);
       const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
