@@ -53,15 +53,13 @@ function parentOf(thread: ClassifyThread): string | undefined {
 /** Membership for either shape of a catalog list, without copying it first. */
 const member = (values: ReadonlySet<string> | readonly string[], value: string): boolean =>
   values instanceof Set ? values.has(value) : (values as readonly string[]).includes(value);
-/** Whether an id is the gateway's, by its record's provider or by the registry alone. */
-function recorded(id: string, ctx: ClassifyContext): boolean {
-  if (ctx.registry.has(id)) return true;
-  return ctx.readParent(id)?.modelProvider === legacyProvider;
-}
+/** Whether a model is one of the gateway's aliases and not a native slug; the native catalog wins a tie. */
+const gatewayModel = (model: unknown, ctx: ClassifyContext): boolean =>
+  text(model) && member(ctx.aliases, model) && !member(ctx.nativeSlugs, model);
 
 /**
  * Says whether a chat belongs to the gateway. Fixed order: the provider older releases stamped, then the registry, then a
- * gateway ancestor down the sub-agent chain, then the model alias, with native as the answer that is left. A sub-agent of
+ * gateway ancestor down the sub-agent chain (recorded, stamped with the provider, or started on an alias), then the model alias, with native as the answer that is left. A sub-agent of
  * a gateway chat is a gateway chat; an alias that names a native slug is a native chat.
  */
 export function classifyThread(thread: ClassifyThread, ctx: ClassifyContext): { kind: ChatKind; rule: ClassifyRule } {
@@ -72,10 +70,14 @@ export function classifyThread(thread: ClassifyThread, ctx: ClassifyContext): { 
     // A repeat, or a chain longer than the limit, answers nothing: the rules below get the chat instead.
     if (seen.has(parent)) break;
     seen.add(parent);
-    if (recorded(parent, ctx)) return { kind: "gateway", rule: "parent" };
-    const next = ctx.readParent(parent);
-    parent = next === undefined ? undefined : parentOf(next);
+    // The ancestor's record is read once and answers both questions: whether it is the gateway's, and who its own parent is.
+    // A registry hit is enough without it; a record that is gone, or a registry that is empty or unreadable, still classifies
+    // an ancestor by the provider or the alias it was started with.
+    if (ctx.registry.has(parent)) return { kind: "gateway", rule: "parent" };
+    const record = ctx.readParent(parent);
+    if (record?.modelProvider === legacyProvider || gatewayModel(record?.model, ctx)) return { kind: "gateway", rule: "parent" };
+    parent = record === undefined ? undefined : parentOf(record);
   }
-  if (text(thread.model) && member(ctx.aliases, thread.model) && !member(ctx.nativeSlugs, thread.model)) return { kind: "gateway", rule: "alias" };
+  if (gatewayModel(thread.model, ctx)) return { kind: "gateway", rule: "alias" };
   return { kind: "native", rule: "native" };
 }
