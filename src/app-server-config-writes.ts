@@ -11,8 +11,8 @@
  * A file path is judged the same way: on the file it names, whichever spelling reached it.
  */
 
-import { realpathSync } from "node:fs";
-import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, parse, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
 import { parseKeyPath } from "./app-server-config-writes-key-path.js";
 
@@ -34,7 +34,8 @@ export const invalidKeyPathMessage = "This configuration key is not valid";
 export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
 
 /** What counts as gateway identity, supplied by the router. Paths are compared as files, so a
- * spelling that leads to one through a symlink is recognized as the file it reaches. */
+ * spelling that leads to one through a symlink, a firmlink, or another case of the same name is
+ * recognized as the file it reaches. See `GatewayPathGuard` for how a path is judged. */
 export type GatewayIdentity = {
   /** The native provider id the gateway registers itself under. */
   provider: string;
@@ -102,39 +103,131 @@ const expandEnginePath = (value: string, identity: GatewayIdentity, base: string
 
 const tryRealpath = (path: string): string | undefined => { try { return realpathSync(path); } catch { return undefined; } };
 
+/** A path longer than this is judged on its spelling alone; walking it would cost more than it can tell. */
+const inspectPathBytes = 1024;
+/** How many paths one prepared guard remembers; a batch that names more recomputes rather than grows. */
+const guardMemoLimit = 4096;
+
+/** What makes one file itself: the volume and the node the file system reads it as. A path that
+ * reaches the same {dev, ino} through another spelling — a link, a firmlink, or another casing of a
+ * directory on a case-insensitive volume — names the same file. */
+type FileId = { dev: number; ino: number };
+const sameFileId = (left: FileId | undefined, right: FileId | undefined): boolean =>
+  left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino;
+
+/** The identity of the file a path names, or undefined where it cannot be read: nothing there, no
+ * permission, or the path itself is unwalkable. Every failure means "not a match" here. */
+const fileIdOf = (guard: GatewayPathGuard, path: string): FileId | undefined => {
+  if (!guard.ids.has(path)) {
+    let id: FileId | undefined;
+    try { const stat = statSync(path); id = { dev: stat.dev, ino: stat.ino }; } catch { id = undefined; }
+    if (guard.ids.size < guardMemoLimit) guard.ids.set(path, id);
+  }
+  return guard.ids.get(path);
+};
+
+/** The prefixes a resolved absolute path passes through, from the root down, one `stat` per component:
+ * the ones that exist, whether or not the path itself does, and where the walk stopped. Reading down
+ * instead of climbing up costs one call per component even when nothing below the root exists. */
+const walkExisting = (guard: GatewayPathGuard, target: string): { ancestors: string[]; deepest: string; missing: string[] } => {
+  const root = parse(target).root;
+  const components = target.slice(root.length).split(sep).filter(component => component.length > 0);
+  const ancestors: string[] = [];
+  let current = root;
+  for (let index = 0; index < components.length; index++) {
+    const next = current === root ? root + components[index] : current + sep + components[index];
+    if (fileIdOf(guard, next) === undefined) return { ancestors, deepest: current, missing: components.slice(index) };
+    if (index < components.length - 1) ancestors.push(next);
+    current = next;
+  }
+  return { ancestors, deepest: current, missing: [] };
+};
+
 /** The file a path names once the links along it are followed: its deepest existing ancestor resolved,
  * with the components below it — a file that is not written yet — kept as spelled. Where no ancestor
  * resolves, the lexical path is the answer; a path that does not exist is never an error here. */
-const realForm = (target: string): string => {
-  const missing: string[] = [];
-  for (let current = target; ; ) {
-    const real = tryRealpath(current);
-    if (real !== undefined) return resolve(real, ...missing);
-    const parent = dirname(current);
-    if (parent === current) return target;
-    missing.unshift(basename(current));
-    current = parent;
-  }
+const realFormOf = (guard: GatewayPathGuard, lexical: string): string => {
+  const cached = guard.real.get(lexical);
+  if (cached !== undefined) return cached;
+  const { deepest, missing } = walkExisting(guard, lexical);
+  const real = tryRealpath(deepest);
+  const form = real === undefined ? lexical : resolve(real, ...missing);
+  if (guard.real.size < guardMemoLimit) guard.real.set(lexical, form);
+  return form;
 };
 
-/** A path in both spellings it can carry: the one written, and the one the file system reads it as. */
-const pathForms = (value: string): string[] => {
-  const lexical = resolve(value);
-  const real = realForm(lexical);
+/** A path in both spellings it can carry: the one written, and the one the file system reads it as.
+ * A path too long to walk keeps only its spelling, and touching the file system stays off the table. */
+const pathFormsOf = (guard: GatewayPathGuard, lexical: string): string[] => {
+  if (Buffer.byteLength(lexical) > inspectPathBytes) return [lexical];
+  const real = realFormOf(guard, lexical);
   return real === lexical ? [lexical] : [lexical, real];
 };
 
+/** The gateway's own paths for one batch of edits, judged once and remembered: both spellings of the
+ * catalog, the state directory and the native home, the identity of the files that already exist, and
+ * what each path the batch names turned out to be. The router builds this per call, so 20k edits that
+ * repeat one path read the file system once. */
+export type GatewayPathGuard = {
+  identity: GatewayIdentity;
+  /** Both spellings of the catalog file. */
+  catalog: string[];
+  /** The catalog file's identity, where it exists. */
+  catalogId: FileId | undefined;
+  /** Both spellings of the state directory, each carrying a trailing separator. */
+  state: string[];
+  /** The state directory's identity, where it exists. */
+  stateId: FileId | undefined;
+  /** Both spellings of the native home, the base a relative value reads against. */
+  homes: string[];
+  /** Per-path reads, kept so one call answers the same question the same way without repeating it. */
+  real: Map<string, string>;
+  ids: Map<string, FileId | undefined>;
+  found: Map<string, boolean>;
+};
+
+const prepareGatewayPaths = (identity: GatewayIdentity): GatewayPathGuard => {
+  const guard: GatewayPathGuard = {
+    identity, catalog: [], catalogId: undefined, state: [], stateId: undefined, homes: [],
+    real: new Map(), ids: new Map(), found: new Map(),
+  };
+  const catalog = resolve(identity.catalogPath);
+  const state = resolve(identity.stateDirectory);
+  guard.catalog = pathFormsOf(guard, catalog);
+  guard.catalogId = fileIdOf(guard, catalog);
+  guard.state = pathFormsOf(guard, state).map(dir => dir.endsWith(sep) ? dir : dir + sep);
+  guard.stateId = fileIdOf(guard, state);
+  guard.homes = pathFormsOf(guard, resolve(identity.nativeHome));
+  return guard;
+};
+
+/** The spellings a target shares with the gateway's files: the catalog named outright, or the state
+ * directory as a prefix. These decide a path the file system cannot answer, and back up identity checks. */
+const spelledAsGateway = (guard: GatewayPathGuard, target: string): boolean =>
+  guard.catalog.some(catalog => target === catalog) || guard.state.some(dir => target.startsWith(dir));
+
+/** Whether the file a target names is one of the gateway's, read off the volume rather than the
+ * spelling: the catalog itself, or anything under the state directory, whichever link or casing reached it. */
+const isGatewayFile = (guard: GatewayPathGuard, target: string): boolean => {
+  const cached = guard.found.get(target);
+  if (cached !== undefined) return cached;
+  const found = sameFileId(fileIdOf(guard, target), guard.catalogId)
+    || (guard.stateId !== undefined && walkExisting(guard, target).ancestors.some(dir => sameFileId(fileIdOf(guard, dir), guard.stateId)));
+  if (guard.found.size < guardMemoLimit) guard.found.set(target, found);
+  return found;
+};
+
 /** True when a string names the gateway catalog or anything inside the gateway's state directory.
- * The engine opens a file, not a spelling, so a link that leads there is there: each base a relative
- * value can read against is tried, and the path it lands on is judged in both of its forms. */
-const holdsGatewayCatalogPath = (value: unknown, identity: GatewayIdentity): boolean => {
+ * The engine opens a file, not a spelling, so the guard reads the file a path reaches: every base a
+ * relative value can read against is tried, and each spelling it lands on is judged both as a path and,
+ * where it exists, by identity. A path too long to walk is judged on its spelling alone. */
+const holdsGatewayCatalogPath = (value: unknown, guard: GatewayPathGuard): boolean => {
   if (typeof value !== "string") return false;
-  const catalog = pathForms(identity.catalogPath);
-  const stateDirectories = pathForms(identity.stateDirectory).map(dir => dir.endsWith(sep) ? dir : dir + sep);
-  for (const base of pathForms(identity.nativeHome)) {
-    for (const target of pathForms(expandEnginePath(value, identity, base))) {
-      if (catalog.some(path => target === path)) return true;
-      if (stateDirectories.some(dir => target.startsWith(dir))) return true;
+  for (const base of guard.homes) {
+    const lexical = resolve(expandEnginePath(value, guard.identity, base));
+    if (Buffer.byteLength(lexical) > inspectPathBytes) { if (spelledAsGateway(guard, lexical)) return true; continue; }
+    for (const target of pathFormsOf(guard, lexical)) {
+      if (spelledAsGateway(guard, target) || isGatewayFile(guard, target)) return true;
     }
   }
   return false;
@@ -151,26 +244,28 @@ const isProviderRowPath = (segments: string[], provider: string): boolean =>
 
 type Finding = "clear" | "identity" | "catalog" | "too-deep";
 // A profile or plugin block can carry its own model settings; search it the way the engine reads it back.
-const scanValue = (value: unknown, identity: GatewayIdentity, depth: number): Finding => {
+const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Finding => {
+  const identity = guard.identity;
   if (value === null || typeof value !== "object") return "clear";
   if (depth > identitySearchDepth) return "too-deep";
   if (Array.isArray(value)) {
-    for (const item of value) { const found = scanValue(item, identity, depth + 1); if (found !== "clear") return found; }
+    for (const item of value) { const found = scanValue(item, guard, depth + 1); if (found !== "clear") return found; }
     return "clear";
   }
   for (const [key, item] of Object.entries(value as ObjectValue)) {
     if (isModelBearingKey(key) && identity.isGatewayModel(item)) return "identity";
     if (isProviderKey(key) && item === identity.provider) return "identity";
     if (key === "model_providers" && holdsGatewayProviderRow(item, identity.provider)) return "identity";
-    if (key === "model_catalog_json" && holdsGatewayCatalogPath(item, identity)) return "catalog";
+    if (key === "model_catalog_json" && holdsGatewayCatalogPath(item, guard)) return "catalog";
   }
-  for (const item of Object.values(value as ObjectValue)) { const found = scanValue(item, identity, depth + 1); if (found !== "clear") return found; }
+  for (const item of Object.values(value as ObjectValue)) { const found = scanValue(item, guard, depth + 1); if (found !== "clear") return found; }
   return "clear";
 };
 
 /** Why a single native edit must be refused, or undefined when the native engine may apply it. */
-export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity): string | undefined => {
+export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity, prepared?: GatewayPathGuard): string | undefined => {
   if (!plain(edit)) return undefined; // forwarded to the engine as sent; it is not an edit this module can read
+  const guard = prepared ?? prepareGatewayPaths(identity);
   const { keyPath, value } = edit;
   const segments = parseKeyPath(keyPath);
   if (!segments) return invalidKeyPathMessage;
@@ -182,13 +277,15 @@ export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity): s
   // Saving any row of the gateway provider is refused; clearing one with null must stay possible.
   if (value !== null && isProviderRowPath(segments, identity.provider)) return gatewayIdentityMessage;
   if (last === "model_providers" && holdsGatewayProviderRow(value, identity.provider)) return gatewayIdentityMessage;
-  if (last === "model_catalog_json" && holdsGatewayCatalogPath(value, identity)) return gatewayCatalogMessage;
-  const found = scanValue(value, identity, 0);
+  if (last === "model_catalog_json" && holdsGatewayCatalogPath(value, guard)) return gatewayCatalogMessage;
+  const found = scanValue(value, guard, 0);
   return found === "clear" ? undefined : found === "catalog" ? gatewayCatalogMessage : gatewayIdentityMessage;
 };
 
-/** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded. */
+/** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded.
+ * The gateway's paths are read once for the batch and handed to every edit in it. */
 export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity): string | undefined => {
-  for (const edit of edits) { const refusal = nativeEditViolation(edit, identity); if (refusal) return refusal; }
+  const guard = prepareGatewayPaths(identity);
+  for (const edit of edits) { const refusal = nativeEditViolation(edit, identity, guard); if (refusal) return refusal; }
   return undefined;
 };
