@@ -175,11 +175,12 @@ test("a deep path costs a unit for every folder it passes, remembered or not", a
   const counted = counting({ memo: 4096, budget: 3 * walk });
   nativeWritesViolation(leaves, tree.identity, counted.limits);
   assert.ok(counted.total() < 3 * walk, "and the remembered folders were not read again");
-  assert.equal(nativeWritesViolation([leaves[0]!, leaves[0]!, leaves[0]!, leaves[0]!], tree.identity, { memo: 4096, budget: 20 * walk }), undefined, "a repeated identical path is free once answered");
-  const repeated = counting({ memo: 4096, budget: 20 * walk });
+  assert.equal(nativeWritesViolation([leaves[0]!, leaves[0]!, leaves[0]!, leaves[0]!], tree.identity, { memo: 4096, budget: 20 * walk }), undefined, "a path repeated four times still fits");
+  // What a repeated path saves is reads, not budget: every copy is charged for its size (see the size test file).
+  const repeated = counting({ memo: 4096, budget: 1e9 });
   nativeWritesViolation([leaves[0]!], tree.identity, repeated.limits);
   const once = repeated.total();
-  const again = counting({ memo: 4096, budget: 20 * walk });
+  const again = counting({ memo: 4096, budget: 1e9 });
   nativeWritesViolation(Array.from({ length: 500 }, () => leaves[0]!), tree.identity, again.limits);
   assert.equal(again.total(), once, "500 copies of one path read the file system as often as one");
 });
@@ -195,7 +196,7 @@ test("links are followed one step at a time, each charged to the budget", async 
   const counted = counting({ memo: 0 });
   assert.equal(nativeWritesViolation(edits, tree.identity, counted.limits), inspectBudgetMessage);
   assert.ok(counted.total() <= defaultGuardLimits.budget, `${counted.total()} reads stay within the budget`);
-  // A link that leads back to itself is followed at most 40 times, then given up on: forwarded, not refused and not hung.
+  // A link that leads back to itself is followed at most 40 times (the resolver's limit; the kernel's own, 32 on macOS, comes first there), then given up on: forwarded, not refused and not hung.
   const loop = join(tree.root, "loop");
   await symlink(loop, loop);
   const looped = counting();

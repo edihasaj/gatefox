@@ -8,11 +8,12 @@
  * gateway's catalog file: those rows exist only while the adapter is running, so a write that
  * stores one is refused before anything is written or forwarded. Key paths are judged on the
  * segments the engine parses, never on the raw spelling, and a path it cannot parse is refused.
- * A file path is judged the same way: on the file it names, whichever spelling reached it.
+ * A file path is judged the same way: on the file it names, whichever spelling reached it. The
+ * resolver reads POSIX paths only; where it cannot (Windows), a catalog path is refused outright.
  */
 
 import { lstatSync, readlinkSync, statSync } from "node:fs";
-import { isAbsolute, parse, resolve, sep } from "node:path";
+import { isAbsolute, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
 import { parseKeyPath } from "./app-server-config-writes-key-path.js";
 
@@ -33,6 +34,7 @@ export const gatewayCatalogMessage = "The gateway catalog cannot be saved into n
 export const invalidKeyPathMessage = "This configuration key is not valid";
 export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
 export const inspectBudgetMessage = "This configuration write names too many different paths to check";
+export const windowsCatalogMessage = "A catalog file path cannot be saved into native Codex configuration on Windows, where the gateway cannot check which file it names";
 
 /** What counts as gateway identity, supplied by the router. Paths are compared as files, so a
  * spelling that leads to one through a symlink, a firmlink, or another case of the same name is
@@ -91,14 +93,14 @@ const holdsGatewayProviderRow = (value: unknown, provider: string): boolean =>
 
 /** The path the engine reads a string as, resolving anything merely relative to it against `base`: a
  * lone `~` is the home directory; `~/rest` is home with `rest` below it, where only a slash is the
- * separator after the tilde (Windows reads `~\rest` the same way, and trims backslashes there); an
- * absolute path is used as sent; and every other value, `~rest` included, resolves below the base. */
+ * separator after the tilde; an absolute path is used as sent; and every other value, `~rest`
+ * included, resolves below the base. The result is a resolved path: absolute, with no `.`, `..` or
+ * empty component, and no trailing separator unless it is the root. */
 const expandEnginePath = (value: string, identity: GatewayIdentity, base: string): string => {
   // A tilde the engine does not expand is just a character in a relative name, so it stays below the
   // base, and `..` is read lexically: it climbs the path as spelled, following no links of its own.
   if (value === "~") return resolve(identity.homeDirectory);
   if (value.startsWith("~/")) return resolve(identity.homeDirectory, value.slice(2).replace(/^\/+/, ""));
-  if (process.platform === "win32" && value.startsWith("~\\")) return resolve(identity.homeDirectory, value.slice(2).replace(/^\\+/, ""));
   return isAbsolute(value) ? resolve(value) : resolve(base, value);
 };
 
@@ -110,15 +112,25 @@ const inspectPathBytes = 4096;
  * The memo only caches: a full memo never changes what an answer is, only what it costs. */
 const guardMemoLimit = 4096;
 /** How many units of work one request may spend on the paths its edits name. A unit is one step of a
- * path walk — one folder passed, whether its answer was remembered or not — or one file-system read
- * (`stat`, `lstat` or `readlink`), so the budget counts work, not calls: a deep path costs a unit per
- * folder every time it is walked. A real batch names a handful of paths about ten folders deep, which
- * costs a few hundred units; 50 edits at 15 folders each cost well under a third of the budget. The
- * costliest shape, distinct paths at the deepest tree a platform allows, spends it in a few hundred
- * milliseconds. A request that spends it is refused whole, because a spelling-only check could be
- * walked around. */
+ * path walk — one folder passed, whether its answer was remembered or not —, one file-system read
+ * (`stat`, `lstat` or `readlink`), or, for every path value judged, a size charge of one per 64
+ * characters of its text (see `pathValueUnits`), paid each time the value is judged against a base
+ * whether or not its answer was remembered. So the budget counts the string work of a path as well as
+ * its reads: a long path costs by its length even when its first folder does not exist, and a long path
+ * repeated a thousand times costs a thousand times. A real batch names a handful of paths about ten
+ * folders deep, which costs a few hundred units; 50 edits at 33 folders each stay under half of the
+ * budget. A request that spends it is refused whole, because a spelling-only check could be walked
+ * around. */
 const inspectBudget = 16384;
-/** How many links one resolution follows before it gives up, as the operating system does (Linux stops at 40). */
+/** The size charge of one path value, in units: one per full 64 characters of its text, so a short name
+ * is free and a 4000-byte path costs 62. Characters are the measure, not bytes: the string work of a path
+ * follows its characters, and a character is never more than its bytes. The text is measured before any
+ * of it is resolved or walked. A short name needs no charge of its own: its work is a small constant per
+ * edit, like the parsing of the edit's key, and the folders and reads it leads to are charged anyway. */
+export const pathValueUnits = (value: string): number => Math.floor(value.length / 64);
+/** How many links one resolution follows before it gives up. The kernel's own limit is lower on some
+ * systems (macOS stops at 32, Linux at 40), so a chain this long is cut off by the system first and the
+ * resolver's limit only makes sure a loop cannot spin. */
 const maxLinks = 40;
 
 /** What one prepared guard may spend and remember; a test lowers these to reach the limits cheaply,
@@ -129,9 +141,9 @@ export const defaultGuardLimits: GuardLimits = { memo: guardMemoLimit, budget: i
 
 /** Thrown when a request names more paths than the budget lets the guard read; never carries a path. */
 class InspectBudgetExhausted extends Error {}
-const spend = (guard: GatewayPathGuard): void => {
-  if (guard.budget <= 0) throw new InspectBudgetExhausted();
-  guard.budget--;
+const spend = (guard: GatewayPathGuard, units = 1): void => {
+  if (guard.budget < units) throw new InspectBudgetExhausted();
+  guard.budget -= units;
 };
 
 /** What a folder on a path is, read once without following it: a link with the path it holds, or any
@@ -154,8 +166,7 @@ const stepOf = (guard: GatewayPathGuard, path: string): Step | undefined => {
   return step;
 };
 
-const separators = process.platform === "win32" ? /[\\/]+/ : /\/+/;
-const componentsOf = (path: string): string[] => path.split(separators).filter(component => component.length > 0);
+const componentsOf = (path: string): string[] => path.split(sep).filter(component => component.length > 0);
 
 /** The file a path is once every link along it is followed, resolved one folder at a time so each step
  * is charged to the budget: a link's target is walked folder by folder as well, and a path that follows
@@ -163,8 +174,8 @@ const componentsOf = (path: string): string[] => path.split(separators).filter(c
  * for one call, so a deep path would cost hundreds of reads against one unit. */
 const tryRealpath = (guard: GatewayPathGuard, path: string): string | undefined => {
   if (guard.resolved.has(path)) return guard.resolved.get(path);
-  const root = parse(path).root;
-  const pending = componentsOf(path.slice(root.length)).reverse();
+  const root: string = sep; // the paths walked here are absolute
+  const pending = componentsOf(path).reverse();
   let current = root;
   let links = 0;
   let failed = false;
@@ -178,9 +189,8 @@ const tryRealpath = (guard: GatewayPathGuard, path: string): string | undefined 
     if (step === undefined) { failed = true; break; }
     if (step.link === undefined) { current = next; continue; }
     if (++links > maxLinks) { failed = true; break; }
-    const targetRoot = parse(step.link).root;
-    if (targetRoot.length > 0) current = targetRoot;
-    pending.push(...componentsOf(step.link.slice(targetRoot.length)).reverse());
+    if (step.link.startsWith(sep)) current = root;
+    pending.push(...componentsOf(step.link).reverse());
   }
   const real = failed ? undefined : current;
   if (guard.resolved.size < guard.limits.memo) guard.resolved.set(path, real);
@@ -208,23 +218,35 @@ const fileIdOf = (guard: GatewayPathGuard, path: string): FileId | undefined => 
 };
 
 /** The prefixes a resolved absolute path passes through, from the root down, one `stat` per component:
- * the ones that exist, whether or not the path itself does, and where the walk stopped. Every folder
- * it passes costs a unit, remembered or not, so the string work of a deep path is paid for too. */
-const walkExisting = (guard: GatewayPathGuard, target: string): { ancestors: string[]; deepest: string; missing: string[] } => {
+ * the ones that exist, whether or not the path itself does, where the walk stopped, and the rest of the
+ * path from there, still as spelled and never split. Every folder it passes costs a unit, remembered
+ * or not. The path is scanned with `indexOf`, one component at a time, and stops at the first folder
+ * that is missing, so a long path whose first folder is absent costs one read and no string work
+ * beyond it. `target` must be a resolved path (see `expandEnginePath`). */
+export const walkExisting = (guard: GatewayPathGuard, target: string): { ancestors: string[]; deepest: string; rest: string } => {
   spend(guard);
-  const root = parse(target).root;
-  const components = target.slice(root.length).split(sep).filter(component => component.length > 0);
   const ancestors: string[] = [];
-  let current = root;
-  for (let index = 0; index < components.length; index++) {
-    const next = current === root ? root + components[index] : current + sep + components[index];
+  let current: string = sep;
+  let start = 1;
+  while (start < target.length) {
+    let end = target.indexOf(sep, start);
+    if (end < 0) end = target.length;
+    if (end === start) { start++; continue; } // an empty component; a resolved path has none
+    const next = target.slice(0, end);
     if (guard.ids.has(next)) spend(guard); // a read charges itself below; a remembered answer is charged here
-    if (fileIdOf(guard, next) === undefined) return { ancestors, deepest: current, missing: components.slice(index) };
-    if (index < components.length - 1) ancestors.push(next);
+    if (fileIdOf(guard, next) === undefined) return { ancestors, deepest: current, rest: target.slice(start) };
+    if (end < target.length) ancestors.push(next);
     current = next;
+    start = end + 1;
   }
-  return { ancestors, deepest: current, missing: [] };
+  return { ancestors, deepest: current, rest: "" };
 };
+
+/** `real` with `rest` below it. Both are already resolved — `rest` has no `.`, `..` or empty component, and
+ * `real` has no trailing separator unless it is the root — so this is exactly `resolve(real, ...components of rest)`
+ * without splitting `rest` or normalizing it again. */
+export const joinBelow = (real: string, rest: string): string =>
+  rest === "" ? real : real === sep ? sep + rest : real + sep + rest;
 
 /** The file a path names once the links along it are followed: its deepest existing ancestor resolved,
  * with the components below it — a file that is not written yet — kept as spelled. Where no ancestor
@@ -232,9 +254,9 @@ const walkExisting = (guard: GatewayPathGuard, target: string): { ancestors: str
 const realFormOf = (guard: GatewayPathGuard, lexical: string): string => {
   const cached = guard.real.get(lexical);
   if (cached !== undefined) return cached;
-  const { deepest, missing } = walkExisting(guard, lexical);
+  const { deepest, rest } = walkExisting(guard, lexical);
   const real = tryRealpath(guard, deepest);
-  const form = real === undefined ? lexical : resolve(real, ...missing);
+  const form = real === undefined ? lexical : joinBelow(real, rest);
   if (guard.real.size < guard.limits.memo) guard.real.set(lexical, form);
   return form;
 };
@@ -276,7 +298,7 @@ export type GatewayPathGuard = {
   budget: number;
 };
 
-const prepareGatewayPaths = (identity: GatewayIdentity, limits: GuardLimits): GatewayPathGuard => {
+export const prepareGatewayPaths = (identity: GatewayIdentity, limits: GuardLimits): GatewayPathGuard => {
   const guard: GatewayPathGuard = {
     identity, catalog: [], catalogId: undefined, state: [], stateId: undefined, homes: [],
     real: new Map(), resolved: new Map(), steps: new Map(), ids: new Map(), found: new Map(), limits, budget: Infinity,
@@ -310,14 +332,22 @@ const isGatewayFile = (guard: GatewayPathGuard, target: string): boolean => {
   return found;
 };
 
+/** Where the resolver cannot read paths (Windows), any string `model_catalog_json` is refused: the guard
+ * would otherwise compare spellings it does not understand. A value that is not a string, such as the
+ * `null` that clears the key, is not a path and is still forwarded. */
+const catalogPathUnreadable = (value: unknown): boolean => process.platform === "win32" && typeof value === "string";
+
 /** True when a string names the gateway catalog or anything inside the gateway's state directory.
  * The engine opens a file, not a spelling, so the guard reads the file a path reaches: every base a
  * relative value can read against is tried, and each spelling it lands on is judged both as a path and,
- * where it exists, by identity. A path too long to walk is judged on its spelling alone. */
+ * where it exists, by identity. A path too long to walk is judged on its spelling alone. Each time the
+ * value is tried against a base it is charged for its size, before any of it is resolved, whether or not
+ * the answer is remembered, so the string work a path costs is bounded by the budget. */
 const holdsGatewayCatalogPath = (value: unknown, guard: GatewayPathGuard): boolean => {
   if (typeof value !== "string") return false;
   for (const base of guard.homes) {
-    const lexical = resolve(expandEnginePath(value, guard.identity, base));
+    spend(guard, pathValueUnits(value));
+    const lexical = expandEnginePath(value, guard.identity, base);
     if (Buffer.byteLength(lexical) > inspectPathBytes) { if (spelledAsGateway(guard, lexical)) return true; continue; }
     for (const target of pathFormsOf(guard, lexical)) {
       if (spelledAsGateway(guard, target) || isGatewayFile(guard, target)) return true;
@@ -335,7 +365,7 @@ const isProviderKey = (key: string): boolean => key === "model_provider" || key 
 const isProviderRowPath = (segments: string[], provider: string): boolean =>
   segments.some((segment, index) => segment === "model_providers" && segments[index + 1] === provider);
 
-type Finding = "clear" | "identity" | "catalog" | "too-deep";
+type Finding = "clear" | "identity" | "catalog" | "unreadable" | "too-deep";
 // A profile or plugin block can carry its own model settings; search it the way the engine reads it back.
 const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Finding => {
   const identity = guard.identity;
@@ -349,6 +379,7 @@ const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Find
     if (isModelBearingKey(key) && identity.isGatewayModel(item)) return "identity";
     if (isProviderKey(key) && item === identity.provider) return "identity";
     if (key === "model_providers" && holdsGatewayProviderRow(item, identity.provider)) return "identity";
+    if (key === "model_catalog_json" && catalogPathUnreadable(item)) return "unreadable";
     if (key === "model_catalog_json" && holdsGatewayCatalogPath(item, guard)) return "catalog";
   }
   for (const item of Object.values(value as ObjectValue)) { const found = scanValue(item, guard, depth + 1); if (found !== "clear") return found; }
@@ -374,9 +405,10 @@ const editViolation = (edit: ObjectValue, identity: GatewayIdentity, guard: Gate
   // Saving any row of the gateway provider is refused; clearing one with null must stay possible.
   if (value !== null && isProviderRowPath(segments, identity.provider)) return gatewayIdentityMessage;
   if (last === "model_providers" && holdsGatewayProviderRow(value, identity.provider)) return gatewayIdentityMessage;
+  if (last === "model_catalog_json" && catalogPathUnreadable(value)) return windowsCatalogMessage;
   if (last === "model_catalog_json" && holdsGatewayCatalogPath(value, guard)) return gatewayCatalogMessage;
   const found = scanValue(value, guard, 0);
-  return found === "clear" ? undefined : found === "catalog" ? gatewayCatalogMessage : gatewayIdentityMessage;
+  return found === "clear" ? undefined : found === "catalog" ? gatewayCatalogMessage : found === "unreadable" ? windowsCatalogMessage : gatewayIdentityMessage;
 };
 
 /** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded.
