@@ -11,7 +11,7 @@
  * A file path is judged the same way: on the file it names, whichever spelling reached it.
  */
 
-import { realpathSync, statSync } from "node:fs";
+import { lstatSync, readlinkSync, statSync } from "node:fs";
 import { isAbsolute, parse, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
 import { parseKeyPath } from "./app-server-config-writes-key-path.js";
@@ -109,14 +109,23 @@ const inspectPathBytes = 4096;
 /** How many paths one prepared guard remembers; a batch that names more recomputes rather than grows.
  * The memo only caches: a full memo never changes what an answer is, only what it costs. */
 const guardMemoLimit = 4096;
-/** How many file-system reads (one `stat` or one `realpath` each) one request may spend on the paths
- * its edits name. A real batch names a handful, and the folders it shares are read once; a request
- * that spends the budget is refused whole, because a spelling-only check could be walked around. */
-const inspectBudget = 2048;
+/** How many units of work one request may spend on the paths its edits name. A unit is one step of a
+ * path walk — one folder passed, whether its answer was remembered or not — or one file-system read
+ * (`stat`, `lstat` or `readlink`), so the budget counts work, not calls: a deep path costs a unit per
+ * folder every time it is walked. A real batch names a handful of paths about ten folders deep, which
+ * costs a few hundred units; 50 edits at 15 folders each cost well under a third of the budget. The
+ * costliest shape, distinct paths at the deepest tree a platform allows, spends it in a few hundred
+ * milliseconds. A request that spends it is refused whole, because a spelling-only check could be
+ * walked around. */
+const inspectBudget = 16384;
+/** How many links one resolution follows before it gives up, as the operating system does (Linux stops at 40). */
+const maxLinks = 40;
 
-/** What one prepared guard may spend and remember; a test lowers these to reach the limits cheaply. */
-export type GuardLimits = { memo: number; budget: number };
-const defaultLimits: GuardLimits = { memo: guardMemoLimit, budget: inspectBudget };
+/** What one prepared guard may spend and remember; a test lowers these to reach the limits cheaply,
+ * and may observe each file-system read the guard actually makes. */
+export type GuardLimits = { memo: number; budget: number; observe?: (operation: "stat" | "lstat" | "readlink") => void };
+/** The limits a request is judged under unless a test supplies its own. */
+export const defaultGuardLimits: GuardLimits = { memo: guardMemoLimit, budget: inspectBudget };
 
 /** Thrown when a request names more paths than the budget lets the guard read; never carries a path. */
 class InspectBudgetExhausted extends Error {}
@@ -125,11 +134,55 @@ const spend = (guard: GatewayPathGuard): void => {
   guard.budget--;
 };
 
+/** What a folder on a path is, read once without following it: a link with the path it holds, or any
+ * other node. `undefined` means it cannot be read at all: nothing there, or no permission. */
+type Step = { link: string | undefined };
+const stepOf = (guard: GatewayPathGuard, path: string): Step | undefined => {
+  const hit = guard.steps.get(path);
+  if (hit !== undefined || guard.steps.has(path)) return hit;
+  spend(guard);
+  let step: Step | undefined;
+  try {
+    guard.limits.observe?.("lstat");
+    if (lstatSync(path).isSymbolicLink()) {
+      spend(guard);
+      guard.limits.observe?.("readlink");
+      step = { link: readlinkSync(path) };
+    } else step = { link: undefined };
+  } catch { step = undefined; }
+  if (guard.steps.size < guard.limits.memo) guard.steps.set(path, step);
+  return step;
+};
+
+const separators = process.platform === "win32" ? /[\\/]+/ : /\/+/;
+const componentsOf = (path: string): string[] => path.split(separators).filter(component => component.length > 0);
+
+/** The file a path is once every link along it is followed, resolved one folder at a time so each step
+ * is charged to the budget: a link's target is walked folder by folder as well, and a path that follows
+ * more than `maxLinks` links gives up. `realpathSync` is not used here: it reads every folder of a path
+ * for one call, so a deep path would cost hundreds of reads against one unit. */
 const tryRealpath = (guard: GatewayPathGuard, path: string): string | undefined => {
   if (guard.resolved.has(path)) return guard.resolved.get(path);
-  spend(guard);
-  let real: string | undefined;
-  try { real = realpathSync(path); } catch { real = undefined; }
+  const root = parse(path).root;
+  const pending = componentsOf(path.slice(root.length)).reverse();
+  let current = root;
+  let links = 0;
+  let failed = false;
+  while (pending.length > 0) {
+    spend(guard);
+    const name = pending.pop()!;
+    if (name === ".") continue;
+    if (name === "..") { current = current === root ? root : current.slice(0, Math.max(current.lastIndexOf(sep), root.length)); continue; }
+    const next = current === root ? root + name : current + sep + name;
+    const step = stepOf(guard, next);
+    if (step === undefined) { failed = true; break; }
+    if (step.link === undefined) { current = next; continue; }
+    if (++links > maxLinks) { failed = true; break; }
+    const targetRoot = parse(step.link).root;
+    if (targetRoot.length > 0) current = targetRoot;
+    pending.push(...componentsOf(step.link.slice(targetRoot.length)).reverse());
+  }
+  const real = failed ? undefined : current;
   if (guard.resolved.size < guard.limits.memo) guard.resolved.set(path, real);
   return real;
 };
@@ -149,21 +202,23 @@ const fileIdOf = (guard: GatewayPathGuard, path: string): FileId | undefined => 
   if (hit !== undefined || guard.ids.has(path)) return hit;
   spend(guard);
   let id: FileId | undefined;
-  try { const stat = statSync(path); id = { dev: stat.dev, ino: stat.ino }; } catch { id = undefined; }
+  try { guard.limits.observe?.("stat"); const stat = statSync(path); id = { dev: stat.dev, ino: stat.ino }; } catch { id = undefined; }
   if (guard.ids.size < guard.limits.memo) guard.ids.set(path, id);
   return id;
 };
 
 /** The prefixes a resolved absolute path passes through, from the root down, one `stat` per component:
- * the ones that exist, whether or not the path itself does, and where the walk stopped. Reading down
- * instead of climbing up costs one call per component even when nothing below the root exists. */
+ * the ones that exist, whether or not the path itself does, and where the walk stopped. Every folder
+ * it passes costs a unit, remembered or not, so the string work of a deep path is paid for too. */
 const walkExisting = (guard: GatewayPathGuard, target: string): { ancestors: string[]; deepest: string; missing: string[] } => {
+  spend(guard);
   const root = parse(target).root;
   const components = target.slice(root.length).split(sep).filter(component => component.length > 0);
   const ancestors: string[] = [];
   let current = root;
   for (let index = 0; index < components.length; index++) {
     const next = current === root ? root + components[index] : current + sep + components[index];
+    if (guard.ids.has(next)) spend(guard); // a read charges itself below; a remembered answer is charged here
     if (fileIdOf(guard, next) === undefined) return { ancestors, deepest: current, missing: components.slice(index) };
     if (index < components.length - 1) ancestors.push(next);
     current = next;
@@ -210,19 +265,21 @@ export type GatewayPathGuard = {
   homes: string[];
   /** Per-path reads, kept so one call answers the same question the same way without repeating it. */
   real: Map<string, string>;
-  /** What `realpath` answered for the deepest existing folder of a path; many leaves share one folder. */
+  /** What resolving the deepest existing folder of a path led to; many leaves share one folder. */
   resolved: Map<string, string | undefined>;
+  /** What each folder on a path is, read once without following it. */
+  steps: Map<string, Step | undefined>;
   ids: Map<string, FileId | undefined>;
   found: Map<string, boolean>;
   limits: GuardLimits;
-  /** File-system reads this request may still spend on the paths its edits name. */
+  /** Units of work this request may still spend on the paths its edits name. */
   budget: number;
 };
 
 const prepareGatewayPaths = (identity: GatewayIdentity, limits: GuardLimits): GatewayPathGuard => {
   const guard: GatewayPathGuard = {
     identity, catalog: [], catalogId: undefined, state: [], stateId: undefined, homes: [],
-    real: new Map(), resolved: new Map(), ids: new Map(), found: new Map(), limits, budget: Infinity,
+    real: new Map(), resolved: new Map(), steps: new Map(), ids: new Map(), found: new Map(), limits, budget: Infinity,
   };
   const catalog = resolve(identity.catalogPath);
   const state = resolve(identity.stateDirectory);
@@ -301,7 +358,7 @@ const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Find
 /** Why a single native edit must be refused, or undefined when the native engine may apply it. */
 export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity, prepared?: GatewayPathGuard): string | undefined => {
   if (!plain(edit)) return undefined; // forwarded to the engine as sent; it is not an edit this module can read
-  try { return editViolation(edit, identity, prepared ?? prepareGatewayPaths(identity, defaultLimits)); }
+  try { return editViolation(edit, identity, prepared ?? prepareGatewayPaths(identity, defaultGuardLimits)); }
   catch (error) { if (error instanceof InspectBudgetExhausted) return inspectBudgetMessage; throw error; }
 };
 
@@ -324,7 +381,7 @@ const editViolation = (edit: ObjectValue, identity: GatewayIdentity, guard: Gate
 
 /** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded.
  * The gateway's paths are read once for the batch and handed to every edit in it. */
-export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity, limits: GuardLimits = defaultLimits): string | undefined => {
+export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity, limits: GuardLimits = defaultGuardLimits): string | undefined => {
   const guard = prepareGatewayPaths(identity, limits);
   for (const edit of edits) { const refusal = nativeEditViolation(edit, identity, guard); if (refusal) return refusal; }
   return undefined;
