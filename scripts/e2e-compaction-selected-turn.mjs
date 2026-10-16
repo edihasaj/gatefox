@@ -97,7 +97,10 @@ export async function selectedTurnScenarios(c) {
   const failed = await seed('provider-failure-seed', 'fixture/large', 'seed-overflow');
   phase('selected-provider-failure', 'failed-manual'); const failureAt = requests.length;
   const failure = await turn(failed, 'fixture/small', 'Try the currently unavailable selected model.', 'failed', 'high');
-  assert.ok(selectedRequests(failureAt, 'mock-small', 1).every(r => r.outcome === 'usage_limit'));
+  // The SDK retries a failed provider call on its own (one try plus five retries), so the attempt count is its choice:
+  // require at least one attempt, and that every attempt went to the selected model and failed.
+  const attempts = requests.slice(failureAt);
+  assert.ok(attempts.length >= 1 && attempts.every(r => r.model === 'mock-small' && r.outcome === 'usage_limit'));
   assert.ok(failure.terminal.error, 'SDK must report its actual failed turn');
   const failedEvidence = lifecycle(failed, failure, { status: 'failed' }); await transcriptHasProof(failed);
   await save({ phase: `${label}-selected-provider-failure`, passed: true, ...failedEvidence, actualSelectedProvider429: true, noOldProviderCalls: true, historyPreserved: true });

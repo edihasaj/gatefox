@@ -15,14 +15,17 @@ import { selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compacti
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, root: { type: 'string' },
   package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string', default: 'automatic' },
-  shared: { type: 'boolean', default: false },
-  codex: { type: 'string', default: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' } } });
+  shared: { type: 'boolean', default: false }, codex: { type: 'string' } } });
 for (const key of ['gateway', 'root']) assert.ok(v[key], 'Missing --' + key);
-const gateway = resolve(v.gateway), root = resolve(v.root), sdk = resolve(v.codex);
+const gateway = resolve(v.gateway), root = resolve(v.root);
+const packageDirectory = resolve(v.package || join(gateway, '../..'));
+// The version check below needs the pinned SDK. The machine's ChatGPT app moves on to newer SDKs, so it cannot be the default:
+// use the signed gateway SDK the package ships. `--expect baseline` reproduces the failure of the stock SDK and needs that
+// stock pinned Mach-O passed explicitly; the patched gateway SDK recovers the switch, so that run would not fail as it expects.
+const sdk = resolve(v.codex || join(packageDirectory, 'gateway-sdk/gateway-codex'));
 assert.ok(['automatic', 'baseline', 'selected-turn'].includes(v.expect));
 const transports = v.expect === 'baseline' ? ['stdio'] : v.transports.split(',');
 assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
-const packageDirectory = resolve(v.package || join(gateway, '../..'));
 const { WebSocket } = createRequire(join(packageDirectory, 'package.json'))('ws');
 assert.ok(!root.startsWith(resolve(homedir(), '.codex')));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
@@ -47,8 +50,9 @@ const save = async row => {
   console.log(JSON.stringify(row));
 };
 const upstream = createServer(async (req, res) => {
-  const parts = []; for await (const bytes of req) parts.push(bytes);
-  const body = JSON.parse(Buffer.concat(parts).toString()); parts.length = 0;
+  // A client that drops the connection mid-request (a stopped turn, a retry) leaves a short or empty body: ignore it
+  // instead of letting an unhandled rejection stop the fixture.
+  let body; try { const parts = []; for await (const bytes of req) parts.push(bytes); body = JSON.parse(Buffer.concat(parts).toString()); } catch { res.destroy(); return; }
   const request = { phase, model: body.model, inputItems: body.input.length, inputBytes: Buffer.byteLength(JSON.stringify(body.input)),
     containsProof: JSON.stringify(body.input).includes(proof),
     ...(v.expect === 'selected-turn' ? { containsSteer: JSON.stringify(body.input).includes(steerProof) } : {}),
@@ -173,6 +177,9 @@ async function transcriptHasProof(id) { const read = await rpc('thread/read', { 
 const start = model => rpc('thread/start', { model, cwd: work, approvalPolicy: 'never', sandbox: 'read-only' });
 function compactItems(offset, threadId) { return events.slice(offset).filter(e => e.params?.threadId === threadId && e.params?.item?.type === 'contextCompaction'); }
 function selectedRequests(offset, model, count) { const rows = requests.slice(offset); assert.equal(rows.length, count); assert.ok(rows.every(row => row.model === model)); return rows; }
+// A failed provider response is retried by the SDK itself, so the number of attempts is the SDK's choice: assert only that
+// there was one and that every one went to the selected model.
+function selectedAttempts(offset, model) { const rows = requests.slice(offset); assert.ok(rows.length >= 1); assert.ok(rows.every(row => row.model === model)); return rows; }
 async function seedLarge(name) { phase = name; mode = 'seed-high'; const thread = await start('fixture/large');
   assert.ok((await turn(thread.thread.id, 'fixture/large', 'Seed the fixture history.')).text.includes(proof)); return thread.thread.id; }
 async function recoveredTurn(id, name, model = 'fixture/small', wireModel = 'mock-small', effort = 'low', oldModel = 'mock-large', wireEffort = effort) {
@@ -236,7 +243,7 @@ async function automatic(transport) {
   const unavailable = await seedLarge(transport + '-target-failure-seed'); phase = transport + '-selected-target-failure'; mode = 'failed-manual'; const at = requests.length;
   const failure = await rpc('turn/start', { threadId: unavailable, model: 'fixture/small', effort: 'low', input: [{ type: 'text', text: 'Unsubmitted fixture message.' }] })
     .then(value => ({ value }), error => ({ error }));
-  assert.equal(failure.error?.code, -32001); selectedRequests(at, 'mock-small', 1);
+  assert.equal(failure.error?.code, -32001); selectedAttempts(at, 'mock-small');
   const retained = await transcriptHasProof(unavailable); assert.ok(!JSON.stringify(retained.turns).includes('Unsubmitted fixture message.'));
   await save({ phase, passed: true, selectedModelFailureReturned: true, noOldProviderCalls: true, userMessageNotSubmitted: true, proofPreserved: true });
   await closeAdapter(); await open(transport); await rpc('thread/resume', { threadId: unavailable, model: 'fixture/small', cwd: work });

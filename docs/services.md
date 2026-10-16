@@ -313,10 +313,14 @@ Adapters that need the host fail closed until a retry succeeds.
 `gateway service shared-executors --disable --apply` and `gateway service
 shared-native --disable --apply` turn a sharing mode off again. Without `--apply`
 they preview the remaining plan. With it, they require the maintenance window,
-stop the service only after its idle guard releases every lease and loaded chat,
-archive the stopped host receipt in `service-backups`, restore the plan without
-that mode, and start the service. If any step after the stop fails, the previous
-plan is restored and the service started again; the error names the backup.
+save the current plan in `service-backups`, write the plan without that mode, and
+restart the service onto it. The restart waits for the service's idle guard to
+release every lease and loaded chat; launchd's KeepAlive then starts the service
+at once from the new plan, so the relaunch cannot take the shared host back. Once
+the service runs the new plan, the stopped host receipt is archived. If any step
+fails, the previous plan is written back. A service that refused the idle restart
+keeps running; one that already restarted is restarted again onto the previous
+plan. The error names the backup.
 
 The service never keeps a Mac awake. While the inference host sleeps, other Macs'
 gateway requests fail and Codex retries them. When the supervisor sees a timer tick
