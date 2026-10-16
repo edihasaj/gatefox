@@ -9,7 +9,8 @@ import { stripOpenAIInternal } from "../protocol/openai-internal.js";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { EventEmitter } from "node:events";
+import { EventEmitter, once } from "node:events";
+import { createServer } from "node:http";
 
 const passthrough = { thread_id: "thr_01", turn_id: "turn_01" };
 const encryptedArgs = "gAAAAAB3fixture-encrypted-args";
@@ -123,4 +124,56 @@ test("a Responses upstream receives byte-identical bodies with and without the i
     assert.equal(bodies[1], bodies[0], "the stripped request reaches upstream exactly as the clean one");
     assert.ok(!bodies[0].includes("mcp_attribution") && !bodies[0].includes("encrypted_function_args"));
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a chat-completions upstream receives the request without the internal fields", async () => {
+  const bodies: string[] = [];
+  const upstream = createServer(async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk as Buffer);
+    bodies.push(Buffer.concat(chunks).toString());
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const emit = (value: unknown) => res.write(`data: ${JSON.stringify(value)}\n\n`);
+    emit({ model: "qwen", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }] });
+    emit({ model: "qwen", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+    emit({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } });
+    res.end("data: [DONE]\n\n");
+  });
+  upstream.listen(0, "127.0.0.1"); await once(upstream, "listening");
+  const directory = await mkdtemp(join(tmpdir(), "gateway-strip-chat-")); process.env.GATEWAY_STRIP_CHAT_KEY = "fixture-key";
+  const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "local", type: "chat-completions-api",
+    baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}/v1`, apiKeyEnv: "GATEWAY_STRIP_CHAT_KEY", models: { "local/qwen": "qwen" } }] });
+  const gateway = await startGateway(config);
+  try {
+    const token = await gatewayToken(directory);
+    const dirty = { ...dirtyRequest(), model: "local/qwen", tools: [{ type: "function", name: "search", parameters: { type: "object", properties: {} } }] } as ResponsesRequest;
+    dirty.input = (dirty.input as Array<Record<string, unknown>>).filter(item => item.type !== "reasoning") as ResponsesRequest["input"];
+    (dirty.input as Array<Record<string, unknown>>).splice(1, 0, { type: "configuration_update", model: "private-config-value" });
+    const response = await fetch(`http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1/responses`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify(dirty) });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(bodies.length, 1);
+    assert.deepEqual(internalFields(bodies[0]), [], "the chat upstream saw internal fields");
+    assert.ok(!bodies[0].includes("private-config-value") && !bodies[0].includes("configuration_update"), "control items never reach the chat upstream");
+    assert.ok(bodies[0].includes("hello") && bodies[0].includes("call_1"), "the conversation itself is intact");
+  } finally { await new Promise<void>(resolve => { gateway.closeAllConnections(); gateway.close(() => resolve()); }); upstream.close(); delete process.env.GATEWAY_STRIP_CHAT_KEY; await rm(directory, { recursive: true, force: true }); }
+});
+
+test("malformed client_metadata and non-object items pass through the strip helper untouched", () => {
+  for (const client_metadata of [null, [], [{ mcp_attribution: attribution }], "text", 7, true]) {
+    const request = { model: "m", input: [{ type: "message", role: "user", content: "x" }], client_metadata } as unknown as ResponsesRequest;
+    const prepared = stripOpenAIInternal(request);
+    assert.equal(prepared.request, request, `client_metadata ${JSON.stringify(client_metadata)} is neither read as a map nor copied`);
+  }
+  const odd = [null, 7, "text", true, [{ internal_chat_message_metadata_passthrough: passthrough }], { type: 7 }, { type: ["configuration_update"] }];
+  const request = { model: "m", input: odd } as unknown as ResponsesRequest;
+  const prepared = stripOpenAIInternal(request);
+  assert.equal(prepared.request, request, "items that are not objects are left for translation to reject");
+  assert.equal(prepared.droppedControlItems, 0); assert.equal(prepared.unsupportedCompaction, false);
+  // A real internal item between odd ones is still cleaned, and the odd ones keep their place.
+  const mixed = stripOpenAIInternal({ model: "m", input: [null, { type: "message", role: "user", content: "x", internal_chat_message_metadata_passthrough: passthrough }, 7, { type: "configuration_update" }] } as unknown as ResponsesRequest);
+  assert.deepEqual(mixed.request.input, [null, { type: "message", role: "user", content: "x" }, 7]);
+  assert.equal(mixed.droppedControlItems, 1);
+  for (const input of [null, 7, "text", { type: "compaction_trigger" }]) {
+    const raw = { model: "m", input } as unknown as ResponsesRequest;
+    assert.equal(stripOpenAIInternal(raw).request, raw);
+  }
 });

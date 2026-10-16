@@ -36,6 +36,17 @@ let writes: Promise<void> = Promise.resolve();
 const recorded = new Set<string>();
 const remember = (requestId: string) => { recorded.add(requestId); if (recorded.size > 20000) recorded.delete(recorded.keys().next().value!); };
 
+/**
+ * Id prefixes of a request the gateway marked: `resp_gl_` for Responses (Codex keeps it in its rollout) and `msg_gl_` for
+ * Messages (Claude Code keeps it in its transcript). A consumer that matches ledger rows to client records accepts both.
+ */
+export const gatewayMarkerPrefixes = ["resp_gl_", "msg_gl_"] as const;
+export type GatewayMarkerProtocol = "responses" | "messages";
+const markerPrefix: Record<GatewayMarkerProtocol, (typeof gatewayMarkerPrefixes)[number]> = { responses: "resp_gl_", messages: "msg_gl_" };
+/** The marked client-visible id of a request: the protocol's prefix and the request id without dashes. */
+export const gatewayMarkedId = (protocol: GatewayMarkerProtocol, requestId: string): string => markerPrefix[protocol] + requestId.replaceAll("-", "");
+export const isGatewayMarkedId = (id: string): boolean => gatewayMarkerPrefixes.some(prefix => id.startsWith(prefix));
+
 export const usageLedgerEnabled = (): boolean => process.env.GATEWAY_USAGE_LEDGER !== "off";
 export const usageLedgerMarks = (type: string): boolean => usageLedgerEnabled() && LEDGER_COUNTED_TYPES.has(type);
 

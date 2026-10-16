@@ -1,13 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
+import { Writable, type Duplex } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import { connect } from "node:net";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { validateConfig, gatewayToken } from "../config.js";
 import { createGatewayHandler, startGateway } from "../server.js";
+import { handleUpgrade, upgradeRefusalGraceMs } from "../server-upgrade.js";
+import { flushRecords } from "../usage-ledger.js";
 import type { InferenceEvent } from "../protocol/types.js";
 
 async function setup() {
@@ -109,4 +113,133 @@ test("the request handler answers an upgrade pass-through with the same 426", as
   assert.equal(unauthorized.status, 401);
   assert.equal(providerCalls, 0);
   assert.equal(handler.isIdle(), true, "an upgrade never occupies admission or a provider slot");
+});
+
+/** Sends raw request bytes and returns what the server answered with until it closed (or a second passed). */
+async function rawExchange(port: number, text: string): Promise<string> {
+  const socket = connect({ port, host: "127.0.0.1" });
+  socket.on("error", () => { /* a reset after the answer is the client's choice */ });
+  const chunks: Buffer[] = []; socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
+  await once(socket, "connect"); socket.write(text);
+  await Promise.race([once(socket, "close"), delay(1000)]);
+  socket.destroy();
+  return Buffer.concat(chunks).toString();
+}
+
+test("an upgrade that carries an Origin is 403, before the token is even read", async () => {
+  const gateway = await setup();
+  try {
+    const withBearer = await handshake(gateway.port, "/v1/responses", { ...gateway.bearer, Origin: "http://evil.example" });
+    assert.match(head(withBearer), /^HTTP\/1\.1 403 Forbidden/);
+    assert.match(withBearer, /"code":"cross_origin"/);
+    assert.match(head(await handshake(gateway.port, "/v1/responses", { Origin: "http://evil.example" })), /^HTTP\/1\.1 403/, "Origin is checked before authentication");
+    assert.equal(gateway.providerCalls(), 0);
+  } finally { await gateway.close(); }
+});
+
+test("clients that keep their half of a refused upgrade open do not hold the server's close", async () => {
+  const gateway = await setup();
+  const clients = [] as Array<ReturnType<typeof connect>>;
+  try {
+    const answered: Array<Promise<void>> = [];
+    const paths = [["/v1/responses", true], ["/v1/responses", false], ["/v1/other", true], ["/v1/other", false]] as const;
+    for (let round = 0; round < 3; round++) for (const [path, authorized] of paths) {
+      const socket = connect({ port: gateway.port, host: "127.0.0.1", allowHalfOpen: true });
+      socket.on("error", () => {}); clients.push(socket);
+      let received = ""; socket.on("data", chunk => { received += chunk; });
+      // The client never ends its side. The server must still let go once it has said no.
+      answered.push(once(socket, "end").then(() => { assert.match(received, /^HTTP\/1\.1 (426|401|404)/); }));
+      await once(socket, "connect");
+      socket.write(["GET " + path + " HTTP/1.1", "Host: 127.0.0.1", "Connection: Upgrade", "Upgrade: websocket", ...(authorized ? [`Authorization: ${gateway.bearer.Authorization}`] : []), "", ""].join("\r\n"));
+    }
+    assert.equal(await Promise.race([Promise.all(answered).then(() => "ended"), delay(5000).then(() => "held")]), "ended", "the server closes its side after the refusal");
+    const closed = new Promise<string>(resolve => gateway.server.close(() => resolve("closed")));
+    assert.equal(await Promise.race([closed, delay(5000).then(() => "hung")]), "closed", "server.close() returns with half-open clients attached");
+  } finally { for (const socket of clients) socket.destroy(); await gateway.close(); }
+});
+
+test("a refused upgrade socket is destroyed after a grace even if the client never reads the refusal", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let destroyed = false;
+  // A socket whose write never completes: `end()` never reports it is done, as for a client that stops reading.
+  const stuck = Object.assign(new Writable({ write() { /* never calls back */ }, destroy(error, callback) { destroyed = true; callback(error); } }), {}) as unknown as Duplex;
+  handleUpgrade({ url: "/v1/responses", headers: { origin: "http://evil.example" } } as never, stuck, "token");
+  assert.equal(destroyed, false, "the socket is not dropped before the grace passes");
+  t.mock.timers.tick(upgradeRefusalGraceMs - 1); assert.equal(destroyed, false);
+  t.mock.timers.tick(1); assert.equal(destroyed, true, "the fallback timer destroys the socket");
+});
+
+test("an unreadable request target is answered 400 on both the upgrade and the request path, and the server keeps serving", async () => {
+  const gateway = await setup();
+  try {
+    const upgrade = await rawExchange(gateway.port, "GET http://[ HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n");
+    assert.match(head(upgrade), /^HTTP\/1\.1 400 Bad Request/);
+    const plain = await rawExchange(gateway.port, "GET http://[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
+    assert.match(head(plain), /^HTTP\/1\.1 400 Bad Request/);
+    assert.match(plain, /"code":"invalid_request"/);
+    assert.equal((await fetch(`http://127.0.0.1:${gateway.port}/health`)).status, 200, "the daemon survived both");
+    assert.equal(gateway.providerCalls(), 0);
+  } finally { await gateway.close(); }
+});
+
+async function handlerSetup() {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-ws-handler-"));
+  let providerCalls = 0;
+  const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "fake", type: "claude-subscription", models: { alias: "actual" } }] });
+  const handler = await createGatewayHandler(config, () => ({ async *infer(): AsyncGenerator<InferenceEvent> { providerCalls++; yield { type: "text", text: "OK" }; yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } }; } }));
+  const token = await gatewayToken(directory);
+  const call = (request: { method: string; url: string; headers: Record<string, string>; body?: unknown }, response = new FakeResponse()) => {
+    const finished = new Promise<void>(resolve => response.once("finish", () => resolve()));
+    handler.handle({ method: request.method, url: request.url, headers: request.headers,
+      [Symbol.asyncIterator]: async function* () { if (request.body !== undefined) yield Buffer.from(JSON.stringify(request.body)); } } as unknown as IncomingMessage, response as unknown as ServerResponse);
+    return finished.then(() => response);
+  };
+  return { handler, token, call, providerCalls: () => providerCalls, close: async () => { await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } };
+}
+
+test("an Upgrade header without an upgrade token in Connection is an ordinary request", async () => {
+  const run = await handlerSetup();
+  try {
+    const auth = { authorization: `Bearer ${run.token}`, "content-type": "application/json" };
+    const post = await run.call({ method: "POST", url: "/v1/responses", headers: { ...auth, upgrade: "h2c" }, body: { model: "alias", input: "hello" } });
+    assert.equal(post.status, 200, "a POST with Upgrade: h2c is served, not answered 426");
+    assert.equal(run.providerCalls(), 1);
+    const keepAlive = await run.call({ method: "POST", url: "/v1/responses", headers: { ...auth, upgrade: "h2c", connection: "keep-alive" }, body: { model: "alias", input: "hello" } });
+    assert.equal(keepAlive.status, 200);
+    const real = await run.call({ method: "GET", url: "/v1/responses", headers: { authorization: `Bearer ${run.token}`, upgrade: "websocket", connection: "keep-alive, Upgrade" } });
+    assert.equal(real.status, 426, "the upgrade token among others still counts, in any case");
+    const noToken = await run.call({ method: "GET", url: "/v1/responses", headers: { authorization: `Bearer ${run.token}`, upgrade: "websocket" } });
+    assert.equal(noToken.status, 404, "a GET with only an Upgrade header is just an unknown endpoint");
+  } finally { await run.close(); }
+});
+
+test("an unreadable request target through the request handler answers 400 and never rejects", async t => {
+  const rejections: unknown[] = []; const note = (reason: unknown) => { rejections.push(reason); };
+  process.on("unhandledRejection", note); t.after(() => { process.off("unhandledRejection", note); });
+  const run = await handlerSetup();
+  try {
+    const response = await run.call({ method: "GET", url: "http://[", headers: {} });
+    assert.equal(response.status, 400);
+    assert.equal(run.handler.isIdle(), true);
+    await delay(20); assert.deepEqual(rejections, []);
+  } finally { await run.close(); }
+});
+
+test("a handler that fails unexpectedly answers 500 while the head is unsent, and never leaves a rejection", async t => {
+  const rejections: unknown[] = []; const note = (reason: unknown) => { rejections.push(reason); };
+  process.on("unhandledRejection", note); t.after(() => { process.off("unhandledRejection", note); });
+  const run = await handlerSetup();
+  try {
+    // setHeader is the first thing the handler does to the response; making it throw stands in for any unforeseen failure.
+    class Exploding extends FakeResponse { override setHeader(): void { throw new Error("boom"); } }
+    const early = await run.call({ method: "GET", url: "/health", headers: {} }, new Exploding());
+    assert.equal(early.status, 500);
+    assert.equal(JSON.parse(early.text()).error.code, "internal_error");
+    assert.ok(!early.text().includes("boom"), "the answer never carries the exception text");
+    // With the head already sent, the connection is cut instead of a second head being written.
+    class Sent extends Exploding { override headersSent = true; destroyed = false; destroy(): this { this.destroyed = true; this.emit("finish"); return this; } }
+    const late = await run.call({ method: "GET", url: "/health", headers: {} }, new Sent());
+    assert.equal((late as Sent).destroyed, true); assert.equal(late.status, 0);
+    await delay(20); assert.deepEqual(rejections, []);
+  } finally { await run.close(); }
 });

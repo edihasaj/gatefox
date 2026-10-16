@@ -9,6 +9,7 @@ import { validateConfig, gatewayToken } from "../config.js";
 import { createGatewayHandler } from "../server.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { unsupportedCompactionMessage } from "../provider-failure.js";
+import { flushRecords } from "../usage-ledger.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 
 class FakeResponse extends EventEmitter {
@@ -19,12 +20,12 @@ class FakeResponse extends EventEmitter {
   body(): string { return Buffer.concat(this.chunks).toString(); }
 }
 
-async function gateway(invoke: (request: ResponsesRequest) => AsyncGenerator<InferenceEvent>) {
+async function gateway(invoke: (request: ResponsesRequest) => AsyncGenerator<InferenceEvent>, extra: { maxConcurrent?: number } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-control-items-"));
   configureTelemetry(directory, "gateway");
   const providerCalls: ResponsesRequest[] = [];
   const handler = await createGatewayHandler(validateConfig({ version: 1, port: 0, stateDirectory: directory,
-    providers: [{ id: "fake", type: "claude-subscription", models: { alias: "actual" } }] }),
+    ...extra, providers: [{ id: "fake", type: "claude-subscription", models: { alias: "actual" } }] }),
   () => ({ infer: request => { providerCalls.push(request); return invoke(request); } }));
   const token = await gatewayToken(directory);
   const post = async (value: unknown) => {
@@ -35,7 +36,9 @@ async function gateway(invoke: (request: ResponsesRequest) => AsyncGenerator<Inf
     await finished; await flushTelemetry(); return res;
   };
   const events = async () => (await readTelemetry(directory, Date.now() - 60000));
-  return { post, providerCalls, events, close: () => rm(directory, { recursive: true, force: true }) };
+  // A finished request's usage-ledger write can still be pending; the folder goes only after it lands.
+  const close = async () => { await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); };
+  return { post, handler, token, providerCalls, events, close };
 }
 const succeed = async function* (): AsyncGenerator<InferenceEvent> {
   yield { type: "text", text: "OK" }; yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
@@ -110,5 +113,53 @@ test("a compaction_trigger beside a configuration_update still fails without cou
     const response = await run.post({ model: "alias", input: [{ type: "configuration_update", model: "m" }, { type: "compaction_trigger" }] });
     assert.equal(response.status, 400);
     assert.equal(run.providerCalls.length, 0);
+  } finally { await run.close(); }
+});
+
+test("a malformed client_metadata or non-object input item never crashes the handler or reaches a provider", async () => {
+  const run = await gateway(succeed);
+  try {
+    for (const client_metadata of [null, [], [{ mcp_attribution: {} }], "text", 7]) {
+      const response = await run.post({ model: "alias", input: [{ type: "message", role: "user", content: "hi" }], client_metadata });
+      assert.ok(response.status === 200 || response.status === 400, `client_metadata ${JSON.stringify(client_metadata)} answered ${response.status}`);
+    }
+    for (const input of [[null], [7], ["text"], [[{ type: "configuration_update" }]], [null, { type: "configuration_update" }, { type: "compaction_trigger" }]]) {
+      const response = await run.post({ model: "alias", input });
+      assert.equal(response.status, 400, `${JSON.stringify(input)} answered ${response.status}: ${response.body()}`);
+    }
+    for (const input of [{ type: "configuration_update" }, 7, null]) assert.ok([200, 400].includes((await run.post({ model: "alias", input })).status));
+    assert.ok(run.providerCalls.every(call => Array.isArray(call.input) ? call.input.every(item => item !== null && typeof item === "object" && !Array.isArray(item)) : true));
+  } finally { await run.close(); }
+});
+
+test("over capacity a compaction meets the same retryable 429 before its body is read, and its final refusal once a slot is free", async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  const blocked = async function* (): AsyncGenerator<InferenceEvent> { await gate; yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } }; };
+  const run = await gateway(blocked, { maxConcurrent: 1 });
+  const hold: Array<Promise<FakeResponse>> = [];
+  try {
+    // One running request and a full admission queue of 32.
+    for (let index = 0; index < 33; index++) hold.push(run.post({ model: "alias", input: "queued" }));
+    await new Promise<void>(resolve => { const poll = () => run.providerCalls.length === 1 ? setTimeout(resolve, 50) : setTimeout(poll, 10); poll(); });
+    const compaction = [{ type: "message", role: "user", content: "hi" }, { type: "compaction_trigger" }];
+    const late = await run.post({ model: "alias", input: compaction });
+    assert.equal(late.status, 429, "an overload never buffers a body to look for a compaction");
+    release(); await Promise.allSettled(hold);
+    const after = await run.post({ model: "alias", input: compaction });
+    assert.equal(after.status, 400, "with a free slot the compaction gets its final refusal");
+    assert.deepEqual(JSON.parse(after.body()), { error: { code: "invalid_request", message: unsupportedCompactionMessage } });
+    assert.equal(run.providerCalls.length, 33, "no provider ran for the compaction");
+  } finally { release(); await Promise.allSettled(hold); await run.close(); }
+});
+
+test("a refused compaction writes the provider_failure line with translation_reason and no item content", async t => {
+  const lines: string[] = []; t.mock.method(console, "error", (line: unknown) => { lines.push(String(line)); });
+  const run = await gateway(succeed);
+  try {
+    await run.post({ model: "alias", input: [{ type: "compaction_trigger", encrypted_content: "private-compaction-state" }] });
+    const record = lines.map(line => { try { return JSON.parse(line) as Record<string, unknown>; } catch { return {}; } }).find(entry => entry.event === "provider_failure");
+    assert.equal(record?.code, "invalid_request");
+    assert.equal(record?.translation_reason, "unsupported_compaction");
+    assert.ok(!lines.join("\n").includes("private-compaction-state"));
   } finally { await run.close(); }
 });

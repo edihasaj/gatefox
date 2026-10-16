@@ -10,6 +10,7 @@ import { loadConfig, gatewayToken, writePrivateJson, type GatewayConfig } from "
 import { signIn } from "./auth/chatgpt.js";
 import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js";
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
+import { claudeSettings, remoteClaudeSettings } from "./claude-config.js";
 import { codexShim } from "./codex-shim.js";
 import { readTelemetry, telemetry } from "./telemetry.js";
 import { stopServing } from "./serve-shutdown.js";
@@ -61,6 +62,8 @@ const help = `gateway — local subscription and API inference
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
   gateway codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
+  gateway claude-config --model ALIAS [--config PATH]
+  gateway claude-config --model ALIAS --endpoint URL --token-file PATH
   gateway codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS
   gateway token [--config PATH]   Credential helper; prints the local client token.
   gateway token --file PATH      Credential helper for a trusted remote gateway.
@@ -89,7 +92,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   } });
   const [command, id, ...extra] = positionals;
   if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "token", "catalog", "discover", "service", "diagnostics"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
@@ -100,7 +103,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
   if (command !== "tunnel" && [values["tunnel-id"], values.host, values["remote-port"], values.reverse, values["ssh-config"]].some(Boolean)) throw new Error("Tunnel options are only valid for tunnel");
-  if (values.model && !["codex-config", "catalog"].includes(command)) throw new Error("--model is only valid for codex-config or catalog");
+  if (values.model && !["codex-config", "claude-config", "catalog"].includes(command)) throw new Error("--model is only valid for codex-config, claude-config or catalog");
   if ((values.select || values.load) && command !== "discover") throw new Error("--select and --load are only valid for discover");
   if (values["no-browser"] && command !== "login") throw new Error("--no-browser is only valid for login");
   if (values["account-email"] !== undefined && command !== "login") throw new Error("--account-email is only valid for Codex subscription login");
@@ -113,6 +116,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(JSON.stringify(await setupClient(await configPath(values.config), Number(values.port), resolve(values["token-file"])), null, 2) + "\n"); return;
   }
   if (values.endpoint || values["token-file"] || values.catalog) {
+    if (command === "claude-config") {
+      if (!values.model || !values.endpoint || !values["token-file"] || values.config || values.catalog) throw new Error("Remote claude-config requires --model, --endpoint and --token-file, without --config or --catalog");
+      process.stdout.write(await remoteClaudeSettings(values.model, values.endpoint, resolve(values["token-file"]))); return;
+    }
     if (command !== "codex-config" || !values.model || !values.endpoint || !values["token-file"] || values.config) throw new Error("Remote codex-config requires --model, --endpoint and --token-file, without --config");
     const tokenFile = resolve(values["token-file"]);
     process.stdout.write(await remoteCodexSettings(values.model, values.endpoint, tokenFile, resolve(values.catalog || `${dirname(tokenFile)}/codex-models.json`))); return;
@@ -207,10 +214,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     }));
     process.stdout.write(values.json ? JSON.stringify({ providers }, null, 2) + "\n" : providers.map(p => `${p.id}\t${p.ready ? "ready" : "login needed"}\t${p.detail}`).join("\n") + "\n"); return;
   }
-  if (command === "codex-config") {
+  if (command === "codex-config" || command === "claude-config") {
     const catalog = config.clientOnly ? await remoteCatalog(config) : modelCatalog(config);
     if (!values.model || !catalog.models.some(model => model.slug === values.model)) throw new Error("--model must name a configured alias");
-    if (!config.port) throw new Error("Use a fixed port before generating Codex configuration");
+    if (!config.port) throw new Error("Use a fixed port before generating client configuration");
+    if (command === "claude-config") {
+      process.stdout.write(claudeSettings(values.model, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path])); return;
+    }
     const catalogPath = resolve(config.stateDirectory, "codex-models.json");
     await writePrivateJson(catalogPath, catalog);
     process.stdout.write(codexSettings(values.model, catalogPath, `http://127.0.0.1:${config.port}/v1`, config.clientOnly ? ["--file", resolve(config.stateDirectory, "client-token")] : ["--config", path])); return;

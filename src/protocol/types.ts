@@ -86,7 +86,11 @@ export type ResponsesRequest = {
   tools?: ResponsesTool[];
   [option: string]: unknown;
 };
-export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number } };
+/**
+ * Token counts a provider reports. `cache_creation_tokens` (cache writes) is internal: Messages clients see it as
+ * `cache_creation_input_tokens`, while the Responses writer leaves it out, since cache writes there stay in the local ledger.
+ */
+export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number; cache_creation_tokens?: number } };
 /** Billing detail the gateway records locally; never sent to clients. */
 export type UsageAccounting = { cacheWriteTokens?: number; reasoningTokens?: number; nanoAiu?: number; nanoAiuStatus?: "complete" | "partial" | "unavailable";
   /** Who started the request's model calls (Copilot): `user` for a new message, `agent` for a follow-up inside a live session, `mixed` for both. */
@@ -101,7 +105,7 @@ export type InferenceEvent =
   | { text: string; type: "text"; messageId?: string; phase?: AssistantMessagePhase }
   | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase; status?: "completed" | "incomplete" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string }
   | { item: Record<string, unknown>; type: "reasoning-state" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
   /** Response-header data from the upstream; the server consumes it and never forwards it as output. */

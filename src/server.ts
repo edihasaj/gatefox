@@ -11,6 +11,9 @@ import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
+import { MessagesWriter, anthropicError } from "./protocol/messages.js";
+import { messagesToResponses } from "./protocol/messages-request.js";
+import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
@@ -21,27 +24,18 @@ import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
-import { flushRecords, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
+import { flushRecords, gatewayMarkedId, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 import { runShutdownHooks, runtimeBusy, shutdownDrainMs } from "./runtime-activity.js";
 import { autoReviewModels, isAutoReviewModel } from "./auto-review.js";
 import { hasPlanLogin } from "./auth/chatgpt.js";
+import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 /** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
 export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1"];
-const isUpgrade = (value: string | undefined): boolean => value !== undefined && !/^(no-op|none|unset)$/i.test(value);
-const upgradeStatusText = (status: number): string => status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : status === 426 ? "Upgrade Required" : "Bad Request";
-/** Refuses an upgrade on its raw socket: this API speaks no upgrade protocol. The 426 carries no body. */
-function refuseUpgrade(socket: Duplex, status: number, error?: { code: string; message: string }): void {
-  socket.on("error", () => { /* A client that resets before reading the refusal is expected. */ });
-  const payload = error ? JSON.stringify({ error }) : "";
-  const head = `HTTP/1.1 ${status} ${upgradeStatusText(status)}\r\nConnection: close\r\n` +
-    (error ? `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n` : "Content-Length: 0\r\n");
-  socket.end(`${head}\r\n${payload}`);
-}
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
   const finished = () => { res.off("drain", finished); res.off("close", finished); signal.removeEventListener("abort", finished); resolve(); };
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
@@ -131,7 +125,6 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
   return value;
 }
-const sendUpgradeRefusal = (res: ServerResponse): void => { res.writeHead(426, { Connection: "close", "Content-Length": "0" }); res.end(); };
 export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean;
   /** Writes the ledger row and the failure record of every request still running, with the usage it has reported so far; returns how many it wrote. */
   recordPending(): number };
@@ -275,29 +268,41 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     requests++; let released = false;
     const release = () => { if (!released) { released = true; requests--; } };
     res.once("finish", release); res.once("close", release);
-    const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
+    const path = requestPath(req.url);
+    if (path === undefined) { send(res, 400, { error: { code: "invalid_request", message: "Request target is not valid" } }); return; }
+    const messagesProtocol = path === "/v1/messages" || path === "/v1/messages/count_tokens";
+    const countTokens = path === "/v1/messages/count_tokens";
+    const fail = (status: number, code: string, message: string, contextTokens?: { used: number; maximum: number }) => send(res, status,
+      messagesProtocol ? { ...anthropicError(code, message, status, contextTokens), request_id: requestId } : { error: { code, message } });
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
+    if (messagesProtocol) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
       try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
-    if (req.headers.origin) { send(res, 403, { error: { code: "cross_origin", message: "Browser cross-origin requests are disabled" } }); return; }
-    if (!validBearer(req.headers.authorization, token)) { send(res, 401, { error: { code: "authentication", message: "Gateway bearer token required" } }); return; }
+    if (req.headers.origin) { fail(403, "cross_origin", "Browser cross-origin requests are disabled"); return; }
+    const apiKey = req.headers["x-api-key"];
+    const authenticated = req.headers.authorization !== undefined ? validBearer(req.headers.authorization, token)
+      && (!messagesProtocol || apiKey === undefined || (typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token)))
+      : messagesProtocol && typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token);
+    if (!authenticated) { fail(401, "authentication", "Gateway client token required"); return; }
     // Node versions that hand an upgrade to the request handler instead of the "upgrade" listener get the same refusal.
-    if (path === "/v1/responses" && isUpgrade(req.headers.upgrade)) { sendUpgradeRefusal(res); return; }
-    if (draining && req.method === "POST" && path === "/v1/responses") { res.setHeader("Retry-After", "1"); send(res, 503, { error: { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" } }); return; }
+    if (path === "/v1/responses" && isUpgradeRequest(req.headers)) { sendUpgradeRefusal(res); return; }
+    if (draining && req.method === "POST" && (path === "/v1/responses" || messagesProtocol)) { res.setHeader("Retry-After", "1"); fail(503, "upstream_unavailable", "Gateway is restarting; retry shortly"); return; }
     let state: Awaited<ReturnType<typeof snapshot>>;
     try { state = await snapshot(); }
-    catch { send(res, 503, { error: { code: "configuration_error", message: "Gateway configuration is invalid; fix it before retrying" } }); return; }
+    catch { fail(503, "configuration_error", "Gateway configuration is invalid; fix it before retrying"); return; }
     if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
-    if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
-    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
+    if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { fail(404, "not_found", "Unknown endpoint"); return; }
+    // Over capacity every request gets a retryable 429 before its body is read, so an overload never buffers bodies. A remote
+    // compaction refused this way is retried and gets its final refusal once a slot is free.
+    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); return; }
     const controller = new AbortController();
     let releaseAdmission: (() => void) | undefined;
-    let writer: ResponsesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
+    let writer: ResponsesWriter | MessagesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
     // A request is recorded once, whichever of its end and a process exit gets there first.
@@ -319,6 +324,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const known = classifyProviderFailure(error, abortCause);
       if (recorded) return known;
       recorded = true;
+      // Token counting is declined by design, not a failure: Claude Code calls it routinely, so it gets no failure record or stderr line.
+      if (countTokens && known.code === "unsupported_protocol" && known.status === 501) { telemetry("request_unsupported", { requestId, route: path, endpoint: "count_tokens" }); ledger("failed"); return known; }
       // A rejected Responses request says which fixed class of data it rejected.
       const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
@@ -354,8 +361,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
     try {
-      const internal = stripOpenAIInternal(await body(req)); const request = internal.request; droppedControlItems = internal.droppedControlItems;
-      context = inferenceContext(req.headers, request);
+      const wire = await body(req);
+      const translated = messagesProtocol ? messagesToResponses(wire, { countTokens }) : wire;
+      // Internal wire fields and control items go once, here, whichever protocol the request arrived in.
+      const internal = stripOpenAIInternal(translated); const request = internal.request; droppedControlItems = internal.droppedControlItems;
+      context = { ...inferenceContext(req.headers, request), ...(messagesProtocol ? { clientProtocol: "messages" as const,
+        ...((wire.thinking as { type?: string } | undefined)?.type === "adaptive" ? { adaptiveThinking: true } : {}) } : {}) };
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
@@ -367,12 +378,24 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
-      const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();
+      if (countTokens) {
+        throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
+      }
+      const providerRequest = messagesProtocol ? messagesProviderRequest(request, route.type) : request;
+      if (messagesProtocol && ["codex-subscription", "claude-subscription", "copilot-subscription"].includes(route.type)) res.setHeader("X-Gateway-Output-Limit", "provider-managed");
+      const limit = state.config.maxConcurrent || 4; admission.setLimit(limit);
+      // Compaction is refused for good below, whatever the queue holds, so a full queue cannot turn it into a retryable 429.
+      if (!internal.unsupportedCompaction) admission.check();
       const streaming = request.stream === true;
       let lastEventAt = Date.now(); let opened = false;
       // A marked id lets a spend tool match this request to the client's own record of the response.
-      responseId = usageLedgerMarks(route.type) ? "resp_gl_" + requestId.replaceAll("-", "") : undefined;
-      const output = writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } }, responseId ? { id: responseId } : {});
+      responseId = usageLedgerMarks(route.type) ? gatewayMarkedId(messagesProtocol ? "messages" : "responses", requestId) : undefined;
+      const Writer = messagesProtocol ? MessagesWriter : ResponsesWriter;
+      const output = writer = new Writer(request.model, event => { if (streaming && !res.destroyed) {
+        lastEventAt = Date.now();
+        const frame = messagesProtocol && event.type === "error" ? { ...event, request_id: requestId } : event;
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+      } }, responseId ? { id: responseId } : {});
       open = turnState => {
         if (opened) return; opened = true; clearTimeout(headWait);
         if (sendableTurnState(turnState) && !res.headersSent) { res.setHeader("X-Codex-Turn-State", turnState); turnStateReturned = true; }
@@ -400,7 +423,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
       const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
-      const source = route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
+      const source = route.adapter.infer({ ...restoreReasoning(providerRequest, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
       // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
       const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
       let stopped = false;
@@ -448,22 +471,21 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          writer.fail(streamFailureCode(known), known.message);
+          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, known.status, known.upstream?.contextTokens);
+          else writer.fail(streamFailureCode(known), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }
-        else send(res, known.status, { error: { code: known.code, message: known.message } });
+        else fail(known.status, known.code, known.message, known.upstream?.contextTokens);
       }
     } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };
-  const handleUpgrade = (req: IncomingMessage, socket: Duplex): void => {
-    const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
-    if (req.headers.origin) return refuseUpgrade(socket, 403, { code: "cross_origin", message: "Browser cross-origin requests are disabled" });
-    if (!validBearer(req.headers.authorization, token)) return refuseUpgrade(socket, 401, { code: "authentication", message: "Gateway bearer token required" });
-    if (path === "/v1/responses") return refuseUpgrade(socket, 426);
-    refuseUpgrade(socket, 404, { code: "not_found", message: "Unknown endpoint" });
+  // A failure the handler did not catch answers 500 while the head is unsent and never takes the process down.
+  const answerCrash = (res: ServerResponse, error: unknown): void => {
+    try { reportException(error, "request"); } catch { /* Reporting never replaces the answer. */ }
+    try { if (!res.headersSent) send(res, 500, { error: { code: "internal_error", message: "Gateway failed to handle the request" } }); else res.destroy(); } catch { res.destroy(); }
   };
-  return { handle: (req, res) => { void handle(req, res); }, handleUpgrade, isIdle: () => !requests && !active.size,
+  return { handle: (req, res) => { handle(req, res).catch(error => answerCrash(res, error)); }, handleUpgrade: (req, socket) => handleUpgrade(req, socket, token), isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
     recordPending: () => { let recorded = 0; for (const record of [...pending]) if (record()) recorded++; return recorded; },
     beginDrain: () => {
