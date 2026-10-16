@@ -10,6 +10,7 @@ import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState } from "./self-update.js";
+import type { SshSocketReplacement } from "./ssh-socket.js";
 
 /** What the process owning a listener uses to retire it after an install. */
 export interface UnixListenerControl {
@@ -35,16 +36,24 @@ export function unixSocketPath(listen: string): string {
  * installed release can tell a stale listener from a current one. Omit it to derive it from
  * where this module was loaded, and pass `null` to record none (a checkout run).
  * `onListen` receives the control handle once the socket is public, so the process that owns
- * the listener can watch for an install and retire it; see `codex-shim`.
+ * the listener can watch for an install and retire it; see `codex-shim`. Its second argument
+ * reports whether the publish dropped a listener this call was told to replace.
+ * `replace` carries a deferred swap decided by `reuseSshSocket`: the public alias currently
+ * held by another listener that may be unlinked, but only inside the publish lock below, so
+ * nothing is removed unless this process actually binds and publishes its own socket.
  */
 export async function serveUnix(path: string, signal: AbortSignal,
   session: (input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal) => Promise<unknown>,
   release: string | null | undefined = releaseState()?.running,
-  onListen?: (listener: UnixListenerControl) => void): Promise<void> {
+  onListen?: (listener: UnixListenerControl, replaced: boolean) => void,
+  replace?: SshSocketReplacement): Promise<void> {
+  const occupied = () => new Error("Unix socket path is occupied; the existing listener was not replaced");
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const directory = await lstat(dirname(path));
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o022)) throw new Error("Unix socket directory must be owned by this user and not writable by others");
-  try { await lstat(path); throw new Error("Unix socket path is occupied; the existing listener was not replaced"); }
+  // A pending replacement may keep an existing alias: serve it to the check under the publish
+  // lock, which verifies the inode/device, socket kind, and ownership before unlinking anything.
+  try { const alias = await lstat(path, { bigint: true }); if (!replace || String(alias.ino) !== replace.inode || String(alias.dev) !== replace.device) throw occupied(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   // Node unlinks its bind path on close. Bind privately, then expose a hard link
   // so retiring this listener cannot unlink a newer desktop bootstrap's socket.
@@ -96,16 +105,23 @@ export async function serveUnix(path: string, signal: AbortSignal,
   try {
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
     const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
+    let replaced = false;
     await withPrivateFileLock(path + ".gateway-lease", async () => {
-      try { await lstat(path); throw new Error("Unix socket path is occupied; the existing listener was not replaced"); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      // The atomic swap: drop the retired listener's alias here, never before this lock, so a
+      // bind that fails for any other reason leaves the old listener published and serving.
+      const alias = await lstat(path, { bigint: true }).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
+      if (alias) {
+        if (!replace || String(alias.ino) !== replace.inode || String(alias.dev) !== replace.device
+          || !alias.isSocket() || alias.uid !== BigInt(process.getuid!())) throw occupied();
+        await unlink(path); replaced = true;
+      }
       // Publish the ownership record first. The alias is the readiness signal. The release
       // name is capped, so the record stays well under the 4096 byte limit readers enforce.
       await writePrivateJson(path + ".gateway-lease",
         { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}) });
       await link(boundPath, path);
     });
-    onListen?.({ sessions: () => active.size, retire });
+    onListen?.({ sessions: () => active.size, retire }, replaced);
     leaseTimer = setInterval(() => {
       void lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false).then(owned => {
         if (!owned) { retiring = true; if (!active.size) close(); }

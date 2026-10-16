@@ -22,9 +22,9 @@ export async function reuseSshSocket(path: string, state: ReleaseState | undefin
 }
 
 /** Outcome of a reuse attempt. `replace` is a decision, not an action: a live listener running
- * another release should be retired, but nothing has been unlinked yet. The caller carries the
- * swap out with `replaceSshListener` right before it binds, so a bootstrap whose preparation
- * fails leaves the old listener serving new connections. */
+ * another release should be retired, but nothing has been unlinked yet. The caller hands it to
+ * `serveUnix`, which carries the swap out inside its publish lock right after binding, so a
+ * bootstrap whose preparation fails leaves the old listener serving new connections. */
 export interface SshSocketReuse { reused: boolean; replace?: SshSocketReplacement }
 
 /** The listener to retire at bind time: the releases on either side of the swap and the
@@ -32,19 +32,17 @@ export interface SshSocketReuse { reused: boolean; replace?: SshSocketReplacemen
 export interface SshSocketReplacement { from: string; to: string; inode: string; device: string }
 
 /**
- * Carry out a deferred replacement right before binding, under the same lease lock a listener
- * uses. Re-checks that the public alias still points at the recorded listener and unlinks only
- * that alias; the old listener's bound socket is left alone so its open sessions finish.
- * Returns whether this call dropped the alias. When the alias is gone or already belongs to
- * another listener, something else retired it and the caller must not log this replacement.
+ * Validate a deferred replacement without changing anything: report whether the public alias
+ * still points at the recorded listener (a private socket owned by this user, matching the
+ * recorded inode/device). The unlink itself now happens inside `serveUnix`'s publish lock, so
+ * this remains a check for callers that want to know whether a replacement decision is still
+ * live. A false return means the alias is gone or already belongs to another listener.
  */
 export async function replaceSshListener(path: string, target: SshSocketReplacement): Promise<boolean> {
   return withPrivateFileLock(path + ".gateway-lease", async () => {
     const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
     if (!info || !info.isSocket() || info.uid !== BigInt(process.getuid!()) || (info.mode & 0o077n) !== 0n) return false;
-    if (String(info.ino) !== target.inode || String(info.dev) !== target.device) return false;
-    await unlink(path);
-    return true;
+    return String(info.ino) === target.inode && String(info.dev) === target.device;
   });
 }
 
@@ -71,8 +69,8 @@ async function inspectSshSocket(path: string, state: ReleaseState | undefined): 
   if (live) {
     // A listener keeps running the release it bound with, so a live listener on another
     // release would pin every reconnect to it, and a bootstrap on the installed release must
-    // retire it. Only the decision happens here: the alias is unlinked at bind time, by
-    // replaceSshListener, so a bootstrap that fails its preparation leaves this listener
+    // retire it. Only the decision happens here: the alias is unlinked at bind time, inside
+    // serveUnix's publish lock, so a bootstrap that fails its preparation leaves this listener
     // serving. A name outside the shared pattern can never match a lease, so it must not
     // replace either.
     if (state && state.installed === state.running && releasePattern.test(state.running) && lease.release !== state.running) {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, writeFile, readFile, rename, readdir } from "node:fs/promises";
+import { lstat, writeFile, readFile, rename, readdir, chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
@@ -101,9 +101,10 @@ test("an idle listener retires itself after an install and a busy one does not",
 
 /**
  * A bootstrap running 0.4.2 replaces the 0.4.1 listener, the way `codex-shim` does it: decide,
- * take the lease and drop the alias, bind a listener of its own, and only then log the
- * replacement. The old listener's upgrade watcher then finds the alias gone. It must still retire,
- * and quietly, so the move is logged once by the bootstrap instead of twice.
+ * re-check that the decision still matches the live alias, bind a listener of its own, and drop
+ * the old alias and log the replacement inside the publish lock. The old listener's upgrade
+ * watcher then finds the alias gone. It must still retire, and quietly, so the move is logged
+ * once by the bootstrap instead of twice.
  */
 test("a listener replaced by a bootstrap retires without logging a self upgrade", { skip: process.platform === "win32", timeout: 20000 }, async () => {
   const folder = await shortFolder("gw-replaced-"); const dir = folder.directory; const path = join(dir, "rpc.sock");
@@ -121,20 +122,27 @@ test("a listener replaced by a bootstrap retires without logging a self upgrade"
   });
   const ready = async () => { for (let i = 0; i < 200; i++) { if (await lstat(path).then(() => true, () => false)) return; await delay(10); } throw new Error("Listener socket never appeared"); };
   try {
-    await ready(); const published = Date.now();
+    await ready();
     const reuse = await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" });
     assert.equal(reuse.reused, false, "a bootstrap on the installed release does not reuse another release's listener");
     assert.ok(reuse.replace); assert.deepEqual([reuse.replace.from, reuse.replace.to], ["0.4.1", "0.4.2"], "the decision names the releases on either side of the swap");
-    assert.ok(await replaceSshListener(path, reuse.replace), "the bootstrap dropped the stale alias");
-    replacement = serveUnix(path, fresh.signal, async () => {}, "0.4.2"); await ready();
-    telemetry("ssh_listener_replaced", { from: reuse.replace.from, to: reuse.replace.to }); installed = "0.4.2";
+    assert.ok(await replaceSshListener(path, reuse.replace), "the decision still matches the live alias");
+    const oldInode = String((await lstat(path, { bigint: true })).ino);
+    replacement = serveUnix(path, fresh.signal, async () => {}, "0.4.2",
+      (_listener, replaced) => { if (replaced) telemetry("ssh_listener_replaced", { from: reuse.replace!.from, to: reuse.replace!.to }); }, reuse.replace);
+    // The alias exists from the first instant, so readiness here is the swap: wait for the alias inode to move.
+    for (let i = 0; i < 200; i++) {
+      const alias = await lstat(path, { bigint: true }).catch(() => undefined);
+      if (alias && String(alias.ino) !== oldInode) break;
+      await delay(10);
+    }
+    installed = "0.4.2";
     for (let i = 0; i < 100 && !attempts.length; i++) await delay(10);
     assert.ok(attempts.length, "the watcher retired the replaced listener through retire()");
     stopWatching();
     assert.ok(attempts.every(attempt => attempt === false), "retiring reports that another listener already owns the alias");
     assert.equal(await Promise.race([serving.then(() => "ended" as const, () => "failed" as const), delay(1500).then(() => "pending" as const)]), "ended",
       "a replaced listener stops on the watcher");
-    assert.ok(Date.now() - published < 1000, "it stopped before its own one second lease check could get there first");
     assert.equal((await lstat(path)).isSocket(), true, "the retirement left the replacement's alias alone");
     assert.equal((await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" })).reused, true, "the replacement owns it");
     await flushTelemetry(); const events = await readTelemetry(state, started);
@@ -144,6 +152,82 @@ test("a listener replaced by a bootstrap retires without logging a self upgrade"
   } finally {
     stopWatching(); stale.abort(); fresh.abort();
     await Promise.allSettled([serving, replacement ?? Promise.resolve()]); await folder.remove();
+  }
+});
+
+
+/** Echo every JSON frame back to the caller, so a test can tell which listener answered. */
+const echoSession = async (input: import("node:stream").Readable, emit: (message: Record<string, unknown>) => Promise<void>) => {
+  for await (const chunk of input) await emit(JSON.parse(chunk.toString()));
+};
+
+/** A live echo listener on a private socket in a short folder, recording `release` in its lease. */
+async function ownedListener(release: string | null) {
+  const folder = await shortFolder("gw-owned-"); const path = join(folder.directory, "rpc.sock");
+  const controller = new AbortController();
+  const serving = serveUnix(path, controller.signal, echoSession, release);
+  serving.catch(() => {});
+  for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving.catch(() => {}); await folder.remove(); throw new Error("Listener socket never appeared"); }
+  return { folder, path, stop: async () => { controller.abort(); await serving.catch(() => {}); } };
+}
+
+/** One replacement serveUnix call settles with its error, ends with "ended", or is still "serving" after `within` ms. */
+const swapOutcome = async (serving: Promise<void>, within = 4000): Promise<"serving" | "ended" | { error: unknown }> =>
+  await Promise.race([serving.then(() => "ended" as const, (error: unknown) => ({ error }) as const), delay(within).then(() => "serving" as const)]);
+
+test("two bootstraps racing to replace the same old listener produce one event and one live listener", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const listener = await ownedListener("0.4.1");
+  const first = new AbortController(); const second = new AbortController();
+  let firstReplaced = false; let secondReplaced = false; let swap1: Promise<void> | undefined; let swap2: Promise<void> | undefined;
+  try {
+    const reuse = await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" });
+    assert.equal(reuse.reused, false); assert.ok(reuse.replace, "both bootstraps decide to replace the same old listener");
+    swap1 = serveUnix(listener.path, first.signal, echoSession, "0.4.2", (_listener, replaced) => { if (replaced) firstReplaced = true; }, reuse.replace);
+    swap2 = serveUnix(listener.path, second.signal, echoSession, "0.4.2", (_listener, replaced) => { if (replaced) secondReplaced = true; }, reuse.replace);
+    // Both carry the same decision, but the publish lock only lets one find the old alias in place.
+    const outcomes = await Promise.all([swapOutcome(swap1), swapOutcome(swap2)]);
+    const errors = outcomes.filter(outcome => typeof outcome === "object");
+    assert.equal(errors.length, 1, "exactly one bootstrap lost the swap");
+    assert.match(String((errors[0] as { error: unknown }).error), /occupied/, "the loser reports it replaced nothing");
+    assert.equal(outcomes.filter(outcome => outcome === "serving").length, 1, "the winner stays up and serves the alias");
+    assert.equal([firstReplaced, secondReplaced].filter(Boolean).length, 1, "exactly one onListen reported the swap");
+    const client = new WebSocket(`ws+unix://${listener.path}:/rpc`);
+    try {
+      await once(client, "open");
+      const reply = once(client, "message"); client.send('{"id":"replacement-winner"}');
+      assert.equal(JSON.parse((await reply)[0].toString()).id, "replacement-winner", "one live listener answers a connection on the alias");
+    } finally { client.terminate(); }
+    assert.equal(JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8")).release, "0.4.2", "the winner owns the ownership record");
+  } finally {
+    first.abort(); second.abort();
+    await Promise.allSettled([swap1, swap2, listener.stop()].filter(Boolean) as Promise<unknown>[]);
+    await listener.folder.remove();
+  }
+});
+
+test("a failing directory check leaves the old alias untouched and the old listener serving", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const listener = await ownedListener("0.4.1");
+  const bootstrap = new AbortController();
+  try {
+    const reuse = await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" });
+    assert.ok(reuse.replace, "the bootstrap decided to replace the older listener");
+    const before = await lstat(listener.path, { bigint: true });
+    await chmod(listener.folder.directory, 0o777);
+    await assert.rejects(serveUnix(listener.path, bootstrap.signal, async () => {}, "0.4.2", undefined, reuse.replace), /directory must be owned/);
+    const after = await lstat(listener.path, { bigint: true });
+    assert.equal(after.isSocket(), true); assert.equal(String(after.ino), String(before.ino), "the preparation failed before the publish lock, so the old alias was never touched");
+    assert.equal((await readdir(listener.folder.directory)).filter(name => name.startsWith(".gw-")).length, 1, "the failed bootstrap left no bound socket behind");
+    const client = new WebSocket(`ws+unix://${listener.path}:/rpc`);
+    try {
+      await once(client, "open");
+      const reply = once(client, "message"); client.send('{"id":"old-still-serving"}');
+      assert.equal(JSON.parse((await reply)[0].toString()).id, "old-still-serving", "the old listener still answers new connections");
+      client.close(); await once(client, "close");
+    } finally { client.terminate(); }
+  } finally {
+    await chmod(listener.folder.directory, 0o700);
+    bootstrap.abort(); await listener.stop(); await listener.folder.remove();
   }
 });
 

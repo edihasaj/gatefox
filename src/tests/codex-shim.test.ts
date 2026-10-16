@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { cp, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -101,28 +101,48 @@ async function staleListener(path: string, release: string) {
   return { stop: async () => { controller.abort(); await serving.finally(() => {}); } };
 }
 
-/** This checkout's dist laid out as installed release `version`, so a bootstrap run from it is the installed release. */
-async function installedRelease(version: string) {
+/** One release directory of this checkout's dist, without touching `current`. */
+async function addRelease(directory: string, version: string) {
   // The layout must hold a real copy: releaseState() resolves symlinks, so a linked dist
   // could never report a release directory.
-  const folder = await shortFolder("gw-rel-");
-  const release = join(folder.directory, "releases", version); const pkg = join(release, "package");
+  const release = join(directory, "releases", version); const pkg = join(release, "package");
   await mkdir(pkg, { recursive: true });
   await cp(fileURLToPath(new URL("../", import.meta.url)), join(pkg, "dist"), { recursive: true });
   await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version, type: "module" }));
   await symlink(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(pkg, "node_modules"));
-  await symlink(release, join(folder.directory, "current"));
-  return { cli: join(pkg, "dist", "cli.js"), remove: folder.remove };
+  return { release, cli: join(pkg, "dist", "cli.js") };
+}
+
+/** Point `current` at an added release the way an install switch does: a pending symlink, then a rename. */
+async function setCurrentRelease(directory: string, version: string) {
+  const pending = join(directory, "current.pending");
+  await symlink(join(directory, "releases", version), pending);
+  await rename(pending, join(directory, "current"));
+}
+
+/**
+ * This checkout's dist laid out as installed release `version`, so a bootstrap run from it is the
+ * installed release. `install(next)` adds a second release and repoints `current` at it, which is
+ * how a later release becomes installed while this process keeps running.
+ */
+async function installedRelease(version: string) {
+  const folder = await shortFolder("gw-rel-");
+  const added = await addRelease(folder.directory, version);
+  await setCurrentRelease(folder.directory, version);
+  return {
+    cli: added.cli, directory: folder.directory, remove: folder.remove,
+    install: async (next: string) => { const other = await addRelease(folder.directory, next); await setCurrentRelease(folder.directory, next); return other; },
+  };
 }
 
 /** Replacement events the given state directory recorded so far. */
-async function replacementEvents(stateDirectory: string, withinMs = 3000) {
+async function replacementEvents(stateDirectory: string, withinMs = 3000, event = "ssh_listener_replaced") {
   let events: Record<string, any>[] = [];
   for (let i = 0; i < Math.max(1, withinMs / 20); i++) {
     const dir = join(stateDirectory, "telemetry");
     const lines = await Promise.all((await readdir(dir).catch(() => [] as string[])).map(name => readFile(join(dir, name), "utf8").catch(() => "")));
     events = lines.join("").split("\n").filter(Boolean).map(line => { try { return JSON.parse(line); } catch { return undefined; } })
-      .filter((e): e is Record<string, any> => e?.event === "ssh_listener_replaced");
+      .filter((e): e is Record<string, any> => e?.event === event);
     if (events.length) break;
     await delay(20);
   }
@@ -198,4 +218,26 @@ test("listener startup reuses a raced listener and binds once more only after re
     assert.equal(attempts, 1, "a live current listener from the race is kept without another bind");
     assert.equal(report?.reused, true); assert.equal(report?.replace, undefined, "nothing was replaced, so nothing is logged again");
   } finally { controller.abort(); await serving; await folder.remove(); }
+});
+
+test("a custom --listen unix listener survives an install switch", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-listen-");
+  const path = join(control.directory, "rpc.sock");
+  const release = await installedRelease("0.9.0");
+  // A fast upgrade check, so a listener that did follow the install would retire inside this window.
+  const child = spawn(process.execPath,
+    [release.cli, "codex-shim", "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://" + path],
+    { env: { ...f.env, GATEWAY_UPGRADE_CHECK_MS: "100" }, stdio: "ignore" });
+  const exited = once(child, "close");
+  try {
+    for (let i = 0; i < 500 && !await lstat(path).then(() => true, () => false); i++) await delay(20);
+    assert.equal(await lstat(path).then(() => true, () => false), true, "the listener bound the path the caller chose");
+    await release.install("0.9.1");
+    await delay(1500);
+    // Only the SSH socket has a bootstrap on the installed release to hand it over; a caller's own
+    // listener keeps running, because retiring it would take the endpoint away with nothing behind it.
+    assert.equal(child.exitCode, null, "the listener is not retired by an install it was never part of");
+    assert.equal(await lstat(path).then(() => true, () => false), true, "the socket stays on the path it was given");
+    assert.deepEqual(await replacementEvents(f.value.stateDirectory, 500, "self_upgrade"), [], "no self upgrade is claimed for a listener that moved to nothing");
+  } finally { child.kill("SIGTERM"); await exited; await release.remove(); await control.remove(); f.close(); }
 });

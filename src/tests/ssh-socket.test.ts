@@ -96,17 +96,30 @@ test("a bootstrap on the installed release decides to replace a listener whose l
     assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 1, "the old bound socket was left alone");
     const latecomer = new WebSocket(`ws+unix://${listener.path}:/rpc`);
     await once(latecomer, "open"); latecomer.close(); await once(latecomer, "close");
-    // The bootstrap carries the decision out only now, right before binding.
-    assert.equal(await replaceSshListener(listener.path, reuse.replace!), true, "the swap drops the alias");
-    await assert.rejects(lstat(listener.path), { code: "ENOENT" }, "the public alias is gone");
-    assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 1, "the old bound socket was left alone");
-    await delay(1100);
-    const reply = once(client, "message"); client.send('{"id":"old-session-still-works"}');
-    assert.equal(JSON.parse((await reply)[0].toString()).id, "old-session-still-works", "the existing session keeps working");
-    client.close(); await once(client, "close");
-    const outcome = await Promise.race([listener.done.then(() => "ended" as const), delay(5000).then(() => "pending" as const)]);
-    assert.equal(outcome, "ended", "the listener ends once its last session closes");
-    assert.deepEqual((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")), []);
+    // The bootstrap carries the decision out only now, inside the publish lock right after its own bind.
+    const fresh = new AbortController(); let replaced: boolean | undefined;
+    const replacement = serveUnix(listener.path, fresh.signal,
+      async (input, emit) => { for await (const chunk of input) await emit(JSON.parse(chunk.toString())); },
+      "0.4.2", (_listener, swapped) => { replaced = swapped; }, reuse.replace!);
+    replacement.catch(() => {});
+    const oldInode = String(before.ino);
+    const aliasInode = async () => String((await lstat(listener.path, { bigint: true }).catch(() => undefined))?.ino ?? "");
+    try {
+      // The alias exists from the first instant, so readiness here is the swap: wait for its inode to move.
+      for (let i = 0; i < 200; i++) { if (replaced !== undefined && (await aliasInode()) !== oldInode) break; await delay(10); }
+      assert.equal(replaced, true, "the replacement reports that it dropped the recorded alias");
+      const swapped = await lstat(listener.path, { bigint: true });
+      assert.equal(swapped.isSocket(), true); assert.notEqual(String(swapped.ino), oldInode, "the public alias now belongs to the replacement");
+      assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 2, "both bound sockets are live while the old listener still has its session");
+      await delay(1100);
+      const reply = once(client, "message"); client.send('{"id":"old-session-still-works"}');
+      assert.equal(JSON.parse((await reply)[0].toString()).id, "old-session-still-works", "the existing session keeps working");
+      client.close(); await once(client, "close");
+      const outcome = await Promise.race([listener.done.then(() => "ended" as const), delay(5000).then(() => "pending" as const)]);
+      assert.equal(outcome, "ended", "the old listener ends once its last session closes");
+      assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 1, "only the replacement's bound socket remains");
+      assert.equal(String((await lstat(listener.path, { bigint: true })).ino), String(swapped.ino), "the old listener's shutdown left the replacement's alias alone");
+    } finally { fresh.abort(); await replacement.catch(() => {}); }
   } finally { client.terminate(); await listener.stop(); await listener.folder.remove(); }
 });
 
