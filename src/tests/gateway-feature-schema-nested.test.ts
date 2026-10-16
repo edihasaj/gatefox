@@ -34,6 +34,11 @@ test("trimming never widens permissions: network_proxy is never changed, and the
     "profiles.w": { features: { network_proxy: limited, guardianv2: false } } } });
   assert.equal(stats.count, 3);
   assert.deepEqual(config, copy);
+  // multi_agent_v2 carries the caller's limits: the strict form keeps them instead of the SDK's looser defaults.
+  const agents = { features: { multi_agent_v2: { enabled: true, max_concurrent_threads_per_session: 1, expose_spawn_agent_model_overrides: false, preserve_fork_prefix: true } },
+    "features.multi_agent_v2.max_wait_timeout_ms": 5 };
+  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", { config: agents }), { config: {
+    features: { multi_agent_v2: { enabled: true, max_concurrent_threads_per_session: 1, expose_spawn_agent_model_overrides: false } }, "features.multi_agent_v2.max_wait_timeout_ms": 5 } });
 });
 
 test("nested sub-table fields are checked in the dotted form too", () => {
@@ -132,16 +137,16 @@ test("a flat profile key holds the same feature settings as a nested profile", (
     ["-c", "profiles.w={ features = { async_compaction = true } }", "-c", 'profiles.w.model="m"']);
 });
 
-test("the strict retry form reduces every feature to a boolean in every spelling", () => {
+test("the strict retry form reduces features to booleans in every spelling, except settings that carry limits", () => {
   const stats = { count: 0 };
   const params = { threadId: "t", config: { model: "m", features: { guardianv2: { enabled: true, review_threshold: 7 }, multi_agent_v2: { wait_agent_enabled: true }, tool_registry: { error_on_tool_collisions: true }, fast_mode: false },
     "features.code_mode": { enabled: false, default_exec_yield_time_ms: 5 }, "features.sleep_tool.mode": "always_on", "features.token_budget.enabled": true, "features.hooks": true,
     "profiles.w": { features: { sleep_tool: { enabled: true } } }, profiles: { v: { "features.network_proxy": { proxy_url: "x" } } } } };
   const copy = structuredClone(params);
-  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", params, stats), { threadId: "t", config: { model: "m", features: { guardianv2: false, fast_mode: false },
+  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", params, stats), { threadId: "t", config: { model: "m", features: { guardianv2: false, multi_agent_v2: { wait_agent_enabled: true }, fast_mode: false },
     "features.code_mode": false, "features.token_budget": true, "features.hooks": true, "profiles.w": { features: { sleep_tool: true } }, profiles: { v: { "features.network_proxy": { proxy_url: "x" } } } } });
   assert.deepEqual(params, copy);
-  assert.equal(stats.count, 7);
+  assert.equal(stats.count, 6);
   const same = { config: { features: { fast_mode: true }, "features.hooks": false } };
   assert.equal(strictGatewayFeatureRequest("thread/resume", same), same);
   const other = { config: { features: { guardianv2: { enabled: true } } } };
