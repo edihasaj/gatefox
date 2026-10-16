@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { executionArgs } from "../execution-host-engine.js";
@@ -42,8 +42,9 @@ test("the input is not mutated when entries are trimmed", () => {
 
 test("profile feature settings are trimmed in dotted and nested forms", () => {
   assert.deepEqual(trimGatewayFeatureConfig({ "profiles.w.features.async_compaction": { enabled: false }, "profiles.w.features.other": { mode: "x" } }), { "profiles.w.features.async_compaction": false });
+  // Keys inside a profile's table are literal for the SDK, so only its `features` table is trimmed.
   assert.deepEqual(trimGatewayFeatureConfig({ profiles: { w: { features: { async_compaction: { enabled: true } }, "features.multi_agent_v2.preserve_fork_prefix": true } } }),
-    { profiles: { w: { features: { async_compaction: true } } } });
+    { profiles: { w: { features: { async_compaction: true }, "features.multi_agent_v2.preserve_fork_prefix": true } } });
 });
 
 test("trimming counts changed entries so telemetry can report a number", () => {
@@ -55,12 +56,14 @@ test("trimming counts changed entries so telemetry can report a number", () => {
   assert.equal(clean.count, 0);
 });
 
-test("requests trim thread config and runtime enablement but leave other methods alone", () => {
+test("requests trim thread config but leave every other method alone", () => {
   const config = { "features.async_compaction": { enabled: true } };
   for (const method of ["thread/start", "thread/resume", "thread/fork"]) {
     assert.deepEqual(trimGatewayFeatureRequest(method, { threadId: "t", config }), { threadId: "t", config: { "features.async_compaction": true } });
   }
-  assert.deepEqual(trimGatewayFeatureRequest("experimentalFeature/enablement/set", { enablement: { async_compaction: { enabled: true }, fast_mode: false } }), { enablement: { async_compaction: true, fast_mode: false } });
+  // A runtime enablement map has no thread id, so it is routed to the native engine and is never trimmed here.
+  const enablement = { enablement: { async_compaction: { enabled: true }, fast_mode: false } };
+  assert.equal(trimGatewayFeatureRequest("experimentalFeature/enablement/set", enablement), enablement);
   const other = { config };
   assert.equal(trimGatewayFeatureRequest("turn/start", other), other);
   const clean = { config: { features: { fast_mode: true } } };
@@ -81,7 +84,7 @@ test("overrides with fields the pinned SDK rejects are removed with their flag",
 });
 
 test("container and structured table overrides are trimmed in both value syntaxes", () => {
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features={"async_compaction":{"enabled":true},"fast_mode":true}']), ["-c", 'features={"async_compaction":true,"fast_mode":true}']);
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features={"async_compaction":{"enabled":true},"fast_mode":true}']), ["-c", "features={ async_compaction = true, fast_mode = true }"]);
   assert.deepEqual(trimGatewayFeatureArgs(["-c", "features.multi_agent_v2={ enabled = true, preserve_fork_prefix = true }"]), ["-c", "features.multi_agent_v2={ enabled = true }"]);
   assert.deepEqual(trimGatewayFeatureArgs(["-c", 'profiles.w.features.async_compaction={"enabled":true}']), ["-c", "profiles.w.features.async_compaction=true"]);
 });
@@ -99,8 +102,9 @@ test("shared gateway execution hosts trim feature tables from the SDK launch arg
 
 test("the private gateway home snapshot carries only features the pinned SDK accepts", async () => {
   const root = await mkdtemp(join(tmpdir(), "gateway-feature-home-"));
-  const home = await gatewayEngineHome(join(root, "state"), { model: "m", features: { async_compaction: { enabled: true }, multi_agent_v2: { enabled: true, preserve_fork_prefix: true } } }, { nativeHome: join(root, "native") });
-  const content = await readFile(join(home, "config.toml"), "utf8");
-  assert.match(content, /"features" = \{ "async_compaction" = true, "multi_agent_v2" = \{ "enabled" = true \} \}/);
-  assert.doesNotMatch(content, /preserve_fork_prefix|threshold/);
+  try {
+    const home = await gatewayEngineHome(join(root, "state"), { model: "m", features: { async_compaction: { enabled: true }, multi_agent_v2: { enabled: true, preserve_fork_prefix: true } } }, { nativeHome: join(root, "native") });
+    const lines = (await readFile(join(home, "config.toml"), "utf8")).split("\n").filter(Boolean);
+    assert.deepEqual(lines, ['"model" = "m"', '"features" = { "async_compaction" = true, "multi_agent_v2" = { "enabled" = true } }', `"sqlite_home" = ${JSON.stringify(join(root, "native"))}`]);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

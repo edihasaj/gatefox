@@ -103,15 +103,39 @@ including requests from older adapters. Native configuration files are unchanged
 ChatGPT chooses which `features.*` settings to send from the native engine's
 version, but gateway chats run the older pinned SDK. For gateway chats and gateway
 executor launches only, the adapter trims feature settings to that SDK's schema.
-This covers thread start/resume/fork overrides, runtime enablement maps, executor
-launch flags and settings, and the private gateway home snapshot. A feature that
-is not a structured table in the pinned SDK must be a boolean, so a table with a
-boolean `enabled` field becomes that boolean and any other value is dropped.
-Structured features, such as `multi_agent_v2` and `code_mode`, keep only the
-fields the SDK accepts. The same rules apply to dotted keys, profile features,
-and `-c` flags in JSON or inline TOML; a flag that cannot be read is dropped.
-Native chats and native launches are never changed. The `gateway_features_trimmed`
-event records only the site and how many entries changed.
+This covers thread start/resume/fork overrides, executor launch flags and
+settings, and the private gateway home snapshot. Runtime enablement maps
+(`experimentalFeature/enablement/set`) are not covered: that request carries no
+thread id, so it always goes to the native engine, which is never changed.
+
+The rules follow the SDK. A feature that is not a structured table in the pinned
+SDK must be a boolean, so a table with a boolean `enabled` field becomes that
+boolean and any other value is dropped. Structured features, such as
+`multi_agent_v2`, `guardianv2` and `code_mode`, keep only the fields the SDK
+accepts, including the strict sub-tables below them (`guardianv2.transcript`,
+`guardianv2.review_scope`, `multi_agent_v2.message_board_remote` and the
+`network_proxy.credentials` entries). `tool_registry` is a plain table in the SDK,
+so a boolean there is dropped. The same rules apply to dotted keys, `profiles.<name>`
+in nested, dotted and flat form, and `-c` flags. A `-c` value is read as JSON or
+inline TOML (bare dotted keys inside an inline table expand to nested tables), and a
+flag that cannot be read is dropped. The SDK parses every `-c` value as TOML, so a
+changed table is always written back as inline TOML, never JSON. Keys are read the way
+the SDK applies them: an override key, from a request's `config` or a `-c` flag, is
+split on every dot and never unquoted, so a quoted segment is part of the name, and
+nothing is respelled. Inside a value the SDK keeps keys literal, so a dotted key inside
+a `features` or profile table is a name, not a path, and only a profile's own
+`features` table is trimmed.
+
+Static rules cannot know new enum values, the SDK's range checks or fields added
+later. If the SDK still refuses a gateway `thread/start`, `thread/resume` or
+`thread/fork` with `failed to load configuration` (code -32600) while the request
+carries non-boolean feature values, the adapter retries once with a strict form:
+each feature becomes its boolean `enabled` or is removed, and `tool_registry` is
+removed. A failed configuration load creates no thread, so the retry has no side
+effects. If the retry fails too, the original error is returned.
+
+Native chats and native launches are never changed or retried. The
+`gateway_features_trimmed` event records only the site and how many entries changed.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
 the gateway state directory. Model, effort, summary, and service-tier writes are
