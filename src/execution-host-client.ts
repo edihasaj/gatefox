@@ -33,7 +33,7 @@ export class ExecutionHostClient {
     }
     const capabilities = executionCapabilities(owner.capabilities);
     if (!capabilities.includes(capability)) {
-      if (required) throw new Error(`Shared ${capability} executor is not enabled in the configured host`);
+      if (required) throw Object.assign(new Error(`Shared ${capability} executor is not enabled in the configured host`), { capabilityAbsent: capability });
       return;
     }
     const socketPath = resolve(home, "host.sock");

@@ -20,6 +20,7 @@ import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { withStagedQueueInput } from "./queued-attachments.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
+import { telemetry } from "./telemetry.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
@@ -74,15 +75,22 @@ export class AppServerBackends {
     catalog: DesktopCatalog, emit: (message: Message) => Promise<void>, onNativeExit: () => void, configPath?: string): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
     const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
-    if (object(plan).sharedNativeExecutor !== true) {
+    // A private native engine, with gateway chats on the shared host only when the plan shares them.
+    const privateNative = async () => {
       await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
       const backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath);
       backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined; return backend;
-    }
+    };
+    if (object(plan).sharedNativeExecutor !== true) return privateNative();
     let client: ExecutionHostClient | undefined; let backend: AppServerBackends | undefined;
     try {
       if (!configPath || plan?.config !== resolve(configPath)) throw new Error("Shared native executor configuration does not match this adapter");
-      client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true);
+      try { client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true); }
+      catch (error) {
+        // A host that shares gateway chats but runs without native sharing (the app's engine is not the verified one). Only that exact case falls back; every other failure keeps failing closed.
+        if ((error as { capabilityAbsent?: unknown })?.capabilityAbsent !== "native" || plan.sharedExecutors !== true) throw error;
+        telemetry("native_sharing_fallback", {}); return await privateNative();
+      }
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
       const record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));
       backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath,

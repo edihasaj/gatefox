@@ -196,6 +196,19 @@ Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
 appear as an organization-settings error.
 
+If the app's native engine is not the verified one (for example after an app
+update), the host starts without native sharing and keeps offering gateway chats;
+it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
+`sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
+adapter then falls back to its own native engine, exactly as without native
+sharing, and records `native_sharing_fallback`. Gateway chats keep using the
+host. Any other failure to reach the host still fails the connection. While the
+fallback lasts, the native relay cannot share the engine either, so remote control
+of that Mac is unavailable. The fallback lasts until a release verifies the app's
+engine. That release must also handle the return to sharing: it has to release the
+stale native lease the earlier host left and must not start a shared native writer
+while a desktop's private native engine still runs on the same native home.
+
 Natively, the desktop is the only launcher of its app-server. With shared native
 ownership, the relay or an SSH client can start the writer first with fewer
 settings. The host compares launches by setting key, not by exact argument list:

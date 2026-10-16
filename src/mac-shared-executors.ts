@@ -71,7 +71,7 @@ export async function enableSharedExecutors(configPath: string, apply = false): 
   if (plan.sharedNativeExecutor && !(await gatewaySdkRuntime())?.selectedModelCompaction) throw new Error("Native and gateway sharing requires this release's verified selected-model compaction SDK; the service was preserved");
   if (!await sharedServiceRegistration(configPath)) throw new Error("The unified LaunchAgent belongs to another configuration or is unavailable; no service was changed");
   await requireMaintenanceWindow(configPath);
-  const sdk = await sdkIdentity(paths.codex); await validateExecutionSdk(sdk.codex);
+  const sdk = await sdkIdentity(paths.codex); const runtime = await gatewaySdkRuntime(); await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
   const latestService = await consolidatedStatus(config.stateDirectory);
   if ((await inspectLegacyWriters(configPath, config.stateDirectory, latestService.statusCurrent ? Number(latestService.pid) : undefined)).length) throw new Error("Legacy gateway writers run outside the unified service. Close their SSH or desktop connections normally before migration; no process was stopped");
   const path = servicePlanPath(config.stateDirectory);

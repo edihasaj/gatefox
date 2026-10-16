@@ -38,3 +38,11 @@ export async function verifyNativeSdk(codex: string): Promise<NativeSdkIdentity>
   await validateExecutionSdk(identity.codex);
   return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 };
 }
+
+/** Fixed, privacy-safe reason for telemetry when native sharing cannot be offered. */
+export function nativeUnavailableReason(error: unknown): "sdk_version" | "sdk_signature" | "other" {
+  const message = error instanceof Error ? error.message : "";
+  if (/requires the pinned Codex SDK version/.test(message)) return "sdk_version";
+  if (/original signed Codex SDK|signature verification failed|SDK changed during signature verification/.test(message)) return "sdk_signature";
+  return "other";
+}

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -14,6 +15,7 @@ import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { executionHostHome, executionHostMarker, sdkIdentity, socketIdentity } from "../execution-host-storage.js";
 import type { ExecutionHostClient } from "../execution-host-client.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 400; attempt++) { if (check()) return; await delay(5); }
@@ -355,5 +357,49 @@ test("configured native sharing fails closed for missing host, wrong scope, or a
     const plan = JSON.parse(await readFile(planPath, "utf8")); await writePrivateJson(planPath, { ...plan, sharedExecutors: true });
     await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /gateway/.test(error.message));
     await f.noSpawn(); assert.equal(f.calls.length, 0);
+  } finally { await f.clean(); }
+});
+
+async function sharedPlan(f: Awaited<ReturnType<typeof fixture>>, capabilities: string[], plan: Message = { sharedExecutors: true }) {
+  await writePrivateJson(join(f.home, "owner.json"), { ...f.owner, capabilities });
+  const planPath = join(f.config.stateDirectory, "service-plan.json");
+  await writePrivateJson(planPath, { ...JSON.parse(await readFile(planPath, "utf8")), ...plan });
+}
+const fallbackEvents = async (f: Awaited<ReturnType<typeof fixture>>, since: number) => { await flushTelemetry(); return (await readTelemetry(f.config.stateDirectory, since)).filter(event => event.event === "native_sharing_fallback"); };
+
+test("a gateway-only host makes the adapter fall back to a private native engine and keep sharing gateway chats", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    await sharedPlan(f, ["gateway"]);
+    const adapter = await AppServerBackends.create(f.sdk, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
+      async () => {}, () => {}, f.configPath);
+    try {
+      assert.notEqual(adapter.native.shared, true); assert.equal((adapter as unknown as { sharedGateway?: boolean }).sharedGateway, true);
+      assert.equal(f.calls.some(message => message.method === "native/acquire"), false);
+      await until(() => existsSync(f.spawnMarker));
+      const events = await fallbackEvents(f, since); assert.equal(events.length, 1);
+      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid"]);
+    } finally { await adapter.stop(); }
+  } finally { await f.clean(); }
+});
+
+test("a full host keeps the shared native path and emits no fallback", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    await sharedPlan(f, ["native", "gateway"]);
+    const first = await f.create(); assert.equal(first.adapter.native.shared, true);
+    assert.equal(f.calls.filter(message => message.method === "native/acquire").length, 1); await f.noSpawn();
+    assert.equal((await fallbackEvents(f, since)).length, 0);
+  } finally { await f.clean(); }
+});
+
+test("only a missing native capability falls back; an unavailable host still fails closed", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    await sharedPlan(f, ["native", "gateway"]); await rm(join(f.home, "owner.json"));
+    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /host is unavailable/.test(error.message));
+    await sharedPlan(f, ["native", "gateway"]); await writePrivateJson(join(f.home, "owner.json"), { ...f.owner, capabilities: ["native", "gateway"], pid: 0 });
+    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /host is unavailable/.test(error.message));
+    assert.equal((await fallbackEvents(f, since)).length, 0); await f.noSpawn();
   } finally { await f.clean(); }
 });

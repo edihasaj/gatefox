@@ -10,7 +10,7 @@ import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js"
 import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
-import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
@@ -67,22 +67,28 @@ export class ExecutionEngine {
   readonly owner: EngineOwner;
   readonly fingerprint: string;
   closed = false;
-  constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string) {
+  /**
+   * `codexValidated` says whether the host pinned the app's codex at start. A host that pinned its runtime instead never
+   * checked that binary, so it must not spawn it for a descriptor that names no runtime.
+   */
+  constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string, private readonly resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = gatewaySdkRuntime,
+    private readonly codexValidated = true) {
     this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases] };
     this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
     this.fingerprint = descriptorFingerprint(descriptor);
   }
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
     const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
-    const runtime = descriptor.gatewaySdkSha256 ? await gatewaySdkRuntime() : undefined;
+    const runtime = descriptor.gatewaySdkSha256 ? await this.resolveRuntime() : undefined;
     if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
     if (runtime) this.record.selectedModelCompaction = true;
     await privateDirectory(directory);
     const metadata = resolve(directory, "execution-generation.json");
-    const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: this.identity.sdkSha256 };
+    // The runtime's checksum is already part of the fingerprint, so an app update that changes the native codex must not orphan its generations.
+    const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: runtime?.binarySha256 ?? this.identity.sdkSha256 };
     const saved = await lstat(metadata).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (saved) {
-      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
+      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(runtime ? { ...JSON.parse(await readFile(metadata, "utf8")), sdkSha256: expected.sdkSha256 } : JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
     } else await writePrivateJson(metadata, expected);
     const home = await gatewayEngineHome(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
     const catalog = resolve(directory, "catalog.json");
@@ -90,8 +96,12 @@ export class ExecutionEngine {
       const existing = JSON.parse(await readFile(catalog, "utf8"));
       if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writePrivateJson(catalog, descriptor.catalog); }
-    const sdk = await sdkIdentity(this.identity.codex);
-    if (sdk.sdkSha256 !== this.identity.sdkSha256) throw new Error("Execution host SDK changed; restart during a maintenance window");
+    // The runtime is guarded by its checksum above. Only a generation that spawns the app's own codex depends on that binary staying put.
+    if (!runtime) {
+      if (!this.codexValidated) throw new Error("Execution generation requires this release's gateway SDK; its ownership was preserved");
+      const sdk = await sdkIdentity(this.identity.codex);
+      if (sdk.sdkSha256 !== this.identity.sdkSha256) throw new Error("Execution host SDK changed; restart during a maintenance window");
+    }
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");

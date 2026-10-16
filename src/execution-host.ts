@@ -9,24 +9,39 @@ import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorF
 import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, type NativeHomeLease } from "./native-execution-host-storage.js";
-import { verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
+import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
+import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { telemetry } from "./telemetry.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
-export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier }
+export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined> }
 const maxFrame = 4 * 1024 * 1024;
 
 /** One owned SDK writer per gateway generation, independent of adapter clients. */
 export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
-  const sdk = await sdkIdentity(options.codex); await validateExecutionSdk(sdk.codex);
-  const capabilities = executionCapabilities(options.capabilities);
-  const nativeSdk = capabilities.includes("native") ? await (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex) : {};
-  if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !capabilities.includes("native")) throw new Error("Execution host native relay ownership is invalid");
+  const sdk = await sdkIdentity(options.codex);
+  const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
+  if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !requested.includes("native")) throw new Error("Execution host native relay ownership is invalid");
+  // Generations run this release's pinned gateway SDK, so that is the binary to pin. Without one (older layouts) they spawn the app's codex.
+  // A runtime that cannot be resolved (a damaged install) falls back to pinning the app's codex, as releases before 0.4.3 did.
+  const runtime = requested.includes("gateway") ? await resolveRuntime().catch(() => undefined) : undefined;
+  await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
+  let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
+  if (requested.includes("native")) {
+    try { nativeSdk = await (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex); }
+    catch (error) {
+      // An app whose engine differs from the verified one cannot be shared, but must not take gateway chats down with it.
+      if (!requested.includes("gateway")) throw error;
+      telemetry("native_sharing_unavailable", { reason: nativeUnavailableReason(error) });
+      capabilities = requested.filter(capability => capability !== "native");
+    }
+  }
+  const nativeRelayOwnsRegistration = options.nativeRelayOwnsRegistration === true && capabilities.includes("native");
   const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath,
-    capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration: options.nativeRelayOwnsRegistration === true } : {}) });
+    capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration } : {}) });
   let native: NativeExecutionEngine | undefined; let richestNative: NativeExecutionDescriptor | undefined; let nativeLease: NativeHomeLease | undefined;
   const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
   let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let pending = 0;
@@ -51,7 +66,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       for (const engine of [...engines.values()]) if (engine.closed || (![...leases.values()].some(values => values.has(engine.record.revision)) && !(await engine.loadedThreads()).size)) { await remove(engine); if (engines.size < 4) break; }
     }
     if (engines.size >= 4) throw new Error("Four gateway generations have loaded chats. Close an older chat before loading another catalog");
-    const engine = new ExecutionEngine(descriptor, owner, home); engines.set(descriptor.revision, engine);
+    const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); throw error; }
   };
@@ -80,7 +95,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     // A relay starting the writer first reuses the richest launch this host has seen,
     // so a returning desktop attaches instead of waiting for an idle replacement.
     const launch = richestNative && compareNativeLaunch(richestNative, descriptor) === "subset" ? richestNative : descriptor;
-    native = new NativeExecutionEngine(launch, owner, home, options.nativeRelayOwnsRegistration === true);
+    native = new NativeExecutionEngine(launch, owner, home, nativeRelayOwnsRegistration);
     if (launch === descriptor && (!richestNative || compareNativeLaunch(richestNative, descriptor) === "superset")) richestNative = descriptor;
     // Persist launch intent before spawn: a killed host cannot claim an unknown
     // child was never started merely because its PID publication was interrupted.

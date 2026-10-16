@@ -108,6 +108,16 @@ The execution host belongs to the unified service and owns its SDK children. The
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 
+The host pins the binary its gateway generations actually run: the release's own
+gateway SDK (`gateway-sdk/gateway-codex`, 0.162.0-alpha.17.2), not the app's
+native engine. An app update therefore neither stops the host from starting nor
+refuses new generations while the host runs; the runtime's checksum, carried in
+every generation descriptor, guards the binary. A host that pinned its runtime
+refuses a descriptor without that checksum instead of spawning the app's unchecked
+codex. Only a layout without a gateway SDK (or a runtime that cannot be resolved)
+pins the app's codex at start, as releases before 0.4.3 did; then that codex must
+report the pinned version and stay unchanged while the host runs.
+
 Native ownership can also be shared independently of gateway generations. Its
 one original signed SDK keeps the original native home and normal authentication;
 private gateway homes never receive that authentication. A per-native-home lease

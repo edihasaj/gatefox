@@ -126,8 +126,8 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
   return withPrivateFileLock(receipt, async () => {
     const previous = await readOwner(receipt);
     if (previous) {
-      for (const key of ["configPath", "nativeHome", "codex", "sdkSha256", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
-      for (const key of ["nativeSdkExecutable", "nativeSdkSha256"] as const) if (previous[key] !== undefined && previous[key] !== identity[key]) throw new Error("Native execution SDK identity changed; existing ownership was preserved");
+      // The app's SDK checksum is deliberately not compared: an app update changes it, and a stopped host with no live owners below must still be replaceable.
+      for (const key of ["configPath", "nativeHome", "codex", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
       if (livePid(previous.pid)) throw new Error("An execution host already owns this configuration");
       for (const engine of previous.generations) {
         if (!engine || !/^[a-f0-9]{64}$/.test(engine.revision) || !Number.isSafeInteger(engine.pid) || engine.pid < 0 || engine.socketPath !== resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) throw new Error("Execution generation receipt is invalid");
