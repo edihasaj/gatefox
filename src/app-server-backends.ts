@@ -10,6 +10,7 @@ import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
+import { sendWithStrictFeatureRetry } from "./gateway-feature-retry.js";
 import { reportGatewayFeatureTrim, trimGatewayFeatureArgs, trimGatewayFeatureConfig, trimGatewayFeatureRequest, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-compaction.js";
@@ -427,7 +428,10 @@ export class AppServerBackends {
       if (compaction?.intercepted) return compaction.result || {};
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
       const target = engine;
-      const result = target.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => target.connection.request(method, staged)) : await target.connection.request(method, params);
+      const send = (sent: Message) => target.shared ? withStagedQueueInput(this.config.stateDirectory, method, sent, staged => target.connection.request(method, staged)) : target.connection.request(method, sent);
+      // Retry inside the request accounting and compaction hooks above and below, so each runs once.
+      const sent = await sendWithStrictFeatureRetry(method, params, send);
+      const result = sent.result; params = sent.params;
       // A throwaway chat has no compaction row, and a rollback must not write a reset row for it.
       if (!(typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId))) await engine.compaction?.after(method, params);
       if (["thread/start", "thread/resume", "thread/fork"].includes(method) && typeof object(result.thread).id === "string") {
