@@ -100,6 +100,19 @@ the compatible alias only when no explicit current setting exists. Shared
 execution hosts enforce the same normalization before spawning their SDK,
 including requests from older adapters. Native configuration files are unchanged.
 
+ChatGPT chooses which `features.*` settings to send from the native engine's
+version, but gateway chats run the older pinned SDK. For gateway chats and gateway
+executor launches only, the adapter trims feature settings to that SDK's schema.
+This covers thread start/resume/fork overrides, runtime enablement maps, executor
+launch flags and settings, and the private gateway home snapshot. A feature that
+is not a structured table in the pinned SDK must be a boolean, so a table with a
+boolean `enabled` field becomes that boolean and any other value is dropped.
+Structured features, such as `multi_agent_v2` and `code_mode`, keep only the
+fields the SDK accepts. The same rules apply to dotted keys, profile features,
+and `-c` flags in JSON or inline TOML; a flag that cannot be read is dropped.
+Native chats and native launches are never changed. The `gateway_features_trimmed`
+event records only the site and how many entries changed.
+
 Gateway default selections are saved to private `desktop-preferences.json` in
 the gateway state directory. Model, effort, summary, and service-tier writes are
 scoped to that file for both gateway and native model choices. String `replace` and

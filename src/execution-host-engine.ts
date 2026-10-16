@@ -9,6 +9,7 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
+import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
@@ -32,7 +33,8 @@ export function canonicalJson(value: unknown): string {
 export function descriptorFingerprint(descriptor: ExecutionDescriptor): string { return createHash("sha256").update(canonicalJson(descriptor)).digest("hex"); }
 export function executionArgs(input: string[], socket: string, catalog: string, settings: Message = {}): string[] {
   // Older connected adapters can still supply legacy flags to a newer host.
-  const args = normalizeCodexFeatureArgs(input, settings);
+  // The SDK started here is the pinned gateway SDK, which rejects feature tables newer than itself.
+  const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs(normalizeCodexFeatureArgs(input, settings), stats));
   const forwarded: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
