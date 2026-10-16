@@ -2,16 +2,16 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { lstat, writeFile, readFile, rename, mkdtemp, readdir } from "node:fs/promises";
+import { lstat, writeFile, readFile, rename, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { unixSocketPath, serveUnix } from "../unix-transport.js";
 import { shimFiles } from "./shim-fixture.js";
 import { shortFolder } from "./short-folder.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
-import { reuseSshSocket } from "../ssh-socket.js";
+import { replaceSshListener, reuseSshSocket } from "../ssh-socket.js";
+import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
 import { releaseState, watchForUpgrade } from "../self-update.js";
 
 test("Unix addresses exclude network listeners, relative paths, and oversized socket names", () => {
@@ -44,12 +44,12 @@ test("Unix readiness never exposes a socket before its ownership record", { skip
 
 test("serveUnix records the release it runs, or none when told to", { skip: process.platform === "win32", timeout: 15000 }, async () => {
   const leaseFor = async (release: string | null | undefined) => {
-    const dir = await mkdtemp("/tmp/gw-lease-release-"); const path = join(dir, "rpc.sock");
+    const folder = await shortFolder("gw-lease-release-"); const path = join(folder.directory, "rpc.sock");
     const controller = new AbortController(); const serving = serveUnix(path, controller.signal, async () => {}, release);
     try {
       for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
       return JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
-    } finally { controller.abort(); await serving; }
+    } finally { controller.abort(); await serving; await folder.remove(); }
   };
   const given = await leaseFor("0.4.2");
   assert.equal(given.release, "0.4.2");
@@ -64,7 +64,7 @@ test("serveUnix records the release it runs, or none when told to", { skip: proc
  * wires it. `busy` needs a client to open a session that lives as long as the connection.
  */
 async function selfRetiringListener(busy: boolean) {
-  const dir = await mkdtemp("/tmp/gw-retire-"); const path = join(dir, "rpc.sock");
+  const folder = await shortFolder("gw-retire-"); const dir = folder.directory; const path = join(dir, "rpc.sock");
   const controller = new AbortController(); let stopWatching = () => {};
   const session = async (_input: import("node:stream").Readable, _emit: (message: Record<string, unknown>) => Promise<void>, signal: AbortSignal) =>
     busy ? new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })) : Promise.resolve();
@@ -73,8 +73,8 @@ async function selfRetiringListener(busy: boolean) {
       { intervalMs: 10, state: () => ({ running: "0.4.1", installed: "0.4.2" }) });
   });
   for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
-  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving; throw new Error("Listener socket never appeared"); }
-  return { directory: dir, path, done: serving, stop: async () => { stopWatching(); controller.abort(); await serving; } };
+  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving; await folder.remove(); throw new Error("Listener socket never appeared"); }
+  return { directory: dir, path, done: serving, stop: async () => { stopWatching(); controller.abort(); await serving; await folder.remove(); } };
 }
 
 test("an idle listener retires itself after an install and a busy one does not", { skip: process.platform === "win32", timeout: 20000 }, async () => {
@@ -97,6 +97,56 @@ test("an idle listener retires itself after an install and a busy one does not",
     await assert.rejects(lstat(busy.path), { code: "ENOENT" }, "it retires once that session has finished");
   } finally { client.terminate(); await busy.stop(); }
 });
+
+
+/**
+ * A bootstrap running 0.4.2 replaces the 0.4.1 listener, the way `codex-shim` does it: decide,
+ * take the lease and drop the alias, bind a listener of its own, and only then log the
+ * replacement. The old listener's upgrade watcher then finds the alias gone. It must still retire,
+ * and quietly, so the move is logged once by the bootstrap instead of twice.
+ */
+test("a listener replaced by a bootstrap retires without logging a self upgrade", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const folder = await shortFolder("gw-replaced-"); const dir = folder.directory; const path = join(dir, "rpc.sock");
+  const state = join(dir, "state"); const started = Date.now(); configureTelemetry(state, "adapter");
+  const stale = new AbortController(); const fresh = new AbortController();
+  // What the watcher's retire attempts reported, and the release the watcher believes is
+  // installed. Flipping it only when the bootstrap takes the alias keeps the watcher from
+  // retiring the listener on an install of its own before the replacement ever happens.
+  const attempts: boolean[] = []; let installed = "0.4.1"; let stopWatching = () => {};
+  let replacement: Promise<void> | undefined;
+  const serving = serveUnix(path, stale.signal, async () => {}, "0.4.1", listener => {
+    stopWatching = watchForUpgrade("ssh_listener", () => listener.sessions() === 0, async () => {
+      const retired = await listener.retire(); attempts.push(retired); return retired;
+    }, { intervalMs: 10, state: () => ({ running: "0.4.1", installed }) });
+  });
+  const ready = async () => { for (let i = 0; i < 200; i++) { if (await lstat(path).then(() => true, () => false)) return; await delay(10); } throw new Error("Listener socket never appeared"); };
+  try {
+    await ready(); const published = Date.now();
+    const reuse = await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" });
+    assert.equal(reuse.reused, false, "a bootstrap on the installed release does not reuse another release's listener");
+    assert.ok(reuse.replace); assert.deepEqual([reuse.replace.from, reuse.replace.to], ["0.4.1", "0.4.2"], "the decision names the releases on either side of the swap");
+    assert.ok(await replaceSshListener(path, reuse.replace), "the bootstrap dropped the stale alias");
+    replacement = serveUnix(path, fresh.signal, async () => {}, "0.4.2"); await ready();
+    telemetry("ssh_listener_replaced", { from: reuse.replace.from, to: reuse.replace.to }); installed = "0.4.2";
+    for (let i = 0; i < 100 && !attempts.length; i++) await delay(10);
+    assert.ok(attempts.length, "the watcher retired the replaced listener through retire()");
+    stopWatching();
+    assert.ok(attempts.every(attempt => attempt === false), "retiring reports that another listener already owns the alias");
+    assert.equal(await Promise.race([serving.then(() => "ended" as const, () => "failed" as const), delay(1500).then(() => "pending" as const)]), "ended",
+      "a replaced listener stops on the watcher");
+    assert.ok(Date.now() - published < 1000, "it stopped before its own one second lease check could get there first");
+    assert.equal((await lstat(path)).isSocket(), true, "the retirement left the replacement's alias alone");
+    assert.equal((await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" })).reused, true, "the replacement owns it");
+    await flushTelemetry(); const events = await readTelemetry(state, started);
+    assert.deepEqual(events.filter(event => event.event === "ssh_listener_replaced").map(event => [event.from, event.to]), [["0.4.1", "0.4.2"]],
+      "the replacement is logged exactly once, by the bootstrap that made it");
+    assert.equal(events.some(event => event.event === "self_upgrade"), false, "the watcher logs no self upgrade for a move it did not make");
+  } finally {
+    stopWatching(); stale.abort(); fresh.abort();
+    await Promise.allSettled([serving, replacement ?? Promise.resolve()]); await folder.remove();
+  }
+});
+
 
 test("Unix clients get combined models, isolated approvals, and disconnect recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {
   const fixture = await shimFiles(); const path = join(fixture.directory, "rpc.sock");
@@ -140,7 +190,7 @@ test("Unix startup refuses an occupied path without deleting its contents", { sk
 });
 
 test("a replacement socket keeps old clients alive and survives old-listener shutdown", { skip: process.platform === "win32", timeout: 10000 }, async () => {
-  const dir = await mkdtemp(join(tmpdir(), "gateway-unix-lease-")); const path = join(dir, "rpc.sock");
+  const folder = await shortFolder("gateway-unix-lease-"); const dir = folder.directory; const path = join(dir, "rpc.sock");
   const first = new AbortController(); const second = new AbortController(); const clients: WebSocket[] = [];
   const echo = async (input: import("node:stream").Readable, emit: (message: Record<string, unknown>) => Promise<void>) => {
     for await (const chunk of input) await emit(JSON.parse(chunk.toString()));
@@ -155,5 +205,5 @@ test("a replacement socket keeps old clients alive and survives old-listener shu
     await delay(1100); const reply = once(old, "message"); old.send('{"id":"old-still-working"}'); assert.equal(JSON.parse((await reply)[0].toString()).id, "old-still-working");
     first.abort(); await a;
     assert.ok((await lstat(path)).isSocket()); const result = once(fresh, "message"); fresh.send('{"id":"new-still-working"}'); assert.equal(JSON.parse((await result)[0].toString()).id, "new-still-working");
-  } finally { for (const ws of clients) ws.terminate(); first.abort(); second.abort(); await a; await b; }
+  } finally { for (const ws of clients) ws.terminate(); first.abort(); second.abort(); await a; await b; await folder.remove(); }
 });

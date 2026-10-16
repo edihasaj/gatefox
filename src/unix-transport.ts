@@ -15,7 +15,10 @@ import { releasePattern, releaseState } from "./self-update.js";
 export interface UnixListenerControl {
   /** WebSocket sessions running now; a listener with sessions must keep serving them. */
   sessions(): number;
-  /** Stop taking new sessions and drop the public alias, but only while this listener owns it. */
+  /** Stop taking new sessions, so the listener finishes what it has and serves nothing new, and
+   * drop the public alias while this listener owns it. A false return means the alias was already
+   * gone or belonged to another listener: this one retires either way, but it moved nothing, so
+   * the caller must not log a self upgrade for it. */
   retire(): Promise<boolean>;
 }
 
@@ -74,14 +77,21 @@ export async function serveUnix(path: string, signal: AbortSignal,
   const close = () => { for (const controller of controllers) controller.abort(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
   const retire = async () => {
     // Under the lock a bootstrap also takes, so a newer listener's alias is never removed here.
-    const dropped = await withPrivateFileLock(path + ".gateway-lease", async () => {
+    // `gone`: the alias is already another listener's or was removed. `held`: the lock or the
+    // unlink failed, so the alias may still be ours.
+    const alias = await withPrivateFileLock(path + ".gateway-lease", async () => {
       const current = await lstat(path, { bigint: true }).catch(() => undefined);
-      if (!current || String(current.ino) !== inode || String(current.dev) !== device) return true;
-      return await unlink(path).then(() => true, () => false);
-    }).catch(() => false);
-    if (!dropped) return false;
+      if (!current || String(current.ino) !== inode || String(current.dev) !== device) return "gone" as const;
+      return await unlink(path).then(() => "dropped" as const, () => "held" as const);
+    }).catch(() => "held" as const);
+    // A failed attempt claims nothing: the alias is left as it was so the watcher tries again later.
+    if (alias === "held") return false;
+    // Whether this listener dropped its own alias or a bootstrap had already dropped it, it stops
+    // serving from now on. `gone` reports false, because the move belongs to whoever replaced it:
+    // a bootstrap logs that as `ssh_listener_replaced`, and an idle listener must not log the same
+    // replacement again as `self_upgrade` once its own upgrade watcher gets to it.
     retiring = true; if (!active.size) close();
-    return true;
+    return alias === "dropped";
   };
   try {
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);

@@ -21,10 +21,32 @@ export async function reuseSshSocket(path: string, state: ReleaseState | undefin
   return withPrivateFileLock(path + ".gateway-lease", () => inspectSshSocket(path, state));
 }
 
-/** Outcome of a reuse attempt. `replaced` names the releases on either side of a live
- * listener this bootstrap retired; the caller records the event once its own telemetry
- * is configured, because the bootstrap runs before that happens. */
-export interface SshSocketReuse { reused: boolean; replaced?: { from: string; to: string } }
+/** Outcome of a reuse attempt. `replace` is a decision, not an action: a live listener running
+ * another release should be retired, but nothing has been unlinked yet. The caller carries the
+ * swap out with `replaceSshListener` right before it binds, so a bootstrap whose preparation
+ * fails leaves the old listener serving new connections. */
+export interface SshSocketReuse { reused: boolean; replace?: SshSocketReplacement }
+
+/** The listener to retire at bind time: the releases on either side of the swap and the
+ * inode/device the public alias had when the decision was made. */
+export interface SshSocketReplacement { from: string; to: string; inode: string; device: string }
+
+/**
+ * Carry out a deferred replacement right before binding, under the same lease lock a listener
+ * uses. Re-checks that the public alias still points at the recorded listener and unlinks only
+ * that alias; the old listener's bound socket is left alone so its open sessions finish.
+ * Returns whether this call dropped the alias. When the alias is gone or already belongs to
+ * another listener, something else retired it and the caller must not log this replacement.
+ */
+export async function replaceSshListener(path: string, target: SshSocketReplacement): Promise<boolean> {
+  return withPrivateFileLock(path + ".gateway-lease", async () => {
+    const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
+    if (!info || !info.isSocket() || info.uid !== BigInt(process.getuid!()) || (info.mode & 0o077n) !== 0n) return false;
+    if (String(info.ino) !== target.inode || String(info.dev) !== target.device) return false;
+    await unlink(path);
+    return true;
+  });
+}
 
 async function inspectSshSocket(path: string, state: ReleaseState | undefined): Promise<SshSocketReuse> {
   const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
@@ -35,8 +57,8 @@ async function inspectSshSocket(path: string, state: ReleaseState | undefined): 
   let lease: { inode?: string; device?: string; boundPath?: string; release?: string };
   try { lease = JSON.parse(await readFile(leasePath, "utf8")); }
   catch { throw new Error("SSH socket ownership record is invalid"); }
-  if (!lease || typeof lease !== "object") throw new Error("SSH socket ownership record is invalid");
-  // Leases written before 0.4.2 carry no release. Anything else must look like a release name.
+  if (!lease || typeof lease !== "object" || typeof lease.inode !== "string" || typeof lease.device !== "string") throw new Error("SSH socket ownership record is invalid");
+  // Leases written before 0.4.4 carry no release. Anything else must look like a release name.
   if (lease.release !== undefined && !(typeof lease.release === "string" && releasePattern.test(lease.release))) throw new Error("SSH socket ownership record is invalid");
   const owned = (value: NonNullable<typeof info>) => value.isSocket() && value.uid === BigInt(process.getuid!()) && (value.mode & 0o077n) === 0n && String(value.ino) === lease.inode && String(value.dev) === lease.device;
   if (!owned(info) || typeof lease.boundPath !== "string" || dirname(lease.boundPath) !== dirname(path) || !lease.boundPath.split("/").at(-1)?.startsWith(".gw-")) throw new Error("SSH socket belongs to another listener; it was not replaced");
@@ -48,14 +70,13 @@ async function inspectSshSocket(path: string, state: ReleaseState | undefined): 
   });
   if (live) {
     // A listener keeps running the release it bound with, so a live listener on another
-    // release would pin every reconnect to it. Retire it when this bootstrap is the
-    // installed release; its open sessions finish on its bound socket untouched. A name
-    // outside the shared pattern can never match a lease, so it must not replace either.
+    // release would pin every reconnect to it, and a bootstrap on the installed release must
+    // retire it. Only the decision happens here: the alias is unlinked at bind time, by
+    // replaceSshListener, so a bootstrap that fails its preparation leaves this listener
+    // serving. A name outside the shared pattern can never match a lease, so it must not
+    // replace either.
     if (state && state.installed === state.running && releasePattern.test(state.running) && lease.release !== state.running) {
-      const current = await lstat(path, { bigint: true }).catch(() => undefined);
-      if (!current || !owned(current)) throw new Error("SSH socket changed during recovery; retry the connection");
-      await unlink(path);
-      return { reused: false, replaced: { from: lease.release ?? "unknown", to: state.running } };
+      return { reused: false, replace: { from: lease.release ?? "unknown", to: state.running, inode: lease.inode, device: lease.device } };
     }
     return { reused: true };
   }

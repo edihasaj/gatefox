@@ -100,9 +100,11 @@ Every server response carries `X-Gateway-Release` with the release that served i
 Until the supervisor is idle it keeps the previous release, so adapters and the
 host must stay protocol-compatible across one release. Each move is logged as
 `self_upgrade`, except an SSH listener replaced by a bootstrap, which is logged
-as `ssh_listener_replaced` (a listener started from a checkout records no
-release there and appears as `unknown`). Processes started from a checkout never
-move themselves, except that an SSH listener started from a checkout is replaced
+as `ssh_listener_replaced`. In that event `from` is `unknown` when the old
+listener recorded no release, which means it started from a checkout or from a
+release before 0.4.4, so the first 0.4.4 rollout logs `from: "unknown"` for
+every listener it replaces. Processes started from a checkout never move
+themselves, except that an SSH listener started from a checkout is replaced
 when a bootstrap on the installed release connects. Releases before
 0.2.32 do not have this; moving from them needs one service restart. In-place
 server takeover starts with 0.2.35; a 0.2.32 to 0.2.34 server needs one restart of

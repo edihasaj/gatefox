@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn, execFile } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -12,6 +12,7 @@ import { combinedNativeCatalog } from "../native-catalog.js";
 import { loadConfig } from "../config.js";
 import { serveUnix } from "../unix-transport.js";
 import { reuseSshSocket, type SshSocketReuse } from "../ssh-socket.js";
+import { shortFolder } from "./short-folder.js";
 import { releaseState } from "../self-update.js";
 import { codexShim, serveWithRecovery } from "../codex-shim.js";
 
@@ -100,6 +101,20 @@ async function staleListener(path: string, release: string) {
   return { stop: async () => { controller.abort(); await serving.finally(() => {}); } };
 }
 
+/** This checkout's dist laid out as installed release `version`, so a bootstrap run from it is the installed release. */
+async function installedRelease(version: string) {
+  // The layout must hold a real copy: releaseState() resolves symlinks, so a linked dist
+  // could never report a release directory.
+  const folder = await shortFolder("gw-rel-");
+  const release = join(folder.directory, "releases", version); const pkg = join(release, "package");
+  await mkdir(pkg, { recursive: true });
+  await cp(fileURLToPath(new URL("../", import.meta.url)), join(pkg, "dist"), { recursive: true });
+  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version, type: "module" }));
+  await symlink(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(pkg, "node_modules"));
+  await symlink(release, join(folder.directory, "current"));
+  return { cli: join(pkg, "dist", "cli.js"), remove: folder.remove };
+}
+
 /** Replacement events the given state directory recorded so far. */
 async function replacementEvents(stateDirectory: string, withinMs = 3000) {
   let events: Record<string, any>[] = [];
@@ -115,18 +130,11 @@ async function replacementEvents(stateDirectory: string, withinMs = 3000) {
 }
 
 test("an SSH bootstrap logs a replaced listener exactly once, only after telemetry is configured", { skip: process.platform === "win32", timeout: 30000 }, async () => {
-  // The fake install layout must hold a real copy: releaseState() resolves symlinks, so a
-  // linked dist could never report a release directory.
-  const f = await files(); const control = await mkdtemp("/tmp/gw-ssh-log-");
-  const path = join(control, "app-server-control/app-server-control.sock");
+  const f = await files(); const control = await shortFolder("gw-ssh-log-");
+  const path = join(control.directory, "app-server-control/app-server-control.sock");
   const listener = await staleListener(path, "0.4.0");
-  const root = await mkdtemp("/tmp/gw-rel-"); const release = join(root, "releases", "0.4.2"); const pkg = join(release, "package");
-  await mkdir(pkg, { recursive: true });
-  await cp(fileURLToPath(new URL("../", import.meta.url)), join(pkg, "dist"), { recursive: true });
-  await writeFile(join(pkg, "package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version: "0.4.2", type: "module" }));
-  await symlink(fileURLToPath(new URL("../../node_modules", import.meta.url)), join(pkg, "node_modules"));
-  await symlink(release, join(root, "current"));
-  const args = [join(pkg, "dist", "cli.js"), "codex-shim", "--ssh", "--ssh-home", control, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
+  const release = await installedRelease("0.4.2");
+  const args = [release.cli, "codex-shim", "--ssh", "--ssh-home", control.directory, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
   const child = spawn(process.execPath, args, { env: f.env, stdio: "ignore" }); const exited = once(child, "close");
   try {
     const events = await replacementEvents(f.value.stateDirectory, 15000);
@@ -139,11 +147,34 @@ test("an SSH bootstrap logs a replaced listener exactly once, only after telemet
     assert.equal(child.exitCode, null);
     await delay(1500); await listener.stop();
     assert.equal((await replacementEvents(f.value.stateDirectory, 500)).length, 1, "the current listener is reused, not replaced again");
-  } finally { child.kill("SIGTERM"); await exited; await listener.stop().catch(() => {}); f.close(); }
+  } finally { child.kill("SIGTERM"); await exited; await listener.stop().catch(() => {}); await release.remove(); await control.remove(); f.close(); }
+});
+
+test("a bootstrap whose preparation fails leaves the old listener serving", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-ssh-kept-");
+  const path = join(control.directory, "app-server-control/app-server-control.sock");
+  const listener = await staleListener(path, "0.4.0");
+  const release = await installedRelease("0.4.2");
+  // The reuse decision runs before the config is read; this config then fails the fixed-port
+  // preparation after telemetry is set up but before anything binds or unlinks.
+  const config = join(control.directory, "no-port.json");
+  await writeFile(config, JSON.stringify({ version: 1, port: 0, stateDirectory: f.value.stateDirectory, providers: f.value.providers }));
+  const args = [release.cli, "codex-shim", "--ssh", "--ssh-home", control.directory, "--config", config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
+  const before = await lstat(path, { bigint: true });
+  const child = spawn(process.execPath, args, { env: f.env, stdio: "ignore" });
+  try {
+    const [code] = await once(child, "close");
+    assert.equal(code, 2, "preparation failed, so this bootstrap never reached the bind");
+    const kept = await lstat(path, { bigint: true });
+    assert.equal(kept.isSocket(), true); assert.equal(String(kept.ino), String(before.ino)); assert.equal(String(kept.dev), String(before.dev), "the old listener still owns the public alias");
+    const reuse = await reuseSshSocket(path, { running: "0.4.2", installed: "0.4.2" });
+    assert.equal(reuse.reused, false); assert.equal(reuse.replace?.from, "0.4.0"); assert.equal(reuse.replace?.to, "0.4.2", "the live old listener is still there to replace");
+    assert.deepEqual(await replacementEvents(f.value.stateDirectory, 500), [], "a bootstrap that replaced nothing logs nothing");
+  } finally { child.kill("SIGTERM"); await listener.stop(); await release.remove(); await control.remove(); f.close(); }
 });
 
 test("listener startup reuses a raced listener and binds once more only after recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {
-  const dir = await mkdtemp("/tmp/gw-recover-"); const path = join(dir, "rpc.sock");
+  const folder = await shortFolder("gw-recover-"); const path = join(folder.directory, "rpc.sock");
   let attempts = 0;
   await serveWithRecovery(path, true, async () => {
     attempts++; if (attempts === 1) throw new Error("Unix socket path is occupied; the existing listener was not replaced");
@@ -165,6 +196,6 @@ test("listener startup reuses a raced listener and binds once more only after re
     attempts = 0; let report: SshSocketReuse | undefined;
     await serveWithRecovery(path, true, async () => { attempts++; throw new Error("occupied"); }, reuse => { report = reuse; });
     assert.equal(attempts, 1, "a live current listener from the race is kept without another bind");
-    assert.equal(report?.reused, true); assert.equal(report?.replaced, undefined, "nothing was replaced, so nothing is logged again");
-  } finally { controller.abort(); await serving; }
+    assert.equal(report?.reused, true); assert.equal(report?.replace, undefined, "nothing was replaced, so nothing is logged again");
+  } finally { controller.abort(); await serving; await folder.remove(); }
 });

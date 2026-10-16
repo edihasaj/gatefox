@@ -37,11 +37,15 @@ Stdout carries JSON-RPC only. The adapter forwards notifications, maps server
 request IDs for approvals, bounds frames to 16 MiB, and stops its child on exit.
 Non-server commands, including `--version`, pass through unchanged. The adapter
 accepts `stdio://` and private `unix://` listeners. A Unix listener serves the
-WebSocket protocol used by desktop SSH connections, and any `--listen unix://PATH`
-listener now also exits by itself once it is idle after a newer release is
-installed; the next connection then starts the listener on the installed release. It gives each connection its
-own native connection. Gateway executors are shared when the unified service has
-shared execution enabled; legacy installations keep per-connection executors.
+WebSocket protocol used by desktop SSH connections. A listener started with
+`--ssh`, which gives it a gateway control home, retires itself once a newer
+release is installed and it holds no session; the next connection then starts
+it on the installed release. A listener started with a custom
+`--listen unix://PATH`, which has no control home, keeps its previous
+behavior: it does not exit on its own after an install. The adapter gives each
+connection its own native connection. Gateway executors are shared when the
+unified service has shared execution enabled; legacy installations keep
+per-connection executors.
 It refuses occupied sockets, requires a
 user-owned directory without group/world write access, and sets the socket to
 mode 0600. Network WebSocket listeners are rejected.
