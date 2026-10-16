@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, basename, relative, isAbsolute } from "node:path";
 import { lstat, readFile, readdir, unlink } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import { connect } from "node:net";
@@ -8,9 +8,18 @@ import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState, type ReleaseState } from "./self-update.js";
 
+/** The folder that holds every managed SSH control home. */
+const sshStateRoot = () => resolve(homedir(), ".local/state/gw-ssh");
+
 export function sshControlHome(configPath: string, nativeHome = process.env.CODEX_HOME || resolve(homedir(), ".codex")): string {
   const scope = createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);
-  return resolve(homedir(), ".local/state/gw-ssh", scope);
+  return resolve(sshStateRoot(), scope);
+}
+
+/** Whether `path` lies in a managed SSH control home, the only place the sweep of crashed bootstraps' leftovers may run. */
+export function isManagedSshSocket(path: string): boolean {
+  const inside = relative(sshStateRoot(), resolve(path));
+  return inside !== "" && inside !== ".." && !inside.startsWith("../") && !isAbsolute(inside);
 }
 
 /**
@@ -76,10 +85,8 @@ const privateSocket = (value: Entry) => value.isSocket() && value.uid === BigInt
 
 interface Lease { inode: string; device: string; boundPath?: string; release?: string; previous?: SshLeasePrevious }
 
-async function inspectSshSocket(path: string, state: ReleaseState | undefined): Promise<SshSocketReuse> {
-  const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
-  if (!info) return { reused: false };
-  const leasePath = path + ".gateway-lease";
+/** Read and validate the ownership record at `leasePath`. Throws when it is unavailable or invalid. */
+async function readLease(leasePath: string): Promise<Lease> {
   const file = await lstat(leasePath);
   if (!file.isFile() || file.isSymbolicLink() || file.uid !== process.getuid?.() || (file.mode & 0o077) || file.size > 4096) throw new Error("SSH socket ownership record is unavailable");
   let parsed: Record<string, unknown>;
@@ -89,8 +96,31 @@ async function inspectSshSocket(path: string, state: ReleaseState | undefined): 
   // Leases written before 0.4.4 carry no release. Anything else must look like a release name.
   if (parsed.release !== undefined && !(typeof parsed.release === "string" && releasePattern.test(parsed.release))) throw new Error("SSH socket ownership record is invalid");
   // `previous` is optional, and a malformed one is ignored: it only ever enables a repair.
-  let lease: Lease = { inode: parsed.inode, device: parsed.device, boundPath: typeof parsed.boundPath === "string" ? parsed.boundPath : undefined,
-    release: parsed.release as string | undefined, previous: readPrevious(parsed.previous, dirname(path)) };
+  return { inode: parsed.inode, device: parsed.device, boundPath: typeof parsed.boundPath === "string" ? parsed.boundPath : undefined,
+    release: parsed.release as string | undefined, previous: readPrevious(parsed.previous, dirname(leasePath)) };
+}
+
+/**
+ * Put the ownership record back when a crashed swap left it naming a dead listener while the alias
+ * is still the previous listener's. A publish calls this under the lease lock before it sweeps or
+ * reads the record: the sweep removes the staged link that is the only evidence of the swap, and the
+ * record it reads becomes the new `previous`, so both must see the real current owner. Nothing to
+ * repair (no alias, an unreadable record, a record that owns the alias, or no evidence) returns
+ * false. A failure while repairing is thrown, so the caller stops before it destroys the evidence.
+ */
+export async function repairSshLease(path: string): Promise<boolean> {
+  const leasePath = path + ".gateway-lease";
+  const info = await lstat(path, { bigint: true }).catch(() => undefined);
+  const lease = info && await readLease(leasePath).catch(() => undefined);
+  if (!info || !lease || (privateSocket(info) && String(info.ino) === lease.inode && String(info.dev) === lease.device)) return false;
+  return await repairInterruptedSwap(leasePath, lease, info) !== undefined;
+}
+
+async function inspectSshSocket(path: string, state: ReleaseState | undefined): Promise<SshSocketReuse> {
+  const info = await lstat(path, { bigint: true }).catch(error => { if (error.code === "ENOENT") return undefined; throw error; });
+  if (!info) return { reused: false };
+  const leasePath = path + ".gateway-lease";
+  let lease = await readLease(leasePath);
   const owned = (value: Entry) => privateSocket(value) && String(value.ino) === lease.inode && String(value.dev) === lease.device;
   if (!owned(info)) lease = await repairInterruptedSwap(leasePath, lease, info) ?? lease;
   if (!owned(info) || typeof lease.boundPath !== "string" || dirname(lease.boundPath) !== dirname(path) || !lease.boundPath.split("/").at(-1)?.startsWith(".gw-")) throw new Error("SSH socket belongs to another listener; it was not replaced");
@@ -143,12 +173,21 @@ async function repairInterruptedSwap(leasePath: string, lease: Lease, alias: Ent
  * private socket of ours, is not the current alias's inode, and its `.gw-<hex>` socket is missing
  * or refuses connections. A live listener's socket is never removed. The `.alias` name is never
  * connected to (it can exceed the socket path limit); its bound socket decides. `keep` names
- * entries to skip, such as the caller's own bound socket. Best effort: anything it cannot judge stays.
+ * entries to skip, such as the caller's own bound socket. It also removes the temporary files
+ * a record write left beside this alias (`<alias>.gateway-lease.<16 hex>.tmp`): every writer of
+ * one holds the same lock, so none is in use. Only regular files of ours go, never a symlink.
+ * Best effort: anything it cannot judge stays.
  */
 export async function sweepSshLeftovers(path: string, keep: readonly string[] = []): Promise<void> {
   const folder = dirname(path);
   const current = await lstat(path, { bigint: true }).catch(() => undefined);
+  const temporary = new RegExp(`^${basename(path).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.gateway-lease\\.[0-9a-f]{16}\\.tmp$`);
   for (const name of await readdir(folder).catch(() => [] as string[])) {
+    if (temporary.test(name)) {
+      const file = await lstat(resolve(folder, name), { bigint: true }).catch(() => undefined);
+      if (file?.isFile() && file.uid === BigInt(process.getuid!())) await unlink(resolve(folder, name)).catch(() => {});
+      continue;
+    }
     if (!/^\.gw-[0-9a-f]{12}(\.alias)?$/.test(name) || keep.includes(name)) continue;
     const entry = resolve(folder, name);
     const info = await lstat(entry, { bigint: true }).catch(() => undefined);

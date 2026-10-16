@@ -10,7 +10,7 @@ import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState } from "./self-update.js";
-import { previousLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
+import { isManagedSshSocket, previousLease, repairSshLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
 
 /** What the process owning a listener uses to retire it after an install. */
 export interface UnixListenerControl {
@@ -146,8 +146,14 @@ export async function serveUnix(path: string, signal: AbortSignal,
       // alias is the readiness signal and a reader must find the record as soon as it appears.
       // The release name is capped, so the record stays well under the 4096 byte limit readers enforce.
       const leasePath = path + ".gateway-lease"; const staged = boundPath + ".alias";
+      // A swap a crashed bootstrap left half done is repaired first: the record then names the real
+      // owner of the alias, which the sweep below must not destroy the evidence for, and which
+      // `before` and `previous` below must describe. A failed repair stops the publish for the same reason.
+      if (alias) await repairSshLease(path);
       // What crashed bootstraps left behind never blocks this one; a failure here is not a reason to stop.
-      await sweepSshLeftovers(path, [basename(boundPath)]).catch(() => {});
+      // Only an SSH listener sweeps: a pending replacement, or the managed control folder. A custom
+      // `--listen` socket shares its folder with nothing of ours, and must never remove another alias's files.
+      if (replace || isManagedSshSocket(path)) await sweepSshLeftovers(path, [basename(boundPath)]).catch(() => {});
       const before = await readFile(leasePath, "utf8").catch(() => undefined);
       // The record of the listener being displaced rides inside the new one. If this process dies
       // between the two steps below, the alias is still the old listener's while the record names

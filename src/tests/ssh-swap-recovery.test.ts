@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { chmod, link, lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { serveUnix } from "../unix-transport.js";
-import { reuseSshSocket, sweepSshLeftovers } from "../ssh-socket.js";
+import { isManagedSshSocket, reuseSshSocket, sweepSshLeftovers } from "../ssh-socket.js";
 import { writePrivateJson } from "../config.js";
 import { shortFolder } from "./short-folder.js";
 
@@ -49,8 +49,8 @@ syncBuiltinESMExports();
 const heal = () => { fault.rename = false; fault.record = "off"; recordOpens = 0; };
 
 /** A live listener published at `path` (default: the folder's usual alias). */
-async function listener(folder: Folder, release: string, file = "app-server-control.sock") {
-  const path = join(folder.directory, "c", file); const controller = new AbortController();
+async function listener(folder: Folder, release: string, file = "app-server-control.sock", sub = "c") {
+  const path = join(folder.directory, sub, file); const controller = new AbortController();
   const done = serveUnix(path, controller.signal, echo as never, release); done.catch(() => {});
   for (let i = 0; i < 300 && !await exists(path); i++) await delay(10);
   assert.ok(await exists(path), "the listener published its alias");
@@ -96,8 +96,11 @@ serveUnix(path, new AbortController().signal, async () => {}, release, undefined
 `;
 
 /** An old 0.4.0 listener, and a 0.5.0 bootstrap killed between its record write and its rename. */
-async function interruptedSwap() {
+async function interruptedSwap(decide = false) {
   const folder = await shortFolder("gw-swap-"); const old = await listener(folder, "0.4.0");
+  // A later bootstrap inspected the live listener before the crash and decided to replace it (the decision is taken, nothing is done yet).
+  const reuse = decide ? await reuseSshSocket(old.path, installed) : undefined;
+  if (decide) assert.equal(reuse?.replace?.from, "0.4.0", "the bootstrap decided to replace the live listener");
   const script = join(folder.directory, "crash-child.mjs"); await writeFile(script, crashChild);
   const leaseBefore = (await read(old.path + ".gateway-lease"))!; const oldInode = await inodeOf(old.path);
   const dist = pathToFileURL(fileURLToPath(new URL("../", import.meta.url))).href;
@@ -106,7 +109,7 @@ async function interruptedSwap() {
   const stuck = await Promise.race([once(child.stdout!, "data").then(([chunk]) => String(chunk).includes("stuck")), delay(15000).then(() => false)]);
   child.kill("SIGKILL"); await exited;
   assert.ok(stuck, "the bootstrap reached the point between the record write and the rename");
-  return { folder, old, leaseBefore, oldInode, dir: join(folder.directory, "c") };
+  return { folder, old, leaseBefore, oldInode, reuse, dir: join(folder.directory, "c") };
 }
 
 for (const [label, state, expected] of [
@@ -175,6 +178,55 @@ test("a record naming another listener is still refused when there is no staged 
     await assert.rejects(reuseSshSocket(old.path, installed), /belongs to another listener/);
     assert.ok(await answers(old.path), "the old listener is untouched");
   } finally { await old.stop(); await folder.remove(); }
+});
+
+// ---------------------------------------------------------------- D5: a publish repairs a crashed swap before it sweeps
+
+/** The listener behind `swap` publishes with a replacement decided before the crash, and `inject` fails. */
+async function publishOverCrash(inject: "rename" | "record-all" | "record-after-repair") {
+  const swap = await interruptedSwap(true); const path = swap.old.path;
+  try {
+    const stuck = (await read(path + ".gateway-lease"))!; assert.notEqual(stuck, swap.leaseBefore, "the crash left the record naming the dead new listener");
+    if (inject === "rename") fault.rename = true; else fault.record = inject === "record-all" ? "all" : "after-first";
+    const failure = await serveUnix(path, new AbortController().signal, echo as never, "0.5.0", undefined, swap.reuse!.replace).then(() => undefined, (error: Error) => error);
+    heal();
+    assert.match(failure?.message ?? "no failure", inject === "rename" ? /injected rename failure/ : /injected record failure/);
+    assert.equal(await inodeOf(path), swap.oldInode, "the public alias did not move"); assert.ok(await answers(path), "the old listener answers");
+    if (inject === "record-all") {
+      // The repair itself could not write: the publish stops before it sweeps, so the evidence is still there for the next bootstrap.
+      assert.equal(await read(path + ".gateway-lease"), stuck, "the record is untouched");
+      assert.equal((await names(swap.dir, ".gw-")).filter(name => name.endsWith(".alias")).length, 1, "the staged link that proves the half-finished swap stays");
+    } else {
+      assert.equal(await read(path + ".gateway-lease"), swap.leaseBefore, "the record names the old listener again, byte for byte");
+      assert.deepEqual((await names(swap.dir, ".gw-")).filter(name => name.endsWith(".alias")), [], "no staged link remains");
+      assert.equal((await names(swap.dir, ".gw-")).length, 1, "only the old listener's bound socket remains");
+    }
+    const next = await reuseSshSocket(path, installed);
+    assert.deepEqual([next.reused, next.replace?.from], [false, "0.4.0"], "the next bootstrap decides to replace the live listener rather than throwing");
+    assert.equal((await reuseSshSocket(path, installed)).replace?.from, "0.4.0", "and keeps deciding the same way");
+    assert.equal(await read(path + ".gateway-lease"), swap.leaseBefore); assert.ok(await answers(path));
+  } finally { heal(); await swap.old.stop(); await swap.folder.remove(); }
+}
+
+const crashed = { skip: process.platform === "win32", timeout: 30000 };
+test("a publish whose rename fails after a crashed swap leaves the old listener repairable", crashed, () => publishOverCrash("rename"));
+test("a publish whose record write fails after a crashed swap keeps the evidence for the next bootstrap", crashed, () => publishOverCrash("record-all"));
+test("a publish whose record write fails after it repaired a crashed swap leaves the repaired record", crashed, () => publishOverCrash("record-after-repair"));
+
+test("a publish that succeeds over a crashed swap records the real previous listener", crashed, async () => {
+  const swap = await interruptedSwap(true); const path = swap.old.path; const controller = new AbortController();
+  try {
+    let replaced: boolean | undefined; let published!: () => void; const ready = new Promise<void>(resolve => { published = resolve; });
+    const serving = serveUnix(path, controller.signal, echo as never, "0.5.0", (_listener, did) => { replaced = did; published(); }, swap.reuse!.replace); serving.catch(() => {});
+    await Promise.race([ready, serving]);
+    assert.equal(replaced, true, "the publish replaced the listener it was told to replace");
+    const lease = JSON.parse((await read(path + ".gateway-lease"))!);
+    assert.equal(lease.release, "0.5.0"); assert.equal(lease.previous?.release, "0.4.0", "previous is the listener that really held the alias");
+    assert.equal(`${lease.previous.device}:${lease.previous.inode}`, swap.oldInode);
+    assert.notEqual(await inodeOf(path), swap.oldInode, "the alias is the new listener's"); assert.ok(await answers(path), "the new listener serves");
+    assert.deepEqual((await names(swap.dir, ".gw-")).filter(name => name.endsWith(".alias")), [], "no staged link remains");
+    assert.deepEqual(await reuseSshSocket(path, installed), { reused: true }, "the new listener is current");
+  } finally { controller.abort(); await swap.old.stop(); await swap.folder.remove(); }
 });
 
 // ---------------------------------------------------------------- D2: a failed publish restores everything
@@ -276,20 +328,94 @@ test("the sweep decides a staged link by its bound socket and never connects to 
   } finally { await folder.remove(); }
 });
 
-test("a fresh bootstrap sweeps crashed bootstraps' leftovers under its publish lock and keeps a live listener's socket", { skip, timeout: 30000 }, async () => {
-  const folder = await shortFolder("gw-sweep-"); const dir = join(folder.directory, "c"); const other = await listener(folder, "0.4.0", "other.sock");
-  const fresh = new AbortController();
+// Short, because the folder `npm test` hands out already takes most of the 103 bytes a socket path may have.
+const managed = ".local/state/gw-ssh/x";
+
+/** Run `body` with `folder` as the home directory, so that a socket under `managed` is an SSH control socket. */
+async function atHome<T>(folder: Folder, body: () => Promise<T>): Promise<T> {
+  const home = process.env.HOME; process.env.HOME = folder.directory;
+  try { return await body(); } finally { if (home === undefined) delete process.env.HOME; else process.env.HOME = home; }
+}
+
+/** Dead leftovers of two crashed bootstraps and a stale record temporary file, beside the alias `path`. */
+async function leftovers(folder: Folder, path: string) {
+  const dir = join(path, ".."); const at = (name: string) => join(dir, name);
+  await deadSocket(folder, [at(".gw-aaaaaaaaaaaa"), at(".gw-aaaaaaaaaaaa.alias")]);
+  await deadSocket(folder, [at(".gw-bbbbbbbbbbbb.alias")]);
+  const temporary = `${path}.gateway-lease.0123456789abcdef.tmp`; await writeFile(temporary, "{", { mode: 0o600 });
+  return { dir, temporary, dead: [".gw-aaaaaaaaaaaa", ".gw-aaaaaaaaaaaa.alias", ".gw-bbbbbbbbbbbb.alias"] };
+}
+
+test("a fresh SSH bootstrap sweeps crashed bootstraps' leftovers under its publish lock and keeps a live listener's socket", { skip, timeout: 30000 }, async () => {
+  const folder = await shortFolder("gw-sweep-"); const sub = managed; const dir = join(folder.directory, sub);
+  const other = await listener(folder, "0.4.0", "other.sock", sub); const fresh = new AbortController();
   try {
-    const otherBound = (await names(dir, ".gw-"))[0]; const at = (name: string) => join(dir, name);
-    await deadSocket(folder, [at(".gw-aaaaaaaaaaaa"), at(".gw-aaaaaaaaaaaa.alias")]);
-    await deadSocket(folder, [at(".gw-bbbbbbbbbbbb.alias")]);
-    const path = at("app-server-control.sock"); const serving = serveUnix(path, fresh.signal, echo as never, "0.5.0"); serving.catch(() => {});
-    for (let i = 0; i < 300 && !await exists(path); i++) await delay(10);
+    const otherBound = (await names(dir, ".gw-"))[0]; const path = join(dir, "a.sock");
+    const left = await leftovers(folder, path);
+    await atHome(folder, async () => {
+      const serving = serveUnix(path, fresh.signal, echo as never, "0.5.0"); serving.catch(() => {});
+      for (let i = 0; i < 300 && !await exists(path); i++) await delay(10);
+    });
     assert.ok(await answers(path), "the new listener serves");
     assert.deepEqual((await names(dir, ".gw-")).filter(name => /^\.gw-[ab]{12}/.test(name)), [], "the crashed bootstraps' leftovers are gone");
-    assert.ok(await exists(at(otherBound)) && await answers(other.path), "the live listener's socket is untouched");
+    assert.equal(await exists(left.temporary), false, "and so is the record's temporary file");
+    assert.ok(await exists(join(dir, otherBound)) && await answers(other.path), "the live listener's socket is untouched");
     assert.equal((await names(dir, ".gw-")).length, 2, "the live listener's and the new listener's bound sockets remain");
   } finally { fresh.abort(); await other.stop(); await folder.remove(); }
+});
+
+test("a replacement sweeps wherever its socket is, and removes a stale record temporary file", { skip, timeout: 30000 }, async () => {
+  const folder = await shortFolder("gw-sweep-"); const old = await listener(folder, "0.4.0"); const controller = new AbortController();
+  try {
+    const left = await leftovers(folder, old.path); const reuse = await reuseSshSocket(old.path, installed); assert.ok(reuse.replace);
+    let published!: () => void; const ready = new Promise<void>(resolve => { published = resolve; });
+    const serving = serveUnix(old.path, controller.signal, echo as never, "0.5.0", () => published(), reuse.replace); serving.catch(() => {});
+    await Promise.race([ready, serving]);
+    for (const name of left.dead) assert.equal(await exists(join(left.dir, name)), false, `${name} was swept`);
+    assert.equal(await exists(left.temporary), false, "the stale record temporary file was swept");
+  } finally { controller.abort(); await old.stop(); await folder.remove(); }
+});
+
+test("a custom listen publish never sweeps", { skip, timeout: 30000 }, async () => {
+  const folder = await shortFolder("gw-sweep-"); const path = join(folder.directory, "c", "custom.sock"); const fresh = new AbortController();
+  try {
+    await mkdir(join(folder.directory, "c"), { recursive: true, mode: 0o700 });
+    const left = await leftovers(folder, path); const before = await names(left.dir, "");
+    const serving = serveUnix(path, fresh.signal, echo as never, "0.5.0"); serving.catch(() => {});
+    for (let i = 0; i < 300 && !await exists(path); i++) await delay(10);
+    assert.ok(await answers(path), "the listener serves");
+    for (const name of [...left.dead, basename(left.temporary)]) assert.ok(await exists(join(left.dir, name)), `${name} is left alone`);
+    const after = await names(left.dir, ""); assert.deepEqual(before.filter(name => !after.includes(name)), [], "nothing that was there went");
+  } finally { fresh.abort(); await folder.remove(); }
+});
+
+test("only a socket under the managed SSH state folder counts as an SSH control socket", { skip }, async () => {
+  const folder = await shortFolder("gw-sweep-");
+  try {
+    await atHome(folder, async () => {
+      assert.equal(isManagedSshSocket(join(folder.directory, managed, "a.sock")), true);
+      for (const outside of [".local/state/gw-ssh", ".local/state/gw-ssh2/x/a.sock", ".local/state/other/a.sock", "c/app-server-control.sock", "../x.sock"])
+        assert.equal(isManagedSshSocket(join(folder.directory, outside)), false, outside);
+    });
+  } finally { await folder.remove(); }
+});
+
+test("the sweep removes stale record temporary files that are regular files of this alias and nothing else", { skip, timeout: 30000 }, async () => {
+  const folder = await shortFolder("gw-sweep-"); const dir = join(folder.directory, "c"); await mkdir(dir, { recursive: true, mode: 0o700 });
+  try {
+    const alias = join(dir, "app-server-control.sock"); const at = (name: string) => join(dir, name);
+    const gone = ["app-server-control.sock.gateway-lease.0123456789abcdef.tmp", "app-server-control.sock.gateway-lease.fedcba9876543210.tmp"];
+    for (const name of gone) await writeFile(at(name), "{", { mode: 0o600 });
+    const kept = ["app-server-control.sock.gateway-lease.0123456789abcde.tmp", "app-server-control.sock.gateway-lease.0123456789ABCDE0.tmp", "app-server-control.sock.gateway-lease.0123456789abcdef.tmp.keep",
+      "other.sock.gateway-lease.0123456789abcdef.tmp", "xapp-server-control.sock.gateway-lease.0123456789abcdef.tmp", "app-server-controlXsock.gateway-lease.0123456789abcdef.tmp"];
+    for (const name of kept) await writeFile(at(name), "{", { mode: 0o600 });
+    await writeFile(at("target"), "keep me"); await symlink(at("target"), at("app-server-control.sock.gateway-lease.1111111111111111.tmp")); kept.push("app-server-control.sock.gateway-lease.1111111111111111.tmp");
+    await mkdir(at("app-server-control.sock.gateway-lease.2222222222222222.tmp")); kept.push("app-server-control.sock.gateway-lease.2222222222222222.tmp");
+    await sweepSshLeftovers(alias);
+    for (const name of gone) assert.equal(await exists(at(name)), false, `${name} was removed`);
+    for (const name of kept) assert.ok(await exists(at(name)), `${name} stays`);
+    assert.equal(await read(at("target")), "keep me", "a symlink's target is never touched");
+  } finally { await folder.remove(); }
 });
 
 test("the sweep keeps a socket whose liveness it could not determine", { skip, timeout: 30000 }, async () => {
