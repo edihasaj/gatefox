@@ -159,6 +159,9 @@ function isNodeBinary(prefix: string): boolean {
   if (!tokens.length) return false;
   if (tokens.some(token => token.startsWith("-"))) return false;
   if (tokens.length > 1 && !tokens[0]!.startsWith("/")) return false;
+  // A later word that starts with "/" is a new argument, not the rest of a node path with spaces
+  // (`/usr/bin/time /opt/node/bin/node ...`): the program is then the wrapper, never node.
+  if (tokens.slice(1).some(token => token.startsWith("/"))) return false;
   return /^(?:node|nodejs)[0-9._-]*$/i.test(basename(tokens[tokens.length - 1]!));
 }
 

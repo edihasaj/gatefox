@@ -164,9 +164,11 @@ running the command never adds a row.
 
 A command line is only read where the program sits: at argv[0], or at argv[1]
 behind a node interpreter for the CLI script. A wrapper that merely mentions
-one of our paths inside a quoted string (`zsh -c node .../current/package/dist
-/cli.js serve`), another product's `releases/` folder, or one of our paths used
-as an argument, runs none of ours and is left out. The install root is matched
+one of our paths inside a quoted string
+(`zsh -c node .../current/package/dist/cli.js serve`), a wrapper program such as
+`/usr/bin/time` that starts node, another product's `releases/` folder, or one
+of our paths used as an argument, runs none of ours and is left out. Short-lived
+helper scripts a request starts (such as the Claude tool helper) are not listed. The install root is matched
 both as written and with its links resolved, so a tree reached through a
 symlink is still recognized.
 
@@ -175,8 +177,8 @@ place keeps the node runtime it started with mapped, so `lsof` names the
 release it started from rather than the code it serves. There the health
 endpoint answers instead, and its `X-Gateway-Release` header wins: the command
 asks `lsof` which loopback ports the process listens on, and sends one
-`GET http://127.0.0.1:PORT/health` with a two second timeout for each of them,
-lowest port first. The port comes from the process's own listening socket,
+`GET http://127.0.0.1:PORT/health` with a two second timeout to each in turn,
+lowest port first, until one answers. The port comes from the process's own listening socket,
 never from its arguments, so a server started with a quoted configuration path
 and no `--port` is still found. When nothing answers, the report falls back to
 the mapped release. Those requests are the only thing here that leaves the

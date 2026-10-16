@@ -125,6 +125,9 @@ test("a command line is judged by the program it runs, not by what it mentions",
     `${node} /usr/local/bin/other-tool ${current()} daemon`,
     // A helper binary named by a wrapper rather than executed by it.
     `/bin/zsh -c ${root}/releases/0.4.1/package/gateway-sdk/gateway-codex app-server`,
+    // A wrapper program given by absolute path that runs node: the process is the wrapper.
+    `/usr/bin/time ${node} ${current()} serve`,
+    `/usr/bin/caffeinate -i ${node} ${current()} daemon`,
   ];
   for (const command of ignored) assert.equal(classifyCommand(command, scope), undefined, command);
 });
