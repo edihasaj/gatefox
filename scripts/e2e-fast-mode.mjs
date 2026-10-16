@@ -20,7 +20,8 @@ assert.ok(root !== resolve(homedir(), '.codex') && !root.startsWith(resolve(home
 const transports = v.transports.split(','); assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
-assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
+// The native engine is the app's own signed CLI, whatever version the app ships; gateway chats run the package's pinned SDK.
+assert.match(sdkVersion, /^codex-cli \d+\.\d+\.\d+/);
 const { WebSocket } = createRequire(join(resolve(v.package), 'package.json'))('ws');
 await mkdir(root, { recursive: true, mode: 0o700 });
 // macOS Unix socket names have a small limit; keep the private fixture path short.
@@ -214,6 +215,15 @@ try {
     executorHost = await host(); ({ listener, client } = await open());
     await client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work, serviceTier: null });
     await invoke(client, fast.thread.id, transport + '-cold-resume-null-standard', null, {}, 'default');
+    // ChatGPT 26.1013 picks features by the native engine's version and sends 0.163-only tables to every chat. A gateway chat's
+    // older pinned SDK rejected the whole configuration ("invalid type: map, expected a boolean in `features`") until 0.4.2.
+    await client.close(); await stop(listener); await stop(executorHost);
+    executorHost = await host(); ({ listener, client } = await open());
+    await client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work, serviceTier: null,
+      config: { 'features.async_compaction': { enabled: true, threshold: 3 }, 'features.multi_agent_v2.preserve_fork_prefix': true } });
+    await invoke(client, fast.thread.id, transport + '-cold-resume-newer-feature-tables', null, {}, 'default');
+    const featured = await start({ serviceTier: null, config: { features: { async_compaction: { mode: 'remote' }, multi_agent_v2: { enabled: true, preserve_fork_prefix: true } } } });
+    await invoke(client, featured.thread.id, transport + '-start-newer-feature-tables', null, {}, 'default');
     assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), nativeConfig);
     assert.equal(await access(join(home, 'auth.json')).then(() => true, () => false), false);
     await client.close(); await stop(listener); await stop(executorHost);
