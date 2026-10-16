@@ -14,6 +14,9 @@ import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { sdkSocketTarget, socketIdentity } from "../execution-host-storage.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-execution-")); const configPath = join(directory, "gateway.json");

@@ -1,8 +1,10 @@
 import { open, readFile, lstat, unlink, type FileHandle } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { ownerAlive, processStartedAfter } from "./boot-identity.js";
 
 /** Serialize small private-file updates across adapter processes. */
 export const lockBusyCode = "ELOCKBUSY";
+const held = new Set<string>();
 export async function withPrivateFileLock<T>(path: string, operation: () => Promise<T>, timeoutMs = 5000): Promise<T> {
   const lock = `${path}.lock`; const deadline = Date.now() + timeoutMs;
   let file: FileHandle;
@@ -21,11 +23,10 @@ export async function withPrivateFileLock<T>(path: string, operation: () => Prom
       if (!info) continue;
       if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077) || info.size > 32) throw new Error("Private preference lock is invalid");
       const pid = Number(await readFile(lock, "utf8").catch(() => "0"));
+      // The same rule as an ownership receipt: an owner is only alive if this boot can still have it.
       let abandoned = false;
-      if (Number.isSafeInteger(pid) && pid > 0) {
-        try { process.kill(pid, 0); }
-        catch (error) { abandoned = (error as NodeJS.ErrnoException).code === "ESRCH"; }
-      } else abandoned = Date.now() - info.mtimeMs > 5000;
+      if (Number.isSafeInteger(pid) && pid > 0) abandoned = !(await lockOwnerAlive(pid, lock, info.mtimeMs));
+      else abandoned = Math.abs(Date.now() - info.mtimeMs) > 5000;
       if (abandoned) {
         const current = await lstat(lock).catch(() => undefined);
         if (current?.ino === info.ino && current.dev === info.dev) await unlink(lock).catch(error => {
@@ -37,6 +38,14 @@ export async function withPrivateFileLock<T>(path: string, operation: () => Prom
       await delay(25);
     }
   }
+  held.add(lock);
   try { return await operation(); }
-  finally { await file.close(); await unlink(lock); }
+  finally { held.delete(lock); await file.close(); await unlink(lock); }
+}
+
+/** A lock is held by this process only while it is inside `held`; any other name of our pid is a leftover. */
+async function lockOwnerAlive(pid: number, lock: string, mtimeMs: number): Promise<boolean> {
+  if (pid === process.pid) return held.has(lock); // Our own pid: only a lock this process still holds is held.
+  if (!(await ownerAlive({ pid }, mtimeMs))) return false;
+  return !(await processStartedAfter(pid, mtimeMs));
 }

@@ -1,15 +1,20 @@
 import { lstat, mkdir, rename } from "node:fs/promises";
 import { resolve } from "node:path";
-import { executionHostHome, readOwner, livePid, removeOwnedSocket, type HostIdentity } from "./execution-host-storage.js";
+import { executionHostHome, readOwnerRecord, receiptPidAlive, removeOwnedSocket, type HostIdentity } from "./execution-host-storage.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
-import { nativeHomeOwnerPath, readNativeHomeOwner } from "./native-execution-host-storage.js";
+import { nativeHomeOwnerPath, readNativeHomeOwner, readNativeHomeOwnerRecord } from "./native-execution-host-storage.js";
+
+/** A receipt's pid is only proof while this boot can still own it. */
+async function writerAlive(pid: number, bootId: string | undefined, startedAtMs: number | undefined, mtimeMs: number): Promise<boolean> {
+  return pid > 0 && await receiptPidAlive({ pid, ...(bootId ? { bootId } : {}), ...(startedAtMs !== undefined ? { startedAtMs } : {}) }, mtimeMs);
+}
 
 /** Legacy fallback returns only after every managed writer is proven stopped. */
 export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity, "version" | "managed" | "socketPath">, backup: string): Promise<string | undefined> {
   const home = executionHostHome(identity.configPath, identity.nativeHome); const receipt = resolve(home, "owner.json");
   const present = await lstat(receipt).catch(error => { if (error.code === "ENOENT") return; throw error; });
-  const nativeReceipt = await readNativeHomeOwner(identity.nativeHome);
-  if (nativeReceipt && (livePid(nativeReceipt.hostPid) || livePid(nativeReceipt.pid) || nativeReceipt.state !== "stopped" || nativeReceipt.sdkState !== "stopped")) {
+  const native = await readNativeHomeOwnerRecord(identity.nativeHome); const nativeReceipt = native.owner;
+  if (nativeReceipt && ((await writerAlive(nativeReceipt.hostPid, nativeReceipt.bootId, nativeReceipt.startedAtMs, native.mtimeMs)) || await writerAlive(nativeReceipt.pid, nativeReceipt.sdkBootId, nativeReceipt.sdkStartedAtMs, native.mtimeMs) || nativeReceipt.state !== "stopped" || nativeReceipt.sdkState !== "stopped")) {
     throw new Error("Native execution ownership is not fully stopped; legacy writers were preserved");
   }
   if (!present) {
@@ -17,12 +22,12 @@ export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity
     return;
   }
   return withPrivateFileLock(receipt, async () => {
-    const owner = await readOwner(receipt); if (!owner) return;
+    const stored = await readOwnerRecord(receipt); const owner = stored.owner; if (!owner) return;
     for (const key of ["configPath", "nativeHome", "codex", "sdkSha256"] as const) if (owner[key] !== identity[key]) throw new Error("Execution rollback ownership does not match this migration; it was preserved");
     if (owner.socketPath !== resolve(home, "host.sock") || owner.state !== "stopped" || owner.pid !== 0) throw new Error("Execution host must be fully stopped before restoring legacy writers");
     for (const engine of owner.generations) {
       if (!engine || !/^[a-f0-9]{64}$/.test(engine.revision) || !Number.isSafeInteger(engine.pid) || engine.pid < 0 || engine.socketPath !== resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) throw new Error("Execution rollback generation identity is invalid; it was preserved");
-      if (livePid(engine.pid)) throw new Error("A managed execution writer is still live; rollback preserved it");
+      if (await receiptPidAlive(engine, stored.mtimeMs)) throw new Error("A managed execution writer is still live; rollback preserved it");
       await removeOwnedSocket(engine.socketPath, engine.socket);
     }
     const archiveNative = async () => {
@@ -35,7 +40,7 @@ export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity
       }
       if (current.socketPath !== resolve(home, "native.sock")) throw new Error("Native execution rollback socket identity changed; it was preserved");
       if (owner.native) {
-        if (livePid(owner.native.pid) || owner.native.socketPath !== current.socketPath || current.revision !== owner.native.revision) throw new Error("A native SDK writer is still live or unconfirmed; rollback preserved it");
+        if (await receiptPidAlive(owner.native, stored.mtimeMs) || owner.native.socketPath !== current.socketPath || current.revision !== owner.native.revision) throw new Error("A native SDK writer is still live or unconfirmed; rollback preserved it");
         await removeOwnedSocket(owner.native.socketPath, owner.native.socket);
       } else if (current.revision !== undefined) throw new Error("Native execution rollback revision is unconfirmed; it was preserved");
       const target = resolve(backup, "native-execution-owner.json");

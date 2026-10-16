@@ -18,6 +18,9 @@ import { sdkIdentity } from "../execution-host-storage.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { externalLegacyWriters } from "../service-legacy-writers.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-shared-")); const state = join(directory, "state"); const nativeHome = join(directory, "native");

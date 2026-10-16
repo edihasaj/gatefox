@@ -1,14 +1,20 @@
-import { realpath } from "node:fs/promises";
+import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { executionHostHome, executionCapabilities, livePid, readOwner, socketIdentity, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
+import { executionHostHome, executionCapabilities, readOwnerRecord, receiptPidAlive, socketIdentity, socketAnswers, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
-import { readNativeHomeOwner } from "./native-execution-host-storage.js";
+import { readNativeHomeOwner, readNativeHomeOwnerRecord } from "./native-execution-host-storage.js";
 import { acquireNativeCompatible } from "./native-execution-compat.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
+/** A receipt left by an owner that is gone must not look alive: its pid alone is not proof. */
+async function ownerMtime(home: string): Promise<number> { return (await lstat(resolve(home, "owner.json")).catch(() => undefined))?.mtimeMs ?? Number.POSITIVE_INFINITY; }
+async function receiptAlive(record: { pid: number; bootId?: string; startedAtMs?: number; socketPath?: string }, mtimeMs: number): Promise<boolean> {
+  if (record.pid > 0 && await receiptPidAlive(record, mtimeMs)) return true;
+  return record.socketPath !== undefined && await socketAnswers(record.socketPath);
+}
 
 /** One control connection keeps its generation leases until the adapter closes. */
 export class ExecutionHostClient {
@@ -16,17 +22,19 @@ export class ExecutionHostClient {
   private constructor(private readonly home: string, socketPath: string, readonly capabilities: readonly ExecutionCapability[]) { this.connection = new SocketAppServerConnection(socketPath, async () => {}); }
   get closed(): boolean { return this.connection.closed; }
   static async assertNativeUnowned(configPath: string | undefined, nativeHome: string): Promise<void> {
-    const homeOwner = await readNativeHomeOwner(nativeHome);
     const blocked = () => { throw Object.assign(new Error("A managed shared native executor still owns this native home. Finish the sharing-mode migration before reconnecting; its chats were preserved."), { code: -32001 }); };
-    if (homeOwner && (livePid(homeOwner.hostPid) || livePid(homeOwner.pid) || (homeOwner.state === "running" && homeOwner.sdkState === "starting"))) blocked();
+    const stored = await readNativeHomeOwnerRecord(nativeHome);
+    if (stored.owner && (await receiptAlive(stored.owner, stored.mtimeMs)
+      || await receiptAlive({ pid: stored.owner.pid, socketPath: stored.owner.socketPath, ...(stored.owner.sdkBootId ? { bootId: stored.owner.sdkBootId } : {}), ...(stored.owner.sdkStartedAtMs !== undefined ? { startedAtMs: stored.owner.sdkStartedAtMs } : {}) }, stored.mtimeMs)
+      || (stored.owner.state === "running" && stored.owner.sdkState === "starting" && await receiptPidAlive({ pid: stored.owner.hostPid, ...(stored.owner.bootId ? { bootId: stored.owner.bootId } : {}) }, stored.mtimeMs)))) blocked();
     if (!configPath) return;
-    const owner = await readOwner(resolve(executionHostHome(configPath, nativeHome), "owner.json"));
-    if (owner && owner.configPath === resolve(configPath) && owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.capabilities).includes("native")
-      && (livePid(owner.pid) || livePid(owner.native?.pid || 0))) blocked();
+    const owner = await readOwnerRecord(resolve(executionHostHome(configPath, nativeHome), "owner.json"));
+    if (owner.owner && owner.owner.configPath === resolve(configPath) && owner.owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.owner.capabilities).includes("native")
+      && (await receiptAlive(owner.owner, owner.mtimeMs) || (owner.owner.native ? await receiptAlive(owner.owner.native, owner.mtimeMs) : false))) blocked();
   }
   static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false): Promise<ExecutionHostClient | undefined> {
     const home = executionHostHome(configPath, nativeHome);
-    const owner = await readOwner(resolve(home, "owner.json"));
+    const receipt = await readOwnerRecord(resolve(home, "owner.json")); const owner = receipt.owner; const receiptMtime = receipt.mtimeMs;
     if (!owner) {
       if (required) throw new Error(`Shared ${capability} executor host is unavailable; check gateway service status`);
       return;
@@ -38,7 +46,7 @@ export class ExecutionHostClient {
     }
     const socketPath = resolve(home, "host.sock");
     if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.codex !== await realpath(codex) || owner.socketPath !== socketPath) throw new Error("Shared executor ownership does not match this adapter");
-    if (owner.state !== "running" || !livePid(owner.pid)) throw new Error("Shared executor host is unavailable; check gateway service status");
+    if (owner.state !== "running" || !(await receiptPidAlive(owner, receiptMtime))) throw new Error("Shared executor host is unavailable; check gateway service status");
     const socket = await socketIdentity(socketPath);
     if (!socket || !owner.socket || !sameSocketIdentity(owner.socket, socket)) throw new Error("Shared executor socket ownership changed; it was preserved");
     const client = new ExecutionHostClient(home, socketPath, capabilities);
@@ -61,8 +69,9 @@ export class ExecutionHostClient {
   }
   async release(revision: string): Promise<void> { await this.connection.request("execution/release", { revision }); }
   private async codeModeAlreadyEnabled(): Promise<boolean> {
-    const owner = await readOwner(resolve(this.home, "owner.json")); const native = owner?.native;
-    if (owner?.state !== "running" || !native || !livePid(native.pid) || native.socketPath !== resolve(this.home, "native.sock")) return false;
+    const receipt = await readOwnerRecord(resolve(this.home, "owner.json")); const native = receipt.owner?.native;
+    if (receipt.owner?.state !== "running" || !native || native.socketPath !== resolve(this.home, "native.sock")) return false;
+    if (!(await receiptAlive(native, receipt.mtimeMs))) return false;
     const socket = await socketIdentity(native.socketPath);
     if (!socket || !native.socket || !sameSocketIdentity(socket, native.socket)) return false;
     const admin = new SocketAppServerConnection(native.socketPath, async () => {}); let timer: NodeJS.Timeout | undefined;

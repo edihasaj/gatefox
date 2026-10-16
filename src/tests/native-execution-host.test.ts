@@ -14,6 +14,9 @@ import type { Message } from "../app-server-connection.js";
 import type { GatewayConfig } from "../config.js";
 import { verifyNativeSdk } from "../native-execution-host-sdk.js";
 import { writePrivateJson } from "../config.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function until(check: () => boolean | Promise<boolean>): Promise<void> {
   for (let index = 0; index < 200; index++) { if (await check()) return; await delay(10); }

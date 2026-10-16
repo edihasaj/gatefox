@@ -22,12 +22,19 @@ const maxFrame = 4 * 1024 * 1024;
 export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
-  const sdk = await sdkIdentity(options.codex);
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
   if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !requested.includes("native")) throw new Error("Execution host native relay ownership is invalid");
   // Generations run this release's pinned gateway SDK, so that is the binary to pin. Without one (older layouts) they spawn the app's codex.
   // A runtime that cannot be resolved (a damaged install) falls back to pinning the app's codex, as releases before 0.4.3 did.
   const runtime = requested.includes("gateway") ? await resolveRuntime().catch(() => undefined) : undefined;
+  // A gateway-only host runs its own pinned runtime, so an app that was updated or uninstalled must not stop it from starting.
+  // Its receipt then names that runtime instead of a binary nothing checks, and the runtime checksum below stays the guard.
+  let sdk: { codex: string; sdkSha256: string };
+  try { sdk = await sdkIdentity(options.codex); }
+  catch (error) {
+    if (!runtime || requested.includes("native")) throw error;
+    sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
+  }
   await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {

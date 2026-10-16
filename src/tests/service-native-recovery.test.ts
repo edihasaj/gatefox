@@ -7,6 +7,9 @@ import { executionHostHome, executionHostMarker, type HostOwner } from "../execu
 import { nativeHomeOwnerPath, type NativeHomeOwner } from "../native-execution-host-storage.js";
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
 import { writePrivateJson } from "../config.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-native-recovery-"));

@@ -6,15 +6,17 @@ import { once } from "node:events";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, socketIdentity } from "../execution-host-storage.js";
+import { removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketIdentity } from "../execution-host-storage.js";
 
 async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), "gw-sdk-link-"));
+  // The rendezvous is a machine-wide fixed folder: a run only ever uses a short folder of its own.
+  const directory = await mkdtemp(join(tmpdir(), "gwt-sdk-"));
+  const root = join(directory, "r");
+  await mkdir(root, { mode: 0o700 }); setSdkSocketRootForTests(root);
   const path = join(directory, "engine.sock"); const target = await sdkSocketTarget(path);
-  await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
-  const root = await lstat(dirname(target));
-  assert.equal(root.uid, process.getuid?.()); assert.equal(root.mode & 0o777, 0o700);
-  return { directory, path, target, clean: async () => { await rm(directory, { recursive: true, force: true }); await rm(target, { force: true }); } };
+  const info = await lstat(dirname(target));
+  assert.equal(info.uid, process.getuid?.()); assert.equal(info.mode & 0o777, 0o700);
+  return { directory, path, target, clean: async () => { setSdkSocketRootForTests(); await rm(directory, { recursive: true, force: true }); } };
 }
 async function childSocket(path: string): Promise<ChildProcess> {
   const child = spawn(process.execPath, ["-e", "const fs=require('node:fs');require('node:net').createServer().listen(process.argv[1],()=>{fs.chmodSync(process.argv[1],0o600);console.log('ready')})", path], { stdio: ["ignore", "pipe", "ignore"] });

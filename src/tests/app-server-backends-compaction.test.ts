@@ -4,6 +4,9 @@ import { compactionSdkFixture, largeModel, smallModel, until } from "./compactio
 import type { Message } from "../app-server-connection.js";
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 const sent = { input: [{ type: "text", text: "caller message remains unchanged" }], effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/fixture"] } };
 

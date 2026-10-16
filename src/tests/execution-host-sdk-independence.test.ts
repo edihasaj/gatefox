@@ -12,6 +12,9 @@ import { readNativeHomeOwner, nativeHomeOwnerPath } from "../native-execution-ho
 import type { GatewayConfig } from "../config.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 // The app's native codex may be any version; the gateway runtime is the pinned fixture SDK that generations really run.
 const pinned = "codex-cli 0.162.0-alpha.17.2";

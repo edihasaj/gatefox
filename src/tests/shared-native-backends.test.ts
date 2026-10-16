@@ -16,6 +16,9 @@ import { executionHostHome, executionHostMarker, sdkIdentity, socketIdentity } f
 import type { ExecutionHostClient } from "../execution-host-client.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 400; attempt++) { if (check()) return; await delay(5); }

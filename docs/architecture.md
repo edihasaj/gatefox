@@ -108,6 +108,23 @@ The execution host belongs to the unified service and owns its SDK children. The
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 
+An owner is dead when its receipt belongs to an earlier boot, when every process
+it names is gone in this boot, or when its receipt cannot be read and none of the
+sockets it could name answers a connect. A live process or an answering socket
+keeps the owner alive and its chats protected. A dead owner never blocks a start:
+its claim removes the socket links that are safe to remove, moves the old receipt
+aside under the host folder's `stale/` directory, and records one
+`execution_owner_reclaimed` event with the scope and the reason. Receipts written
+before this boot stamp are judged by their file time. A receipt naming the very
+process that is claiming is its own leftover from an attempt that never finished,
+so it is dead, and the claim goes on to take the home.
+
+A native launch that a dead host recorded as `starting` may have left an SDK
+child that is still coming up. Its receipt is reclaimed only when it is from an
+earlier boot, or when it is older than 60 seconds and nothing answers a connect
+at the native socket or its SDK target. Until then the claim is refused as
+unconfirmed, so two writers never share a chat.
+
 The host pins the binary its gateway generations actually run: the release's own
 gateway SDK (`gateway-sdk/gateway-codex`, 0.162.0-alpha.17.2), not the app's
 native engine. An app update therefore neither stops the host from starting nor
