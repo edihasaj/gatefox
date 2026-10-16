@@ -138,7 +138,7 @@ test("combined native catalogs do not duplicate gateway rows", async () => {
 });
 
 
-test("native model choices are saved separately and all other native config writes are blocked", async () => {
+test("gateway defaults stay private and every other config write reaches the native engine", async () => {
   const { router, calls, directory } = await fixture();
   await router.request("config/batchWrite", { edits: [{ keyPath: "model", value: "native", mergeStrategy: "upsert" }, { keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" }] });
   assert.equal(calls.length, 0);
@@ -147,8 +147,10 @@ test("native model choices are saved separately and all other native config writ
   assert.equal(calls.at(-1)!.params.model, "native");
   assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "high");
   const count = calls.length;
-  await assert.rejects(router.request("config/value/write", { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" }), /managed separately/);
-  assert.equal(calls.length, count);
+  const params = { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" };
+  await router.request("config/value/write", params);
+  assert.deepEqual(calls.slice(count), [{ method: "config/value/write", params }], "the native write is forwarded exactly as the caller sent it");
+  assert.equal(JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8")).model, "native", "a native write saves no gateway default");
 });
 
 test("independent desktop connections refresh reasoning preferences and preserve unrelated writes", async () => {
@@ -210,7 +212,7 @@ test("desktop reasoning display writes persist without selecting a gateway model
   assert.deepEqual(read.desktop, { nativeOnly: true, "enabled-reasoning-efforts": efforts, "show-ultra-in-model-picker-slider": true });
 });
 
-test("desktop preference writes merge across connections and reject mixed native changes atomically", async () => {
+test("desktop preference writes merge across connections and a mixed batch saves only after its native part is allowed", async () => {
   const { router, config, directory, backend } = await fixture();
   const other = new AppServerRouter(config, backend); await other.initialize();
   await Promise.all([
@@ -221,13 +223,18 @@ test("desktop preference writes merge across connections and reject mixed native
   const before = await readFile(path, "utf8");
   const saved = JSON.parse(before);
   assert.deepEqual(saved.desktop, { "enabled-reasoning-efforts": ["high", "max"], "show-ultra-in-model-picker-slider": true });
-  await assert.rejects(router.request("config/batchWrite", { edits: [
+  await router.request("config/batchWrite", { edits: [
     { keyPath: "desktop.enabled-reasoning-efforts", value: ["low"], mergeStrategy: "replace" },
     { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" },
-  ] }), /native configuration/);
-  assert.equal(await readFile(path, "utf8"), before);
+  ] });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true });
+  await assert.rejects(router.request("config/batchWrite", { edits: [
+    { keyPath: "desktop.enabled-reasoning-efforts", value: ["medium"], mergeStrategy: "replace" },
+    { keyPath: "model_providers.subscription_gateway.base_url", value: "http://127.0.0.1:3457/v1", mergeStrategy: "upsert" },
+  ] }), /cannot be saved into native Codex configuration/);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true }, "a refused mixed batch saves nothing");
   await assert.rejects(router.request("config/value/write", { keyPath: "desktop.enabled-reasoning-efforts", value: ["bogus"], mergeStrategy: "replace" }), /unsupported value/);
-  assert.equal(await readFile(path, "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true });
 });
 
 test("model list defaults follow valid private choices while native defaults remain intact otherwise", async () => {

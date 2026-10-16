@@ -98,21 +98,43 @@ preflight. It removes the legacy hooks alias without overriding the native
 `hooks` setting while reading that base. Normal inference arguments then apply
 the compatible alias only when no explicit current setting exists. Shared
 execution hosts enforce the same normalization before spawning their SDK,
-including requests from older adapters. Native configuration files are unchanged.
+including requests from older adapters. This normalization rewrites no
+native configuration file.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
-the gateway state directory. Model, effort, summary, and service-tier writes are
-scoped to that file for both gateway and native model choices. String `replace` and
-`upsert` operations are supported. Writes into native profiles, native version
-guards, and batches mixing native changes with gateway defaults are rejected.
-All other configuration writes are rejected, including the legacy whole-config
-write. Obsidian-managed native settings remain the source of truth.
+the gateway state directory. Model, effort, summary, speed (service tier), and
+`desktop.*` writes are scoped to that file for both gateway and native model
+choices, and they require string values with a `replace` or `upsert` merge
+strategy. Every other key belongs to the caller's native configuration, which
+`config/value/write` and `config/batchWrite` forward to the native engine
+unchanged: same method, same params, with `filePath`, `expectedVersion`,
+`reloadUserConfig`, and `mergeStrategy` passed through, and the engine's result
+or error returned as-is. The app writes those keys the same way without the
+gateway, so a setting changed in ChatGPT still reaches its own configuration.
+The adapter itself never writes native configuration on its own initiative.
+
+A whole request is refused, before anything is written or forwarded, when a
+native edit would store gateway identity in native configuration:
+
+| Refused native edit | Error |
+| --- | --- |
+| A `*.model` key set to a gateway alias | Gateway defaults cannot be saved into a native Codex profile |
+| `model_provider`, or any `.model_provider` key, set to `subscription_gateway`; `model_providers.subscription_gateway` or any key below it | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A value that anywhere holds a gateway alias under `model`, that provider under `model_provider`, or that provider as a key of `model_providers`. Values are searched through objects and arrays to a depth of 64, and a deeper value is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| Any native edit in a request whose `filePath` is the gateway preference file | Native configuration changes cannot target the gateway preference file |
+
+A batch that mixes both kinds first checks every gateway-default rule, then
+sends the native edits to the engine in their original order, and saves the
+private file only after that write succeeds. A native write that fails returns
+its own error and saves nothing, and an invalid private part forwards nothing.
+The caller receives the engine's result either way. The legacy whole-config
+`config/write` stays refused.
 
 The current app also saves its display settings through `desktop.*` configuration
 writes. The adapter validates supported display fields and stores them in that
 same private preference file. It merges them over native desktop defaults when
 the app reads settings. This allows Max and Ultra display choices to survive
-restart without writing the Obsidian-managed file. Pending desktop migration
+restart in the private file instead of a native one. Pending desktop migration
 batches are validated before any preference changes are saved.
 
 Each adapter connection rereads private preferences when reading settings or
@@ -184,7 +206,7 @@ open or quit the app. Registration refuses an unrelated existing CLI override an
 clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` that an older gateway set.
 `gateway desktop unregister` removes its own overrides.
 This keeps normal Dock launches configured after initial activation without
-editing the Obsidian-managed native configuration.
+editing native configuration.
 
 The client owns chat naming. The adapter forwards native `thread/name/set`,
 saved-title reads, and live name notifications; it adds no title tool or naming
