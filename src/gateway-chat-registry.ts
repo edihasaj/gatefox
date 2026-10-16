@@ -23,7 +23,7 @@ const originNames = new Set<string>(["start", "fork", "started", "subagent"]);
 const message = "Gateway chat registry is invalid or unsafe";
 /** A caller, or a place on disk, the registry will not work with. Nothing here says the file's content is bad. */
 const refused = () => new Error(message);
-/** The file's own content cannot be trusted: not UTF-8 or JSON, the wrong shape, mode, owner or size, or a link. Read as empty, and a record sets it aside. */
+/** The file's own content cannot be trusted: not UTF-8 or JSON, the wrong shape, owner or size, or a link. Read as empty, and a record sets it aside. */
 class UnreadableContent extends Error { constructor() { super(message); } }
 const invalid = () => new UnreadableContent();
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -53,8 +53,12 @@ function makeRoom(chats: Map<string, GatewayChat>, keep: string, cap: number): G
   return [...others.slice(dropped), list.find(chat => chat.id === keep)!].sort(byStamp);
 }
 
-/** What one read of the registry file found. `bad` means the file is there but its content cannot be trusted; it reads as empty. */
-interface Loaded { key: string; chats: Map<string, GatewayChat>; bad: boolean; ids?: Set<string> }
+/**
+ * What one read of the registry file found. `bad` means the file is there but cannot be trusted, and it reads as empty:
+ * `"content"` is a file this class would not have written (set aside by a record), while `"mode"` is a regular file of ours
+ * whose permission bits drifted from 0600 (copied without permissions, chmodded) and which a record repairs in place.
+ */
+interface Loaded { key: string; chats: Map<string, GatewayChat>; bad: false | "content" | "mode"; ids?: Set<string> }
 /** The stamp of a registry file that does not exist yet. */
 const absent = "absent";
 const code = (error: unknown) => (error as NodeJS.ErrnoException).code;
@@ -74,10 +78,13 @@ async function writeCompact(path: string, value: unknown): Promise<void> {
  * a prompt, or a tool argument. One file per native home, so a second Codex installation keeps its own list.
  *
  * Reads are cached per instance and keyed by the file's identity (device, inode, size, change and modify times), so a
- * lookup costs one `lstat` unless some writer, here or in another process, replaced the file. A file whose content is bad
- * reads as empty and is set aside as `<scope>.json.unreadable` (one copy) by the next record. A file that cannot be read for
- * any other reason (permissions, descriptor limits, I/O errors) reads as empty too, but a record then throws and writes
- * nothing, so a passing fault never costs the list.
+ * lookup costs two `lstat` calls (the folder, then the file) unless some writer, here or in another process, replaced the
+ * file. A file whose content is bad reads as empty and is set aside as `<scope>.json.unreadable` (one copy) by the next
+ * record. A regular file of ours whose mode alone drifted from 0600 (say it was copied to 0644 or chmodded to 0400) is not
+ * bad content: readers report it unreadable and see nothing until a record, inside the lock, chmods it back to 0600 through
+ * the opened file, re-reads it, and merges as usual, so no entry is lost. A file that cannot be read for any other reason
+ * (permissions that forbid even opening it, descriptor limits, I/O errors) reads as empty too, but a record then throws and
+ * writes nothing, so a passing fault never costs the list.
  */
 export class GatewayChatRegistry {
   private readonly directory: string;
@@ -108,7 +115,7 @@ export class GatewayChatRegistry {
     }
     await this.checkDirectory();
   }
-  /** Who the file is right now, from one `lstat`. A missing file or folder is `absent`; any other failure is the caller's to handle. */
+  /** Who the file is right now, from the folder check and one `lstat` of the file. A missing file or folder is `absent`; any other failure is the caller's to handle. */
   private async stamp(): Promise<string> {
     try {
       await this.checkDirectory();
@@ -123,11 +130,11 @@ export class GatewayChatRegistry {
   private async read(): Promise<Loaded> {
     const key = await this.stamp();
     if (this.cache?.key === key) return this.cache;
-    const loaded = key === absent ? { key, chats: new Map<string, GatewayChat>(), bad: false } : await this.parse(key);
+    const loaded: Loaded = key === absent ? { key, chats: new Map<string, GatewayChat>(), bad: false } : await this.parse(key);
     return (this.cache = loaded);
   }
   private async parse(key: string): Promise<Loaded> {
-    const bad = (): Loaded => ({ key, chats: new Map(), bad: true });
+    const bad = (reason: "content" | "mode" = "content"): Loaded => ({ key, chats: new Map(), bad: reason });
     let file;
     try { file = await this.opener(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0)); }
     catch (error) {
@@ -137,7 +144,9 @@ export class GatewayChatRegistry {
     }
     try {
       const info = await file.stat();
-      if (!info.isFile() || info.size > maxBytes || (process.platform !== "win32" && (info.uid !== process.getuid?.() || (info.mode & 0o7777) !== 0o600))) return bad();
+      if (!info.isFile() || info.size > maxBytes || (process.platform !== "win32" && info.uid !== process.getuid?.())) return bad();
+      // Mode alone is not the content's fault: it is reported as its own case so a record can repair it instead of discarding the list.
+      if (process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) return bad("mode");
       // One extra byte detects growth without allowing an unbounded allocation or read.
       const bytes = Buffer.alloc(info.size + 1); let length = 0;
       while (length < bytes.length) {
@@ -149,6 +158,20 @@ export class GatewayChatRegistry {
       try { return { key, chats: snapshot(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length)))), bad: false }; }
       catch { return bad(); }
     } finally { await file.close(); }
+  }
+  /**
+   * Puts the file's mode back to 0600. It works on the opened file, never the path, so a link swapped in meanwhile is not
+   * followed, and only a regular file of ours is touched. A file that vanished or became a link is left for the re-read to judge.
+   */
+  private async repairMode(): Promise<void> {
+    let file;
+    try { file = await this.opener(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0)); }
+    catch (error) { if (code(error) === "ENOENT" || code(error) === "ELOOP") return; throw error; }
+    try {
+      const info = await file.stat();
+      if (info.isFile() && info.uid === process.getuid?.()) await file.chmod(0o600);
+    } finally { await file.close(); }
+    this.cache = undefined;
   }
   /** What a reader sees: the file's chats, or nothing at all when it cannot be trusted or read, reported once. */
   private async view(): Promise<Loaded> {
@@ -178,7 +201,14 @@ export class GatewayChatRegistry {
       const where = await lstat(this.path).catch(() => undefined);
       if (where && !where.isFile() && !where.isSymbolicLink()) throw refused();
       // A read that fails for any reason but the file's content ends the record here: nothing is overwritten on a guess.
-      const loaded = await this.read();
+      let loaded = await this.read();
+      if (loaded.bad === "mode") {
+        // Only the permission bits drifted: restore them and read again, so the entries are merged and not discarded.
+        await this.repairMode();
+        loaded = await this.read();
+        // A mode that is still wrong was changed again under the lock; refuse rather than guess.
+        if (loaded.bad === "mode") throw refused();
+      }
       let chats = new Map(loaded.chats);
       if (loaded.bad) {
         this.report();
@@ -191,7 +221,7 @@ export class GatewayChatRegistry {
       const list = makeRoom(chats, id, this.cap);
       await writeCompact(this.path, { version: 1, chats: list });
       const next = list.length === chats.size ? chats : new Map(list.map(chat => [chat.id, chat] as const));
-      this.cache = await this.stamp().then(key => ({ key, chats: next, bad: false }), () => undefined);
+      this.cache = await this.stamp().then(key => ({ key, chats: next, bad: false as const }), () => undefined);
     });
   }
   async has(id: string): Promise<boolean> {

@@ -104,7 +104,7 @@ test("a full registry drops the oldest chats and never the one it just wrote", a
 });
 
 test("an unreadable file reads as empty, is reported once, and a record repairs it", async () => {
-  for (const kind of ["bad-json", "wrong-version", "wrong-shape", "extra-field", "bad-id", "public-file", "symlink"] as const) {
+  for (const kind of ["bad-json", "wrong-version", "wrong-shape", "extra-field", "bad-id", "symlink"] as const) {
     await test(kind, async () => {
       const f = await fixture();
       try {
@@ -115,7 +115,6 @@ test("an unreadable file reads as empty, is reported once, and a record repairs 
         if (kind === "wrong-shape") await writeFile(f.path, JSON.stringify({ version: 1, chats: { a: 1 } }), { mode: 0o600 });
         if (kind === "extra-field") await writeFile(f.path, JSON.stringify({ version: 1, chats: [chat("a", 1), { ...chat("b", 2), model: "gpt-6.1-sol" }] }), { mode: 0o600 });
         if (kind === "bad-id") await writeFile(f.path, JSON.stringify({ version: 1, chats: [{ id: "", atMs: 1, origin: "start" }] }), { mode: 0o600 });
-        if (kind === "public-file") { await writeFile(f.path, good, { mode: 0o600 }); await chmod(f.path, 0o644); }
         if (kind === "symlink") { await writeFile(join(f.root, "elsewhere.json"), good, { mode: 0o600 }); await symlink(join(f.root, "elsewhere.json"), f.path); }
         assert.equal(await f.store.has("a"), false, "an unreadable file reads as empty");
         assert.deepEqual(await f.store.snapshot(), new Set());
@@ -148,6 +147,63 @@ test("an unreadable file reads as empty, is reported once, and a record repairs 
       } finally { await f.close(); }
     });
   }
+});
+
+test("a file whose mode alone drifted keeps every entry: a record restores 0600 instead of setting the file aside", async () => {
+  if (process.getuid?.() === 0) return;
+  for (const mode of [0o644, 0o664, 0o666, 0o400, 0o640]) {
+    await test(`mode ${mode.toString(8)}`, async () => {
+      const f = await fixture();
+      try {
+        for (let i = 0; i < 5; i++) await f.store.record(`gw-${i}`, "start", 1000 + i);
+        const before = await readFile(f.path, "utf8");
+        await chmod(f.path, mode);
+        const reader = f.registry();
+        assert.equal(await reader.has("gw-0"), false, "a reader does not trust the drifted file");
+        assert.deepEqual(f.unreadable, ["gateway_registry_unreadable"], "and reports it once");
+        assert.equal(await readFile(f.path, "utf8"), before, "reading changed nothing");
+        assert.equal((await lstat(f.path)).mode & 0o7777, mode, "a reader does not repair");
+        for (const writer of [reader, f.registry(), f.store]) {
+          await writer.record("gw-new", "start", 2000);
+          assert.equal((await lstat(f.path)).mode & 0o7777, 0o600, "the record put the mode back");
+          assert.deepEqual((await f.saved()).chats.map(item => item.id), ["gw-0", "gw-1", "gw-2", "gw-3", "gw-4", "gw-new"], "every entry survives");
+          assert.deepEqual(await readdir(f.directory), [f.path.slice(f.directory.length + 1)], "nothing was set aside and nothing was left behind");
+          await chmod(f.path, mode);
+        }
+        await chmod(f.path, 0o600);
+        assert.deepEqual(await f.registry().snapshot(), new Set(["gw-0", "gw-1", "gw-2", "gw-3", "gw-4", "gw-new"]));
+        assert.deepEqual(f.unreadable, ["gateway_registry_unreadable"], "the repair is not a second failure");
+      } finally { await chmod(f.path, 0o600).catch(() => undefined); await f.close(); }
+    });
+  }
+  await test("a drifted mode on a file with bad content still sets the content aside", async () => {
+    const f = await fixture();
+    try {
+      await writeFile(f.path, "{ not json\n", { mode: 0o600 }); await chmod(f.path, 0o644);
+      await f.store.record("fresh", "start", 4000);
+      assert.deepEqual((await f.saved()).chats, [chat("fresh", 4000)]);
+      assert.equal(await readFile(`${f.path}.unreadable`, "utf8"), "{ not json\n");
+      assert.equal((await lstat(f.path)).mode & 0o777, 0o600);
+    } finally { await f.close(); }
+  });
+  await test("a mode that keeps drifting is refused, not guessed at", async () => {
+    const f = await fixture();
+    try {
+      await f.store.record("a", "start", 1000);
+      await chmod(f.path, 0o644);
+      // The opener hands out a file whose chmod does nothing, as if something else kept changing the mode.
+      const stubborn = (async (...args: Parameters<typeof open>) => {
+        const file = await open(...args);
+        file.chmod = async () => undefined;
+        return file;
+      }) as typeof open;
+      const store = new GatewayChatRegistry(f.state, f.native, f.report, undefined, stubborn);
+      await assert.rejects(store.record("b", "start", 2000), /invalid or unsafe/);
+      assert.deepEqual(await readdir(f.directory), [f.path.slice(f.directory.length + 1)], "nothing was set aside");
+      await chmod(f.path, 0o600);
+      assert.deepEqual((await f.saved()).chats, [chat("a", 1000)], "the list is untouched");
+    } finally { await f.close(); }
+  });
 });
 
 test("each native home keeps its own registry file", async () => {
