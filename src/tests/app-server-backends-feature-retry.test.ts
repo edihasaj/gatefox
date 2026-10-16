@@ -22,7 +22,7 @@ test("a rejected feature table is retried once in its strict form and the caller
     const id = await startGatewayChat(f.backend);
     const { engine, calls } = spy(f, id);
     // guardianv2 is a structured feature the static schema accepts, so only the engine can refuse the new range.
-    const config = failing({ features: { guardianv2: { enabled: true, review_threshold: 7 }, multi_agent_v2: { enabled: false, wait_agent_enabled: true }, fast_mode: true, tool_registry: { error_on_tool_collisions: true } },
+    const config = failing({ features: { guardianv2: { enabled: true, review_threshold: 7 }, fast_mode: true, tool_registry: { error_on_tool_collisions: true } },
       "features.code_mode": { enabled: true, default_exec_yield_time_ms: 5 }, "features.token_budget.guidance_message": "x", "profiles.w": { features: { sleep_tool: { enabled: true, mode: "always_on" } } } });
     const result = await f.backend.request("thread/resume", { threadId: id, config });
     // Read the hooks before probing: the probe is itself a request through them.
@@ -32,7 +32,7 @@ test("a rejected feature table is retried once in its strict form and the caller
     assert.deepEqual(seen.map(entry => entry.method), ["thread/resume", "thread/resume"]);
     assert.deepEqual(seen[0].config, config);
     // The reviewer is turned off in the strict form, so actions return to the user's own approval.
-    assert.deepEqual(seen[1].config, failing({ features: { guardianv2: false, multi_agent_v2: false, fast_mode: true },
+    assert.deepEqual(seen[1].config, failing({ features: { guardianv2: false, fast_mode: true },
       "features.code_mode": true, "profiles.w": { features: { sleep_tool: true } } }));
     // One reserved request accounted once; compaction saw the request once and finished it once.
     assert.equal(held, 0);
@@ -40,7 +40,7 @@ test("a rejected feature table is retried once in its strict form and the caller
     await flushTelemetry();
     const retried = (await readTelemetry(f.value.stateDirectory, Date.now() - 60_000)).filter(event => event.event === "gateway_features_trimmed" && event.site === "retry")
       .map(({ at, host, component, pid, ...payload }) => payload);
-    assert.deepEqual(retried, [{ event: "gateway_features_trimmed", site: "retry", count: 6 }]);
+    assert.deepEqual(retried, [{ event: "gateway_features_trimmed", site: "retry", count: 5 }]);
   } finally { await f.clean(); }
 });
 
@@ -48,14 +48,14 @@ test("thread start and fork are retried the same way", { timeout: 10000 }, async
   const f = await featureFixture();
   try {
     const id = await startGatewayChat(f.backend);
-    const config = failing({ features: { multi_agent_v2: { enabled: true, message_board_remote: { url: "x" } } } });
+    const config = failing({ features: { sleep_tool: { enabled: true, mode: "always_on" } } });
     const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway", config });
     assert.equal(typeof (started.thread as { id: string }).id, "string");
     await f.backend.request("thread/fork", { threadId: id, config });
     const seen = await log(f, id);
     assert.deepEqual(seen.map(entry => entry.method), ["thread/start", "thread/start", "thread/fork", "thread/fork"]);
-    assert.deepEqual(seen.map(entry => entry.config.features), [{ multi_agent_v2: { enabled: true, message_board_remote: { url: "x" } } }, { multi_agent_v2: true },
-      { multi_agent_v2: { enabled: true, message_board_remote: { url: "x" } } }, { multi_agent_v2: true }]);
+    assert.deepEqual(seen.map(entry => entry.config.features), [{ sleep_tool: { enabled: true, mode: "always_on" } }, { sleep_tool: true },
+      { sleep_tool: { enabled: true, mode: "always_on" } }, { sleep_tool: true }]);
   } finally { await f.clean(); }
 });
 

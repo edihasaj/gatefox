@@ -39,14 +39,21 @@ function trimFieldPath(schema: TableSchema, path: string[], value: unknown): { v
  */
 const failClosed = new Set(["network_proxy"]);
 /**
- * `guardianv2` reviews actions in place of the user. In the strict retry form it is turned off rather than reduced to
- * its defaults, so actions go back to the user's own approval instead of a reviewer with unknown thresholds.
+ * `guardianv2` is the reviewer's asynchronous scoring. In the strict retry form it is turned off rather than reduced to
+ * its defaults: off removes the cached fast approvals, so every reviewed action gets a fresh synchronous review or goes
+ * to the user, as `approvals_reviewer` decides. It never approves more than the reviewer would with default settings.
  */
 const offWhenStrict = new Set(["guardianv2"]);
+/**
+ * `multi_agent_v2` carries the caller's own limits (concurrent threads, spawn model overrides). Reducing it to a boolean
+ * would bring back the SDK's looser defaults, so the strict form keeps its normally trimmed value as sent.
+ */
+const keepWhenStrict = new Set(["multi_agent_v2"]);
 
 /** Apply the pinned schema to a whole feature entry `K = value`. Returns undefined when it is dropped. */
 function trimFeature(ctx: Context, name: string, value: unknown): { value: unknown } | undefined {
   if (failClosed.has(name)) return { value };
+  if (ctx.strict && keepWhenStrict.has(name)) return trimFeature({ ...ctx, strict: false }, name, value);
   const spec = featureSchema(name);
   // The SDK reads tool_registry as a plain table: a boolean there is an error, not a toggle.
   if (spec?.tableOnly) {
@@ -69,6 +76,7 @@ function trimDotted(ctx: Context, names: string[], value: unknown): { collapsed:
   const [feature, ...rest] = names;
   if (!rest.length) { const result = trimFeature(ctx, feature, value); return result && { collapsed: false, value: result.value }; }
   if (failClosed.has(feature)) return { collapsed: false, value };
+  if (ctx.strict && keepWhenStrict.has(feature)) return trimDotted({ ...ctx, strict: false }, names, value);
   // A dotted field of the reviewer in the strict form: the reviewer as a whole is turned off instead (see offWhenStrict).
   if (ctx.strict && offWhenStrict.has(feature)) { ctx.stats.count++; return { collapsed: true, value: false }; }
   const spec = featureSchema(feature);

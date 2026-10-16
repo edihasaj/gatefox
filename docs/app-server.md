@@ -135,9 +135,12 @@ later. If the SDK still refuses a gateway `thread/start`, `thread/resume` or
 `thread/fork` with `failed to load configuration` (code -32600) at a `features` or
 `profiles.<name>.features` path, and the strict form differs from the request, the
 adapter retries once with that strict form: each feature becomes its boolean `enabled`
-or is removed, `tool_registry` is removed, `guardianv2` is turned off (actions go back
-to the user's own approval rather than a reviewer with default thresholds), and
-`network_proxy` stays as sent. A failure at any other path, or one the SDK marks as an
+or is removed, `tool_registry` is removed, and `guardianv2` is turned off. Off removes
+the reviewer's cached fast approvals, so every reviewed action gets a fresh review or
+goes to the user, as `approvals_reviewer` decides; it never approves more than the
+reviewer would with default settings. `network_proxy` stays as sent, and
+`multi_agent_v2` keeps its normally trimmed table, so the caller's limits on concurrent
+threads and spawn model overrides are not replaced by the SDK's looser defaults. A failure at any other path, or one the SDK marks as an
 unavailable cloud configuration bundle, is not retried. A failed configuration load
 creates no thread, so the retry has no side effects. If the retry fails too, the
 original error is returned.
