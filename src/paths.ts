@@ -5,6 +5,10 @@ import { access } from "node:fs/promises";
 export function userConfigPath(): string {
   return resolve(homedir(), process.platform === "darwin" ? "Library/Application Support/Subscription Gateway/gateway.json" : ".config/subscription-gateway/gateway.json");
 }
+/** Where the installer keeps releases when no `--prefix` was given. */
+export function defaultInstallRoot(): string {
+  return resolve(homedir(), ".local/share/subscription-gateway");
+}
 export async function configPath(explicit?: string): Promise<string> {
   if (explicit || process.env.GATEWAY_CONFIG) return resolve(explicit || process.env.GATEWAY_CONFIG!);
   if (process.env.GATEWAY_INSTALLED === "1") return userConfigPath();

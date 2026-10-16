@@ -148,6 +148,67 @@ per request id and prefers the gateway's own row over an imported one.
 
 `gateway diagnostics` also sums Copilot credits per model from `nanoAiu`.
 
+## Running component releases
+
+An install only moves the `current` link, so a process that started earlier
+keeps running the release it loaded. Its command line still says
+`.../current/...`, a link the operating system resolved when the process
+started, which is why it says nothing about what that process is running.
+`gateway versions [--json] [--check]` answers that question: it lists this
+user's gateway processes, names each one's role (`service`, `inference`,
+`desktop-adapter`, `ssh-listener`, `ssh-proxy`, `executor-host`,
+`gateway-engine`, `native-relay`, `tunnel` or `other`) and reads the release
+from the text files the process actually has mapped, found with `lsof`,
+rather than from its command line. The report skips this process itself, so
+running the command never adds a row.
+
+A command line is only read where the program sits: at argv[0], or at argv[1]
+behind a node interpreter for the CLI script. A wrapper that merely mentions
+one of our paths inside a quoted string
+(`zsh -c node .../current/package/dist/cli.js serve`), a wrapper program such as
+`/usr/bin/time` that starts node, another product's `releases/` folder, or one
+of our paths used as an argument, runs none of ours and is left out. Short-lived
+helper scripts a request starts (such as the Claude tool helper) are not listed. The install root is matched
+both as written and with its links resolved, so a tree reached through a
+symlink is still recognized.
+
+The one exception is the inference process. A release that replaced itself in
+place keeps the node runtime it started with mapped, so `lsof` names the
+release it started from rather than the code it serves. There the health
+endpoint answers instead, and its `X-Gateway-Release` header wins: the command
+asks `lsof` which loopback ports the process listens on, and sends one
+`GET http://127.0.0.1:PORT/health` with a two second timeout to each in turn,
+lowest port first, until one answers. The port comes from the process's own listening socket,
+never from its arguments, so a server started with a quoted configuration path
+and no `--port` is still found. When nothing answers, the report falls back to
+the mapped release. Those requests are the only thing here that leaves the
+process, and they never leave the machine.
+
+What is printed is limited to roles, pids, start times and release versions;
+command arguments, paths and environment values are never shown. A release
+that neither `lsof` nor the command line can name reads `unknown`, and a
+process started from a source checkout reads `checkout`. The human form
+prints the installed release, one row per process with its start time on the
+local clock, then a summary: `all on RELEASE` or `N lagging: role@release`,
+one mention per distinct pair.
+`--json` prints the same data as
+`{ installed, processes: [{ role, pid, startedAt, release }], lagging }`,
+where `installed` is the release the `current` link points at and `startedAt`
+is that start time as a UTC instant. A run from a checkout or worktree, which
+has no `current` of its own, names the release the default install's link
+points at, `~/.local/share/subscription-gateway`, and still calls its own
+processes `checkout`. When neither link resolves, `installed` is null, which
+`--json` always prints.
+
+`--check` exits 1 when a process runs another release than the installed one,
+or `unknown`, and 0 when none does. It exits 2 when there is no installed
+release to compare against, because a run that names none cannot tell a lagging
+process from an up to date one; the report itself is still printed. A flag
+outside `--json` and `--check`, and a process list `ps` cannot read, exit 2
+too; `--help` or `-h` prints the usage line and exits 0. See
+[release](RELEASING.md#updating-without-quitting-the-app) for how long a
+lagging process may legitimately take to move.
+
 ## Exception reports
 
 Only exceptions go to `errors.applifyer.com`, project `harness-gateway`. The DSN
