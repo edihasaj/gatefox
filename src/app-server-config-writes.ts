@@ -32,6 +32,7 @@ export const gatewayTargetMessage = "Native configuration changes cannot target 
 export const gatewayCatalogMessage = "The gateway catalog cannot be saved into native Codex configuration";
 export const invalidKeyPathMessage = "This configuration key is not valid";
 export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
+export const inspectBudgetMessage = "This configuration write names too many different paths to check";
 
 /** What counts as gateway identity, supplied by the router. Paths are compared as files, so a
  * spelling that leads to one through a symlink, a firmlink, or another case of the same name is
@@ -101,12 +102,37 @@ const expandEnginePath = (value: string, identity: GatewayIdentity, base: string
   return isAbsolute(value) ? resolve(value) : resolve(base, value);
 };
 
-const tryRealpath = (path: string): string | undefined => { try { return realpathSync(path); } catch { return undefined; } };
-
-/** A path longer than this is judged on its spelling alone; walking it would cost more than it can tell. */
-const inspectPathBytes = 1024;
-/** How many paths one prepared guard remembers; a batch that names more recomputes rather than grows. */
+/** A path longer than this is judged on its spelling alone; walking it would cost more than it can tell.
+ * 4096 is the longest path any platform the engine runs on accepts (Linux; macOS stops at 1024), and a
+ * path nothing can open is judged on its spelling alone anyway, so one cutoff serves every platform. */
+const inspectPathBytes = 4096;
+/** How many paths one prepared guard remembers; a batch that names more recomputes rather than grows.
+ * The memo only caches: a full memo never changes what an answer is, only what it costs. */
 const guardMemoLimit = 4096;
+/** How many file-system reads (one `stat` or one `realpath` each) one request may spend on the paths
+ * its edits name. A real batch names a handful, and the folders it shares are read once; a request
+ * that spends the budget is refused whole, because a spelling-only check could be walked around. */
+const inspectBudget = 2048;
+
+/** What one prepared guard may spend and remember; a test lowers these to reach the limits cheaply. */
+export type GuardLimits = { memo: number; budget: number };
+const defaultLimits: GuardLimits = { memo: guardMemoLimit, budget: inspectBudget };
+
+/** Thrown when a request names more paths than the budget lets the guard read; never carries a path. */
+class InspectBudgetExhausted extends Error {}
+const spend = (guard: GatewayPathGuard): void => {
+  if (guard.budget <= 0) throw new InspectBudgetExhausted();
+  guard.budget--;
+};
+
+const tryRealpath = (guard: GatewayPathGuard, path: string): string | undefined => {
+  if (guard.resolved.has(path)) return guard.resolved.get(path);
+  spend(guard);
+  let real: string | undefined;
+  try { real = realpathSync(path); } catch { real = undefined; }
+  if (guard.resolved.size < guard.limits.memo) guard.resolved.set(path, real);
+  return real;
+};
 
 /** What makes one file itself: the volume and the node the file system reads it as. A path that
  * reaches the same {dev, ino} through another spelling — a link, a firmlink, or another casing of a
@@ -116,14 +142,16 @@ const sameFileId = (left: FileId | undefined, right: FileId | undefined): boolea
   left !== undefined && right !== undefined && left.dev === right.dev && left.ino === right.ino;
 
 /** The identity of the file a path names, or undefined where it cannot be read: nothing there, no
- * permission, or the path itself is unwalkable. Every failure means "not a match" here. */
+ * permission, or the path itself is unwalkable. Every failure means "not a match" here. The memo only
+ * caches: a path it has no room for is read again, never answered as if nothing were there. */
 const fileIdOf = (guard: GatewayPathGuard, path: string): FileId | undefined => {
-  if (!guard.ids.has(path)) {
-    let id: FileId | undefined;
-    try { const stat = statSync(path); id = { dev: stat.dev, ino: stat.ino }; } catch { id = undefined; }
-    if (guard.ids.size < guardMemoLimit) guard.ids.set(path, id);
-  }
-  return guard.ids.get(path);
+  const hit = guard.ids.get(path);
+  if (hit !== undefined || guard.ids.has(path)) return hit;
+  spend(guard);
+  let id: FileId | undefined;
+  try { const stat = statSync(path); id = { dev: stat.dev, ino: stat.ino }; } catch { id = undefined; }
+  if (guard.ids.size < guard.limits.memo) guard.ids.set(path, id);
+  return id;
 };
 
 /** The prefixes a resolved absolute path passes through, from the root down, one `stat` per component:
@@ -150,9 +178,9 @@ const realFormOf = (guard: GatewayPathGuard, lexical: string): string => {
   const cached = guard.real.get(lexical);
   if (cached !== undefined) return cached;
   const { deepest, missing } = walkExisting(guard, lexical);
-  const real = tryRealpath(deepest);
+  const real = tryRealpath(guard, deepest);
   const form = real === undefined ? lexical : resolve(real, ...missing);
-  if (guard.real.size < guardMemoLimit) guard.real.set(lexical, form);
+  if (guard.real.size < guard.limits.memo) guard.real.set(lexical, form);
   return form;
 };
 
@@ -182,14 +210,19 @@ export type GatewayPathGuard = {
   homes: string[];
   /** Per-path reads, kept so one call answers the same question the same way without repeating it. */
   real: Map<string, string>;
+  /** What `realpath` answered for the deepest existing folder of a path; many leaves share one folder. */
+  resolved: Map<string, string | undefined>;
   ids: Map<string, FileId | undefined>;
   found: Map<string, boolean>;
+  limits: GuardLimits;
+  /** File-system reads this request may still spend on the paths its edits name. */
+  budget: number;
 };
 
-const prepareGatewayPaths = (identity: GatewayIdentity): GatewayPathGuard => {
+const prepareGatewayPaths = (identity: GatewayIdentity, limits: GuardLimits): GatewayPathGuard => {
   const guard: GatewayPathGuard = {
     identity, catalog: [], catalogId: undefined, state: [], stateId: undefined, homes: [],
-    real: new Map(), ids: new Map(), found: new Map(),
+    real: new Map(), resolved: new Map(), ids: new Map(), found: new Map(), limits, budget: Infinity,
   };
   const catalog = resolve(identity.catalogPath);
   const state = resolve(identity.stateDirectory);
@@ -198,6 +231,9 @@ const prepareGatewayPaths = (identity: GatewayIdentity): GatewayPathGuard => {
   guard.state = pathFormsOf(guard, state).map(dir => dir.endsWith(sep) ? dir : dir + sep);
   guard.stateId = fileIdOf(guard, state);
   guard.homes = pathFormsOf(guard, resolve(identity.nativeHome));
+  // The gateway's own paths are bounded by their length and are not the request's doing; only what
+  // the edits name is charged to the budget.
+  guard.budget = limits.budget;
   return guard;
 };
 
@@ -213,7 +249,7 @@ const isGatewayFile = (guard: GatewayPathGuard, target: string): boolean => {
   if (cached !== undefined) return cached;
   const found = sameFileId(fileIdOf(guard, target), guard.catalogId)
     || (guard.stateId !== undefined && walkExisting(guard, target).ancestors.some(dir => sameFileId(fileIdOf(guard, dir), guard.stateId)));
-  if (guard.found.size < guardMemoLimit) guard.found.set(target, found);
+  if (guard.found.size < guard.limits.memo) guard.found.set(target, found);
   return found;
 };
 
@@ -265,7 +301,11 @@ const scanValue = (value: unknown, guard: GatewayPathGuard, depth: number): Find
 /** Why a single native edit must be refused, or undefined when the native engine may apply it. */
 export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity, prepared?: GatewayPathGuard): string | undefined => {
   if (!plain(edit)) return undefined; // forwarded to the engine as sent; it is not an edit this module can read
-  const guard = prepared ?? prepareGatewayPaths(identity);
+  try { return editViolation(edit, identity, prepared ?? prepareGatewayPaths(identity, defaultLimits)); }
+  catch (error) { if (error instanceof InspectBudgetExhausted) return inspectBudgetMessage; throw error; }
+};
+
+const editViolation = (edit: ObjectValue, identity: GatewayIdentity, guard: GatewayPathGuard): string | undefined => {
   const { keyPath, value } = edit;
   const segments = parseKeyPath(keyPath);
   if (!segments) return invalidKeyPathMessage;
@@ -284,8 +324,8 @@ export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity, pr
 
 /** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded.
  * The gateway's paths are read once for the batch and handed to every edit in it. */
-export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity): string | undefined => {
-  const guard = prepareGatewayPaths(identity);
+export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity, limits: GuardLimits = defaultLimits): string | undefined => {
+  const guard = prepareGatewayPaths(identity, limits);
   for (const edit of edits) { const refusal = nativeEditViolation(edit, identity, guard); if (refusal) return refusal; }
   return undefined;
 };
