@@ -98,7 +98,8 @@ preflight. It removes the legacy hooks alias without overriding the native
 `hooks` setting while reading that base. Normal inference arguments then apply
 the compatible alias only when no explicit current setting exists. Shared
 execution hosts enforce the same normalization before spawning their SDK,
-including requests from older adapters. Native configuration files are unchanged.
+including requests from older adapters. This normalization rewrites no
+native configuration file.
 
 ChatGPT chooses which `features.*` settings to send from the native engine's
 version, but gateway chats run the older pinned SDK. For gateway chats and gateway
@@ -149,18 +150,70 @@ Native chats and native launches are never changed or retried. The
 `gateway_features_trimmed` event records only the site and how many entries changed.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
-the gateway state directory. Model, effort, summary, and service-tier writes are
-scoped to that file for both gateway and native model choices. String `replace` and
-`upsert` operations are supported. Writes into native profiles, native version
-guards, and batches mixing native changes with gateway defaults are rejected.
-All other configuration writes are rejected, including the legacy whole-config
-write. Obsidian-managed native settings remain the source of truth.
+the gateway state directory. Model, effort, summary and speed (service tier)
+writes are scoped to that file for both gateway and native model choices, and
+they require string values with a `replace` or `upsert` merge strategy. Writes
+to the supported `desktop.*` display keys go to that same file, but each carries
+its own typed value rather than the string rule above; unsupported `desktop.*`
+keys are ordinary native keys and reach the engine. Every other key belongs to
+the caller's native configuration, which `config/value/write` and
+`config/batchWrite` forward to the native engine unchanged: same method, same
+params, with `filePath`, `expectedVersion`, `reloadUserConfig`, and
+`mergeStrategy` passed through, and the engine's result or error returned
+as-is. When a batch mixes kinds, its native part keeps the caller's own edit
+objects in the caller's own order, including an entry the adapter cannot read,
+which is forwarded unchanged. The app writes those keys the same way without the
+gateway, so a setting changed in ChatGPT still reaches its own configuration.
+The adapter itself never writes native configuration on its own initiative.
+
+A whole request is refused, before anything is written or forwarded, when a
+native edit would store gateway identity in native configuration. A key path is
+parsed into segments exactly as the Codex engine parses it: dots separate
+segments, a segment may open with `"` to carry separators literally, and inside
+quotes a `\` escapes the next character. Every rule below reads those segments,
+so a quoted spelling such as `model_providers."subscription_gateway".base_url`
+is refused like the dotted one. A gateway default spelled another way, such as
+`"model"`, is not a key the adapter can save: it reads as a native key to the
+engine, so the write is refused rather than sent. A byte-order mark is not
+whitespace here, which is how the engine reads it, and a path made only of
+whitespace carries no name and is refused.
+
+| Refused native edit | Error |
+| --- | --- |
+| A gateway default key given another spelling, such as `"model"` or `desktop."appearanceTheme"`: the engine reads those segments as a native key, so the adapter neither saves nor forwards it | Gateway defaults must be written with their plain key |
+| A key path the engine cannot parse: empty, or whitespace in the Unicode sense that carries no name, with an empty segment, with a quote that can neither open nor close a segment, or with an unterminated quote or escape | This configuration key is not valid |
+| A key whose last segment is `model` set to a gateway alias | Gateway defaults cannot be saved into a native Codex profile |
+| `model_provider` or `oss_provider`, at the top level or below a profile, set to `subscription_gateway`; a `model_providers.subscription_gateway` key, or any key below it, given a value other than `null`; a `model_providers` key whose value holds that provider with a non-null value | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A key whose last segment ends with `_model` (such as `review_model`, `profiles.work.review_model` or `features.guardianv2.review_model`) set to a gateway alias | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A value that anywhere holds a gateway alias under a `model` or `*_model` key, that provider under a `model_provider` or `oss_provider` key, or that provider as a non-null key of a `model_providers` value. Values are searched through objects and arrays to 65 nested levels, counting the written value as level 1; a value containing a 66th level is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A `model_catalog_json` key, at the top level or anywhere inside a value, set to the gateway's catalog file or to anything inside the gateway state directory. Files and folders that exist are compared by identity, by device and inode, so a symlink, a firmlink such as `/System/Volumes/Data/private/var/...`, or another letter case of the same name on a case-insensitive volume is refused like the path written out directly; a file or folder that does not exist yet is judged by the identity of its existing ancestor folders as well as by its spellings, the lexical and the resolved one. A path longer than 4096 bytes, the longest any platform accepts and the same cutoff on every platform, is compared by its spelling only, without touching the file system. One request may spend at most 16384 units of work on the paths its edits name. A unit is one folder passed while walking a path, whether or not its answer is already remembered, or one file-system read (`stat`, `lstat` or `readlink`); links are followed one folder at a time, at most 40 of them as the operating system does, and each step is charged. A deep path therefore costs a unit for every folder each time it is walked, while the same path repeated is answered from memory at no cost and a folder shared by several paths is read once. A request that spends the budget is refused whole with "This configuration write names too many different paths to check" instead of being checked by spelling alone; at the deepest tree a platform allows, that takes a fraction of a second. A real batch stays far below this limit: one or two catalog paths of ten folders cost under 150 units, and 50 edits about 15 folders deep cost about 3300. Every spelling the engine reads is tried: a `~` on its own or `~/rest` is the home directory, and any other relative path is read below the native home in both its lexical and its resolved spelling, never below the directory of the request's `filePath`. With the native home at `~/.codex` and the state directory at `~/.codex/state`, that makes `state/codex-models.json`, `~/.codex/state/codex-models.json` and `../.codex/state/codex-models.json` all the gateway's catalog; `../state/codex-models.json` reaches it only where the state directory sits beside the native home. A name the engine does not expand, such as `~rest`, stays one of the caller's own files and is forwarded | The gateway catalog cannot be saved into native Codex configuration |
+| Any native edit in a request whose `filePath` is the gateway preference file | Native configuration changes cannot target the gateway preference file |
+
+Clearing stays possible: an edit whose value is `null` removes a gateway
+provider row or field instead of storing one, so it is forwarded rather than
+refused. Chat starts and settings reads overlay the gateway's own catalog
+through `model_catalog_json`; that file is gateway state, and saving its path,
+or any file from inside the gateway state directory, into native configuration
+is refused like the rows above. The guard compares the file the engine would
+open, or the path itself when the engine could not open it, so a link that
+points at either one is refused the same way.
+
+A batch that mixes both kinds first checks every gateway-default rule, then
+sends the native edits to the engine in their original order, and saves the
+private file only after that write succeeds. A native write that fails returns
+its own error and saves nothing, and an invalid private part forwards nothing.
+A request that carries a native part answers with the engine's result or error;
+a write that is private-only answers with the gateway's own saved result. Every
+configuration write from one connection, native-only ones included, waits
+behind the writes sent before it, so the engine sees them in send order and a
+failing write does not hold back the ones queued behind it. The legacy
+whole-config `config/write` stays refused.
 
 The current app also saves its display settings through `desktop.*` configuration
 writes. The adapter validates supported display fields and stores them in that
 same private preference file. It merges them over native desktop defaults when
 the app reads settings. This allows Max and Ultra display choices to survive
-restart without writing the Obsidian-managed file. Pending desktop migration
+restart in the private file instead of a native one. Pending desktop migration
 batches are validated before any preference changes are saved.
 
 Each adapter connection rereads private preferences when reading settings or
@@ -245,7 +298,7 @@ open or quit the app. Registration refuses an unrelated existing CLI override an
 clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` that an older gateway set.
 `gateway desktop unregister` removes its own overrides.
 This keeps normal Dock launches configured after initial activation without
-editing the Obsidian-managed native configuration.
+editing native configuration.
 
 The client owns chat naming. The adapter forwards native `thread/name/set`,
 saved-title reads, and live name notifications; it adds no title tool or naming

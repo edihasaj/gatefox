@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { configEdits, gatewayPreferenceKeys, gatewayTargetMessage, nativeWritesViolation, partitionConfigEdits, type GatewayIdentity } from "./app-server-config-writes.js";
 import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import type { DesktopCatalog } from "./desktop-catalog.js";
@@ -19,7 +20,6 @@ type ObjectValue = Record<string, unknown>;
 export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 const gatewayProvider = "subscription_gateway";
-const preferenceKeys = new Set(["model", "model_reasoning_effort", "model_reasoning_summary", "service_tier"]);
 const requestedModel = (params: ObjectValue): unknown => object(object(params.collaborationMode).settings).model ?? params.model ?? object(params.config).model;
 const tierSelection = (params: ObjectValue): { value: unknown } | undefined => Object.hasOwn(params, "serviceTier") && params.serviceTier !== undefined
   ? { value: params.serviceTier } : Object.hasOwn(object(params.config), "service_tier") ? { value: object(params.config).service_tier } : undefined;
@@ -66,7 +66,7 @@ export class AppServerRouter {
   private readonly preferencesPath: string;
   readonly catalogPath: string;
   private extraModels: ObjectValue[];
-  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
+  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
     this.extraModels = modelCatalog(config).models;
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
@@ -84,7 +84,7 @@ export class AppServerRouter {
     try { saved = JSON.parse(await readFile(this.preferencesPath, "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") { this.preferences = {}; return; } throw new AppServerRoutingError("Gateway desktop preferences are unreadable"); }
     const preferences = object(saved);
-    this.preferences = Object.fromEntries(Object.entries(preferences).filter(([key]) => preferenceKeys.has(key)));
+    this.preferences = Object.fromEntries(Object.entries(preferences).filter(([key]) => gatewayPreferenceKeys.has(key)));
     if (typeof this.preferences.model !== "string" || !this.preferences.model) delete this.preferences.model;
     try {
       const desktop = readDesktopPreferences(preferences.desktop);
@@ -286,14 +286,46 @@ export class AppServerRouter {
     if (!Number.isSafeInteger(offset) || offset > models.length) throw new AppServerRoutingError("Invalid gateway model cursor");
     return { data: models.slice(offset, offset + Number(limit)), nextCursor: offset + Number(limit) < models.length ? `gateway-models:${offset + Number(limit)}` : null };
   }
-  private async writePreferences(method: string, params: ObjectValue): Promise<ObjectValue | undefined> {
-    const edits = method === "config/value/write" ? [params] : Array.isArray(params.edits) ? params.edits.map(object) : [];
-    if (edits.some(edit => typeof edit.keyPath === "string" && edit.keyPath.endsWith(".model") && typeof edit.value === "string" && this.aliases.has(edit.value))) throw new AppServerRoutingError("Gateway defaults cannot be saved into a native Codex profile");
+  /**
+   * Gateway defaults are saved privately; every other edit is the caller's own native
+   * configuration and reaches the native engine as it was sent. A batch that carries both
+   * validates the private part first, forwards the native part, and saves only once that
+   * write succeeded, so a refusal at either step leaves both files untouched.
+   * A request with no gateway default reads and writes no private file, but it waits in the
+   * same queue: one connection's configuration writes must reach the native engine in send
+   * order, and a write that fails must not hold back the writes queued behind it.
+   */
+  private async writeConfig(method: string, params: ObjectValue): Promise<ObjectValue> {
+    const { privateEdits, nativeEdits } = partitionConfigEdits(configEdits(method, params));
+    if (nativeEdits.length) {
+      // The engine resolves a relative path in a native value against its own home, never against the
+      // folder of the file this request happens to name, so a relative value is tried against that
+      // home in both of its spellings: the one it is written with and the one its links resolve to.
+      const identity: GatewayIdentity = { provider: gatewayProvider, isGatewayModel: value => typeof value === "string" && this.aliases.has(value),
+        stateDirectory: resolve(this.config.stateDirectory), catalogPath: this.catalogPath, homeDirectory: homedir(), nativeHome: resolve(this.nativeHome) };
+      const refusal = typeof params.filePath === "string" && params.filePath === this.preferencesPath ? gatewayTargetMessage
+        : nativeWritesViolation(nativeEdits, identity);
+      if (refusal) throw new AppServerRoutingError(refusal);
+    }
+    const queued = async (): Promise<ObjectValue> => privateEdits.length
+      ? withPrivateFileLock(this.preferencesPath, async () => {
+        await this.readPreferences();
+        const preferences = this.planPreferences(params, privateEdits);
+        if (!nativeEdits.length) return this.commitPreferences(preferences);
+        // The native engine answers a mixed batch, so its result is what the caller sees.
+        return this.backend(method, { ...params, edits: nativeEdits }).then(forwarded => this.commitPreferences(preferences, forwarded));
+      })
+      // No private part: the whole request belongs to the native engine and is forwarded unchanged.
+      : this.backend(method, params);
+    const operation = this.writes.then(queued);
+    this.writes = operation.catch(() => undefined); return operation;
+  }
+  /** Checks a batch aimed at gateway defaults and returns the file it produces, without saving it. */
+  private planPreferences(params: ObjectValue, edits: ObjectValue[]): ObjectValue {
     const modelEdit = edits.find(edit => edit.keyPath === "model");
     const chosen = modelEdit ? modelEdit.value : this.preferences.model;
-    const local = edits.filter(edit => preferenceKeys.has(String(edit.keyPath)));
+    const local = edits.filter(edit => gatewayPreferenceKeys.has(String(edit.keyPath)));
     const desktopEdits = edits.filter(edit => isDesktopPreferenceKey(edit.keyPath));
-    if (!local.length && !desktopEdits.length) throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
     if (local.length && (typeof chosen !== "string" || !chosen)) throw new AppServerRoutingError("Select a model before saving its reasoning preferences");
     // Do not redirect writes explicitly aimed at a project or other profile.
     if (typeof params.filePath === "string" && params.filePath !== this.preferencesPath) throw new AppServerRoutingError("Gateway defaults are scoped to this adapter; choose a model without a custom config-file target");
@@ -304,16 +336,18 @@ export class AppServerRouter {
         throw new AppServerRoutingError("This gateway model does not offer that speed, so it cannot be the saved default. Choose Standard, or pick a model that offers it, then save again.", -32002);
       }
     }
-    const remaining = edits.filter(edit => !preferenceKeys.has(String(edit.keyPath)) && !isDesktopPreferenceKey(edit.keyPath));
-    if (remaining.length) throw new AppServerRoutingError("Save gateway model preferences separately from native configuration changes");
     let desktop: ObjectValue;
     try { desktop = applyDesktopEdits(object(this.preferences.desktop), desktopEdits); }
     catch { throw new AppServerRoutingError("Gateway desktop display settings contain an unsupported value"); }
     const preferences: ObjectValue = { ...this.preferences, ...Object.fromEntries(local.map(edit => [String(edit.keyPath), edit.value])),
       ...(Object.keys(desktop).length ? { desktop } : {}) };
     if (modelEdit && chosen !== this.preferences.model && !local.some(edit => edit.keyPath === "service_tier")) delete preferences.service_tier;
+    return preferences;
+  }
+  /** Saves the planned defaults; a mixed batch answers with what the native engine returned. */
+  private async commitPreferences(preferences: ObjectValue, forwarded?: ObjectValue): Promise<ObjectValue> {
     await writePrivateJson(this.preferencesPath, preferences); this.preferences = preferences;
-    return { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
+    return forwarded ?? { status: "ok", version: createHash("sha256").update(JSON.stringify(preferences)).digest("hex"), filePath: this.preferencesPath, overriddenMetadata: null };
   }
   /** The chat read already needed for routing also carries its rollout path and effort. */
   private async threadSnapshot(threadId: string): Promise<ThreadReasonSnapshot> {
@@ -386,15 +420,7 @@ export class AppServerRouter {
     }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
     if (method === "model/list") return this.models(params);
-    if (method === "config/value/write" || method === "config/batchWrite") {
-      const operation = this.writes.then(() => withPrivateFileLock(this.preferencesPath, async () => {
-        await this.readPreferences();
-        const written = await this.writePreferences(method, params);
-        if (!written) throw new AppServerRoutingError("Native Codex configuration is managed separately");
-        return written;
-      }));
-      this.writes = operation.catch(() => undefined); return operation;
-    }
+    if (method === "config/value/write" || method === "config/batchWrite") return this.writeConfig(method, params);
     let forwarded = params;
     const drops: TierDrop[] = [];
     if (method === "thread/start") {
