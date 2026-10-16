@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
-import { mkdir, lstat, chmod, link, unlink, rename, readFile } from "node:fs/promises";
+import { mkdir, lstat, chmod, link, unlink, rename, readFile, open } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Readable } from "node:stream";
 import { once } from "node:events";
@@ -10,7 +10,7 @@ import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState } from "./self-update.js";
-import type { SshSocketReplacement } from "./ssh-socket.js";
+import { previousLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
 
 /** What the process owning a listener uses to retire it after an install. */
 export interface UnixListenerControl {
@@ -21,6 +21,31 @@ export interface UnixListenerControl {
    * gone or belonged to another listener: this one retires either way, but it moved nothing, so
    * the caller must not log a self upgrade for it. */
   retire(): Promise<boolean>;
+}
+
+/**
+ * A publish failed before the rename: put the ownership record back as it was, then drop the
+ * staged link. The link goes only once the record reads as it did before. While the record still
+ * names the listener that failed to publish, the staged link is what lets the next bootstrap
+ * recognise the half-finished swap and repair it, so it must not be removed first.
+ */
+async function abandonPublish(leasePath: string, staged: string, before: string | undefined): Promise<void> {
+  const current = () => readFile(leasePath, "utf8").catch(() => undefined);
+  if (await current() !== before) {
+    if (before === undefined) await unlink(leasePath).catch(() => {});
+    else await writeRecord(leasePath, before).catch(() => {});
+  }
+  if (await current() === before) await unlink(staged).catch(() => {});
+}
+
+/** Replace a private record with exact text, through a temporary file and a rename. */
+async function writeRecord(path: string, text: string): Promise<void> {
+  const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    const file = await open(temporary, "wx", 0o600);
+    try { await file.writeFile(text); await file.sync(); } finally { await file.close(); }
+    await rename(temporary, path);
+  } catch (error) { await unlink(temporary).catch(() => {}); throw error; }
 }
 
 export function unixSocketPath(listen: string): string {
@@ -39,8 +64,8 @@ export function unixSocketPath(listen: string): string {
  * the listener can watch for an install and retire it; see `codex-shim`. Its second argument
  * reports whether the publish dropped a listener this call was told to replace.
  * `replace` carries a deferred swap decided by `reuseSshSocket`: the public alias currently
- * held by another listener that may be unlinked, but only inside the publish lock below, so
- * nothing is removed unless this process actually binds and publishes its own socket.
+ * held by another listener, which an atomic rename may replace, but only inside the publish
+ * lock below, so nothing is displaced unless this process actually binds and publishes its own socket.
  */
 export async function serveUnix(path: string, signal: AbortSignal,
   session: (input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal) => Promise<unknown>,
@@ -52,7 +77,7 @@ export async function serveUnix(path: string, signal: AbortSignal,
   const directory = await lstat(dirname(path));
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o022)) throw new Error("Unix socket directory must be owned by this user and not writable by others");
   // A pending replacement may keep an existing alias: serve it to the check under the publish
-  // lock, which verifies the inode/device, socket kind, and ownership before unlinking anything.
+  // lock, which verifies the inode/device, socket kind, and ownership before renaming over it.
   try { const alias = await lstat(path, { bigint: true }); if (!replace || String(alias.ino) !== replace.inode || String(alias.dev) !== replace.device) throw occupied(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   // Node unlinks its bind path on close. Bind privately, then expose a hard link
@@ -121,17 +146,20 @@ export async function serveUnix(path: string, signal: AbortSignal,
       // alias is the readiness signal and a reader must find the record as soon as it appears.
       // The release name is capped, so the record stays well under the 4096 byte limit readers enforce.
       const leasePath = path + ".gateway-lease"; const staged = boundPath + ".alias";
-      const previous = await readFile(leasePath, "utf8").catch(() => undefined);
+      // What crashed bootstraps left behind never blocks this one; a failure here is not a reason to stop.
+      await sweepSshLeftovers(path, [basename(boundPath)]).catch(() => {});
+      const before = await readFile(leasePath, "utf8").catch(() => undefined);
+      // The record of the listener being displaced rides inside the new one. If this process dies
+      // between the two steps below, the alias is still the old listener's while the record names
+      // this one, and the next bootstrap uses `previous` to recognise that and repair it.
+      const displaced: SshLeasePrevious | undefined = alias ? previousLease(before, dirname(path), alias) : undefined;
       await link(boundPath, staged);
       try {
         await writePrivateJson(leasePath,
-          { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}) });
+          { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}), ...(displaced ? { previous: displaced } : {}) });
         await rename(staged, path);
       } catch (error) {
-        // Nothing was swapped: drop the staged link and put the previous ownership record back.
-        await unlink(staged).catch(() => {});
-        if (previous === undefined) await unlink(leasePath).catch(() => {});
-        else { try { await writePrivateJson(leasePath, JSON.parse(previous)); } catch { /* the previous record was unreadable already */ } }
+        await abandonPublish(leasePath, staged, before);
         throw error;
       }
     });
