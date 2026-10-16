@@ -64,7 +64,7 @@ test("every metadata SDK spawn receives clean arguments and preserves the native
   } finally { f.close(); }
 });
 
-test("the actual shim applies aliases after preflight and respects native and current CLI hooks", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+test("the actual shim applies aliases after preflight and respects native and current CLI hooks", { skip: process.platform === "win32", timeout: 60000 }, async () => {
   const cases = [
     { base: undefined, legacy: true, current: undefined, expected: ["features.hooks=true", "features.code_mode.enabled=true"] },
     { base: false, legacy: true, current: undefined, expected: ["features.code_mode.enabled=true"] },

@@ -30,7 +30,7 @@
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "node --test dist/tests/*.test.js",
+    "test": "node scripts/run-tests.mjs",
     "version:next": "node scripts/release-version.mjs",
     "start": "node dist/cli.js serve"
   },

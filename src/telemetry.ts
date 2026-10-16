@@ -29,6 +29,9 @@ function safe(value: TelemetryValue): TelemetryValue {
   return bounded.includes("/Users/") ? bounded.replace(/\/Users\/[^ ]*\/([^/ ]+)/g, ".../$1") : bounded;
 }
 
+/** The same character filter other local logs apply to free text. */
+export const safeTelemetryValue = safe;
+
 export function telemetryFields(fields: Record<string, unknown>): Record<string, TelemetryValue> {
   const result: Record<string, TelemetryValue> = {};
   for (const [key, value] of Object.entries(fields)) {

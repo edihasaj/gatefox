@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { busyActivities, registerActivityProbe, registerShutdownHook, runShutdownHooks, runtimeBusy, shutdownDrainMs, maxShutdownDrainMs, serviceStopTimeoutMs } from "../runtime-activity.js";
+import { busyActivities, registerActivityProbe, registerShutdownHook, runShutdownHooks, runtimeBusy, shutdownDrainMs, maxShutdownDrainMs, serviceStopTimeoutMs, serveExitDeadlineMs, inferenceStopGraceMs, worstServiceStopMs, componentStopMs } from "../runtime-activity.js";
 
 test("activity probes report busy work, a throwing probe counts as idle, and removal works", () => {
   assert.equal(runtimeBusy(), false);
@@ -57,8 +57,20 @@ test("the shutdown drain defaults to 4 s and clamps the environment override", (
     }
   } finally { if (previous === undefined) delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; else process.env.GATEWAY_SHUTDOWN_DRAIN_MS = previous; }
   // The longest stop: drain, 2.5 s inference grace before SIGKILL, 2.5 s execution host close.
-  const worstStop = maxShutdownDrainMs + 2500 + 2500;
-  assert.ok(worstStop <= 10000, "the longest service stop fits the 10 s bootout timeout callers use");
-  assert.ok(serviceStopTimeoutMs > worstStop, "launchctl bootout outlasts the longest service stop");
+  assert.equal(worstServiceStopMs, maxShutdownDrainMs + 2500 + componentStopMs);
+  assert.ok(worstServiceStopMs <= 10000, "the longest service stop fits the 10 s bootout timeout callers use");
+  assert.ok(serviceStopTimeoutMs > worstServiceStopMs, "launchctl bootout outlasts the longest service stop");
   assert.ok(serviceStopTimeoutMs <= 20000, "and stays inside launchd's default exit timeout");
+});
+
+test("a stopping server exits (after recording its requests) before the supervisor kills it, whatever the drain", () => {
+  const previous = process.env.GATEWAY_SHUTDOWN_DRAIN_MS;
+  try {
+    for (const drain of ["0", "100", "4000", "5000", "99999"]) {
+      process.env.GATEWAY_SHUTDOWN_DRAIN_MS = drain;
+      assert.equal(serveExitDeadlineMs(), shutdownDrainMs() + 1500, drain);
+      assert.ok(inferenceStopGraceMs() - serveExitDeadlineMs() >= 1000, `${drain}: the supervisor waits at least 1 s past the exit deadline for the records to be written and the process to leave`);
+      assert.ok(inferenceStopGraceMs() + componentStopMs <= worstServiceStopMs, `${drain}: the stop fits the worst service stop`);
+    }
+  } finally { if (previous === undefined) delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; else process.env.GATEWAY_SHUTDOWN_DRAIN_MS = previous; }
 });

@@ -1,18 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, chmod, rm } from "node:fs/promises";
+import { chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import { SharedNativeConnection } from "../shared-native-connection.js";
 import type { Message } from "../app-server-connection.js";
+import { shortFolder } from "./short-folder.js";
 
 type Received = { socket: WebSocket; client: number; message: Message };
 async function fixture(onRequest: (value: Received) => void) {
-  const directory = await mkdtemp("/tmp/gw-native-client-");
-  const path = join(directory, "native.sock");
+  const folder = await shortFolder("gw-native-client-");
+  const path = join(folder.directory, "native.sock");
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const sockets: WebSocket[] = [];
@@ -29,15 +30,16 @@ async function fixture(onRequest: (value: Received) => void) {
     for (const socket of sockets) socket.terminate();
     await new Promise<void>(resolve => wss.close(() => resolve()));
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    await rm(directory, { recursive: true, force: true });
+    await folder.remove();
   } };
 }
 
 async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100; i++) { if (check()) return; await delay(5); }
+  // A socket event that never comes fails here after ten seconds, or earlier by the test's own timeout; a loaded machine fails nothing.
+  for (let i = 0; i < 2000; i++) { if (check()) return; await delay(5); }
   assert.fail("Expected native socket activity did not arrive");
 }
-const options = { skip: process.platform === "win32", timeout: 5000 };
+const options = { skip: process.platform === "win32", timeout: 30000 };
 
 test("shared native clients retain independent RPC sessions while using the same engine threads", options, async () => {
   const threads = new Map<string, Message>();

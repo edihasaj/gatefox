@@ -253,7 +253,7 @@ export class ClaudeSession {
     for (const message of attached.queue.splice(0)) this.detached(message, eventType(message));
     if (this.retiring) void this.close("closed", this.retiring);
     const served = turn.fast ? { serviceTier: this.fastState === "on" ? "priority" as const : "default" as const } : {};
-    return [...calls.map(call => ({ type: "tool" as const, call })), { type: "done", usage: end.usage, ...served }];
+    return [...calls.map(call => ({ type: "tool" as const, call })), { type: "done", usage: end.usage, accounting: { cacheWriteTokens: end.tokens.cacheWrite }, ...served }];
   }
 
   /** Cancels the attached request: interrupt keeps the process, unless a tool call was being written. */

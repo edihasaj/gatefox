@@ -2,14 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { mkdtemp, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { WebSocketServer } from "ws";
 import { setTimeout as delay } from "node:timers/promises";
 import { NativeControl } from "../native-control.js";
+import { shortFolder } from "./short-folder.js";
 
 test("native control forwards real status and reconnects after the relay restarts", { skip: process.platform === "win32", timeout: 10000 }, async () => {
-  const home = await mkdtemp("/tmp/gw-native-control-"); await mkdir(join(home, "app-server-control"));
+  const folder = await shortFolder("gw-native-control-"); const home = folder.directory; await mkdir(join(home, "app-server-control"));
   const path = join(home, "app-server-control/app-server-control.sock");
   const events: Record<string, unknown>[] = []; let generation = 0;
   async function open() {
@@ -34,5 +35,5 @@ test("native control forwards real status and reconnects after the relay restart
       await delay(100); try { next = await control.request("remoteControl/status/read", {}); if (next.generation === 2) break; } catch { /* waiting for the owned relay */ }
     }
     assert.equal(next?.generation, 2); assert.ok(events.some(event => (event.params as Record<string, unknown>).generation === 2));
-  } finally { control.close(); await stop(); }
+  } finally { control.close(); await stop(); await folder.remove(); }
 });

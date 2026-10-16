@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, readFile, lstat } from "node:fs/promises";
+import { mkdir, writeFile, readFile, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import { reuseSshSocket, sshControlHome } from "../ssh-socket.js";
 import { shimFiles } from "./shim-fixture.js";
+import { shortFolder } from "./short-folder.js";
 
 test("SSH control scope separates configs and native homes", () => {
   assert.equal(sshControlHome("/a/config", "/a/native"), sshControlHome("/a/config", "/a/native"));
@@ -16,7 +17,7 @@ test("SSH control scope separates configs and native homes", () => {
 });
 
 test("SSH listeners reuse live sockets and recover their own crashed sockets without native IPC changes", { skip: process.platform === "win32", timeout: 15000 }, async () => {
-  const f = await shimFiles(); const control = await mkdtemp("/tmp/gw-ssh-test-");
+  const f = await shimFiles(); const folder = await shortFolder("gw-ssh-test-"); const control = folder.directory;
   const nativeDirectory = join(f.nativeHome, "app-server-control"); await mkdir(nativeDirectory);
   const nativeSocket = join(nativeDirectory, "app-server-control.sock"); await writeFile(nativeSocket, "native-ipc-must-stay");
   const path = join(control, "app-server-control/app-server-control.sock");
@@ -32,7 +33,7 @@ test("SSH listeners reuse live sockets and recover their own crashed sockets wit
     await assert.rejects(lstat(path));
     assert.equal(await readFile(nativeSocket, "utf8"), "native-ipc-must-stay");
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
-  } finally { child.kill("SIGTERM"); await exited; f.close(); }
+  } finally { child.kill("SIGTERM"); await exited; f.close(); await folder.remove(); }
 });
 
 test("SSH proxy redirects only its child control home and never needs gateway credentials", { skip: process.platform === "win32" }, async () => {
@@ -46,7 +47,7 @@ test("SSH proxy redirects only its child control home and never needs gateway cr
 });
 
 test("simultaneous SSH bootstraps retain one listener and a matching ownership record", { skip: process.platform === "win32", timeout: 15000 }, async () => {
-  const f = await shimFiles(); const control = await mkdtemp("/tmp/gw-ssh-race-");
+  const f = await shimFiles(); const folder = await shortFolder("gw-ssh-race-"); const control = folder.directory;
   const path = join(control, "app-server-control/app-server-control.sock");
   const args = [f.cli, "codex-shim", "--ssh", "--ssh-home", control, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"];
   const children = [0, 1].map(() => spawn(process.execPath, args, { env: f.env, stdio: "ignore" }));
@@ -59,11 +60,13 @@ test("simultaneous SSH bootstraps retain one listener and a matching ownership r
     const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
     assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
-  } finally { for (const child of children) child.kill("SIGTERM"); await Promise.all(exited); f.close(); }
+  } finally { for (const child of children) child.kill("SIGTERM"); await Promise.all(exited); f.close(); await folder.remove(); }
 });
 
 test("SSH recovery refuses an unrecorded socket path", { skip: process.platform === "win32" }, async () => {
-  const dir = await mkdtemp("/tmp/gw-ssh-foreign-"); const path = join(dir, "rpc.sock");
-  await writeFile(path, "keep-this");
-  await assert.rejects(reuseSshSocket(path)); assert.equal(await readFile(path, "utf8"), "keep-this");
+  const folder = await shortFolder("gw-ssh-foreign-"); const path = join(folder.directory, "rpc.sock");
+  try {
+    await writeFile(path, "keep-this");
+    await assert.rejects(reuseSshSocket(path)); assert.equal(await readFile(path, "utf8"), "keep-this");
+  } finally { await folder.remove(); }
 });

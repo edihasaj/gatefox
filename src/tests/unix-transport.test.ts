@@ -9,6 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { unixSocketPath, serveUnix } from "../unix-transport.js";
 import { shimFiles } from "./shim-fixture.js";
+import { shortFolder } from "./short-folder.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
 import { reuseSshSocket } from "../ssh-socket.js";
 
@@ -20,7 +21,7 @@ test("Unix addresses exclude network listeners, relative paths, and oversized so
 });
 
 test("Unix readiness never exposes a socket before its ownership record", { skip: process.platform === "win32", timeout: 10000 }, async () => {
-  const dir = await mkdtemp("/tmp/gw-publication-"); const path = join(dir, "rpc.sock");
+  const folder = await shortFolder("gw-publication-"); const dir = folder.directory; const path = join(dir, "rpc.sock");
   const controller = new AbortController(); let running: Promise<void> | undefined;
   try {
     await withPrivateFileLock(path + ".gateway-lease", async () => {
@@ -37,7 +38,7 @@ test("Unix readiness never exposes a socket before its ownership record", { skip
     const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
     assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
     assert.equal(await reuseSshSocket(path), true);
-  } finally { controller.abort(); await running; }
+  } finally { controller.abort(); await running; await folder.remove(); }
 });
 
 test("Unix clients get combined models, isolated approvals, and disconnect recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {

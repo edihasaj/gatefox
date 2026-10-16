@@ -13,7 +13,7 @@ import { configureTelemetry, telemetry } from "./telemetry.js";
 import { errorClass } from "./turn-telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
-import { shutdownDrainMs } from "./runtime-activity.js";
+import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped"; pid?: number; restarts: number; nextRestartAt?: string }
 const execFileAsync = promisify(execFile);
@@ -173,7 +173,7 @@ export class ServiceSupervisor {
     // of the usual grace. Shared executors are its local clients: the host closes only
     // once inference has exited, or their running streams would end as cancelled. Plans
     // override only PATH and SSH_AUTH_SOCK, so inference inherits this drain setting.
-    const grace = (slot: Slot) => slot.definition.kind === "inference" ? shutdownDrainMs() + 2500 : 2500;
+    const grace = (slot: Slot) => slot.definition.kind === "inference" ? inferenceStopGraceMs() : componentStopMs;
     const inference = this.slots.filter(slot => slot.definition.kind === "inference" && slot.child);
     for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
     const executionClose = this.executionStarting && Promise.all(inference.map(slot => within(slot.exited, grace(slot))))

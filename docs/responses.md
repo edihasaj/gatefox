@@ -17,6 +17,12 @@ Claude, Copilot and other rows, and clients without a native catalog, get no
 model-specific base prompt. Explicit and resumed client instructions remain
 authoritative.
 
+**Response ids.** Every response id is `resp_<32 hex>`. While the usage ledger is on
+([diagnostics](diagnostics.md#usage-ledger)), responses from Copilot and Claude
+subscription routes use `resp_gl_<request id without dashes>`, the same hex as the
+`X-Request-Id` header. Usage and billing detail (cache writes, reasoning tokens,
+Copilot credits) stay in the local ledger and never appear in the response.
+
 The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
 the older nested function definition format for existing Chat Completions clients.
@@ -269,7 +275,8 @@ Chat Completions providers ignore every service tier.
 Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
 setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
 `flex` has no Claude equivalent, so it runs the turn as Standard with no fast mode
-setting; other tiers are rejected before the CLI starts. The CLI reports its fast mode
+setting; any other tier the model does not offer (`scale`, an unknown name) is
+rejected before the CLI starts. The CLI reports its fast mode
 state. When fast mode stays on, the completion reports `priority`. When Claude
 refuses it (for example, no usage credits) and falls back to standard speed, the
 turn still completes and reports `default`.
@@ -279,8 +286,21 @@ SDK custom tools and returns their real calls before any execution. SDK reasonin
 summaries stream separately; `auto` requests a concise summary. The adapter rejects
 BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
-Cancellation stops the request's CLI process and waits for it to exit. The next
-request starts a separate session and replays caller-supplied history.
+By default the thread keeps one live CLI session, and a request sends only the
+items that are new; see [live Copilot sessions](copilot-sessions.md). Cancelling a
+live request aborts its session and kills its CLI process (about 2 seconds: the abort is bounded to
+2 seconds, then the CLI is killed and its folder removed); the
+request hands over the usage the CLI reports meanwhile and then ends. The next request
+starts a new session and sends the caller-supplied history once. Cancelling a one-shot request stops
+its CLI process and waits for it to exit; a process outside the CLI's group that keeps its output open
+delays that by half a second of silence on the CLI's output, or by at most about 5 seconds (100 ticks) when output keeps arriving, after which the gateway closes its pipes. Either way, usage the CLI reported before the
+cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry. A request a live session
+cannot serve gets its own session, with the same system message, the caller's whole tool
+catalog and one user message per history item. That happens, for example, for a request
+without a thread id; a compaction, prewarm or memory request; a second request while the
+thread's first still runs; no free slot; a session that fails to start, does not accept a
+tool result or dies before its first event; or `copilotSessions.mode: "oneshot"`. The
+[full list](copilot-sessions.md#how-a-request-is-served) names each case.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
@@ -404,7 +424,12 @@ update. Live sessions reseed once after an inference restart anyway, so they pay
 that same single write.
 
 Claude receives native image blocks through the official CLI's streamed input.
-Copilot receives private SDK image attachments, deleted with the request session.
+Copilot receives a history item's images as file attachments on the message that owns
+them: the gateway writes each image (mode 0600) into the CLI's private folder, which is
+removed with the session, because one RPC message to the CLI is limited to 16 MiB.
+Tool-output images travel inline as binary results of the waiting tool call while the
+result stays within 12 MiB; a larger one starts the thread's session over, which sends
+those images as files too.
 Their text conversation contains labels for image ownership and order, never the
 image bytes. Each native harness controls its own image preprocessing. Codex and
 ordinary Responses upstreams retain the original image parts and detail setting.

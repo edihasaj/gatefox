@@ -26,11 +26,21 @@ endpoint. Each account has its own provider ID, model aliases, and credentials.
 Routing never switches accounts or billing modes after a failure.
 
 Copilot uses the installed GitHub Copilot CLI's [SDK protocol](https://docs.github.com/en/copilot/how-tos/copilot-sdk/troubleshooting/compatibility) 3 and subscription
-login. Per-request sessions expose only caller tools, disable local instruction
-discovery, and are deleted after inference. Inherited BYOK settings and GitHub
-token overrides are removed. The adapter verifies the reported subscription
+login. Sessions expose only caller tools and disable local instruction
+discovery. A one-shot session whose turn ended with a complete text answer is deleted
+after inference; any other one-shot end kills its CLI. Live sessions (the
+default) last until they park out, are evicted or are closed, and their CLI is
+then killed and its private folder removed (see
+[live Copilot sessions](docs/copilot-sessions.md)). Inherited BYOK settings and
+GitHub token overrides are removed. The adapter verifies the reported subscription
 route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
+By default the gateway keeps one live Copilot session per Codex thread, so Copilot's
+prompt cache stays warm across a tool loop; the same history sent as a new session on
+every request rewrites most of it to the cache each time, which cost about 9.5 times
+as much as the same work in a native Copilot session. Set `copilotSessions.mode: "oneshot"` on
+the provider to turn that off, which is also what a request falls back to when a live
+session cannot serve it (see [live Copilot sessions](docs/copilot-sessions.md)).
 
 The Apple Silicon installer bundles a verified Node runtime. Subscription
 inference hosts also need the native CLI for each configured provider. Desktop
@@ -165,7 +175,15 @@ jobs with one supervisor. Apply with `--apply` after local and remote chats fini
 The migration preserves endpoints and saves rollback copies. See
 [service ownership](docs/services.md).
 
-Development gate: `npm run build && npm run check && npm test`.
+Development gate: `npm run build && npm run check && npm test`. `npm test` runs the suite under a private
+temporary folder and a private home folder (`scripts/run-tests.mjs`, `HOME` is `<folder>/home`) that it removes
+afterwards, so the real ones are left as they were, including `~/.local/state/gw-exec`, where execution hosts keep their
+folders, receipts and socket links; name test files
+after `--` to run only those. The runner fails a test that sets no timeout after 120 s
+(`GATEWAY_TEST_TIMEOUT_MS`), lets a test file exit once its tests have ended, and runs the suite in its own
+process group, so a signal to the runner stops every test process and it exits with 128 plus the signal. Each test
+process exits on the signal, so the Copilot CLIs it started (they run in groups of their own) stop with it, and the runner
+removes the stale sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders.
 Hosted macOS native CI is manual-only: dispatch from `production` with
 **Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).

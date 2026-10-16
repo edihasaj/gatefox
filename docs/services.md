@@ -86,7 +86,9 @@ configuration) fail at once with a retryable `upstream_unavailable` "Gateway is
 restarting; retry shortly", and no provider call is made, so nothing is paid for
 twice. Requests still running at the deadline end the same way and are not
 reported to GlitchTip. Codex retries them against the restarted server. The
-supervisor gives inference the drain plus 2.5 seconds before SIGKILL, and closes
+inference process itself leaves the drain plus 1.5 seconds after the stop began, after it
+has recorded the requests still running (a `failed` ledger row with the usage received so
+far); the supervisor gives it the drain plus 2.5 seconds before SIGKILL, and closes
 the shared execution host after inference exits, which takes up to 2.5 seconds
 more. A stop with a busy stream therefore takes at most the drain plus 5 seconds:
 9 seconds by default and 10 seconds at the maximum, within the 10-second timeout

@@ -10,8 +10,9 @@ import { ServiceSupervisor } from "../service-supervisor.js";
 import { readServicePlan, validateServicePlan, serviceStatusPath, type ServiceComponent } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 
+// Waits up to a minute: a state that is never reached fails the test, and a loaded machine (children are processes) fails nothing.
 async function until(predicate: () => Promise<boolean>): Promise<void> {
-  for (let attempt = 0; attempt < 200; attempt++) { if (await predicate()) return; await delay(20); }
+  for (let attempt = 0; attempt < 3000; attempt++) { if (await predicate()) return; await delay(20); }
   assert.fail("Service did not reach the expected state");
 }
 function component(directory: string, id: string, kind: ServiceComponent["kind"], source: string): ServiceComponent {
@@ -44,7 +45,7 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
-test("a missing child executable moves the component to the waiting state", async () => {
+test("a missing child executable waits for its backoff and shutdown stops it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-"));
   const child = component(directory, "native", "native", ""); child.command = join(directory, "absent");
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
@@ -52,25 +53,28 @@ test("a missing child executable moves the component to the waiting state", asyn
     await supervisor.start();
     await until(async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0].state === "waiting");
   } finally { await supervisor.stop(); }
+  const stopped = JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0];
+  assert.equal(stopped.state, "stopped"); assert.ok(stopped.restarts >= 1, "the missing executable was retried with a backoff");
 });
 
 test("shutdown during a failed component's backoff cancels its retry", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-cancel-"));
-  const marker = join(directory, "starts");
-  const failing = component(directory, "native", "native", `require('fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(1)`);
-  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [failing] }, directory, 100);
-  const read = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { components: Array<{ state: string; restarts: number; nextRestartAt?: string }> };
-  const starts = async () => (await readFile(marker, "utf8")).length;
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-cancel-")); const marker = join(directory, "starts");
+  // A child that exists, notes each start by appending one byte, and exits at once.
+  const failing = component(directory, "native", "native", `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(1)`);
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [failing] }, directory, 400);
+  const status = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0] as { state: string; restarts: number; nextRestartAt?: string };
+  const starts = async () => (await readFile(marker, "utf8").catch(() => "")).length;
   try {
     await supervisor.start();
-    await until(async () => { const first = (await read()).components[0]; return first.state === "waiting" && !!first.nextRestartAt; });
-    // The retry time is read before stop() so the wait below is measured against the timer stop() must cancel.
-    const retryAt = Date.parse((await read()).components[0].nextRestartAt!);
+    // The retry time is read in the same status as the waiting state, so the wait below is measured against the timer stop() must cancel.
+    let due = 0;
+    await until(async () => { const current = await status(); if (current.state === "waiting" && current.nextRestartAt) due = Date.parse(current.nextRestartAt); return due > 0; });
     await supervisor.stop();
-    const afterStop = await starts();
-    await delay(Math.max(0, retryAt + 500 - Date.now()));
+    // Whatever a loaded machine let run before stop(), the count at stop() is the baseline: no start may follow, past the due time and 500 ms more.
+    const afterStop = await starts(); assert.ok(afterStop >= 1, "the child ran");
+    await delay(Math.max(0, due + 500 - Date.now()));
     assert.equal(await starts(), afterStop, "a cancelled retry never starts the component again");
-    assert.equal((await read()).components[0].state, "stopped");
+    const stopped = await status(); assert.equal(stopped.state, "stopped"); assert.equal(stopped.nextRestartAt, undefined);
   } finally { await supervisor.stop(); }
 });
 

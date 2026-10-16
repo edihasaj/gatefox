@@ -204,7 +204,7 @@ export class ClaudeSubscription implements Provider {
         end = step.end; if (end.kind !== "end_turn") break;
         // The turn is complete at its end_turn delta: answer now. The CLI's result can follow a post-turn summary seconds later.
         tokens = end.tokens; validateForcedChoice([], run.choice);
-        settle = setTimeout(kill, 100); yield { type: "done", usage: end.usage, ...served() };
+        settle = setTimeout(kill, 100); yield { type: "done", usage: end.usage, accounting: { cacheWriteTokens: end.tokens.cacheWrite }, ...served() };
       }
       if (end?.kind === "end_turn") return;
       if (signal.aborted) throw cancelled();
@@ -213,7 +213,7 @@ export class ClaudeSubscription implements Provider {
       const calls = end.kind === "tool_use" ? end.calls : [];
       validateForcedChoice(calls, run.choice);
       for (const call of calls) yield { type: "tool", call };
-      yield { type: "done", usage: end.usage, ...served() };
+      yield { type: "done", usage: end.usage, accounting: { cacheWriteTokens: end.tokens.cacheWrite }, ...served() };
     } finally {
       signal.removeEventListener("abort", cancel); lines.close(); clearTimeout(settle);
       // After a result the CLI exits on its own; anything else is stopped now, including the post-turn summary after end_turn.
