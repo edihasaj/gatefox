@@ -5,8 +5,18 @@ type Block = { type: "text"; text: string } | { type: "tool_use"; id: string; na
 type StopReason = "end_turn" | "tool_use" | "max_tokens" | "stop_sequence";
 const identifier = () => `msg_${randomUUID().replaceAll("-", "")}`;
 
-/** Maps gateway failures to Anthropic's native, public error envelope. */
-export function anthropicError(code: string, message: string, status?: number): { type: "error"; error: { type: string; message: string } } {
+/**
+ * Claude Code compacts reactively only when an error message contains "prompt is too long", and reads the token gap from
+ * "<n> tokens > <max>". The gateway's own text for the failure code is not recognized, so the Messages envelope says it this way.
+ */
+function contextOverflowMessage(contextTokens?: { used: number; maximum: number }): string {
+  return contextTokens ? `prompt is too long: ${contextTokens.used} tokens > ${contextTokens.maximum} maximum`
+    : "prompt is too long: the request exceeds the model's context window";
+}
+
+/** Maps gateway failures to Anthropic's native, public error envelope. `contextTokens` are the counts an upstream context overflow reported. */
+export function anthropicError(code: string, message: string, status?: number, contextTokens?: { used: number; maximum: number }): { type: "error"; error: { type: string; message: string } } {
+  if (code === "context_length_exceeded") return { type: "error", error: { type: "invalid_request_error", message: contextOverflowMessage(contextTokens) } };
   const type = code === "authentication" || status === 401 ? "authentication_error"
     : code === "cross_origin" || code === "permission" || status === 403 ? "permission_error"
     : code === "model_not_found" || code === "not_found" || status === 404 ? "not_found_error"
@@ -91,8 +101,8 @@ export class MessagesWriter {
       case "done": this.finish(event); return;
     }
   }
-  fail(code: string, message: string, status?: number): void {
+  fail(code: string, message: string, status?: number, contextTokens?: { used: number; maximum: number }): void {
     if (this.status !== "in_progress") return;
-    this.status = "failed"; this.emit(anthropicError(code, message, status));
+    this.status = "failed"; this.emit(anthropicError(code, message, status, contextTokens));
   }
 }

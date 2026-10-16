@@ -22,7 +22,7 @@ import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
-import { flushRecords, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
+import { flushRecords, gatewayMarkedId, recordUsage, usageLedgerMarks, type LedgerStatus } from "./usage-ledger.js";
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
@@ -256,8 +256,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
     const messagesProtocol = path === "/v1/messages" || path === "/v1/messages/count_tokens";
     const countTokens = path === "/v1/messages/count_tokens";
-    const fail = (status: number, code: string, message: string) => send(res, status,
-      messagesProtocol ? { ...anthropicError(code, message, status), request_id: requestId } : { error: { code, message } });
+    const fail = (status: number, code: string, message: string, contextTokens?: { used: number; maximum: number }) => send(res, status,
+      messagesProtocol ? { ...anthropicError(code, message, status, contextTokens), request_id: requestId } : { error: { code, message } });
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
     if (messagesProtocol) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
@@ -304,6 +304,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const known = classifyProviderFailure(error, abortCause);
       if (recorded) return known;
       recorded = true;
+      // Token counting is declined by design, not a failure: Claude Code calls it routinely, so it gets no failure record or stderr line.
+      if (countTokens && known.code === "unsupported_protocol" && known.status === 501) { telemetry("request_unsupported", { requestId, route: path, endpoint: "count_tokens" }); ledger("failed"); return known; }
       // A rejected Responses request says which fixed class of data it rejected.
       const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
@@ -363,8 +365,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const streaming = request.stream === true;
       let lastEventAt = Date.now(); let opened = false;
       // A marked id lets a spend tool match this request to the client's own record of the response.
-      const marked = usageLedgerMarks(route.type) ? "_gl_" + requestId.replaceAll("-", "") : undefined;
-      responseId = marked ? (messagesProtocol ? "msg" : "resp") + marked : undefined;
+      responseId = usageLedgerMarks(route.type) ? gatewayMarkedId(messagesProtocol ? "messages" : "responses", requestId) : undefined;
       const Writer = messagesProtocol ? MessagesWriter : ResponsesWriter;
       const output = writer = new Writer(request.model, event => { if (streaming && !res.destroyed) {
         lastEventAt = Date.now();
@@ -443,12 +444,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, known.status);
+          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, known.status, known.upstream?.contextTokens);
           else writer.fail(streamFailureCode(known), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }
-        else fail(known.status, known.code, known.message);
+        else fail(known.status, known.code, known.message, known.upstream?.contextTokens);
       }
     } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };
