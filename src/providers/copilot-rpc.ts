@@ -57,11 +57,12 @@ export class CopilotRPC {
     // has exited, its output is given `exitGraceMs` to say anything more; after that much silence the pipes are closed from this
     // side. Silence is counted in ticks, not by the clock: a process that was held up for longer than the grace has had one tick,
     // not all of them, and reads what is waiting for it before it can close anything.
+    // Output that never falls silent is bounded the same way: at most 100 ticks since the CLI exited, however busy its output was.
     this.child.once("exit", () => {
-      const tick = Math.max(5, Math.floor(rpcLimits.exitGraceMs / 10)); let seen = this.chunks; let silent = 0;
+      const tick = Math.max(5, Math.floor(rpcLimits.exitGraceMs / 10)); let seen = this.chunks; let silent = 0; let total = 0;
       const timer = setInterval(() => {
-        if (this.chunks !== seen) { seen = this.chunks; silent = 0; return; }
-        if (++silent < 10) return;
+        const arrived = this.chunks !== seen; if (arrived) { seen = this.chunks; silent = 0; } else silent++;
+        if (++total < 100 && (arrived || silent < 10)) return;
         clearInterval(timer);
         this.failure ??= new ProviderError("cli_failed", "Copilot CLI closed before completion");
         for (const stream of [this.child.stdout, this.child.stdin, this.child.stderr]) stream.destroy();

@@ -287,7 +287,7 @@ live request aborts its session and kills its CLI process (about 2 seconds: the 
 request hands over the usage the CLI reports meanwhile and then ends. The next request
 starts a new session and sends the caller-supplied history once. Cancelling a one-shot request stops
 its CLI process and waits for it to exit; a process outside the CLI's group that keeps its output open
-delays that by half a second of silence on the CLI's output, after which the gateway closes its pipes. Either way, usage the CLI reported before the
+delays that by half a second of silence on the CLI's output, or by at most about 5 seconds (100 ticks) when output keeps arriving, after which the gateway closes its pipes. Either way, usage the CLI reported before the
 cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry. A request a live session
 cannot serve gets its own session, with the same system message, the caller's whole tool
 catalog and one user message per history item. That happens, for example, for a request
