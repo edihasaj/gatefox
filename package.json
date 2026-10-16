@@ -3,7 +3,7 @@
   "version": "0.4.3",
   "private": true,
   "type": "module",
-  "description": "A local gateway that serves subscription accounts to Codex and other agent harnesses as a Responses API.",
+  "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
   "license": "MIT",
   "bin": {
     "gateway": "dist/cli.js",

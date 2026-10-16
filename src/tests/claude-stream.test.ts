@@ -29,7 +29,7 @@ test("parallel tool calls end the request only at message_delta, with its output
   assert.equal(steps.findIndex(step => step.end), 8, "no end at the first assistant line");
   const end = steps[8].end!; assert.equal(end.kind, "tool_use");
   assert.deepEqual(end.kind === "tool_use" && end.calls.map(call => [call.id, call.function.name, call.function.arguments]), [["toolu_a", "alpha", "{\"path\":\"a\"}"], ["toolu_b", "beta", "{\"path\":\"b\"}"]]);
-  assert.deepEqual(end.usage, { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100 } });
+  assert.deepEqual(end.usage, { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100, cache_creation_tokens: 5 } });
   assert.deepEqual(end.tokens, { input: 10, cacheRead: 100, cacheWrite: 5, output: 64 });
   assert.equal(steps[9].end, undefined, "message_stop after the end adds nothing");
 });
@@ -123,7 +123,7 @@ test("the provider forwards every parallel call and stops the CLI before it can 
   try {
     const events = await f.infer();
     assert.deepEqual(events.map(item => item.type === "tool" ? item.call.function.name : item.type), ["alpha", "beta", "done"]);
-    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100 } }, accounting: { cacheWriteTokens: 5 } });
+    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100, cache_creation_tokens: 5 } }, accounting: { cacheWriteTokens: 5 } });
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(existsSync(posted), false, "the CLI was stopped at message_delta");
     assert.throws(() => process.kill(f.pid(), 0), { code: "ESRCH" });

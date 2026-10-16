@@ -203,12 +203,13 @@ export class ResponsesAPI implements Provider {
       const terminal = event.type === "response.completed" || event.type === "response.incomplete";
       const completed = event.response as { id?: unknown; status?: unknown; error?: unknown; incomplete_details?: { reason?: unknown }; output_text?: unknown; output?: unknown; usage?: Usage; service_tier?: unknown; end_turn?: unknown };
       const interrupted = event.type === "response.incomplete" && completed?.incomplete_details?.reason === "interrupted";
-      if (event.type === "error" || event.type === "response.failed" || (event.type === "response.incomplete" && !interrupted)) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
+      const capped = context.clientProtocol === "messages" && event.type === "response.incomplete" && completed?.incomplete_details?.reason === "max_output_tokens";
+      if (event.type === "error" || event.type === "response.failed" || (event.type === "response.incomplete" && !interrupted && !capped)) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
       if (terminal) {
         if (!completed || typeof completed !== "object" || Array.isArray(completed)) throw new ProviderError("invalid_output", "Provider returned invalid response completion metadata");
         if (completed.error !== undefined && completed.error !== null) throw responsesStreamError(event, response.headers.get("x-request-id") || undefined);
-        if (completed.status !== undefined && completed.status !== (interrupted ? "incomplete" : "completed")) throw new ProviderError("incomplete", "Provider did not complete the response");
-        if ((interrupted || completed.status === undefined) && (typeof completed.id !== "string" || !completed.id || completed.id.length > 1024 || completed.id.includes("\0"))) throw new ProviderError("invalid_output", "Provider returned invalid response completion identity");
+        if (completed.status !== undefined && completed.status !== (interrupted || capped ? "incomplete" : "completed")) throw new ProviderError("incomplete", "Provider did not complete the response");
+        if ((interrupted || capped || completed.status === undefined) && (typeof completed.id !== "string" || !completed.id || completed.id.length > 1024 || completed.id.includes("\0"))) throw new ProviderError("invalid_output", "Provider returned invalid response completion identity");
         if (completed.end_turn !== undefined && typeof completed.end_turn !== "boolean") throw new ProviderError("invalid_output", "Provider returned invalid turn completion metadata");
         if (completed.output !== undefined) {
           if (!Array.isArray(completed.output) || completed.output.length > 1024) throw new ProviderError("invalid_output", "Provider returned invalid response output");
@@ -223,7 +224,7 @@ export class ResponsesAPI implements Provider {
               if (typeof item.call_id !== "string" || snapshotCalls.has(item.call_id)) throw new ProviderError("invalid_tool_call", "Provider returned a duplicate tool call");
               snapshotCalls.add(item.call_id);
             }
-            yield* itemDone(item, true, interrupted);
+            yield* itemDone(item, true, interrupted || capped);
           }
         }
         if (!output.hasText && completed.output_text !== undefined) {
@@ -231,10 +232,12 @@ export class ResponsesAPI implements Provider {
           yield* output.legacy(completed.output_text);
         }
         if (!interrupted && unfinished.size) throw new ProviderError("invalid_tool_call", "Provider completed the response with unfinished tool calls");
-        yield* output.finish(interrupted);
+        if (capped && calls.size) throw new ProviderError("incomplete", "Provider reached its output limit while returning tools");
+        yield* output.finish(interrupted || capped);
         done = true;
         const serviceTier = publicServiceTier(completed.service_tier);
         yield { type: "done", usage: completed.usage || { input_tokens: 0, output_tokens: 0, total_tokens: 0 }, ...(serviceTier ? { serviceTier } : {}),
+          ...(capped ? { stopReason: "max_tokens" as const } : {}),
           ...(interrupted ? { interrupted: true, endTurn: false } : completed.end_turn === undefined ? {} : { endTurn: completed.end_turn }) };
         break;
       }

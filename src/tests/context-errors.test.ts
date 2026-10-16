@@ -22,6 +22,11 @@ test("only authoritative native error envelopes identify context overflow", () =
   assert.equal(claudeContextFailure({ type: "result", subtype: "success", is_error: false, result: "Prompt is too long" }), undefined);
   assert.equal(claudeContextFailure({ type: "result", subtype: "error_max_budget_usd", is_error: true, result: "Prompt is too long" }), undefined);
   assert.equal(claudeContextFailure({ type: "assistant", message: { content: [{ type: "text", text: "Prompt is too long" }] } }), undefined);
+  // The CLI's longer form for a conversation it cannot compact is still an overflow inside a native error envelope, without counts.
+  const long = claudeContextFailure({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "Prompt is too long · Run /compact or start a new chat" }] } });
+  assert.equal(long?.code, "context_length_exceeded"); assert.equal(long?.upstream?.contextTokens, undefined);
+  assert.equal(claudeContextFailure({ type: "assistant", message: { content: [{ type: "text", text: "Prompt is too long · Run /compact" }] } }), undefined);
+  assert.equal(anthropicContextFailure({ error: { type: "invalid_request_error", message: "Prompt is too long · Run /compact" } }), undefined);
   assert.ok(copilotContextFailure({ errorType: "context_length_exceeded", message: "private-token" }));
   assert.equal(copilotContextFailure({ errorType: "notification", message: "context_length_exceeded prompt is too long" }), undefined);
 });

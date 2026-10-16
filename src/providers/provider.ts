@@ -2,12 +2,15 @@ import type { ResponsesRequest, InferenceEvent } from "../protocol/types.js";
 export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; reasoningItems: number; textDeltas: number; toolCalls: number }
 export class ProviderError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502,
-    readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic }) { super(message); }
+    readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;
+      /** Token counts an upstream context overflow reported (numbers only); a Messages client uses them to size its compaction. */
+      contextTokens?: { used: number; maximum: number } }) { super(message); }
 }
 export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
-/** Caller-supplied conversation routing identifiers; never request content. */
+/** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */
 export interface InferenceContext {
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
+  clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */
   turnState?: string;
 }
