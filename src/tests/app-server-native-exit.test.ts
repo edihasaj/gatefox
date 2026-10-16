@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { AppServerBackends } from "../app-server-backends.js";
 import { AppServerConnection, object, type Message } from "../app-server-connection.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import type { GatewayConfig } from "../config.js";
 
@@ -31,6 +32,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 });
 `, { mode: 0o700 });
   const home = join(directory, "native"); const state = join(directory, "state"); await mkdir(home); await mkdir(state);
+  configureTelemetry(state, "test");
   const nativeConfig = 'model = "native-original"\n'; const nativeAuth = '{"fixtureOnly":"original-primary-secret"}\n';
   await writeFile(join(home, "config.toml"), nativeConfig, { mode: 0o600 }); await writeFile(join(home, "auth.json"), nativeAuth, { mode: 0o600 });
   const events: Message[] = []; const order: string[] = []; let exits = 0;
@@ -40,7 +42,7 @@ createInterface({input:process.stdin}).on('line',line=>{
     async message => { events.push(message); order.push(`${message.method}:${object(object(message.params).turn).status || ""}`); await hook.emit?.(message); },
     () => { exits++; order.push("native-exit"); hook.exit?.(); });
   await backend.request("initialize", { clientInfo: { name: "native-exit-fixture", version: "1" } });
-  return { backend, events, order, hook, sdk, exits: () => exits,
+  return { backend, events, order, hook, sdk, state, exits: () => exits,
     emit: (messages: Message[]) => backend.native.request("fixture/emit", { messages }),
     crash: (messages: Message[] = []) => backend.native.request("fixture/exit", { messages }).catch(() => ({})),
     async unchanged() { assert.equal(await readFile(join(home, "config.toml"), "utf8"), nativeConfig); assert.equal(await readFile(join(home, "auth.json"), "utf8"), nativeAuth); },
@@ -128,16 +130,78 @@ test("native exit forgets pending approvals and still shuts down after a disconn
   } finally { await f.clean(); }
 });
 
-test("bounded native active tracking rejects excessive new threads while retaining existing IDs", { timeout: 10000 }, async () => {
-  const f = await fixture();
+test("the native turn cap evicts the oldest thread instead of stopping the engine", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000;
   try {
     const events = Array.from({ length: 256 }, (_, index) => started(`chat-${index}`, `turn-${index}`));
     await f.emit(events); await f.emit([started("chat-0", "replacement")]);
-    await f.emit([started("overflow-chat", "overflow-turn")]).catch(() => undefined); await until(() => f.exits() === 1);
+    // Crossing the cap tracks the new thread and forgets the oldest; the engine keeps running.
+    await f.emit([started("overflow-chat", "overflow-turn")]);
+    assert.equal(f.exits(), 0);
+    await flushTelemetry();
+    const evictions = (await readTelemetry(f.state, since)).filter(event => event.event === "native_turns_evicted");
+    assert.equal(evictions.length, 1); assert.equal(evictions[0].count, 1);
+    await f.crash(); await until(() => f.exits() === 1);
     const failed = f.events.filter(message => object(object(message.params).turn).status === "failed");
-    assert.equal(failed.length, 256);
-    assert.equal(failed.some(message => object(object(message.params).turn).id === "replacement"), true);
-    assert.equal(failed.some(message => object(object(message.params).turn).id === "overflow-turn"), false);
+    assert.equal(failed.length, 256); // chat-1..255 plus the overflow thread
+    assert.equal(failed.some(message => object(object(message.params).turn).id === "overflow-turn"), true);
+    assert.equal(failed.some(message => object(message.params).threadId === "chat-0"), false);
+  } finally { await f.clean(); }
+});
+
+test("sub-agent threads closed by the engine release their tracking without stopping it", { timeout: 10000 }, async () => {
+  const f = await fixture();
+  try {
+    const pairs = [];
+    for (let index = 0; index < 300; index++) {
+      pairs.push(started(`sub-${index}`, `turn-${index}`), { method: "thread/closed", params: { threadId: `sub-${index}` } });
+    }
+    await f.emit(pairs); // 300 > the cap, yet nothing throws and the engine stays up.
+    assert.equal(f.exits(), 0);
+    await f.crash(); await until(() => f.exits() === 1);
+    assert.equal(f.events.filter(message => object(object(message.params).turn).status === "failed").length, 0);
+  } finally { await f.clean(); }
+});
+
+test("an inactive thread status releases native tracking and unknown shapes change nothing", { timeout: 10000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.emit([started("idle-chat", "turn-1"), { method: "thread/status/changed", params: { threadId: "idle-chat", status: { type: "idle", activeFlags: [] } } },
+      started("busy-chat", "turn-2"), { method: "thread/status/changed", params: { threadId: "busy-chat", status: { type: "active", activeFlags: [] } } },
+      started("odd-chat", "turn-3"), { method: "thread/status/changed", params: { threadId: "odd-chat", status: "notLoaded" } }]);
+    assert.equal(f.exits(), 0);
+    await f.crash(); await until(() => f.exits() === 1);
+    const failed = f.events.filter(message => object(object(message.params).turn).status === "failed");
+    // idle-chat's entry was released by its status; active and unrecognized shapes stay tracked.
+    assert.deepEqual(failed.map(message => object(message.params).threadId).sort(), ["busy-chat", "odd-chat"]);
+  } finally { await f.clean(); }
+});
+
+test("engine_exit records an engine-initiated crash once, with its turns", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000;
+  try {
+    await f.emit([started("chat-a", "turn-a"), started("chat-b", "turn-b")]);
+    await f.crash(); await until(() => f.exits() === 1);
+    await flushTelemetry();
+    const exits = (await readTelemetry(f.state, since)).filter(event => event.event === "engine_exit");
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0].engine, "native"); assert.equal(exits[0].initiatedBy, "engine"); assert.equal(exits[0].reason, "none");
+    assert.equal(exits[0].code, 7); assert.equal(exits[0].activeTurns, 2); assert.equal(typeof exits[0].uptimeMs, "number");
+  } finally { await f.clean(); }
+});
+
+test("engine_exit records adapter-initiated stops with their fixed reason", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000;
+  try {
+    await f.emit([started("chat", "turn")]);
+    await f.backend.stop();
+    await flushTelemetry();
+    const exits = (await readTelemetry(f.state, since)).filter(event => event.event === "engine_exit");
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0].engine, "native"); assert.equal(exits[0].initiatedBy, "adapter"); assert.equal(exits[0].reason, "session_end");
+    assert.equal(exits[0].activeTurns, 1);
+    // The intentional stop still delivers no failure to active turns, as before.
+    assert.equal(f.events.some(message => message.method === "error" || object(object(message.params).turn).status === "failed"), false);
   } finally { await f.clean(); }
 });
 

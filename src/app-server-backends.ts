@@ -1,7 +1,7 @@
 import { dirname, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
-import { AppServerConnection, isId, object, type Id, type Message } from "./app-server-connection.js";
+import { AppServerConnection, isId, object, type EngineStopReason, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { ExecutionHostClient, type NativeLaunchRecord } from "./execution-host-client.js";
@@ -21,17 +21,21 @@ import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { withStagedQueueInput } from "./queued-attachments.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { telemetry } from "./telemetry.js";
+import { NativeTurnTracker, nativeId } from "./native-turns.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
-interface NativeTurn { id: string; rootTurnId: string | null; startedAt: number | null }
-const nativeId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 1024 && !value.includes("\0");
 const nativeArguments = (args: string[], overrides: Message) => [...args,
   ...Object.entries(overrides).flatMap(([key, value]) => ["-c", `model_providers.subscription_gateway.${key}=${JSON.stringify(value)}`])];
 
 function offersPriority(models: Message[]): boolean {
   return models.some(model => readPublicServiceTierMetadata(model).serviceTiers?.some(tier => tier.id === "priority"));
+}
+
+/** Socket clients of host-owned engines ignore the reason; only a spawned process can say why it stopped. */
+function stopConnection(connection: RpcConnection, reason: EngineStopReason): void {
+  if (connection instanceof AppServerConnection) connection.stop(reason); else connection.stop();
 }
 
 function gatewayFeatureArgs(args: string[], priority: boolean): string[] {
@@ -65,9 +69,7 @@ export class AppServerBackends {
   private readonly compaction: GatewayCompaction;
   // Throwaway chats (composer prediction forks): their turns never write to the on-disk compaction store.
   private readonly ephemeralThreads = new BoundedIdSet(4096);
-  private readonly nativeActive = new Map<string, NativeTurn>();
-  private readonly nativeCompleted = new Set<string>();
-  private nativeNotificationRevision = 0;
+  private readonly nativeTurns = new NativeTurnTracker();
   private nativeExitPending?: Promise<void>;
   private finishNativeClosing!: () => void;
   private readonly nativeClosing = new Promise<void>(resolve => { this.finishNativeClosing = resolve; });
@@ -110,37 +112,27 @@ export class AppServerBackends {
     this.settings = normalizeCodexFeatureConfig(settings);
     this.compaction = new GatewayCompaction(config.stateDirectory);
     // Register only the added provider at runtime. Native account/model defaults stay intact.
-    const exited = () => {
+    const exited = (connection?: RpcConnection) => {
+      this.reportEngineExit(connection ?? this.native, this.nativeTurns.active.size);
       this.nativeExitPending = this.nativeExited().finally(() => { onNativeExit(); });
     };
     const nativeArgs = nativeArguments(this.args, overrides);
     this.native = nativeFactory ? nativeFactory(nativeArgs, message => this.forward(this.native, message), exited)
-      : new AppServerConnection(executable, nativeArgs, message => this.forward(this.native, message), exited);
+      : new AppServerConnection(executable, nativeArgs, message => this.forward(this.native, message), exited, process.env, "native");
   }
-  private observeNative(message: Message): void {
-    if (this.closing || isId(message.id)) return;
-    const params = object(message.params); const turn = object(params.turn);
-    if (!nativeId(params.threadId) || !nativeId(turn.id)) return;
-    const key = JSON.stringify([params.threadId, turn.id]);
-    if (["turn/started", "turn/completed"].includes(String(message.method))) this.nativeNotificationRevision++;
-    if (message.method === "turn/started" && turn.status === "inProgress") {
-      if (this.nativeCompleted.has(key)) return;
-      if (!this.nativeActive.has(params.threadId) && this.nativeActive.size >= 256) throw new Error("Too many active native Codex turns");
-      this.nativeActive.set(params.threadId, { id: turn.id, rootTurnId: nativeId(turn.rootTurnId) ? turn.rootTurnId : null,
-        startedAt: typeof turn.startedAt === "number" && Number.isFinite(turn.startedAt) ? turn.startedAt : null });
-    }
-    if (message.method === "turn/completed" && ["completed", "failed", "interrupted"].includes(String(turn.status))) {
-      if (this.nativeActive.get(params.threadId)?.id === turn.id) this.nativeActive.delete(params.threadId);
-      this.nativeCompleted.add(key);
-      if (this.nativeCompleted.size > 512) this.nativeCompleted.delete(this.nativeCompleted.values().next().value!);
-    }
+  /** One engine process always gets exactly one exit record, with the reason it stopped for. */
+  private reportEngineExit(connection: RpcConnection, activeTurns: number): void {
+    if (!(connection instanceof AppServerConnection)) return; // A host-owned shared engine has no process to explain here.
+    const facts = connection.exitFacts;
+    telemetry("engine_exit", { engine: connection.engine, code: facts.code, signal: facts.signal, uptimeMs: facts.uptimeMs,
+      activeTurns, initiatedBy: facts.initiatedBy, reason: facts.reason });
   }
   private async nativeExited(): Promise<void> {
     // Drain before deciding which tasks lost their terminal event. Pending SDK
     // RPCs are already rejected at child close, so forwarding can finish.
     await Promise.race([this.native.drained, this.nativeClosing]);
     this.forgetConnection(this.native);
-    const active = [...this.nativeActive]; this.nativeActive.clear(); this.nativeCompleted.clear();
+    const active = [...this.nativeTurns.active]; this.nativeTurns.clear();
     if (this.closing) return;
     // Socket loss does not prove SDK death. Only the matching host-owned SDK's
     // observed death of this exact SDK launch permits failure of observed turns.
@@ -158,25 +150,24 @@ export class AppServerBackends {
     }
   }
   private async nativeRequest(method: string, params: Message): Promise<Message> {
-    const revision = this.nativeNotificationRevision;
+    const revision = this.nativeTurns.revision;
     // A service-owned SDK lacks the desktop app's file grants, so attachments are staged for it.
     const native = this.native;
     const result = native.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => native.request(method, staged)) : await native.request(method, params);
     if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && nativeId(params.threadId)) {
-      this.nativeActive.delete(params.threadId); this.nativeNotificationRevision++;
+      this.nativeTurns.delete(params.threadId); this.nativeTurns.revision++;
     }
     if (["thread/read", "thread/resume"].includes(method)) {
       const thread = object(result.thread); const id = nativeId(thread.id) ? thread.id : params.threadId;
       const turns = Array.isArray(thread.turns) ? thread.turns.map(object).filter(turn => turn.status === "inProgress" && nativeId(turn.id)) : [];
-      if (nativeId(id) && Array.isArray(thread.turns) && revision === this.nativeNotificationRevision) {
+      if (nativeId(id) && Array.isArray(thread.turns) && revision === this.nativeTurns.revision) {
         for (const value of thread.turns) {
           const turn = object(value);
-          if (nativeId(turn.id) && ["completed", "failed", "interrupted"].includes(String(turn.status))) this.nativeCompleted.add(JSON.stringify([id, turn.id]));
+          if (nativeId(turn.id) && ["completed", "failed", "interrupted"].includes(String(turn.status))) this.nativeTurns.rememberCompleted(JSON.stringify([id, turn.id]));
         }
-        while (this.nativeCompleted.size > 512) this.nativeCompleted.delete(this.nativeCompleted.values().next().value!);
-        this.nativeActive.delete(id);
-        if (turns.length === 1) this.observeNative({ method: "turn/started", params: { threadId: id, turn: turns[0] } });
-        else this.nativeNotificationRevision++;
+        this.nativeTurns.delete(id);
+        if (turns.length === 1) { if (!this.closing) this.nativeTurns.observe({ method: "turn/started", params: { threadId: id, turn: turns[0] } }); }
+        else this.nativeTurns.revision++;
       }
     }
     return result;
@@ -187,7 +178,7 @@ export class AppServerBackends {
     this.reverse.delete(connection);
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
-    if (connection === this.native) this.observeNative(message);
+    if (connection === this.native && !this.closing) this.nativeTurns.observe(message);
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
     if (engine) {
       engine.compaction?.observe(message);
@@ -256,7 +247,7 @@ export class AppServerBackends {
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
         if (!old.shared || old.revision === keepRevision || old.requests || old.threads.size || old.active.size) continue;
-        old.detaching = true; old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1);
+        old.detaching = true; stopConnection(old.connection, "idle"); await old.connection.exited; this.engines.splice(index, 1);
         await (await this.pool())?.release(old.revision);
       }
     });
@@ -272,7 +263,7 @@ export class AppServerBackends {
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
         if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) {
-          old.detaching = true; old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1);
+          old.detaching = true; stopConnection(old.connection, "replaced"); await old.connection.exited; this.engines.splice(index, 1);
           if (old.shared && old.revision !== record.revision) await (await this.pool())?.release(old.revision);
         }
       }
@@ -299,7 +290,7 @@ export class AppServerBackends {
       try {
         await connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } });
         connection.send({ method: "initialized", params: {} }); return engine;
-      } catch (error) { connection.stop(); throw error; }
+      } catch (error) { stopConnection(connection, "replaced"); throw error; }
     });
     this.creating = operation.catch(() => undefined); return operation;
   }
@@ -348,7 +339,7 @@ export class AppServerBackends {
       if (existing) { existing.requests++; return existing; }
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
-        if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) { old.detaching = true; old.connection.stop(); await old.connection.exited; this.engines.splice(index, 1); }
+        if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) { old.detaching = true; stopConnection(old.connection, "replaced"); await old.connection.exited; this.engines.splice(index, 1); }
       }
       if (this.engines.filter(engine => !engine.connection.closed).length >= 4) throw new Error("Four gateway catalog versions still have loaded chats. Close an older gateway chat before selecting a newly added model; native chats remain available.");
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
@@ -368,18 +359,19 @@ export class AppServerBackends {
       const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], stats));
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
-      engine.connection = new AppServerConnection(runtime?.executable || this.executable, args, message => this.forward(engine.connection, message), () => {
+      engine.connection = new AppServerConnection(runtime?.executable || this.executable, args, message => this.forward(engine.connection, message), connection => {
+        this.reportEngineExit(connection, engine.active.size);
         void engine.compaction?.close();
         this.forgetConnection(engine.connection);
         if (!this.closing) for (const [threadId, id] of engine.active) void this.emit({ method: "turn/completed", params: { threadId, turn: { id, items: [], status: "failed", error: { message: "Gateway executor exited. Resume this chat to recover its saved history.", codexErrorInfo: "internalServerError", additionalDetails: null } } } });
         engine.active.clear();
-      }, gatewayEnvironment(home));
+      }, gatewayEnvironment(home), "gateway");
       engine.compaction = this.compaction.session({ models: snapshot.models, settings, args, aliases: engine.aliases,
         selectedModelCompaction: runtime?.selectedModelCompaction,
         isActive: id => engine.active.has(id), request: (method, params) => engine.connection.request(method, params) });
       this.engines.push(engine);
       try { await engine.connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } }); engine.connection.send({ method: "initialized", params: {} }); }
-      catch (error) { engine.connection.stop(); throw error; }
+      catch (error) { stopConnection(engine.connection, "replaced"); throw error; }
       return engine;
     });
     this.creating = operation.catch(() => undefined); return operation;
@@ -458,7 +450,7 @@ export class AppServerBackends {
     this.nativeHost?.client.close();
     const poolClosing = this.poolPending?.then(client => client?.close()).catch(() => {});
     await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));
-    for (const engine of this.engines) engine.connection.stop();
+    for (const engine of this.engines) stopConnection(engine.connection, "session_end");
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
     await Promise.allSettled(this.engines.map(engine => engine.exitPending));
