@@ -189,9 +189,15 @@ export function withFallback(model: Row, fallback: NodeReplFallback): Row {
  * A native row carried into the executor catalog keeps its own values apart from the two node_repl
  * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. A row with a plain
  * policy and a reviewer that runs keeps both; one that states no policy gets node_repl off here,
- * never the SDK default. The native engine's own catalog is unchanged.
+ * never the SDK default. `supports_search_tool` is also carried off on every row, as a Codex 2 row
+ * has it: Codex would add its `tool_search` tool to a request on a row that says search is on, and
+ * the gateway rejects that tool (see src/protocol/request.ts), so every sub-agent naming such a
+ * model failed with `unsupported_tool`. A row whose policy matches and that does not plainly turn
+ * search on is returned unchanged. The native engine's own catalog is unchanged.
  */
 export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): Row {
   const policy = nodeReplPolicy(model, native, reviewers);
-  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required ? model : { ...model, ...policy };
+  const search: Row | undefined = model.supports_search_tool === true ? { supports_search_tool: false } : undefined;
+  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required && !search
+    ? model : { ...model, ...policy, ...search };
 }
