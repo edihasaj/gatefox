@@ -13,7 +13,8 @@
 // `session.model.switchTo` once the file exists; HOLD_STDOUT=<ms> starts, at `session.create`, a process in a group of its own that holds the
 // CLI's stdout open for that long (or until the test process is gone), as a helper the CLI detached would. HOLD_STDOUT_NOISE makes that holder
 // also write one newline to the shared stdout every half tick, so the output never falls silent: between frames the framing absorbs it, since
-// the header is matched per line and the body follows its terminator.
+// the header is matched per line and the body follows its terminator. Once the gateway has closed its end, the next write fails; the holder then
+// stops writing but stays alive for its time, so a test can tell that the request ended without waiting for it.
 import { copilotFrames, record, rpcLimits } from "../providers/copilot-rpc.js";
 import { appendFileSync, mkdirSync, existsSync, writeFileSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -127,7 +128,7 @@ for await (const frame of copilotFrames(process.stdin)) {
     const noise = env("HOLD_STDOUT_NOISE") ? Math.max(1, Math.floor(Math.max(5, Math.floor(rpcLimits.exitGraceMs / 10)) / 2)) : 0;
     if (env("HOLD_STDOUT")) log({ op: "holder", holder: spawn(process.execPath, ["-e", `const parent = ${parent}; const end = Date.now() + ${Number(env("HOLD_STDOUT"))}; const noise = ${noise};
 setInterval(() => { try { process.kill(parent, 0); } catch { process.exit(0); } if (Date.now() > end) process.exit(0); }, 100);
-if (noise) setInterval(() => process.stdout.write(String.fromCharCode(10)), noise).unref();`], { stdio: ["ignore", 1, "ignore"], detached: true }).pid });
+if (noise) { const timer = setInterval(() => process.stdout.write(String.fromCharCode(10)), noise); timer.unref(); process.stdout.on("error", () => clearInterval(timer)); }`], { stdio: ["ignore", 1, "ignore"], detached: true }).pid });
     log({ op: "create", directory, args: process.argv.slice(2), tmpdir: process.env.TMPDIR, params, ...surroundings(directory) });
     // An event of the given type just before `session.create` answers, while the gateway is still starting a live
     // session: in the same write as the answer, or on its own when the answer is delayed.
