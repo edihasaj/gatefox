@@ -148,6 +148,51 @@ per request id and prefers the gateway's own row over an imported one.
 
 `gateway diagnostics` also sums Copilot credits per model from `nanoAiu`.
 
+## Running component releases
+
+An install only moves the `current` link, so a process that started earlier
+keeps running the release it loaded. Its command line still says
+`.../current/...`, a link the operating system resolved when the process
+started, which is why it says nothing about what that process is running.
+`gateway versions [--json] [--check]` answers that question: it lists this
+user's gateway processes, names each one's role (`service`, `inference`,
+`desktop-adapter`, `ssh-listener`, `ssh-proxy`, `executor-host`,
+`gateway-engine`, `native-relay`, `tunnel` or `other`) and reads the release
+from the text files the process actually has mapped, found with `lsof`,
+rather than from its command line.
+
+The one exception is the inference process. A release that replaced itself in
+place keeps the node runtime it started with mapped, so `lsof` names the
+release it started from rather than the code it serves. There the health
+endpoint answers instead, and its `X-Gateway-Release` header wins: the command
+sends one `GET http://127.0.0.1:PORT/health` with a two second timeout, on the
+port the process was given or the one its configuration names. When nothing
+answers, the report falls back to the mapped release. That request is the only
+thing here that leaves the process, and it never leaves the machine.
+
+What is printed is limited to roles, pids, start times and release versions;
+command arguments, paths and environment values are never shown. A release
+that neither `lsof` nor the command line can name reads `unknown`, and a
+process started from a source checkout reads `checkout`. The human form
+prints the installed release, one row per process, then a summary: `all on
+RELEASE` or `N lagging: role@release`, one mention per distinct pair.
+`--json` prints the same data as
+`{ installed, processes: [{ role, pid, startedAt, release }], lagging }`,
+where `installed` is the release the `current` link points at. A run from a
+checkout or worktree, which has no `current` of its own, names the release the
+default install's link points at, `~/.local/share/subscription-gateway`, and
+still calls its own processes `checkout`. When neither link resolves,
+`installed` is null, which `--json` always prints.
+
+`--check` exits 1 when a process runs another release than the installed one,
+or `unknown`, and 0 when none does. It exits 2 when there is no installed
+release to compare against, because a run that names one cannot tell a lagging
+process from an up to date one; the report itself is still printed. A flag
+outside `--json` and `--check`, and a process list `ps` cannot read, exit 2
+too. See
+[release](RELEASING.md#updating-without-quitting-the-app) for how long a
+lagging process may legitimately take to move.
+
 ## Exception reports
 
 Only exceptions go to `errors.applifyer.com`, project `harness-gateway`. The DSN

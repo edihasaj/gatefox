@@ -33,6 +33,7 @@ import { enableSharedNative } from "./mac-shared-native.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
+import { versionsCommand } from "./versions.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -55,6 +56,7 @@ const help = `gateway — local subscription and API inference
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
+  gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
@@ -74,6 +76,7 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
+  if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {

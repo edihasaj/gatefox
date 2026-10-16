@@ -81,7 +81,8 @@ belongs in the release archive.
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
    the archive's file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
-   Install exactly that asset on each device.
+   Install exactly that asset on each device, then run `gateway versions --check`
+   there and require a zero exit before the device is treated as updated.
 
 ## Updating without quitting the app
 
@@ -102,6 +103,20 @@ host must stay protocol-compatible across one release. Each move is logged as
 0.2.32 do not have this; moving from them needs one service restart. In-place
 server takeover starts with 0.2.35; a 0.2.32 to 0.2.34 server needs one restart of
 its inference process to reach it.
+
+Run `gateway versions --check` on every Mac after an install. A process is
+lagging when it loaded an older release than the installed `current` target,
+which the command reads from the files the process has mapped and not from
+its command line. The `X-Gateway-Release` header alone is not proof of that:
+it names whichever release served one inference response, and says nothing
+about the other processes on the machine. Components that move only when
+idle, such as the service supervisor, the shared execution host and the
+engines it starts, the SSH listeners, the desktop adapters and the native
+relay, can stay on the previous release until they go idle. That is expected,
+so recheck after they have been idle rather than force-killing them; a kill
+skips the idle guard and cuts off whatever that process was holding. See
+[diagnostics](diagnostics.md#running-component-releases) for what the command
+prints.
 
 The installer keeps the current release, the previous one and the newest other
 release. Older releases move to the Trash unless a running process still maps
@@ -204,10 +219,11 @@ A 0.4.0 adapter that is still running, or a rollback to 0.4.0, reads the same st
 files, so this build saves a chat's tier or a new-chat default only when its row
 declares it; see [rollback and mixed versions](speed-controls.md#rollback-and-mixed-versions).
 
-Use `gateway service status`, `gateway doctor`, and `gateway desktop status` after
-installation. Registration prepares future app launches and does not interrupt an
-open app. One fresh launch is needed after first registration. The private desktop
-launch hook is specific to the tested Codex build, so verify it after app upgrades.
+Use `gateway service status`, `gateway doctor`, `gateway desktop status`, and
+`gateway versions --check` after installation on each Mac. Registration
+prepares future app launches and does not interrupt an open app. One fresh
+launch is needed after first registration. The private desktop launch hook is
+specific to the tested Codex build, so verify it after app upgrades.
 
 Preview job consolidation with `gateway service consolidate`. Apply it only after
 local and remote chats finish. See [the service migration checks](services.md).
