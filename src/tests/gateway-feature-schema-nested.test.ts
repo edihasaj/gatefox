@@ -13,10 +13,27 @@ test("nested strict sub-tables keep only their own fields in table form", () => 
   } }, stats), { features: {
     guardianv2: { enabled: true, transcript: { include_images: true, max_recent_non_user_entries: 3 }, review_scope: { computer_use_only: true } },
     multi_agent_v2: { enabled: true, message_board_remote: { url: "u", bearer_token_env_var: "E" } },
-    network_proxy: { enabled: true, credentials: { openai: { env: ["A"], url_prefixes: ["https://x"] } }, domains: { "example.com": "allow" } },
+    // network_proxy limits network access, so it is never trimmed: an unreadable value fails closed with the SDK's error.
+    network_proxy: { enabled: true, credentials: { openai: { env: ["A"], url_prefixes: ["https://x"], bogus: 1 } }, domains: { "example.com": "allow" } },
   } });
   // One count per feature entry, however many nested fields were removed.
+  assert.equal(stats.count, 2);
+});
+
+test("trimming never widens permissions: network_proxy is never changed, and the strict form turns the reviewer off", () => {
+  const limited = { enabled: true, mode: "limited", domains: { "example.com": "allow" }, future_limit: 3 };
+  const config = { features: { network_proxy: limited, guardianv2: { enabled: true, review_threshold: 7 } }, "features.network_proxy.mode": "limited",
+    "features.guardianv2.review_scope.computer_use_only": true, "profiles.w": { features: { network_proxy: limited, guardianv2: true } } };
+  const copy = structuredClone(config);
+  // The normal form leaves network_proxy exactly as sent, however unreadable, and still trims the reviewer's known fields.
+  assert.deepEqual(trim(config), config);
+  const stats = { count: 0 };
+  // The strict form never reduces network_proxy to a boolean (the SDK's default mode is Full); the reviewer is turned off.
+  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", { threadId: "t", config }, stats), { threadId: "t", config: {
+    features: { network_proxy: limited, guardianv2: false }, "features.network_proxy.mode": "limited", "features.guardianv2": false,
+    "profiles.w": { features: { network_proxy: limited, guardianv2: false } } } });
   assert.equal(stats.count, 3);
+  assert.deepEqual(config, copy);
 });
 
 test("nested sub-table fields are checked in the dotted form too", () => {
@@ -29,7 +46,8 @@ test("nested sub-table fields are checked in the dotted form too", () => {
     "profiles.w.features.guardianv2.transcript.bogus": 1,
   }), {
     "features.guardianv2.transcript.include_images": true, "features.guardianv2.review_scope.sandboxed_exec_commands": false,
-    "features.multi_agent_v2.message_board_remote.url": "u", "features.network_proxy.credentials.openai.env": ["A"],
+    "features.multi_agent_v2.message_board_remote.url": "u",
+    "features.network_proxy.credentials.openai.bogus": 1, "features.network_proxy.credentials.openai.env": ["A"],
     'features.network_proxy.domains."example.com"': "allow",
   });
   // A sub-table assigned whole is trimmed by its own schema.
@@ -120,7 +138,7 @@ test("the strict retry form reduces every feature to a boolean in every spelling
     "features.code_mode": { enabled: false, default_exec_yield_time_ms: 5 }, "features.sleep_tool.mode": "always_on", "features.token_budget.enabled": true, "features.hooks": true,
     "profiles.w": { features: { sleep_tool: { enabled: true } } }, profiles: { v: { "features.network_proxy": { proxy_url: "x" } } } } };
   const copy = structuredClone(params);
-  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", params, stats), { threadId: "t", config: { model: "m", features: { guardianv2: true, fast_mode: false },
+  assert.deepEqual(strictGatewayFeatureRequest("thread/resume", params, stats), { threadId: "t", config: { model: "m", features: { guardianv2: false, fast_mode: false },
     "features.code_mode": false, "features.token_budget": true, "features.hooks": true, "profiles.w": { features: { sleep_tool: true } }, profiles: { v: { "features.network_proxy": { proxy_url: "x" } } } } });
   assert.deepEqual(params, copy);
   assert.equal(stats.count, 7);

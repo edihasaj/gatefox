@@ -31,7 +31,8 @@ test("a rejected feature table is retried once in its strict form and the caller
     const seen = await log(f, id);
     assert.deepEqual(seen.map(entry => entry.method), ["thread/resume", "thread/resume"]);
     assert.deepEqual(seen[0].config, config);
-    assert.deepEqual(seen[1].config, failing({ features: { guardianv2: true, multi_agent_v2: false, fast_mode: true },
+    // The reviewer is turned off in the strict form, so actions return to the user's own approval.
+    assert.deepEqual(seen[1].config, failing({ features: { guardianv2: false, multi_agent_v2: false, fast_mode: true },
       "features.code_mode": true, "profiles.w": { features: { sleep_tool: true } } }));
     // One reserved request accounted once; compaction saw the request once and finished it once.
     assert.equal(held, 0);
@@ -74,12 +75,12 @@ test("a second failure surfaces the original error and creates nothing", { timeo
     const { engine, calls } = spy(f, id);
     const config = { "fail.mode": "always", features: { guardianv2: { enabled: true, review_threshold: 7 } } };
     await assert.rejects(f.backend.request("thread/resume", { threadId: id, config }), (error: Error & { code?: number }) => {
-      assert.equal(error.message, "failed to load configuration: attempt 1");
+      assert.equal(error.message, "failed to load configuration: attempt 1\nin `features`\n");
       assert.equal(error.code, -32600);
       return true;
     });
     const hooks = { ...calls }; const held = engine.requests;
-    assert.deepEqual((await log(f, id)).map(entry => entry.config.features), [{ guardianv2: { enabled: true, review_threshold: 7 } }, { guardianv2: true }]);
+    assert.deepEqual((await log(f, id)).map(entry => entry.config.features), [{ guardianv2: { enabled: true, review_threshold: 7 } }, { guardianv2: false }]);
     assert.equal(held, 0);
     assert.deepEqual(hooks, { before: 1, after: 0 });
   } finally { await f.clean(); }
@@ -95,6 +96,11 @@ test("an error that is not a configuration load failure is not retried", { timeo
     // The same message under another code is not the SDK's configuration error either.
     await assert.rejects(f.backend.request("thread/resume", { threadId: id, config: { ...config, "fail.mode": "wrong-code" } }), /failed to load configuration: attempt 2/);
     assert.equal((await log(f, id)).length, 2);
+    // A configuration failure outside the features (here model_providers) is not about features.
+    await assert.rejects(f.backend.request("thread/resume", { threadId: id, config: { ...config, "fail.mode": "other-path" } }), /attempt 3\nin `model_providers`/);
+    // An unavailable cloud configuration bundle names features but is not caused by them; a retry could strip settings for nothing.
+    await assert.rejects(f.backend.request("thread/resume", { threadId: id, config: { ...config, "fail.mode": "cloud" } }), /attempt 4\nin `features`/);
+    assert.equal((await log(f, id)).length, 4, "neither was retried");
     assert.equal(engineOf(f.backend, id).requests, 0);
   } finally { await f.clean(); }
 });

@@ -32,8 +32,21 @@ function trimFieldPath(schema: TableSchema, path: string[], value: unknown): { v
   return trimFieldPath(child, tail, value);
 }
 
+/**
+ * Trimming never widens what a chat may do. `network_proxy` limits network access: dropping one of its fields, or
+ * reducing it to a boolean (the SDK's default mode is Full), could lift a limit, so it is never changed. If the pinned
+ * SDK cannot read it, the chat fails with the SDK's own error instead of running with fewer limits.
+ */
+const failClosed = new Set(["network_proxy"]);
+/**
+ * `guardianv2` reviews actions in place of the user. In the strict retry form it is turned off rather than reduced to
+ * its defaults, so actions go back to the user's own approval instead of a reviewer with unknown thresholds.
+ */
+const offWhenStrict = new Set(["guardianv2"]);
+
 /** Apply the pinned schema to a whole feature entry `K = value`. Returns undefined when it is dropped. */
 function trimFeature(ctx: Context, name: string, value: unknown): { value: unknown } | undefined {
+  if (failClosed.has(name)) return { value };
   const spec = featureSchema(name);
   // The SDK reads tool_registry as a plain table: a boolean there is an error, not a toggle.
   if (spec?.tableOnly) {
@@ -41,10 +54,11 @@ function trimFeature(ctx: Context, name: string, value: unknown): { value: unkno
     const kept = trimFields(spec, value); if (kept !== value) ctx.stats.count++;
     return { value: kept };
   }
-  if (typeof value === "boolean") return { value };
+  if (typeof value === "boolean") return ctx.strict && offWhenStrict.has(name) && value ? (ctx.stats.count++, { value: false }) : { value };
   if (isTable(value)) {
     if (spec && !ctx.strict) { const kept = trimFields(spec, value); if (kept !== value) ctx.stats.count++; return { value: kept }; }
     ctx.stats.count++;
+    if (offWhenStrict.has(name)) return { value: false };
     return typeof value.enabled === "boolean" ? { value: value.enabled } : undefined;
   }
   ctx.stats.count++;
@@ -54,6 +68,9 @@ function trimFeature(ctx: Context, name: string, value: unknown): { value: unkno
 function trimDotted(ctx: Context, names: string[], value: unknown): { collapsed: boolean; value: unknown } | undefined {
   const [feature, ...rest] = names;
   if (!rest.length) { const result = trimFeature(ctx, feature, value); return result && { collapsed: false, value: result.value }; }
+  if (failClosed.has(feature)) return { collapsed: false, value };
+  // A dotted field of the reviewer in the strict form: the reviewer as a whole is turned off instead (see offWhenStrict).
+  if (ctx.strict && offWhenStrict.has(feature)) { ctx.stats.count++; return { collapsed: true, value: false }; }
   const spec = featureSchema(feature);
   if (spec && !ctx.strict) {
     const result = trimFieldPath(spec, rest, value);

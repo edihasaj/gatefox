@@ -13,15 +13,20 @@ import { shimFiles } from "./shim-fixture.js";
  * - `until-boolean`: fails while any `features` value is not a boolean, like the SDK does for a table it does not know.
  * - `other`: fails with an unrelated -32600 error.
  * - `wrong-code`: fails with the configuration message but another code.
+ * - `other-path`: fails with the configuration error for a path that is not a feature path.
+ * - `cloud`: fails with the configuration error marked as an unavailable cloud configuration bundle.
  */
 const hook = `if(m.params&&m.params.config)globalThis.lastConfig=m.params.config;
  if(['thread/start','thread/resume','thread/fork'].includes(m.method)&&m.params&&m.params.config){
   (globalThis.log??=[]).push({method:m.method,config:m.params.config});
   const c=m.params.config;const mode=c['fail.mode'];
   const nonBoolean=Object.entries(c).some(([k,v])=>k==='features'?(v&&typeof v==='object'&&Object.values(v).some(x=>typeof x!=='boolean')):k.startsWith('features.')&&typeof v!=='boolean');
-  if(mode==='always'||(mode==='until-boolean'&&nonBoolean)){send({id:m.id,error:{code:-32600,message:'failed to load configuration: attempt '+globalThis.log.length}});return;}
+  const failure='failed to load configuration: attempt '+globalThis.log.length;
+  if(mode==='always'||(mode==='until-boolean'&&nonBoolean)){send({id:m.id,error:{code:-32600,message:failure+'\\nin \`features\`\\n'}});return;}
   if(mode==='other'){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}
-  if(mode==='wrong-code'){send({id:m.id,error:{code:-32000,message:'failed to load configuration: attempt '+globalThis.log.length}});return;}
+  if(mode==='wrong-code'){send({id:m.id,error:{code:-32000,message:failure+'\\nin \`features\`\\n'}});return;}
+  if(mode==='other-path'){send({id:m.id,error:{code:-32600,message:failure+'\\nin \`model_providers\`\\n'}});return;}
+  if(mode==='cloud'){send({id:m.id,error:{code:-32600,message:failure+'\\nin \`features\`\\n',data:{reason:'cloudConfigBundle'}}});return;}
  }
  if(m.method==='probe/log'){send({id:m.id,result:{log:globalThis.log??[]}});return;}
  if(m.method==='probe/features'){send({id:m.id,result:{config:globalThis.lastConfig??null,overrides}});return;}
