@@ -3,7 +3,7 @@
 // that throws is reported instead of killing the reader loop.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,7 +25,7 @@ async function fixture() {
   await writeFile(sdk, `#!${process.execPath}
 const {createInterface}=require('node:readline');
 const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');
-let waiting=null;
+let waiting=null;let lastId=null;
 createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);
  if(waiting!==null&&m.id===waiting.serverId&&m.method===undefined){send({id:waiting.requestId,result:{reply:m}});waiting=null;return;}
@@ -38,6 +38,11 @@ createInterface({input:process.stdin}).on('line',line=>{
  else if(m.method==='fixture/self-exit'){process.stdout.write(JSON.stringify({id:m.id,result:{}})+'\\n',()=>process.exit(m.params.code||0));}
  else if(m.method==='fixture/exit-with-frame'){process.stdin.destroy();process.stdout.write((m.params.messages||[]).map(x=>JSON.stringify(x)).join('\\n')+(m.params.messages&&m.params.messages.length?'\\n':''),()=>process.exit(0));}
  else if(m.method==='fixture/half-frame'){process.stdout.write('{"method":"note/half"');process.stdout.end();}
+ else if(m.method==='fixture/huge-server-request'){lastId=m.id;process.stdout.write(JSON.stringify({id:m.id,method:'fixture/approval',params:{threadId:'chat',fill:'x'.repeat(m.params.padBytes)}})+'\\n');}
+ else if(m.method==='fixture/reply-last'){send({id:lastId,result:{ok:true}});send({id:m.id,result:{}});}
+ else if(m.method==='fixture/orphan-exit'){const cp=require('node:child_process'),fs=require('node:fs');const hold=m.params.holdMs||1500;
+  const g=cp.spawn(process.execPath,['-e','process.on("SIGTERM",()=>process.exit(0));setTimeout(()=>{},'+hold+')'],{stdio:['ignore','inherit','ignore']});
+  fs.writeFileSync(m.params.pidFile,String(g.pid));process.stdout.write(JSON.stringify({method:'note/orphan-final'})+'\\n',()=>process.exit(0));}
  else send({id:m.id,result:{}});
 });
 `, { mode: 0o700 });
@@ -191,4 +196,60 @@ test("a dropped oversized response frame fails its pending request instead of wa
     const dropped = (await f.events()).filter(event => event.event === "engine_frame_dropped");
     assert.equal(dropped.length, 1); assert.equal(dropped[0].engine, "gateway");
   } finally { connection.stop(); await connection.exited; await f.clean(); }
+});
+
+// Regression for the dropped frame's method guard: a server request that was too large to read starts
+// with an id like an answer does. Failing the adapter's own pending request for it would end a healthy
+// chat over a frame that was never a reply to anything.
+test("a dropped oversized server request leaves the pending request that shares its id alone", { timeout: 30000 }, async () => {
+  const f = await fixture(); const messages: Message[] = [];
+  const connection = new AppServerConnection(f.sdk, [], async message => { messages.push(message); }, () => {}, process.env, "gateway");
+  try {
+    // The fixture carries this request's own id in the oversized frame and then answers nothing.
+    const pending = connection.request("fixture/huge-server-request", { padBytes: 65 * 1024 * 1024 });
+    let settled = "pending"; pending.then(() => { settled = "resolved"; }, () => { settled = "rejected"; }); // Watch how it ends without consuming it.
+    let dropped: Awaited<ReturnType<typeof f.events>> = [];
+    for (let attempt = 0; attempt < 400 && !dropped.length; attempt++) {
+      await flushTelemetry();
+      dropped = (await f.events()).filter(event => event.event === "engine_frame_dropped");
+      if (!dropped.length) await delay(10);
+    }
+    assert.equal(dropped.length, 1); assert.equal(dropped[0].sizeMiB, "64"); assert.equal(dropped[0].engine, "gateway");
+    assert.equal(messages.length, 0); // Its bytes were discarded, so the handler never saw it either.
+    await delay(50); // The drop is already recorded, so any wrong rejection would have landed by now.
+    assert.equal(settled, "pending", "a dropped server request must not answer for an adapter request");
+    await connection.request("fixture/reply-last", {}); // Its real answer, late but well-formed, still lands.
+    assert.deepEqual(object(await pending), { ok: true });
+    assert.equal(connection.closed, false);
+  } finally { connection.stop(); await connection.exited.catch(() => {}); await f.clean(); }
+});
+
+// Regression for the exit recheck inside the pipe grace: the engine process can be gone while something
+// it spawned still holds the stdout pipe open. The pipe error is then the engine leaving, not the
+// adapter's fault, and whatever the engine wrote before it died still has to reach the handler.
+test("an engine that exits behind a grandchild holding stdout open stays an engine exit", { timeout: 20000 }, async () => {
+  const f = await fixture(); const messages: Message[] = [];
+  const pidFile = join(f.directory, "grandchild.pid");
+  const connection = new AppServerConnection(f.sdk, [], async message => { messages.push(message); }, () => {}, process.env, "native");
+  let grandchild: number | undefined;
+  try {
+    void connection.request("fixture/orphan-exit", { holdMs: 1600, pidFile }).catch(() => undefined);
+    for (let attempt = 0; attempt < 300 && grandchild === undefined; attempt++) {
+      const written = await readFile(pidFile, "utf8").catch(() => "");
+      if (written) grandchild = Number(written);
+      if (grandchild === undefined) await delay(5);
+    }
+    assert.ok(grandchild !== undefined && Number.isInteger(grandchild));
+    // Keep writing: the first write after the engine leaves reports EPIPE, and the grace starts there.
+    const deadline = Date.now() + 2500;
+    while (Date.now() < deadline && !connection.closed) { for (let sent = 0; sent < 64; sent++) connection.send(notify("note/keepalive")); await delay(2); }
+    await connection.exited; // The close only lands once the grandchild lets go of the pipe.
+    assert.equal(messages.some(message => message.method === "note/orphan-final"), true);
+    assert.equal(connection.exitFacts.initiatedBy, "engine");
+    assert.equal(connection.exitFacts.reason, "none");
+    assert.equal(connection.exitFacts.code, 0);
+  } finally {
+    if (grandchild !== undefined) { try { process.kill(grandchild, "SIGKILL"); } catch { /* Already gone with the pipe. */ } }
+    connection.stop("session_end"); await connection.exited.catch(() => {}); await f.clean();
+  }
 });

@@ -69,6 +69,8 @@ export class NativeTurnTracker {
   close(): void { clearTimeout(this.evictionTimer); this.evictionTimer = undefined; this.flushEvictions(); }
   private flushEvictions(): void {
     if (!this.evictions) return;
+    // This report opens the next window, so a timer left over from the old one must not report inside it.
+    clearTimeout(this.evictionTimer); this.evictionTimer = undefined;
     this.lastEvictionReportedAt = Date.now();
     telemetry("native_turns_evicted", { count: this.evictions });
     this.evictions = 0;

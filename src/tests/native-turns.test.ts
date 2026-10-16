@@ -136,3 +136,30 @@ test("evictions counted inside the quiet minute are reported when it closes", as
     assert.deepEqual((await reported()).map(event => event.count), [1, 1, 1]);
   } finally { t.mock.timers.reset(); await rm(directory, { recursive: true, force: true }); }
 });
+
+// Regression: a stalled engine loop can pass the window edge before the overdue timer runs. The
+// eviction that flushes at that edge opens the next window, so the old timer must not survive it:
+// it used to report the new window's count at the same instant and leave that window unscheduled.
+test("an eviction at a passed window edge reports once and reschedules the next window", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "gw-native-overdue-"));
+  try {
+    configureTelemetry(directory, "test");
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+    const tracker = new NativeTurnTracker();
+    const since = Date.now();
+    const reported = async () => { await flushTelemetry(); return (await readTelemetry(directory, since)).filter(event => event.event === "native_turns_evicted"); };
+    const counts = async () => (await reported()).map(event => event.count);
+    const evict = (name: string) => tracker.observe(started(name, `turn-${name}`));
+    for (let index = 0; index < 258; index++) evict(`chat-${index}`); // One immediate report, one count waiting for the edge.
+    assert.deepEqual(await counts(), [1]);
+    t.mock.timers.setTime(EVICT_WINDOW + 1); // The clock passes the edge while the timer is still queued.
+    evict("edge");
+    assert.deepEqual(await counts(), [1, 2]); // The waiting count is reported at once, together with this one.
+    evict("fresh"); // Inside the window the report just opened, so it has to wait for that window.
+    t.mock.timers.tick(1);
+    assert.deepEqual(await counts(), [1, 2]); // A stale timer must not report a second time at the same instant.
+    t.mock.timers.tick(EVICT_WINDOW);
+    assert.deepEqual(await counts(), [1, 2, 1]); // It is reported when the next window closes.
+    tracker.close();
+  } finally { t.mock.timers.reset(); await rm(directory, { recursive: true, force: true }); }
+});
