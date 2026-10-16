@@ -10,6 +10,9 @@ import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
+import { MessagesWriter, anthropicError } from "./protocol/messages.js";
+import { messagesToResponses } from "./protocol/messages-request.js";
+import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
@@ -251,26 +254,35 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const release = () => { if (!released) { released = true; requests--; } };
     res.once("finish", release); res.once("close", release);
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
+    const messagesProtocol = path === "/v1/messages" || path === "/v1/messages/count_tokens";
+    const countTokens = path === "/v1/messages/count_tokens";
+    const fail = (status: number, code: string, message: string) => send(res, status,
+      messagesProtocol ? { ...anthropicError(code, message, status), request_id: requestId } : { error: { code, message } });
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
+    if (messagesProtocol) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
       try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
-    if (req.headers.origin) { send(res, 403, { error: { code: "cross_origin", message: "Browser cross-origin requests are disabled" } }); return; }
-    if (!validBearer(req.headers.authorization, token)) { send(res, 401, { error: { code: "authentication", message: "Gateway bearer token required" } }); return; }
-    if (draining && req.method === "POST" && path === "/v1/responses") { res.setHeader("Retry-After", "1"); send(res, 503, { error: { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" } }); return; }
+    if (req.headers.origin) { fail(403, "cross_origin", "Browser cross-origin requests are disabled"); return; }
+    const apiKey = req.headers["x-api-key"];
+    const authenticated = req.headers.authorization !== undefined ? validBearer(req.headers.authorization, token)
+      && (!messagesProtocol || apiKey === undefined || (typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token)))
+      : messagesProtocol && typeof apiKey === "string" && validBearer(`Bearer ${apiKey}`, token);
+    if (!authenticated) { fail(401, "authentication", "Gateway client token required"); return; }
+    if (draining && req.method === "POST" && (path === "/v1/responses" || messagesProtocol)) { res.setHeader("Retry-After", "1"); fail(503, "upstream_unavailable", "Gateway is restarting; retry shortly"); return; }
     let state: Awaited<ReturnType<typeof snapshot>>;
     try { state = await snapshot(); }
-    catch { send(res, 503, { error: { code: "configuration_error", message: "Gateway configuration is invalid; fix it before retrying" } }); return; }
+    catch { fail(503, "configuration_error", "Gateway configuration is invalid; fix it before retrying"); return; }
     if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
-    if (req.method !== "POST" || path !== "/v1/responses") { send(res, 404, { error: { code: "not_found", message: "Unknown endpoint" } }); return; }
-    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); send(res, 429, { error: { code: "busy", message: "Gateway waiting queue is full; retry shortly" } }); return; }
+    if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { fail(404, "not_found", "Unknown endpoint"); return; }
+    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); return; }
     const controller = new AbortController();
     let releaseAdmission: (() => void) | undefined;
-    let writer: ResponsesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
+    let writer: ResponsesWriter | MessagesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
     // A request is recorded once, whichever of its end and a process exit gets there first.
@@ -327,7 +339,10 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
     try {
-      const request = await body(req); context = inferenceContext(req.headers, request);
+      const wire = await body(req);
+      const request = messagesProtocol ? messagesToResponses(wire, { countTokens }) : wire;
+      context = { ...inferenceContext(req.headers, request), ...(messagesProtocol ? { clientProtocol: "messages" as const,
+        ...((wire.thinking as { type?: string } | undefined)?.type === "adaptive" ? { adaptiveThinking: true } : {}) } : {}) };
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
@@ -339,12 +354,23 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = request.model;
       responsesToChatRequest(request); // Validate the supported protocol before invoking any provider.
+      if (countTokens) {
+        throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
+      }
+      const providerRequest = messagesProtocol ? messagesProviderRequest(request, route.type) : request;
+      if (messagesProtocol && ["codex-subscription", "claude-subscription", "copilot-subscription"].includes(route.type)) res.setHeader("X-Gateway-Output-Limit", "provider-managed");
       const limit = state.config.maxConcurrent || 4; admission.setLimit(limit); admission.check();
       const streaming = request.stream === true;
       let lastEventAt = Date.now(); let opened = false;
       // A marked id lets a spend tool match this request to the client's own record of the response.
-      responseId = usageLedgerMarks(route.type) ? "resp_gl_" + requestId.replaceAll("-", "") : undefined;
-      const output = writer = new ResponsesWriter(request.model, event => { if (streaming && !res.destroyed) { lastEventAt = Date.now(); res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } }, responseId ? { id: responseId } : {});
+      const marked = usageLedgerMarks(route.type) ? "_gl_" + requestId.replaceAll("-", "") : undefined;
+      responseId = marked ? (messagesProtocol ? "msg" : "resp") + marked : undefined;
+      const Writer = messagesProtocol ? MessagesWriter : ResponsesWriter;
+      const output = writer = new Writer(request.model, event => { if (streaming && !res.destroyed) {
+        lastEventAt = Date.now();
+        const frame = messagesProtocol && event.type === "error" ? { ...event, request_id: requestId } : event;
+        res.write(`event: ${event.type}\ndata: ${JSON.stringify(frame)}\n\n`);
+      } }, responseId ? { id: responseId } : {});
       open = turnState => {
         if (opened) return; opened = true; clearTimeout(headWait);
         if (sendableTurnState(turnState) && !res.headersSent) { res.setHeader("X-Codex-Turn-State", turnState); turnStateReturned = true; }
@@ -369,7 +395,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
       const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
-      const source = route.adapter.infer({ ...restoreReasoning(request, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
+      const source = route.adapter.infer({ ...restoreReasoning(providerRequest, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
       // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
       const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
       let stopped = false;
@@ -417,11 +443,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          writer.fail(streamFailureCode(known), known.message);
+          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, known.status);
+          else writer.fail(streamFailureCode(known), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }
-        else send(res, known.status, { error: { code: known.code, message: known.message } });
+        else fail(known.status, known.code, known.message);
       }
     } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };

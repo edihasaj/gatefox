@@ -184,11 +184,12 @@ gateway service status</code></pre>
       <div class="section-number">09 / OPTIONAL</div>
       <h2>Use a separate Codex CLI home.</h2>
       <p><code>gateway codex-config</code> generates a complete configuration, not a named profile. Save it in a separate home to preserve your primary settings:</p>
-      <pre><code>gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
+      <pre><code>gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
 gateway codex-config --model codex/gpt-6.1-sol \
-  &gt; "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex</code></pre>
+  &gt; "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex</code></pre>
       <p>This CLI home has its own history and settings. It does not inherit all native customizations. Regenerate the snapshot after changing the gateway's model selection.</p>
     </section>
     <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Harness Gateway · Field guide<br><small>Own your setup. Keep the work moving.</small></span><a href="#overview">Back to top ↑</a></footer>

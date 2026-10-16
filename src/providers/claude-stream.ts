@@ -33,7 +33,10 @@ function tokensOf(usage: unknown, base: ClaudeTokens = { input: 0, cacheRead: 0,
 /** Cache reads are reported the Responses way so callers can see actual cache reuse. */
 export function claudeUsage(tokens: ClaudeTokens): Usage {
   const input = tokens.input + tokens.cacheRead + tokens.cacheWrite;
-  return { input_tokens: input, output_tokens: tokens.output, total_tokens: input + tokens.output, input_tokens_details: { cached_tokens: tokens.cacheRead } };
+  return { input_tokens: input, output_tokens: tokens.output, total_tokens: input + tokens.output, input_tokens_details: {
+    cached_tokens: tokens.cacheRead,
+    ...(tokens.cacheWrite ? { cache_creation_tokens: tokens.cacheWrite } : {}),
+  } };
 }
 
 /** Maps an unsuccessful CLI result; private result text is only classified, never returned. */

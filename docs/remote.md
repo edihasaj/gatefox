@@ -27,11 +27,12 @@ The desktop and SSH adapters fetch this shared selection. Each device can also
 generate an opt-in CLI configuration in a separate home:
 
 ```sh
-gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
 gateway codex-config --model codex/gpt-6.1-sol \
-  > "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex
+  > "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex
 ```
 
 Regenerate the CLI snapshot after changing the host's selection. This separate

@@ -5,9 +5,10 @@ export class ProviderError extends Error {
     readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic }) { super(message); }
 }
 export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
-/** Caller-supplied conversation routing identifiers; never request content. */
+/** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */
 export interface InferenceContext {
   sessionId?: string; threadId?: string; turnId?: string; windowId?: string; requestKind?: InferenceRequestKind;
+  clientProtocol?: "responses" | "messages"; adaptiveThinking?: boolean;
   /** Opaque sticky-routing token that Codex echoes for the rest of a turn. */
   turnState?: string;
 }

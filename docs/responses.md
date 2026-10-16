@@ -6,6 +6,10 @@ read_when:
 
 # Responses support
 
+This document describes the OpenAI Responses ingress. The same provider catalog
+also serves [native Anthropic Messages clients](messages.md), including Claude
+Code. Selecting an inbound protocol does not select an upstream provider.
+
 The gateway translates the caller's instructions and tool catalog. It does not
 assign agent roles, choose workers, add task instructions, or provide agent-only
 tools. Its catalog rows carry an empty instruction template, and the desktop

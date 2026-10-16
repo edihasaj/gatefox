@@ -131,7 +131,9 @@ environment values.
 **Marker.** For `copilot-subscription` and `claude-subscription` routes, while the
 ledger is on, the Responses id is `resp_gl_<request id without dashes>` instead of a
 random `resp_<hex>`. Codex records that id in its own rollout, so a spend tool counts
-a gateway request once, from the ledger, and skips the matching Codex record.
+a gateway request once, from the ledger, and skips the matching Codex record. A
+Messages request on those routes gets the message id `msg_gl_<request id without
+dashes>` instead of a random `msg_<hex>`, and its row records that id.
 
 **Telemetry import.** The first time the ledger is prepared, and
 `<state>/usage/telemetry-import.json` is absent, each `request_*` telemetry event with
