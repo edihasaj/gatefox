@@ -83,6 +83,20 @@ network, MCP and permissions), so `gateway diagnostics` counts them together in 
 `autoReview` bucket: `completed`, `empty` and `failed:<code>`
 ([node_repl](node-repl.md#scope-data-and-decision)).
 
+## Gateway-rule refusals and dropped control items
+
+Two fixed fields describe how the gateway treated a Responses request before any provider ran
+([details](responses.md#websocket-refusals-internal-fields-and-control-items)).
+
+| Field | Where | Meaning |
+| --- | --- | --- |
+| `translation_reason` | `request_failed`, and the stderr `provider_failure` line | The gateway refused the request by its own rule, not because translation failed. The only value is `unsupported_compaction`: the request carried a `compaction_trigger` item. Any other value is dropped. |
+| `droppedControlItems` | `request_completed`, `request_empty`, `request_failed` | How many `configuration_update` items were removed. A count only, never item content; absent when it is zero. |
+
+`gateway diagnostics` counts a refused compaction as `failed:invalid_request:unsupported_compaction`
+beside the translation reasons (`failed:invalid_request:<reason>`), so it does not hide among plain
+`failed:invalid_request` rows.
+
 ## Native relay records
 
 The native relay writes its own JSON records to its managed log, one record per

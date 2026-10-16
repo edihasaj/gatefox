@@ -64,3 +64,14 @@ test("error classes cover the failures seen in the field", () => {
   // Digits inside a thread id are not a status code.
   assert.equal(errorClass("thread not loaded: 01a135fc-36e4-7c91-8e25-263539a552bd"), "other");
 });
+
+test("diagnostics groups a refused remote compaction apart from other invalid requests", () => {
+  const base = { at: new Date().toISOString(), host: "h", component: "gateway", pid: 1, model: "alias" };
+  const summary = summarizeTelemetry([
+    { ...base, event: "request_failed", code: "invalid_request", translation_reason: "unsupported_compaction" },
+    { ...base, event: "request_failed", code: "invalid_request", translation_reason: "unsupported_compaction" },
+    { ...base, event: "request_failed", code: "invalid_request", reason: "invalid_shape" },
+    { ...base, event: "request_failed", code: "invalid_request" },
+  ], new Date(0)) as { requests: Record<string, Record<string, number>> };
+  assert.deepEqual(summary.requests.alias, { "failed:invalid_request:unsupported_compaction": 2, "failed:invalid_request:invalid_shape": 1, "failed:invalid_request": 1, cacheHit: undefined, firstEventMsP50: undefined, firstEventMsP95: undefined });
+});
