@@ -128,6 +128,26 @@ test("combined() gives the native rows the Codex 2 rule: both fields kept where 
   assert.equal(executorNativeRow(lax, rows), lax);
 });
 
+test("a carried native row never turns tool search on, while the native catalog keeps it", () => {
+  const searchable: Row = { ...lax, supports_search_tool: true };
+  const carried = executorNativeRow(searchable, [searchable, reviewer], served);
+  assert.equal(carried.supports_search_tool, false);
+  assert.equal(Object.is(carried, searchable), false, "the row is copied, never mutated");
+  assert.equal(searchable.supports_search_tool, true, "the client's own native row keeps it");
+  for (const key of Object.keys(searchable)) if (key !== "supports_search_tool") assert.deepEqual(carried[key], searchable[key], key);
+  // Identity where nothing changes: search is off or unstated and the node_repl policy already matches.
+  for (const value of [false, undefined, "true", null]) {
+    const row = { ...lax, supports_search_tool: value };
+    assert.equal(Object.is(executorNativeRow(row, [row, reviewer], served), row), true, `search ${JSON.stringify(value)}`);
+  }
+  for (const codeMode of modes) {
+    const combined = desktop([searchable, strict, reviewer], codeMode, sol).combined().models;
+    const nativeRows = combined.filter(row => row.slug === "gpt-6-luna" || row.slug === "gpt-6.1-sol");
+    assert.equal(nativeRows.length, 2);
+    assert.equal(nativeRows.every(row => row.supports_search_tool !== true), true, `${codeMode}: no carried native row adds tool_search`);
+  }
+});
+
 test("guardian shapes decide review the same way through withNativeRow, executorNativeRow and nodeReplFallback, whether code mode is on or off", () => {
   // [guardian, node_repl_disabled, node_repl_auto_review_required] -> [Codex 2 row, native row in the executor catalog, fallback row]
   type Case = [unknown, boolean, boolean, object, object, object, string];

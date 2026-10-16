@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCatalog } from "../catalog.js";
-import { executorRunsCodeMode, withNativeRow } from "../codex-native-rows.js";
+import { executorNativeRow, executorRunsCodeMode, withNativeRow } from "../codex-native-rows.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson, type GatewayConfig, type ProviderConfig } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
@@ -109,7 +109,9 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, false); assert.deepEqual(sol.service_tiers, [tier]);
     for (const key of usageFlags) { assert.equal(sol[key], false, key); assert.equal(next[key], true, key); }
     for (const row of [next, odd]) { assert.deepEqual(row.model_messages, { instructions_template: "" }); assert.equal(row.tool_mode, "direct"); assert.equal(row.context_window, 500000); }
-    assert.deepEqual(combined.models[0], nativeSol);
+    assert.deepEqual(combined.models[0], { ...nativeSol, supports_search_tool: false }, "the carried native row keeps tool search off, as the Codex 2 rows do");
+    assert.equal(nativeSol.supports_search_tool, true, "the client's own native row keeps it");
+    assert.equal(combined.models.slice(0, native.length).every((row: { supports_search_tool?: unknown }) => row.supports_search_tool !== true), true, "no native row in the executor catalog turns tool search on");
     assert.equal(JSON.stringify(combined).includes("upstream_slug"), false);
     const cache = await readFile(join(f.value.stateDirectory, "desktop-public-models.json"), "utf8");
     assert.equal(cache.includes("native base prompt"), false); assert.equal(JSON.parse(cache).models[0].upstream_slug, "gpt-6.1-sol");
@@ -120,6 +122,20 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.equal(hostless.current().models[0].tool_mode, "direct"); assert.notEqual(hostless.current().revision, snapshot.revision);
     assert.deepEqual(native, [before]);
   } finally { f.close(); }
+});
+
+test("a native row that turns tool search on is carried with it off", () => {
+  const carried = executorNativeRow(nativeSol, [nativeSol]);
+  assert.equal(carried.supports_search_tool, false);
+  assert.equal(Object.is(carried, nativeSol), false, "a row whose search must change is copied, never mutated");
+  const source: Record<string, unknown> = nativeSol;
+  for (const key of Object.keys(source)) if (key !== "supports_search_tool") assert.deepEqual(carried[key], source[key], key);
+  assert.equal(nativeSol.supports_search_tool, true, "the native row and catalog the client reads stay unchanged");
+  // Nothing else to change: the row keeps its own object.
+  const off = { ...nativeSol, supports_search_tool: false };
+  assert.equal(executorNativeRow(off, [off]), off);
+  const unstated = { ...nativeSol, supports_search_tool: undefined };
+  assert.equal(executorNativeRow(unstated, [unstated]), unstated, "search that is not plainly on is left as the row states it");
 });
 
 test("the first host read replaces the plain startup catalog even when the host rows match the local config", async () => {
