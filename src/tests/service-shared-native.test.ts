@@ -36,7 +36,8 @@ async function fixture() {
     validateSdk: async () => { calls.push("verified-sdk"); assert.equal(JSON.parse(await readFile(servicePlanPath(state), "utf8")).sharedNativeExecutor, undefined); },
     ready: async current => { assert.equal(current.sharedNativeExecutor, true); assert.equal(current.sharedExecutors, false); return true; },
     restart: async () => { calls.push("restart"); pid = 102; await writePrivateJson(join(relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine" }); },
-    stopReplacement: async () => { calls.push("stop-replacement"); }, archive: async () => { calls.push("archive"); }, install: async () => { calls.push("install"); },
+    health: async () => true, rollbackTiming: { readyMs: 20, pollMs: 1, restartAttempts: 2, retryMs: 1 },
+    archive: async () => { calls.push("archive"); }, install: async () => { calls.push("install"); },
   };
   return { directory, state, nativeHome, relayHome, codex, configPath, plan, calls, dependencies, setPid: (value: number) => { pid = value; },
     cleanup: async () => { await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); await rm(dirname(nativeHomeOwnerPath(nativeHome)), { recursive: true, force: true }); } };
@@ -136,17 +137,36 @@ test("pending plans, mismatched registrations, active native writers, and unsign
   } finally { await f.cleanup(); }
 });
 
-test("refused restart restores the old plan and unsafe replacement rollback never restores competing writers", async () => {
+test("refused restart restores the old plan, and a replacement that cannot be restarted keeps its plan file and its writers", async () => {
   const f = await fixture();
   try {
     await assert.rejects(enableSharedNative(f.configPath, true, { ...f.dependencies, restart: async () => { throw new Error("idle restart refused"); } }), /idle restart refused/);
     assert.equal(JSON.parse(await readFile(servicePlanPath(f.state), "utf8")).sharedNativeExecutor, undefined);
     await new Promise(resolve => setTimeout(resolve, 2));
+    let restarts = 0;
     await assert.rejects(enableSharedNative(f.configPath, true, { ...f.dependencies,
-      restart: async () => { f.setPid(102); throw new Error("replacement startup failed"); },
-      stopReplacement: async () => { throw new Error("loaded native work refuses idle shutdown"); },
+      restart: async () => { restarts++; f.setPid(102); throw new Error(restarts === 1 ? "replacement startup failed" : "loaded native work refuses idle shutdown"); },
     }), /could not roll back safely/);
+    // The replacement still runs the native plan, so the plan file names it; no receipt was archived and nothing was started.
     assert.equal(JSON.parse(await readFile(servicePlanPath(f.state), "utf8")).sharedNativeExecutor, true);
+    assert.equal(restarts, 3, "the migration restart and two rollback attempts");
     assert.ok(!f.calls.includes("archive")); assert.ok(!f.calls.includes("install"));
+  } finally { await f.cleanup(); }
+});
+
+test("a failed native migration rolls back by the plan swap: the plan goes back first, the replacement restarts onto it, then the receipt is archived", async () => {
+  const f = await fixture();
+  try {
+    const original = await readFile(servicePlanPath(f.state), "utf8"); const planAtRestart: Array<boolean | undefined> = []; let restarts = 0;
+    await assert.rejects(enableSharedNative(f.configPath, true, { ...f.dependencies,
+      restart: async () => {
+        restarts++; planAtRestart.push(JSON.parse(await readFile(servicePlanPath(f.state), "utf8")).sharedNativeExecutor); f.calls.push("restart"); f.setPid(101 + restarts);
+        if (restarts === 1) throw new Error("replacement startup failed");
+      },
+    }), /replacement startup failed/);
+    // The rollback restart found the previous plan on disk, so launchd's relaunch cannot start the native host again.
+    assert.deepEqual(planAtRestart, [true, undefined]);
+    assert.equal(await readFile(servicePlanPath(f.state), "utf8"), original);
+    assert.deepEqual(f.calls, ["maintenance", "verified-sdk", "restart", "restart", "archive"]);
   } finally { await f.cleanup(); }
 });

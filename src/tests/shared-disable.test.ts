@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writePrivateJson } from "../config.js";
 import { servicePlanPath, type ServicePlan } from "../service-plan.js";
-import { disableSharing, sharingDisableFailureMessage, type SharingDisableDependencies } from "../mac-shared-disable.js";
+import { disableSharing, sharingDisableFailureMessage } from "../mac-shared-disable.js";
 import { safeErrorMessage } from "../error-message.js";
+import { executionHostHome } from "../execution-host-storage.js";
+import { standInFixture } from "./launchd-stand-in.js";
 
 test("disabling a sharing mode previews the remaining plan without touching the service", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-disable-"));
@@ -27,83 +29,156 @@ test("the failure message collapses a JSON parse error but keeps an ordinary rea
   let syntax: unknown = new Error("expected JSON.parse to throw");
   try { JSON.parse('{"pid": SECRET_TOKEN_FROM_PLAN'); } catch (error) { syntax = error; }
   assert.ok(syntax instanceof SyntaxError);
-  const fromParse = sharingDisableFailureMessage("shared-executors", syntax, "/tmp/backup", true);
+  const fromParse = sharingDisableFailureMessage("shared-executors", syntax, "/tmp/backup", "restarted");
   assert.match(fromParse, /Invalid JSON data/);
   assert.doesNotMatch(fromParse, /SECRET|pid/);
-  assert.match(fromParse, /^Turning off shared-executors failed \(Invalid JSON data\)\. The previous plan is restored from \/tmp\/backup and the service was restarted\.$/);
-  assert.equal(sharingDisableFailureMessage("shared-native", new Error("launchctl bootstrap failed"), "/tmp/backup", false),
-    "Turning off shared-native failed (launchctl bootstrap failed). The previous plan is restored from /tmp/backup; start it with gateway service install.");
-  assert.match(sharingDisableFailureMessage("shared-native", "not an error", "/tmp/backup", false), /failed \(Unknown failure\)\./);
+  assert.equal(fromParse, "Turning off shared-executors failed (Invalid JSON data). The previous plan is restored from /tmp/backup and the service was restarted.");
+  const reason = new Error("launchctl bootstrap failed");
+  assert.equal(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "kept"), "Turning off shared-native failed (launchctl bootstrap failed). The previous plan is restored from /tmp/backup and the service kept running.");
+  assert.equal(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "started"), "Turning off shared-native failed (launchctl bootstrap failed). The previous plan is restored from /tmp/backup, and the service, which was down, was started.");
+  assert.equal(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "stuck"),
+    "Turning off shared-native failed (launchctl bootstrap failed). The plan file is restored from /tmp/backup; the service still runs the plan without shared-native; run `gateway service restart` when idle.");
+  assert.match(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "down"), /service is down and could not be started; run `gateway service install`\.$/);
+  assert.match(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "unknown"), /could not be checked; run `gateway service status`/);
+  const lost = sharingDisableFailureMessage("shared-native", "not an error", "/tmp/backup", "not_restored");
+  assert.match(lost, /failed \(Unknown failure\)\./); assert.match(lost, /could not be written back/); assert.doesNotMatch(lost, /is restored|was restored/);
 });
 
-/**
- * A stand-in for launchd with KeepAlive. A restart makes the running service exit after its idle guard and launchd starts it
- * again at once, from whatever plan is on disk at that instant: there is no gap in which a stop could be observed.
- */
-class KeepAliveLaunchd {
-  pid = 1000; relaunched: Array<{ pid: number; sharedExecutors: boolean }> = []; refuseIdle = false;
-  constructor(private readonly planPath: string) {}
-  async restart(): Promise<void> {
-    if (this.refuseIdle) throw new Error("The unified service could not restart while idle; inspect gateway service status");
-    const plan = JSON.parse(await readFile(this.planPath, "utf8")) as ServicePlan;
-    this.pid += 1; this.relaunched.push({ pid: this.pid, sharedExecutors: plan.sharedExecutors === true });
-  }
-}
-async function fixture(): Promise<{ directory: string; config: string; plan: string; launchd: KeepAliveLaunchd; calls: string[]; deps: Partial<SharingDisableDependencies> }> {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-disable-"));
-  const config = join(directory, "gateway.json"); const plan = servicePlanPath(directory);
-  await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: directory, clientOnly: true, providers: [] });
-  await writePrivateJson(plan, { version: 1, config, sharedExecutors: true, components: [
-    { id: "native", kind: "native", command: "/usr/bin/true", args: ["--native-home", join(directory, "native"), "--relay-home", join(directory, "relay"), "--codex", "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex", "--daemon"], log: join(directory, "native.log") }] });
-  const launchd = new KeepAliveLaunchd(plan); const calls: string[] = [];
-  const deps: Partial<SharingDisableDependencies> = {
-    registration: async () => true, maintenance: async () => {}, status: async () => ({ pid: launchd.pid }), sdk: async codex => ({ codex, sdkSha256: "0".repeat(64) }),
-    restart: async () => { calls.push("restart"); await launchd.restart(); }, install: async () => { calls.push("install"); },
-    archive: async () => { calls.push("archive"); },
-  };
-  return { directory, config, plan, launchd, calls, deps };
-}
 const planOnDisk = async (path: string) => JSON.parse(await readFile(path, "utf8")) as ServicePlan;
 
-test("turning sharing off wins against a KeepAlive relaunch that comes back at once", { skip: process.platform !== "darwin" }, async () => {
-  const { directory, config, plan, launchd, calls, deps } = await fixture();
+test("turning sharing off wins against a KeepAlive relaunch, through the throttle gap, and archives the stopped receipt afterwards", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true }); f.launchd.gap = 2;
   try {
-    const result = await disableSharing(config, "shared-executors", true, deps);
-    // The relaunch read the plan without sharing, so it could not take the shared host back; nothing reported a changed owner.
-    assert.deepEqual(launchd.relaunched, [{ pid: 1001, sharedExecutors: false }]);
-    assert.deepEqual(calls, ["restart", "archive"]);
-    assert.equal(result.applied, true);
-    assert.equal((await planOnDisk(plan)).sharedExecutors, undefined);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    const result = await disableSharing(f.config, "shared-executors", true, f.deps);
+    // The relaunch read the plan without sharing, so it could not take the shared host back.
+    assert.deepEqual(f.launchd.relaunched, [{ pid: 1001, sharedExecutors: false, sharedNativeExecutor: false }]);
+    assert.deepEqual(f.calls, ["restart", "archive"]); assert.deepEqual(f.host.errors, []);
+    assert.equal(result.applied, true); assert.equal((await planOnDisk(f.planPath)).sharedExecutors, undefined);
+    // The real archive moved the stopped receipt into the backup.
+    assert.deepEqual(await readdir(executionHostHome(f.config, f.nativeHome)).then(names => names.filter(name => name === "owner.json")), []);
+    assert.ok((await readdir(result.backup as string)).includes("execution-owner.json"));
+  } finally { await f.cleanup(); }
 });
 
 test("a service that refuses the idle restart keeps running its previous plan, restored byte for byte", { skip: process.platform !== "darwin" }, async () => {
-  const { directory, config, plan, launchd, calls, deps } = await fixture();
+  const f = await standInFixture({ sharedExecutors: true });
   try {
-    const original = await readFile(plan, "utf8"); launchd.refuseIdle = true;
-    await assert.rejects(disableSharing(config, "shared-executors", true, deps), (error: Error) => {
+    const original = await readFile(f.planPath, "utf8"); f.launchd.refuseIdle = true;
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
       assert.match(error.message, /^Turning off shared-executors failed \(The unified service could not restart while idle; inspect gateway service status\)\. The previous plan is restored from .+ and the service kept running\.$/);
       return true;
     });
-    assert.equal(await readFile(plan, "utf8"), original);
-    assert.deepEqual(calls, ["restart"]); assert.deepEqual(launchd.relaunched, []);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    assert.equal(await readFile(f.planPath, "utf8"), original);
+    assert.deepEqual(f.calls, ["restart"]); assert.deepEqual(f.launchd.relaunched, []);
+    assert.ok((await readdir(f.directory)).every(name => !name.endsWith(".tmp")), "the atomic restore leaves no temporary file");
+  } finally { await f.cleanup(); }
 });
 
-test("a corrupt receipt after the relaunch reports exactly Invalid JSON data and restarts onto the previous plan", { skip: process.platform !== "darwin" }, async () => {
-  const { directory, config, plan, launchd, calls, deps } = await fixture();
+test("a rollback waits for the relaunched service to answer before it restarts it, because an immediate restart is refused", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true }); f.launchd.startup = 4;
   try {
-    const original = await readFile(plan, "utf8");
-    deps.archive = async () => { calls.push("archive"); JSON.parse('{"state": SECRET_TOKEN_FROM_RECEIPT'); };
-    await assert.rejects(disableSharing(config, "shared-executors", true, deps), (error: Error) => {
-      assert.match(error.message, /^Turning off shared-executors failed \(Invalid JSON data\)\. The previous plan is restored from .+shared-executors-disable-\d+ and the service was restarted\.$/);
-      assert.doesNotMatch(error.message, /SECRET|state/);
+    const original = await readFile(f.planPath, "utf8");
+    f.deps.archive = async () => {
+      f.calls.push("archive");
+      // The relaunched service starts its host before inference: asked now, its maintenance check and idle guard refuse.
+      await assert.rejects(f.launchd.restart(), /fetch failed/);
+      throw new Error("archive failed");
+    };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(archive failed\)\. The previous plan is restored from .+ and the service was restarted\.$/);
+      return true;
+    });
+    assert.equal(await readFile(f.planPath, "utf8"), original);
+    // First the relaunch on the plan without sharing, then the restart that read the restored plan back and claimed its host.
+    assert.deepEqual(f.launchd.relaunched, [{ pid: 1001, sharedExecutors: false, sharedNativeExecutor: false }, { pid: 1002, sharedExecutors: true, sharedNativeExecutor: false }]);
+    assert.equal(f.launchd.pid, 1002); assert.deepEqual(f.host.errors, []);
+    assert.equal(f.launchd.restartCalls, 3, "the forward restart, the refused probe, and one rollback restart that needed no retry");
+  } finally { await f.cleanup(); }
+});
+
+test("a rollback retries a restart that the idle guard refuses for a moment", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    f.deps.archive = async () => { f.calls.push("archive"); f.launchd.restartFailures = 2; throw new Error("archive failed"); };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), /and the service was restarted\.$/);
+    assert.equal(f.launchd.restartCalls, 4, "one forward restart and three rollback attempts");
+    assert.equal(f.launchd.pid, 1002); assert.equal((await planOnDisk(f.planPath)).sharedExecutors, true);
+  } finally { await f.cleanup(); }
+});
+
+test("a rollback whose restart never succeeds reports the stuck state, with the plan file restored and the service still on the next plan", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    const original = await readFile(f.planPath, "utf8");
+    f.deps.archive = async () => { f.calls.push("archive"); f.launchd.restartFailures = 99; throw new Error("archive failed"); };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(archive failed\)\. The plan file is restored from .+shared-executors-disable-\d+; the service still runs the plan without shared-executors; run `gateway service restart` when idle\.$/);
+      return true;
+    });
+    assert.equal(await readFile(f.planPath, "utf8"), original);
+    assert.equal(f.launchd.pid, 1001); assert.equal(f.launchd.restartCalls, 4);
+    // The recorded recovery works: a restart when idle relaunches onto the restored plan, which claims the host again.
+    f.launchd.restartFailures = 0; await f.launchd.restart();
+    assert.deepEqual(f.launchd.relaunched.at(-1), { pid: 1002, sharedExecutors: true, sharedNativeExecutor: false }); assert.deepEqual(f.host.errors, []);
+  } finally { await f.cleanup(); }
+});
+
+test("a restart that exits the service and times out leaves it down, and the rollback starts it on the restored plan", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true }); f.launchd.gap = 3; f.launchd.restartTimesOut = true;
+  try {
+    const original = await readFile(f.planPath, "utf8");
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(The unified service could not restart while idle; inspect gateway service status\)\. The previous plan is restored from .+, and the service, which was down, was started\.$/);
+      return true;
+    });
+    assert.equal(await readFile(f.planPath, "utf8"), original);
+    assert.deepEqual(f.calls, ["restart", "install"]);
+    // The only relaunch read the restored plan, so no process ever ran the plan without sharing.
+    assert.deepEqual(f.launchd.relaunched, [{ pid: 1001, sharedExecutors: true, sharedNativeExecutor: false }]); assert.deepEqual(f.host.errors, []);
+  } finally { await f.cleanup(); }
+});
+
+test("a plan that turns unreadable mid-change fails with exactly Invalid JSON data and restarts onto the previous plan", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    const original = await readFile(f.planPath, "utf8");
+    // Another writer leaves a corrupt plan; the service's own restart reads it first, as macService does, and the real parser throws.
+    f.deps.restart = async () => { f.calls.push("restart"); await writeFile(f.planPath, '{"version": 1, "sharedExecutors": SECRET_TOKEN_FROM_PLAN', { mode: 0o600 }); await f.launchd.restart(); };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(Invalid JSON data\)\. The previous plan is restored from .+shared-executors-disable-\d+ and the service kept running\.$/);
+      assert.doesNotMatch(error.message, /SECRET|sharedExecutors": /);
       return true;
     });
     assert.equal(safeErrorMessage(new SyntaxError("Unexpected token S in JSON at position 10")), "Invalid JSON data");
-    assert.equal(await readFile(plan, "utf8"), original);
-    // First relaunch on the plan without sharing, then a second one that read the restored plan back.
-    assert.deepEqual(launchd.relaunched, [{ pid: 1001, sharedExecutors: false }, { pid: 1002, sharedExecutors: true }]);
-    assert.deepEqual(calls, ["restart", "archive", "restart"]);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+    assert.equal(await readFile(f.planPath, "utf8"), original);
+    assert.equal(f.launchd.pid, 1000, "the service never left its plan");
+  } finally { await f.cleanup(); }
+});
+
+test("a corrupt host receipt is refused before anything changes", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    const original = await readFile(f.planPath, "utf8"); const receipt = join(executionHostHome(f.config, f.nativeHome), "owner.json");
+    await writeFile(receipt, '{"state": SECRET_TOKEN_FROM_RECEIPT', { mode: 0o600 });
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.equal(error.message, "Execution host ownership receipt is unreadable");
+      return true;
+    });
+    assert.equal(await readFile(f.planPath, "utf8"), original); assert.deepEqual(f.calls, []); assert.deepEqual(f.launchd.relaunched, []);
+    assert.ok(!(await readdir(f.directory)).includes("service-backups"));
+  } finally { await f.cleanup(); }
+});
+
+test("a rollback that cannot write the previous plan back says so instead of claiming it restored", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    // The plan path becomes a non-empty directory, so the rename of the restored plan onto it fails.
+    f.deps.archive = async () => { await rm(f.planPath); await mkdir(f.planPath); await writeFile(join(f.planPath, "keep"), "x"); throw new Error("archive failed"); };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(archive failed\)\. The previous plan could not be written back, so the plan file still holds the plan without shared-executors/);
+      assert.doesNotMatch(error.message, /is restored|was restored|restarted/);
+      return true;
+    });
+    assert.ok((await readdir(f.directory)).every(name => !name.endsWith(".tmp")), "no temporary plan is left behind");
+  } finally { await f.cleanup(); }
 });

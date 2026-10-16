@@ -2,50 +2,63 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { readServicePlan, serviceExecutionPaths, serviceNativeExecutionPaths, servicePlanPath, validateServicePlan, type ServicePlan } from "./service-plan.js";
-import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
-import { macService } from "./mac-service.js";
+import { requireMaintenanceWindow } from "./mac-consolidate.js";
 import { readOwner, sdkIdentity } from "./execution-host-storage.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js";
 import { sharedServiceRegistration } from "./mac-shared-native.js";
+import { archiveStoppedNativeHomeReceipt, defaultPlanSwapServices, planSharesExecutors, relaunchOntoPlan, writePlanText, type PlanSwapServices, type PlanSwapTiming, type RelaunchOutcome } from "./mac-shared-plan-swap.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 import { executionHostHome } from "./execution-host.js";
 import { safeErrorMessage } from "./error-message.js";
 
 export type SharingMode = "shared-executors" | "shared-native";
 
+/** How a failed disable ended: the rollback outcome of the service, or that the previous plan could not be written back. */
+export type DisableOutcome = RelaunchOutcome | "not_restored";
+
 /**
  * Why turning a sharing mode off failed, and how to recover. The reason goes through
  * safeErrorMessage: a JSON parse error quotes a slice of the plan it tripped over, which can
  * hold a credential, so the snippet never reaches the terminal.
  */
-export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, backup: string, restarted: boolean | "kept"): string {
-  const service = restarted === "kept" ? " and the service kept running" : restarted ? " and the service was restarted" : "; start it with gateway service install";
-  return `Turning off ${mode} failed (${safeErrorMessage(error, "Unknown failure")}). The previous plan is restored from ${backup}${service}.`;
+export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, backup: string, outcome: DisableOutcome): string {
+  const reason = `Turning off ${mode} failed (${safeErrorMessage(error, "Unknown failure")}).`;
+  switch (outcome) {
+    case "restarted": return `${reason} The previous plan is restored from ${backup} and the service was restarted.`;
+    case "kept": return `${reason} The previous plan is restored from ${backup} and the service kept running.`;
+    case "started": return `${reason} The previous plan is restored from ${backup}, and the service, which was down, was started.`;
+    case "stuck": return `${reason} The plan file is restored from ${backup}; the service still runs the plan without ${mode}; run \`gateway service restart\` when idle.`;
+    case "down": return `${reason} The plan file is restored from ${backup}, but the service is down and could not be started; run \`gateway service install\`.`;
+    case "unknown": return `${reason} The plan file is restored from ${backup}, but the service could not be checked; run \`gateway service status\`, then \`gateway service restart\` when idle.`;
+    case "not_restored": return `${reason} The previous plan could not be written back, so the plan file still holds the plan without ${mode}, which a running service reads at its next restart. The previous plan is saved in ${backup}.`;
+  }
 }
 
 /** The service operations a disable uses; tests replace them to stand in for launchd. */
-export interface SharingDisableDependencies {
+export interface SharingDisableDependencies extends PlanSwapServices {
   registration(config: string): Promise<boolean>;
   maintenance(config: string): Promise<void>;
-  status(state: string): Promise<Record<string, unknown>>;
-  /** Idle-guarded restart of the running service: it exits, and launchd KeepAlive starts it again from the plan on disk. */
-  restart(config: string): Promise<unknown>;
-  install(config: string): Promise<unknown>;
   sdk(codex: string): ReturnType<typeof sdkIdentity>;
+  /** Archives the stopped host receipt (and the native-home receipt it names) once no relaunched host can claim it. */
   archive(identity: Parameters<typeof archiveStoppedExecutionReceipt>[0], backup: string): Promise<unknown>;
+  /** Releases only the stopped native-home receipt, for a relaunch that keeps gateway executors. */
+  releaseNative(identity: { configPath: string; nativeHome: string }, backup: string): Promise<unknown>;
+  timing?: PlanSwapTiming;
 }
 const defaults: SharingDisableDependencies = {
-  registration: sharedServiceRegistration, maintenance: requireMaintenanceWindow, status: consolidatedStatus,
-  restart: config => macService("restart", config), install: config => macService("install", config), sdk: sdkIdentity, archive: archiveStoppedExecutionReceipt,
+  ...defaultPlanSwapServices, registration: sharedServiceRegistration, maintenance: requireMaintenanceWindow, sdk: sdkIdentity,
+  archive: archiveStoppedExecutionReceipt, releaseNative: archiveStoppedNativeHomeReceipt,
 };
 
 /**
  * Turns one sharing mode off again. The next plan is written first and the service restarts onto it: the restart is
  * guarded by the service's own idle check, which releases every lease and loaded chat before it exits, and launchd's
  * KeepAlive relaunch then starts the plan without the mode. Stopping the job and waiting for it to stay down cannot work:
- * KeepAlive relaunches it within milliseconds, and a relaunch on the old plan would own the shared host again.
- * Once the service runs the new plan its stopped host receipt is archived. Any failure restores the previous plan.
+ * KeepAlive relaunches it within milliseconds (at most launchd's 10 s throttle later), and a relaunch on the old plan would
+ * own the shared host again. Once the service runs the new plan, its stopped receipts are released, but only those no
+ * relaunched host can claim: when the new plan still shares executors its host claims owner.json itself (claimHost takes over
+ * the stopped receipt), so archiving it would race that claim. Any failure restores the previous plan and runs it.
  */
 export async function disableSharing(configPath: string, mode: SharingMode, apply = false, overrides: Partial<SharingDisableDependencies> = {}): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("Shared service changes currently support macOS");
@@ -76,21 +89,18 @@ export async function disableSharing(configPath: string, mode: SharingMode, appl
     try {
       await writePrivateJson(path, validateServicePlan(next));
       if (typeof before.pid === "number") await deps.restart(configPath); else await deps.install(configPath);
-      await deps.archive({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup);
+      const identity = { configPath: resolve(configPath), nativeHome: paths.nativeHome };
+      if (!planSharesExecutors(next)) await deps.archive({ ...identity, ...sdk }, backup);
+      else if (mode === "shared-native" && next.sharedExecutors === true) await deps.releaseNative(identity, backup);
     } catch (error) {
-      // Never leave inference and tunnels down: restore the previous plan and run it.
-      let restarted: boolean | "kept" = false;
-      try {
-        await writeFile(path, original, { mode: 0o600 });
-        const now = await deps.status(config.stateDirectory);
-        // A service that refused the idle restart still runs the previous plan. One that already relaunched on the next plan
-        // restarts again onto the restored one, and one that is down is started.
-        if (typeof now.pid !== "number") { await deps.install(configPath); restarted = true; }
-        else if (now.pid !== before.pid) { await deps.restart(configPath); restarted = true; }
-        else restarted = "kept";
-      } catch { /* Reported below. */ }
-      telemetry("sharing_disable_failed", { mode, restarted: restarted === true, kept: restarted === "kept" }); await flushTelemetry();
-      throw new Error(sharingDisableFailureMessage(mode, error, backup, restarted));
+      // Never leave inference and tunnels down: restore the previous plan and run it. The plan goes back first, through a rename,
+      // because a relaunch may read the file at any moment; then the service restarts onto it.
+      let restored = false; let outcome: DisableOutcome = "not_restored";
+      try { await writePlanText(path, original); restored = true; } catch { /* Reported below. */ }
+      // A relaunch that was started from the next plan is still starting and refuses the idle restart; relaunchOntoPlan waits for it.
+      if (restored) outcome = await relaunchOntoPlan(deps, configPath, config.stateDirectory, before.pid as number | undefined, deps.timing).catch((): DisableOutcome => "unknown");
+      telemetry("sharing_disable_failed", { mode, outcome }); await flushTelemetry();
+      throw new Error(sharingDisableFailureMessage(mode, error, backup, outcome));
     }
     telemetry("sharing_disabled", { mode }); await flushTelemetry();
     return { ...preview, applied: true, backup, ...await deps.status(config.stateDirectory) };

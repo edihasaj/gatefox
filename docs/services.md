@@ -316,11 +316,38 @@ they preview the remaining plan. With it, they require the maintenance window,
 save the current plan in `service-backups`, write the plan without that mode, and
 restart the service onto it. The restart waits for the service's idle guard to
 release every lease and loaded chat; launchd's KeepAlive then starts the service
-at once from the new plan, so the relaunch cannot take the shared host back. Once
-the service runs the new plan, the stopped host receipt is archived. If any step
-fails, the previous plan is written back. A service that refused the idle restart
-keeps running; one that already restarted is restarted again onto the previous
-plan. The error names the backup.
+from the new plan, so the relaunch cannot take the shared host back. The relaunch
+is not immediate: launchd's 10 second ThrottleInterval can pass first, and the
+service has no process while it waits. The command waits for the new process.
+Once the service runs the new plan, the stopped host receipt is archived, but only
+when no relaunched host can claim it. If the other mode stays on, the relaunched
+host claims `owner.json` itself and takes over the stopped receipt, so nothing is
+archived. When shared-native goes off and shared-executors stays, only the stopped
+native-home receipt is moved into the backup.
+
+If any step fails, the previous plan is written back through a temporary file and a
+rename, and the service is brought onto it:
+
+| State when the change failed | Result | Message says |
+| --- | --- | --- |
+| The service refused the idle restart and never left the previous plan | Plan restored, service untouched | the service kept running |
+| The service was down (for example in the throttle gap), so the restore starts it | Plan restored, service started | the service, which was down, was started |
+| The service already relaunched on the new plan | The command waits up to 30 seconds for the relaunched service to be current and answer `/health` (it starts its host before inference), then retries the idle restart up to three times | the service was restarted |
+| Every retry was refused (loaded chats, or the service never became healthy) | Plan file restored; the service still runs the plan without the mode | run `gateway service restart` when idle |
+| The previous plan could not be written back | The plan file still holds the new plan | the previous plan is saved in the backup |
+
+In the fourth case the plan file and the service differ until the restart runs.
+The next restart or crash relaunch reads the restored plan, so it heals itself.
+`gateway service install` does nothing while the service has a process, so the
+message never suggests it in that state.
+
+`gateway service shared-executors --apply` and `gateway service shared-native
+--apply` undo a failed migration the same way: the previous plan goes back first,
+the replacement restarts onto it through its idle guard, and the stopped host
+receipt is archived once the service runs it (not when the previous plan still
+shares executors itself). A replacement that cannot be restarted keeps running its
+own plan, so there the plan file is put back to name that plan and the command
+reports that rollback was not safe.
 
 The service never keeps a Mac awake. While the inference host sleeps, other Macs'
 gateway requests fail and Codex retries them. When the supervisor sees a timer tick

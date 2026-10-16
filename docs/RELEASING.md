@@ -40,7 +40,17 @@ belongs in the release archive.
    INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
    --shared`. It reproduces the previous-model failure with `--expect baseline`
    and verifies selected-model recovery, Stop, failures, and reconnect through
-   stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
+   stdio and Unix with a mock upstream and the signed SDK. `--expect baseline`
+   needs the stock pinned SDK passed explicitly with `--codex SIGNED_CODEX_MACH_O`
+   (the script refuses to start without it): the gateway SDK recovers the switch,
+   so it would not fail as the baseline expects. Without `--codex` the script
+   uses `gateway-sdk/gateway-codex` in the package and says so if it is missing.
+   Every child runs under a private HOME inside the run folder, so no execution
+   host home or receipt reaches `~/.local/state`. Only the pinned SDK's fixed
+   socket folder, `/tmp/codex-daemon-UID`, stays outside, because the SDK
+   hard-codes it; the script removes its own stale sockets there. A passing run
+   removes its `/tmp/gw-compact-switch-*` run folder; a failing run keeps it, and
+   `--keep-fixture` keeps it on request. Shared ownership is
    checked for safe refusal of automatic compaction, not seamless recovery.
    For Responses continuation changes, run
    `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
