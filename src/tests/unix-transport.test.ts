@@ -12,6 +12,7 @@ import { shimFiles } from "./shim-fixture.js";
 import { shortFolder } from "./short-folder.js";
 import { withPrivateFileLock } from "../private-file-lock.js";
 import { reuseSshSocket } from "../ssh-socket.js";
+import { releaseState, watchForUpgrade } from "../self-update.js";
 
 test("Unix addresses exclude network listeners, relative paths, and oversized socket names", () => {
   assert.throws(() => unixSocketPath("ws://0.0.0.0:80"));
@@ -37,8 +38,64 @@ test("Unix readiness never exposes a socket before its ownership record", { skip
     const info = await lstat(path, { bigint: true });
     const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
     assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
-    assert.equal(await reuseSshSocket(path), true);
+    assert.equal((await reuseSshSocket(path)).reused, true);
   } finally { controller.abort(); await running; await folder.remove(); }
+});
+
+test("serveUnix records the release it runs, or none when told to", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const leaseFor = async (release: string | null | undefined) => {
+    const dir = await mkdtemp("/tmp/gw-lease-release-"); const path = join(dir, "rpc.sock");
+    const controller = new AbortController(); const serving = serveUnix(path, controller.signal, async () => {}, release);
+    try {
+      for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+      return JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
+    } finally { controller.abort(); await serving; }
+  };
+  const given = await leaseFor("0.4.2");
+  assert.equal(given.release, "0.4.2");
+  assert.deepEqual(Object.keys(given).sort(), ["boundPath", "device", "inode", "release"]);
+  assert.ok(Buffer.byteLength(JSON.stringify(given, null, 2) + "\n") <= 4096, "the ownership record stays within the size readers allow");
+  assert.equal("release" in await leaseFor(null), false, "a checkout run records no release");
+  assert.equal((await leaseFor(undefined)).release, releaseState()?.running, "omitting it derives the running release");
+});
+
+/**
+ * A listener running 0.4.1 with 0.4.2 installed, checked every 10ms, exactly as `codex-shim`
+ * wires it. `busy` needs a client to open a session that lives as long as the connection.
+ */
+async function selfRetiringListener(busy: boolean) {
+  const dir = await mkdtemp("/tmp/gw-retire-"); const path = join(dir, "rpc.sock");
+  const controller = new AbortController(); let stopWatching = () => {};
+  const session = async (_input: import("node:stream").Readable, _emit: (message: Record<string, unknown>) => Promise<void>, signal: AbortSignal) =>
+    busy ? new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true })) : Promise.resolve();
+  const serving = serveUnix(path, controller.signal, session, null, listener => {
+    stopWatching = watchForUpgrade("ssh_listener", () => listener.sessions() === 0, () => listener.retire(),
+      { intervalMs: 10, state: () => ({ running: "0.4.1", installed: "0.4.2" }) });
+  });
+  for (let i = 0; i < 200 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving; throw new Error("Listener socket never appeared"); }
+  return { directory: dir, path, done: serving, stop: async () => { stopWatching(); controller.abort(); await serving; } };
+}
+
+test("an idle listener retires itself after an install and a busy one does not", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const ended = async (serving: Promise<void>, within = 8000) => await Promise.race([serving.then(() => "ended" as const, () => "failed" as const), delay(within).then(() => "pending" as const)]);
+  const idle = await selfRetiringListener(false);
+  try {
+    assert.equal(await ended(idle.done), "ended", "an idle listener finishes after retiring");
+    await assert.rejects(lstat(idle.path), { code: "ENOENT" }, "the retired listener dropped its public alias");
+    assert.deepEqual((await readdir(idle.directory)).filter(name => name.startsWith(".gw-")), [], "its bound socket is gone");
+  } finally { await idle.stop(); }
+
+  const busy = await selfRetiringListener(true); const client = new WebSocket(`ws+unix://${busy.path}:/rpc`);
+  try {
+    await once(client, "open");
+    await delay(200);
+    assert.equal((await lstat(busy.path)).isSocket(), true, "a listener with a running session keeps its alias");
+    assert.equal(await ended(busy.done, 500), "pending", "a listener with a session keeps running");
+    client.close(); await once(client, "close");
+    assert.equal(await ended(busy.done), "ended", "it finishes once its session has");
+    await assert.rejects(lstat(busy.path), { code: "ENOENT" }, "it retires once that session has finished");
+  } finally { client.terminate(); await busy.stop(); }
 });
 
 test("Unix clients get combined models, isolated approvals, and disconnect recovery", { skip: process.platform === "win32", timeout: 15000 }, async () => {

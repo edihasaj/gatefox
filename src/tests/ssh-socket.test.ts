@@ -1,14 +1,31 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, readFile, lstat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
+import { WebSocket } from "ws";
 import { reuseSshSocket, sshControlHome } from "../ssh-socket.js";
+import { serveUnix } from "../unix-transport.js";
+import { writePrivateJson } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
 import { shortFolder } from "./short-folder.js";
+
+/** A live listener bound in a short private directory, recording `release` in its lease (none for `null`). */
+async function ownedListener(release: string | null) {
+  const directory = await mkdtemp("/tmp/gw-ssh-rel-");
+  const path = join(directory, "app-server-control/app-server-control.sock");
+  const controller = new AbortController();
+  const serving = serveUnix(path, controller.signal,
+    async (input, emit) => { for await (const chunk of input) await emit(JSON.parse(chunk.toString())); }, release);
+  serving.catch(() => {});
+  for (let i = 0; i < 200; i++) { if (await lstat(path).then(() => true, () => false)) break; await delay(10); }
+  if (!await lstat(path).then(() => true, () => false)) { controller.abort(); await serving; throw new Error("Listener socket never appeared"); }
+  const socketDirectory = join(directory, "app-server-control");
+  return { directory, socketDirectory, path, done: serving, stop: async () => { controller.abort(); await serving; } };
+}
 
 test("SSH control scope separates configs and native homes", () => {
   assert.equal(sshControlHome("/a/config", "/a/native"), sshControlHome("/a/config", "/a/native"));
@@ -25,11 +42,11 @@ test("SSH listeners reuse live sockets and recover their own crashed sockets wit
   const child = spawn(process.execPath, args, { env: f.env, stdio: "ignore" }); const exited = once(child, "close");
   try {
     for (let i = 0; i < 100; i++) { if (await lstat(path).then(() => true, () => false)) break; await delay(20); }
-    assert.equal(await reuseSshSocket(path), true);
+    assert.equal((await reuseSshSocket(path)).reused, true);
     await promisify(execFile)(process.execPath, args, { env: f.env, timeout: 5000 });
     assert.equal(child.exitCode, null);
     child.kill("SIGKILL"); await exited;
-    assert.equal(await reuseSshSocket(path), false);
+    assert.equal((await reuseSshSocket(path)).reused, false);
     await assert.rejects(lstat(path));
     assert.equal(await readFile(nativeSocket, "utf8"), "native-ipc-must-stay");
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
@@ -55,12 +72,79 @@ test("simultaneous SSH bootstraps retain one listener and a matching ownership r
   try {
     for (let i = 0; i < 200 && children.every(child => child.exitCode === null); i++) await delay(20);
     assert.deepEqual(children.map(child => child.exitCode).sort(), [0, null]);
-    assert.equal(await reuseSshSocket(path), true);
+    assert.equal((await reuseSshSocket(path)).reused, true);
     const info = await lstat(path, { bigint: true });
     const lease = JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
     assert.equal(lease.inode, String(info.ino)); assert.equal(lease.device, String(info.dev));
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
   } finally { for (const child of children) child.kill("SIGTERM"); await Promise.all(exited); f.close(); await folder.remove(); }
+});
+
+test("a bootstrap on the installed release replaces a listener whose lease records no release", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const listener = await ownedListener(null);
+  const client = new WebSocket(`ws+unix://${listener.path}:/rpc`);
+  try {
+    await once(client, "open");
+    const reuse = await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" });
+    assert.equal(reuse.reused, false);
+    assert.deepEqual(reuse.replaced, { from: "unknown", to: "0.4.2" }, "the bootstrap is told both releases so it can log the replacement");
+    assert.deepEqual(Object.keys(reuse.replaced ?? {}).sort(), ["from", "to"], "no paths in the replacement report");
+    await assert.rejects(lstat(listener.path), { code: "ENOENT" }, "the public alias is gone");
+    assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 1, "the old bound socket was left alone");
+    await delay(1100);
+    const reply = once(client, "message"); client.send('{"id":"old-session-still-works"}');
+    assert.equal(JSON.parse((await reply)[0].toString()).id, "old-session-still-works", "the existing session keeps working");
+    client.close(); await once(client, "close");
+    const outcome = await Promise.race([listener.done.then(() => "ended" as const), delay(5000).then(() => "pending" as const)]);
+    assert.equal(outcome, "ended", "the listener ends once its last session closes");
+    assert.deepEqual((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")), []);
+  } finally { client.terminate(); await listener.stop(); }
+});
+
+test("a bootstrap on the same release keeps the live listener and its alias", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const listener = await ownedListener("0.4.2");
+  const client = new WebSocket(`ws+unix://${listener.path}:/rpc`);
+  try {
+    await once(client, "open");
+    assert.equal(JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8")).release, "0.4.2");
+    const before = await lstat(listener.path, { bigint: true });
+    assert.equal((await reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" })).reused, true);
+    const after = await lstat(listener.path, { bigint: true });
+    assert.equal(after.isSocket(), true); assert.equal(String(after.ino), String(before.ino)); assert.equal(String(after.dev), String(before.dev));
+  } finally { client.terminate(); await listener.stop(); }
+});
+
+test("a bootstrap that is not the installed release leaves a newer listener alone", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const listener = await ownedListener("0.4.2");
+  try {
+    const before = await lstat(listener.path, { bigint: true });
+    assert.equal((await reuseSshSocket(listener.path, { running: "0.4.1", installed: "0.4.2" })).reused, true);
+    const after = await lstat(listener.path, { bigint: true });
+    assert.equal(after.isSocket(), true); assert.equal(String(after.ino), String(before.ino));
+    assert.equal((await readdir(listener.socketDirectory)).filter(name => name.startsWith(".gw-")).length, 1, "nothing was unlinked");
+  } finally { await listener.stop(); }
+});
+
+test("a checkout bootstrap reuses a live listener without comparing releases", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const listener = await ownedListener("0.4.2");
+  try {
+    const before = await lstat(listener.path, { bigint: true });
+    assert.equal((await reuseSshSocket(listener.path, undefined)).reused, true);
+    const after = await lstat(listener.path, { bigint: true });
+    assert.equal(after.isSocket(), true); assert.equal(String(after.ino), String(before.ino));
+  } finally { await listener.stop(); }
+});
+
+test("an ownership record with a malformed release is rejected and its listener untouched", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  for (const bad of ["../x", "a".repeat(200), 7, false]) {
+    const listener = await ownedListener("0.4.2");
+    try {
+      const lease = JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8"));
+      await writePrivateJson(listener.path + ".gateway-lease", { ...lease, release: bad });
+      await assert.rejects(reuseSshSocket(listener.path, { running: "0.4.2", installed: "0.4.2" }), /SSH socket ownership record is invalid/);
+      assert.equal((await lstat(listener.path, { bigint: true })).isSocket(), true);
+    } finally { await listener.stop(); }
+  }
 });
 
 test("SSH recovery refuses an unrecorded socket path", { skip: process.platform === "win32" }, async () => {

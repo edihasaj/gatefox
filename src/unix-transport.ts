@@ -9,6 +9,15 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
+import { releasePattern, releaseState } from "./self-update.js";
+
+/** What the process owning a listener uses to retire it after an install. */
+export interface UnixListenerControl {
+  /** WebSocket sessions running now; a listener with sessions must keep serving them. */
+  sessions(): number;
+  /** Stop taking new sessions and drop the public alias, but only while this listener owns it. */
+  retire(): Promise<boolean>;
+}
 
 export function unixSocketPath(listen: string): string {
   if (!listen.startsWith("unix://")) throw new Error("Choose stdio:// or a private unix:// socket");
@@ -17,9 +26,18 @@ export function unixSocketPath(listen: string): string {
   return path;
 }
 
-/** Private filesystem permissions protect SSH's local WebSocket transport. */
+/**
+ * Private filesystem permissions protect SSH's local WebSocket transport.
+ * `release` records which gateway release this listener runs, so a later bootstrap on the
+ * installed release can tell a stale listener from a current one. Omit it to derive it from
+ * where this module was loaded, and pass `null` to record none (a checkout run).
+ * `onListen` receives the control handle once the socket is public, so the process that owns
+ * the listener can watch for an install and retire it; see `codex-shim`.
+ */
 export async function serveUnix(path: string, signal: AbortSignal,
-  session: (input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal) => Promise<unknown>): Promise<void> {
+  session: (input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal) => Promise<unknown>,
+  release: string | null | undefined = releaseState()?.running,
+  onListen?: (listener: UnixListenerControl) => void): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const directory = await lstat(dirname(path));
   if (!directory.isDirectory() || directory.uid !== process.getuid?.() || (directory.mode & 0o022)) throw new Error("Unix socket directory must be owned by this user and not writable by others");
@@ -54,16 +72,30 @@ export async function serveUnix(path: string, signal: AbortSignal,
     });
   });
   const close = () => { for (const controller of controllers) controller.abort(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
+  const retire = async () => {
+    // Under the lock a bootstrap also takes, so a newer listener's alias is never removed here.
+    const dropped = await withPrivateFileLock(path + ".gateway-lease", async () => {
+      const current = await lstat(path, { bigint: true }).catch(() => undefined);
+      if (!current || String(current.ino) !== inode || String(current.dev) !== device) return true;
+      return await unlink(path).then(() => true, () => false);
+    }).catch(() => false);
+    if (!dropped) return false;
+    retiring = true; if (!active.size) close();
+    return true;
+  };
   try {
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
     const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
     await withPrivateFileLock(path + ".gateway-lease", async () => {
       try { await lstat(path); throw new Error("Unix socket path is occupied; the existing listener was not replaced"); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      // Publish the ownership record first. The alias is the readiness signal.
-      await writePrivateJson(path + ".gateway-lease", { inode, device, boundPath });
+      // Publish the ownership record first. The alias is the readiness signal. The release
+      // name is capped, so the record stays well under the 4096 byte limit readers enforce.
+      await writePrivateJson(path + ".gateway-lease",
+        { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}) });
       await link(boundPath, path);
     });
+    onListen?.({ sessions: () => active.size, retire });
     leaseTimer = setInterval(() => {
       void lstat(path, { bigint: true }).then(info => String(info.ino) === inode && String(info.dev) === device, () => false).then(owned => {
         if (!owned) { retiring = true; if (!active.size) close(); }
