@@ -306,6 +306,36 @@ The current Copilot CLI exposes no selected-model priority tier. Direct
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
 
+## WebSocket refusals, internal fields, and control items
+
+The gateway serves `/v1/responses` over plain HTTP only. A WebSocket (or any other) upgrade
+attempt to `/v1/responses` with a valid bearer gets `HTTP/1.1 426 Upgrade Required` with no body
+and `Connection: close`; without a valid bearer it gets `401` first, and an upgrade to any other
+path gets `404`. The refusal runs in the server's `upgrade` listener and, on Node builds that pass
+upgrades to the request handler instead, in that handler with the same answers. It never admits a
+request, changes the health admission counters, or invokes a provider.
+
+Recent Codex builds carry internal transport state beside the conversation. Before translation or
+any provider sees a request, the gateway removes it once in the request handler:
+`internal_chat_message_metadata_passthrough` from every input item, `encrypted_function_args` from
+`function_call` items (their plaintext `arguments` stay), and `mcp_attribution` from
+`client_metadata`; every other `client_metadata` key passes through untouched. When nothing is
+removed the parsed body is forwarded as the same object, so Responses upstreams receive
+byte-identical requests to before the strip existed.
+
+Two input items are executor control, not model input. A `configuration_update` item is removed
+before translation and counted in the request's telemetry record as `droppedControlItems` (a count
+only, never item content). A `compaction_trigger` item fails the request as final: streams get a
+`response.failed` with Codex's non-retryable `invalid_prompt` code and the fixed message "This
+gateway serves compaction inside the gateway executor; this Codex build sent remote compaction,
+which the gateway does not support yet."; nonstream requests get HTTP 400 `invalid_request` with
+that message. `request_failed` records `translation_reason: unsupported_compaction`. Neither
+invokes a provider nor takes an admission slot.
+
+`/health` adds `features`: `["responses-ws-426", "openai-internal-strip", "native-identity-v1"]`,
+the behaviors this release guarantees (the exported `gatewayFeatures`), so an operator can tell an
+updated daemon from an old one without reading its code.
+
 ## Ordinary Anthropic API
 
 Configured reasoning effort maps to `output_config.effort`; unsupported model

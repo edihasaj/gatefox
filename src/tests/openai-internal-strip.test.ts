@@ -1,0 +1,126 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { validateConfig, gatewayToken, type ProviderConfig } from "../config.js";
+import { createGatewayHandler, startGateway } from "../server.js";
+import { stripOpenAIInternal } from "../protocol/openai-internal.js";
+import { ResponsesAPI } from "../providers/responses-api.js";
+import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { EventEmitter } from "node:events";
+
+const passthrough = { thread_id: "thr_01", turn_id: "turn_01" };
+const encryptedArgs = "gAAAAAB3fixture-encrypted-args";
+const attribution = { server: "mcp.example", connection_id: "conn_01" };
+const cleanRequest = (): ResponsesRequest => ({
+  model: "alias",
+  input: [
+    { type: "message", role: "user", content: "hello" },
+    { type: "function_call", call_id: "call_1", name: "search", arguments: "{\"q\":\"x\"}" },
+    { type: "reasoning", summary: [{ type: "summary_text", text: "planning" }], encrypted_content: "opaque" } as never,
+    { type: "function_call_output", call_id: "call_1", output: "done" },
+  ],
+  client_metadata: { "x-codex-turn-metadata": "{\"turn_id\":\"turn-1\"}", session_id: "sess-1" },
+  prompt_cache_key: "thread-1",
+});
+const dirtyRequest = (): ResponsesRequest => {
+  const request = JSON.parse(JSON.stringify(cleanRequest())) as ResponsesRequest;
+  (request.input as Array<Record<string, unknown>>).forEach((item, index) => { item.internal_chat_message_metadata_passthrough = passthrough; if (index === 1) item.encrypted_function_args = encryptedArgs; });
+  Object.assign(request.client_metadata as Record<string, unknown>, { mcp_attribution: attribution });
+  return request;
+};
+const internalFields = (value: unknown): string[] => {
+  const text = JSON.stringify(value);
+  return ["internal_chat_message_metadata_passthrough", "encrypted_function_args", JSON.stringify(passthrough), JSON.stringify(attribution)]
+    .filter(needle => text.includes(needle));
+};
+
+test("the strip helper returns the same object when nothing is removed", () => {
+  const clean = cleanRequest();
+  const prepared = stripOpenAIInternal(clean);
+  assert.equal(prepared.request, clean, "no copy, no reordering: the route forwards exactly what the caller sent");
+  assert.equal(prepared.droppedControlItems, 0);
+  assert.equal(prepared.unsupportedCompaction, false);
+  assert.equal(stripOpenAIInternal({ model: "m", input: "text" }).request.input, "text");
+});
+
+test("the strip helper removes only the internal fields and keeps key order", () => {
+  const prepared = stripOpenAIInternal(dirtyRequest());
+  assert.deepEqual(internalFields(prepared.request), []);
+  assert.equal(JSON.stringify(prepared.request), JSON.stringify(cleanRequest()), "removing the fields yields the byte order of a request that never carried them");
+  const metadata = prepared.request.client_metadata as Record<string, unknown>;
+  assert.deepEqual(Object.keys(metadata), ["x-codex-turn-metadata", "session_id"], "other client_metadata keys are kept");
+  const call = (prepared.request.input as Array<Record<string, unknown>>)[1];
+  assert.equal(call.arguments, "{\"q\":\"x\"}", "the plaintext arguments the caller owns stay intact");
+  assert.equal(call.encrypted_function_args, undefined);
+  const reasoning = (prepared.request.input as Array<Record<string, unknown>>)[2];
+  assert.equal(reasoning.encrypted_content, "opaque", "reasoning replay state is not an internal transport field");
+});
+
+class FakeResponse extends EventEmitter {
+  status = 0; headersSent = false; writableEnded = false; destroyed = false; private readonly chunks: Buffer[] = [];
+  setHeader(): void {} writeHead(status: number): this { this.status = status; this.headersSent = true; return this; }
+  write(chunk: string): boolean { this.chunks.push(Buffer.from(chunk)); return true; }
+  end(value?: string): void { if (value !== undefined) this.chunks.push(Buffer.from(value)); this.writableEnded = true; this.emit("finish"); }
+  body(): string { return Buffer.concat(this.chunks).toString(); }
+}
+
+test("Claude, Responses and Copilot routes all receive the request without the internal fields", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-strip-"));
+  const seen = new Map<string, ResponsesRequest>();
+  const config = validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [
+    { id: "cl", type: "claude-subscription", models: { claude: "upstream" } },
+    { id: "cp", type: "copilot-subscription", models: { copilot: "upstream" } },
+    { id: "rs", type: "responses-api", baseUrl: "https://upstream.invalid/v1", apiKeyEnv: "STRIP_TEST_KEY", models: { responses: "upstream" } },
+  ] });
+  const gateway = await startGateway(config, provider => ({ async *infer(request): AsyncGenerator<InferenceEvent> {
+    seen.set(provider.id, request);
+    yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+  } }), undefined, { copilotTempBase: directory });
+  try {
+    const token = await gatewayToken(directory);
+    const url = `http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1/responses`;
+    for (const alias of ["claude", "copilot", "responses"]) {
+      const response = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ ...dirtyRequest(), model: alias }) });
+      assert.equal(response.status, 200, alias);
+    }
+    assert.deepEqual([...seen.keys()].sort(), ["cl", "cp", "rs"]);
+    for (const [id, request] of seen) assert.deepEqual(internalFields(request), [], `${id} saw internal fields`);
+    for (const request of seen.values()) {
+      const metadata = request.client_metadata as Record<string, unknown>;
+      assert.equal(metadata.session_id, "sess-1"); assert.equal(metadata["x-codex-turn-metadata"], "{\"turn_id\":\"turn-1\"}");
+    }
+  } finally { await new Promise<void>(resolve => { gateway.closeAllConnections(); gateway.close(() => resolve()); }); await rm(directory, { recursive: true, force: true }); }
+});
+
+// The Responses provider serializes what it forwards; a request that carried only removed fields must reach upstream byte-identical.
+test("a Responses upstream receives byte-identical bodies with and without the internal fields", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-strip-bytes-"));
+  const credentialFile = join(directory, "registration.json");
+  await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
+  const bodies: string[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => {
+    bodies.push(String(options.body));
+    const event = (data: Record<string, unknown>) => `data: ${JSON.stringify(data)}\n\n`;
+    return new Response(event({ type: "response.completed", response: { id: "r", status: "completed", output: [], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }), { headers: { "Content-Type": "text/event-stream" } });
+  });
+  try {
+    const provider = new ResponsesAPI({ id: "api", type: "responses-api", baseUrl: "https://upstream.invalid/v1", apiKeyEnv: "STRIP_BYTES_KEY", models: { "api/upstream": "upstream" } } as unknown as ProviderConfig);
+    process.env.STRIP_BYTES_KEY = "fixture-only"; t.after(() => { delete process.env.STRIP_BYTES_KEY; });
+    const send = async (request: ResponsesRequest) => {
+      const handler = await createGatewayHandler(validateConfig({ version: 1, port: 0, stateDirectory: directory, providers: [{ id: "api", type: "responses-api", baseUrl: "https://upstream.invalid/v1", apiKeyEnv: "STRIP_BYTES_KEY", models: { alias: "upstream" } }] }), () => provider);
+      const res = new FakeResponse();
+      const finished = new Promise<void>(resolve => res.once("finish", () => resolve()));
+      handler.handle({ method: "POST", url: "/v1/responses", headers: { authorization: `Bearer ${await gatewayToken(directory)}`, "content-type": "application/json" },
+        [Symbol.asyncIterator]: async function* () { yield Buffer.from(JSON.stringify(request)); } } as unknown as IncomingMessage, res as unknown as ServerResponse);
+      await finished; assert.equal(res.status, 200, res.body());
+    };
+    await send({ ...cleanRequest(), model: "alias" });
+    await send({ ...dirtyRequest(), model: "alias" });
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[1], bodies[0], "the stripped request reaches upstream exactly as the clean one");
+    assert.ok(!bodies[0].includes("mcp_attribution") && !bodies[0].includes("encrypted_function_args"));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

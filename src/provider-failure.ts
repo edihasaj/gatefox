@@ -90,8 +90,20 @@ export interface ProviderFailureDiagnosticInput {
   /** Allowlisted Responses item or tool type the translation rejected. */
   itemType?: string;
 }
+/**
+ * The gateway's own compaction rule, sent as a fixed final failure. Codex's remote
+ * compaction control item (`compaction_trigger`) reaches the executor, not a provider,
+ * so its message is written here and never carries caller text.
+ */
+export const unsupportedCompactionMessage = "This gateway serves compaction inside the gateway executor; this Codex build sent remote compaction, which the gateway does not support yet.";
+/** A ProviderError whose failure telemetry records the fixed `translation_reason`. */
+class UnsupportedCompactionFailure extends ProviderError { readonly translationReason = "unsupported_compaction" as const;
+  constructor() { super("invalid_request", unsupportedCompactionMessage, 400); } }
+export function unsupportedCompactionFailure(): ProviderError { return new UnsupportedCompactionFailure(); }
+
 /** The translation classes a failure may carry; empty for every other error. */
 export function translationFailureFields(error: unknown): Record<string, string> {
+  if (error instanceof UnsupportedCompactionFailure) return { translation_reason: error.translationReason };
   if (!(error instanceof ResponsesTranslationError)) return {};
   const reason = allowlisted(own(error, "reason"), translationReasons); const itemType = allowlisted(own(error, "itemType"), translationItemTypes);
   return { ...(reason ? { reason } : {}), ...(itemType ? { itemType } : {}) };

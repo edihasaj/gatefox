@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
@@ -11,10 +12,11 @@ import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { responsesToChatRequest } from "./protocol/request.js";
+import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
-import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "./provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "./provider-failure.js";
 import { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
@@ -28,6 +30,18 @@ import { autoReviewModels, isAutoReviewModel } from "./auto-review.js";
 import { hasPlanLogin } from "./auth/chatgpt.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
+/** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
+export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1"];
+const isUpgrade = (value: string | undefined): boolean => value !== undefined && !/^(no-op|none|unset)$/i.test(value);
+const upgradeStatusText = (status: number): string => status === 401 ? "Unauthorized" : status === 403 ? "Forbidden" : status === 404 ? "Not Found" : status === 426 ? "Upgrade Required" : "Bad Request";
+/** Refuses an upgrade on its raw socket: this API speaks no upgrade protocol. The 426 carries no body. */
+function refuseUpgrade(socket: Duplex, status: number, error?: { code: string; message: string }): void {
+  socket.on("error", () => { /* A client that resets before reading the refusal is expected. */ });
+  const payload = error ? JSON.stringify({ error }) : "";
+  const head = `HTTP/1.1 ${status} ${upgradeStatusText(status)}\r\nConnection: close\r\n` +
+    (error ? `Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(payload)}\r\n` : "Content-Length: 0\r\n");
+  socket.end(`${head}\r\n${payload}`);
+}
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
   const finished = () => { res.off("drain", finished); res.off("close", finished); signal.removeEventListener("abort", finished); resolve(); };
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
@@ -117,6 +131,7 @@ async function body(req: IncomingMessage): Promise<ResponsesRequest> {
   if (!value || typeof value !== "object" || typeof value.model !== "string" || (value.stream !== undefined && typeof value.stream !== "boolean")) throw new ProviderError("invalid_request", "model must be a string and stream must be a boolean", 400);
   return value;
 }
+const sendUpgradeRefusal = (res: ServerResponse): void => { res.writeHead(426, { Connection: "close", "Content-Length": "0" }); res.end(); };
 export type GatewayServer = Server & { restartWhenIdle(callback: () => void): boolean; isIdle(): boolean;
   /** Writes the ledger row and the failure record of every request still running, with the usage it has reported so far; returns how many it wrote. */
   recordPending(): number };
@@ -136,6 +151,8 @@ export interface GatewayStartOptions {
  */
 export interface GatewayHandler {
   readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean;
+  /** Refuses an HTTP upgrade (a WebSocket handshake among them) on its raw socket; no admission, no provider. */
+  handleUpgrade?(req: IncomingMessage, socket: Duplex, head: Buffer): void;
   /** Aborts running requests; "shutdown" fails them as retryable. Returns how many it aborted. */
   abortAll(reason?: "shutdown"): number | void;
   /**
@@ -149,7 +166,8 @@ export interface GatewayHandler {
    */
   recordPending?(): number;
 }
-type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined> };
+type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined>;
+  gatewayUpgrade?: (req: IncomingMessage, socket: Duplex, head: Buffer) => void };
 const total = (values: Array<number | void>) => values.reduce<number>((sum, value) => sum + (typeof value === "number" ? value : 0), 0);
 const sendableTurnState = (value: unknown): value is string => typeof value === "string" && value.length <= maxTurnStateLength && /^[\x21-\x7e]+$/.test(value);
 
@@ -188,6 +206,13 @@ export function adoptGatewayHandler(server: Server, handler: GatewayHandler): Ga
   const close = target.gatewayClose ??= server.close.bind(server);
   target.gatewayHandlers = [...(target.gatewayHandlers || []).filter(previous => !previous.isIdle()), handler];
   server.removeAllListeners("request"); server.on("request", handler.handle);
+  // Upgrades (WebSocket handshakes among them) never reach an inference path; the newest generation still at work refuses them.
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer): void => {
+    const entry = (target.gatewayHandlers || []).slice().reverse().find(previous => previous.handleUpgrade);
+    if (entry?.handleUpgrade) entry.handleUpgrade(req, socket, head); else socket.destroy();
+  };
+  if (target.gatewayUpgrade) server.off("upgrade", target.gatewayUpgrade);
+  server.on("upgrade", onUpgrade); target.gatewayUpgrade = onUpgrade;
   // Includes body uploads, catalog reads and process-wide work such as live provider sessions.
   target.isIdle = () => (target.gatewayHandlers || []).every(entry => entry.isIdle()) && !runtimeBusy();
   // The callback runs after the drain and the shutdown hooks, so an exit cannot cut them short.
@@ -253,12 +278,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true }); }
+      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
     if (req.headers.origin) { send(res, 403, { error: { code: "cross_origin", message: "Browser cross-origin requests are disabled" } }); return; }
     if (!validBearer(req.headers.authorization, token)) { send(res, 401, { error: { code: "authentication", message: "Gateway bearer token required" } }); return; }
+    // Node versions that hand an upgrade to the request handler instead of the "upgrade" listener get the same refusal.
+    if (path === "/v1/responses" && isUpgrade(req.headers.upgrade)) { sendUpgradeRefusal(res); return; }
     if (draining && req.method === "POST" && path === "/v1/responses") { res.setHeader("Retry-After", "1"); send(res, 503, { error: { code: "upstream_unavailable", message: "Gateway is restarting; retry shortly" } }); return; }
     let state: Awaited<ReturnType<typeof snapshot>>;
     try { state = await snapshot(); }
@@ -277,12 +304,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     let recorded = false;
     let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
-    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
+    let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
       autoReview: model !== undefined && isAutoReviewModel(model) ? true : undefined,
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
-      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned }; };
+      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined }; };
     // Content-free record of what the request cost, appended once per finished request.
     const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
       inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens,
@@ -327,7 +354,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const cancel = () => { if (!res.writableEnded) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); } };
     res.once("close", cancel);
     try {
-      const request = await body(req); context = inferenceContext(req.headers, request);
+      const internal = stripOpenAIInternal(await body(req)); const request = internal.request; droppedControlItems = internal.droppedControlItems;
+      context = inferenceContext(req.headers, request);
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
@@ -361,6 +389,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // request still opens at once and shows progress while it waits.
       const deferred = streaming && route.adapter.emitsTransport === true;
       if (!deferred || admission.running >= limit || admission.queued > 0) open();
+      // Remote compaction is an executor control item the gateway does not serve: it fails as a final error once the
+      // head a stream needs exists, before admission and without a provider. Nonstream requests get the plain HTTP 400.
+      if (internal.unsupportedCompaction) throw unsupportedCompactionFailure();
       releaseAdmission = await admission.acquire(controller.signal);
       // Admitted after the drain began (queued, uploading or loading config meanwhile): the
       // process is going away, so the client retries on the next one before any provider spend.
@@ -425,7 +456,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       }
     } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };
-  return { handle: (req, res) => { void handle(req, res); }, isIdle: () => !requests && !active.size,
+  const handleUpgrade = (req: IncomingMessage, socket: Duplex): void => {
+    const path = new URL(req.url || "/", "http://127.0.0.1").pathname;
+    if (req.headers.origin) return refuseUpgrade(socket, 403, { code: "cross_origin", message: "Browser cross-origin requests are disabled" });
+    if (!validBearer(req.headers.authorization, token)) return refuseUpgrade(socket, 401, { code: "authentication", message: "Gateway bearer token required" });
+    if (path === "/v1/responses") return refuseUpgrade(socket, 426);
+    refuseUpgrade(socket, 404, { code: "not_found", message: "Unknown endpoint" });
+  };
+  return { handle: (req, res) => { void handle(req, res); }, handleUpgrade, isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
     recordPending: () => { let recorded = 0; for (const record of [...pending]) if (record()) recorded++; return recorded; },
     beginDrain: () => {
