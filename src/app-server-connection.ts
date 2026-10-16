@@ -15,8 +15,14 @@ export const isId = (value: unknown): value is Id => typeof value === "string" |
 
 /** The client input stream keeps its old hard limit; an engine stream drops oversized frames instead. */
 const CLIENT_FRAME_LIMIT = 16 * 1024 * 1024;
-const ENGINE_FRAME_LIMIT = 64 * 1024 * 1024;
+export const ENGINE_FRAME_LIMIT = 64 * 1024 * 1024;
 const methodField = /^[A-Za-z]+(\/[A-Za-z]+)*$/;
+/** Only a dropped frame's first bytes are kept, and only to identify the request it answers. */
+const FRAME_HEAD = 128;
+/** How long a broken pipe waits for an engine that may already be on its way out. */
+const PIPE_EXIT_GRACE_MS = 500;
+/** A dropped frame that begins like an answer to one of our requests; a server request names a method instead. */
+const frameHeadId = /^\{"id":(\d+)/;
 
 /** The frame's size band; a dropped frame is never buffered, only counted. */
 function sizeMiBBucket(bytes: number): "64" | "128" | "256" | "more" {
@@ -30,29 +36,39 @@ function sizeMiBBucket(bytes: number): "64" | "128" | "256" | "more" {
  * With one, the adapter never kills an engine for a recoverable problem: bytes of an oversized
  * frame are discarded until the next newline, `engine_frame_dropped` is recorded, and reading continues.
  */
-export async function* jsonLines(input: Readable, engine?: EngineLabel): AsyncGenerator<string> {
+export async function* jsonLines(input: Readable, engine?: EngineLabel, onDroppedFrame?: (head: string) => void): AsyncGenerator<string> {
   const decoder = new StringDecoder("utf8"); const limit = engine ? ENGINE_FRAME_LIMIT : CLIENT_FRAME_LIMIT;
-  let frame = ""; let bytes = 0; let discarding = false;
+  let frame = ""; let bytes = 0; let discarding = false; let head = "";
+  /** An oversized frame is over: record its band and first bytes, then start the next one clean. */
+  const dropped = () => {
+    telemetry("engine_frame_dropped", { engine: engine!, sizeMiB: sizeMiBBucket(bytes) }); onDroppedFrame?.(head);
+    frame = ""; bytes = 0; head = ""; decoder.end();
+  };
   for await (const chunk of input) {
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    // The bytes that belong to the frame in progress are kept as a head even when the frame turns out to be oversized.
+    const keepHead = (from: number, to: number) => { if (!discarding && head.length < FRAME_HEAD) head += buffer.subarray(from, Math.min(from + FRAME_HEAD - head.length, to)).toString("latin1"); };
     let start = 0;
     for (let end = 0; end < buffer.length; end++) {
       if (buffer[end] !== 10) continue;
-      bytes += end - start;
-      if (discarding) { telemetry("engine_frame_dropped", { engine: engine!, sizeMiB: sizeMiBBucket(bytes) }); frame = ""; bytes = 0; discarding = false; }
-      else if (bytes > limit) {
-        if (!engine) throw new Error("App-server frame exceeds 16 MiB");
-        discarding = true; frame = ""; decoder.end();
-      } else { frame += decoder.write(buffer.subarray(start, end)); frame += decoder.end(); yield frame; frame = ""; bytes = 0; }
+      if (discarding) { bytes += end - start; dropped(); discarding = false; }
+      else {
+        keepHead(start, end); bytes += end - start;
+        // The frame ended inside this chunk: it is oversized but complete, so the next line still stands on its own.
+        if (bytes > limit) { if (!engine) throw new Error("App-server frame exceeds 16 MiB"); dropped(); }
+        else { frame += decoder.write(buffer.subarray(start, end)); frame += decoder.end(); const line = frame; frame = ""; bytes = 0; head = ""; yield line; }
+      }
       start = end + 1;
     }
     bytes += buffer.length - start;
+    if (discarding) continue; // The frame began in an earlier chunk; its head is already kept.
+    keepHead(start, buffer.length);
     if (bytes > limit) {
       if (!engine) throw new Error("App-server frame exceeds 16 MiB");
       discarding = true; frame = ""; decoder.end();
     } else if (start < buffer.length) frame += decoder.write(buffer.subarray(start));
   }
-  if (discarding) telemetry("engine_frame_dropped", { engine: engine!, sizeMiB: sizeMiBBucket(bytes) });
+  if (discarding) dropped();
   else { frame += decoder.end(); if (frame.trim()) throw new Error("App-server stream ended inside a JSON frame"); }
 }
 
@@ -67,6 +83,7 @@ export class AppServerConnection {
   private exitCode: number | null = null;
   private exitSignal: NodeJS.Signals | null = null;
   private killTimer?: NodeJS.Timeout;
+  private pipeFailureTimer?: NodeJS.Timeout;
   private readonly requests = new Map<Id, { resolve: (value: Message) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   readonly exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>;
   /** Child close can precede forwarding of buffered terminal notifications. */
@@ -76,15 +93,16 @@ export class AppServerConnection {
     const child = spawn(executable, args, { stdio: ["pipe", "pipe", "pipe"], env }); this.child = child;
     this.child.stderr.pipe(process.stderr);
     this.exited = new Promise(resolve => this.child.once("close", (code, signal) => {
-      this.closed = true; this.closedAt = Date.now(); this.exitCode = code; this.exitSignal = signal; clearTimeout(this.killTimer);
+      this.closed = true; this.closedAt = Date.now(); this.exitCode = code; this.exitSignal = signal;
+      clearTimeout(this.killTimer); clearTimeout(this.pipeFailureTimer); this.pipeFailureTimer = undefined;
       for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new Error("Codex app-server exited")); }
       this.requests.clear(); onExit(this); resolve({ code, signal });
     }));
     this.child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); this.stop("spawn_error"); });
-    this.child.stdin.on("error", () => this.stop("stdin_error"));
+    this.child.stdin.on("error", () => this.pipeFailed("stdin_error"));
     this.drained = (async () => {
       try {
-        for await (const line of jsonLines(child.stdout, this.engine)) {
+        for await (const line of jsonLines(child.stdout, this.engine, head => this.droppedFrame(head))) {
           let message: Message;
           try { message = object(JSON.parse(line)); }
           catch { telemetry("engine_frame_invalid", { engine: this.engine }); continue; }
@@ -95,6 +113,8 @@ export class AppServerConnection {
               reportException(error, "engine_message");
               const method = message.method;
               telemetry("engine_message_failed", { engine: this.engine, ...(method.length <= 64 && methodField.test(method) ? { method } : {}) });
+              // A server request the adapter could not pass on must not leave the engine waiting for an answer.
+              if (isId(message.id)) this.send({ id: message.id, error: { code: -32603, message: "The adapter could not deliver this request" } });
             }
           }
           else if (isId(message.id) && this.requests.has(message.id)) {
@@ -103,13 +123,31 @@ export class AppServerConnection {
             else pending.resolve(object(message.result));
           }
         }
-      } catch (error) { if (!this.stopping) process.stderr.write(`gateway: ${error instanceof Error ? error.message : "App-server stream failed"}\n`); this.stop("stream_error"); }
+      } catch (error) { if (!this.stopping) process.stderr.write(`gateway: ${error instanceof Error ? error.message : "App-server stream failed"}\n`); this.pipeFailed("stream_error"); }
     })();
   }
   /** What the exit telemetry may say once the process is gone; no paths, ids or output are included. */
   get exitFacts(): { code: number | null; signal: NodeJS.Signals | null; uptimeMs: number; initiatedBy: "adapter" | "engine"; reason: EngineStopReason | "none" } {
     return { code: this.exitCode, signal: this.exitSignal, uptimeMs: (this.closedAt ?? Date.now()) - this.startedAt,
       initiatedBy: this.stopReason ? "adapter" : "engine", reason: this.stopReason ?? "none" };
+  }
+  /** A broken pipe is not always the adapter's doing: an engine that leaves inside the grace was exiting by itself. */
+  private pipeFailed(reason: EngineStopReason): void {
+    if (this.stopping || this.closed || this.child.exitCode !== null || this.child.signalCode !== null) return;
+    this.pipeFailureTimer ??= setTimeout(() => {
+      this.pipeFailureTimer = undefined;
+      if (this.stopping || this.closed || this.child.exitCode !== null || this.child.signalCode !== null) return;
+      this.stop(reason);
+    }, PIPE_EXIT_GRACE_MS).unref();
+  }
+  /** The response of a dropped oversized frame never arrives, so its caller learns so at once. */
+  private droppedFrame(head: string): void {
+    const matched = frameHeadId.exec(head);
+    const id = matched && !head.includes('"method"') ? Number(matched[1]) : Number.NaN;
+    const pending = Number.isFinite(id) ? this.requests.get(id) : undefined;
+    if (!pending) return;
+    this.requests.delete(id); clearTimeout(pending.timer);
+    pending.reject(new Error("Codex app-server response frame was too large to read"));
   }
   send(message: Message): void { if (!this.stopping && !this.closed) this.child.stdin.write(JSON.stringify(message) + "\n"); }
   request(method: string, params: Message): Promise<Message> {

@@ -216,3 +216,43 @@ test("AppServerConnection exposes drain completion separately from child exit", 
     held.resolve(); await connection.drained; assert.equal(messages.length, 2); assert.equal(drained, true);
   } finally { held.resolve(); connection.stop(); await connection.exited; await connection.drained; await f.clean(); }
 });
+
+test("backends.stop passes the reason it was given into engine_exit", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000;
+  try {
+    await f.backend.stop("idle"); // The upgrade recycle will call this way; a plain stop() stays "session_end".
+    await flushTelemetry();
+    const exits = (await readTelemetry(f.state, since)).filter(event => event.event === "engine_exit");
+    assert.equal(exits.length, 1);
+    assert.equal(exits[0].engine, "native"); assert.equal(exits[0].initiatedBy, "adapter"); assert.equal(exits[0].reason, "idle");
+  } finally { await f.clean(); }
+});
+
+test("engine_exit counts native turns only after the engine's last frames drained", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; const forwarding = deferred();
+  try {
+    f.hook.emit = async message => { if (message.method === "turn/started") await forwarding.promise; };
+    void f.crash([started("chat", "done"), completed("chat", "done")]);
+    await until(() => f.backend.native.closed);
+    forwarding.resolve(); await until(() => f.exits() === 1);
+    await flushTelemetry();
+    const exits = (await readTelemetry(f.state, since)).filter(event => event.event === "engine_exit");
+    assert.equal(exits.length, 1); // Still exactly one record for the process.
+    assert.equal(exits[0].initiatedBy, "engine");
+    assert.equal(exits[0].activeTurns, 0); // The completion that drained after close released the turn first.
+    assert.equal(f.events.filter(message => message.method === "error").length, 0);
+  } finally { forwarding.resolve(); await f.clean(); }
+});
+
+test("an evicted turn count is not lost when the engine exits inside the report minute", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000;
+  try {
+    const events = Array.from({ length: 256 }, (_, index) => started(`chat-${index}`, `turn-${index}`));
+    await f.emit(events); await f.emit([started("overflow-a", "turn-a"), started("overflow-b", "turn-b")]);
+    await flushTelemetry();
+    assert.deepEqual((await readTelemetry(f.state, since)).filter(event => event.event === "native_turns_evicted").map(event => event.count), [1]);
+    await f.crash(); await until(() => f.exits() === 1); // The second eviction is still inside the minute.
+    await flushTelemetry();
+    assert.deepEqual((await readTelemetry(f.state, since)).filter(event => event.event === "native_turns_evicted").map(event => event.count), [1, 1]);
+  } finally { await f.clean(); }
+});

@@ -9,6 +9,8 @@ import { NativeTurnTracker } from "../native-turns.js";
 import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
 import type { Message } from "../app-server-connection.js";
 
+const EVICT_WINDOW = 60_000; // Keep in step with the tracker's report window.
+
 const started = (threadId: string, id: string): Message => ({ method: "turn/started", params: { threadId,
   turn: { id, rootTurnId: null, items: [], itemsView: "full", status: "inProgress", error: null, startedAt: 123, completedAt: null, durationMs: null } } });
 const status = (threadId: string, value: unknown): Message => ({ method: "thread/status/changed", params: { threadId, status: value } });
@@ -32,6 +34,9 @@ test("an inactive status releases the thread and unknown shapes change nothing",
   tracker.observe(started("busy-chat", "turn-2"));
   tracker.observe(status("busy-chat", { type: "active", activeFlags: [] }));
   assert.equal(tracker.active.size, 1);
+  // The SDK reports `systemError` while the turn is still running, so it must not release anything.
+  tracker.observe(status("busy-chat", { type: "systemError", activeFlags: [] }));
+  assert.equal(tracker.active.size, 1, "systemError accompanies a turn that is still running");
   for (const value of ["notLoaded", {}, null, { type: null }]) {
     tracker.observe(started("odd-chat", "turn-3"));
     tracker.observe(status("odd-chat", value));
@@ -58,7 +63,9 @@ test("the cap evicts the oldest entries and reports evictions at most once per m
     assert.equal(tracker.active.has("over-2"), true);
     await flushTelemetry();
     const evictions = (await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "native_turns_evicted");
-    assert.equal(evictions.length, 1); assert.equal(evictions[0].count, 1); // The next minute's window carries the rest.
+    assert.equal(evictions.length, 1); assert.equal(evictions[0].count, 1); // The rest waits for its own window.
+    tracker.close(); // Closing the engine releases the pending window timer.
+    await flushTelemetry();
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -89,15 +96,43 @@ test("malformed and unrelated messages are observed without throwing", () => {
   assert.equal(tracker.active.size, 0); assert.equal(tracker.completed.size, 0);
 });
 
-test("notifications bump the revision only on turn lifecycle", () => {
+test("a release invalidates an in-flight read, and unrelated notifications do not", () => {
   const tracker = new NativeTurnTracker();
   const before = tracker.revision;
   tracker.observe(started("a", "1"));
   assert.equal(tracker.revision, before + 1);
+  // thread/read raced with these, so its answer must not be trusted and must not re-add the thread.
   tracker.observe({ method: "thread/closed", params: { threadId: "a" } });
-  tracker.observe(status("b", { type: "idle" }));
-  tracker.observe({ method: "item/started", params: { threadId: "a" } });
-  assert.equal(tracker.revision, before + 1);
-  tracker.observe({ method: "turn/completed", params: { threadId: "a", turn: { id: "1", status: "failed" } } });
   assert.equal(tracker.revision, before + 2);
+  tracker.observe(started("b", "2"));
+  tracker.observe(status("b", { type: "idle" }));
+  assert.equal(tracker.revision, before + 4);
+  tracker.observe({ method: "item/started", params: { threadId: "a" } });
+  tracker.observe(status("c", { type: "systemError" })); // Nothing was released.
+  assert.equal(tracker.revision, before + 4);
+  tracker.observe({ method: "thread/closed", params: {} }); // No thread id: nothing to release.
+  assert.equal(tracker.revision, before + 4);
+  tracker.observe({ method: "turn/completed", params: { threadId: "a", turn: { id: "1", status: "failed" } } });
+  assert.equal(tracker.revision, before + 5);
+});
+
+test("evictions counted inside the quiet minute are reported when it closes", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "gw-native-window-"));
+  try {
+    configureTelemetry(directory, "test");
+    t.mock.timers.enable({ apis: ["Date", "setTimeout"] }); // The minute is a wall-clock window; freeze it to reach its edge.
+    const tracker = new NativeTurnTracker();
+    const since = Date.now(); // Mocked time starts at the epoch, so the window filter has to be fixed up front.
+    const reported = async () => { await flushTelemetry(); return (await readTelemetry(directory, since)).filter(event => event.event === "native_turns_evicted"); };
+    for (let index = 0; index < 258; index++) tracker.observe(started(`chat-${index}`, `turn-${index}`));
+    assert.deepEqual((await reported()).map(event => event.count), [1]); // The first is immediate; the second waits for the window.
+    t.mock.timers.tick(EVICT_WINDOW - 1);
+    assert.deepEqual((await reported()).map(event => event.count), [1]);
+    t.mock.timers.tick(1);
+    assert.deepEqual((await reported()).map(event => event.count), [1, 1]);
+    tracker.observe(started("overflow", "turn")); // Inside the fresh window again.
+    assert.deepEqual((await reported()).map(event => event.count), [1, 1]);
+    tracker.close(); // An engine that exits must not take the pending count with it.
+    assert.deepEqual((await reported()).map(event => event.count), [1, 1, 1]);
+  } finally { t.mock.timers.reset(); await rm(directory, { recursive: true, force: true }); }
 });

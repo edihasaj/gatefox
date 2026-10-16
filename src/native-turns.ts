@@ -9,32 +9,38 @@ const MAX_COMPLETED = 512;
 /** The eviction signal is a rare leak indicator, so repeats collapse into one event per minute. */
 const EVICT_REPORT_MS = 60_000;
 
+/** The only thread statuses that prove a turn is over; `systemError` accompanies a turn that keeps running. */
+const releasedStatuses = new Set(["idle", "notLoaded"]);
+
 /**
  * Which native (app-owned-engine) threads have a turn in flight. The adapter launched the engine,
  * so nothing here may ever stop it: the tracking cap evicts the oldest entry instead of throwing,
- * and the engine's own `thread/closed` or an inactive `thread/status/changed` releases an entry
- * that never saw a `turn/completed` (sub-agent threads included).
+ * and the engine's own `thread/closed` or an `idle`/`notLoaded` `thread/status/changed` releases an
+ * entry that never saw a `turn/completed` (sub-agent threads included).
  */
 export class NativeTurnTracker {
   readonly active = new Map<string, NativeTurn>();
   readonly completed = new Set<string>();
-  /** Bumped by turn lifecycle notifications so a `thread/read` answer is only trusted when nothing raced it. */
+  /** Bumped by anything that changes what a turn is doing, so a `thread/read` answer is only trusted when nothing raced it. */
   revision = 0;
   private evictions = 0;
-  private lastEvictionReportedAt = 0;
+  private lastEvictionReportedAt?: number;
+  private evictionTimer?: NodeJS.Timeout;
 
   /** One notification from the native engine. Well-formed input never throws. */
   observe(message: Message): void {
     if (isId(message.id)) return;
     const params = object(message.params);
     if (message.method === "thread/closed") {
-      if (nativeId(params.threadId)) this.active.delete(params.threadId);
+      if (nativeId(params.threadId)) { this.active.delete(params.threadId); this.revision++; }
       return;
     }
     if (message.method === "thread/status/changed") {
       // Only the tagged {type} shape is understood; anything else changes nothing.
       const status = object(params.status);
-      if (nativeId(params.threadId) && typeof status.type === "string" && status.type !== "active") this.active.delete(params.threadId);
+      if (nativeId(params.threadId) && typeof status.type === "string" && releasedStatuses.has(status.type)) {
+        this.active.delete(params.threadId); this.revision++;
+      }
       return;
     }
     const turn = object(params.turn);
@@ -59,6 +65,14 @@ export class NativeTurnTracker {
   }
 
   delete(threadId: string): void { this.active.delete(threadId); }
+  /** An engine that is gone cannot evict again: the window's pending count must not die with it. */
+  close(): void { clearTimeout(this.evictionTimer); this.evictionTimer = undefined; this.flushEvictions(); }
+  private flushEvictions(): void {
+    if (!this.evictions) return;
+    this.lastEvictionReportedAt = Date.now();
+    telemetry("native_turns_evicted", { count: this.evictions });
+    this.evictions = 0;
+  }
   rememberCompleted(key: string): void {
     this.completed.add(key);
     while (this.completed.size > MAX_COMPLETED) {
@@ -72,9 +86,8 @@ export class NativeTurnTracker {
   private recordEviction(): void {
     this.evictions++;
     const now = Date.now();
-    if (this.lastEvictionReportedAt && now - this.lastEvictionReportedAt < EVICT_REPORT_MS) return;
-    this.lastEvictionReportedAt = now;
-    telemetry("native_turns_evicted", { count: this.evictions });
-    this.evictions = 0;
+    if (this.lastEvictionReportedAt === undefined || now - this.lastEvictionReportedAt >= EVICT_REPORT_MS) { this.flushEvictions(); return; }
+    // Inside a window the count accumulates, but it is still reported when the window closes.
+    this.evictionTimer ??= setTimeout(() => { this.evictionTimer = undefined; this.flushEvictions(); }, EVICT_REPORT_MS - (now - this.lastEvictionReportedAt)).unref();
   }
 }

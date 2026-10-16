@@ -33,7 +33,7 @@ function offersPriority(models: Message[]): boolean {
   return models.some(model => readPublicServiceTierMetadata(model).serviceTiers?.some(tier => tier.id === "priority"));
 }
 
-/** Socket clients of host-owned engines ignore the reason; only a spawned process can say why it stopped. */
+/** Socket clients of host-owned engines ignore the reason: only a process the adapter spawned can say why it stopped. */
 function stopConnection(connection: RpcConnection, reason: EngineStopReason): void {
   if (connection instanceof AppServerConnection) connection.stop(reason); else connection.stop();
 }
@@ -112,9 +112,9 @@ export class AppServerBackends {
     this.settings = normalizeCodexFeatureConfig(settings);
     this.compaction = new GatewayCompaction(config.stateDirectory);
     // Register only the added provider at runtime. Native account/model defaults stay intact.
+    // The native exit record waits for the drain, because only then is the turn table final.
     const exited = (connection?: RpcConnection) => {
-      this.reportEngineExit(connection ?? this.native, this.nativeTurns.active.size);
-      this.nativeExitPending = this.nativeExited().finally(() => { onNativeExit(); });
+      this.nativeExitPending = this.nativeExited(connection).finally(() => { onNativeExit(); });
     };
     const nativeArgs = nativeArguments(this.args, overrides);
     this.native = nativeFactory ? nativeFactory(nativeArgs, message => this.forward(this.native, message), exited)
@@ -127,10 +127,13 @@ export class AppServerBackends {
     telemetry("engine_exit", { engine: connection.engine, code: facts.code, signal: facts.signal, uptimeMs: facts.uptimeMs,
       activeTurns, initiatedBy: facts.initiatedBy, reason: facts.reason });
   }
-  private async nativeExited(): Promise<void> {
+  private async nativeExited(connection?: RpcConnection): Promise<void> {
     // Drain before deciding which tasks lost their terminal event. Pending SDK
     // RPCs are already rejected at child close, so forwarding can finish.
     await Promise.race([this.native.drained, this.nativeClosing]);
+    // Exactly one record per process, counting the turns that survived its last forwarded frames.
+    this.reportEngineExit(connection ?? this.native, this.nativeTurns.active.size);
+    this.nativeTurns.close();
     this.forgetConnection(this.native);
     const active = [...this.nativeTurns.active]; this.nativeTurns.clear();
     if (this.closing) return;
@@ -290,7 +293,7 @@ export class AppServerBackends {
       try {
         await connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } });
         connection.send({ method: "initialized", params: {} }); return engine;
-      } catch (error) { stopConnection(connection, "replaced"); throw error; }
+      } catch (error) { stopConnection(connection, "spawn_error"); throw error; }
     });
     this.creating = operation.catch(() => undefined); return operation;
   }
@@ -371,7 +374,7 @@ export class AppServerBackends {
         isActive: id => engine.active.has(id), request: (method, params) => engine.connection.request(method, params) });
       this.engines.push(engine);
       try { await engine.connection.request("initialize", { ...this.initialized, capabilities: { ...object(this.initialized.capabilities), experimentalApi: true } }); engine.connection.send({ method: "initialized", params: {} }); }
-      catch (error) { stopConnection(engine.connection, "replaced"); throw error; }
+      catch (error) { stopConnection(engine.connection, "spawn_error"); throw error; }
       return engine;
     });
     this.creating = operation.catch(() => undefined); return operation;
@@ -445,12 +448,13 @@ export class AppServerBackends {
       return result;
     } finally { engine.requests--; }
   }
-  async stop(): Promise<void> {
-    this.closing = true; this.finishNativeClosing(); this.native.stop();
+  /** Why the session ends travels to every owned engine; a plain call stays "session_end" for the adapter's own shutdown. */
+  async stop(reason: EngineStopReason = "session_end"): Promise<void> {
+    this.closing = true; this.finishNativeClosing(); stopConnection(this.native, reason);
     this.nativeHost?.client.close();
     const poolClosing = this.poolPending?.then(client => client?.close()).catch(() => {});
     await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));
-    for (const engine of this.engines) stopConnection(engine.connection, "session_end");
+    for (const engine of this.engines) stopConnection(engine.connection, reason);
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
     await Promise.allSettled(this.engines.map(engine => engine.exitPending));
