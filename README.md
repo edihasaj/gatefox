@@ -94,10 +94,11 @@ anything.
 For an optional Codex CLI installation, generate settings in a separate home:
 
 ```sh
-gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
-gateway codex-config --model codex/gpt-6.1-sol > "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
+gateway codex-config --model codex/gpt-6.1-sol > "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex
 ```
 
 Keep the native account’s base configuration unchanged. The generated file is

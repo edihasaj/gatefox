@@ -44,12 +44,40 @@ response lets Claude Code use its own character-based estimate.
 
 ## Claude Code setup
 
-Generate an opt-in settings file from the existing gateway configuration:
+Use one Harness Gateway client directory, with each client's native configuration
+kept separately. These are opt-in paths; the generators write to stdout and do
+not move an existing client home or migrate its settings.
+
+```text
+~/.config/harness-gateway/clients/
+├── codex/config.toml
+└── claude/settings.json
+```
+
+Both clients connect to the same gateway listener and provider catalog. For an
+isolated Codex CLI home:
 
 ```sh
-mkdir -p work
-gateway claude-config --model codex/gpt-6.1-sol > work/claude-gateway.settings.json
-claude --settings work/claude-gateway.settings.json --model codex/gpt-6.1-sol
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
+gateway codex-config --model claude/claude-sonnet-5-5 \
+  > "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex
+```
+
+This separate home has its own Codex state. Existing custom roles, profiles, and
+skills are not copied automatically. Preserve them when integrating gateway
+provider settings into a normal client setup.
+
+Generate Claude Code's settings from the same gateway configuration:
+
+```sh
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+mkdir -p "$gateway_client_root/claude"
+gateway claude-config --model codex/gpt-6.1-sol \
+  > "$gateway_client_root/claude/settings.json"
+claude --settings "$gateway_client_root/claude/settings.json" --model codex/gpt-6.1-sol
 ```
 
 Choose a public gateway alias, such as `codex/gpt-6.1-sol`,
@@ -71,11 +99,13 @@ protocol itself does not depend on that shell convention.
 For an authenticated remote gateway reached through HTTPS or a local SSH tunnel:
 
 ```sh
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+mkdir -p "$gateway_client_root/claude"
 gateway claude-config --model codex/gpt-6.1-sol \
   --endpoint http://127.0.0.1:3459/v1 \
   --token-file /absolute/path/to/gateway-client.token \
-  > work/claude-remote.settings.json
-claude --settings work/claude-remote.settings.json --model codex/gpt-6.1-sol
+  > "$gateway_client_root/claude/settings-remote.json"
+claude --settings "$gateway_client_root/claude/settings-remote.json" --model codex/gpt-6.1-sol
 ```
 
 Remote generation validates the public model catalog. It never downloads
