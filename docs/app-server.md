@@ -71,6 +71,44 @@ and bypasses a desktop or SSH wrapper. The separate
 registration and routes that connection through the same gateway router. Its
 rendered checks are still in progress on the test Mac.
 
+## The native relay is optional
+
+Nothing in the gateway depends on the native relay. ChatGPT always keeps its own
+remote control, so a machine without a working relay still works, and a relay
+that cannot run is set aside quietly instead of restarted forever.
+
+An adapter, or an SSH listener, asks once when it starts whether a relay is
+usable: it must be registered for this configuration and native home, its
+`status.json` must say `connected`, and its private control socket must answer
+within one second. When any of that fails the engine is started without
+`CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` and keeps its own remote
+control, and `remoteControl/*` is no longer intercepted. The answer is not asked
+again while the process runs, so a relay that connects later is used from the
+next app start or the next listener start, not from the current one. Gateway
+executors are separate: they run headless on the gateway's own SDK, so
+`gatewayEnvironment` always sets that variable and they never try remote control.
+
+The unified service keeps the same rule for its `native` component. Before it
+spawns the relay it reads `<state>/native-registration.json`, and a slot whose
+relay was never registered, or was uninstalled, is left `paused` with reason
+`not_registered` and is never started. A relay that exits non-zero within a
+minute of starting three times in a row is left `paused` with reason `failing`.
+A paused slot writes no log lines and reports no exits, and `gateway service
+status` shows `paused` with its reason instead of a process id; because no
+relay process is running, `gateway versions` does not list one either. Every five
+minutes the service looks at the paused relay once and starts it again only when
+all of these hold:
+
+| Condition to start a paused relay again | Where it comes from |
+| --- | --- |
+| The registration says the relay is registered | `<state>/native-registration.json` |
+| Something a restart would use has changed | `dev:inode:size:mtime` of the app's `codex` executable, the relay binary and that registration file; a relay paused for `not_registered` only needs the registration to exist |
+| No ChatGPT app is open | a `ps -axo comm=` line for `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`, the same check native installation makes, so a newly connected relay never competes with an app's own remote control |
+
+Consolidation treats a paused relay as ready: it is a `components_not_running`
+gap only for components that are neither running nor a paused relay, and it waits
+for a relay to connect only on a machine whose registration says one is set up.
+
 On startup, a bounded native app-server process refreshes its own model metadata.
 The adapter copies only public model rows from that engine's configured catalog
 or model cache. It validates that the rows cover the engine's available models

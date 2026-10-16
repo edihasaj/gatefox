@@ -22,7 +22,9 @@ import { externalLegacyWriters } from "../service-legacy-writers.js";
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-shared-")); const state = join(directory, "state"); const nativeHome = join(directory, "native");
   await mkdir(nativeHome, { mode: 0o700 }); await writeFile(join(nativeHome, "config.toml"), 'model="original"\n', { mode: 0o600 });
-  const configPath = join(directory, "gateway.json"); await writePrivateJson(configPath, { version: 1, port: 3459, clientOnly: true, stateDirectory: state, providers: [] });
+  const configPath = join(directory, "gateway.json");
+  // A shared plan owns the relay only where one is registered, which is what the service checks before starting it.
+  await writePrivateJson(join(state, "native-registration.json"), { registered: true }); await writePrivateJson(configPath, { version: 1, port: 3459, clientOnly: true, stateDirectory: state, providers: [] });
   const codex = join(directory, "codex");
   await writeFile(codex, `#!${process.execPath}\nimport {createServer} from 'node:http';
 import {writeFileSync} from 'node:fs';
