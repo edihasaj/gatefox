@@ -174,8 +174,9 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
 - The native rows that the executor catalog carries for sub-agents naming a model
   directly follow the same rule as the Codex 2 row for that model, so one upstream
   model has one policy in an executor. A native row that states no node_repl policy
-  gets node_repl off there. The reviewer row is carried unchanged, and the native
-  engine's own catalog is unchanged. No row's messages are rewritten.
+  gets node_repl off there. The reviewer row keeps its node_repl and review fields,
+  and like every carried row it has tool search turned off. The native engine's own
+  catalog is unchanged. No row's messages are rewritten.
 - A row with no native counterpart (Claude, Copilot, Qwen, API, or a Codex row whose
   upstream is missing) always requires review, the strictest policy, and carries no
   `guardian`. Its `confirmation_policies` and `guardian_v2` come from the native rows:

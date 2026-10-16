@@ -119,8 +119,9 @@ export class DesktopCatalog {
    * The native rows as gateway executors load them. Sub-agents that name a native model directly use
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
-   * does not run here or no policy is stated. The reviewer row is carried unchanged, like every other
-   * row, and its review text stays the SDK's own. The native engine keeps its own catalog unchanged.
+   * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
+   * and its review text stays the SDK's own; like every carried row it has tool search turned off.
+   * The native engine keeps its own catalog unchanged.
    */
   private executorNative(reviewers: ReadonlySet<string>): Message[] {
     return this.native.map(model => {
