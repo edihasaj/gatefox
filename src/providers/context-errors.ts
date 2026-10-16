@@ -5,6 +5,8 @@ const object = (value: unknown): Record<string, unknown> => value && typeof valu
 export const contextWindowFailure = (contextTokens?: { used: number; maximum: number }) =>
   new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400, contextTokens ? { contextTokens } : undefined);
 const nativePromptTooLong = (value: unknown) => typeof value === "string" && /^(?:prompt is too long|prompt is too long: \d+ tokens > \d+ maximum)\.?$/i.test(value.trim());
+/** The Claude CLI also prints a longer form ("Prompt is too long · …") for a conversation it cannot compact; inside a native CLI error envelope that is still an overflow. */
+const cliPromptTooLong = (value: unknown) => nativePromptTooLong(value) || (typeof value === "string" && /^prompt is too long\s*[·:\u2014-]/i.test(value.trim()));
 /** The token counts of a native overflow message; nothing when it carries none or they are not safe integers. */
 function promptTokens(value: unknown): { used: number; maximum: number } | undefined {
   const match = typeof value === "string" ? /^prompt is too long: (\d+) tokens > (\d+) maximum\.?$/i.exec(value.trim()) : null;
@@ -43,7 +45,7 @@ export function claudeContextFailure(message: Record<string, unknown>): Provider
   if (resultError && message.subtype !== "error_during_execution") return;
   const texts = resultError ? [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
     : (Array.isArray(object(message.message).content) ? object(message.message).content as unknown[] : []).flatMap(part => object(part).type === "text" ? [object(part).text] : []);
-  const overflow = texts.find(nativePromptTooLong);
+  const overflow = texts.find(cliPromptTooLong);
   if (overflow !== undefined) return contextWindowFailure(promptTokens(overflow));
 }
 

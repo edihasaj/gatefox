@@ -172,10 +172,14 @@ empty tool results and empty stop-sequence lists remain valid no-ops.
 When the upstream rejects a request for exceeding the model's context window, the
 Messages reply is a 400 `invalid_request_error` whose message starts with
 `prompt is too long`, on the JSON path and as the SSE `error` event. Claude Code
-recognizes only that text as a prompt-too-long error, so this is what lets its
-reactive auto-compact run. When the provider reported the counts, as the
-Anthropic API and the Claude CLI do in `prompt is too long: <n> tokens > <max>
-maximum`, the message repeats them and Claude Code reads the token gap from it.
+recognizes that text (and `input is too long for requested model`) as a
+prompt-too-long error, so this is what lets its reactive auto-compact run. When
+the provider reported the counts in `prompt is too long: <n> tokens > <max>
+maximum`, as the Anthropic API does, the message repeats them and Claude Code
+reads the token gap from it. Current Claude CLIs report an overflow without counts
+(`Prompt is too long`, or a longer `Prompt is too long · …` form, or
+`terminal_reason: "prompt_too_long"`), so on Claude subscription routes the reply
+carries no counts and Claude Code compacts with its own fallback.
 Otherwise the message reads `prompt is too long: the request exceeds the model's
 context window`. Only the two numbers are kept; no other upstream text is
 repeated. Responses errors are unchanged.
