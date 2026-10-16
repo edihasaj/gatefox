@@ -28,7 +28,8 @@ async function setup() {
   const counts = async () => { const health = await (await fetch(`http://127.0.0.1:${port}/health`)).json() as { active: number; running: number; queued: number };
     return [health.active, health.running, health.queued]; };
   return { server, port, bearer, providerCalls: () => providerCalls, counts,
-    close: () => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); }) };
+    close: async () => { await new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()); });
+      await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } };
 }
 
 /** Sends a raw upgrade handshake and returns every byte the server answered with, until it closed. */
@@ -113,6 +114,7 @@ test("the request handler answers an upgrade pass-through with the same 426", as
   assert.equal(unauthorized.status, 401);
   assert.equal(providerCalls, 0);
   assert.equal(handler.isIdle(), true, "an upgrade never occupies admission or a provider slot");
+  await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 });
 
 /** Sends raw request bytes and returns what the server answered with until it closed (or a second passed). */

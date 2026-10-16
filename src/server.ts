@@ -297,7 +297,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.method === "GET" && path === "/v1/model-catalog") { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
     if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { fail(404, "not_found", "Unknown endpoint"); return; }
-    // Over capacity every request gets a retryable 429 before its body is read, so an overload never buffers bodies. A remote
+    // Over capacity every inference request gets a retryable 429 before its body is read, so an overload never buffers bodies. A remote
     // compaction refused this way is retried and gets its final refusal once a slot is free.
     if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); return; }
     const controller = new AbortController();

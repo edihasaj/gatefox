@@ -317,10 +317,11 @@ attempt to `/v1/responses` with a valid bearer gets `HTTP/1.1 426 Upgrade Requir
 and `Connection: close`. The checks run in this order: a request target that cannot be parsed
 (`GET http://[ HTTP/1.1`) gets `400`; a request with an `Origin` header gets `403`; a missing or
 wrong bearer gets `401`; an upgrade to any other path gets `404`. The refusal runs in the server's
-`upgrade` listener and, on Node builds that pass upgrades to the request handler instead, in that
-handler with the same answers; there a request counts as an upgrade only when `Connection` names
-the `upgrade` token beside an `Upgrade` header, as Node's own parser requires, so a `POST` with
-`Upgrade: h2c` is served normally. It never admits a request, changes the health admission
+`upgrade` listener. On Node builds that pass upgrades to the request handler instead, that handler
+gives an upgrade to `/v1/responses` the same checks and the same 426, and serves an upgrade to any
+other path as an ordinary request; there a request counts as an upgrade only when `Connection`
+names the `upgrade` token beside an `Upgrade` header, as Node's own parser requires, so a `POST`
+with `Upgrade: h2c` is served normally. It never admits a request, changes the health admission
 counters, or invokes a provider.
 
 The upgrade listener closes the socket as soon as the refusal is flushed, and after two seconds
@@ -354,13 +355,19 @@ that message. `request_failed` records `translation_reason: unsupported_compacti
 stderr `provider_failure` line and `gateway diagnostics` carry it too
 ([diagnostics](diagnostics.md#gateway-rule-refusals-and-dropped-control-items)). Neither invokes a
 provider nor takes an admission slot, and the refusal is final. A gateway at capacity (`maxConcurrent`
-plus 32 requests in flight) answers every request with a retryable `429` before reading its body,
+plus 32 requests in flight) answers every inference request (`/v1/responses` and `/v1/messages`)
+with a retryable `429` before reading its body,
 so an overload never buffers bodies; a compaction refused that way is retried and gets this final
 refusal once a slot is free.
 
 `/health` adds `features`: `["responses-ws-426", "openai-internal-strip", "native-identity-v1"]`,
 the behaviors this release guarantees (the exported `gatewayFeatures`), so an operator can tell an
-updated daemon from an old one without reading its code.
+updated daemon from an old one without reading its code. `responses-ws-426` is the WebSocket
+refusal above. `openai-internal-strip` is the removal of internal fields and control items.
+`native-identity-v1` means this inference server accepts requests from a gateway executor that runs
+under the native `openai` provider identity: the two behaviors above, which such an executor needs,
+are both present. It describes the server only; whether executors run under that identity is a
+separate setting of the desktop adapter.
 
 ## Ordinary Anthropic API
 
