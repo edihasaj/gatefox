@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
-import { configEdits, gatewayPreferenceKeys, gatewayTargetMessage, nativeWritesViolation, partitionConfigEdits } from "./app-server-config-writes.js";
+import { configEdits, gatewayPreferenceKeys, gatewayTargetMessage, nativeWritesViolation, partitionConfigEdits, type GatewayIdentity } from "./app-server-config-writes.js";
 import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import type { DesktopCatalog } from "./desktop-catalog.js";
@@ -66,7 +67,7 @@ export class AppServerRouter {
   private readonly preferencesPath: string;
   readonly catalogPath: string;
   private extraModels: ObjectValue[];
-  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
+  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
     this.extraModels = modelCatalog(config).models;
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
@@ -298,8 +299,13 @@ export class AppServerRouter {
   private async writeConfig(method: string, params: ObjectValue): Promise<ObjectValue> {
     const { privateEdits, nativeEdits } = partitionConfigEdits(configEdits(method, params));
     if (nativeEdits.length) {
+      // The engine resolves a relative path in a native value against its own home, never against
+      // the folder of the file this request happens to name, so that home is the only base here.
+      let relativeBase: string; try { relativeBase = realpathSync(this.nativeHome); } catch { relativeBase = resolve(this.nativeHome); }
+      const identity: GatewayIdentity = { provider: gatewayProvider, isGatewayModel: value => typeof value === "string" && this.aliases.has(value),
+        stateDirectory: resolve(this.config.stateDirectory), catalogPath: this.catalogPath, homeDirectory: homedir(), relativeBase };
       const refusal = typeof params.filePath === "string" && params.filePath === this.preferencesPath ? gatewayTargetMessage
-        : nativeWritesViolation(nativeEdits, { provider: gatewayProvider, isGatewayModel: value => typeof value === "string" && this.aliases.has(value) });
+        : nativeWritesViolation(nativeEdits, identity);
       if (refusal) throw new AppServerRoutingError(refusal);
     }
     const queued = async (): Promise<ObjectValue> => privateEdits.length

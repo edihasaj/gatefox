@@ -4,25 +4,32 @@
  * The adapter owns only its own default selections and display settings, which live in a
  * private file. Every other key is the caller's native configuration and reaches the native
  * engine unchanged, exactly as it would without the gateway. The one thing that must never
- * happen is a native file that remembers a gateway model or the gateway provider: those rows
- * exist only while the adapter is running, so a write that stores one is refused before
- * anything is written or forwarded.
+ * happen is a native file that remembers a gateway model, the gateway provider, or the
+ * gateway's catalog file: those rows exist only while the adapter is running, so a write that
+ * stores one is refused before anything is written or forwarded. Key paths are judged on the
+ * segments the engine parses, never on the raw spelling, and a path it cannot parse is refused.
  */
 
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
+import { parseKeyPath } from "./app-server-config-writes-key-path.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
+const plain = (value: unknown): value is ObjectValue => object(value) === value && value !== null && !Array.isArray(value);
 
 /** Keys the adapter keeps in its private preference file; they never reach native configuration. */
 export const gatewayPreferenceKeys = new Set(["model", "model_reasoning_effort", "model_reasoning_summary", "service_tier"]);
 
-/** How deep a written value is searched for gateway identity; anything deeper is refused. */
+/** How many objects or arrays below the written value a search still reads; a deeper container is refused. */
 const identitySearchDepth = 64;
 
 export const gatewayProfileMessage = "Gateway defaults cannot be saved into a native Codex profile";
 export const gatewayIdentityMessage = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
 export const gatewayTargetMessage = "Native configuration changes cannot target the gateway preference file";
+export const gatewayCatalogMessage = "The gateway catalog cannot be saved into native Codex configuration";
+export const invalidKeyPathMessage = "This configuration key is not valid";
+export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
 
 /** What counts as gateway identity, supplied by the router so this module stays pure. */
 export type GatewayIdentity = {
@@ -30,26 +37,83 @@ export type GatewayIdentity = {
   provider: string;
   /** True for a model name only the gateway catalog offers. */
   isGatewayModel: (value: unknown) => boolean;
+  /** The gateway's resolved state directory; every file inside it belongs to the gateway. */
+  stateDirectory: string;
+  /** The catalog file config/read overlays onto chat settings; it must never land in a native file. */
+  catalogPath: string;
+  /** The user's home directory, which the engine expands a lone `~` and `~/rest` against. */
+  homeDirectory: string;
+  /** The directory the engine resolves a relative path against: always the native home. */
+  relativeBase: string;
 };
 
-/** The edits a configuration write carries: one for a value write, the batch list otherwise. */
-export const configEdits = (method: string, params: ObjectValue): ObjectValue[] =>
-  method === "config/value/write" ? [params] : Array.isArray(params.edits) ? params.edits.map(object) : [];
+/** The edits a configuration write carries in their original form: the request itself for a
+ * value write, the batch list otherwise; a batch without a list carries none. */
+export const configEdits = (method: string, params: ObjectValue): unknown[] =>
+  method === "config/value/write" ? [params] : Array.isArray(params.edits) ? params.edits : [];
 
-/** An edit the adapter answers itself, from its private preference file. */
-export const isGatewayPreferenceEdit = (edit: ObjectValue): boolean =>
-  gatewayPreferenceKeys.has(String(edit.keyPath)) || isDesktopPreferenceKey(edit.keyPath);
+/** The path the adapter keeps private, judged on the segments the engine parses: one private key,
+ * or a supported `desktop.*` display key. A quoted spelling of one of these is still this path. */
+const isGatewayPreferencePath = (segments: string[]): boolean =>
+  segments.length === 1 ? gatewayPreferenceKeys.has(segments[0]!)
+  : segments.length === 2 && segments[0] === "desktop" && isDesktopPreferenceKey(segments.join("."));
 
-/** Splits a request into what the adapter saves and what only the native engine may apply. */
-export const partitionConfigEdits = (edits: ObjectValue[]): { privateEdits: ObjectValue[]; nativeEdits: ObjectValue[] } => ({
-  privateEdits: edits.filter(isGatewayPreferenceEdit),
+/** The dotted spelling this parsed path would have carried unquoted; anything else is quoted or escaped. */
+const plainSpelling = (keyPath: unknown, segments: string[]): boolean => keyPath === segments.join(".");
+
+/** An edit the adapter answers itself, from its private preference file. A value it cannot read,
+ * including `null` or a bare string in a batch, belongs to the native engine and is forwarded as sent.
+ * A private key spelled another way (for example `"model"`) is not one: it reaches the native guard,
+ * which refuses it rather than saving a key the engine would apply somewhere else. */
+export const isGatewayPreferenceEdit = (edit: unknown): boolean => {
+  if (!plain(edit) || typeof (edit as ObjectValue).keyPath !== "string") return false;
+  const segments = parseKeyPath((edit as ObjectValue).keyPath);
+  return segments !== undefined && isGatewayPreferencePath(segments) && plainSpelling((edit as ObjectValue).keyPath, segments);
+};
+
+/** Splits a request by index into what the adapter saves and what only the native engine may apply.
+ * Native entries stay the caller's own objects, in the caller's own order, so dropping the private
+ * part of a batch cannot rewrite or reorder the rest of it. */
+export const partitionConfigEdits = (edits: unknown[]): { privateEdits: ObjectValue[]; nativeEdits: unknown[] } => ({
+  privateEdits: edits.filter(isGatewayPreferenceEdit).map(object),
   nativeEdits: edits.filter(edit => !isGatewayPreferenceEdit(edit)),
 });
 
-const holdsGatewayProvider = (value: unknown, provider: string): boolean =>
-  value !== null && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value as ObjectValue, provider);
+// A provider row only identifies the gateway while it holds something; a cleared row is a deletion.
+const holdsGatewayProviderRow = (value: unknown, provider: string): boolean =>
+  plain(value) && Object.hasOwn(value, provider) && value[provider] !== null;
 
-type Finding = "clear" | "identity" | "too-deep";
+/** The path the engine reads a string as: a lone `~`, or `~/rest` (Windows also `~\rest`, with any
+ * extra separators after the tilde dropped), is the home directory; an absolute path is used as
+ * sent; and every other value, `~rest` included, resolves below the native home. */
+const expandEnginePath = (value: string, identity: GatewayIdentity): string => {
+  // A tilde that the engine's expansion does not recognize is just a character in a relative name,
+  // so it stays below the base, and `..` in any spelling is read lexically.
+  const expanded = value === "~" || value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"));
+  if (expanded) {
+    const rest = value.slice(1).replace(/^[/\\]+/, "");
+    return rest ? resolve(identity.homeDirectory, rest) : resolve(identity.homeDirectory);
+  }
+  return isAbsolute(value) ? resolve(value) : resolve(identity.relativeBase, value);
+};
+
+/** True when a string names the gateway catalog or anything inside the gateway's state directory. */
+const holdsGatewayCatalogPath = (value: unknown, identity: GatewayIdentity): boolean => {
+  if (typeof value !== "string") return false;
+  const target = expandEnginePath(value, identity);
+  return target === identity.catalogPath || target.startsWith(identity.stateDirectory.endsWith(sep) ? identity.stateDirectory : identity.stateDirectory + sep);
+};
+
+/** A key that carries the model a profile or block runs: `model` itself, or a `*_model` variant such as `review_model`. */
+const isModelBearingKey = (key: string): boolean => key === "model" || key.endsWith("_model");
+
+/** The keys that name the provider a profile or block runs on; both can point at the gateway. */
+const isProviderKey = (key: string): boolean => key === "model_provider" || key === "oss_provider";
+
+const isProviderRowPath = (segments: string[], provider: string): boolean =>
+  segments.some((segment, index) => segment === "model_providers" && segments[index + 1] === provider);
+
+type Finding = "clear" | "identity" | "catalog" | "too-deep";
 // A profile or plugin block can carry its own model settings; search it the way the engine reads it back.
 const scanValue = (value: unknown, identity: GatewayIdentity, depth: number): Finding => {
   if (value === null || typeof value !== "object") return "clear";
@@ -58,26 +122,37 @@ const scanValue = (value: unknown, identity: GatewayIdentity, depth: number): Fi
     for (const item of value) { const found = scanValue(item, identity, depth + 1); if (found !== "clear") return found; }
     return "clear";
   }
-  const record = value as ObjectValue;
-  if (identity.isGatewayModel(record.model) || record.model_provider === identity.provider || holdsGatewayProvider(record.model_providers, identity.provider)) return "identity";
-  for (const item of Object.values(record)) { const found = scanValue(item, identity, depth + 1); if (found !== "clear") return found; }
+  for (const [key, item] of Object.entries(value as ObjectValue)) {
+    if (isModelBearingKey(key) && identity.isGatewayModel(item)) return "identity";
+    if (isProviderKey(key) && item === identity.provider) return "identity";
+    if (key === "model_providers" && holdsGatewayProviderRow(item, identity.provider)) return "identity";
+    if (key === "model_catalog_json" && holdsGatewayCatalogPath(item, identity)) return "catalog";
+  }
+  for (const item of Object.values(value as ObjectValue)) { const found = scanValue(item, identity, depth + 1); if (found !== "clear") return found; }
   return "clear";
 };
 
 /** Why a single native edit must be refused, or undefined when the native engine may apply it. */
-export const nativeEditViolation = (edit: ObjectValue, identity: GatewayIdentity): string | undefined => {
-  const keyPath = typeof edit.keyPath === "string" ? edit.keyPath : "";
-  if (keyPath.endsWith(".model") && typeof edit.value === "string" && identity.isGatewayModel(edit.value)) return gatewayProfileMessage;
-  const providerPath = `model_providers.${identity.provider}`;
-  if ((keyPath === "model_provider" || keyPath.endsWith(".model_provider")) && edit.value === identity.provider) return gatewayIdentityMessage;
-  if (keyPath === providerPath || keyPath.startsWith(`${providerPath}.`)) return gatewayIdentityMessage;
-  // A whole provider map already names the gateway's row, even with no provider field inside it.
-  if (keyPath === "model_providers" && holdsGatewayProvider(edit.value, identity.provider)) return gatewayIdentityMessage;
-  return scanValue(edit.value, identity, 0) === "clear" ? undefined : gatewayIdentityMessage;
+export const nativeEditViolation = (edit: unknown, identity: GatewayIdentity): string | undefined => {
+  if (!plain(edit)) return undefined; // forwarded to the engine as sent; it is not an edit this module can read
+  const { keyPath, value } = edit;
+  const segments = parseKeyPath(keyPath);
+  if (!segments) return invalidKeyPathMessage;
+  // A gateway default the engine would apply as a native key: refuse the spelling, not just the value.
+  if (isGatewayPreferencePath(segments) && !plainSpelling(keyPath, segments)) return gatewayPreferenceSpellingMessage;
+  const last = segments[segments.length - 1]!;
+  if (isModelBearingKey(last) && identity.isGatewayModel(value)) return last === "model" ? gatewayProfileMessage : gatewayIdentityMessage;
+  if (isProviderKey(last) && value === identity.provider) return gatewayIdentityMessage;
+  // Saving any row of the gateway provider is refused; clearing one with null must stay possible.
+  if (value !== null && isProviderRowPath(segments, identity.provider)) return gatewayIdentityMessage;
+  if (last === "model_providers" && holdsGatewayProviderRow(value, identity.provider)) return gatewayIdentityMessage;
+  if (last === "model_catalog_json" && holdsGatewayCatalogPath(value, identity)) return gatewayCatalogMessage;
+  const found = scanValue(value, identity, 0);
+  return found === "clear" ? undefined : found === "catalog" ? gatewayCatalogMessage : gatewayIdentityMessage;
 };
 
 /** The first refusal a batch of native edits earns, or undefined when all of them may be forwarded. */
-export const nativeWritesViolation = (edits: ObjectValue[], identity: GatewayIdentity): string | undefined => {
+export const nativeWritesViolation = (edits: unknown[], identity: GatewayIdentity): string | undefined => {
   for (const edit of edits) { const refusal = nativeEditViolation(edit, identity); if (refusal) return refusal; }
   return undefined;
 };

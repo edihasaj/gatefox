@@ -85,8 +85,9 @@ test("live settings keep provider boundaries and forward thread controls unchang
   assert.equal(calls.length, count);
   await router.request("thread/start", { model: "claude/model" });
   const params = { threadId: "test", model: "codex/model", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" }, effort: "high" };
+  const sent = structuredClone(params);
   await router.request("thread/settings/update", params);
-  assert.deepEqual(calls.at(-1)!.params, params);
+  assert.deepEqual(calls.at(-1)!.params, sent);
   await appliedSettings(router, "test", "codex/model", null);
   await router.request("thread/resume", { threadId: "test" });
   assert.equal(calls.at(-1)!.params.model, "codex/model");
@@ -97,9 +98,11 @@ test("steering and goal operations retain their active-turn and authorization fi
   const { router, calls } = await fixture();
   await router.request("thread/start", { model: "claude/model" });
   const steer = { threadId: "test", expectedTurnId: "active", input: [{ type: "text", text: "changed direction" }], clientUserMessageId: "client-message" };
-  await router.request("turn/steer", steer); assert.deepEqual(calls.at(-1)!.params, steer);
+  const sentSteer = structuredClone(steer);
+  await router.request("turn/steer", steer); assert.deepEqual(calls.at(-1)!.params, sentSteer);
   const goal = { threadId: "test", objective: "fixture objective", status: "paused", origin: "user", tokenBudget: 10000 };
-  await router.request("thread/goal/set", goal); assert.deepEqual(calls.at(-1)!.params, goal);
+  const sentGoal = structuredClone(goal);
+  await router.request("thread/goal/set", goal); assert.deepEqual(calls.at(-1)!.params, sentGoal);
 });
 
 test("desktop config overrides select the gateway before its first turn", async () => {
@@ -148,8 +151,9 @@ test("gateway defaults stay private and every other config write reaches the nat
   assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "high");
   const count = calls.length;
   const params = { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" };
+  const sent = structuredClone(params);
   await router.request("config/value/write", params);
-  assert.deepEqual(calls.slice(count), [{ method: "config/value/write", params }], "the native write is forwarded exactly as the caller sent it");
+  assert.deepEqual(calls.slice(count), [{ method: "config/value/write", params: sent }], "the native write is forwarded exactly as the caller sent it");
   assert.equal(JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8")).model, "native", "a native write saves no gateway default");
 });
 

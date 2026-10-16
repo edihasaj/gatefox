@@ -102,33 +102,62 @@ including requests from older adapters. This normalization rewrites no
 native configuration file.
 
 Gateway default selections are saved to private `desktop-preferences.json` in
-the gateway state directory. Model, effort, summary, speed (service tier), and
-`desktop.*` writes are scoped to that file for both gateway and native model
-choices, and they require string values with a `replace` or `upsert` merge
-strategy. Every other key belongs to the caller's native configuration, which
-`config/value/write` and `config/batchWrite` forward to the native engine
-unchanged: same method, same params, with `filePath`, `expectedVersion`,
-`reloadUserConfig`, and `mergeStrategy` passed through, and the engine's result
-or error returned as-is. The app writes those keys the same way without the
+the gateway state directory. Model, effort, summary and speed (service tier)
+writes are scoped to that file for both gateway and native model choices, and
+they require string values with a `replace` or `upsert` merge strategy. Writes
+to the supported `desktop.*` display keys go to that same file, but each carries
+its own typed value rather than the string rule above; unsupported `desktop.*`
+keys are ordinary native keys and reach the engine. Every other key belongs to
+the caller's native configuration, which `config/value/write` and
+`config/batchWrite` forward to the native engine unchanged: same method, same
+params, with `filePath`, `expectedVersion`, `reloadUserConfig`, and
+`mergeStrategy` passed through, and the engine's result or error returned
+as-is. When a batch mixes kinds, its native part keeps the caller's own edit
+objects in the caller's own order, including an entry the adapter cannot read,
+which is forwarded unchanged. The app writes those keys the same way without the
 gateway, so a setting changed in ChatGPT still reaches its own configuration.
 The adapter itself never writes native configuration on its own initiative.
 
 A whole request is refused, before anything is written or forwarded, when a
-native edit would store gateway identity in native configuration:
+native edit would store gateway identity in native configuration. A key path is
+parsed into segments exactly as the Codex engine parses it: dots separate
+segments, a segment may open with `"` to carry separators literally, and inside
+quotes a `\` escapes the next character. Every rule below reads those segments,
+so a quoted spelling such as `model_providers."subscription_gateway".base_url`
+is refused like the dotted one. A gateway default spelled another way, such as
+`"model"`, is not a key the adapter can save: it reads as a native key to the
+engine, so the write is refused rather than sent. A byte-order mark is not
+whitespace here, which is how the engine reads it, and a path made only of
+whitespace carries no name and is refused.
 
 | Refused native edit | Error |
 | --- | --- |
-| A `*.model` key set to a gateway alias | Gateway defaults cannot be saved into a native Codex profile |
-| `model_provider`, or any `.model_provider` key, set to `subscription_gateway`; `model_providers.subscription_gateway` or any key below it | Gateway models and the gateway provider cannot be saved into native Codex configuration |
-| A value that anywhere holds a gateway alias under `model`, that provider under `model_provider`, or that provider as a key of `model_providers`. Values are searched through objects and arrays to a depth of 64, and a deeper value is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A gateway default key given another spelling, such as `"model"` or `desktop."appearanceTheme"`: the engine reads those segments as a native key, so the adapter neither saves nor forwards it | Gateway defaults must be written with their plain key |
+| A key path the engine cannot parse: empty, or whitespace in the Unicode sense that carries no name, with an empty segment, with a quote that can neither open nor close a segment, or with an unterminated quote or escape | This configuration key is not valid |
+| A key whose last segment is `model` set to a gateway alias | Gateway defaults cannot be saved into a native Codex profile |
+| `model_provider` or `oss_provider`, at the top level or below a profile, set to `subscription_gateway`; a `model_providers.subscription_gateway` key, or any key below it, given a value other than `null`; a `model_providers` key whose value holds that provider with a non-null value | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A key whose last segment ends with `_model` (such as `review_model`, `profiles.work.review_model` or `features.guardianv2.review_model`) set to a gateway alias | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A value that anywhere holds a gateway alias under a `model` or `*_model` key, that provider under a `model_provider` or `oss_provider` key, or that provider as a non-null key of a `model_providers` value. Values are searched through objects and arrays to 65 nested levels, counting the written value as level 1; a value containing a 66th level is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
+| A `model_catalog_json` key, at the top level or anywhere inside a value, set to the gateway's catalog file or to anything inside the gateway state directory. Every spelling the engine reads counts, not only an absolute path: a `~` on its own or `~/rest` is the home directory, and any other relative path is read below the native home, never below the directory of the request's `filePath`, so `~/.codex/state/codex-models.json` and `../state/codex-models.json` are refused like the absolute one. A name the engine does not expand, such as `~rest`, stays one of the caller's own files and is forwarded | The gateway catalog cannot be saved into native Codex configuration |
 | Any native edit in a request whose `filePath` is the gateway preference file | Native configuration changes cannot target the gateway preference file |
+
+Clearing stays possible: an edit whose value is `null` removes a gateway
+provider row or field instead of storing one, so it is forwarded rather than
+refused. Chat starts and settings reads overlay the gateway's own catalog
+through `model_catalog_json`; that file is gateway state, and saving its path,
+or any file from inside the gateway state directory, into native configuration
+is refused like the rows above.
 
 A batch that mixes both kinds first checks every gateway-default rule, then
 sends the native edits to the engine in their original order, and saves the
 private file only after that write succeeds. A native write that fails returns
 its own error and saves nothing, and an invalid private part forwards nothing.
-The caller receives the engine's result either way. The legacy whole-config
-`config/write` stays refused.
+A request that carries a native part answers with the engine's result or error;
+a write that is private-only answers with the gateway's own saved result. Every
+configuration write from one connection, native-only ones included, waits
+behind the writes sent before it, so the engine sees them in send order and a
+failing write does not hold back the ones queued behind it. The legacy
+whole-config `config/write` stays refused.
 
 The current app also saves its display settings through `desktop.*` configuration
 writes. The adapter validates supported display fields and stores them in that

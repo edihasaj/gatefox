@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, mkdtemp, readFile, symlink } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { parseKeyPath } from "../app-server-config-writes-key-path.js";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 
@@ -66,8 +68,42 @@ async function fixture() {
 }
 
 /** A refusal names its rule and nothing else: no key, no value, no path from the caller's request. */
-const leakless = (message: string, values: unknown[]) =>
+const leaks = (message: string, values: unknown[]) =>
   values.some(value => typeof value === "string" && value.length > 1 && message.includes(value));
+
+/** A chain of `levels` nested containers whose leaf is a benign string; the written value is level 1. */
+const nest = (levels: number): unknown => levels <= 0 ? "benign" : { n: nest(levels - 1) };
+
+// The SDK ships no parse_key_path unit tests, so these cover every branch of the ported parser.
+test("a key path parses into the segments the engine applies", () => {
+  assert.deepEqual(parseKeyPath("model"), ["model"]);
+  assert.deepEqual(parseKeyPath("features.guardianv2.review_model"), ["features", "guardianv2", "review_model"]);
+  assert.deepEqual(parseKeyPath("sample@catalog"), ["sample@catalog"], "bare segments stay permissive");
+  assert.deepEqual(parseKeyPath("a b.c"), ["a b", "c"]);
+  assert.deepEqual(parseKeyPath('model_providers."subscription_gateway".base_url'), ["model_providers", "subscription_gateway", "base_url"]);
+  assert.deepEqual(parseKeyPath('a."b.c".d'), ["a", "b.c", "d"], "a quoted segment carries the separator literally");
+  assert.deepEqual(parseKeyPath('"a b"'), ["a b"]);
+  assert.deepEqual(parseKeyPath('a."b\\.c"'), ["a", "b.c"], "a quoted backslash escapes the separator");
+  assert.deepEqual(parseKeyPath('a."b\\"c"'), ["a", 'b"c'], "a quoted backslash escapes the quote");
+  assert.deepEqual(parseKeyPath('a."b\\\\c"'), ["a", "b\\c"], "a quoted backslash escapes itself");
+  assert.deepEqual(parseKeyPath('a."x"y'), ["a", "xy"], "text may follow a closing quote");
+  assert.deepEqual(parseKeyPath("\uFEFF"), ["\uFEFF"], "the engine trims Unicode whitespace, and a byte-order mark is not whitespace");
+});
+
+test("only the Unicode whitespace a path cannot hold is empty to the engine", () => {
+  // JavaScript's trim() also strips the byte-order mark, which the engine keeps as a segment.
+  for (const blank of [" ", "\u0085", "\u00a0", "\u2028", "\t \n"]) {
+    assert.equal(parseKeyPath(blank), undefined, `expected ${JSON.stringify(blank)} to carry no segment`);
+  }
+  assert.deepEqual(parseKeyPath("\uFEFF\u0085"), ["\uFEFF\u0085"], "a mark beside whitespace is still a name");
+});
+
+test("a key path the engine would reject is refused fail-closed", () => {
+  for (const bad of ["", " ", "\t\n", ".", "a..b", ".a", "a.", 'a"b', '"a', '"', '""', '"\\', 'a."b\\', 'a\\"b', 'a."x""y"']) {
+    assert.equal(parseKeyPath(bad), undefined, `expected ${JSON.stringify(bad)} to be rejected`);
+  }
+  for (const notAPath of [undefined, null, 42, ["model"], {}]) assert.equal(parseKeyPath(notAPath), undefined);
+});
 
 test("a bundled plugin's native config write reaches the engine unchanged", async () => {
   const f = await fixture();
@@ -132,7 +168,7 @@ test("a gateway model cannot be saved into a native profile", async () => {
   const f = await fixture();
   const profileModel = "Gateway defaults cannot be saved into a native Codex profile";
   await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work.model", value: alias, mergeStrategy: "upsert" }),
-    error => (error as Error).message === profileModel && (error as { code: number }).code === -32600 && !leakless((error as Error).message, ["profiles.work.model", alias]));
+    error => (error as Error).message === profileModel && (error as { code: number }).code === -32600 && !leaks((error as Error).message, ["profiles.work.model", alias]));
   await assert.rejects(f.router.request("config/batchWrite", { edits: [
     { keyPath: "mcp_servers.node_repl", value: { command: "/x/node_repl" }, mergeStrategy: "upsert" },
     { keyPath: "profiles.work.model", value: "codex/model", mergeStrategy: "upsert" },
@@ -154,7 +190,7 @@ test("the gateway's own provider row cannot be written into native config", asyn
   const f = await fixture();
   const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
   await assert.rejects(f.router.request("config/value/write", { keyPath: `model_providers.${gateway}.base_url`, value: "http://127.0.0.1:3457/v1", mergeStrategy: "upsert" }),
-    error => (error as Error).message === identity && !leakless((error as Error).message, [`model_providers.${gateway}.base_url`, "http://127.0.0.1:3457/v1"]));
+    error => (error as Error).message === identity && !leaks((error as Error).message, [`model_providers.${gateway}.base_url`, "http://127.0.0.1:3457/v1"]));
   await assert.rejects(f.router.request("config/value/write", { keyPath: `model_providers.${gateway}`, value: { name: "Gateway" }, mergeStrategy: "replace" }), { message: identity });
   await assert.rejects(f.router.request("config/batchWrite", { edits: [{ keyPath: "model_providers", value: { [gateway]: {} }, mergeStrategy: "replace" }] }), { message: identity });
   assert.deepEqual(f.calls, []);
@@ -165,7 +201,7 @@ test("gateway identity hidden inside a native value is refused", async () => {
   const f = await fixture();
   const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
   await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work", value: { model: alias }, mergeStrategy: "replace" }),
-    error => (error as Error).message === identity && !leakless((error as Error).message, [alias]));
+    error => (error as Error).message === identity && !leaks((error as Error).message, [alias]));
   await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles", value: { w: { model_provider: gateway } }, mergeStrategy: "replace" }), { message: identity });
   await assert.rejects(f.router.request("config/batchWrite", { edits: [
     { keyPath: "mcp_servers.tool", value: { env: { LIST: [{ model_provider: gateway }] } }, mergeStrategy: "upsert" },
@@ -177,11 +213,86 @@ test("gateway identity hidden inside a native value is refused", async () => {
   assert.equal(await f.saved(), undefined);
 });
 
+test("a quoted gateway provider row cannot bypass the guard", async () => {
+  const f = await fixture();
+  const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
+  await assert.rejects(f.router.request("config/value/write", { keyPath: `model_providers."${gateway}".base_url`, value: "http://127.0.0.1:3457/v1", mergeStrategy: "upsert" }),
+    error => (error as Error).message === identity && !leaks((error as Error).message, [gateway]));
+  assert.deepEqual(f.calls, [], "the quoted spelling reaches the same segments and is refused the same way");
+  assert.equal(await f.saved(), undefined);
+});
+
+test("a gateway model under any model-bearing native key is refused", async () => {
+  const f = await fixture();
+  const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
+  const profileModel = "Gateway defaults cannot be saved into a native Codex profile";
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "review_model", value: alias, mergeStrategy: "upsert" }), { message: identity });
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "features.guardianv2.review_model", value: alias, mergeStrategy: "upsert" }), { message: identity });
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work.review_model", value: alias, mergeStrategy: "upsert" }), { message: identity });
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work", value: { review_model: alias }, mergeStrategy: "replace" }),
+    error => (error as Error).message === identity && !leaks((error as Error).message, [alias]));
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work.model", value: alias, mergeStrategy: "upsert" }), { message: profileModel });
+  assert.deepEqual(f.calls, []);
+  // A native review model is the caller's own choice and reaches the engine unchanged.
+  const native = { keyPath: "features.guardianv2.review_model", value: "native", mergeStrategy: "upsert" };
+  const sent = structuredClone(native);
+  assert.equal(await f.router.request("config/value/write", native), nativeAnswer);
+  assert.deepEqual(f.calls, [{ method: "config/value/write", params: sent }]);
+  assert.equal(await f.saved(), undefined);
+});
+
+test("clearing a gateway provider row stays possible", async () => {
+  const f = await fixture();
+  const row = { keyPath: `model_providers.${gateway}`, value: null, mergeStrategy: "replace", filePath: nativeFile };
+  const field = { keyPath: `model_providers.${gateway}.base_url`, value: null, mergeStrategy: "replace" };
+  const sent = structuredClone([row, field]);
+  assert.equal(await f.router.request("config/value/write", row), nativeAnswer, "a null clears the whole row, as natively");
+  assert.equal(await f.router.request("config/value/write", field), nativeAnswer, "a null clears one field, as natively");
+  assert.deepEqual(f.calls, [{ method: "config/value/write", params: sent[0] }, { method: "config/value/write", params: sent[1] }]);
+  assert.equal(await f.saved(), undefined);
+});
+
+test("the gateway catalog cannot be saved into native Codex configuration", async () => {
+  const f = await fixture();
+  const catalog = "The gateway catalog cannot be saved into native Codex configuration";
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "model_catalog_json", value: f.router.catalogPath, mergeStrategy: "upsert" }),
+    error => (error as Error).message === catalog && !leaks((error as Error).message, [f.router.catalogPath, f.directory]));
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work.model_catalog_json", value: join(f.directory, "anything.json"), mergeStrategy: "upsert" }),
+    { message: catalog }, "any file inside the gateway state directory is gateway state");
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work", value: { model_catalog_json: f.router.catalogPath }, mergeStrategy: "replace" }),
+    { message: catalog }, "the same path inside a written value is refused");
+  assert.deepEqual(f.calls, []);
+  const elsewhere = { keyPath: "model_catalog_json", value: "/elsewhere/catalog.json", mergeStrategy: "upsert" };
+  const sent = structuredClone(elsewhere);
+  assert.equal(await f.router.request("config/value/write", elsewhere), nativeAnswer, "the caller's own catalog file stays native");
+  assert.deepEqual(f.calls, [{ method: "config/value/write", params: sent }]);
+});
+
+test("a value nested past the searched 65 levels is refused", async () => {
+  const f = await fixture();
+  const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
+  const shallow = { keyPath: "profiles.work", value: nest(65), mergeStrategy: "replace" };
+  const sent = structuredClone(shallow);
+  assert.equal(await f.router.request("config/value/write", shallow), nativeAnswer, "65 levels are searched, and a benign value inside them is forwarded");
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work", value: nest(66), mergeStrategy: "replace" }), { message: identity });
+  assert.deepEqual(f.calls, [{ method: "config/value/write", params: sent }], "only the searched-depth write reached the engine");
+});
+
+test("a mixed batch forwards null and native edits unchanged and in order", async () => {
+  const f = await fixture();
+  const plugin = { keyPath: "mcp_servers.node_repl", value: { command: "/x/node_repl" }, mergeStrategy: "upsert" };
+  const sent = structuredClone(plugin);
+  await f.router.request("config/batchWrite", { edits: [{ keyPath: "model", value: alias, mergeStrategy: "upsert" }, null, plugin] });
+  assert.deepEqual(f.forwarded(), [{ method: "config/batchWrite", params: { edits: [null, sent] } }],
+    "the native part keeps the caller's own entries, including one the adapter cannot read");
+  assert.equal((await f.saved())?.model, alias);
+});
+
 test("a native write cannot target the gateway preference file", async () => {
   const f = await fixture();
   const target = "Native configuration changes cannot target the gateway preference file";
   await assert.rejects(f.router.request("config/value/write", { keyPath: "sandbox_mode", value: "read-only", filePath: f.preferencesPath }),
-    error => (error as Error).message === target && !leakless((error as Error).message, [f.preferencesPath, "sandbox_mode"]));
+    error => (error as Error).message === target && !leaks((error as Error).message, [f.preferencesPath, "sandbox_mode"]));
   await assert.rejects(f.router.request("config/batchWrite", { edits: [
     { keyPath: "model", value: alias, mergeStrategy: "upsert" },
     { keyPath: "mcp_servers.node_repl", value: { command: "/x/node_repl" }, mergeStrategy: "upsert" },
@@ -270,6 +381,90 @@ test("a gateway default write never reaches the engine", async () => {
   assert.deepEqual(f.calls, []);
   assert.equal(model.filePath, f.preferencesPath);
   assert.deepEqual(await f.saved(), { model: alias, model_reasoning_effort: "high", desktop: { appearanceTheme: "dark" } });
+});
+
+test("the native home is the only base a relative catalog path reads against", async () => {
+  const f = await fixture();
+  const catalog = "The gateway catalog cannot be saved into native Codex configuration";
+  // The engine expands a lone `~`, and `~/rest`, against the home directory.
+  const homeSpelling = "~/" + relative(homedir(), f.router.catalogPath);
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "model_catalog_json", value: homeSpelling, mergeStrategy: "upsert" }),
+    error => (error as Error).message === catalog && !leaks((error as Error).message, [f.router.catalogPath, f.directory]));
+
+  // A relative path is read below the native home, whatever the request's own filePath says: none,
+  // a `~` spelling of the native config, and a symlink pointing at one all share that same base.
+  const root = realpathSync(await mkdtemp(join(tmpdir(), "gateway-native-base-")));
+  const state = join(root, "state");
+  const nativeHome = join(root, "native-home");
+  await mkdir(state); await mkdir(nativeHome);
+  const scoped = new AppServerRouter({ ...f.config, stateDirectory: state }, f.backend, undefined, undefined, nativeHome);
+  const aliasConfig = join(root, "native-config-link.toml");
+  await symlink(join(nativeHome, "config.toml"), aliasConfig);
+  const climbing = relative(nativeHome, scoped.catalogPath); // ../state/codex-models.json
+  assert.ok(climbing.startsWith("../"), `the catalog spelled below the native home: ${climbing}`);
+  for (const filePath of [undefined, "~/.codex/config.toml", aliasConfig]) {
+    const edit = { keyPath: "model_catalog_json", value: climbing, ...(filePath ? { filePath } : {}), mergeStrategy: "upsert" };
+    await assert.rejects(scoped.request("config/value/write", structuredClone(edit)), { message: catalog },
+      `the catalog reached from the native home is refused with filePath ${String(filePath)}`);
+  }
+  // A symlinked native home is that same home once the guard resolves it.
+  const homeAlias = join(root, "native-home-link");
+  await symlink(nativeHome, homeAlias);
+  await assert.rejects(new AppServerRouter({ ...f.config, stateDirectory: state }, f.backend, undefined, undefined, homeAlias)
+    .request("config/value/write", { keyPath: "model_catalog_json", value: climbing, mergeStrategy: "upsert" }),
+    { message: catalog }, "a ../ spelling of the catalog is refused however the native home is spelled");
+  assert.deepEqual(f.calls, [], "none of the refusals forwarded anything");
+
+  // The caller's own files stay native: one beside the config the write targets, one the engine
+  // expands onto the home directory, and two that only look like one: a backslash expands nowhere
+  // outside Windows, and a tilde with no separator after it is just the first character of a name.
+  for (const value of ["elsewhere.json", "~/elsewhere.json", "~.x/foo.json", "~\\elsewhere.json"]) {
+    const edit = { keyPath: "model_catalog_json", value, filePath: nativeFile, mergeStrategy: "upsert" };
+    const sent = structuredClone(edit);
+    assert.equal(await scoped.request("config/value/write", edit), nativeAnswer, `${value} stays the caller's own file`);
+    assert.deepEqual(f.calls.at(-1), { method: "config/value/write", params: sent }, `${value} is forwarded as it was sent`);
+  }
+});
+
+test("a gateway default spelled with quotes is refused rather than saved elsewhere", async () => {
+  const f = await fixture();
+  const spelling = "Gateway defaults must be written with their plain key";
+  for (const keyPath of ['"model"', '"service_tier"', '"model_reasoning_effort"', '"model_reasoning_summary"', 'desktop."appearanceTheme"']) {
+    await assert.rejects(f.router.request("config/value/write", { keyPath, value: "anything", mergeStrategy: "upsert" }),
+      error => (error as Error).message === spelling && !leaks((error as Error).message, [keyPath]));
+  }
+  await assert.rejects(f.router.request("config/batchWrite", { edits: [
+    { keyPath: "model", value: alias, mergeStrategy: "upsert" },
+    { keyPath: '"mcp_servers.node_repl"', value: { command: "/x/node_repl" }, mergeStrategy: "upsert" },
+    { keyPath: '"model_reasoning_summary"', value: "auto", mergeStrategy: "upsert" },
+  ] }), { message: spelling }, "a mixed batch with one quoted default saves nothing");
+  assert.deepEqual(f.calls, [], "the whole request is refused before anything is forwarded");
+  assert.equal(await f.saved(), undefined);
+  // A quoted name that is not a gateway default is one native key the adapter has no claim on.
+  const quoted = { keyPath: '"mcp_servers.node_repl"', value: { command: "/x/node_repl" }, mergeStrategy: "upsert" };
+  const literal = { keyPath: 'mo\\del', value: alias, mergeStrategy: "upsert" };
+  const desktop = { keyPath: '"desktop.appearanceTheme"', value: "dark", mergeStrategy: "upsert" };
+  const sent = [quoted, literal, desktop].map(edit => structuredClone(edit));
+  for (const edit of [quoted, literal, desktop]) assert.equal(await f.router.request("config/value/write", edit), nativeAnswer);
+  assert.deepEqual(f.forwarded().map(call => call.params), sent, "a key the engine reads as one name it does not own stays native");
+});
+
+test("the gateway provider cannot be chosen as the native OSS provider", async () => {
+  const f = await fixture();
+  const identity = "Gateway models and the gateway provider cannot be saved into native Codex configuration";
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "oss_provider", value: gateway, mergeStrategy: "replace" }),
+    error => (error as Error).message === identity && !leaks((error as Error).message, [gateway]));
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work.oss_provider", value: gateway, mergeStrategy: "upsert" }), { message: identity });
+  await assert.rejects(f.router.request("config/value/write", { keyPath: "profiles.work", value: { oss_provider: gateway }, mergeStrategy: "replace" }), { message: identity });
+  await assert.rejects(f.router.request("config/batchWrite", { edits: [{ keyPath: "mcp_servers.x", value: { env: { SET: { oss_provider: gateway } } }, mergeStrategy: "upsert" }] }), { message: identity });
+  assert.deepEqual(f.calls, []);
+  assert.equal(await f.saved(), undefined);
+  // Another provider, and a cleared key, stay the caller's own.
+  const other = { keyPath: "oss_provider", value: "ollama", mergeStrategy: "upsert" };
+  const cleared = { keyPath: "oss_provider", value: null, mergeStrategy: "replace" };
+  assert.equal(await f.router.request("config/value/write", other), nativeAnswer);
+  assert.equal(await f.router.request("config/value/write", cleared), nativeAnswer);
+  assert.deepEqual(f.forwarded().map(call => call.params), [structuredClone(other), structuredClone(cleared)]);
 });
 
 test("the whole-file native write stays refused", async () => {
