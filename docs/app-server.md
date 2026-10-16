@@ -138,7 +138,7 @@ whitespace carries no name and is refused.
 | `model_provider` or `oss_provider`, at the top level or below a profile, set to `subscription_gateway`; a `model_providers.subscription_gateway` key, or any key below it, given a value other than `null`; a `model_providers` key whose value holds that provider with a non-null value | Gateway models and the gateway provider cannot be saved into native Codex configuration |
 | A key whose last segment ends with `_model` (such as `review_model`, `profiles.work.review_model` or `features.guardianv2.review_model`) set to a gateway alias | Gateway models and the gateway provider cannot be saved into native Codex configuration |
 | A value that anywhere holds a gateway alias under a `model` or `*_model` key, that provider under a `model_provider` or `oss_provider` key, or that provider as a non-null key of a `model_providers` value. Values are searched through objects and arrays to 65 nested levels, counting the written value as level 1; a value containing a 66th level is refused. | Gateway models and the gateway provider cannot be saved into native Codex configuration |
-| A `model_catalog_json` key, at the top level or anywhere inside a value, set to the gateway's catalog file or to anything inside the gateway state directory. Every spelling the engine reads counts, not only an absolute path: a `~` on its own or `~/rest` is the home directory, and any other relative path is read below the native home, never below the directory of the request's `filePath`, so `~/.codex/state/codex-models.json` and `../state/codex-models.json` are refused like the absolute one. A name the engine does not expand, such as `~rest`, stays one of the caller's own files and is forwarded | The gateway catalog cannot be saved into native Codex configuration |
+| A `model_catalog_json` key, at the top level or anywhere inside a value, set to the gateway's catalog file or to anything inside the gateway state directory. The comparison is by file identity, so a path that reaches one of the gateway's own files through a symlink is refused like the path written out directly. Every spelling the engine reads is tried: a `~` on its own or `~/rest` is the home directory, and any other relative path is read below the native home in both its lexical and its resolved spelling, never below the directory of the request's `filePath`. With the native home at `~/.codex` and the state directory at `~/.codex/state`, that makes `state/codex-models.json`, `~/.codex/state/codex-models.json` and `../.codex/state/codex-models.json` all the gateway's catalog; `../state/codex-models.json` reaches it only where the state directory sits beside the native home. A name the engine does not expand, such as `~rest`, stays one of the caller's own files and is forwarded | The gateway catalog cannot be saved into native Codex configuration |
 | Any native edit in a request whose `filePath` is the gateway preference file | Native configuration changes cannot target the gateway preference file |
 
 Clearing stays possible: an edit whose value is `null` removes a gateway
@@ -146,7 +146,8 @@ provider row or field instead of storing one, so it is forwarded rather than
 refused. Chat starts and settings reads overlay the gateway's own catalog
 through `model_catalog_json`; that file is gateway state, and saving its path,
 or any file from inside the gateway state directory, into native configuration
-is refused like the rows above.
+is refused like the rows above. The guard reads the file the engine would open,
+so a link that points at either one is refused the same way.
 
 A batch that mixes both kinds first checks every gateway-default rule, then
 sends the native edits to the engine in their original order, and saves the

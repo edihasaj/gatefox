@@ -390,6 +390,17 @@ test("the native home is the only base a relative catalog path reads against", a
   const homeSpelling = "~/" + relative(homedir(), f.router.catalogPath);
   await assert.rejects(f.router.request("config/value/write", { keyPath: "model_catalog_json", value: homeSpelling, mergeStrategy: "upsert" }),
     error => (error as Error).message === catalog && !leaks((error as Error).message, [f.router.catalogPath, f.directory]));
+  if (process.platform !== "win32") {
+    // A slash is the only separator the engine trims after a tilde here, so a backslash starts a
+    // name instead of expanding one: the `..` that follows climbs back out of that name and reads
+    // the catalog all the same, and so does a doubled slash, which the engine collapses to one.
+    const backslash = "\\";
+    const climbed = relative(homedir(), f.router.catalogPath);
+    for (const value of [`~/${backslash}/../${climbed}`, `~//${climbed}`]) {
+      await assert.rejects(f.router.request("config/value/write", { keyPath: "model_catalog_json", value, mergeStrategy: "upsert" }),
+        { message: catalog }, `${JSON.stringify(value)} is the catalog spelled from the home directory`);
+    }
+  }
 
   // A relative path is read below the native home, whatever the request's own filePath says: none,
   // a `~` spelling of the native config, and a symlink pointing at one all share that same base.
@@ -424,6 +435,53 @@ test("the native home is the only base a relative catalog path reads against", a
     assert.equal(await scoped.request("config/value/write", edit), nativeAnswer, `${value} stays the caller's own file`);
     assert.deepEqual(f.calls.at(-1), { method: "config/value/write", params: sent }, `${value} is forwarded as it was sent`);
   }
+});
+
+test("the catalog guard compares the file a path names, not its spelling", async () => {
+  const f = await fixture();
+  const catalog = "The gateway catalog cannot be saved into native Codex configuration";
+  const root = realpathSync(await mkdtemp(join(tmpdir(), "gateway-catalog-identity-")));
+  // One refusal per spelling, and nothing reaches the engine for any of them.
+  const refused = (router: AppServerRouter, value: string, note: string) =>
+    assert.rejects(router.request("config/value/write", { keyPath: "model_catalog_json", value, mergeStrategy: "upsert" }),
+      error => (error as Error).message === catalog && !leaks((error as Error).message, [f.router.catalogPath, f.directory]), note);
+  const sent = () => f.forwarded().length;
+
+  // A state directory behind a link is that directory: the guard reads a path through the links it
+  // crosses, so the catalog is refused whichever spelling of it the caller sends.
+  const realState = join(root, "real-state");
+  const stateLink = join(root, "state-link");
+  await mkdir(realState); await symlink(realState, stateLink);
+  await refused(new AppServerRouter({ ...f.config, stateDirectory: stateLink }, f.backend), join(realState, "codex-models.json"),
+    "the catalog spelled through the directory a link leads to");
+  await refused(new AppServerRouter({ ...f.config, stateDirectory: realState }, f.backend), join(stateLink, "codex-models.json"),
+    "the same catalog spelled through the link itself");
+  await refused(new AppServerRouter({ ...f.config, stateDirectory: realState }, f.backend), join(stateLink, "anything.json"),
+    "any file inside the state directory, reached through its link");
+
+  // A native home behind a link is that home, so a relative value is read against both spellings of
+  // it: the place the link itself holds in the tree, and the directory the link leads to.
+  const deepHome = join(root, "deep", "native-home");
+  const deepState = join(root, "deep", "state");
+  const shallowState = join(root, "state");
+  await mkdir(deepHome, { recursive: true }); await mkdir(deepState); await mkdir(shallowState);
+  const homeLink = join(root, "native-home-link");
+  await symlink(deepHome, homeLink);
+  const climbing = "../state/codex-models.json";
+  await refused(new AppServerRouter({ ...f.config, stateDirectory: deepState }, f.backend, undefined, undefined, homeLink), climbing,
+    "the catalog below the home a link leads to, which only the resolved home reaches");
+  await refused(new AppServerRouter({ ...f.config, stateDirectory: shallowState }, f.backend, undefined, undefined, homeLink), climbing,
+    "the catalog beside the link, which only the spelled home reaches");
+  assert.equal(sent(), 0, "none of these refusals forwarded anything");
+
+  // The caller's own files stay native across a link: the guard refuses the gateway's, not the folder.
+  const linked = join(root, "elsewhere");
+  await mkdir(linked); await symlink(linked, join(root, "elsewhere-link"));
+  const before = sent();
+  assert.equal(await new AppServerRouter({ ...f.config, stateDirectory: shallowState }, f.backend).request("config/value/write",
+    { keyPath: "model_catalog_json", value: join(root, "elsewhere-link", "catalog.json"), mergeStrategy: "upsert" }), nativeAnswer,
+    "a catalog of the caller's own, behind a link, is still the caller's own");
+  assert.equal(sent(), before + 1);
 });
 
 test("a gateway default spelled with quotes is refused rather than saved elsewhere", async () => {

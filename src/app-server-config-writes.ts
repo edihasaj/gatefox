@@ -8,9 +8,11 @@
  * gateway's catalog file: those rows exist only while the adapter is running, so a write that
  * stores one is refused before anything is written or forwarded. Key paths are judged on the
  * segments the engine parses, never on the raw spelling, and a path it cannot parse is refused.
+ * A file path is judged the same way: on the file it names, whichever spelling reached it.
  */
 
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import { isDesktopPreferenceKey } from "./desktop-preferences.js";
 import { parseKeyPath } from "./app-server-config-writes-key-path.js";
 
@@ -31,7 +33,8 @@ export const gatewayCatalogMessage = "The gateway catalog cannot be saved into n
 export const invalidKeyPathMessage = "This configuration key is not valid";
 export const gatewayPreferenceSpellingMessage = "Gateway defaults must be written with their plain key";
 
-/** What counts as gateway identity, supplied by the router so this module stays pure. */
+/** What counts as gateway identity, supplied by the router. Paths are compared as files, so a
+ * spelling that leads to one through a symlink is recognized as the file it reaches. */
 export type GatewayIdentity = {
   /** The native provider id the gateway registers itself under. */
   provider: string;
@@ -43,8 +46,9 @@ export type GatewayIdentity = {
   catalogPath: string;
   /** The user's home directory, which the engine expands a lone `~` and `~/rest` against. */
   homeDirectory: string;
-  /** The directory the engine resolves a relative path against: always the native home. */
-  relativeBase: string;
+  /** The native home the engine resolves a relative path against, spelled lexically. A link that
+   * leads elsewhere is that same home to the engine, so the guard reads both of its spellings. */
+  nativeHome: string;
 };
 
 /** The edits a configuration write carries in their original form: the request itself for a
@@ -83,25 +87,57 @@ export const partitionConfigEdits = (edits: unknown[]): { privateEdits: ObjectVa
 const holdsGatewayProviderRow = (value: unknown, provider: string): boolean =>
   plain(value) && Object.hasOwn(value, provider) && value[provider] !== null;
 
-/** The path the engine reads a string as: a lone `~`, or `~/rest` (Windows also `~\rest`, with any
- * extra separators after the tilde dropped), is the home directory; an absolute path is used as
- * sent; and every other value, `~rest` included, resolves below the native home. */
-const expandEnginePath = (value: string, identity: GatewayIdentity): string => {
-  // A tilde that the engine's expansion does not recognize is just a character in a relative name,
-  // so it stays below the base, and `..` in any spelling is read lexically.
-  const expanded = value === "~" || value.startsWith("~/") || (process.platform === "win32" && value.startsWith("~\\"));
-  if (expanded) {
-    const rest = value.slice(1).replace(/^[/\\]+/, "");
-    return rest ? resolve(identity.homeDirectory, rest) : resolve(identity.homeDirectory);
-  }
-  return isAbsolute(value) ? resolve(value) : resolve(identity.relativeBase, value);
+/** The path the engine reads a string as, resolving anything merely relative to it against `base`: a
+ * lone `~` is the home directory; `~/rest` is home with `rest` below it, where only a slash is the
+ * separator after the tilde (Windows reads `~\rest` the same way, and trims backslashes there); an
+ * absolute path is used as sent; and every other value, `~rest` included, resolves below the base. */
+const expandEnginePath = (value: string, identity: GatewayIdentity, base: string): string => {
+  // A tilde the engine does not expand is just a character in a relative name, so it stays below the
+  // base, and `..` is read lexically: it climbs the path as spelled, following no links of its own.
+  if (value === "~") return resolve(identity.homeDirectory);
+  if (value.startsWith("~/")) return resolve(identity.homeDirectory, value.slice(2).replace(/^\/+/, ""));
+  if (process.platform === "win32" && value.startsWith("~\\")) return resolve(identity.homeDirectory, value.slice(2).replace(/^\\+/, ""));
+  return isAbsolute(value) ? resolve(value) : resolve(base, value);
 };
 
-/** True when a string names the gateway catalog or anything inside the gateway's state directory. */
+const tryRealpath = (path: string): string | undefined => { try { return realpathSync(path); } catch { return undefined; } };
+
+/** The file a path names once the links along it are followed: its deepest existing ancestor resolved,
+ * with the components below it — a file that is not written yet — kept as spelled. Where no ancestor
+ * resolves, the lexical path is the answer; a path that does not exist is never an error here. */
+const realForm = (target: string): string => {
+  const missing: string[] = [];
+  for (let current = target; ; ) {
+    const real = tryRealpath(current);
+    if (real !== undefined) return resolve(real, ...missing);
+    const parent = dirname(current);
+    if (parent === current) return target;
+    missing.unshift(basename(current));
+    current = parent;
+  }
+};
+
+/** A path in both spellings it can carry: the one written, and the one the file system reads it as. */
+const pathForms = (value: string): string[] => {
+  const lexical = resolve(value);
+  const real = realForm(lexical);
+  return real === lexical ? [lexical] : [lexical, real];
+};
+
+/** True when a string names the gateway catalog or anything inside the gateway's state directory.
+ * The engine opens a file, not a spelling, so a link that leads there is there: each base a relative
+ * value can read against is tried, and the path it lands on is judged in both of its forms. */
 const holdsGatewayCatalogPath = (value: unknown, identity: GatewayIdentity): boolean => {
   if (typeof value !== "string") return false;
-  const target = expandEnginePath(value, identity);
-  return target === identity.catalogPath || target.startsWith(identity.stateDirectory.endsWith(sep) ? identity.stateDirectory : identity.stateDirectory + sep);
+  const catalog = pathForms(identity.catalogPath);
+  const stateDirectories = pathForms(identity.stateDirectory).map(dir => dir.endsWith(sep) ? dir : dir + sep);
+  for (const base of pathForms(identity.nativeHome)) {
+    for (const target of pathForms(expandEnginePath(value, identity, base))) {
+      if (catalog.some(path => target === path)) return true;
+      if (stateDirectories.some(dir => target.startsWith(dir))) return true;
+    }
+  }
+  return false;
 };
 
 /** A key that carries the model a profile or block runs: `model` itself, or a `*_model` variant such as `review_model`. */
