@@ -1,0 +1,105 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { parseHealthEvent, readHealthTelemetry, summarizeHealthEvents, telemetryFileNames, unavailableCode, watchedFields, type HealthEvent } from "../health-telemetry.js";
+
+const at = Date.parse("2026-10-16T09:00:00.000Z");
+const stamp = (msOffset: number) => new Date(at + msOffset).toISOString();
+const minutes = (count: number) => count * 60_000;
+/** A parsed event row directly, without the file round trip. */
+const row = (extra: Record<string, unknown> & { event: string }, msOffset = 0): HealthEvent =>
+  ({ ...extra, at: at + msOffset }) as unknown as HealthEvent;
+
+test("a telemetry line keeps only the watched fields", () => {
+  const parsed = parseHealthEvent(JSON.stringify({ at: stamp(0), event: "rpc_error", method: "turn/start", code: unavailableCode,
+    path: "/secret/home", argv: ["--token", "hunter2"], message: "upstream said no" }));
+  assert.deepEqual(parsed, { event: "rpc_error", method: "turn/start", code: unavailableCode, at });
+  assert.equal(JSON.stringify(parsed).includes("hunter2"), false);
+  assert.equal(JSON.stringify(parsed).includes("upstream said no"), false);
+  assert.ok(watchedFields.includes("reason"));
+});
+
+test("malformed, foreign, and torn lines read as nothing", () => {
+  assert.equal(parseHealthEvent(""), undefined);
+  assert.equal(parseHealthEvent("not json"), undefined);
+  assert.equal(parseHealthEvent('{"at":"2026-10-16T09:00:00Z"}'), undefined);
+  assert.equal(parseHealthEvent('{"at":"2026-10-16T09:00:00Z","event":"Evil! Event"}'), undefined);
+  assert.equal(parseHealthEvent('{"event":"rpc_error"}'), undefined);
+  assert.equal(parseHealthEvent('{"at":"nope","event":"rpc_error"}'), undefined);
+  assert.equal(parseHealthEvent("[1,2,3]"), undefined);
+  assert.equal(parseHealthEvent('"a string"'), undefined);
+});
+
+test("long field values are cut and numbers survive", () => {
+  const parsed = parseHealthEvent(JSON.stringify({ at: stamp(0), event: "component_exit", kind: "n".repeat(300), pid: 402 }));
+  assert.equal(parsed?.kind?.length, 128);
+  assert.equal(parsed?.event, "component_exit");
+});
+
+test("counts cover hosts, exits, refusals, retries, and sharing", () => {
+  const signals = summarizeHealthEvents([
+    row({ event: "execution_host_failed" }), row({ event: "execution_host_failed" }),
+    row({ event: "component_exit", kind: "native" }), row({ event: "component_exit", kind: "native" }), row({ event: "component_exit" }),
+    row({ event: "rpc_error", method: "turn/start", code: unavailableCode }),
+    row({ event: "rpc_error", method: "thread/resume", reason: "other" }),
+    row({ event: "rpc_error", method: "other/method", code: unavailableCode }),
+    row({ event: "rpc_error", method: "thread/start", code: -32600 }),
+    row({ event: "gateway_features_trimmed", site: "startup" }),
+    row({ event: "gateway_features_trimmed", site: "retry" }),
+    row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_fallback" }),
+  ]);
+  assert.equal(signals.hostFailures, 2);
+  assert.deepEqual(signals.exits, { native: 2, unknown: 1 });
+  assert.equal(signals.nativeExited, true);
+  assert.deepEqual(signals.rpcErrors, { "turn/start": 1, "thread/resume": 1 });
+  assert.equal(signals.featureRetries, 1);
+  assert.deepEqual(signals.nativeSharing, ["native_sharing_unavailable", "native_sharing_fallback"]);
+});
+
+test("only all four session methods count as refusals", () => {
+  for (const method of ["thread/start", "thread/resume", "thread/fork", "turn/start"]) {
+    assert.equal(summarizeHealthEvents([row({ event: "rpc_error", method, code: unavailableCode })]).rpcErrors[method], 1);
+  }
+  assert.equal(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/completed", reason: "other" })]).rpcErrors["turn/completed"], undefined);
+  // A reason outside the fixed vocabulary is not a session-stopping refusal.
+  assert.deepEqual(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/start", reason: "timeout" })]).rpcErrors, {});
+});
+
+test("a retry followed by a refusal is the config failure worth naming", () => {
+  const events = [row({ event: "gateway_features_trimmed", site: "retry" }, minutes(2)), row({ event: "rpc_error", method: "turn/start", code: unavailableCode }, minutes(3))];
+  assert.equal(summarizeHealthEvents(events).retriedThenRefused, 1);
+  // A refusal that came first is unrelated to the retry, whatever order the file lists them in.
+  const before = [row({ event: "gateway_features_trimmed", site: "retry" }, minutes(5)), row({ event: "rpc_error", method: "turn/start", code: unavailableCode }, minutes(3))];
+  assert.equal(summarizeHealthEvents(before).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents(before.reverse()).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents([row({ event: "gateway_features_trimmed", site: "retry" })]).retriedThenRefused, 0);
+});
+
+test("the window's files are named by UTC day, today and the one before", () => {
+  assert.deepEqual(telemetryFileNames(Date.parse("2026-10-16T13:00:00Z")), ["events-2026-10-16.jsonl"]);
+  // Fifteen minutes back crosses midnight UTC, so both files are read.
+  assert.deepEqual(telemetryFileNames(Date.parse("2026-10-16T00:05:00Z")), ["events-2026-10-16.jsonl", "events-2026-10-15.jsonl"]);
+});
+
+test("the reader takes both files and drops lines outside the window", async () => {
+  // Just past UTC midnight, so the 15-minute window reaches into yesterday's file.
+  const nowMs = Date.parse("2026-10-16T00:05:00Z");
+  const wanted = join("/state", "telemetry");
+  const today = "events-2026-10-16.jsonl";
+  const yesterday = "events-2026-10-15.jsonl";
+  const line = (msOffset: number) => JSON.stringify({ event: "execution_host_failed", at: new Date(nowMs + msOffset).toISOString() });
+  const files: Record<string, string> = {
+    [join(wanted, today)]: [line(-minutes(2)), "torn{", "", line(-minutes(600))].join("\n"),
+    [join(wanted, yesterday)]: [line(-minutes(10)), "garbage"].join("\n"),
+  };
+  const read: string[] = [];
+  const rows = await readHealthTelemetry("/state", { now: () => nowMs, readFile: async path => { read.push(path); return files[path] ?? ""; } });
+  assert.deepEqual(read.sort(), [join(wanted, today), join(wanted, yesterday)].sort());
+  assert.equal(rows.length, 2);
+  assert.deepEqual(summarizeHealthEvents(rows).hostFailures, 2);
+});
+
+test("unreadable telemetry is quiet, not a failure", async () => {
+  const rows = await readHealthTelemetry("/state", { now: () => at, readFile: async () => "" });
+  assert.deepEqual(rows, []);
+});

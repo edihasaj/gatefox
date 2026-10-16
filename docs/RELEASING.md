@@ -83,6 +83,10 @@ belongs in the release archive.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
    there and require a zero exit before the device is treated as updated.
+   After every install, also run `gateway health` on every Mac; its verdict must
+   be `ok` or `warn` (see [the watchdog](health.md)). A `fail` means this Mac is
+   broken or half-moved, and the alert push is not configured until
+   `<state>/alert-push-url` exists with mode 0600.
 
 ## Updating without quitting the app
 
