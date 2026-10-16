@@ -1,13 +1,13 @@
 import { object, type Message } from "./app-server-connection.js";
 
 const removed = new Set(["code_mode_tool_description_first", "guardianv2.thread_context"]);
-const record = (value: unknown): value is Message => !!value && typeof value === "object" && !Array.isArray(value);
+export const record = (value: unknown): value is Message => !!value && typeof value === "object" && !Array.isArray(value);
 const owns = (value: Message, key: string) => Object.hasOwn(value, key);
-const featurePath = (key: string): { prefix: string; name: string } | undefined => {
+export const featurePath = (key: string): { prefix: string; name: string } | undefined => {
   const match = /^(features|profiles\..+\.features)\.(.+)$/.exec(key);
   return match ? { prefix: match[1], name: match[2] } : undefined;
 };
-const featureContainer = (key: string) => key === "features" || /^profiles\..+\.features$/.test(key);
+export const featureContainer = (key: string) => key === "features" || /^profiles\..+\.features$/.test(key);
 function featureScope(prefix: string): string {
   if (prefix === "features") return prefix;
   let profile = prefix.slice("profiles.".length, -".features".length);
@@ -61,9 +61,9 @@ export function normalizeCodexFeatureRequest(method: string, params: Message, ba
   return params;
 }
 
-interface InlineField { key: string; value: string; original: string; rawKey: string }
+export interface InlineField { key: string; value: string; original: string; rawKey: string }
 /** Split only a complete inline table; quoted values and nested tables/arrays stay intact. */
-function inlineFields(value: string): InlineField[] | undefined {
+export function inlineFields(value: string): InlineField[] | undefined {
   const text = value.trim(); if (!text.startsWith("{") || !text.endsWith("}")) return;
   const body = text.slice(1, -1); const parts: string[] = []; let from = 0; let depth = 0; let quote = ""; let escaped = false;
   for (let index = 0; index < body.length; index++) {

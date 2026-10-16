@@ -10,6 +10,7 @@ import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
+import { reportGatewayFeatureTrim, trimGatewayFeatureArgs, trimGatewayFeatureConfig, trimGatewayFeatureRequest, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-compaction.js";
 import { SharedNativeConnection, type NativeConnectionFactory, type NativeRpcConnection } from "./shared-native-connection.js";
@@ -310,7 +311,9 @@ export class AppServerBackends {
       const latest = object((await this.native.request("config/read", {})).config);
       const clientSettings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };
       const omitted = new Set(["desktop", "model", "model_provider", "model_catalog_json", "model_reasoning_effort", "model_reasoning_summary", "service_tier", "model_providers", "openai_api_key", "forced_login_method", "forced_chatgpt_workspace_id"]);
-      const settings = normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(clientSettings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null)));
+      // ChatGPT picks features by the native engine's version; the pinned gateway SDK is older, so trim both to its schema.
+      const stats = { count: 0 };
+      const settings = trimGatewayFeatureConfig(normalizeCodexFeatureConfig(Object.fromEntries(Object.entries(clientSettings).filter(([key, value]) => !omitted.has(key) && value !== undefined && value !== null))), stats);
       const forwarded: string[] = [];
       for (let index = 0; index < this.args.length; index++) {
         if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
@@ -318,7 +321,8 @@ export class AppServerBackends {
       }
       const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
-      const args = normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings);
+      const args = trimGatewayFeatureArgs(normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings), stats);
+      reportGatewayFeatureTrim("spawn", stats);
       const combined = this.catalog.combined(snapshot);
       const sdk = runtime ? { gatewaySdkSha256: runtime.binarySha256 } : {};
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
@@ -352,7 +356,7 @@ export class AppServerBackends {
       const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", model_catalog_json: path,
         "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
         ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
-      const args = [...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])];
+      const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], stats));
       if (this.closing) throw new Error("Codex desktop connection is closing");
       const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
       engine.connection = new AppServerConnection(runtime?.executable || this.executable, args, message => this.forward(engine.connection, message), () => {
@@ -415,6 +419,8 @@ export class AppServerBackends {
     }
     if (!reserved) engine.requests++;
     try {
+      // Only gateway engines get here; native requests returned above and are forwarded untouched.
+      params = trimmedGatewayFeatures("request", stats => trimGatewayFeatureRequest(method, params, stats));
       const model = object(object(params.collaborationMode).settings).model ?? params.model;
       if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
       const compaction = await engine.compaction?.before(method, params);
