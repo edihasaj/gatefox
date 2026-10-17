@@ -137,7 +137,8 @@ export class DesktopCatalog {
    * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
    * and its review text stays the SDK's own. A carried row has the tool search flag off, as a Codex 2 row does: a bare
    * model name resolves to the Codex subscription route, which drops `tool_search` because the ChatGPT backend refuses
-   * it; an alias spelled like a native slug, which could take that name first, is refused when the catalog loads.
+   * it; an alias spelled like a native slug, which could take that name first, is refused at every gateway catalog load,
+   * checked against the native slugs read at launch.
    * The native engine keeps its own catalog unchanged.
    */
   private executorNative(reviewers: ReadonlySet<string>): Message[] {

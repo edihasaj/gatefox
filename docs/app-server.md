@@ -660,8 +660,9 @@ executor catalog carries for sub-agents naming a model directly (a role's model,
 to spawn code-mode host". Those carried rows have the search flag off, as the Codex 2
 rows do: a bare model name resolves to the Codex subscription route, which drops
 `tool_search` because the ChatGPT backend refuses it. No provider can take that name first, because a gateway
-model alias spelled exactly like a native slug is refused when the adapter launches
-(see the start of this page). (Before 0.4.4 every such sub-agent request failed with
+model alias spelled exactly like a native slug is refused whenever the adapter loads the
+gateway catalog, at launch and at each refresh, against the native slugs it read at launch;
+a native model that appears later is checked at the next launch. (Before 0.4.4 every such sub-agent request failed with
 `unsupported_tool`.) The native engine keeps its own catalog unchanged.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
