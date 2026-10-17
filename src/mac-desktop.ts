@@ -11,14 +11,15 @@ import { readServicePlan } from "./service-plan.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
+import { envAgentNames, readEnvAgent, readGuiCliPath, removeEnvAgent, writeEnvAgent } from "./desktop-env-agent.js";
 
 const execFileAsync = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 /** Seam for every launchctl call so a registration test can observe the GUI session without changing it. */
 export type LaunchctlExec = (file: string, args: string[]) => Promise<{ stdout: string }>;
-type ExecFileWithTimeout = (file: string, args: string[], options: { timeout: number }) => Promise<{ stdout: string }>;
-/** The real session's launchctl: every call, including enable and bootstrap, is bounded by the same 10 s timeout. */
+type ExecFileWithTimeout = (file: string, args: string[], options: { timeout: number; maxBuffer: number }) => Promise<{ stdout: string }>;
+/** The real session's launchctl: every call, including enable and bootstrap, is bounded by the same 10 s timeout. The buffer is sized for `launchctl print gui/<uid>`, which lists the whole login domain. */
 export const launchctlRunner = (run: ExecFileWithTimeout = (file, args, options) => execFileAsync(file, args, options)): LaunchctlExec =>
-  (file, args) => run(file, args, { timeout: 10000 });
+  (file, args) => run(file, args, { timeout: 10000, maxBuffer: 16 * 1024 * 1024 });
 const launchctlExec = launchctlRunner();
 /** The part of an entry's status that ownership needs: what kind of entry it is, and who owns it. */
 export type WrapperStat = (path: string) => Promise<{ isFile(): boolean; isSymbolicLink(): boolean; uid: number }>;
@@ -84,6 +85,8 @@ type UnregisterPlan = {
   receipt: string;
   /** The desktop LaunchAgent that unregister moves to the Trash, its contents as read, and its launchd target. */
   plist: string; existing: string | undefined; target: string;
+  /** The login-time environment agent, as read; unregister boots it out and moves it to the Trash. */
+  envAgent: string | undefined;
   /** Whether the receipt names a wrapper. */
   registered: boolean;
   /** Whether the session's CODEX_CLI_PATH is a wrapper this gateway wrote. */
@@ -108,13 +111,14 @@ async function planUnregister(stateDirectory: string, exec: LaunchctlExec, optio
   const receipt = resolve(stateDirectory, "desktop-registration.json");
   const plist = resolve(homedir(), "Library/LaunchAgents", label + ".plist");
   const existing = await readDesktopPlist(plist);
+  const envAgent = await readEnvAgent();
   const registration = await readReceipt(receipt);
   const cliPath = await getenv(exec, "CODEX_CLI_PATH");
   // Ownership is decided from the session as it is now, before any write, so a later failure cannot leave a
   // half-cleared pair behind, and so the call order is always reads first then writes.
   const ownPath = (!!registration.wrapper && cliPath === registration.wrapper) || (!!cliPath && await ownWrapper(stateDirectory, cliPath));
   // FORCE_CLI is read only once the path proves itself ours, and an unset name reads as the empty string.
-  return { receipt, plist, existing, target: `gui/${process.getuid!()}/${label}`,
+  return { receipt, plist, existing, envAgent, target: `gui/${process.getuid!()}/${label}`,
     registered: !!registration.wrapper, ownPath, force: ownPath ? await getenv(exec, "CODEX_APP_SERVER_FORCE_CLI") : "" };
 }
 /** The writes unregister does after the plan above, in the order they have always happened: env, then plist, then receipt. */
@@ -122,7 +126,10 @@ async function applyUnregister(plan: UnregisterPlan, exec: LaunchctlExec): Promi
   // The plist is read again, before the first write, because the plan proved it was ours only moments ago: a file
   // that took its place in between is refused rather than moved to the Trash.
   const existing = await readDesktopPlist(plan.plist);
+  const envAgent = await readEnvAgent();
   let legacyForceCliKept = false;
+  // The env agent goes first, so a login that races this unregister cannot set the path again after it is cleared.
+  await removeEnvAgent(envAgent, exec);
   if (plan.ownPath) {
     await exec("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]);
     if (plan.force === "1") {
@@ -150,7 +157,7 @@ export async function planDesktopUnregister(configPath: string, exec: LaunchctlE
   const plan = await withLoginRegistrationLock(config.stateDirectory, () => planUnregister(config.stateDirectory, exec, options));
   // The same truthiness the apply step uses to decide whether there is a plist to move, so the plan cannot
   // promise to trash a file it would then leave alone.
-  return { unregisterReady: true, loginAgent: plan.existing ? "managed" : "absent", cliPathOurs: plan.ownPath,
+  return { unregisterReady: true, loginAgent: plan.existing ? "managed" : "absent", envAgent: plan.envAgent ? "managed" : "absent", cliPathOurs: plan.ownPath,
     receiptNamesWrapper: plan.registered, ...(plan.ownPath && !plan.registered && plan.force === "1" ? { legacyForceCliKept: true } : {}) };
 }
 async function desktopOperation(action: string, configPath: string, app: string, restoreOnly: boolean, exec: LaunchctlExec): Promise<Record<string, unknown>> {
@@ -163,7 +170,8 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist"); const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const registration = await readReceipt(receipt);
   if (action === "status") {
-    const cliPath = await getenv(exec, "CODEX_CLI_PATH");
+    // The login (GUI) domain's value, not the caller's: `launchctl getenv` over SSH reads another domain.
+    const cliPath = await readGuiCliPath(exec, () => getenv(exec, "CODEX_CLI_PATH"));
     // One getenv answers both FORCE_CLI questions. A real `launchctl getenv` exits 0 with empty stdout for an
     // unset name, so the variable counts as set only when it holds a non-empty value; the value itself never
     // reaches the output.
@@ -172,11 +180,13 @@ async function desktopOperation(action: string, configPath: string, app: string,
     const owned = fromReceipt || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath));
     // Future launches use the registered wrapper, so an older one we still own is stale, not active. Ownership
     // only decides whether the legacy FORCE_CLI value is ours to clear.
-    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, forceCliSet: force !== "",
+    const envAgent = envAgentNames(await readEnvAgent(), registration.wrapper);
+    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, envAgent, forceCliSet: force !== "",
       legacyForceCli: owned && !!registration.wrapper && force === "1",
       ...(owned && !fromReceipt ? { staleWrapper: true } : {}) };
   }
   const existing = await readDesktopPlist(path);
+  const envExisting = await readEnvAgent();
   const { wrapper } = await prepareDesktop(configPath, app); const previous = await getenv(exec, "CODEX_CLI_PATH");
   const ownPrevious = !!previous && await ownWrapper(config.stateDirectory, previous);
   // The refusal names the variable it refuses, never its value, and gives the next step for an override the
@@ -201,10 +211,13 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const contents = `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>RunAtLoad</key><true/></dict></plist>\n`;
   await writePrivateJson(receipt, { wrapper, registeredAt: new Date().toISOString() });
   await exec("/bin/launchctl", ["setenv", "CODEX_CLI_PATH", wrapper]);
-  if (restoreOnly || unified || pending) return { registered: true, activeForFutureLaunches: true, nativeConfigUntouched: true, loginHook: pending ? "unified service at next login" : "unified service" };
+  // Belt and braces: the service and this command set the variable now, and the agent sets it at the next login
+  // before the service is up, so a login item such as ChatGPT never starts without it.
+  await writeEnvAgent(config.stateDirectory, wrapper, envExisting, exec);
+  if (restoreOnly || unified || pending) return { registered: true, activeForFutureLaunches: true, envAgent: true, nativeConfigUntouched: true, loginHook: pending ? "unified service at next login" : "unified service" };
   if (existing !== contents) { if (existing) await exec("/bin/launchctl", ["bootout", target]).catch(() => undefined); await mkdir(dirname(path), { recursive: true }); await writeFile(path, contents, { mode: 0o600 }); }
   let loaded = false; try { await exec("/bin/launchctl", ["print", target]); loaded = true; } catch { /* Restore an explicitly registered login hook. */ }
   // One path for production and tests: every launchctl call goes through exec, so no branch decides whether a test reaches the real session.
   await ensureLaunchAgent(domain, label, path, loaded, args => exec("/bin/launchctl", args));
-  return { registered: true, activeForFutureLaunches: true, freshAppLaunchRequired: true, nativeConfigUntouched: true };
+  return { registered: true, activeForFutureLaunches: true, envAgent: true, freshAppLaunchRequired: true, nativeConfigUntouched: true };
 }

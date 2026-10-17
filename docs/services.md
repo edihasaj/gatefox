@@ -62,6 +62,16 @@ timeout names which readiness condition never held (`status_not_current`,
 test paths while retaining the original relay home and connected-machine
 registration.
 
+The login environment agent, `com.edihasaj.subscription-gateway.desktop-env`, is
+not a service component and stays a separate LaunchAgent on purpose. ChatGPT can
+start at login before this service has set `CODEX_CLI_PATH`; the agent runs
+`/bin/launchctl setenv CODEX_CLI_PATH <registered wrapper>` at login, ahead of
+anything slower, and exits. Consolidation does not collect it into the plan,
+retire it, or count it as a separate login job, and the unified service's
+desktop component keeps it in step with the registration. `gateway desktop
+unregister` and `gateway uninstall` remove it. See
+[the registration section](app-server.md#the-login-environment-agent).
+
 The supervisor retries failed children with a delay that grows from one second
 to thirty seconds. A child failure does not replace the other children. An
 inference or tunnel child that exits within a minute of its start five times in a

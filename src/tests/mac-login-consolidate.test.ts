@@ -383,3 +383,29 @@ test("a rollback that would overwrite a changed original refuses and keeps the m
   await assert.rejects(activateLoginConsolidation(f.config, f.deps), /backup changed/);
   assert.equal((await readPendingLoginConsolidation(f.state))?.phase, "preparing");
 });
+
+/**
+ * The desktop environment agent shares our label prefix but is not a service component. Staging and promotion must
+ * neither fold it into the plan, nor retire it, nor count it as a separate gateway login job that blocks them.
+ */
+test("the desktop environment agent is neither consolidated, retired, nor mistaken for a separate login job", async () => {
+  const f = await fixture(); const envLabel = serviceLabel + ".desktop-env"; const envPath = join(f.directory, envLabel + ".plist");
+  const envText = `<?xml version="1.0"?><!-- Managed by subscription-gateway desktop-env --><plist version="1.0"><dict><key>Label</key><string>${envLabel}</string></dict></plist>\n`;
+  await writeFile(envPath, envText, { mode: 0o600 });
+  f.registrations.set(envPath, { Label: envLabel, ProgramArguments: ["/bin/launchctl", "setenv", "CODEX_CLI_PATH", join(f.state, "desktop-wrapper-0123456789abcdef")] });
+  const keepEnvLoaded = () => f.loaded.set(envLabel, { loaded: true });
+  keepEnvLoaded();
+
+  await stageLoginConsolidation(f.config, f.deps);
+  const pending = (await readPendingLoginConsolidation(f.state))!;
+  assert.ok(!pending.removedLabels.includes(envLabel) && !pending.sources.some(source => source.label === envLabel), "it is not a retired source");
+  assert.ok(!pending.plan.components.some(component => component.id.includes("env")), "it is not a plan component");
+  assert.equal(await readFile(envPath, "utf8"), envText, "its plist is left exactly where and as it was");
+  assert.deepEqual((await readdir(f.directory)).sort(), [envLabel + ".plist", serviceLabel + ".plist"].sort());
+
+  f.unloadLegacy(); keepEnvLoaded();
+  assert.deepEqual(await activatePendingLoginConsolidation(f.config, f.deps), f.plan, "a loaded agent does not hold promotion back");
+  assert.equal(await readFile(envPath, "utf8"), envText, "promotion leaves it alone");
+  assert.equal((await stageLoginConsolidation(f.config, f.deps)).alreadyConsolidated, true, "and a later stage is not blocked by it");
+  assert.equal(f.loaded.get(envLabel)?.loaded, true, "it stays loaded");
+});

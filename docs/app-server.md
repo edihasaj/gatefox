@@ -398,6 +398,40 @@ clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` that an older gateway set.
 This keeps normal Dock launches configured after initial activation without
 editing native configuration.
 
+### The login environment agent
+
+ChatGPT is a login item and can start before the unified service has set
+`CODEX_CLI_PATH`. When that happens the app launches its own bundled engine and
+runs without the gateway until it is restarted; this was seen on a Mac that
+rebooted after a power outage. To close the race, registration also writes a
+small LaunchAgent, `com.edihasaj.subscription-gateway.desktop-env`. It runs one
+command at login and exits:
+
+```text
+/bin/launchctl setenv CODEX_CLI_PATH <state>/desktop-wrapper-<hash>
+```
+
+It has `RunAtLoad`, no `KeepAlive`, `LimitLoadToSessionType` `Aqua`, no node and no
+other environment. It names the stable registered wrapper in the gateway state
+directory, never a release path, and registration refuses any other path. The file
+is private, written atomically, and bootstrapped into `gui/<uid>` when written.
+`gateway desktop register`, and the unified service's desktop component when it
+sets the variable, write or update it, so it follows the registration. The service
+still sets the variable itself as before. A plist with that label that does not
+carry the gateway's marker is refused, and nothing is changed.
+
+`gateway desktop unregister` and `gateway uninstall` boot the agent out and move its
+plist to the Trash, before they clear the variable. The agent is not a service
+component: consolidation does not collect or retire it.
+
+`gateway desktop status` reads `CODEX_CLI_PATH` from the login (GUI) domain: it
+parses only that key from the `environment` block of `launchctl print gui/<uid>`,
+and falls back to `launchctl getenv` only when the print fails. `launchctl getenv`
+over SSH reads a different domain and reported `activeForFutureLaunches: false`
+even when the login session held the right value. Status also reports
+`envAgent: true` when the agent exists, is the gateway's, and names the registered
+wrapper. `forceCliSet` still uses `launchctl getenv`.
+
 The client owns chat naming. The adapter forwards native `thread/name/set`,
 saved-title reads, and live name notifications; it adds no title tool or naming
 instructions. Caller-supplied dynamic tools remain unchanged. Read-only saved-chat
