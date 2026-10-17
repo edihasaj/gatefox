@@ -12,12 +12,17 @@ import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type Nati
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { engineActivity } from "./execution-host-activity.js";
 import { telemetry } from "./telemetry.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined> }
 const maxFrame = 4 * 1024 * 1024;
+/** How long after the last turn ended a host with connected adapters still counts as in use (see prepareQuietStop). */
+export const defaultQuietMs = 5 * 60_000;
+/** A quiet host that closed its gate: how many chats its engines still had loaded (a count only). */
+export interface QuietStop { loadedChats: number }
 
 /** Why a host start failed, from a fixed vocabulary; the error's own text and paths are never part of it. */
 export type HostFailureReason = "live_owner" | "identity_changed" | "socket_occupied" | "sdk_invalid" | "sdk_dir_missing" | "receipt_invalid" | "io_error" | "other";
@@ -60,8 +65,8 @@ export function hostFailureReason(error: unknown): HostFailureReason {
   return "other";
 }
 
-/** One owned SDK writer per gateway generation, independent of adapter clients. */
-export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; resume(): void }> {
+/** One owned SDK writer per gateway generation, independent of adapter clients. A host without `prepareQuietStop` (a stand-in) never stops quietly. */
+export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; prepareQuietStop?(quietMs?: number): Promise<QuietStop | undefined>; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
@@ -248,6 +253,39 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     });
     serial = operation.catch(() => undefined); return operation;
   };
+  // Chats seen running at the last quiet check, and when a turn last ended. A chat that was running then and is not now (its
+  // turn ended, it was unloaded, or its engine exited, which clears its turns) ended at the latest now.
+  let runningSeen = new Set<string>(); let lastTurnEndedAtMs = Number.NEGATIVE_INFINITY;
+  /**
+   * The upgrade's second rule, next to prepareStop: leases and loaded chats do not block it, a turn does. True (the loaded-chat
+   * count) only when no engine, gateway or native, has a turn running or waiting for an approval or input, no turn ended within
+   * `quietMs`, and every loaded chat could be read. Like prepareStop it runs in the serial queue and closes the gate itself, so
+   * no acquire or find runs between this check and the close; resume() reopens it. Turns start on engine sockets, not here, so
+   * a turn started in the moment between this check and the close is not held back: the supervisor closes at once.
+   */
+  const prepareQuietStop = (quietMs = defaultQuietMs): Promise<QuietStop | undefined> => {
+    const operation = serial.then(async (): Promise<QuietStop | undefined> => {
+      if (stopping || quiescing) return;
+      const owned: Array<[string, ExecutionEngine | NativeExecutionEngine]> = [...engines.values()].map(engine => [engine.record.revision, engine]);
+      if (native) owned.push(["native", native]);
+      const running = new Set<string>(); let loadedChats = 0; let unknown = 0; let endedAtMs = Number.NEGATIVE_INFINITY;
+      try {
+        for (const [key, engine] of owned) {
+          if (engine.closed) continue;
+          const activity = await engineActivity(engine.record.socketPath, engine.owner.socket, quietMs);
+          loadedChats += activity.loaded.length; unknown += activity.unknown;
+          for (const threadId of activity.running) running.add(`${key}\0${threadId}`);
+          if (activity.lastEndedAtMs !== undefined) endedAtMs = Math.max(endedAtMs, activity.lastEndedAtMs);
+        }
+      } catch { return; }
+      const now = Date.now();
+      if ([...runningSeen].some(chat => !running.has(chat))) endedAtMs = Math.max(endedAtMs, now);
+      runningSeen = running; lastTurnEndedAtMs = Math.max(lastTurnEndedAtMs, Math.min(endedAtMs, now));
+      if (stopping || running.size || unknown || now - lastTurnEndedAtMs < quietMs) return;
+      quiescing = true; return { loadedChats };
+    });
+    serial = operation.catch(() => undefined); return operation;
+  };
   const close = (): Promise<void> => closed ||= (async () => {
     stopping = true; for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
@@ -293,6 +331,6 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     server.listen(physicalPath); await once(server, "listening"); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();
-    return { close, prepareStop, resume: () => { if (!stopping) quiescing = false; } };
+    return { close, prepareStop, prepareQuietStop, resume: () => { if (!stopping) quiescing = false; } };
   } catch (error) { await close(); throw error; }
 }
