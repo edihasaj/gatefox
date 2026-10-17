@@ -75,3 +75,17 @@ test("diagnostics groups a refused remote compaction apart from other invalid re
   ], new Date(0)) as { requests: Record<string, Record<string, number>> };
   assert.deepEqual(summary.requests.alias, { "failed:invalid_request:unsupported_compaction": 2, "failed:invalid_request:invalid_shape": 1, "failed:invalid_request": 1, cacheHit: undefined, firstEventMsP50: undefined, firstEventMsP95: undefined });
 });
+
+test("gateway diagnostics lists the service's self-heal reports among recent problems", () => {
+  const at = new Date().toISOString(); const base = { at, host: "mac", component: "service", pid: 1 };
+  const events = [
+    { ...base, event: "component_failing", component: "inference", kind: "inference", failures: 5, reason: "exit_1" },
+    { ...base, event: "execution_host_unhealthy", reason: "status_timeout" },
+    { ...base, event: "status_write_failed", code: "ENOSPC" },
+    { ...base, event: "component_resumed", kind: "native" },
+  ];
+  const summary = summarizeTelemetry(events, new Date(Date.now() - 60000)) as { recentProblems: Array<Record<string, unknown>>; executionHost: Record<string, number> };
+  assert.deepEqual(summary.recentProblems.map(problem => problem.event), ["component_failing", "execution_host_unhealthy", "status_write_failed"]);
+  assert.deepEqual(summary.recentProblems.map(problem => problem.reason ?? problem.code), ["exit_1", "status_timeout", "ENOSPC"]);
+  assert.equal(summary.executionHost.execution_host_unhealthy, 1, "the unhealthy host is still counted with the host events");
+});
