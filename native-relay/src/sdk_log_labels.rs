@@ -1,4 +1,5 @@
-//! Fixed labels for the pinned SDK's remote-control log messages (Codex 740e5af).
+//! Fixed labels for the pinned SDK's remote-control log messages (Codex 740e5af; the transport crate
+//! of 4ebc485, rust-v0.163.0-alpha.10.2, is byte-identical, so every label still matches).
 //! The message text is matched by prefix and never printed. After an SDK bump, unmatched
 //! warnings print as `unlisted` with their callsite only: readability is lost, safety is not.
 

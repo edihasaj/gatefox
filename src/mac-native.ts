@@ -12,6 +12,8 @@ import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
+import { registerPlanRelay, relayCheck } from "./native-plan-registration.js";
+import { chatGptAppRunning } from "./native-pause.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway.native";
@@ -75,8 +77,10 @@ async function nativeOperation(action: string | undefined, configPath: string, o
     let relay = {}; try { relay = JSON.parse(await readFile(resolve(home, "status.json"), "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     return plan ? { service: "com.edihasaj.subscription-gateway", mode: "supervised", component: "native", ...await consolidatedStatus(config.stateDirectory), relay } : { service: label, ...await status(target), relay };
   }
-  if (plan) throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
+  if (plan && action !== "install") throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
   if (await readPendingLoginConsolidation(config.stateDirectory)) throw new Error("Native transport startup is staged under the unified service at next login; its separate registration was not changed");
+  // Under the unified service, install only registers the relay the service already runs (see native-plan-registration.ts).
+  if (plan) return registerPlanRelay(config.stateDirectory, plan, { appRunning: () => chatGptAppRunning(), check: (binary, args) => relayCheck(binary, args), enable });
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to replace an unmanaged native relay service");
   if (action === "uninstall") {

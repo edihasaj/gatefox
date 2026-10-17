@@ -329,16 +329,23 @@ Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
 appear as an organization-settings error.
 
-If the app's native engine is not the verified one (for example after an app
-update), the host starts without native sharing and keeps offering gateway chats;
+The host shares only the app engine this release verified for sharing,
+`0.162.0-alpha.17.2`. The native relay also accepts `0.163.0-alpha.10.2`, because it
+never needs the host's engine ([verified app engines](native-remote.md#verified-app-engines)).
+If the app's native engine is not the verified one (for example after an app update),
+the host starts without native sharing and keeps offering gateway chats;
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
 adapter then falls back to its own native engine and records `native_sharing_fallback`
 with `reason: other` and `holders`, how many private engines hold the native home once
-its lease is taken. Gateway chats keep using the host. While the fallback lasts, the
-native relay cannot share the engine either, so remote control of that Mac is
-unavailable. The fallback lasts until a release verifies the app's engine. It runs under
-a private native-home lease, like the host-down fallback below.
+its lease is taken. Gateway chats keep using the host. The relay cannot use the host's
+engine either, but a registered relay that is live keeps remote control available while
+the fallback lasts: each phone stream runs the gateway router, whose adapter runs a
+private native engine of its own on the same home, and the SDK refuses a second writer
+for a chat another engine holds
+([relay sessions](native-remote.md#relay-sessions-and-native-chats)). The fallback lasts
+until a release verifies the app's engine. It runs under a private native-home lease,
+like the host-down fallback below.
 
 Private leases share the native home with each other and never with the host's writer.
 The Mac's own ChatGPT app and a connected machine's SSH session therefore each run

@@ -25,7 +25,7 @@ function tar(entries: Entry[]) {
   }
   return gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)]));
 }
-async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean } = {}) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean | Record<string, unknown> } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-release-reuse-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const binary = Buffer.from("isolated component executable");
@@ -46,7 +46,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { n
   ]);
   if (options.native) {
     // A published relay whose source has changed since: its receipt no longer matches.
-    const nativeMetadata = { version: "0.2.23", profile: "release", codexVersion: pins.gatewaySdkCodexVersion,
+    const nativeMetadata = typeof options.native === "object" ? options.native : { version: "0.2.23", profile: "release", codexVersion: pins.gatewaySdkCodexVersion,
       revision: pins.gatewaySdkRevision, archiveSha256: pins.gatewaySdkArchiveSha256, sourceSha256: "e".repeat(64) };
     for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) files.set(`package/native/${name}`, Buffer.from("fixture"));
     files.set("package/native/build.json", Buffer.from(JSON.stringify(nativeMetadata)));
@@ -129,6 +129,22 @@ test("fresh native reuses only the gateway SDK from a bundle whose relay source 
   const both = releaseComponentPlan(base);
   assert.deepEqual(both, { reuse: { native: true, gatewaySdk: true }, freshNative: false, freshGatewaySdk: false });
   assert.throws(() => verifyReleaseComponents(a.archive, a.digest, both.reuse), /native source or build receipt changed/);
+});
+
+test("a relay is reused only under its own SDK pins, never the gateway SDK's", async t => {
+  const relay = await import(new URL("../../scripts/native-relay-sdk.mjs", import.meta.url).href);
+  const { nativeSourceDigest } = await import(new URL("../../scripts/native-source.mjs", import.meta.url).href);
+  const current = { version: "0.2.23", profile: "release", codexVersion: relay.sdkCodexVersion, revision: relay.sdkRevision,
+    archiveSha256: relay.sdkArchiveSha256, sourceSha256: nativeSourceDigest() };
+  const f = await fixture(t, { native: current }); const a = await f.save();
+  const verified = verifyReleaseComponents(a.archive, a.digest, { native: true, gatewaySdk: true });
+  assert.deepEqual(Object.keys(verified.provenance.components).sort(), ["gatewaySdk", "native"]);
+  // The relay and the gateway SDK no longer share a pin: a relay receipt naming the gateway SDK's is refused.
+  assert.notEqual(relay.sdkRevision, pins.gatewaySdkRevision);
+  for (const changed of [{ codexVersion: pins.gatewaySdkCodexVersion }, { revision: pins.gatewaySdkRevision }, { archiveSha256: pins.gatewaySdkArchiveSha256 }]) {
+    const old = await fixture(t, { native: { ...current, ...changed } }); const b = await old.save();
+    assert.throws(() => verifyReleaseComponents(b.archive, b.digest, { native: true, gatewaySdk: true }), /native source or build receipt changed/);
+  }
 });
 
 test("fresh native requires component reuse and both components", () => {

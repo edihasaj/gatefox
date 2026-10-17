@@ -51,3 +51,12 @@ test("the SDK test gate requires 0 failed and every required test name", () => {
   assert.deepEqual(args.slice(-3), ["--", ...sdk.sdkTestFilters]);
   assert.ok(args.includes("--locked") && !args.includes("--release"));
 });
+
+test("the relay repairs only its own pinned lockfile, for its own workspace version", async () => {
+  const lock = await import(new URL("../../scripts/native-relay-sdk-lock.mjs", import.meta.url).href);
+  assert.equal(lock.relaySdkWorkspaceVersion, sdk.sdkCodexVersion);
+  assert.throws(() => lock.repairedRelaySdkLock('[[package]]\nname = "codex-core"\nversion = "0.0.0"\n'), /lockfile source does not match/);
+  // Build storage is keyed by revision, so the gateway SDK's pinned archive and checkout are never replaced.
+  assert.equal(sdk.sdkBuildKey, sdk.sdkRevision.slice(0, 12));
+  assert.match(sdk.sdkArchiveSha256, /^[a-f0-9]{64}$/);
+});

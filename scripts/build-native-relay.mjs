@@ -4,12 +4,14 @@ import {resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {nativeSourceDigest} from './native-source.mjs';
-import {checkSdkTestOutput,materializeSdk,sdkArchiveSha256 as archiveDigest,sdkRevision as revision,sdkTestArguments} from './native-relay-sdk.mjs';
+import {checkSdkTestOutput,materializeSdk,sdkArchiveSha256 as archiveDigest,sdkBuildKey,sdkCodexVersion,sdkRevision as revision,sdkTestArguments} from './native-relay-sdk.mjs';
 
 const {values}=parseArgs({options:{archive:{type:'string'},'target-dir':{type:'string'},dev:{type:'boolean'},test:{type:'boolean'},version:{type:'string'}}});
-const root=resolve('.state/native-relay-build');const sdk=join(root,'sdk');const build=join(root,'build');
+// Sources, pristine copies and the crate manifest are kept per pinned revision. The gateway SDK build reads its own pinned
+// archive from `sdk.tar.gz` here, so the relay never replaces those bytes; the target folders are shared, as cargo keys them by path.
+const root=resolve('.state/native-relay-build');const sdk=join(root,`sdk-${sdkBuildKey}`);const build=join(root,`build-${sdkBuildKey}`);
 mkdirSync(root,{recursive:true});mkdirSync(build,{recursive:true});
-const archive=resolve(values.archive||join(root,'sdk.tar.gz'));
+const archive=resolve(values.archive||join(root,`sdk-${sdkBuildKey}.tar.gz`));
 if(!existsSync(archive)){
   // The pinned bytes use GitHub's API tarball format (including its root name).
   const response=await fetch(`https://api.github.com/repos/openai/codex/tarball/${revision}`);
@@ -46,6 +48,6 @@ if(!values.test){
   cpSync('native-relay/NOTICE',join(output,'NOTICE'));
   const metadata=JSON.parse(execFileSync('cargo',['metadata','--format-version','1','--manifest-path',join(build,'Cargo.toml')],{encoding:'utf8',maxBuffer:32*1024*1024}));
   writeFileSync(join(output,'dependencies.json'),JSON.stringify(metadata.packages.map(({name,version,license,repository})=>({name,version,license,repository})),null,2));
-  writeFileSync(join(output,'build.json'),JSON.stringify({version,codexVersion:'0.162.0-alpha.17.2',revision,archiveSha256:archiveDigest,profile:values.dev?'dev':'release',sourceSha256:nativeSourceDigest()},null,2));
+  writeFileSync(join(output,'build.json'),JSON.stringify({version,codexVersion:sdkCodexVersion,revision,archiveSha256:archiveDigest,profile:values.dev?'dev':'release',sourceSha256:nativeSourceDigest()},null,2));
   console.log(JSON.stringify({artifact:output,version,revision}));
 }

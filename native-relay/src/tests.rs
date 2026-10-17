@@ -75,3 +75,32 @@ async fn incoming_without_session_is_counted() {
     );
     assert!(crate::relay_counters::NO_SESSION_DROPS.load(Ordering::Relaxed) > before);
 }
+
+#[test]
+fn chat_requests_reach_the_gateway_router_not_the_relay() {
+    use crate::control::answers;
+    // The phone's chat list, models and turns are the router's: the relay never answers them.
+    for method in [
+        "thread/list",
+        "model/list",
+        "thread/start",
+        "thread/resume",
+        "turn/start",
+        "initialize",
+        "remoteControl/status/changed",
+    ] {
+        assert!(!answers(method), "{method} must reach the gateway router");
+        assert!(network_guard(&json!({"id": 1, "method": method})).is_none());
+    }
+    for method in [
+        "remoteControl/status/read",
+        "remoteControl/enable",
+        "remoteControl/disable",
+        "remoteControl/pairing/start",
+        "remoteControl/pairing/status",
+        "remoteControl/clients/list",
+        "remoteControl/clients/revoke",
+    ] {
+        assert!(answers(method), "{method} is the relay's own");
+    }
+}
