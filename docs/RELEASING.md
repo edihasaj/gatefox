@@ -38,10 +38,29 @@ belongs in the release archive.
    rendered desktop controls or the built-in cloud transport.
    For compaction changes, run `scripts/e2e-compaction-switch.mjs --gateway
    INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
-   --shared`. It reproduces the previous-model failure with `--expect baseline`
-   and verifies selected-model recovery, Stop, failures, and reconnect through
-   stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
-   checked for safe refusal of automatic compaction, not seamless recovery.
+   --expect selected-turn --shared`. This is the release step. A package that
+   ships `gateway-sdk` (0.4.3 and later) compacts inside the user turn, so the
+   run verifies the package's own gateway SDK receipt and selected-model recovery,
+   Stop, failures, and reconnect through stdio and Unix with a mock upstream and
+   the signed SDK. The script detects `gateway-sdk` in the package (through its
+   `dist/gateway-sdk-runtime.js`, else the same file layout). When the package
+   has it, `selected-turn` is the default and `automatic` and `baseline` are
+   refused; when it does not, `selected-turn` is refused. `--expect automatic`
+   and `--expect baseline` are for legacy packages without `gateway-sdk` only
+   (baseline reproduces the previous-model failure of the stock SDK). `--codex`
+   does not change the SDK of the gateway executor, which always runs the
+   package's own `gateway-sdk`; it only replaces the SDK the script itself
+   starts and checks. The script uses `gateway-sdk/gateway-codex` in the package
+   and says so if it is missing.
+   Every child runs under a private HOME inside the run folder, so no execution
+   host home or receipt reaches `~/.local/state`. Only the pinned SDK's fixed
+   socket folder, `/tmp/codex-daemon-UID`, stays outside, because the SDK
+   hard-codes it; the script removes its own stale sockets there. A passing run
+   removes its `/tmp/gw-compact-switch-*` run folder; a failing run keeps it, and
+   `--keep-fixture` keeps it on request. With `--shared`, the
+   `selected-turn` run also checks the shared execution host over stdio; a legacy
+   `automatic` run only checks the safe refusal of automatic compaction, not
+   seamless recovery.
    For Responses continuation changes, run
    `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
    SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies actual

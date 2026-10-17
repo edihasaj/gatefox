@@ -1,8 +1,42 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { replaySelectedTurnObserver } from './e2e-compaction-ui-observer.mjs';
+
+/**
+ * Whether the package ships the gateway SDK, the executor that compacts inside the user turn (0.4.3 and later). It uses the
+ * package's own resolution (dist/gateway-sdk-runtime.js, which validates the artifact and throws when it is present but invalid);
+ * a package whose dist cannot be imported that way is checked by the same file layout: a gateway-sdk folder with its receipt.
+ */
+export async function packageHasGatewaySdk(packageDirectory) {
+  const exists = path => access(path).then(() => true, () => false);
+  const dist = join(packageDirectory, 'dist/gateway-sdk-runtime.js');
+  if (await exists(dist)) {
+    const { gatewaySdkRuntime } = await import(pathToFileURL(dist));
+    if (typeof gatewaySdkRuntime === 'function') return Boolean(await gatewaySdkRuntime(packageDirectory));
+  }
+  return await exists(join(packageDirectory, 'gateway-sdk/build.json')) || await exists(join(packageDirectory, 'gateway-sdk/gateway-codex'));
+}
+
+/**
+ * Resolves --expect from what the package ships. The gateway executor always runs the package's own gateway SDK when it has one
+ * (the adapter prefers it over --codex), so a package that has it can only be checked with selected-turn, and one without it can
+ * never be.
+ */
+export async function resolveExpectation(packageDirectory, requested) {
+  let present;
+  try { present = await packageHasGatewaySdk(packageDirectory); }
+  catch (error) { return { error: 'The package ships a gateway-sdk that failed its own validation (' + (error?.message ?? error) + '); reinstall the release before running this check.' }; }
+  if (present) {
+    const expect = requested ?? 'selected-turn';
+    if (expect !== 'selected-turn') return { error: '--expect ' + expect + ' is refused: this package ships gateway-sdk, so the gateway executor compacts inside the user turn and ' + expect + ' cannot pass. Use --expect selected-turn (the release gate), or omit --expect. --codex does not change the gateway executor\'s SDK.' };
+    return { expect, present };
+  }
+  const expect = requested ?? 'automatic';
+  if (expect === 'selected-turn') return { error: '--expect selected-turn is refused: this package has no gateway-sdk (a release before 0.4.3), so there is no selected-turn runtime to verify. Use --expect automatic or --expect baseline for a legacy package.' };
+  return { expect, present };
+}
 
 /** Require the installed package's own receipt and byte validation, not a fixture flag. */
 export async function verifySelectedTurnRuntime(packageDirectory) {
@@ -97,7 +131,10 @@ export async function selectedTurnScenarios(c) {
   const failed = await seed('provider-failure-seed', 'fixture/large', 'seed-overflow');
   phase('selected-provider-failure', 'failed-manual'); const failureAt = requests.length;
   const failure = await turn(failed, 'fixture/small', 'Try the currently unavailable selected model.', 'failed', 'high');
-  assert.ok(selectedRequests(failureAt, 'mock-small', 1).every(r => r.outcome === 'usage_limit'));
+  // The SDK retries a failed provider call on its own (one try plus five retries), so the attempt count is its choice:
+  // require between one and six attempts, and that every attempt went to the selected model and failed.
+  const attempts = requests.slice(failureAt);
+  assert.ok(attempts.length >= 1 && attempts.length <= 6 && attempts.every(r => r.model === 'mock-small' && r.outcome === 'usage_limit'));
   assert.ok(failure.terminal.error, 'SDK must report its actual failed turn');
   const failedEvidence = lifecycle(failed, failure, { status: 'failed' }); await transcriptHasProof(failed);
   await save({ phase: `${label}-selected-provider-failure`, passed: true, ...failedEvidence, actualSelectedProvider429: true, noOldProviderCalls: true, historyPreserved: true });
