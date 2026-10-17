@@ -24,9 +24,9 @@ export function translationItemType(value: unknown): TranslationItemType {
   return typeof value === "string" && translationItemTypes.has(value) ? value as TranslationItemType : "other";
 }
 /**
- * `toolSearch` is set only for the Codex subscription route, which forwards the `tool_search` tool and the
- * `tool_search_call` / `tool_search_output` items to the ChatGPT backend unchanged. Every other route
- * rejects them as unsupported.
+ * `toolSearch` is set only for the Codex subscription route, where validation accepts the `tool_search` tool and the
+ * `tool_search_call` / `tool_search_output` items; that provider then drops them before forwarding, because the ChatGPT
+ * backend refuses a forwarded `tool_search` (see `tool_search_dropped`). Every other route rejects them as unsupported.
  */
 export interface TranslationOptions { toolSearch?: boolean;
   /** Record `tool_declarations_merged` for this translation. The server sets it on its one validation pass, so a request is reported once. */
@@ -109,7 +109,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"], optio
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
       case "additional_tools": break;
-      // Search items replay as the client sent them; the Codex route forwards them without translation.
+      // Search items are accepted on the Codex route only; its provider drops them before forwarding.
       case "tool_search_call": case "tool_search_output":
         if (!options.toolSearch) reject("Unsupported Responses input item type", "unsupported_input_item", translationItemType(item.type));
         break;

@@ -165,7 +165,8 @@ folder and rewritten (an `execution_owner_reclaimed` event with the scope
 A host that died between creating its control socket at its SDK target and linking it
 leaves a socket nothing recorded at that configuration's own target; the next start
 removes it when it is a socket of this user, whatever its mode, that refuses a connect
-(ECONNREFUSED), and any other file, or any socket that answers, still refuses the start
+(ECONNREFUSED) twice, 200 ms apart (a live listener with a full accept queue also refuses
+on macOS), and any other file, or any socket that answers, still refuses the start
 as occupied and is never removed. The host creates its socket under a private umask
 (`0077`, restored right after the bind) so that a host killed before its `chmod` leaves a
 socket closed to others; the `chmod` stays as a second guard. Releases before 0.4.7

@@ -380,8 +380,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = request.model;
-      // Validate the supported protocol before invoking any provider. Only the Codex subscription route forwards tool_search;
-      // every other route rejects it here, and Messages requests carry only function tools.
+      // Validate the supported protocol before invoking any provider. Only the Codex subscription route accepts tool_search
+      // (its provider drops it before forwarding); every other route rejects it here, and Messages requests carry only function tools.
       responsesToChatRequest(request, { toolSearch: route.type === "codex-subscription", reportMerges: true });
       if (countTokens) {
         throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
