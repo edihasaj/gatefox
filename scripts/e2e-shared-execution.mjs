@@ -30,8 +30,8 @@ if(Boolean(v.image)!==Boolean(v.expected)||v.image&&!v.inference)throw new Error
 // engines) and stays listed until that group is empty. No exit path leaves one behind: success and failure stop them in order, a
 // signal or an uncaught error does the same with a deadline, and the exit handler SIGKILLs whatever group is still there.
 const groups=new Set();
-// Each group is also listed in the fake home's `.groups`, for the reaper below.
-function startGroup(command,args,options){const child=spawn(command,args,{...options,detached:true});if(child.pid){const leader=child.pid;groups.add(leader);try{appendFileSync(resolve(fakeHome,'.groups'),leader+'\n',{mode:0o600});}catch{}child.once('close',()=>{void groupGone(leader,10000).then(gone=>{if(gone)groups.delete(leader);});});}return child;}
+// Each group is also listed in the fake home's `.groups`, for the reaper below, and announced gone from it as `-<pid>` once it empties.
+function startGroup(command,args,options){const child=spawn(command,args,{...options,detached:true});if(child.pid){const leader=child.pid;groups.add(leader);try{appendFileSync(resolve(fakeHome,'.groups'),leader+'\n',{mode:0o600});}catch{}child.once('close',()=>{void groupGone(leader,10000).then(gone=>{if(!gone)return;groups.delete(leader);try{appendFileSync(resolve(fakeHome,'.groups'),'-'+leader+'\n',{mode:0o600});}catch{}});});}return child;}
 const killGroups=signal=>{for(const leader of groups){try{process.kill(-leader,signal);}catch{groups.delete(leader);}}};
 /** After its leader is gone, a group gets a moment to empty on its own; whatever is left of it is SIGKILLed. */
 const reapGroup=async(leader,ms)=>{if(!await groupGone(leader,ms))try{process.kill(-leader,'SIGKILL');}catch{}await groupGone(leader,5000);};
