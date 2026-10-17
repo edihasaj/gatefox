@@ -26,13 +26,38 @@ Added gateway model rows ignore task prompt text from older hosts and offline
 caches. The original native model catalog and explicit client instructions remain
 unchanged.
 
+### Live configuration
+
 An inference keeps the configuration snapshot with which it began. New requests
-load atomically replaced configuration. Invalid configuration fails closed until
-repaired. Existing aliases cannot change account, provider, credential source, or
-upstream model live. Add another alias or restart after active work finishes.
-Retiring an alias does not release its identity until the daemon restarts.
-Labels and capability metadata can update live. Listener and state-directory
-changes require a restart.
+load atomically replaced configuration. A change that cannot be applied live is
+refused, not served as an error: the last good configuration keeps serving and the
+refusal is recorded once per file version as `config_rejected` with a fixed
+`reason`, never a path, value or error text (see [diagnostics](diagnostics.md)).
+That covers an invalid or unreadable file (`invalid`, `unreadable`), a changed
+listener port, mode or state directory (`restart_required`), and an existing alias
+that would change account, provider, credential source, base URL or upstream model
+(`rebind`). The change takes effect only after the daemon restarts; to apply it
+live, add another alias instead. The next file that is valid and allowed is adopted
+at once and clears the refusal, and so does putting the applied file back.
+
+A refused file that does validate still takes away what it removes. Every alias it
+no longer has stops being served, and a provider left with no alias stops with them,
+so a provider removed on purpose does not keep serving because another edit in the
+same file was refused. Those aliases stay stopped through later unreadable or
+invalid edits, until a file puts them back or the daemon restarts. Everything the
+refused file kept stays on its last good binding.
+
+The refusal is visible while it lasts. `/health` still answers 200, so the service
+does not restart-loop, and adds `configRejected` with the same fixed reason.
+`gateway health` reads that answer and warns "gateway.json change not applied
+(reason); fix it or restart the service" for as long as the file stays refused,
+and `gateway discover --load` checks it after writing and says when the daemon did
+not take the routes. The diagnostics problems list includes `config_rejected`.
+A release hot swap builds a fresh live configuration from the file in place, as a
+start does, so a file the release before it had refused and that loads is adopted by
+the new release, rebound aliases included. A gateway whose configuration is
+invalid at startup still fails to start. Retiring an alias does not release its identity until the
+daemon restarts. Labels and capability metadata can update live.
 
 A macOS user LaunchAgent keeps the daemon alive across app and terminal exits.
 Its environment contains PATH, not provider credentials. Credentials and gateway

@@ -36,6 +36,7 @@ import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
 import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
+import { daemonConfigStatus } from "./config-rejection.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -179,7 +180,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const target = source.providers.find(entry => entry.id === provider.id)!;
       target.models = provider.models; target.modelMetadata = provider.modelMetadata;
       await writePrivateJson(path, source);
-      process.stderr.write("Model routes saved. The daemon reloads them on the next request.\n");
+      // The daemon reads the file when it answers /health, so asking also tells whether it took the change or held it back.
+      const daemon = config.clientOnly ? { reachable: false } : await daemonConfigStatus(config.port);
+      process.stderr.write(daemon.rejection ? `Model routes saved, but the daemon did not apply them (${daemon.rejection}); fix gateway.json or restart the service to apply them.\n`
+        : daemon.reachable ? "Model routes saved. The daemon has loaded them.\n" : "Model routes saved. The daemon reloads them on the next request.\n");
     }
     process.stdout.write(JSON.stringify({ provider: provider.id, models }, null, 2) + "\n"); return;
   }

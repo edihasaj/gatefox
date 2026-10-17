@@ -22,7 +22,8 @@ export async function startServeRuntime(configPath: string, port?: number, serve
   const config = await loadConfig(configPath); if (port) config.port = port;
   configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
   const live = new LiveConfig(configPath, config, port);
-  const gateway = server ? adoptGatewayHandler(server, await createGatewayHandler(config, undefined, () => live.current())) : await startGateway(config, undefined, () => live.current());
+  const options = { configRejection: () => live.rejection };
+  const gateway = server ? adoptGatewayHandler(server, await createGatewayHandler(config, undefined, () => live.current(), options)) : await startGateway(config, undefined, () => live.current(), options);
   previous?.stop();
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
   const refresh = () => { void refreshModelMetadata(configPath).then(updated => { if (updated.length) telemetry("model_metadata_refreshed", { providers: updated.join(",") }); }).catch(() => {}); };

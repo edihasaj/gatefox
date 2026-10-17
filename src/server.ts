@@ -1,3 +1,4 @@
+import type { ConfigRejection } from "./config-rejection.js";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { Duplex } from "node:stream";
 import { randomUUID } from "node:crypto";
@@ -137,6 +138,8 @@ export interface GatewayStartOptions {
   heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void;
   /** The temp folder whose Copilot parent the startup sweep reads; the OS temp folder by default. Tests pass a private one. */
   copilotTempBase?: string;
+  /** Why the newest change to the configuration file is not applied, if it is not; `/health` reports it as `configRejected`. */
+  configRejection?: () => ConfigRejection | undefined;
 }
 /**
  * One generation of request handling; a server can switch generations without closing its socket.
@@ -277,7 +280,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
     if (messagesProtocol) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); send(res, 200, { status: "ok", active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); }
+      try { await snapshot(); const configRejected = options.configRejection?.(); send(res, 200, { status: "ok", ...(configRejected ? { configRejected } : {}), active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
