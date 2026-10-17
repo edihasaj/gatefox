@@ -22,10 +22,12 @@ const bootIdPattern = /^[0-9a-fA-F][0-9a-fA-F-]{6,63}$/;
 let identity: Promise<BootIdentity> | undefined;
 let injected: BootIdentity | undefined;
 let startReader: ProcessStartReader | undefined;
-let ownStart: Promise<number> | undefined;
+let ownStart: number | undefined;
+/** Bumped by every reader change, so a read that was already under way cannot cache the previous reader's answer. */
+let ownStartReader = 0;
 let ownPidForTests: number | undefined;
 
-/** An estimate of when this process started, used only when the operating system will not say. */
+/** An estimate of when this process started. Never recorded in a receipt: it drifts from the kernel's record (see `ownStartMs`). */
 export function thisProcessStartMs(): number { return Math.round(Date.now() - Math.max(0, process.uptime() * 1000)) }
 
 export function bootIdentity(): Promise<BootIdentity> {
@@ -35,7 +37,7 @@ export function bootIdentity(): Promise<BootIdentity> {
 /** Tests pin the boot and never touch a real machine's identity. Undefined restores the probe. */
 export function setBootIdentityForTests(value?: BootIdentity): void { injected = value; identity = undefined; }
 /** `ps` is not always runnable, so callers under test supply the start time instead. It also restamps this process. */
-export function setProcessStartReaderForTests(reader?: ProcessStartReader): void { startReader = reader; ownStart = undefined; }
+export function setProcessStartReaderForTests(reader?: ProcessStartReader): void { startReader = reader; ownStart = undefined; ownStartReader++; }
 /** The pid whose receipts are this process's own leftovers. Production: always this process. */
 export function ownPid(): number { return ownPidForTests ?? process.pid; }
 /**
@@ -48,18 +50,27 @@ export function setOwnPidForTests(pid?: number): void { ownPidForTests = pid; }
 /** When the operating system says the process started, from the one source every liveness check reads. */
 export function processStartMs(pid: number): Promise<number | undefined> { return (startReader ?? readProcessStartMs)(pid); }
 /**
- * This process's own start, read once from the same source a checker uses. A start computed from the
- * uptime drifts from the kernel's record by a few parts per million, which outgrows the skew in days.
+ * This process's own start, from the same source a checker uses. A start computed from the uptime drifts from the
+ * kernel's record by a few parts per million, which outgrows the skew in days, so it is never a substitute. Only an
+ * answer is kept: when `ps` fails there is no start, and the next stamp asks again instead of reusing a guess made
+ * at first use, which could be days after this process started.
  */
-export function ownStartMs(): Promise<number> {
-  ownStart ??= processStartMs(process.pid).catch(() => undefined).then(started => started ?? thisProcessStartMs());
-  return ownStart;
+export async function ownStartMs(): Promise<number | undefined> {
+  if (ownStart !== undefined) return ownStart;
+  const reader = ownStartReader;
+  const started = await processStartMs(process.pid).catch(() => undefined);
+  if (started !== undefined && reader === ownStartReader) ownStart ??= started;
+  return started;
 }
 
-/** The fields a new receipt records about the process it names. */
-export async function ownerStamp(): Promise<{ bootId?: string; startedAtMs: number }> {
-  const boot = await bootIdentity();
-  return { ...(boot.id ? { bootId: boot.id } : {}), startedAtMs: await ownStartMs() };
+/**
+ * The fields a new receipt records about the process it names. Without a start from the operating system the receipt
+ * records none: a checker then skips the start comparison and keeps the owner while its pid answers, which errs toward
+ * blocking, and the boot stamp still tells a reboot apart.
+ */
+export async function ownerStamp(): Promise<{ bootId?: string; startedAtMs?: number }> {
+  const boot = await bootIdentity(); const started = await ownStartMs();
+  return { ...(boot.id ? { bootId: boot.id } : {}), ...(started !== undefined ? { startedAtMs: started } : {}) };
 }
 /** What a receipt records about a child it started just now: the kernel's start when it answers, else the time of the spawn. */
 export async function spawnStamp(pid?: number): Promise<{ bootId?: string; startedAtMs: number }> {

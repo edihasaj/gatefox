@@ -91,9 +91,24 @@ test("this process stamps its start from the same source a checker reads, so a d
     const stamp = await ownerStamp();
     assert.equal(stamp.startedAtMs, kernel); assert.equal(stamp.bootId, current.id);
     assert.equal(await ownerAlive({ pid: process.pid, ...stamp }, Date.now()), true);
-    // Without an answer from the operating system the estimate is the only stamp left.
-    setProcessStartReaderForTests(async () => undefined);
-    assert.ok(Math.abs((await ownerStamp()).startedAtMs - thisProcessStartMs()) < 1000);
+  } finally { setOwnPidForTests(); setBootIdentityForTests(); setProcessStartReaderForTests(); }
+});
+
+// A3: a failed `ps` was cached for good as an uptime estimate taken at first use, which could be days after the start and so
+// seconds away from the kernel's record: the process's own live receipt then read as a reused pid.
+test("a start the operating system will not give is never stamped or remembered, and the stamp asks again", async () => {
+  setBootIdentityForTests(current);
+  let answer: number | undefined; const kernel = Date.now() - 86_400_000;
+  setProcessStartReaderForTests(async pid => pid === process.pid ? answer : undefined);
+  setOwnPidForTests(process.pid + 1_000_000); // Judge this process as another one would, not as its own leftover.
+  try {
+    const unstamped = await ownerStamp();
+    assert.deepEqual(unstamped, { bootId: current.id }); // No guess: a checker skips the start comparison.
+    assert.equal(await ownerAlive({ pid: process.pid, ...unstamped }, Date.now()), true); // So a live pid keeps its owner.
+    answer = kernel;
+    assert.equal((await ownerStamp()).startedAtMs, kernel); // The failure was not kept: this stamp asked again.
+    answer = kernel + 60_000;
+    assert.equal((await ownerStamp()).startedAtMs, kernel); // An answer is kept: the start of a process never changes.
   } finally { setOwnPidForTests(); setBootIdentityForTests(); setProcessStartReaderForTests(); }
 });
 

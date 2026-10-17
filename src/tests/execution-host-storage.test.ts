@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketIdentity } from "../execution-host-storage.js";
+import { linkAnswers, removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketAnswers, socketIdentity } from "../execution-host-storage.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
 const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
@@ -95,5 +95,27 @@ test("SDK recovery removes only its recorded dead physical target after the alia
     await kill(child); child = undefined;
     await removeOwnedSocket(f.path); assert.ok((await lstat(f.target)).isSocket());
     await removeOwnedSocket(f.path, identity); await assert.rejects(lstat(f.target), { code: "ENOENT" });
+  } finally { await kill(child); await f.clean(); }
+});
+
+// A3: connect on a plain file fails with ENOTSOCK, which the probe counted as "answering". A stray file at a socket path, or
+// at the SDK target a dead link names, then kept a dead owner alive for good. Nothing that is not a socket can listen.
+test("only a socket can answer: a plain file, a folder or a pipe never keeps an owner alive", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); let child;
+  try {
+    const file = join(f.directory, "file.sock"); await writeFile(file, "not a socket", { mode: 0o600 });
+    const folder = join(f.directory, "folder.sock"); await mkdir(folder, { mode: 0o700 });
+    const pipe = join(f.directory, "pipe.sock"); await new Promise<void>((done, failed) => spawn("/usr/bin/mkfifo", ["-m", "600", pipe]).once("exit", code => code === 0 ? done() : failed(new Error("mkfifo failed"))));
+    const link = join(f.directory, "link.sock"); await symlink(file, link);
+    for (const path of [file, folder, pipe, link]) assert.equal(await socketAnswers(path), false, path);
+    // The SDK's own target turned into a plain file: its link is not answering either.
+    await writeFile(f.target, "stray", { mode: 0o600 }); await symlink(f.target, f.path);
+    assert.equal(await linkAnswers(f.path), false);
+    await unlink(f.target);
+    // A socket nobody listens on is not answering, and a live one is: the rule for sockets is unchanged.
+    child = await childSocket(f.target);
+    assert.equal(await socketAnswers(f.target), true); assert.equal(await linkAnswers(f.path), true);
+    await kill(child); child = undefined;
+    assert.equal(await socketAnswers(f.target), false); assert.equal(await socketAnswers(join(f.directory, "missing.sock")), false);
   } finally { await kill(child); await f.clean(); }
 });

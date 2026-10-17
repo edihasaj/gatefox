@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { connect } from "node:net";
@@ -43,9 +43,17 @@ export function livePid(pid: number): boolean {
 export async function receiptPidAlive(record: ReceiptOwner, mtimeMs: number): Promise<boolean> {
   return ownerAlive({ pid: record.pid, ...(record.bootId ? { bootId: record.bootId } : {}), ...(record.startedAtMs !== undefined ? { startedAtMs: record.startedAtMs } : {}) }, mtimeMs);
 }
-/** A refused probe is never taken as proof that nothing listens: that would allow a removal. */
+/**
+ * A refused probe is never taken as proof that nothing listens: that would allow a removal. A path that is not a socket
+ * is the exception. A plain file, a folder or a pipe can never be a live listener (connect answers ENOTSOCK), so it
+ * cannot keep a dead owner alive; counted as answering, a stray file at a socket path blocked every reclaim for good.
+ */
 export async function socketAnswers(path: string): Promise<boolean> {
-  try { return await listening(path); } catch { return true; }
+  // Followed like connect follows it: a link is judged by what it names.
+  const info = await stat(path).catch(() => undefined);
+  if (info && !info.isSocket()) return false;
+  try { return await listening(path); }
+  catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOTSOCK"; }
 }
 export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
@@ -109,7 +117,7 @@ async function inspectSocket(path: string, allowMissingTarget: boolean): Promise
   // A machine that rebooted cleared the SDK's fixed directory: the alias is stale on its own, exactly like a missing target.
   const protectedParent = await lstat(dirname(target)).catch(error => {
     if (allowMissingTarget && error.code === "ENOENT") return;
-    if (error.code === "ENOENT") throw new Error("Execution SDK socket directory must be private and user-owned");
+    if (error.code === "ENOENT") throw new Error("Execution SDK socket directory is missing");
     throw error;
   });
   if (protectedParent) {
@@ -125,7 +133,11 @@ async function listening(path: string): Promise<boolean> {
     const socket = connect(path); const timer = setTimeout(() => { socket.destroy(); reject(new Error("Execution socket liveness check timed out")); }, 1500);
     const finish = (value: boolean) => { clearTimeout(timer); socket.destroy(); resolve(value); };
     socket.once("connect", () => finish(true));
-    socket.once("error", error => { if (["ECONNREFUSED", "ENOENT"].includes((error as NodeJS.ErrnoException).code || "")) finish(false); else { clearTimeout(timer); socket.destroy(); reject(new Error("Execution socket liveness check failed")); } });
+    socket.once("error", error => {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (["ECONNREFUSED", "ENOENT"].includes(code || "")) finish(false);
+      else { clearTimeout(timer); socket.destroy(); reject(Object.assign(new Error("Execution socket liveness check failed"), { code })); }
+    });
   });
 }
 /** Recovery never removes a live or unrecorded listener. */
@@ -191,6 +203,10 @@ async function ownerLiveness(home: string, records: ReceiptOwner[], links: strin
   for (const path of new Set([...links, ...await homeLinks(home)])) if (await linkAnswers(path)) return "live";
   return previous ? "previous_boot" : "dead_pids";
 }
+/** The claim's verdict on a valid host receipt: "live" while anything it names can still own the home, else why it is gone. */
+export async function hostOwnerLiveness(home: string, owner: HostOwner, mtimeMs: number): Promise<OwnerLiveness> {
+  return ownerLiveness(home, ownerRecords(owner), ownerLinks(home, owner), owner.bootId, mtimeMs);
+}
 /** A field of an invalid receipt that still names a process: its pid, with the boot and start it was stamped with. */
 export function lenientRecord(value: unknown, pidKey = "pid", bootKey = "bootId", startKey = "startedAtMs"): ReceiptOwner | undefined {
   if (!value || typeof value !== "object") return;
@@ -228,8 +244,11 @@ async function removeUnrecordedLink(path: string, controlSocket: string): Promis
   await removeOwnedSocket(path, undefined, true);
 }
 const maxArchiveCopyBytes = 1024 * 1024;
-/** An owner this machine no longer has leaves its receipt behind in `<folder>/stale/`, never deleted; the newest five are kept. */
-export async function archiveStaleReceipt(receiptPath: string, scope: "host" | "native_home", reason: OwnerReclaim): Promise<void> {
+/**
+ * An owner this machine no longer has leaves its receipt behind in `<folder>/stale/`, never deleted; the newest five are kept.
+ * A gateway generation's garbled record or catalog is kept the same way before it is rewritten.
+ */
+export async function archiveStaleReceipt(receiptPath: string, scope: "host" | "native_home" | "generation", reason: OwnerReclaim): Promise<void> {
   const folder = resolve(dirname(receiptPath), "stale"); const stem = basename(receiptPath, ".json");
   await privateDirectory(folder);
   const info = await lstat(receiptPath).catch(error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; });
@@ -257,7 +276,9 @@ async function copyReceipt(receiptPath: string, archive: string, expected: { ino
     let bytes: Buffer;
     try { bytes = await file.readFile(); }
     catch (error) { if (["EACCES", "EIO"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; }
-    await writeFile(archive, bytes, { mode: 0o600, flag: "wx" });
+    // A copy that fails half way (a full disk, say) is removed, so the next attempt never finds a partial archive.
+    try { await writeFile(archive, bytes, { mode: 0o600, flag: "wx" }); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") await unlink(archive).catch(() => {}); throw error; }
     return true;
   } finally { await file.close(); }
 }

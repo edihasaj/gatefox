@@ -18,6 +18,38 @@ export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engi
 export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined> }
 const maxFrame = 4 * 1024 * 1024;
 
+/** Why a host start failed, from a fixed vocabulary; the error's own text and paths are never part of it. */
+export type HostFailureReason = "live_owner" | "identity_changed" | "socket_occupied" | "sdk_invalid" | "sdk_dir_missing" | "receipt_invalid" | "io_error" | "other";
+/** Errors raised while checking the engine binaries themselves (missing, changed, unsigned or the wrong version), whatever their code. */
+const sdkFailures = new WeakSet<object>();
+async function sdkCheck<T>(check: () => Promise<T>): Promise<T> {
+  try { return await check(); } catch (error) { if (error && typeof error === "object") sdkFailures.add(error); throw error; }
+}
+const failureMessages: Array<[HostFailureReason, RegExp]> = [
+  ["live_owner", /^(An execution host already owns this configuration|An execution generation is still running|A native execution owner (is still running|already owns this native home)|Native execution launch is unconfirmed|A live execution listener was preserved|Private preferences are busy)/],
+  ["identity_changed", /^(Execution host identity changed|Native execution ownership changed|Execution host ownership changed)/],
+  ["socket_occupied", /^(Execution control socket target is occupied|Execution socket (belongs to another listener|changed during recovery|must be private)|Execution SDK socket (rendezvous points to an unrelated target|target must be private)|Native execution socket (is occupied|ownership changed))/],
+  ["sdk_invalid", /^(Execution host (SDK |requires the pinned)|Native execution (requires|SDK signature|SDK changed)|Gateway executor artifact does not match)/],
+  ["receipt_invalid", /^(Execution host ownership receipt is (invalid|unreadable)|Native execution ownership receipt is invalid|Execution generation receipt is invalid|Native execution (SDK identity|death metadata) is invalid|Execution host capabilities are invalid|Private preference lock is invalid)/],
+];
+/** The SDK's fixed socket folder: a missing one was the 2026-10-16 reboot incident, reported as overloaded by the turn classifier. */
+const sdkSocketFolder = /(^|\/)codex-daemon-\d+(\/|$)/;
+/**
+ * Classifies a failed host start for telemetry and retry policy. It reads the error's fixed message, its errno code and,
+ * for a missing file, whether the path lies in the SDK's socket folder; none of them is ever returned or logged.
+ */
+export function hostFailureReason(error: unknown): HostFailureReason {
+  if (!error || typeof error !== "object") return "other";
+  const { message, code, path } = error as { message?: unknown; code?: unknown; path?: unknown };
+  const text = typeof message === "string" ? message : "";
+  if (text.startsWith("Execution SDK socket directory is missing") || code === "ENOENT" && typeof path === "string" && sdkSocketFolder.test(path)) return "sdk_dir_missing";
+  if (sdkFailures.has(error)) return "sdk_invalid";
+  for (const [reason, pattern] of failureMessages) if (pattern.test(text)) return reason;
+  if (code === "EADDRINUSE") return "socket_occupied";
+  if (typeof code === "string" && /^E[A-Z0-9]+$/.test(code) || /^(Execution (host|SDK socket) directory must be private|Execution ownership archive is full)/.test(text)) return "io_error";
+  return "other";
+}
+
 /** One owned SDK writer per gateway generation, independent of adapter clients. */
 export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
@@ -30,15 +62,15 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   // A gateway-only host runs its own pinned runtime, so an app that was updated or uninstalled must not stop it from starting.
   // Its receipt then names that runtime instead of a binary nothing checks, and the runtime checksum below stays the guard.
   let sdk: { codex: string; sdkSha256: string };
-  try { sdk = await sdkIdentity(options.codex); }
+  try { sdk = await sdkCheck(() => sdkIdentity(options.codex)); }
   catch (error) {
     if (!runtime || requested.includes("native")) throw error;
     sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
   }
-  await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
+  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
-    try { nativeSdk = await (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex); }
+    try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }
     catch (error) {
       // An app whose engine differs from the verified one cannot be shared, but must not take gateway chats down with it.
       if (!requested.includes("gateway")) throw error;

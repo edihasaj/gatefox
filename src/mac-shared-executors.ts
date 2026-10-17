@@ -20,7 +20,7 @@ export async function executionHostReady(plan: ServicePlan, pid: number): Promis
   if (!plan.sharedExecutors && !plan.sharedNativeExecutor) return true;
   const paths = serviceExecutionPaths(plan); const home = executionHostHome(plan.config, paths.nativeHome);
   const owner = await readOwner(resolve(home, "owner.json"));
-  if (!owner || owner.state !== "running" || owner.pid !== pid || owner.configPath !== resolve(plan.config) || owner.nativeHome !== paths.nativeHome || owner.codex !== await realpath(paths.codex) || owner.socketPath !== resolve(home, "host.sock")) return false;
+  if (!owner || owner.state !== "running" || owner.pid !== pid || owner.configPath !== resolve(plan.config) || owner.nativeHome !== paths.nativeHome || (owner.capabilities?.includes("native") && owner.codex !== await realpath(paths.codex)) || owner.socketPath !== resolve(home, "host.sock")) return false;
   const socket = await socketIdentity(owner.socketPath);
   if (!socket || !owner.socket || !sameSocketIdentity(socket, owner.socket)) return false;
   const connection = new SocketAppServerConnection(owner.socketPath, async () => {});

@@ -6,7 +6,7 @@ import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { claimNativeHome, nativeHomeOwnerPath, readNativeHomeOwner, setNativeStartupGraceForTests, type NativeHomeOwner } from "../native-execution-host-storage.js";
+import { claimNativeHome, nativeHomeOwnerPath, readNativeHomeOwner, setNativeNamelessGraceForTests, setNativeStartupGraceForTests, type NativeHomeOwner } from "../native-execution-host-storage.js";
 import { executionHostMarker, executionHostRoot, privateDirectory, sdkSocketTarget, setSdkSocketRootForTests, type HostIdentity } from "../execution-host-storage.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
@@ -131,7 +131,7 @@ test("a garbled native receipt is reclaimed once it is from an earlier boot and 
     setBootIdentityForTests(current);
     await mkdir(dirname(f.path), { recursive: true, mode: 0o700 });
     await writeFile(f.path, "{ not json at all", { mode: 0o600 });
-    // Written this boot it says nothing about who owns the home, so nothing but a reboot can prove its owner gone.
+    // Written this boot and just now, it says nothing about who owns the home: only a reboot or its ten-minute grace can prove its owner gone.
     await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
     await assert.rejects(readdir(join(dirname(f.path), "stale")), { code: "ENOENT" });
     const old = new Date(current.bootedAtMs - 120_000); await utimes(f.path, old, old);
@@ -238,7 +238,63 @@ test("a private native writer waits out a launch a dead host left unconfirmed, a
     await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome);
     await f.receipt({ state: "stopped", sdkState: "stopped", hostPid: 0, pid: 0 });
     await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome);
-    await writeFile(f.path, "{ garbled", { mode: 0o600 }); // Nothing says who owns it, and it is from this boot.
+    await writeFile(f.path, "{ garbled", { mode: 0o600 }); // Nothing says who owns it, and it is from this boot, inside its grace.
     await assert.rejects(ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome), /still owns this native home/);
   } finally { await f.clean(); }
+});
+
+// B5: a garbled receipt written this boot blocked native sharing and private native writers until a reboot. The native SDK always
+// listens while it runs, so ten quiet minutes prove its writer gone. The grace follows the socket probes: an answer still keeps it.
+test("a nameless native receipt from this boot is reclaimed after ten quiet minutes, and kept before them or while a socket answers", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); let server: ReturnType<typeof createServer> | undefined;
+  const other = join(executionHostRoot(), "0123456789abcdee");
+  try {
+    setBootIdentityForTests(current);
+    await mkdir(dirname(f.path), { recursive: true, mode: 0o700 }); await writeFile(f.path, "{ garbled", { mode: 0o600 });
+    const aged = async (ms: number) => { const at = new Date(Date.now() - ms); await utimes(f.path, at, at); };
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    await aged(9 * 60_000); // Still inside the grace.
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    await privateDirectory(other); server = await f.listener(join(other, "native.sock"));
+    await aged(11 * 60_000); // Past the grace, but another configuration's native writer answers.
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /receipt is invalid/);
+    assert.ok(server.listening); assert.equal(await readFile(f.path, "utf8"), "{ garbled");
+    await assert.rejects(readdir(join(dirname(f.path), "stale")), { code: "ENOENT" });
+    await close(server); server = undefined;
+    await claimNativeHome(f.identity, f.hostHome);
+    assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
+    assert.equal((await readdir(join(dirname(f.path), "stale"))).length, 1);
+    assert.deepEqual((await f.reclaims()).map(event => [event.scope, event.reason]), [["native_home", "invalid_receipt"]]);
+  } finally { if (server) await close(server); await rm(other, { recursive: true, force: true }); await f.clean(); }
+});
+
+test("a private native writer obeys the same grace, and its length can be set for tests", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); let server: ReturnType<typeof createServer> | undefined;
+  try {
+    setBootIdentityForTests(current); setNativeNamelessGraceForTests(1000);
+    const elsewhere = join(f.directory, "elsewhere"); await privateDirectory(elsewhere);
+    await mkdir(dirname(f.path), { recursive: true, mode: 0o700 });
+    await writeFile(f.path, JSON.stringify({ socketPath: join(elsewhere, "native.sock") }), { mode: 0o600 }); // A socket, but no process.
+    await assert.rejects(ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome), /still owns this native home/);
+    const at = new Date(Date.now() - 2000); await utimes(f.path, at, at);
+    server = await f.listener(join(elsewhere, "native.sock")); // The socket it records answers: no grace outweighs that.
+    await assert.rejects(ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome), /still owns this native home/);
+    await close(server); server = undefined;
+    await ExecutionHostClient.assertNativeUnowned(undefined, f.nativeHome);
+  } finally { setNativeNamelessGraceForTests(); if (server) await close(server); await f.clean(); }
+});
+
+// A3: a stray plain file where a socket belongs answered connect with ENOTSOCK, which counted as a listener, so a receipt that
+// nothing else kept alive was kept for good. Nothing that is not a socket can listen.
+test("a plain file at another home's native socket never keeps a dead receipt", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); const other = join(executionHostRoot(), "0123456789abcded");
+  try {
+    setBootIdentityForTests(current);
+    await privateDirectory(other); await writeFile(join(other, "native.sock"), "not a socket", { mode: 0o600 });
+    await mkdir(dirname(f.path), { recursive: true, mode: 0o700 }); await writeFile(f.path, "{ garbled", { mode: 0o600 });
+    const old = new Date(current.bootedAtMs - 120_000); await utimes(f.path, old, old);
+    await claimNativeHome(f.identity, f.hostHome);
+    assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
+    assert.equal(await readFile(join(other, "native.sock"), "utf8"), "not a socket"); // Another home's file is never touched.
+  } finally { await rm(other, { recursive: true, force: true }); await f.clean(); }
 });

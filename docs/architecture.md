@@ -116,6 +116,8 @@ sockets are the links its receipt records and every link its host folder holds
 (`host.sock`, `native.sock` and each `e-*.sock` generation link), each asked both
 through the link and at the SDK socket it names. An answering socket keeps an owner
 alive even when its receipt is from an earlier boot, so the two rules always agree.
+Only a socket can answer: a plain file, a folder or a pipe at a socket path, or at the
+SDK target a link names, never keeps an owner alive.
 A receipt this release cannot validate, such as a newer release's or a damaged one,
 is judged by whatever pids, stamps and socket path it still contains.
 
@@ -127,14 +129,31 @@ reason. Archiving copies a plain receipt and moves anything else, such as a link
 a pipe, aside whole without reading it; `stale/` keeps the five newest receipts of
 each name. Receipts written before 0.4.4 carry no boot stamp and are judged by their
 file time. A receipt naming the claiming process itself is its own leftover from an
-attempt that never finished, so the claim goes on to take the home.
+attempt that never finished, so the claim goes on to take the home. A gateway
+generation whose record or catalog file is garbled is moved aside to its own `stale/`
+folder and rewritten (an `execution_owner_reclaimed` event with the scope
+`generation`); a record that names another identity still refuses the generation.
+Rollback to legacy writers treats a receipt still marked running as stopped once
+its owner is proven dead by the same rule, so a crash cannot block it for good.
+
+An adapter whose required host is missing, not running, dead, or no longer matches
+its socket asks the service for an immediate retry by writing the private file
+`kick` in the host folder, and waits up to 20 seconds, looking every 250 ms, for a
+running, live host. The service watches that file once a second and retries at most
+once every five seconds. A host that stays down fails with the same error as before
+the wait; a live host that does not match fails at once.
 
 Process start times come from the operating system (`ps`, read in UTC with the C
 locale) both for the stamp a process records about itself and for every check, so a
 long-running supervisor never drifts away from its own receipt, and a daylight-saving
-change cannot move a start by an hour. Private file locks follow the same process rule
-but never the file-time boot rule, because a clock that steps forward would otherwise
-free a live lock. Only the caller that created a lock removes it, and only while the
+change cannot move a start by an hour. When `ps` does not answer, a process records no
+start at all rather than an estimate: a checker then skips the start comparison and
+keeps the owner while its pid answers, and the boot stamp still tells a reboot apart.
+Only an answer is remembered, so the next stamp asks `ps` again. Private file locks
+follow the same process rule but never the file-time boot rule, because a clock that
+steps forward would otherwise free a live lock. A lock has one name however its folder
+is spelled (`/tmp` and `/private/tmp`, or a linked folder), so two spellings never
+hold it together. Only the caller that created a lock removes it, and only while the
 path still names its file; one breaker at a time removes a stale lock.
 
 A native launch that a dead host recorded as `starting` may have left an SDK
@@ -142,8 +161,9 @@ child that is still coming up. Its receipt is reclaimed only when it is from an
 earlier boot, or when it is older than 60 seconds, and in both cases only when nothing
 answers a connect at the native socket or its SDK target. Until then the claim is
 refused as unconfirmed, so two writers never share a chat. A native-home receipt that
-cannot be read at all is given up only when its file is from an earlier boot and no
-host folder's native socket answers. A private, unshared native writer obeys the same
+names no process is given up only when no host folder's native socket (nor any socket
+it records) answers, and its file is from an earlier boot or older than ten minutes;
+the native SDK always listens while it runs, so ten quiet minutes prove its writer gone. A private, unshared native writer obeys the same
 verdict as a claim: a live host (even with its SDK idle), a launch inside its startup
 grace, or a receipt nothing can prove dead keeps it from starting.
 

@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:net";
+import { once } from "node:events";
+import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { executionHostHome, executionHostMarker, type HostOwner } from "../execution-host-storage.js";
@@ -62,4 +65,41 @@ test("missing host proof cannot retire a surviving native-home receipt", async (
     await assert.rejects(archiveStoppedExecutionReceipt(f.identity, f.backup), /no matching host proof/);
     assert.ok(await readFile(f.nativePath));
   } finally { await f.cleanup(); }
+});
+
+const exitedPid = async () => {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], { stdio: "ignore" });
+  const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; return child.pid!;
+};
+
+// B2: a host killed by SIGKILL, a crash or a reboot leaves its receipts marked running. Once its owner is proven gone (every pid it
+// names is gone and nothing it advertised answers), those receipts must not block rollback for good.
+test("rollback treats running receipts whose owners are proven gone as stopped", async () => {
+  const f = await fixture();
+  try {
+    const dead = await exitedPid();
+    await writePrivateJson(f.path, { ...f.owner, state: "running", pid: dead, native: { ...f.owner.native, pid: dead } });
+    await writePrivateJson(f.nativePath, { ...f.lease, state: "running", sdkState: "running", hostPid: dead, pid: dead });
+    assert.equal(await archiveStoppedExecutionReceipt(f.identity, f.backup), join(f.backup, "execution-owner.json"));
+    assert.equal(JSON.parse(await readFile(join(f.backup, "execution-owner.json"), "utf8")).state, "running");
+    assert.equal(JSON.parse(await readFile(join(f.backup, "native-execution-owner.json"), "utf8")).state, "running");
+    await assert.rejects(readFile(f.path), { code: "ENOENT" }); await assert.rejects(readFile(f.nativePath), { code: "ENOENT" });
+  } finally { await f.cleanup(); }
+});
+
+test("rollback still refuses a running receipt whose owner is alive, answers, or is still starting", async () => {
+  const f = await fixture(); const server = createServer();
+  try {
+    const dead = await exitedPid();
+    await writePrivateJson(f.path, { ...f.owner, state: "running", pid: process.pid }); // A live host.
+    await assert.rejects(archiveStoppedExecutionReceipt(f.identity, f.backup), /fully stopped/);
+    await writePrivateJson(f.path, { ...f.owner, state: "running", pid: dead }); // Its pid is gone, but its socket answers.
+    server.listen(join(f.home, "host.sock")); await once(server, "listening"); await chmod(join(f.home, "host.sock"), 0o600);
+    await assert.rejects(archiveStoppedExecutionReceipt(f.identity, f.backup), /fully stopped/);
+    assert.ok(server.listening);
+    await new Promise<void>(done => server.close(() => done()));
+    await writePrivateJson(f.nativePath, { ...f.lease, state: "running", sdkState: "starting", hostPid: dead, pid: 0 }); // Inside its startup grace.
+    await assert.rejects(archiveStoppedExecutionReceipt(f.identity, f.backup), /not fully stopped/);
+    assert.ok(await readFile(f.path)); assert.ok(await readFile(f.nativePath));
+  } finally { await new Promise<void>(done => server.listening ? server.close(() => done()) : done()); await f.cleanup(); }
 });

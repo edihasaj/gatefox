@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, access, symlink, readFile, rm, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, access, symlink, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -163,4 +163,24 @@ test("only one breaker at a time removes a stale lock, and a breaker that died d
     assert.equal(await withPrivateFileLock(path, async () => "recovered"), "recovered");
     await assert.rejects(access(`${path}.lock`)); await assert.rejects(access(`${path}.lock.break`));
   } finally { const exited = once(child, "exit"); child.kill("SIGKILL"); await exited; }
+});
+
+// A3 (reviewer probe alias.mjs): `held`, `breaking` and the break marker were keyed by the caller's spelling of the path. A
+// second caller that reached the same file through a linked folder (`/tmp` and `/private/tmp` on macOS) read our live lock as
+// this process's own leftover, broke it and held it too: two holders at once. A linked folder shows it on every platform.
+test("one lock reached through two spellings of its folder is still one lock", { timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-preference-lock-"));
+  const real = join(directory, "real"); await mkdir(real, { mode: 0o700 });
+  const alias = join(directory, "alias"); await symlink(real, alias);
+  try {
+    for (const [first, second] of [[real, alias], [alias, real]]) {
+      let inside = 0; let most = 0;
+      const operation = async () => { inside++; most = Math.max(most, inside); await new Promise(done => setTimeout(done, 200)); inside--; return "done"; };
+      const holder = withPrivateFileLock(join(first, "prefs"), operation, 3000);
+      await new Promise(done => setTimeout(done, 20)); // The first caller holds the lock now.
+      const results = await Promise.allSettled([holder, withPrivateFileLock(join(second, "prefs"), operation, 3000)]);
+      assert.deepEqual({ most, results: results.map(result => result.status) }, { most: 1, results: ["fulfilled", "fulfilled"] });
+      await assert.rejects(access(join(real, "prefs.lock"))); await assert.rejects(access(join(real, "prefs.lock.break")));
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

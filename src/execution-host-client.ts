@@ -8,7 +8,15 @@ import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engi
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { nativeHomeOwnership } from "./native-execution-host-storage.js";
 import { acquireNativeCompatible } from "./native-execution-compat.js";
+import { requestHostKick } from "./execution-host-kick.js";
 export type NativeLaunchRecord = NativeExecutionRecord & { instanceId: string };
+/** How long a required host may take to come back (a restart after a crash, a reboot or an update) before an adapter fails. */
+const defaultHostWaitMs = 20_000; const hostPollMs = 250;
+let hostWaitMs = defaultHostWaitMs;
+/** Tests shorten the wait for a required host instead of sitting it out. Undefined restores the production value. */
+export function setHostWaitForTests(ms?: number): void { hostWaitMs = ms ?? defaultHostWaitMs; }
+/** One look at the host: a client, or the error today's single look would throw and whether waiting could change it. */
+type HostLook = { client?: ExecutionHostClient; failure?: Error; retry?: boolean };
 /** A receipt left by an owner that is gone must not look alive: its pid alone is not proof. */
 async function ownerMtime(home: string): Promise<number> { return (await lstat(resolve(home, "owner.json")).catch(() => undefined))?.mtimeMs ?? Number.POSITIVE_INFINITY; }
 async function receiptAlive(record: { pid: number; bootId?: string; startedAtMs?: number; socketPath?: string }, mtimeMs: number): Promise<boolean> {
@@ -32,29 +40,46 @@ export class ExecutionHostClient {
     if (owner.owner && owner.owner.configPath === resolve(configPath) && owner.owner.nativeHome === resolve(nativeHome) && executionCapabilities(owner.owner.capabilities).includes("native")
       && (await receiptAlive(owner.owner, owner.mtimeMs) || (owner.owner.native ? await receiptAlive(owner.owner.native, owner.mtimeMs) : false))) blocked();
   }
-  static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false): Promise<ExecutionHostClient | undefined> {
-    const home = executionHostHome(configPath, nativeHome);
+  /**
+   * The host for this configuration. A required host that is missing, not running, dead, or whose socket no longer matches
+   * its receipt is usually restarting: the adapter asks the service for an immediate retry (a kick) and waits up to 20 s,
+   * looking every 250 ms, for a running, live owner. It then answers as a single look would: the same client or the same
+   * error, so a host that stays down still fails with today's message. A live host that does not match fails at once, and
+   * an optional host (`required` false) is looked at once, as before.
+   */
+  static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false, signal?: AbortSignal): Promise<ExecutionHostClient | undefined> {
+    const home = executionHostHome(configPath, nativeHome); const deadline = Date.now() + hostWaitMs; let kicked = false;
+    for (;;) {
+      const look = await ExecutionHostClient.look(home, configPath, nativeHome, codex, capability, required);
+      if (!look.failure) return look.client;
+      if (!required || !look.retry || signal?.aborted || Date.now() >= deadline) throw look.failure;
+      if (!kicked) { kicked = true; await requestHostKick(home); }
+      try { await delay(Math.min(hostPollMs, Math.max(1, deadline - Date.now())), undefined, signal ? { signal } : {}); }
+      catch { throw look.failure; } // The caller gave up: it gets the answer it would have had without waiting.
+    }
+  }
+  private static async look(home: string, configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability, required: boolean): Promise<HostLook> {
     const receipt = await readOwnerRecord(resolve(home, "owner.json")); const owner = receipt.owner; const receiptMtime = receipt.mtimeMs;
-    if (!owner) {
-      if (required) throw new Error(`Shared ${capability} executor host is unavailable; check gateway service status`);
-      return;
-    }
+    if (!owner) return required ? { failure: new Error(`Shared ${capability} executor host is unavailable; check gateway service status`), retry: true } : {};
+    // A receipt that names no running, live host is a host the service can still bring back; one that does decides now.
+    const live = owner.state === "running" && await receiptPidAlive(owner, receiptMtime);
+    const fail = (failure: Error, retry = !live): HostLook => ({ failure, retry });
     const capabilities = executionCapabilities(owner.capabilities);
-    if (!capabilities.includes(capability)) {
-      if (required) throw Object.assign(new Error(`Shared ${capability} executor is not enabled in the configured host`), { capabilityAbsent: capability });
-      return;
-    }
+    if (!capabilities.includes(capability)) return required ? fail(Object.assign(new Error(`Shared ${capability} executor is not enabled in the configured host`), { capabilityAbsent: capability })) : {};
     const socketPath = resolve(home, "host.sock");
-    if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) throw new Error("Shared executor ownership does not match this adapter");
+    if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) return fail(new Error("Shared executor ownership does not match this adapter"));
     // Only native sharing runs the app's own engine. A gateway-only host runs its pinned runtime, guarded by that runtime's
     // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
-    if (capabilities.includes("native") && owner.codex !== await realpath(codex)) throw new Error("Shared executor ownership does not match this adapter");
-    if (owner.state !== "running" || !(await receiptPidAlive(owner, receiptMtime))) throw new Error("Shared executor host is unavailable; check gateway service status");
-    const socket = await socketIdentity(socketPath);
-    if (!socket || !owner.socket || !sameSocketIdentity(owner.socket, socket)) throw new Error("Shared executor socket ownership changed; it was preserved");
+    try { if (capabilities.includes("native") && owner.codex !== await realpath(codex)) return fail(new Error("Shared executor ownership does not match this adapter")); }
+    catch (error) { return fail(error as Error); }
+    if (!live) return fail(new Error("Shared executor host is unavailable; check gateway service status"));
+    // A live host whose socket is gone or replaced, or that refuses the connection, is the host going away: wait for the next one.
+    let socket;
+    try { socket = await socketIdentity(socketPath); } catch (error) { return fail(error as Error, true); }
+    if (!socket || !owner.socket || !sameSocketIdentity(owner.socket, socket)) return fail(new Error("Shared executor socket ownership changed; it was preserved"), true);
     const client = new ExecutionHostClient(home, socketPath, capabilities);
-    try { await client.connection.ready; return client; }
-    catch (error) { client.close(); throw error; }
+    try { await client.connection.ready; return { client }; }
+    catch (error) { client.close(); return fail(error as Error, true); }
   }
   private record(value: Message): ExecutionRecord {
     if (typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, `e-${value.revision.slice(0, 16)}.sock`) || !Array.isArray(value.aliases) || !value.aliases.length || value.aliases.length > 256 || value.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024)

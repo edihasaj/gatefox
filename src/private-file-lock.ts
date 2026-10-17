@@ -1,23 +1,24 @@
 import { constants } from "node:fs";
-import { lstat, open, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, open, realpath, unlink, type FileHandle } from "node:fs/promises";
+import { basename, dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { processAlive, processStartedAfter } from "./boot-identity.js";
 
 /** Serialize small private-file updates across adapter processes. */
 export const lockBusyCode = "ELOCKBUSY";
 /**
- * How many callers in this process hold each lock path right now. An entry exists from the moment the
- * exclusive create succeeds until the lock file is gone, so a second caller here never reads our own pid
- * as a leftover while one of ours still holds the lock.
+ * How many callers in this process hold each lock right now, keyed by the lock's canonical path. An entry
+ * exists from the moment the exclusive create succeeds until the lock file is gone, so a second caller here
+ * never reads our own pid as a leftover while one of ours still holds the lock.
  */
 const held = new Map<string, number>();
-/** Breaking a stale lock is one step at a time per path inside this process. */
+/** Breaking a stale lock is one step at a time per lock inside this process, keyed like `held`. */
 const breaking = new Map<string, Promise<void>>();
 /** A breaker that died inside its few-millisecond step leaves its marker this long at most. */
 const breakMarkerStaleMs = 10_000;
 
 export async function withPrivateFileLock<T>(path: string, operation: () => Promise<T>, timeoutMs = 5000): Promise<T> {
-  const lock = `${path}.lock`; const deadline = Date.now() + timeoutMs;
+  const lock = await canonicalLock(path); const deadline = Date.now() + timeoutMs;
   let file: FileHandle;
   for (;;) {
     let created: FileHandle;
@@ -36,6 +37,14 @@ export async function withPrivateFileLock<T>(path: string, operation: () => Prom
   try { return await operation(); }
   finally { await release(lock, file); }
 }
+
+/**
+ * One lock file has one name here, however the caller spelled its folder (`/tmp/x` and `/private/tmp/x`, or a link to
+ * the folder). `held`, `breaking` and the `.break` marker all use this name, so a second spelling can never read the
+ * first caller's live lock as this process's own leftover and break it. A folder that does not exist fails here as the
+ * lock's own create would.
+ */
+async function canonicalLock(path: string): Promise<string> { return `${resolve(await realpath(dirname(resolve(path))), basename(path))}.lock`; }
 
 function hold(lock: string): void { held.set(lock, (held.get(lock) ?? 0) + 1); }
 function unhold(lock: string): void { const count = (held.get(lock) ?? 1) - 1; if (count > 0) held.set(lock, count); else held.delete(lock); }

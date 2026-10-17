@@ -75,6 +75,14 @@ let startupGraceMs = defaultStartupGraceMs;
 /** Tests shorten the startup grace instead of waiting it out. Undefined restores the production value. */
 export function setNativeStartupGraceForTests(ms?: number): void { startupGraceMs = ms ?? defaultStartupGraceMs; }
 /**
+ * A receipt that names no process at all, written this boot, is given up after this long once nothing answers: the native
+ * SDK always listens while it runs, so ten quiet minutes prove its writer gone without waiting for a reboot.
+ */
+const defaultNamelessGraceMs = 10 * 60_000;
+let namelessGraceMs = defaultNamelessGraceMs;
+/** Tests shorten the grace for a receipt that names nothing. Undefined restores the production value. */
+export function setNativeNamelessGraceForTests(ms?: number): void { namelessGraceMs = ms ?? defaultNamelessGraceMs; }
+/**
  * What an existing receipt means for a new claim: "live" while a recorded process or an answering socket can still own the
  * home, "unconfirmed" while a launch it recorded cannot be proven absent, or the reason the owner is gone.
  */
@@ -102,7 +110,8 @@ async function hostHomes(): Promise<string[]> {
 /**
  * A receipt this release cannot validate (a newer release's, or a damaged one) is judged by whatever it still says. Any pid
  * it names that can still be its own, or its recorded socket, or the native socket of any host home answering, keeps it. A
- * receipt that says nothing usable at all is only given up once it is from an earlier boot and nothing answers.
+ * receipt that names no process is given up once nothing answers and it is from an earlier boot or older than ten minutes;
+ * the grace only follows the socket probes, so it never outweighs a live pid or an answering socket.
  */
 async function invalidNativeLiveness(path: string, mtimeMs: number, hostHome?: string): Promise<NativeLiveness> {
   const body = await readLenientJson(path);
@@ -116,7 +125,7 @@ async function invalidNativeLiveness(path: string, mtimeMs: number, hostHome?: s
   for (const home of await hostHomes()) links.add(resolve(home, "native.sock"));
   for (const link of links) if (await linkAnswers(link)) return "live";
   if (previous) return "previous_boot";
-  if (!parsed) return "unconfirmed";
+  if (!parsed) return Date.now() - mtimeMs >= namelessGraceMs ? "invalid_receipt" : "unconfirmed";
   if (body?.state === "running" && body.sdkState === "starting" && Date.now() - mtimeMs < startupGraceMs) return "unconfirmed";
   return "invalid_receipt";
 }
