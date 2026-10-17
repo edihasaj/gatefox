@@ -8,8 +8,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AppServerBackends } from "../app-server-backends.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
+import { ExecutionHostClient } from "../execution-host-client.js";
 import type { Message } from "../app-server-connection.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
+import { setHostDownWindowForTests } from "../executor-reattach.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
@@ -18,13 +20,18 @@ isolateExecutionRoots(); // The SDK rendezvous, host homes and native-home recei
 hostRunsInThisProcess(); // The shared host runs inside the test process: see src/tests/in-process-host.ts.
 
 const alias = "claude/fixture"; const otherAlias = "claude/other";
-type Logged = { pid: number; method: string; threadId?: string; turnId?: string; modelProvider?: string; model?: string; cwd?: string; approvalPolicy?: string; text?: string };
+type Logged = { pid: number; method: string; threadId?: string; turnId?: string; modelProvider?: string; model?: string; cwd?: string;
+  approvalPolicy?: string; text?: string; excludeTurns?: boolean; config?: Message; serviceTier?: string | null };
 
 /**
  * A fake SDK that plays the native engine (stdio) and the host's gateway generations (a Unix socket). Saved chats live in
  * `<root>/threads.json`, shared by every process as rollouts are; every request a process answers is appended to
- * `<root>/log.jsonl` with the process id, so a test sees which executor got which request. `fixtureActive` on turn/start
- * leaves the turn running; `fixture/exit` ends a stdio executor as a crash would.
+ * `<root>/log.jsonl` with the process id, so a test sees which executor got which request. Like the real one, a thread/start
+ * or a turn that carries one saves the chat's model, reasoning effort and approval policy, and a thread/resume restores the
+ * saved values unless the resume names a model or provider itself or carries a `config.model` / `config.model_reasoning_effort`
+ * key (the SDK's own gate). `fixtureActive` on turn/start leaves the turn running; `fixture/exit` ends a stdio executor as a
+ * crash would; `fixture/close` unloads a chat as the engine's own `thread/closed` would; a `<root>/refuse-resume` file makes
+ * every executor refuse to resume.
  */
 async function fixture(options: { shared?: boolean } = {}) {
   const shared = options.shared ?? true;
@@ -40,18 +47,35 @@ import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modul
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const turns=new Map();const loaded=new Set();let sequence=0;
 const all=()=>existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};
-const log=(m)=>{const p=m.params||{};appendFileSync(root+'/log.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:p.threadId,turnId:p.turnId,modelProvider:p.modelProvider,model:p.model,cwd:p.cwd,approvalPolicy:p.approvalPolicy,text:p.input?.[0]?.text})+'\\n');};
+const keep=v=>{const a=all();a[v.id]=v;writeFileSync(saved,JSON.stringify(a));};
+const typed=v=>v!==undefined&&v!==null;
+const log=(m)=>{const p=m.params||{};appendFileSync(root+'/log.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:p.threadId,turnId:p.turnId,modelProvider:p.modelProvider,model:p.model,cwd:p.cwd,approvalPolicy:p.approvalPolicy,excludeTurns:p.excludeTurns,config:p.config,serviceTier:p.serviceTier,text:p.input?.[0]?.text})+'\\n');};
 async function rpc(m,send,drop){if(m.id==null)return;log(m);const p=m.params||{};let result={};
 if(m.method==='fixture/disconnect'){drop?.();return;}
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
-if(m.method==='thread/unsubscribe')loaded.delete(p.threadId);
+if(m.method==='thread/unsubscribe'){loaded.delete(p.threadId);result={status:'unsubscribed'};}
+if(m.method==='thread/delete'||m.method==='thread/archive'){loaded.delete(p.threadId);}
+if(m.method==='fixture/close'){loaded.delete(p.threadId);send({method:'thread/closed',params:{threadId:p.threadId}});}
 if(m.method==='fixture/exit'){send({id:m.id,result:{}});setTimeout(()=>process.exit(3),20);return;}
-if(m.method==='thread/start'){const thread={id:p.fixtureId,modelProvider:p.modelProvider||'subscription_gateway',model:p.model};const value=all();value[thread.id]=thread;writeFileSync(saved,JSON.stringify(value));loaded.add(thread.id);result={thread,model:p.model,modelProvider:thread.modelProvider,serviceTier:null};}
-if(m.method==='thread/resume'){const thread=all()[p.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id '+p.threadId}});return;}loaded.add(thread.id);result={thread,model:p.model||thread.model,modelProvider:p.modelProvider||thread.modelProvider,serviceTier:null};}
+if(m.method==='thread/start'){const thread={id:p.fixtureId,model:p.model,modelProvider:p.modelProvider||'subscription_gateway',approvalPolicy:typed(p.approvalPolicy)?p.approvalPolicy:'never',effort:typed(p.config&&p.config.model_reasoning_effort)?p.config.model_reasoning_effort:null,serviceTier:typed(p.serviceTier)?p.serviceTier:null,cwd:p.cwd};keep(thread);loaded.add(thread.id);result={thread,model:thread.model,modelProvider:thread.modelProvider,serviceTier:thread.serviceTier};}
+if(m.method==='thread/fork'){const parent=all()[p.threadId]||{};const thread={...parent,id:p.fixtureId,model:p.model||parent.model,modelProvider:p.modelProvider||parent.modelProvider,approvalPolicy:typed(p.approvalPolicy)?p.approvalPolicy:parent.approvalPolicy,cwd:typed(p.cwd)?p.cwd:parent.cwd};keep(thread);loaded.add(thread.id);result={thread,model:thread.model,modelProvider:thread.modelProvider,serviceTier:thread.serviceTier||null};}
+if(m.method==='thread/resume'){if(existsSync(root+'/refuse-resume')){send({id:m.id,error:{code:-32603,message:'the fixture refuses to resume chats'}});return;}
+ const thread=all()[p.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id '+p.threadId}});return;}
+ // The SDK's rule: naming a model or provider, or a config.model / config.model_reasoning_effort key, skips its restore.
+ const gated=typed(p.model)||typed(p.modelProvider)||(p.config&&(Object.prototype.hasOwnProperty.call(p.config,'model')||Object.prototype.hasOwnProperty.call(p.config,'model_reasoning_effort')));
+ const next={...thread,model:gated?(typed(p.model)?p.model:'config-default'):thread.model,modelProvider:gated?(typed(p.modelProvider)?p.modelProvider:'config-default'):thread.modelProvider,
+  approvalPolicy:typed(p.approvalPolicy)?p.approvalPolicy:thread.approvalPolicy,effort:gated?(p.config&&typed(p.config.model_reasoning_effort)?p.config.model_reasoning_effort:'config-default'):thread.effort,
+  serviceTier:typed(p.serviceTier)?p.serviceTier:thread.serviceTier||null,cwd:typed(p.cwd)?p.cwd:thread.cwd};
+ keep(next);loaded.add(next.id);result={thread:next,model:next.model,modelProvider:next.modelProvider,serviceTier:next.serviceTier};}
 if(m.method==='thread/read'){const thread=all()[p.threadId];result={thread:thread?{...thread,turns:[]}:{id:p.threadId,modelProvider:'openai'}};}
-if(m.method==='turn/start'){const turn={id:'turn-'+process.pid+'-'+(++sequence),status:p.fixtureActive?'inProgress':'completed'};turns.set(p.threadId,turn);result={turn};send({method:'turn/started',params:{threadId:p.threadId,turn}});if(!p.fixtureActive)send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
+if(m.method==='thread/turns/list')result={data:[],nextCursor:null};
+if(m.method==='turn/start'){const a=all();const thread=a[p.threadId];
+ if(thread){if(p.model)thread.model=p.model;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}
+ const turn={id:'turn-'+process.pid+'-'+(++sequence),status:p.fixtureActive?'inProgress':'completed'};turns.set(p.threadId,turn);result={turn};send({method:'turn/started',params:{threadId:p.threadId,turn}});if(!p.fixtureActive)send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
 if(m.method==='turn/interrupt'){const turn=turns.get(p.threadId);if(turn?.id!==p.turnId||turn.status!=='inProgress'){send({id:m.id,error:{code:-32600,message:'no active turn to interrupt'}});return;}turn.status='interrupted';send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
+if(m.method==='thread/settings/update'){const a=all();const thread=a[p.threadId];
+ if(thread){if(p.model)thread.model=p.model;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}result={};}
 send({id:m.id,result});}
 const listen=args.includes('--listen')?args[args.indexOf('--listen')+1]:'stdio://';
 if(listen.startsWith('unix://')){
@@ -64,6 +88,13 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const configPath = join(directory, "gateway.json");
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   configureTelemetry(config.stateDirectory, "test");
+  setHostDownWindowForTests(1500); // Fail fast while the host stays down, but never sit out the five-second production window.
+  // Watch the host lookups: a re-attach that finds the host must discover it exactly once, whatever the number of waiting chats.
+  const discoverAll = ExecutionHostClient.discover;
+  let discovers = 0; const hostClients: ExecutionHostClient[] = [];
+  ExecutionHostClient.discover = async (...ask: Parameters<typeof ExecutionHostClient.discover>) => {
+    discovers++; const found = await discoverAll(...ask); if (found) hostClients.push(found); return found;
+  };
   // As on Studio: the service shares gateway executors, so an adapter needs the host and waits for it when it is down.
   if (shared) await writePrivateJson(join(config.stateDirectory, "service-plan.json"), { version: 1, config: configPath, sharedExecutors: true,
     components: [{ id: "native", kind: "native", command: sdk, args: ["--codex", sdk, "--native-home", nativeHome], log: join(config.stateDirectory, "native.log") }] });
@@ -77,17 +108,20 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
     : new AppServerBackends(sdk, args, config, {}, {}, catalog, async message => { events.push(message); }, () => {});
   await backends.request("initialize", { clientInfo: { name: "reattach", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
   const logged = async (): Promise<Logged[]> => (await readFile(join(directory, "log.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
-  const engine = (threadId: string) => (backends as unknown as { bindings: Map<string, { connection: { closed: boolean } }> }).bindings.get(threadId);
-  const until = async (check: () => boolean | Promise<boolean>, name: string) => { for (let attempt = 0; attempt < 400; attempt++) { if (await check()) return; await delay(10); } throw new Error(name + " never happened"); };
-  const events_ = async (name: string) => { await flushTelemetry(); return (await readTelemetry(config.stateDirectory, Date.now() - 60_000)).filter(event => event.event === name); };
+  const engine = (threadId: string) => (backends as unknown as { bindings: Map<string, { connection: { closed: boolean }; requests: number }> }).bindings.get(threadId);
+  const until = async (check: () => boolean | Promise<boolean>, name: string) => { for (let attempt = 0; attempt < 800; attempt++) { if (await check()) return; await delay(10); } throw new Error(name + " never happened"); };
+  const events_ = async (name: string) => { await flushTelemetry(); return (await readTelemetry(config.stateDirectory, Date.now() - 120_000)).filter(event => event.event === name); };
   return {
-    backends, events, logged, engine, until, telemetry: events_,
+    backends, events, logged, engine, until, telemetry: events_, discovers: () => discovers, directory,
+    openHostConnections: () => hostClients.filter(client => !client.closed).length,
+    windowClosed: () => until(() => Date.now() >= (backends as unknown as { reattacher: { hostDownUntil: number } }).reattacher.hostDownUntil, "the fail-fast window to pass"),
     start: (id: string, provider = "subscription_gateway") => backends.request("thread/start", { fixtureId: id, model: alias, modelProvider: provider, cwd: "/work", approvalPolicy: "never" }, { engine: "gateway" }),
     /** Stops the host, as the service does for an upgrade; its generations go with it. */
     async stopHost() { await host?.close(); host = undefined; },
     async startHost() { host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk }); },
     async clean() {
       await backends.stop(); await host?.close();
+      ExecutionHostClient.discover = discoverAll; setHostDownWindowForTests();
       process.env.CODEX_HOME = previousHome; if (previousHome === undefined) delete process.env.CODEX_HOME;
       await flushTelemetry();
       await Promise.allSettled([rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }), rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true })]);
@@ -95,31 +129,54 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   };
 }
 const turn = (threadId: string, text: string, extra: Message = {}) => ({ threadId, model: alias, input: [{ type: "text", text }], ...extra });
+const lost = (error: Error & { code?: number }) => error.code === -32001 && error.message === "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session.";
 
-test("a host restarted under a loaded chat: the next turn is sent after one automatic resume that keeps the chat's saved provider", { timeout: 30000 }, async () => {
+test("a host restarted under a loaded chat re-attaches with a resume that leaves model, effort and approvals for the SDK to restore", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
-    await f.start("loaded", "openai");
-    // The chat switched models after it was loaded: the re-attach loads it with the model it now uses.
-    await f.backends.request("turn/start", turn("loaded", "before the restart", { model: otherAlias }));
+    await f.backends.request("thread/start", { fixtureId: "switched", model: alias, modelProvider: "openai", cwd: "/work", approvalPolicy: "never",
+      config: { model_reasoning_effort: "low", model_catalog_json: "/catalog.json" } }, { engine: "gateway" });
+    // The chat tightened its approvals and moved model and effort after it was loaded.
+    await f.backends.request("turn/start", turn("switched", "before the restart", { model: otherAlias, approvalPolicy: "on-request" }));
+    await f.backends.request("thread/settings/update", { threadId: "switched", effort: "high" });
     const before = (await f.logged()).find(row => row.method === "thread/start")!.pid;
-    await f.stopHost(); await f.until(() => f.engine("loaded")?.connection.closed === true, "the executor connection closing");
+    await f.stopHost(); await f.until(() => f.engine("switched")?.connection.closed === true, "the executor connection closing");
     await f.startHost();
-    const answer = await f.backends.request("turn/start", turn("loaded", "after the restart"));
-    assert.equal(typeof (answer.turn as Message).id, "string");
-    // Metadata reads (the compaction check reads the chat's model) are not chat requests.
-    const after = (await f.logged()).filter(row => row.pid !== before && row.threadId === "loaded" && row.method !== "thread/read");
-    assert.deepEqual(after.map(row => row.method), ["thread/resume", "turn/start"], "one resume, then only the new request");
-    assert.deepEqual({ provider: after[0].modelProvider, model: after[0].model, cwd: after[0].cwd, approvalPolicy: after[0].approvalPolicy },
-      { provider: "openai", model: otherAlias, cwd: "/work", approvalPolicy: "never" }, "the chat is loaded as it was, under its saved provider");
-    assert.equal(after[1].text, "after the restart");
+    await f.backends.request("thread/turns/list", { threadId: "switched", includeTurns: false }); // The turn list re-attaches, as opening the chat would.
+    const after = (await f.logged()).filter(row => row.pid !== before && row.threadId === "switched" && row.method !== "thread/read");
+    assert.deepEqual(after.map(row => row.method), ["thread/resume", "thread/turns/list"], "one resume, then only the new request");
+    const resume = after[0];
+    assert.equal(resume.model, undefined, "no start-time model to revert the chat's own");
+    assert.equal(resume.modelProvider, undefined, "no provider replay: the SDK restores the id the chat is saved with");
+    assert.equal(resume.approvalPolicy, undefined, "no start-time approvals to loosen the chat's own");
+    assert.equal(resume.serviceTier, undefined, "nothing loaded without it replays nothing");
+    assert.deepEqual(resume.config, { model_catalog_json: "/catalog.json" }, "the replayed config cannot gate the SDK's effort restore");
+    assert.equal(resume.cwd, "/work"); assert.equal(resume.excludeTurns, true);
+    const kept = (await f.backends.request("thread/read", { threadId: "switched", includeTurns: false })).thread as Message;
+    assert.deepEqual({ model: kept.model, effort: kept.effort, approvals: kept.approvalPolicy, provider: kept.modelProvider },
+      { model: otherAlias, effort: "high", approvals: "on-request", provider: "openai" }, "the chat kept what it changed after loading");
+    assert.equal((f.engine("switched") as unknown as { requests: number }).requests, 0, "the re-attach left no request pinning the engine");
     const reattached = await f.telemetry("executor_reattached");
     assert.deepEqual(reattached.map(event => [event.reason, event.requests]), [["engine_closed", 1]]);
-    assert.equal(typeof reattached[0].ms, "number");
     assert.deepEqual(Object.keys(reattached[0]).sort(), ["at", "component", "event", "host", "ms", "pid", "reason", "requests"]);
-    // The re-attached chat now works without another resume.
-    await f.backends.request("turn/start", turn("loaded", "later"));
+    await f.backends.request("turn/start", turn("switched", "later")); // The re-attached chat works without another resume.
     assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 1);
+  } finally { await f.clean(); }
+});
+
+test("a chat saved as openai and one saved as subscription_gateway each re-attach under their own saved provider", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("mine", "openai"); await f.start("theirs");
+    await f.stopHost(); await f.until(() => f.engine("mine")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    for (const id of ["mine", "theirs"]) await f.backends.request("turn/start", turn(id, "after the restart"));
+    const resumes = (await f.logged()).filter(row => row.method === "thread/resume");
+    assert.equal(resumes.length, 2); assert.deepEqual(resumes.map(row => row.modelProvider), [undefined, undefined], "neither resume names a provider");
+    for (const [id, provider] of [["mine", "openai"], ["theirs", "subscription_gateway"]] as const) {
+      const thread = (await f.backends.request("thread/read", { threadId: id, includeTurns: false })).thread as Message;
+      assert.equal(thread.modelProvider, provider, `${id} still carries its saved provider`);
+    }
   } finally { await f.clean(); }
 });
 
@@ -139,18 +196,76 @@ test("concurrent requests for a chat whose executor is gone share one resume", {
   } finally { await f.clean(); }
 });
 
-test("a host that stays down answers today's error, and the chat recovers once the host is back", { timeout: 30000 }, async () => {
+test("three chats re-attaching at once make the connection rediscover the host once and leak no control connection", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    for (const id of ["one", "two", "three"]) await f.start(id);
+    await f.stopHost(); await f.until(() => f.engine("one")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    const before = f.discovers(); // The start-time discovery already settled; these re-attaches all find it closed.
+    await Promise.all([f.backends.request("turn/start", turn("one", "a")), f.backends.request("turn/start", turn("two", "b")), f.backends.request("turn/start", turn("three", "c"))]);
+    assert.equal(f.discovers() - before, 1, "the chats shared one host lookup");
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 3, "each chat was resumed once");
+    await f.backends.stop();
+    assert.equal(f.openHostConnections(), 0, "stop leaves no host control connection of the re-attach open");
+  } finally { await f.clean(); }
+});
+
+test("a host that stays down answers today's error, fails fast inside its window, and the chat recovers once the host is back", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
     await f.start("stranded");
     await f.stopHost(); await f.until(() => f.engine("stranded")?.connection.closed === true, "the executor connection closing");
-    await assert.rejects(f.backends.request("turn/start", turn("stranded", "while the host is down")), (error: Error & { code?: number }) =>
-      error.code === -32001 && error.message === "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session.");
-    assert.deepEqual((await f.telemetry("executor_reattach_failed")).map(event => [event.reason, event.requests]), [["host_unavailable", 1]]);
+    await assert.rejects(f.backends.request("turn/start", turn("stranded", "while the host is down")), (error: Error & { code?: number }) => lost(error));
+    const failed = await f.telemetry("executor_reattach_failed");
+    assert.deepEqual(failed.map(event => [event.reason, event.requests]), [["host_unavailable", 1]]);
     assert.equal((await f.logged()).some(row => row.text === "while the host is down"), false, "nothing was sent anywhere");
-    await f.startHost();
+    const at = Date.now(); const before = f.discovers();
+    await assert.rejects(f.backends.request("turn/start", turn("stranded", "asked again at once")), (error: Error & { code?: number }) => lost(error));
+    assert.ok(Date.now() - at < 300, "the second request fails fast instead of kicking and waiting for the host");
+    assert.equal(f.discovers(), before, "the failed window started no new host lookup");
+    assert.equal((await f.telemetry("executor_reattach_failed")).length, 1, "the refused request added no record");
+    await f.startHost(); await f.windowClosed();
     await f.backends.request("turn/start", turn("stranded", "after the host is back"));
     assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 1);
+    assert.deepEqual((await f.telemetry("executor_reattached")).map(event => [event.reason, event.requests]), [["engine_closed", 1]]);
+  } finally { await f.clean(); }
+});
+
+test("a request arriving while another chat is still looking for the host reports and records it as engine_closed", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("r1"); await f.start("r2");
+    await f.stopHost(); await f.until(() => f.engine("r1")?.connection.closed === true, "the executor connection closing");
+    const first = f.backends.request("turn/start", turn("r1", "first while down")).then(() => true, () => false);
+    await f.until(() => f.discovers() === 2, "the first re-attach's host lookup to start");
+    await f.startHost();
+    const second = f.backends.request("turn/start", turn("r2", "second while down")).then(() => true, () => false);
+    assert.deepEqual([await first, await second], [true, true]);
+    const reattached = await f.telemetry("executor_reattached");
+    assert.equal(reattached.length, 2);
+    assert.deepEqual(reattached.map(event => event.reason).sort(), ["engine_closed", "engine_closed"],
+      "both chats lost their executor with the host: a lookup of the new one still in flight must not relabel the second chat's reason");
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 2, "each chat resumed once");
+  } finally { await f.clean(); }
+});
+
+test("thread/unsubscribe on a closed engine is answered locally, while delete and archive still re-attach", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("gone"); await f.start("staying");
+    await f.stopHost(); await f.until(() => f.engine("gone")?.connection.closed === true, "the executor connection closing");
+    const before = f.discovers();
+    assert.deepEqual(await f.backends.request("thread/unsubscribe", { threadId: "gone" }), { status: "notLoaded" });
+    assert.equal(f.discovers(), before, "unloading a chat nobody can reach woke no host");
+    assert.equal((await f.logged()).some(row => row.method === "thread/resume"), false, "no resume was sent");
+    assert.equal(f.engine("gone"), undefined, "the chat's local records are cleared");
+    await f.startHost();
+    await f.backends.request("thread/delete", { threadId: "staying" });
+    assert.deepEqual((await f.logged()).filter(row => row.method === "thread/resume").map(row => row.threadId), ["staying"], "deleting a chat re-attaches it first, as the SDK needs it loaded");
+    assert.equal((await f.telemetry("executor_reattached")).map(event => event.reason).length, 1);
+    const loads = (f.backends as unknown as { loads: { resumeParams(threadId: string): Message } }).loads;
+    assert.deepEqual(loads.resumeParams("staying"), { threadId: "staying", excludeTurns: true }, "a deleted chat's load parameters are forgotten");
   } finally { await f.clean(); }
 });
 
@@ -169,7 +284,7 @@ test("a turn that was running when its executor died is not sent again; the new 
   } finally { await f.clean(); }
 });
 
-test("a private executor that exited is replaced and the chat resumed; a throwaway chat still has to be started again", { timeout: 30000 }, async () => {
+test("a private executor that exited is replaced and the chat resumed with its saved settings; a throwaway chat still has to be started again", { timeout: 30000 }, async () => {
   const f = await fixture({ shared: false });
   try {
     await f.start("private");
@@ -179,10 +294,128 @@ test("a private executor that exited is replaced and the chat resumed; a throwaw
     await f.backends.request("turn/start", turn("private", "after the exit"));
     const rows = (await f.logged()).filter(row => row.threadId === "private" && row.method !== "thread/read");
     assert.deepEqual(rows.map(row => row.method), ["fixture/exit", "thread/resume", "turn/start"]);
+    assert.equal(rows[1].approvalPolicy, undefined, "the resume leaves the chat's approvals to its saved settings");
+    assert.equal(rows[1].model, undefined, "and the same for the model and provider it once replayed");
+    assert.equal(rows[1].excludeTurns, true, "the resume never drags the turn history along");
     assert.notEqual(rows[1].pid, rows[0].pid, "a new executor serves the chat"); assert.equal(rows[2].pid, rows[1].pid);
+    assert.equal((f.engine("private") as unknown as { requests: number }).requests, 0, "the re-attach left no request pinning the engine");
     assert.deepEqual((await f.telemetry("executor_reattached")).map(event => event.reason), ["engine_closed"]);
+    // The replacement goes the same way: the next unsubscribe is answered here, not by starting yet another executor.
+    await f.backends.request("fixture/exit", { threadId: "private" });
+    await f.until(() => f.engine("private")?.connection.closed === true, "the replacement exiting");
+    assert.deepEqual(await f.backends.request("thread/unsubscribe", { threadId: "private" }), { status: "notLoaded" });
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 1, "unloading a gone chat woke nobody");
+    assert.equal(f.engine("private"), undefined, "its records are cleared");
     await assert.rejects(f.backends.request("turn/start", turn("throwaway", "lost")), (error: Error & { code?: number }) =>
       error.code === -32001 && /Ephemeral chats must be started again/.test(error.message));
+  } finally { await f.clean(); }
+});
+
+test("a private executor that refuses the resume answers today's error, records resume_failed, and the next request tries again", { timeout: 30000 }, async () => {
+  const f = await fixture({ shared: false });
+  try {
+    await f.start("refused");
+    await writeFile(join(f.directory, "refuse-resume"), "");
+    await f.backends.request("fixture/exit", { threadId: "refused" });
+    await f.until(() => f.engine("refused")?.connection.closed === true, "the executor exiting");
+    await assert.rejects(f.backends.request("turn/start", turn("refused", "blocked")), (error: Error & { code?: number }) =>
+      error.code === -32001 && /gateway executor exited/.test(error.message));
+    assert.deepEqual((await f.telemetry("executor_reattach_failed")).map(event => [event.reason, event.requests]), [["resume_failed", 1]]);
+    assert.equal((await f.logged()).some(row => row.text === "blocked"), false, "the refused request reached no executor");
+    await rm(join(f.directory, "refuse-resume"));
+    await f.backends.request("turn/start", turn("refused", "now it takes it")); // resume_failed opens no fail-fast window: it tries again at once
+    assert.equal((await f.logged()).filter(row => row.text === "now it takes it").length, 1);
+    assert.equal((await f.telemetry("executor_reattached")).map(event => event.reason).length, 1);
+  } finally { await f.clean(); }
+});
+
+test("a private chat's request during shutdown answers the old error, records nothing, and does not hang", { timeout: 30000 }, async () => {
+  const f = await fixture({ shared: false });
+  try {
+    await f.start("closing");
+    await f.backends.request("fixture/exit", { threadId: "closing" });
+    await f.until(() => f.engine("closing")?.connection.closed === true, "the executor exiting");
+    const stopping = f.backends.stop(); // stop sets closing before its first await, so the request below finds shutdown begun.
+    await assert.rejects(f.backends.request("turn/start", turn("closing", "during the stop")), (error: Error & { code?: number }) =>
+      error.code === -32001 && /gateway executor exited/.test(error.message));
+    await stopping;
+    assert.equal((await f.telemetry("executor_reattach_failed")).length, 0, "the adapter gave up instead of starting a re-attach");
+    assert.equal((await f.logged()).some(row => row.method === "thread/resume"), false);
+  } finally { await f.clean(); }
+});
+
+test("an executor the host restarts refuses the resume, and the chat recovers when it no longer does", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("refused");
+    await writeFile(join(f.directory, "refuse-resume"), "");
+    await f.stopHost(); await f.until(() => f.engine("refused")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    await assert.rejects(f.backends.request("turn/start", turn("refused", "blocked")), (error: Error & { code?: number }) => lost(error));
+    assert.deepEqual((await f.telemetry("executor_reattach_failed")).map(event => [event.reason, event.requests]), [["resume_failed", 1]]);
+    await rm(join(f.directory, "refuse-resume"));
+    await f.backends.request("turn/start", turn("refused", "now it takes it"));
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume").length, 2, "each request found the host; only the resume was refused");
+  } finally { await f.clean(); }
+});
+
+test("a forked chat re-attaches with its own load parameters, kept under the fork's id", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("parent");
+    await f.backends.request("thread/fork", { threadId: "parent", fixtureId: "kid", model: alias, cwd: "/fork" });
+    await f.stopHost(); await f.until(() => f.engine("kid")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    await f.backends.request("turn/start", turn("kid", "hello"));
+    const resume = (await f.logged()).find(row => row.method === "thread/resume" && row.threadId === "kid")!;
+    assert.equal(resume.cwd, "/fork", "the fork re-attaches the way it was loaded, not the way its parent was");
+    await f.stopHost(); await f.until(() => f.engine("kid")?.connection.closed === true, "the executor connection closing again");
+    await f.startHost();
+    await f.backends.request("turn/start", turn("parent", "back"));
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "parent").pop()!.cwd, "/work");
+  } finally { await f.clean(); }
+});
+
+test("thread/closed clears the chat's records, so a later re-attach resumes it from its saved settings alone", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("doomed");
+    const loads = (f.backends as unknown as { loads: { resumeParams(threadId: string): Message } }).loads;
+    assert.equal(loads.resumeParams("doomed").cwd, "/work", "the connection remembers how it loaded the chat");
+    await f.backends.request("fixture/close", { threadId: "doomed" });
+    await f.until(() => f.engine("doomed") === undefined, "the thread/closed notice to clear the chat");
+    assert.deepEqual(loads.resumeParams("doomed"), { threadId: "doomed", excludeTurns: true }, "after the unload the connection replays nothing it once remembered");
+  } finally { await f.clean(); }
+});
+
+test("a request on a closed engine during shutdown answers the old error, records nothing, and does not hang", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("closing");
+    await f.stopHost(); await f.until(() => f.engine("closing")?.connection.closed === true, "the executor connection closing");
+    const stopping = f.backends.stop(); // stop sets closing before its first await, so the request below finds shutdown begun.
+    await assert.rejects(f.backends.request("turn/start", turn("closing", "during the stop")), (error: Error & { code?: number }) => lost(error));
+    await stopping;
+    assert.equal((await f.telemetry("executor_reattach_failed")).length, 0, "the adapter gave up instead of starting a re-attach");
+    assert.equal((await f.logged()).some(row => row.method === "thread/resume"), false);
+  } finally { await f.clean(); }
+});
+
+test("stopping the adapter while a re-attach waits for the host ends it with the old error, without a hang or a leaked connection", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("waiting");
+    await f.stopHost(); await f.until(() => f.engine("waiting")?.connection.closed === true, "the executor connection closing");
+    const before = f.discovers();
+    const request = f.backends.request("turn/start", turn("waiting", "while the host is down")).then(() => undefined, (error: Error & { code?: number }) => error);
+    await f.until(() => f.discovers() > before, "the re-attach's host lookup to start");
+    const stopped = Date.now();
+    await f.backends.stop();
+    const error = await request;
+    assert.ok(error && lost(error), "the request got the old error");
+    assert.ok(Date.now() - stopped < 10_000, "stopping did not wait out the host wait");
+    assert.equal((await f.logged()).some(row => row.method === "thread/resume" || row.text === "while the host is down"), false, "nothing was resumed or sent");
+    assert.equal(f.openHostConnections(), 0, "no control connection stays open");
   } finally { await f.clean(); }
 });
 
