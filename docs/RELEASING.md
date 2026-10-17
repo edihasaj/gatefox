@@ -102,6 +102,13 @@ belongs in the release archive.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
    there and require a zero exit before the device is treated as updated.
+   After every install, also run `gateway health` on every Mac; its verdict must
+   be `ok` or `warn` (see [the watchdog](health.md)). A `fail` means this Mac is
+   broken or half-moved, and the alert push is not configured until
+   `<state>/alert-push-url` exists with mode 0600. Run it as `gateway health
+   --smoke` on the machine that took the new release first: that is the one pass
+   that proves the app's own engine still chats, and its answer is remembered
+   against the app build, so the ten-minute check is paid once per update.
 
 ## Updating without quitting the app
 

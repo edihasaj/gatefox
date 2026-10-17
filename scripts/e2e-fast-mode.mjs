@@ -5,7 +5,7 @@ import { createInterface } from 'node:readline';
 import { Duplex } from 'node:stream';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile, access, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -29,9 +29,12 @@ const run = await mkdtemp('/tmp/gw-fast-');
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
 env.GATEWAY_FAST_FIXTURE_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 const results = [], wire = [], returned = [], owned = new Set(), servers = new Set();
-let phase = 'setup', responseTier = 'priority';
+let phase = 'setup', failedPhase, responseTier = 'priority';
+// Every row says where the check had got to; the failure names the phase it stopped in, and the
+// watchdog reads that one field and nothing else.
 const save = async row => {
-  results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway,
+  results.push(row);
+  await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway, failedPhase,
     primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0, results, requestedTiers: wire, returnedTiers: returned }, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(row));
 };
@@ -104,6 +107,22 @@ async function invoke(client, threadId, name, tier, params = {}, actual = 'prior
   await until(() => returned.length === output + 1, 'Returned tier frame'); assert.equal(returned[output].serviceTier, actual);
   await save({ phase: name, passed: true, requestedServiceTier: tier, actualReturnedServiceTier: actual });
 }
+// One teardown for both endings: the finally below and the stopped-by-signal path. The check starts its
+// children in groups of their own, so every one of them must be stopped here or it outlives this script.
+let stopping;
+const cleanup = async () => {
+  if (stopping) return stopping;
+  stopping = (async () => {
+    await Promise.allSettled([...clients].map(client => client.close()));
+    for (const child of [...owned]) await stop(child);
+    for (const server of servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+    await rm(run, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  })();
+  return stopping;
+};
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  void cleanup().catch(() => {}).then(() => process.exit(1));
+});
 try {
   await until(() => fetch('http://127.0.0.1:' + servePort + '/health').then(res => res.ok).catch(() => false), 'Fixture CLI serve');
   const token = (await readFile(join(state, 'client-token'), 'utf8')).trim();
@@ -232,10 +251,7 @@ try {
   await save({ phase: 'verification', passed: true, transports, realSignedSdk: true, paidInferenceRequests: 0,
     renderedDesktopUiTested: false, builtInCloudTransportTested: false });
 } catch (error) {
-  await save({ phase: 'verification', passed: false, errorClass: error?.name || 'Error', code: error?.code,
+  failedPhase = phase;
+  await save({ phase: 'verification', passed: false, failedPhase, errorClass: error?.name || 'Error', code: error?.code,
     check: error?.message?.startsWith('Expected') ? 'Assertion failed' : error?.message, fixtureDiagnostic: error?.fixtureDiagnostic }); process.exitCode = 1;
-} finally {
-  await Promise.allSettled([...clients].map(client => client.close()));
-  for (const child of owned) await stop(child);
-  for (const server of servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-}
+} finally { await cleanup(); }

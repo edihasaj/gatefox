@@ -24,6 +24,7 @@
     "dist/protocol/*.d.ts",
     "LICENSE",
     "scripts/codex-desktop-shim",
+    "scripts/e2e-fast-mode.mjs",
     "README.md",
     "docs"
   ],
