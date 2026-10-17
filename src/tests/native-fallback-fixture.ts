@@ -72,10 +72,10 @@ export async function fallbackFixture(plan: Message = { sharedExecutors: true })
   const snapshot = { models: [] as Message[], revision: "fixture" };
   const catalog = { current: () => snapshot, refresh: async () => snapshot, combined: (value: typeof snapshot) => ({ models: value.models }), nativeSlugs: new Set<string>() } as unknown as DesktopCatalog;
   const adapters = new Set<AppServerBackends>();
-  async function create() {
+  async function create(signal?: AbortSignal) {
     const events: Message[] = []; let exits = 0;
     const adapter = await AppServerBackends.create(sdk, ["app-server", "--listen", "stdio://"], config, {}, {}, catalog,
-      async message => { events.push(message); }, () => { exits++; }, configPath);
+      async message => { events.push(message); }, () => { exits++; }, configPath, signal);
     adapters.add(adapter);
     return { adapter, events, exits: () => exits };
   }

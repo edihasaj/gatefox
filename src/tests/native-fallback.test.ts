@@ -10,7 +10,7 @@ import { object, type Message } from "../app-server-connection.js";
 import { writePrivateJson } from "../config.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import { livePid, sdkIdentity } from "../execution-host-storage.js";
-import { hostUnavailable, nativeFallbackReason } from "../execution-host-client.js";
+import { hostUnavailable, nativeFallbackReason, setHostWaitForTests } from "../execution-host-client.js";
 import { claimPrivateNativeHome, nativeHomeOwnership, readNativeHomeOwner } from "../native-execution-host-storage.js";
 import { configureTelemetry } from "../telemetry.js";
 import { fallbackFixture, until } from "./native-fallback-fixture.js";
@@ -194,4 +194,22 @@ test("an adapter whose native home is not the plan's, even a link to the same fo
     // The plan's own spelling still falls back.
     process.env.CODEX_HOME = f.nativeHome; await f.create(); assert.ok((await readNativeHomeOwner(f.nativeHome))?.privateOwner);
   } finally { await f.clean(); }
+});
+
+// The adapter's host waits take the session's signal: a session that ends while its host is down stops waiting at once, and a
+// stopped adapter ends the wait a gateway chat started, instead of holding its shutdown for up to 20 s.
+test("an ending session or a stopped adapter ends its host wait at once, and an ended session never falls back", { timeout: 30000 }, async () => {
+  const f = await fallbackFixture();
+  try {
+    setHostWaitForTests(15_000);
+    const controller = new AbortController(); setTimeout(() => controller.abort(), 200); let began = Date.now();
+    await assert.rejects(f.create(controller.signal), unavailable);
+    assert.ok(Date.now() - began < 5000, `the wait ended with the session (${Date.now() - began} ms)`);
+    assert.deepEqual(await f.launches(), [], "no private engine was started"); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+    // A fallback adapter whose gateway chat waits for the host: stopping the adapter ends that wait too.
+    setHostWaitForTests(500); const { adapter } = await f.create(); setHostWaitForTests(15_000);
+    const waiting = adapter.request("thread/start", { model: "claude/fixture" }, { engine: "gateway" }).then(() => "started", (error: Error) => error.message);
+    await new Promise(done => setTimeout(done, 200)); began = Date.now(); await adapter.stop();
+    assert.match(await waiting, /host is unavailable/); assert.ok(Date.now() - began < 5000, `the stop did not wait for the host (${Date.now() - began} ms)`);
+  } finally { setHostWaitForTests(500); await f.clean(); }
 });

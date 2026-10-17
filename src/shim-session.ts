@@ -43,7 +43,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
       // Server requests keep their own correlation; only notifications wait for a new thread's reply.
       if (isId(message.id)) { await Promise.all(order.before(message).map(emit)); await emit(message); return; }
       await Promise.all(order.admit(message).map(emit));
-    }, () => input.destroy(), configPath);
+    }, () => input.destroy(), configPath, signal);
   } catch (error) {
     control?.close(); turns.close();
     // A host that is restarting, busy or owned elsewhere fails closed by design and the

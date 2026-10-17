@@ -59,11 +59,13 @@ export class AppServerBackends {
   private leaseReleased?: Promise<void>;
   private finishNativeClosing!: () => void;
   private readonly nativeClosing = new Promise<void>(resolve => { this.finishNativeClosing = resolve; });
+  /** Aborted by stop(), so a host wait this adapter started (a kick and up to 20 s of looking) ends with it. */
+  private readonly stopped = new AbortController();
   /** This connection's chat classification; the router shares it, so both read one registry and one set of seen chats. */
   readonly identity: ChatIdentity;
   private readonly catalogs: IdentityCatalogs = { aliases: () => this.gatewayAliases(), nativeSlugs: () => this.catalog.nativeSlugs ?? noSlugs };
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
-    catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string): Promise<AppServerBackends> {
+    catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string, signal?: AbortSignal): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
     const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
     // A private native engine, with gateway chats on the shared host only when the plan shares them. A fallback engine runs only
@@ -78,8 +80,9 @@ export class AppServerBackends {
     let client: ExecutionHostClient | undefined; let backend: AppServerBackends | undefined;
     try {
       if (!configPath || plan?.config !== resolve(configPath)) throw new Error("Shared native executor configuration does not match this adapter");
-      try { client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true); }
+      try { client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true, signal); }
       catch (error) {
+        if (signal?.aborted) throw error; // The session is ending: nothing falls back for it.
         // Only a host that stayed down through the wait, or one that shares gateway chats without native sharing, falls back;
         // a host that does not match, a changed socket and every other failure keep failing closed. A fallback that a live
         // native owner refuses reports the host's own failure, unless the refusal names a cause of its own.
@@ -242,7 +245,7 @@ export class AppServerBackends {
       if (existing && !existing.closed) return existing;
       this.poolPending = undefined;
     }
-    const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable, "gateway", this.sharedGateway === true)
+    const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable, "gateway", this.sharedGateway === true, this.stopped.signal)
       .catch(error => { if (this.sharedGateway === true) Object.assign(error, { code: -32001 }); throw error; });
     this.poolPending = pending;
     const client = await pending;
@@ -480,7 +483,7 @@ export class AppServerBackends {
   }
   /** Why the session ends travels to every owned engine; a plain call stays "session_end" for the adapter's own shutdown. */
   async stop(reason: EngineStopReason = "session_end"): Promise<void> {
-    this.closing = true; this.finishNativeClosing(); stopConnection(this.native, reason);
+    this.closing = true; this.stopped.abort(); this.finishNativeClosing(); stopConnection(this.native, reason);
     this.nativeHost?.client.close();
     const poolClosing = this.poolPending?.then(client => client?.close()).catch(() => {});
     await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));
