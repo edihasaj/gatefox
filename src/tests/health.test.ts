@@ -74,6 +74,16 @@ test("a run the service stopped pushes nothing", async () => {
   assert.equal(exitCodeFor(stopped.report.verdict, stopped.report.push), 0);
 });
 
+test("the run's signal reaches the push, so a stop cancels the request", async () => {
+  const controller = new AbortController();
+  let seen: AbortSignal | undefined;
+  await check({ push: true, signal: controller.signal }, {
+    pushUrl: async () => ({ url: secretUrl }),
+    pushSend: async (_url, _verdict, _findings, signal) => { seen = signal; return { state: "sent", up: true } as PushOutcome; },
+  });
+  assert.equal(seen, controller.signal);
+});
+
 test("a section that cannot be read warns, and the run and its push still finish", async () => {
   const boom = async () => { throw new Error("ps: Operation not permitted"); };
   const seen: Array<{ verdict: Verdict }> = [];
@@ -128,13 +138,13 @@ test("a lagging component warns; a stopped inference or a refusal fails", async 
   assert.equal(down.code, 2);
   assert.ok(down.report.findings.some(f => f.reason === "inference not serving"));
   // One refusal in the window is a hiccup; the third is a Mac that stopped answering.
-  const one = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [{ event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at }] });
+  const one = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [{ event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "adapter_routing", at }] });
   assert.equal(one.report.verdict, "warn");
   assert.ok(one.report.findings.some(f => f.level === "warn" && f.reason === "refused turn/start 1x"));
   assert.deepEqual(one.report.errors.rpcErrors, { "turn/start": 1 });
   const three = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [
-    { event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at },
-    { event: "rpc_error", method: "thread/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at },
+    { event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "adapter_routing", at },
+    { event: "rpc_error", method: "thread/start", code: -32001, errorClass: "RouteUnavailable", rejection: "adapter_routing", at },
     { event: "rpc_error", method: "thread/resume", errorClass: "AdapterRefused", rejection: "other", at },
   ] });
   assert.equal(three.report.verdict, "fail");

@@ -10,7 +10,12 @@ read_when:
 `gateway health` answers one question for a single Mac: did the ChatGPT app move
 under the gateway, and did anything break when it did? It runs entirely on the
 local machine. The only network calls are the loopback inference probe and, with
-`--push`, the one heartbeat to the alert monitor.
+`--push`, the one heartbeat to the alert monitor. The compatibility smoke adds
+none of its own: its mock upstream is on loopback, and its engine config sets
+`features.plugins = false`, which stops the app engine from cloning
+`github.com/openai/plugins` into its private home (checked against engine
+0.163: without the key `git ls-remote` and `git fetch` run within seconds of
+start, with it none do).
 
 ```sh
 gateway health [--json] [--push] [--smoke]
@@ -54,9 +59,15 @@ from the last JSON line's `failedPhase` name on failure.
 Stopping it is a sequence, not a signal. The check starts its gateway, executor
 and engine in process groups of their own, so after the 10-minute timeout the
 watchdog sends SIGTERM to the check's group and gives it 15 seconds to take its
-own children down; only a group that ignores the ask gets SIGKILL. The check
-handles SIGTERM and SIGINT the same way it handles the end of its own run, so
-the children and the `/tmp/gw-fast-*` folder it made leave with it. Stopping the
+own children down; only a group that ignores the ask gets SIGKILL, and once the
+check has closed the group is swept with SIGKILL for anything it left behind.
+The check handles SIGTERM and SIGINT the same way it handles the end of its own
+run: its handlers are installed before it creates anything, it spawns nothing
+once teardown has begun, and it stops each child's whole process group (SIGTERM,
+three seconds, then SIGKILL, and a sweep after the child closes) until none is
+left, so the engine's own helpers and the `/tmp/gw-fast-*` folder leave with it.
+A failure names the step it stopped in (`serve`, `catalog`, `stdio-host`,
+`stdio-open`, `stdio-catalog`, or the check's own phases). Stopping the
 service aborts a check that is still running through the same sequence, which is
 why a shutdown does not wait for a ten-minute run.
 

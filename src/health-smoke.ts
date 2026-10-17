@@ -60,13 +60,15 @@ export interface SmokeDeps {
 
 /** Runs the check for this app pair, or says plainly why it could not. */
 export async function runSmoke(app: AppInfo, stateDirectory: string, deps: SmokeDeps = {}): Promise<SmokeAnswer> {
+  // A service that is already stopping starts nothing: no folder, no child.
+  if (deps.signal?.aborted) return { result: "unavailable" };
   const at = deps.now?.() ?? Date.now();
   const script = smokeScript(deps.moduleUrl);
   const present = deps.exists ?? (path => stat(path).then(info => info.isFile(), () => false));
   if (app.state !== "found" || !app.enginePath) return { result: "unavailable" };
   if (!await present(script)) return { result: "unavailable" };
   const install = await (deps.targets ?? installedPaths)().catch(() => undefined);
-  if (!install) return { result: "unavailable" };
+  if (!install || deps.signal?.aborted) return { result: "unavailable" };
   const root = smokeRoot(stateDirectory, at);
   const make = deps.makeRoot ?? ((path: string) => mkdir(path, { recursive: true, mode: 0o700 }).then(() => undefined));
   await make(root).catch(() => undefined);
@@ -110,6 +112,8 @@ function failingPhase(tail: string): string | undefined {
 
 /** The real runner: one detached check, stopped as a group, read only for its last phase. */
 export const launchSmoke: SmokeRunner = launch => new Promise<SmokeAnswer>(resolveAnswer => {
+  // Asked to stop before it began: nothing is started at all.
+  if (launch.signal?.aborted) return resolveAnswer({ result: "unavailable" });
   let child;
   try {
     child = spawn(launch.runtime, [launch.script, "--gateway", launch.gateway, "--package", launch.packageRoot,
@@ -153,6 +157,8 @@ export const launchSmoke: SmokeRunner = launch => new Promise<SmokeAnswer>(resol
   };
   child.once("error", () => settle({ result: "unavailable" }));
   child.once("close", code => {
+    // The script is gone, but a child it left in its group is not: sweep the group before answering.
+    if (stopping) group("SIGKILL");
     // A stopped run says nothing about the pair, so it is not recorded; a timeout still is a failure.
     if (stopping === "abort") return settle({ result: "unavailable" });
     if (stopping === "timeout") return settle({ result: "fail", phase: "timeout" });

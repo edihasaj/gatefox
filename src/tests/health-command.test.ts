@@ -87,8 +87,8 @@ test("exit codes follow the verdict and the push answer", async () => {
   const noRelease: Partial<HealthCommandDeps> = { versions: async () => ({ installed: null, lagging: 0, processes: [] }) };
   // Three refusals in the window are a fail, and fail exits 2. One on its own is only a warn.
   const refused = await run(["--json"], { telemetry: async () => [
-    { event: "rpc_error", method: "thread/start", code: -32001, rejection: "route", at },
-    { event: "rpc_error", method: "turn/start", code: -32001, rejection: "route", at },
+    { event: "rpc_error", method: "thread/start", code: -32001, rejection: "adapter_routing", at },
+    { event: "rpc_error", method: "turn/start", code: -32001, rejection: "adapter_routing", at },
     { event: "rpc_error", method: "thread/resume", rejection: "other", at },
   ], ...noRelease });
   assert.equal(JSON.parse(refused.out).verdict, "fail");

@@ -85,6 +85,8 @@ export interface PushTransportDeps {
   /** Sends one request and reports only whether the monitor took it. */
   send?: (url: string, signal: AbortSignal) => Promise<{ ok: boolean; status: number }>;
   timeoutMs?: number;
+  /** A service shutting down cancels the request the same way a timeout does. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -97,7 +99,8 @@ export async function pushVerdict(url: string, verdict: Verdict, findings: Findi
   const request = pushRequest(url, status, pushSummary(verdict, findings));
   const timeoutMs = deps.timeoutMs ?? pushTimeoutMs;
   const send = deps.send ?? ((target, signal) => fetch(target, { signal, redirect: "error" }).then(response => ({ ok: response.ok, status: response.status })));
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = deps.signal ? AbortSignal.any([timeout, deps.signal]) : timeout;
   try {
     const answer = await send(request, signal);
     return answer.ok ? { state: "sent", up: status === "up" } : { state: "failed", error: `http_${answer.status}` };

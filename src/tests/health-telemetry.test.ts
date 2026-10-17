@@ -44,10 +44,10 @@ test("counts cover hosts, exits, refusals, retries, and sharing", () => {
   const signals = summarizeHealthEvents([
     row({ event: "execution_host_failed" }), row({ event: "execution_host_failed" }),
     row({ event: "component_exit", kind: "native" }), row({ event: "component_exit", kind: "native" }), row({ event: "component_exit" }),
-    row({ event: "rpc_error", method: "turn/start", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "route" }),
+    row({ event: "rpc_error", method: "turn/start", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "adapter_routing" }),
     row({ event: "rpc_error", method: "thread/resume", code: -32603, errorClass: "AdapterRefused", rejection: "other" }),
-    row({ event: "rpc_error", method: "other/method", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "route" }),
-    row({ event: "rpc_error", method: "thread/start", code: -32600, errorClass: "BadRequest", rejection: "input" }),
+    row({ event: "rpc_error", method: "other/method", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "adapter_routing" }),
+    row({ event: "rpc_error", method: "thread/start", code: -32600, errorClass: "BadRequest", rejection: "invalid_params" }),
     row({ event: "gateway_features_trimmed", site: "startup" }),
     row({ event: "gateway_features_trimmed", site: "retry" }),
     row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_fallback" }),
