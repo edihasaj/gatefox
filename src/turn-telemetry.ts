@@ -29,7 +29,8 @@ export function errorClass(message: unknown): string {
 export class TurnTelemetry {
   private readonly turns = new Map<string, Turn>();
   private readonly timer: NodeJS.Timeout;
-  constructor(private readonly describe: (threadId: string) => { provider?: string; model?: string }) {
+  /** `describe` gives the chat's engine kind as `provider`, its model, and for a gateway chat the provider id it was saved with as `identity`. */
+  constructor(private readonly describe: (threadId: string) => { provider?: string; model?: string; identity?: string }) {
     this.timer = setInterval(() => this.checkQuiet(), 60000); this.timer.unref();
   }
   close(): void { clearInterval(this.timer); }
@@ -42,7 +43,7 @@ export class TurnTelemetry {
   }
   private fields(key: string): Record<string, unknown> {
     const [threadId, turnId] = key.split("\n"); const route = this.describe(threadId!);
-    return { threadId, turnId, provider: route.provider || "unknown", model: route.model };
+    return { threadId, turnId, provider: route.provider || "unknown", model: route.model, identity: route.identity };
   }
   observe(message: Message): void {
     const method = typeof message.method === "string" ? message.method : ""; const params = object(message.params); const now = Date.now();

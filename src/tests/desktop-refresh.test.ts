@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFile, writeFile, mkdir, readlink } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, readlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 import { modelCatalog } from "../catalog.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson } from "../config.js";
+import { gatewayIdentities } from "./identity-cases.js";
 
 async function client(files?: Awaited<ReturnType<typeof shimFiles>>) {
   files ??= await shimFiles();
@@ -142,4 +143,27 @@ test("credential-free clients read saved gateway chats before model discovery an
     assert.equal((await reopened.rpc("account/read")).account.email, "primary-test-account");
     assert.equal(await readFile(join(files.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
   } finally { await reopened.stop(); }
+});
+
+for (const identity of gatewayIdentities) test(`a saved gateway chat resumes on a gateway executor whichever provider id it was saved with (${identity.name})`, { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    // Saved before this adapter started, as by an earlier release: the desktop resumes both with no model and no provider.
+    const sessions = join(c.nativeHome, "sessions"); await mkdir(sessions, { recursive: true });
+    await writeFile(join(sessions, "saved-gateway.json"), JSON.stringify({ id: "saved-gateway", modelProvider: identity.provider, model: "claude/model" }));
+    await writeFile(join(sessions, "saved-native.json"), JSON.stringify({ id: "saved-native", modelProvider: "openai", model: "native" }));
+    const nativeEngine = await c.rpc("engine/info", {});
+    const resumed = await c.rpc("thread/resume", { threadId: "saved-gateway", model: null, modelProvider: null });
+    assert.deepEqual({ provider: resumed.modelProvider, model: resumed.model }, { provider: "subscription_gateway", model: "claude/model" }, "this release still runs gateway chats under the gateway's own provider id");
+    const gatewayEngine = await c.rpc("engine/info", { threadId: "saved-gateway" });
+    assert.notEqual(gatewayEngine.pid, nativeEngine.pid); assert.equal(gatewayEngine.primaryAuthPresent, false);
+    const nativeResume = await c.rpc("thread/resume", { threadId: "saved-native", model: null, modelProvider: null });
+    assert.deepEqual({ provider: nativeResume.modelProvider, model: nativeResume.model }, { provider: "openai", model: "native" });
+    assert.equal((await c.rpc("engine/info", { threadId: "saved-native" })).pid, nativeEngine.pid);
+    // A new gateway chat is recorded in the gateway's registry, so a later release can tell it apart without the provider id.
+    const started = await c.rpc("thread/start", { model: "claude/model" });
+    assert.equal(started.modelProvider, "subscription_gateway");
+    const registry = JSON.parse(await readFile(join(c.value.stateDirectory, "gateway-chats", (await readdir(join(c.value.stateDirectory, "gateway-chats"))).find(name => name.endsWith(".json"))!), "utf8"));
+    assert.deepEqual(registry.chats.map((chat: { id: string; origin: string }) => [chat.id, chat.origin]), [[started.thread.id, "start"]]);
+  } finally { await c.stop(); }
 });

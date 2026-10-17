@@ -35,8 +35,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
   const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
   try {
-    backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async message => {
-      await router?.observeNotification(message);
+    backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async (message, engine) => {
+      await router?.observeNotification(message, engine);
       if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
       if (control && message.method === "remoteControl/status/changed") return;
       // Server requests keep their own correlation; only notifications wait for a new thread's reply.
@@ -49,7 +49,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
     // app retries; only an unexpected start failure is reported as an exception.
     if (!operationalStartFailure(error)) reportException(error, "adapter_start");
     telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
-  router = new AppServerRouter(config, (method, params) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params), prepared.path, source);
+  router = new AppServerRouter(config, (method, params, hint) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params, hint), prepared.path, source, undefined, backends.identity);
   const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {
     // The parent already runs with corrected hooks; the SDK refuses any override on this fork.

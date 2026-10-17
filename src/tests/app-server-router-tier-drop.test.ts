@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,10 +6,14 @@ import { ThreadServiceTiers } from "../thread-service-tiers.js";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import { identityTest } from "./identity-cases.js";
+
+// A saved gateway chat and its engine's notifications carry the identity under test; requests the router sends still name the gateway's own provider.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 type Ran = { model: string; tier: string | null };
-const gateway = "subscription_gateway";
 const claude = "claude/model"; const codex = "codex/model";
 let clock = Date.now();
 
@@ -49,7 +52,8 @@ async function fixture(readModel = claude) {
     if (method === "config/read") return { config: { model: "native", model_provider: "openai" }, origins: {}, layers: null };
     if (method === "thread/read") return { thread: { id: "t", modelProvider: control.provider, model: readModel } };
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
-      if (control.loaded) return { thread: { id: "t" }, modelProvider: gateway, model: sdk.model, serviceTier: sdk.tier ?? null };
+      // A loaded chat answers with the provider this router's own start or resume gave it.
+      if (control.loaded) return { thread: { id: "t" }, modelProvider: "subscription_gateway", model: sdk.model, serviceTier: sdk.tier ?? null };
       sdk.model = String(params.model);
       sdk.tier = tier === undefined || tier === null || offers(sdk.model, tier) ? normal(tier) ?? null : null;
       const answer = { thread: { id: "t" }, modelProvider: params.modelProvider, model: params.model, serviceTier: sdk.tier };
@@ -280,7 +284,8 @@ test("a per-turn field on a session start is not a tier the gateway interprets, 
 });
 
 test("a native chat's per-turn fast is passed to the SDK unchanged; only gateway chats map it to priority", async () => {
-  const f = await fixture(); f.control.provider = "openai";
+  // A native chat runs a native model; "openai" with a gateway alias would be a gateway chat saved with the native identity.
+  const f = await fixture("native"); f.control.provider = "openai";
   await f.router.request("turn/start", { threadId: "t", serviceTierForTurn: "fast", input: [] });
   assert.equal(f.last().method, "turn/start"); assert.equal(f.last().params.serviceTierForTurn, "fast");
   const gatewayChat = await fixture();

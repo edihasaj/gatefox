@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,9 +6,13 @@ import { ThreadServiceTiers } from "../thread-service-tiers.js";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { oldBuildAccepts } from "./thread-tier-0-4-0-parser.js";
+import { identityTest } from "./identity-cases.js";
+
+// A saved gateway chat and its engine's notifications carry the identity under test; requests the router sends still name the gateway's own provider.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
-const gateway = "subscription_gateway";
 const codex = "codex/model";
 const oddTiers = ["auto", "Fast", "PRIORITY", "x".repeat(200)];
 const label = (tier: string) => tier.slice(0, 12);
@@ -35,7 +38,8 @@ async function fixture() {
     if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
       await control.during?.();
       const thread = { id: control.answerId, ...(control.ephemeral ? { ephemeral: true } : {}) };
-      if (control.loaded) return { thread, modelProvider: gateway, model: codex, serviceTier: sdk.tier };
+      // A loaded chat answers with the provider this router's own start or resume gave it.
+      if (control.loaded) return { thread, modelProvider: "subscription_gateway", model: codex, serviceTier: sdk.tier };
       sdk.tier = Object.hasOwn(params, "serviceTier") ? params.serviceTier ?? null : null;
       return { thread, modelProvider: params.modelProvider, model: params.model, serviceTier: sdk.tier };
     }

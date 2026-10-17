@@ -49,7 +49,7 @@ test("thread start and fork are retried the same way", { timeout: 10000 }, async
   try {
     const id = await startGatewayChat(f.backend);
     const config = failing({ features: { sleep_tool: { enabled: true, mode: "always_on" } } });
-    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway", config });
+    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway", config }, { engine: "gateway" });
     assert.equal(typeof (started.thread as { id: string }).id, "string");
     await f.backend.request("thread/fork", { threadId: id, config });
     const seen = await log(f, id);

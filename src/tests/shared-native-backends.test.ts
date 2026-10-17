@@ -154,7 +154,7 @@ test("native-only adapter intent does not inherit gateway sharing from an older 
     const first = await f.create(); assert.equal(first.adapter.native.shared, true);
     // The fixture CLI exits after recording its private gateway home. A shared
     // route would instead call the host's forbidden execution/acquire method.
-    await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture", modelProvider: "subscription_gateway" }), /exited/);
+    await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture", modelProvider: "subscription_gateway" }, { engine: "gateway" }), /exited/);
     const spawned = JSON.parse(await readFile(f.spawnMarker, "utf8"));
     assert.notEqual(spawned.home, f.nativeHome); assert.ok(spawned.home.startsWith(join(f.config.stateDirectory, "desktop-generations") + "/"));
     assert.equal(spawned.authPresent, false); assert.equal(f.calls.some(message => String(message.method).startsWith("execution/")), false);

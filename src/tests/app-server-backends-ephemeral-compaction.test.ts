@@ -5,6 +5,12 @@ import { CompactionStateStore } from "../compaction-state.js";
 import { BoundedIdSet } from "../bounded-id-set.js";
 import type { Message } from "../app-server-connection.js";
 import { compactionSdkFixture, largeModel, until } from "./compaction-sdk-fixture.js";
+import { GatewayChatRegistry } from "../gateway-chat-registry.js";
+import { identityTest } from "./identity-cases.js";
+
+// Throwaway chats stay out of every gateway file, the chat registry included, whichever provider id their parent was saved with.
+let gateway = "subscription_gateway";
+const bothIdentities = identityTest(identity => { gateway = identity.provider; });
 
 type Fixture = Awaited<ReturnType<typeof compactionSdkFixture>>;
 const input = [{ type: "text", text: "go" }];
@@ -17,8 +23,8 @@ async function turn(f: Fixture, threadId: string): Promise<void> {
 const row = (f: Fixture, threadId: string) => new CompactionStateStore(f.config.stateDirectory, resolve(f.nativeHome)).read(threadId);
 const fork = (f: Fixture, id: string, params: Message) => f.backends.request("thread/fork", { threadId: "parent", fixtureId: id, ...params });
 
-test("a throwaway chat's turns write no compaction row, however the gateway learns it is throwaway", { timeout: 15000 }, async () => {
-  const f = await compactionSdkFixture();
+bothIdentities("a throwaway chat's turns write no compaction row and no registry entry, however the gateway learns it is throwaway", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(false, true, gateway);
   try {
     await f.start("parent"); await turn(f, "parent");
     assert.ok(await row(f, "parent"), "an ordinary chat's finished turn is saved, so this test can see a row");
@@ -31,11 +37,13 @@ test("a throwaway chat's turns write no compaction row, however the gateway lear
     // Only the request says so: the executor reports nothing.
     await fork(f, "by-flag", { ephemeral: true, fixtureNoStarted: true, fixtureHideResult: true });
     // A chat the desktop started as ephemeral.
-    await f.backends.request("thread/start", { fixtureId: "started", model: largeModel, modelProvider: "subscription_gateway", ephemeral: true });
+    await f.backends.request("thread/start", { fixtureId: "started", model: largeModel, modelProvider: gateway, ephemeral: true }, { engine: "gateway" });
     for (const id of ["by-mode", "by-param", "by-result", "by-notice", "by-flag", "started"]) { await turn(f, id); assert.equal(await row(f, id), undefined, id); }
     // A fork that is not throwaway is saved like its parent.
     await fork(f, "ordinary", {}); await turn(f, "ordinary");
     assert.ok(await row(f, "ordinary"));
+    const registry = new GatewayChatRegistry(f.config.stateDirectory, f.nativeHome);
+    assert.deepEqual([...await registry.snapshot()].sort(), ["ordinary", "parent"], "only durable gateway chats are recorded");
   } finally { await f.clean(); }
 });
 
@@ -77,7 +85,7 @@ test("a throwaway chat is forgotten when it is closed, unsubscribed or deleted, 
       await fork(f, id, { experimentalPredictionMode: true });
       await f.backends.request(end, { threadId: id, ...extra });
       // The same id returns as an ordinary chat: it must be saved again.
-      await f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway" });
+      await f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway" }, { engine: "gateway" });
       await turn(f, id);
       assert.ok(await row(f, id), end);
     }
