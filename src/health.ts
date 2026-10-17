@@ -57,7 +57,7 @@ export interface HealthDeps {
   state?: (stateDirectory: string) => Promise<HealthState | undefined>;
   writeState?: (stateDirectory: string, state: HealthState) => Promise<void>;
   pushUrl?: PushUrlReader;
-  pushSend?: (url: string, verdict: Verdict, findings: Finding[]) => Promise<PushOutcome>;
+  pushSend?: (url: string, verdict: Verdict, findings: Finding[], signal?: AbortSignal) => Promise<PushOutcome>;
   moduleUrl?: string;
   windowMs?: number;
   /** When the installed `current` link was switched; the clock a lag becomes stale on. */
@@ -156,7 +156,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   await remember(options.stateDirectory, state, change, smoke, deps);
   // A run this Mac was asked to stop says nothing about the Mac, so it says nothing aloud either:
   // stopping the service must never send a warning born of the stop itself.
-  if (options.push && !options.signal?.aborted) report.push = await deliver(report, options.stateDirectory, deps);
+  if (options.push && !options.signal?.aborted) report.push = await deliver(report, options.stateDirectory, deps, options.signal);
   return report;
 }
 
@@ -193,10 +193,10 @@ async function remember(stateDirectory: string, before: HealthState | undefined,
 }
 
 /** The alert: read the monitor's URL privately, send one heartbeat, and fold in what it says. */
-async function deliver(report: HealthReport, stateDirectory: string, deps: HealthDeps): Promise<PushOutcome> {
+async function deliver(report: HealthReport, stateDirectory: string, deps: HealthDeps, signal?: AbortSignal): Promise<PushOutcome> {
   const file = await (deps.pushUrl ?? readPushUrl)(pushUrlPath(stateDirectory));
   const outcome: PushOutcome = file.error === "insecure" ? { state: "insecure" } : !file.url ? { state: "skipped" }
-    : await (deps.pushSend ?? ((url, verdict, findings) => pushVerdict(url, verdict, findings)))(file.url, report.verdict, report.findings);
+    : await (deps.pushSend ?? ((url, verdict, findings, abort) => pushVerdict(url, verdict, findings, { signal: abort })))(file.url, report.verdict, report.findings, signal);
   // Every outcome, including a URL this watchdog will not read, says so in its own words.
   report.findings = [...report.findings, ...pushFindings(outcome)];
   report.verdict = verdictOf(report.findings);

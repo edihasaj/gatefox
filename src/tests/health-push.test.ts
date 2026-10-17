@@ -138,6 +138,23 @@ test("the heartbeat arms its timeout and names failures without naming the monit
   assert.deepEqual(rejected, { state: "failed", error: "http_502" });
 });
 
+test("a stopped service cancels the heartbeat that is in flight", async () => {
+  const controller = new AbortController();
+  let seen: AbortSignal | undefined;
+  const sending = pushVerdict(url, "ok", [], { signal: controller.signal, send: (_request, signal) => new Promise((_resolve, reject) => {
+    seen = signal; signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }) });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(seen?.aborted, false);
+  controller.abort();
+  assert.deepEqual(await sending, { state: "failed", error: "timeout" });
+  assert.equal(seen?.aborted, true);
+  // Without a caller's signal the request still has its own timeout signal.
+  let own: AbortSignal | undefined;
+  await pushVerdict(url, "ok", [], { send: async (_request, signal) => { own = signal; return { ok: true, status: 200 }; } });
+  assert.equal(own?.aborted, false);
+});
+
 test("push findings carry outcomes, not the URL", () => {
   assert.deepEqual(pushFindings({ state: "sent", up: false }), []);
   assert.deepEqual(pushFindings({ state: "skipped" }), [{ level: "info", reason: "alert push not configured" }]);

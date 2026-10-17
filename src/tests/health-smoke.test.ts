@@ -188,3 +188,60 @@ test("the signal reaches the runner through runSmoke, and the folder still goes"
   assert.deepEqual(outcome, { result: "unavailable" });
   assert.equal(dropped, smokeRoot("/state", at));
 });
+
+// The check's own child sits in the check's group and ignores SIGTERM, as the engine's git does while it is waiting on the network.
+const stubbornChild = [
+  "const child = spawn(\"/bin/sh\", [\"-c\", \"trap '' TERM; exec sleep 60\"], { stdio: \"ignore\" });",
+  "await import(\"node:fs/promises\").then(fs => fs.writeFile(process.env.FAKE_PID_FILE, process.pid + \" \" + child.pid));",
+];
+const pids = async (file: string) => (await readFile(file, "utf8")).split(" ").map(Number);
+
+test("a check that ignores SIGTERM is killed after the grace, with the child in its group", { skip: process.platform === "win32" }, async () => {
+  const { folder, launch } = await fakeSmoke([...stubbornChild, "process.on(\"SIGTERM\", () => { });", "await new Promise(() => { });"].join("\n"));
+  const pidFile = join(folder.directory, "pids");
+  launch.timeoutMs = 300; launch.graceMs = 400;
+  launch.env = { ...launch.env, FAKE_PID_FILE: pidFile };
+  const started = Date.now();
+  assert.deepEqual(await launchSmoke(launch), { result: "fail", phase: "timeout" });
+  assert.ok(Date.now() - started >= 600, "SIGKILL must wait for the grace, not replace the polite ask");
+  const [script, child] = await pids(pidFile);
+  assert.ok(await untilGone(script!), "the check ignored SIGTERM and SIGKILL did not follow");
+  assert.ok(await untilGone(child!), "SIGKILL left the check's child running");
+  await folder.remove();
+});
+
+test("a check that exits on SIGTERM still has its group swept of what it left behind", { skip: process.platform === "win32" }, async () => {
+  const { folder, launch } = await fakeSmoke([...stubbornChild, "process.on(\"SIGTERM\", () => process.exit(1));", "await new Promise(() => { });"].join("\n"));
+  const pidFile = join(folder.directory, "pids");
+  launch.timeoutMs = 300; launch.graceMs = 30_000;
+  launch.env = { ...launch.env, FAKE_PID_FILE: pidFile };
+  const started = Date.now();
+  assert.deepEqual(await launchSmoke(launch), { result: "fail", phase: "timeout" });
+  assert.ok(Date.now() - started < 10_000, "the answer waited for the grace");
+  const [, child] = await pids(pidFile);
+  assert.ok(await untilGone(child!), "the child that ignores SIGTERM outlived the check");
+  await folder.remove();
+});
+
+test("a run asked to stop before it starts starts nothing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const { folder, launch } = await fakeSmoke(`await import("node:fs/promises").then(fs => fs.writeFile(process.env.FAKE_PID_FILE, "started"));`);
+  const marker = join(folder.directory, "started");
+  launch.env = { ...launch.env, FAKE_PID_FILE: marker }; launch.signal = controller.signal;
+  assert.deepEqual(await launchSmoke(launch), { result: "unavailable" });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await assert.rejects(() => stat(marker), (error: unknown) => (error as { code?: string }).code === "ENOENT");
+  await folder.remove();
+  // runSmoke does not even make the folder or look for the install.
+  const made: string[] = [];
+  let looked = false;
+  const outcome = await runSmoke(app, "/state", {
+    now: () => at, exists: async () => true, targets: async () => { looked = true; return targets; },
+    makeRoot: async path => { made.push(path); }, dropRoot: async () => {}, signal: controller.signal,
+    run: async () => { throw new Error("must not run"); },
+  });
+  assert.deepEqual(outcome, { result: "unavailable" });
+  assert.deepEqual(made, []);
+  assert.equal(looked, false);
+});
