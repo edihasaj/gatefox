@@ -54,6 +54,8 @@ export class AppServerBackends {
   private closing = false;
   private creating: Promise<unknown> = Promise.resolve();
   private poolPending?: Promise<ExecutionHostClient | undefined>;
+  /** The last live host connection `pool()` handed out; a re-attach reads it, synchronously, for its reason. */
+  private poolClient?: ExecutionHostClient;
   private nativeHost?: { client: ExecutionHostClient; record: NativeLaunchRecord };
   private sharedGateway?: boolean;
   private readonly compaction: GatewayCompaction;
@@ -267,15 +269,23 @@ export class AppServerBackends {
       if (this.sharedGateway === true) throw Object.assign(new Error("Shared gateway execution requires this adapter's configuration path"), { code: -32001 });
       return;
     }
-    if (this.poolPending) {
-      const existing = await this.poolPending.catch(() => undefined);
-      if (existing && !existing.closed) return existing;
+    // One discovery at a time: a caller that finds the settled one gone follows a newer attempt if another caller already
+    // started one, and only a caller still seeing that same closed value starts the next. A discovery of its own per closed
+    // generation would leak a control connection each, and the host takes at most eight.
+    for (;;) {
+      const waiting = this.poolPending;
+      if (!waiting) break;
+      const existing = await waiting.catch(() => undefined);
+      if (existing && !existing.closed) { this.poolClient = existing; return existing; }
+      if (this.poolPending !== waiting) continue;
       this.poolPending = undefined;
+      break;
     }
     const pending = ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable, "gateway", this.sharedGateway === true, this.stopped.signal)
       .catch(error => { if (this.sharedGateway === true) Object.assign(error, { code: -32001 }); throw error; });
     this.poolPending = pending;
     const client = await pending;
+    if (client && !client.closed) this.poolClient = client;
     if (!client && this.poolPending === pending) this.poolPending = undefined;
     return client;
   }
@@ -420,13 +430,17 @@ export class AppServerBackends {
   }
   /**
    * Loads a chat whose gateway executor is gone onto a live one: the host is found again (a kick and its usual wait), the
-   * generation that owns the chat or the current one is acquired, and the chat is resumed with the parameters this
-   * connection loaded it with, its saved provider among them. Nothing of a turn that died with the executor is sent again.
-   * Requests that find the same chat's executor gone meanwhile share this one re-attach. The host's owner and generation
-   * rules still decide, so a chat never gets a second writer.
+   * generation that owns the chat or the current one is acquired, and the chat is resumed the way a desktop resume is:
+   * with the load parameters the executor cannot restore from the chat's history, the SDK bringing back the model, the
+   * provider id the chat is saved with and the approvals the chat last used. Nothing of a turn that died with the executor
+   * is sent again. Requests that find the same chat's executor gone meanwhile share this one re-attach; the flight is
+   * claimed before anything is awaited. The host's owner and generation rules still decide, so a chat never gets a second
+   * writer.
    */
   private async reattach(threadId: string, closed: Engine): Promise<void> {
-    const host = this.nativeHost?.client ?? await this.poolPending?.catch(() => undefined);
+    // Synchronous state only, and the flight check that follows is synchronous too: awaiting a host lookup here would let
+    // a request that arrives mid-lookup miss the running flight and report a reason the host lookup has already changed.
+    const host = this.nativeHost?.client ?? this.poolClient;
     const reason = closed.shared && host && !host.closed ? "generation_retired" : "engine_closed";
     await this.reattacher.join(threadId, reason, async () => {
       try { const target = await this.owner(threadId) ?? await this.gateway(); target.requests--; }
@@ -511,6 +525,14 @@ export class AppServerBackends {
       if (reserved) engine.requests--;
       const threadId = String(params.threadId);
       if (method === "thread/resume") { engine = await this.owner(threadId) || await this.gateway(); reserved = true; }
+      else if (method === "thread/unsubscribe") {
+        // The chat is loaded nowhere this connection can reach, and unloading it asks nothing of a host: answer the SDK's
+        // own "not loaded" here, with the chat's local records cleared, instead of waking a generation just to unload it.
+        engine.threads.delete(threadId);
+        if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId);
+        this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); this.loads.forget(threadId);
+        return { status: "notLoaded" };
+      }
       else {
         // The chat's executor is gone (its host restarted, or it exited): load the chat again on a live one and then send the
         // request there, as the user would by resuming. A throwaway chat lived only in the engine that is gone.
@@ -561,10 +583,8 @@ export class AppServerBackends {
         if (creating && typeof params.modelProvider === "string" && result.modelProvider !== params.modelProvider) {
           throw new Error("The gateway executor did not record this chat with the requested provider; start a new chat");
         }
-        if (!this.ephemeralThreads.has(id)) this.loads.remember(id, params, result);
+        if (!this.ephemeralThreads.has(id)) this.loads.remember(id, params);
       }
-      // A model the executor applied is the one a re-attach loads the chat with.
-      if (typeof params.threadId === "string" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) this.loads.model(params.threadId, params.model);
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
         engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); this.ephemeralThreads.delete(params.threadId); engine.compaction?.forget(params.threadId);
         this.loads.forget(params.threadId);
