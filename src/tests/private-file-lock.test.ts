@@ -34,10 +34,12 @@ async function stalled(path: string, pid: number, mtimeMs: number): Promise<void
 test("a lock this process still holds is never broken by a second writer in the same process", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-preference-lock-")); const path = join(directory, "preferences");
   setBootIdentityForTests({ id: "11111111-1111-4111-8111-111111111111", bootedAtMs: booted });
-  let release!: () => void;
+  let release!: () => void; let acquired!: () => void;
+  // The second attempt starts only once the first writer holds the lock: a fixed tick raced the first one's file creation.
+  const holding = new Promise<void>(done => { acquired = done; });
   try {
-    const first = withPrivateFileLock(path, () => new Promise<string>(done => { release = () => done("first"); }));
-    await new Promise(done => setImmediate(done));
+    const first = withPrivateFileLock(path, () => { acquired(); return new Promise<string>(done => { release = () => done("first"); }); });
+    await holding;
     await assert.rejects(withPrivateFileLock(path, async () => "second", 200), /busy/);
     assert.equal(await readFile(`${path}.lock`, "utf8"), String(process.pid));
     release(); assert.equal(await first, "first");

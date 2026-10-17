@@ -4,8 +4,10 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, type GatewayConfig } from "../config.js";
 import { createGatewayHandler } from "../server.js";
+import { flushRecords } from "../usage-ledger.js";
 import type { InferenceContext, Provider } from "../providers/provider.js";
 import { readEvents } from "../protocol/sse.js";
 import type { WireEvent } from "../protocol/types.js";
@@ -24,7 +26,13 @@ async function fixture(provider: Provider) {
   return { handler,
     post: (body: unknown = input, headers: Record<string, string> = {}) => fetch(endpoint, { method: "POST",
       headers: { "Content-Type": "application/json", "x-api-key": token, ...headers }, body: JSON.stringify(body) }),
-    close: async () => { handler.abortAll(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); },
+    close: async () => {
+      handler.abortAll(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+      // A request writes its usage row and telemetry after its stream ends, so the folder goes only once the handler is idle
+      // and those writes are flushed; removing it earlier raced a late row into the usage folder (ENOTEMPTY).
+      for (const until = Date.now() + 5000; !handler.isIdle() && Date.now() < until;) await delay(10);
+      await flushRecords(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    },
   };
 }
 async function collect(response: Response): Promise<WireEvent[]> {

@@ -32,6 +32,8 @@ export class ObservedContextWindows {
       await writePrivateJson(windowsPath(this.state), { version: 1, providers: windows });
     }).catch(() => {});
   }
+  /** Settles once every window recorded so far is written, or its write failed. */
+  flush(): Promise<void> { return this.writes; }
 }
 
 /**

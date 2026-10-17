@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { ObservedContextWindows, refreshModelMetadata } from "../model-refresh.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { ClaudeSubscription } from "../providers/claude.js";
@@ -21,8 +20,9 @@ async function fixture() {
 test("refresh updates metadata of configured models only and prefers observed windows", async () => {
   const f = await fixture();
   try {
-    new ObservedContextWindows(f.directory).record("claude", "claude-opus-4-6", 1000000);
-    await delay(50);
+    const observed = new ObservedContextWindows(f.directory); observed.record("claude", "claude-opus-4-6", 1000000);
+    // The window is on disk before the refresh reads it: a fixed 50 ms wait lost that race on a loaded machine.
+    await observed.flush();
     const updated = await refreshModelMetadata(f.path, async () => [
       { model: "claude-opus-5-5", metadata: { displayName: "Opus 5.5", contextWindow: 1000000, reasoningEfforts: ["max", "ultra"], multiAgentVersion: "v2" } },
       { model: "claude-new-model", metadata: { displayName: "New" } },
