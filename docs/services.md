@@ -546,10 +546,13 @@ about every loaded chat:
   seconds apart. A chat with no turns has nothing that ended.
 
 A throwaway chat, and one that has saved nothing yet, cannot list its turns, and its
-`updatedAt` is the time of the read, so neither tells when a turn ended. The host
-judges such a chat by its own watch instead: it is quiet once the host has seen it
+`updatedAt` is the time of the read, so neither tells when a turn ended. Only such
+chats are judged by the host's own watch: one is quiet once the host has seen it
 settled (not running, no terminal) at every check for 5 minutes; a check that sees it
-running, or that cannot read an engine, starts that watch again. A chat or a status the
+running, or that cannot read an engine, starts that watch again. The watch cannot see a
+throwaway chat's turn that starts and ends entirely between two checks, which run about
+every 2 minutes. A saved chat with a real `updatedAt` whose turn list fails is not
+watched: it ended its newest turn no later than its `updatedAt`. A chat or a status the
 check cannot read, or more than 256 loaded chats in one engine, counts as not quiet. A
 chat that was running at the previous check and is not now (its turn ended, the chat was
 unloaded, or its engine exited) counts as having ended at this check. Each reason a

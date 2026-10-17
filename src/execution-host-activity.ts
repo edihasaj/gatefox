@@ -44,11 +44,14 @@ const ended = new Set(["completed", "interrupted", "failed"]);
 /** A host with more loaded chats than this in one engine is not judged quiet: reading them all would hold acquires too long. */
 const maxChats = 256;
 const timeoutMs = 10_000;
+/** An `updatedAt` this close to the start of the read is the engine's stand-in for a chat with nothing saved. */
+const syntheticMs = 5_000;
 const seconds = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value > 0 ? value * 1000 : undefined;
 const chatId = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 1024 && !value.includes("\0");
 
 /** One chat: running, keeping a background terminal, settled (with when its newest turn ended), settling, or unreadable. */
 async function chatActivity(admin: SocketAppServerConnection, threadId: string, quietMs: number): Promise<ChatActivity | undefined> {
+  const readStartMs = Date.now();
   const thread = object(object(await admin.request("thread/read", { threadId, includeTurns: false })).thread);
   const status = object(thread.status).type;
   if (status === "active") return { kind: "running" };
@@ -63,7 +66,9 @@ async function chatActivity(admin: SocketAppServerConnection, threadId: string, 
   if (updatedAtMs !== undefined && Date.now() - updatedAtMs > quietMs + touchMarginMs) return { kind: "settled", endedAtMs: updatedAtMs };
   // The newest turn, with the live one merged in by the SDK. A chat with nothing saved yet cannot list its turns.
   const page = await admin.request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }).catch(() => undefined);
-  if (!page) return { kind: "settling" };
+  // A chat with nothing saved reports the time of the read as `updatedAt`; only then (or when throwaway) is the watch needed.
+  // A saved chat with a real `updatedAt` whose turns cannot be listed ended its newest turn no later than that.
+  if (!page) return updatedAtMs === undefined || updatedAtMs >= readStartMs - syntheticMs ? { kind: "settling" } : { kind: "settled", endedAtMs: updatedAtMs };
   if (!Array.isArray(page.data)) return;
   if (!page.data.length) return { kind: "settled" };
   const turn = object(page.data[0]);

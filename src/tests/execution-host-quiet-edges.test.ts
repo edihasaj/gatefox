@@ -58,6 +58,18 @@ test("a throwaway chat or one with nothing saved is quiet only after it was seen
   } finally { await f.clean(); }
 });
 
+test("a saved chat with a real updatedAt whose turns cannot be listed is judged by its updatedAt, not by the settled watch", { timeout: 30000 }, async () => {
+  const f = await quietHost();
+  try {
+    const record = await f.control<ExecutionRecord>("execution/acquire", f.descriptor);
+    const chat = await f.chat(record.socketPath, "saved-list-fails");
+    await chat.saved(); await chat.listFails(); await chat.updated(seconds(10_000));
+    assert.deepEqual(await f.host.prepareQuietStop!(60_000), { wait: "recent_turn" }, "updatedAt is 10 s old, inside the quiet time");
+    assert.deepEqual(await f.host.prepareQuietStop!(5_000), { loadedChats: 1 }, "updatedAt is older than the quiet time, with no watch");
+    f.host.resume();
+  } finally { await f.clean(); }
+});
+
 test("an engine the check cannot read makes the host not quiet: a changed socket or an engine that fails to list its chats", { timeout: 30000 }, async () => {
   const f = await quietHost();
   const stranger = createServer();

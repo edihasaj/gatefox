@@ -33,9 +33,10 @@ if(m.method==='thread/start'||m.method==='thread/resume'){if(!chat)loaded.set(id
 if(m.method==='thread/unsubscribe')loaded.delete(id);
 if(m.method==='thread/read')result={thread:chat?{id,updatedAt:chat.saved&&!chat.ephemeral?chat.updatedAt:now(),ephemeral:chat.ephemeral,status:chat.status||(chat.turn&&chat.turn.status==='inProgress'?{type:'active',activeFlags:[]}:{type:'idle'})}:null};
 if(m.method==='thread/backgroundTerminals/list'){if(chat.terminal==='fail')return fail('fixture: terminals unavailable');result={data:chat.terminal?[{itemId:'item-1',processId:'42',command:'npm run dev',cwd:'/tmp',osPid:null,cpuPercent:null,rssKb:null}].slice(0,m.params.limit??1):[],nextCursor:null};}
-if(m.method==='thread/turns/list'){chat.turnReads++;if(chat.ephemeral)return fail('ephemeral threads do not support thread/turns/list');if(!chat.saved)return fail('no rollout found for thread id '+id);result={data:chat.turn?[chat.turn]:[],nextCursor:null,backwardsCursor:null};}
+if(m.method==='thread/turns/list'){chat.turnReads++;if(chat.ephemeral)return fail('ephemeral threads do not support thread/turns/list');if(chat.listFails||!chat.saved)return fail('no rollout found for thread id '+id);result={data:chat.turn?[chat.turn]:[],nextCursor:null,backwardsCursor:null};}
 if(m.method==='fixture/turn'){chat.saved=true;chat.turn={id:'turn-'+Math.random(),rootTurnId:null,items:[],itemsView:'notLoaded',status:m.params.status,error:null,startedAt:m.params.startedAt===undefined?now():m.params.startedAt,completedAt:m.params.completedAt??null,durationMs:null};}
 if(m.method==='fixture/saved')chat.saved=true;
+if(m.method==='fixture/listFails')chat.listFails=true;
 if(m.method==='fixture/status')chat.status=m.params.status;
 if(m.method==='fixture/updated')Object.assign(chat,{updatedAt:m.params.updatedAt,ephemeral:m.params.ephemeral});
 if(m.method==='fixture/terminal')chat.terminal=m.params.state;
@@ -79,7 +80,7 @@ export async function quietHost(capabilities?: Array<"gateway" | "native">) {
     const call = (method: string, params: object = {}) => engine.request(method, { threadId, ...params });
     return { engine, turn: (params: object) => call("fixture/turn", params), status: (status: object) => call("fixture/status", { status }),
       updated: (updatedAt: number, ephemeral = false) => call("fixture/updated", { updatedAt, ephemeral }),
-      terminal: (state: boolean | "fail") => call("fixture/terminal", { state }), saved: () => call("fixture/saved"),
+      terminal: (state: boolean | "fail") => call("fixture/terminal", { state }), saved: () => call("fixture/saved"), listFails: () => call("fixture/listFails"),
       turnReads: async () => (await call("fixture/turnReads")).turnReads as number };
   };
   const clean = async () => {
