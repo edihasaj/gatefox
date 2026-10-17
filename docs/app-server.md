@@ -8,8 +8,18 @@ read_when:
 # Codex app-server adapter
 
 The experimental adapter keeps the original Codex executable and native login.
-It adds configured gateway models after the native models and starts new gateway
-chats with `modelProvider: subscription_gateway`. Native chats keep their provider.
+It adds configured gateway models after the native models and routes every chat by its
+kind, not by its provider id. The adapter classifies a chat with the first rule that
+answers, in this order: the legacy provider id `subscription_gateway`; the registry of
+gateway chats; the parent of a sub-agent; and a model alias that is not a native model
+slug. Any other chat is native and keeps its provider. The registry is the file
+`<state directory>/gateway-chats/<scope>.json`, where `<scope>` identifies the native
+Codex home. The adapter writes a gateway chat's start or fork to the registry before it
+returns the reply, and a sub-agent that a gateway engine announces before it forwards
+the announcement. Release 0.4.4 still writes `subscription_gateway` as the provider id
+of every gateway chat, so release 0.4.3 can still resume those chats. A gateway model
+alias that equals a native model slug is refused when the catalog loads, because the
+native slug would otherwise take over the alias's chats.
 
 Claude subscription usage observations are available at the authenticated
 `GET /v1/provider-usage` endpoint. They contain only provider route IDs, recognized

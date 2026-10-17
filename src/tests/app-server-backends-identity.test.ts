@@ -21,7 +21,7 @@ async function until<T>(read: () => T | undefined): Promise<T> {
 /**
  * One fake SDK plays both engines; the gateway executor is the one launched with the gateway's provider. Saved chats live in
  * `<root>/threads.json`, shared by both, as Codex shares rollouts and SQLite. `fixture/ledger` says which engine answered,
- * a start answers which engine took it (`fixtureEngine`), `fixture/spawn` announces a sub-agent the way the SDK does: a thread/started notification with the parent in its source.
+ * a start answers which engine took it (`fixtureEngine`), a start with `hold` stays unanswered until `fixture/release`, `fixture/spawn` announces a sub-agent the way the SDK does: a thread/started notification with the parent in its source.
  */
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gw-backends-identity-"));
@@ -31,7 +31,7 @@ async function fixture() {
 const {createInterface}=require('node:readline');const {readFileSync,writeFileSync,existsSync}=require('node:fs');
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2),root=args[args.indexOf('--fixture-root')+1],saved=root+'/threads.json';
-const gateway=args.some(arg=>arg==='model_provider="subscription_gateway"');let sequence=0;
+const gateway=args.some(arg=>arg==='model_provider="subscription_gateway"');let sequence=0,held=null;
 const all=()=>existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};
 const keep=t=>{const value=all();value[t.id]=t;writeFileSync(saved,JSON.stringify(value));};
 const send=m=>process.stdout.write(JSON.stringify(m)+'\\n');
@@ -40,7 +40,9 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
  if(m.method==='fixture/ledger')result={gateway};
  if(m.method==='thread/start'||m.method==='thread/fork'){const parent=m.method==='thread/fork'?all()[p.threadId]:{};
   const t={id:p.fixtureId||(gateway?'gw-':'native-')+(++sequence),model:p.model||parent.model||'${nativeModel}',modelProvider:p.modelProvider||parent.modelProvider||'openai',ephemeral:p.ephemeral===true};
-  if(!t.ephemeral)keep(t);result={thread:t,model:t.model,modelProvider:t.modelProvider,serviceTier:null,fixtureEngine:gateway?'gateway':'native'};send({id:m.id,result});send({method:'thread/started',params:{thread:t}});return;}
+  const finish=()=>{if(!t.ephemeral)keep(t);send({id:m.id,result:{thread:t,model:t.model,modelProvider:t.modelProvider,serviceTier:null,fixtureEngine:gateway?'gateway':'native'}});send({method:'thread/started',params:{thread:t}});};
+  if(p.hold){held=finish;return;}finish();return;}
+ if(m.method==='fixture/release'&&held){const finish=held;held=null;finish();}
  if(m.method==='thread/read'||m.method==='thread/resume'){const t=all()[p.threadId];if(!t){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id '+p.threadId}});return;}result={thread:t,model:t.model,modelProvider:t.modelProvider,serviceTier:null};}
  if(m.method==='fixture/spawn'){const t={id:p.child,model:'${nativeModel}',modelProvider:p.provider,source:{subAgent:{thread_spawn:{parent_thread_id:p.threadId,depth:1}}}};keep(t);send({method:'thread/started',params:{thread:t}});}
  send({id:m.id,result});});
@@ -136,6 +138,26 @@ for (const identity of gatewayIdentities) test(`a sub-agent a gateway engine ann
     // A native engine's announcement is handed on as native and recorded nowhere.
     await backends.request("thread/start", { fixtureId: "native-chat", model: nativeModel }, { engine: "native" });
     assert.deepEqual(await until(() => f.emitted.find(event => event.threadId === "native-chat")), { method: "thread/started", threadId: "native-chat", engine: "native", recorded: false });
+  } finally { await f.clean(); }
+});
+
+for (const identity of gatewayIdentities) test(`a sub-agent is recorded before its announcement even while a thread/start on the same engine is pending (${identity.name})`, { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    const backends = await f.open();
+    await backends.request("thread/start", { fixtureId: "parent", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    // This start is still unanswered, so the engine counts a chat as being created: the announcement of an ordinary chat is
+    // left to that request, but a sub-agent has no request of its own and must be recorded by its announcement.
+    const pending = backends.request("thread/start", { fixtureId: "slow", model: alias, modelProvider: "subscription_gateway", hold: true }, { engine: "gateway" });
+    let answered = false; void pending.then(() => { answered = true; }, () => { answered = true; });
+    await delay(50);
+    await backends.request("fixture/spawn", { threadId: "parent", child: "pending-sub-agent", provider: identity.provider });
+    const announced = await until(() => f.emitted.find(event => event.method === "thread/started" && event.threadId === "pending-sub-agent"));
+    assert.equal(answered, false, "the start was still pending when the sub-agent was announced");
+    assert.deepEqual(announced, { method: "thread/started", threadId: "pending-sub-agent", engine: "gateway", recorded: true });
+    await backends.request("fixture/release", { threadId: "parent" });
+    assert.equal((await pending).fixtureEngine, "gateway");
+    assert.equal(await f.registry().has("slow"), true, "the pending start is recorded by its own request");
   } finally { await f.clean(); }
 });
 

@@ -6,6 +6,7 @@ import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { GatewayChatRegistry } from "../gateway-chat-registry.js";
 import { identityTest } from "./identity-cases.js";
 
 isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
@@ -30,6 +31,39 @@ bothIdentities("long model downshifts select the target and complete manual comp
     assert.equal(calls[compact].model, smallModel); assert.deepEqual(calls[turn].params, request);
     assert.ok(f.events.some(event => event.method === "item/completed" && (event.params as Message)?.turnId?.toString().startsWith("owned-compact")));
     assert.equal(await f.nativeUnchanged(), true);
+  } finally { await f.clean(); }
+});
+
+// A gateway chat on a native model slug and the native provider id: the chat's own record says nothing about the gateway, so
+// only the registry identifies it. Recovery must use the adapter's classification (registry included), not the record alone.
+async function registryOnlyChat(f: Awaited<ReturnType<typeof compactionSdkFixture>>, id: string): Promise<void> {
+  await writeFile(join(f.directory, "threads.json"), JSON.stringify({ [id]: { id, model: "native-original", modelProvider: "openai", reasoningEffort: "medium", status: { type: "idle" }, active: null, path: null, ephemeral: false } }));
+  await new GatewayChatRegistry(f.config.stateDirectory, f.nativeHome).record(id, "start");
+}
+
+test("a chat that only the registry identifies as gateway is recovered before the turn", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(false, true); const id = "registry-only-recovery";
+  try {
+    await registryOnlyChat(f, id);
+    await f.backends.request("thread/resume", { threadId: id });
+    await f.usage(id);
+    const request = { threadId: id, model: smallModel, ...structuredClone(sent) };
+    await f.backends.request("turn/start", request);
+    const calls = await f.ledger(id);
+    const compact = calls.findIndex(call => call.method === "thread/compact/start"); const turn = calls.findIndex(call => call.method === "turn/start");
+    assert.ok(compact >= 0 && turn > compact, "the registry-only chat was compacted before its turn");
+    assert.equal(calls.filter(call => call.method === "thread/compact/start").length, 1);
+  } finally { await f.clean(); }
+});
+
+test("a shared executor refuses automatic recovery for a chat that only the registry identifies as gateway", { timeout: 20000 }, async () => {
+  const f = await compactionSdkFixture(true, true); const id = "registry-only-shared";
+  try {
+    await registryOnlyChat(f, id);
+    await f.backends.request("thread/resume", { threadId: id });
+    await f.usage(id);
+    await assert.rejects(f.backends.request("turn/start", { threadId: id, model: smallModel, ...sent }), /shared|compaction.*recovery|exclusive/i);
+    assert.equal((await f.ledger(id)).some(call => call.method === "thread/compact/start" || call.method === "turn/start"), false);
   } finally { await f.clean(); }
 });
 
