@@ -18,16 +18,12 @@ export interface HostKeeperContext {
   retryBaseMs: number;
   startHost: typeof startExecutionHost;
   heal: SupervisorHealing;
-  /** Asks the relay's registration receipt whether the relay is registered; it may reject. */
+  /** Asks whether the relay owns remote control here (registered, or an activation is pending); it may reject. */
   registered: () => Promise<boolean>;
-  /** Whether the plan's first native relay slot is paused. */
-  relayPaused: () => boolean;
   stopping: () => boolean;
   restarting: () => boolean;
   /** Writes the status file; never rejects. */
   publish: () => Promise<void>;
-  /** Whether any native relay slot is paused. */
-  nativePaused: () => boolean;
   /** The whole-service idle restart. */
   restartWhenIdle: () => Promise<boolean>;
 }
@@ -123,8 +119,8 @@ export class ServiceHostKeeper {
       this.hostFailures = 0; this.hostFailureDeterministic = false; this.hostOwnsRelay = owns; this.hostUnhealthy = undefined; this.hostRestartReason = undefined; this.sdkBaseline = {};
       this.hostGeneration++; this.hostProbeFailures = 0;
       execution.state = "running"; await this.context.publish();
-      // The relay paused while this start was in the air: the host must give the app its remote control back.
-      if (owns && this.context.nativePaused()) this.requestHostRestart("relay_paused");
+      // The relay was registered while this start was in the air without the host knowing: ask again now it is running.
+      if (!owns) void this.restartForRegistration();
     } catch (error) {
       // A fixed reason, never the turn classifier: it read the uid in an SDK socket path as a 5xx status.
       const reason = hostFailureReason(error); this.hostFailureDeterministic = deterministicFailures.has(reason);
@@ -182,14 +178,22 @@ export class ServiceHostKeeper {
     }
     if (++this.hostProbeFailures < hostProbeStrikes) return;
     if (this.hostUnhealthy !== reason) telemetry("execution_host_unhealthy", { reason });
-    this.hostUnhealthy = reason; if (this.hostRestartReason !== "relay_paused") this.hostRestartReason = reason;
+    this.hostUnhealthy = reason; if (this.hostRestartReason !== "relay_registered") this.hostRestartReason = reason;
   }
-  /** A relay slot was set aside: a host that took the remote-control registration from the app gives it back by an idle restart. */
-  onRelayPaused(): void {
-    if (this.hostOwnsRelay && this.executionState?.state === "running") this.requestHostRestart("relay_paused");
+  /**
+   * The relay became registered (or an activation is pending) after this host started its native engine without standing
+   * down. That engine may hold the machine's one remote-control slot, so the host restarts, once idle, with the flag set.
+   * Nothing here ever hands remote control back: a registered relay that is paused or down leaves the phone without this Mac
+   * until it is back, rather than letting the host's engine take the slot.
+   */
+  async restartForRegistration(): Promise<void> {
+    const execution = this.executionState;
+    if (this.context.plan.sharedNativeExecutor !== true || this.hostOwnsRelay || !execution || execution.state !== "running" || this.hostRestartReason === "relay_registered") return;
+    if (!await this.context.registered().catch(() => false)) return;
+    this.requestHostRestart("relay_registered");
   }
   private requestHostRestart(reason: HostRestartReason): void {
-    if (this.hostRestartReason !== "relay_paused") this.hostRestartReason = reason;
+    if (this.hostRestartReason !== "relay_registered") this.hostRestartReason = reason;
     void this.restartHostWhenIdle();
   }
   /**
@@ -201,8 +205,8 @@ export class ServiceHostKeeper {
   async restartHostWhenIdle(): Promise<void> {
     const reason = this.hostRestartReason; const execution = this.executionState;
     if (!reason || !execution || this.context.stopping() || this.context.restarting() || this.hostRestarting || this.hostAttempt || this.hostChecking || execution.state !== "running") return;
-    // A relay that came back, or a host that already gave the registration up, needs no restart.
-    if (reason === "relay_paused" && (!this.hostOwnsRelay || !this.context.nativePaused())) { this.hostRestartReason = undefined; return; }
+    // A host that already stands down needs no restart for the registration.
+    if (reason === "relay_registered" && this.hostOwnsRelay) { this.hostRestartReason = undefined; return; }
     const wait = this.hostLastStart + this.context.heal.kickGapMs - performance.now();
     if (wait > 0) {
       if (!this.hostRestartTimer) { this.hostRestartTimer = setTimeout(() => { this.hostRestartTimer = undefined; void this.restartHostWhenIdle(); }, wait); this.hostRestartTimer.unref(); }
@@ -237,16 +241,16 @@ export class ServiceHostKeeper {
    */
   private async restartAfterFailedClose(): Promise<void> { await this.context.restartWhenIdle().catch(() => undefined); }
   /**
-   * Whether the native relay, not the engine, owns this machine's remote-control registration:
-   * only a registered relay whose slot is not paused counts. A paused or missing relay leaves the
-   * app's own remote control alone. A relay that becomes live later takes effect at the next host
-   * start, which an idle restart is, because the receipt is read once when the host starts.
+   * Whether the native relay, not the engine, owns this machine's remote-control registration: the registration (or an
+   * activation in progress) decides, whether or not the relay is live or its slot is paused. OpenAI allows one remote-control
+   * connection per Mac, so an engine that took it while the relay was down would lock the relay out until the engine exited.
+   * The record is read once when the host starts; a registration made later restarts the host when idle
+   * (`restartForRegistration`).
    */
   private async relayOwnsRegistration(): Promise<boolean> {
     if (this.context.plan.sharedNativeExecutor !== true) return false;
-    if (this.context.relayPaused()) return false;
     // A question that cannot be answered is not an answer, so the start is left as it would have
-    // been; only a registration that really says otherwise takes ownership away from the relay.
+    // been; only a record that really says otherwise takes ownership away from the relay.
     return await this.context.registered().catch(() => true);
   }
 }

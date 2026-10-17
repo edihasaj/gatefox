@@ -50,6 +50,15 @@ export async function nativeRegistrationEnabled(stateDirectory: string): Promise
   return (await nativeRegistrationRecord(stateDirectory))?.registered === true;
 }
 
+/**
+ * Whether the relay owns this Mac's remote control: registered, or an activation is pending. This is the question every stock
+ * engine (adapter, SSH listener, shared host) asks when it starts; the supervisor's own start of the relay asks the stricter
+ * `nativeRegistrationEnabled`, because it must not start a second relay while `--enable` runs.
+ */
+export async function nativeRegistrationClaimed(stateDirectory: string): Promise<boolean> {
+  return await nativeRegistrationEnabled(stateDirectory) || await nativePendingRecord(stateDirectory) !== undefined;
+}
+
 /** The `--codex` executable of a native component, the file a relay restart is waiting for. */
 function nativeCodex(component: ServiceComponent): string {
   const at = component.args.indexOf("--codex");

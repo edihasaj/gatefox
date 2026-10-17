@@ -13,7 +13,7 @@ import { configureTelemetry, telemetry } from "./telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
 import { watchForUpgrade, type PendingRelease, type UpgradeOutcome } from "./self-update.js";
 import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
-import { chatGptAppRunning, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
+import { chatGptAppRunning, nativeRegistrationClaimed, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
 import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, upgradeGraceMs, upgradeQuietMs, type SupervisorHealing } from "./service-heal.js";
 import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js";
 export type { SupervisorHealing } from "./service-heal.js";
@@ -22,15 +22,17 @@ export type { SupervisorHealing } from "./service-heal.js";
 type UpgradeWait = QuietWait | "inference_busy";
 /** A restart that stopped the service (with the host's loaded-chat count), or one that was refused, with why when known. */
 type RestartResult = { loadedChats: number } | { wait?: UpgradeWait };
-interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason }
+interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason; pausedAt?: string }
 type PauseReason = "not_registered" | "failing";
 /** How a slot decides whether the optional relay is worth starting; tests replace all three. */
 export interface NativeProbes {
   registered: (state: string) => Promise<boolean>;
+  /** Whether the relay owns remote control for engines that start now: registered, or an activation pending. Defaults to `registered`. */
+  claimed?: (state: string) => Promise<boolean>;
   fingerprint: (component: ServiceComponent, state: string) => Promise<string>;
   appRunning: () => Promise<boolean>;
 }
-export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnabled, fingerprint: relayFingerprint, appRunning: chatGptAppRunning };
+export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnabled, claimed: nativeRegistrationClaimed, fingerprint: relayFingerprint, appRunning: chatGptAppRunning };
 /**
  * A relay that dies within a minute three times in a row cannot run here; it is left paused.
  * A resumed relay is given a single start, not a fresh three-strike budget, and a relay paused
@@ -78,10 +80,9 @@ export class ServiceSupervisor {
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs) {
     this.heal = { ...defaultHealing, ...healing };
     this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost, heal: this.heal,
-      registered: () => this.probes.registered(this.state),
-      relayPaused: () => this.slots.find(slot => slot.definition.kind === "native")?.state.state === "paused",
+      registered: () => (this.probes.claimed ?? this.probes.registered)(this.state),
       stopping: () => this.stopping, restarting: () => this.restarting, publish: () => this.publish(),
-      nativePaused: () => this.nativePaused(), restartWhenIdle: () => this.restartWhenIdle() });
+      restartWhenIdle: () => this.restartWhenIdle() });
     this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, quickExits: 0, pausedAt: 0, resumedOnce: false }));
   }
   /**
@@ -114,8 +115,9 @@ export class ServiceSupervisor {
       // A re-check that cannot be answered is handled inside resumePaused; it never stops the service. The same tick
       // retries a host restart a busy host refused (see restartHostWhenIdle).
       this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
-      // A relay set aside as unregistered starts the moment a registration appears, not at the next re-check.
-      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); }, this.registrationPollMs); this.registrationWatch.unref();
+      // A relay set aside as unregistered starts the moment a registration appears, not at the next re-check, and a shared host
+      // that started before the registration is asked to restart (when idle) so its native engine stands down too.
+      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); void this.host.restartForRegistration().catch(() => undefined); }, this.registrationPollMs); this.registrationWatch.unref();
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one.
@@ -171,13 +173,10 @@ export class ServiceSupervisor {
     const fingerprint = await this.probes.fingerprint(slot.definition, this.state).catch(() => undefined);
     if (this.stopping || slot.child) return;
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = undefined; }
-    slot.state.state = "paused"; slot.state.pausedReason = reason; slot.fingerprint = fingerprint; slot.pausedAt = Date.now(); slot.resumedOnce = false;
+    slot.state.state = "paused"; slot.state.pausedReason = reason; slot.state.pausedAt = new Date().toISOString(); slot.fingerprint = fingerprint; slot.pausedAt = Date.now(); slot.resumedOnce = false;
     delete slot.state.nextRestartAt;
     telemetry("component_paused", { component: slot.state.id, kind: slot.state.kind, reason });
     await this.publish();
-    // A host started while this relay looked usable took the remote-control registration from the app. Only the host is
-    // restarted, when idle, so it starts again without it; the boot order of everything else is left alone.
-    if (slot.definition.kind === "native") this.host.onRelayPaused();
   }
   /**
    * Re-checks the relay slots a timer put aside. It starts one again only when the relay is
@@ -224,7 +223,7 @@ export class ServiceSupervisor {
       }
       // Stop or a restart may have happened while one of the probes above was in the air.
       if (this.stopping || this.restarting || slot.state.state !== "paused") return;
-      slot.failures = 0; slot.quickFailures = 0; slot.resumedOnce = true; delete slot.state.pausedReason; delete slot.state.nextRestartAt;
+      slot.failures = 0; slot.quickFailures = 0; slot.resumedOnce = true; delete slot.state.pausedReason; delete slot.state.pausedAt; delete slot.state.nextRestartAt;
       slot.state.state = "starting";
       telemetry("component_resumed", { component: slot.state.id, kind: slot.state.kind });
       await this.startSlot(slot);

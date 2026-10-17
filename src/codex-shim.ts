@@ -17,6 +17,7 @@ import { sshControlHome, reuseSshSocket, type SshSocketReuse, type SshSocketRepl
 import { liveNativeRelay, registeredNativeRelay } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { ListenerActivity } from "./ssh-listener-activity.js";
+import { runtimeBusy } from "./runtime-activity.js";
 
 export function appServerIndex(args: string[]): number {
   const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
@@ -109,6 +110,16 @@ export async function codexShim(argv: string[]): Promise<void> {
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   // An SSH listener records whether a turn runs in any of its sessions, so activating the relay can retire it only while idle.
   const activity = controlHome && socketPath ? new ListenerActivity(controlHome) : undefined;
+  // `gateway native install` asks an SSH listener to retire with SIGUSR2. The listener decides itself, in one step, whether it is
+  // truly idle (see shimSession); if so it stops the way a TERM would, otherwise it ignores the request and records that it did.
+  // Until the listener is public there is nothing to retire, and the record that authorizes the signal does not exist yet.
+  let listening = false;
+  const onRetire = () => {
+    if (!listening) return;
+    if (runtimeBusy()) { telemetry("ssh_listener_retire_request", { outcome: "declined" }); activity?.decline(); return; }
+    telemetry("ssh_listener_retire_request", { outcome: "retired" }); stop();
+  };
+  if (activity) process.on("SIGUSR2", onRetire);
   try {
     const session = async (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) => {
       const tracked = activity?.open(emit);
@@ -129,7 +140,7 @@ export async function codexShim(argv: string[]): Promise<void> {
         try {
           await serveUnix(socketPath, controller.signal, session, undefined, (listener, replaced) => {
             if (replaced && pending) { telemetry("ssh_listener_replaced", { from: pending.from, to: pending.to }); replacement = undefined; }
-            activity?.publish();
+            listening = true; activity?.publish();
             if (controlHome) stopWatching = watchForUpgrade("ssh_listener", () => listener.sessions() === 0, () => listener.retire());
           }, pending);
         } finally { stopWatching?.(); }
@@ -139,7 +150,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   }
   finally {
     controller.abort();
-    process.off("SIGINT", stop); process.off("SIGTERM", stop);
+    process.off("SIGINT", stop); process.off("SIGTERM", stop); process.off("SIGUSR2", onRetire);
     await activity?.stop();
   }
 }

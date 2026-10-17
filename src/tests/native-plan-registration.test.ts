@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writePrivateJson } from "../config.js";
@@ -9,6 +9,7 @@ import { nativeRelayHome } from "../native-control.js";
 import { nativeRegistrationPath } from "../native-pause.js";
 import { registerPlanRelay, relayCheck, type PlanRelayDeps } from "../native-plan-registration.js";
 import { servicePlanPath, type ServicePlan } from "../service-plan.js";
+import { sshControlHome } from "../ssh-socket.js";
 
 /**
  * A consolidated Mac whose relay slot waits as `not_registered`: a unified plan with a native component, and a fake relay
@@ -82,13 +83,63 @@ test("an open ChatGPT app, a failed connection or a plan the service would not r
   } finally { await f.clean(); }
 });
 
-test("gateway native install under a unified plan reaches the registration, while uninstall stays refused", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
+/** Every side effect of a unified-plan install replaced, so these tests can reach no process, ChatGPT, launchd or `ps`. */
+const noProcesses = (overrides: Partial<PlanRelayDeps> = {}): Partial<PlanRelayDeps> => ({ appRunning: async () => false, check: async () => {}, enable: async () => {}, ...overrides });
+const lstart = (at: number) => { const d = new Date(at); const p = (n: number) => String(n).padStart(2, "0"); return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d.getDay()]} ${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][d.getMonth()]} ${String(d.getDate()).padStart(2)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${d.getFullYear()}`; };
+
+test("gateway native install under a unified plan reaches the registration with an open ChatGPT app, and registers nothing", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
   const f = await fixture("refused");
   try {
     await writePrivateJson(servicePlanPath(f.state), f.plan);
-    // Either this Mac's ChatGPT is open, or the fake relay's check refuses: both are the registration path, not the old refusal.
-    await assert.rejects(macNative("install", f.configPath), (error: Error) => /Quit ChatGPT normally|nothing was registered/.test(error.message) && !/owned by the unified service/.test(error.message));
-    await assert.rejects(macNative("uninstall", f.configPath), /owned by the unified service/);
+    await assert.rejects(macNative("install", f.configPath, { planDeps: noProcesses({ appRunning: async () => true }) }), (error: Error) => /Quit ChatGPT normally/.test(error.message) && !/owned by the unified service/.test(error.message));
+    await assert.rejects(macNative("install", f.configPath, { planDeps: noProcesses({ check: async () => { throw new Error("The native relay check failed: nothing was registered"); } }) }), /nothing was registered/);
     assert.equal(await f.receipt(), undefined);
+    // A registered Mac can still uninstall under the plan (see below); anything else the plan owns stays refused.
+    await assert.rejects(macNative("bogus", f.configPath), /Choose gateway native install, status, or uninstall/);
+  } finally { await f.clean(); }
+});
+
+test("macNative hands the SSH control home and the config path to the holder check, then registers", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await writePrivateJson(servicePlanPath(f.state), f.plan);
+    const sshHome = sshControlHome(f.configPath, f.nativeHome);
+    const started = Math.floor((Date.now() - 3_600_000) / 1000) * 1000; const alive = new Set([100, 101]); const asked: Array<[string, number]> = []; const signalled: number[] = [];
+    const snapshot = [`   100      1 ${lstart(started)} /usr/bin/node /g/cli.js codex-shim --config ${f.configPath} --codex ${f.codex} --ssh -- app-server --listen unix://`,
+      `   101    100 ${lstart(started)} ${f.codex} app-server --listen stdio://`].join("\n");
+    const result = await macNative("install", f.configPath, { nativeHome: f.nativeHome, planDeps: noProcesses(), holderDeps: {
+      snapshot: async () => snapshot, activity: async (home, pid) => { asked.push([home, pid]); return { pid, startedAt: started + 300, busy: false }; },
+      signal: pid => { signalled.push(pid); alive.clear(); }, alive: pid => alive.has(pid), stopWaitMs: 1000, pollMs: 10 } });
+    assert.deepEqual(asked, [[sshHome, 100]], "the activity record is read from the SSH control home of this config and native home");
+    assert.deepEqual(signalled, [100]);
+    assert.equal(result.registered, true);
+    assert.deepEqual(await f.receipt(), { registered: true, home: f.relayHome, nativeHome: f.nativeHome, codex: f.codex });
+  } finally { await f.clean(); }
+});
+
+test("macNative refuses while a listener is busy: nothing is signalled, registered or left pending", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await writePrivateJson(servicePlanPath(f.state), f.plan);
+    const started = Math.floor((Date.now() - 3_600_000) / 1000) * 1000; const signalled: number[] = [];
+    const snapshot = [`   100      1 ${lstart(started)} /usr/bin/node /g/cli.js codex-shim --config ${f.configPath} --codex ${f.codex} --ssh -- app-server --listen unix://`, `   101    100 ${lstart(started)} ${f.codex} app-server --listen stdio://`].join("\n");
+    await assert.rejects(macNative("install", f.configPath, { nativeHome: f.nativeHome, planDeps: noProcesses(), holderDeps: {
+      snapshot: async () => snapshot, activity: async pid => ({ pid: 100, startedAt: started, busy: true }), signal: pid => { signalled.push(pid); }, alive: () => true, stopWaitMs: 100, pollMs: 10 } }), /retry when it is idle/);
+    assert.deepEqual(signalled, []); assert.equal(await f.receipt(), undefined);
+    assert.equal(await readFile(join(f.state, "native-registration.pending"), "utf8").catch(() => undefined), undefined);
+  } finally { await f.clean(); }
+});
+
+test("gateway native uninstall under a unified plan is the way out: it unregisters, keeps a backup and refuses nothing", { skip: process.platform !== "darwin", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await writePrivateJson(servicePlanPath(f.state), f.plan);
+    await writePrivateJson(nativeRegistrationPath(f.state), { registered: true, home: f.relayHome, nativeHome: f.nativeHome, codex: f.codex });
+    const result = await macNative("uninstall", f.configPath);
+    assert.equal(result.registered, false);
+    assert.deepEqual(await f.receipt(), { registered: false });
+    const backups = (await readdir(f.state)).filter(name => name.startsWith("native-registration.json.pre-relay-off-"));
+    assert.equal(backups.length, 1);
+    assert.equal(JSON.parse(await readFile(join(f.state, backups[0]), "utf8")).registered, true, "the backup holds the registration it replaced");
   } finally { await f.clean(); }
 });

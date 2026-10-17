@@ -1,14 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { writePrivateJson } from "../config.js";
 import { nativeRelayHome } from "../native-control.js";
-import { nativePendingPath, nativeRegistrationPath } from "../native-pause.js";
+import { nativePendingPath, nativeRegistrationClaimed, nativeRegistrationPath } from "../native-pause.js";
 import { nativeExecutionEnvironment, nativeExecutionArgs } from "../native-execution-host-engine.js";
-import { registerPlanRelay, type PlanRelayDeps } from "../native-plan-registration.js";
-import { clearSlotHolders, slotHolders, type HolderDeps } from "../native-slot-holders.js";
-import { ListenerActivity, listenerActivityPath, readListenerActivity } from "../ssh-listener-activity.js";
+import { registerPlanRelay, unregisterPlanRelay, type PlanRelayDeps } from "../native-plan-registration.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import type { ServicePlan } from "../service-plan.js";
 
@@ -92,108 +91,49 @@ test("an open ChatGPT app still refuses before anything is written", async () =>
   } finally { await f.clean(); }
 });
 
-/** A process list as `ps -axo pid=,ppid=,lstart=,args=` prints it; `at` is a start time in ms. */
-const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-const lstart = (at: number) => { const d = new Date(at); const p = (n: number) => String(n).padStart(2, "0"); return `${days[d.getDay()]} ${months[d.getMonth()]} ${String(d.getDate()).padStart(2)} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${d.getFullYear()}`; };
-const row = (pid: number, parent: number, at: number, args: string) => `${String(pid).padStart(6)} ${String(parent).padStart(6)} ${lstart(at)} ${args}`;
-const config = "/Users/x/gateway.json";
-const pendingAt = Date.now(); const before = pendingAt - 3_600_000;
-const listener = (pid: number, at = before, cfg = config) => row(pid, 1, at, `/usr/bin/node /g/cli.js codex-shim --config ${cfg} --codex /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --ssh -- app-server --listen unix://`);
-const engine = (pid: number, parent: number, at = before) => row(pid, parent, at, "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex app-server --listen stdio://");
-
-test("only stock engines under this gateway's listeners that started before the pending record can hold the slot", () => {
-  const snapshot = [
-    listener(100), engine(101, 100),
-    row(102, 100, before, "/g/gateway-codex app-server -c model_catalog_json=/state/catalog.json"),
-    row(110, 1, before, `/usr/bin/node /g/cli.js codex-shim --config ${config} --codex /c --ssh -- proxy`),
-    listener(120, pendingAt + 5000), engine(121, 120, pendingAt + 5000),
-    listener(130, before, "/Users/y/other.json"), engine(131, 130),
-    row(140, 1, before, `/usr/bin/node /g/cli.js codex-shim --config ${config} --codex /c -- app-server`), engine(141, 140),
-    engine(150, 1),
-  ].join("\n");
-  assert.deepEqual(slotHolders(snapshot, config, pendingAt), [{ pid: 101, owner: 100, kind: "ssh-listener" }, { pid: 141, owner: 140, kind: "adapter" }]);
-});
-
-function holderDeps(snapshot: string, state: Record<number, "idle" | "busy" | "unknown">, overrides: Partial<HolderDeps> = {}) {
-  const gone = new Set<number>(); const terminated: number[] = [];
-  const deps: HolderDeps = { snapshot: async () => snapshot, activity: async (_home, pid) => state[pid] ?? "unknown",
-    terminate: pid => { terminated.push(pid); setTimeout(() => { gone.add(pid); gone.add(pid + 1); }, 20); }, alive: pid => !gone.has(pid), stopWaitMs: 2000, pollMs: 10, ...overrides };
-  return { deps, terminated };
-}
-const run = (deps: HolderDeps) => clearSlotHolders({ configPath: config, sshHome: "/ssh", pendingAtMs: pendingAt }, deps);
-
-test("an idle listener is retired gracefully and waited for before the relay connects", async () => {
-  const f = await fixture();
-  try {
-    const { deps, terminated } = holderDeps([listener(100), engine(101, 100)].join("\n"), { 100: "idle" });
-    assert.equal(await run(deps), 1);
-    assert.deepEqual(terminated, [100], "the listener got a TERM; its engine was never signalled");
-    assert.deepEqual((await f.events("native_listener_retired")).map(event => event.count), [1]);
-  } finally { await f.clean(); }
-});
-
-test("a busy listener, one that cannot say, or another adapter refuses and nothing is signalled", async () => {
-  const f = await fixture();
-  try {
-    const snapshot = [listener(100), engine(101, 100), listener(200), engine(201, 200)].join("\n");
-    for (const [state, reason] of [[{ 100: "idle", 200: "busy" }, "listener_busy"], [{ 100: "idle", 200: "unknown" }, "listener_unknown"]] as const) {
-      const { deps, terminated } = holderDeps(snapshot, state);
-      await assert.rejects(run(deps), /SSH session from another Mac is using this Mac; retry when it is idle/);
-      assert.deepEqual(terminated, [], `${reason}: the idle listener is spared too, so the refusal changes nothing`);
-    }
-    const adapter = holderDeps([row(140, 1, before, `/usr/bin/node /g/cli.js codex-shim --config ${config} --codex /c -- app-server`), engine(141, 140)].join("\n"), {});
-    await assert.rejects(run(adapter.deps), /Codex session on this Mac/);
-    assert.deepEqual(adapter.terminated, []);
-    assert.deepEqual((await f.events("native_activation_refused")).map(event => event.reason), ["listener_busy", "listener_unknown", "adapter_running"]);
-  } finally { await f.clean(); }
-});
-
-test("a listener that became busy after the first answer keeps its sessions, and one that will not stop fails the activation", async () => {
-  const snapshot = [listener(100), engine(101, 100)].join("\n");
-  let asked = 0;
-  const flip = holderDeps(snapshot, {}, { activity: async () => ++asked === 1 ? "idle" : "busy" });
-  await assert.rejects(run(flip.deps), /retry when it is idle/);
-  assert.deepEqual(flip.terminated, []);
-  const stuck = holderDeps(snapshot, { 100: "idle" }, { alive: () => true, stopWaitMs: 50 });
-  await assert.rejects(run(stuck.deps), /did not stop/);
-});
-
-test("a machine with no holder retires nothing", async () => {
-  const none = holderDeps(listener(100), { 100: "idle" });
-  assert.equal(await run(none.deps), 0);
-  assert.deepEqual(none.terminated, []);
-});
-
-test("an SSH listener records whether any of its sessions runs a turn, and no record reads as unknown", async () => {
-  const folder = await mkdtemp(join(tmpdir(), "gw-listener-")); const pid = process.pid;
-  try {
-    assert.equal(await readListenerActivity(folder, pid), "unknown", "a listener from a release without records");
-    const activity = new ListenerActivity(folder, pid); const sent: unknown[] = [];
-    activity.publish();
-    await new Promise(done => setTimeout(done, 30));
-    assert.equal(await readListenerActivity(folder, pid), "idle", "a listener with no session is idle");
-    const session = activity.open(async message => { sent.push(message); });
-    await session.emit({ method: "turn/started", params: { threadId: "t1", turn: { id: "u1", status: "inProgress" } } });
-    await new Promise(done => setTimeout(done, 30));
-    assert.equal(await readListenerActivity(folder, pid), "busy", "a running turn keeps the listener");
-    assert.equal(sent.length, 1, "the client still receives every message");
-    await session.emit({ method: "turn/completed", params: { threadId: "t1", turn: { id: "u1", status: "completed" } } });
-    await new Promise(done => setTimeout(done, 30));
-    assert.equal(await readListenerActivity(folder, pid), "idle");
-    await session.emit({ method: "turn/started", params: { threadId: "t2", turn: { id: "u2", status: "inProgress" } } });
-    session.close();
-    await new Promise(done => setTimeout(done, 30));
-    assert.equal(await readListenerActivity(folder, pid), "idle", "a session that ended runs nothing");
-    await activity.stop();
-    assert.equal(await readListenerActivity(folder, pid), "unknown");
-    await writeFile(listenerActivityPath(folder, 999999), JSON.stringify({ pid: 1, busy: false }));
-    assert.equal(await readListenerActivity(folder, 999999), "unknown", "a record for another pid says nothing");
-    assert.ok((await stat(folder)).isDirectory());
-  } finally { await rm(folder, { recursive: true, force: true }); }
-});
-
 test("the shared host's native engine stands down whenever the relay is registered, live or not", () => {
   assert.equal(nativeExecutionEnvironment("/native", true).CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED, "1");
   assert.equal(nativeExecutionEnvironment("/native", false).CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED, undefined, "an unregistered Mac keeps today's behaviour");
   assert.throws(() => nativeExecutionArgs(["app-server", "--remote-control"], "/s", true), /conflicts with managed relay ownership/);
+});
+
+test("a Mac that already registered the relay clears no holders: its engines started standing down", async () => {
+  const f = await fixture();
+  try {
+    await writePrivateJson(nativeRegistrationPath(f.state), { registered: true, home: `${f.relayHome}-old`, nativeHome: f.nativeHome, codex: f.codex });
+    let cleared = false;
+    await registerPlanRelay(f.state, f.plan, calm({ clearHolders: async () => { cleared = true; return 0; } }));
+    assert.equal(cleared, false);
+    assert.equal(JSON.parse(await readFile(nativeRegistrationPath(f.state), "utf8")).home, f.relayHome);
+  } finally { await f.clean(); }
+});
+
+test("uninstall under a unified plan unregisters, keeps a backup of the old record and removes a pending one", async () => {
+  const f = await fixture();
+  try {
+    const previous = `{"registered":true,"home":"${f.relayHome}","nativeHome":"${f.nativeHome}","codex":"${f.codex}"}\n`;
+    await writeFile(nativeRegistrationPath(f.state), previous, { mode: 0o600 });
+    await writeFile(nativePendingPath(f.state), "{}");
+    const result = await unregisterPlanRelay(f.state, new Date("2026-10-18T01:02:03.456Z"));
+    assert.equal(result.registered, false);
+    assert.deepEqual(JSON.parse(await readFile(nativeRegistrationPath(f.state), "utf8")), { registered: false });
+    const backups = (await readdir(f.state)).filter(name => name.startsWith("native-registration.json.pre-relay-off-"));
+    assert.deepEqual(backups, ["native-registration.json.pre-relay-off-20261018T010203Z"]);
+    assert.equal(await readFile(join(f.state, backups[0]), "utf8"), previous, "the backup is the old record, byte for byte");
+    assert.equal(await f.exists(nativePendingPath(f.state)), false);
+    assert.match(String(result.next), /gateway service restart/);
+    // Nothing registered means nothing to undo, and no backup either.
+    const again = await unregisterPlanRelay(f.state, new Date("2026-10-18T01:02:04Z"));
+    assert.equal(again.unchanged, true); assert.equal((await readdir(f.state)).filter(name => name.includes("pre-relay-off")).length, 1);
+  } finally { await f.clean(); }
+});
+
+test("once unregistered, an adapter or listener that starts keeps its engine's own remote control (the relay no longer owns it)", async () => {
+  const f = await fixture();
+  try {
+    await writeFile(nativeRegistrationPath(f.state), `{"registered":true,"home":"${f.relayHome}","nativeHome":"${f.nativeHome}"}`);
+    assert.equal(await nativeRegistrationClaimed(f.state), true);
+    await unregisterPlanRelay(f.state);
+    assert.equal(await nativeRegistrationClaimed(f.state), false);
+  } finally { await f.clean(); }
 });

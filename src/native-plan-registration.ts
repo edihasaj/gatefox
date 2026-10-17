@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { stat, unlink } from "node:fs/promises";
+import { copyFile, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
@@ -65,7 +65,8 @@ export async function registerPlanRelay(stateDirectory: string, plan: ServicePla
   const pending = nativePendingPath(stateDirectory);
   await writePrivateJson(pending, receipt);
   try {
-    await deps.clearHolders((await stat(pending)).mtimeMs);
+    // Engines that started under an earlier registration already stand down; only a first registration has holders to clear.
+    if (saved?.registered !== true) await deps.clearHolders((await stat(pending)).mtimeMs);
     process.stderr.write("Connecting the native Codex relay…\n");
     try { await deps.enable(relay.binary, relay.args); }
     catch (error) {
@@ -92,4 +93,23 @@ export function relayCheck(binary: string, args: string[], timeoutMs = 60000): P
       if (code === 0 && ready?.ready === true && ready.existingMachine === true) done(); else fail(refused());
     });
   });
+}
+
+/**
+ * The way out of a registered relay under the unified service: `gateway native uninstall` marks it unregistered, so every
+ * adapter, SSH listener and shared host that starts afterwards leaves remote control to ChatGPT again. The previous record is
+ * kept beside it (`native-registration.json.pre-relay-off-<time>`), and a pending activation is removed. The relay the service
+ * is running stops at the next service restart, which a running relay needs before ChatGPT can take the slot. Nothing in the
+ * native configuration is touched. The caller holds the login registration lock.
+ */
+export async function unregisterPlanRelay(stateDirectory: string, now = new Date()): Promise<Record<string, unknown>> {
+  const path = nativeRegistrationPath(stateDirectory);
+  const saved = await nativeRegistrationRecord(stateDirectory);
+  await unlink(nativePendingPath(stateDirectory)).catch(() => {});
+  if (saved?.registered !== true) return { service: serviceLabel, mode: "supervised", registered: false, unchanged: true, nativeConfigUntouched: true };
+  const backup = `${path}.pre-relay-off-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  await copyFile(path, backup);
+  await writePrivateJson(path, { registered: false });
+  return { service: serviceLabel, mode: "supervised", registered: false, nativeConfigUntouched: true, previousRegistration: backup,
+    next: "Remote control goes back to ChatGPT for every engine that starts from now on. Restart the service while idle (gateway service restart) so the running relay, the shared host and the open adapters let go of it, then open ChatGPT" };
 }

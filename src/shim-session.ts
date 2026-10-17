@@ -9,6 +9,7 @@ import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
+import { registerActivityProbe } from "./runtime-activity.js";
 import { ThreadStartOrder } from "./thread-start-order.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { rpcRejection } from "./rpc-rejection.js";
@@ -19,6 +20,9 @@ export function operationalStartFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : "";
   return /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
 }
+
+/** How long a session must be silent to count as idle: 30 s. GATEWAY_SESSION_IDLE_MS is a test hook nothing the gateway installs sets. */
+const sessionIdleMs = (): number => Number(process.env.GATEWAY_SESSION_IDLE_MS) || 30000;
 
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
@@ -35,6 +39,11 @@ export async function shimSession(executable: string, args: string[], config: Ga
   let backends: AppServerBackends;
   const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
   const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
+  const tasks = new Set<Promise<void>>();
+  // Idle means no turn, no request in flight and no traffic for 30 s. The SSH listener asks this process-wide question (see
+  // runtimeBusy) when it is asked to retire, and a session is busy from its first moment, while its engines still start.
+  const idle = () => turns.active === 0 && tasks.size === 0 && Date.now() - lastActivity > sessionIdleMs();
+  const unregisterActivity = registerActivityProbe("adapter_session", () => !idle());
   try {
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async (message, engine) => {
       await router?.observeNotification(message, engine);
@@ -45,13 +54,12 @@ export async function shimSession(executable: string, args: string[], config: Ga
       await Promise.all(order.admit(message).map(emit));
     }, () => input.destroy(), configPath, signal);
   } catch (error) {
-    control?.close(); turns.close();
+    control?.close(); turns.close(); unregisterActivity();
     // A host that is restarting, busy or owned elsewhere fails closed by design and the
     // app retries; only an unexpected start failure is reported as an exception.
     if (!operationalStartFailure(error)) reportException(error, "adapter_start");
     telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
   router = new AppServerRouter(config, (method, params, hint) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params, hint), prepared.path, source, undefined, backends.identity);
-  const tasks = new Set<Promise<void>>();
   const compatible = async (method: string, params: Message): Promise<Message> => {
     // The parent already runs with corrected hooks; the SDK refuses any override on this fork.
     if (inheritsParentSettings(method, params)) return params;
@@ -76,7 +84,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const stop = () => { closing = true; input.destroy(); void backends.stop(); };
   signal.addEventListener("abort", stop, { once: true });
   // After an install, an idle adapter exits; the app starts a new one on the new release.
-  const stopWatching = watchForUpgrade("adapter", () => turns.active === 0 && tasks.size === 0 && Date.now() - lastActivity > 30000, () => { stop(); return true; });
+  const stopWatching = watchForUpgrade("adapter", idle, () => { stop(); return true; });
   try {
     if (signal.aborted) return 0;
     await router.initialize();
@@ -107,7 +115,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
     }
   } catch (error) { if (!closing && !backends.native.closed) throw error; }
   finally {
-    closing = true; signal.removeEventListener("abort", stop); turns.close(); stopWatching();
+    closing = true; signal.removeEventListener("abort", stop); turns.close(); stopWatching(); unregisterActivity();
     telemetry("adapter_session_end", { durationMs: Date.now() - startedAt, requests: handled, nativeClosed: backends.native.closed });
     control?.close();
     await backends.stop(); await Promise.allSettled(tasks);
