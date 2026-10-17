@@ -2,20 +2,20 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { loadConfig, writePrivateJson } from "./config.js";
+import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
-import { serviceExecutionPaths, serviceNativeExecutionPaths, serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
-import { executionHostHome, hostFailureReason, startExecutionHost } from "./execution-host.js";
+import { serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
+import { startExecutionHost } from "./execution-host.js";
 import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
 import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 import { chatGptAppRunning, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
-import type { HostProbeReason, SdkBaseline } from "./service-host-probe.js";
-import { defaultHealing, deterministicFailures, exitReason, failingStreak, hostProbeStrikes, hostRetryDelayMs, quickExitMs, statusFailureGapMs, statusWriteCode, type HostRestartReason, type SupervisorHealing } from "./service-heal.js";
+import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, type SupervisorHealing } from "./service-heal.js";
+import { ServiceHostKeeper } from "./service-host-keeper.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason }
@@ -35,7 +35,6 @@ export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnable
  */
 const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nativeRecheckMs = 300000; const nativeBlindRetryMs = 1800000;
 const execFileAsync = promisify(execFile);
-type ExecutionHost = Awaited<ReturnType<typeof startExecutionHost>>;
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; quickExits: number; fingerprint?: string; pausedAt: number; resumedOnce: boolean }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
 function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown> {
@@ -49,48 +48,26 @@ export class ServiceSupervisor {
   private heartbeat?: NodeJS.Timeout;
   private stopDone?: Promise<void>;
   private restarting = false;
-  private executionStarting?: ReturnType<typeof startExecutionHost>;
-  private hostRetry?: NodeJS.Timeout;
   private wakeWatch?: NodeJS.Timeout;
   private stopUpgradeWatch?: () => void;
   private lastTick = Date.now();
   private pauseWatch?: NodeJS.Timeout;
-  private hostFailures = 0;
   private readonly heal: SupervisorHealing;
-  private hostConfig?: Awaited<ReturnType<typeof loadConfig>>;
-  private hostPaths?: ReturnType<typeof serviceExecutionPaths>;
-  /** A host start in flight, from its relay question to its settled start; stop() waits for it. */
-  private hostAttempt?: Promise<void>;
-  private hostRetryAt = 0;
-  /** The last failed start cannot pass by retrying, and a kick already bought its one extra start in this backoff step. */
-  private hostFailureDeterministic = false;
-  private hostKickUsed = false;
-  /** When the last host start began (performance.now()); a kicked or probed start waits for the kick gap after it. */
-  private hostLastStart = Number.NEGATIVE_INFINITY;
-  private hostOwnsRelay = false;
-  private hostProbe?: NodeJS.Timeout;
-  private hostChecking = false;
-  private hostRestarting = false;
-  private hostRestartTimer?: NodeJS.Timeout;
-  private hostRestartReason?: HostRestartReason;
-  private hostUnhealthy?: HostProbeReason;
-  /** Failed probes in a row of the host running now; `hostProbeStrikes` of them mark it unhealthy. */
-  private hostProbeFailures = 0;
-  /** Counts the host starts that succeeded: a probe's verdict is dropped when another host started while it was out. */
-  private hostGeneration = 0;
-  /** An idle restart could not close the old host, whose receipt names this process: no start here can pass, so none is tried. */
-  private hostCloseFailed = false;
-  private sdkBaseline: SdkBaseline = {};
-  private stopKickWatch?: () => void;
+  /** The shared execution host's start, backoff, kick, probe and host-only restart (src/service-host-keeper.ts). */
+  private readonly host: ServiceHostKeeper;
   private stopHealth?: () => void;
   private statusFailedAt = Number.NEGATIVE_INFINITY;
-  private executionState?: { state: "starting" | "running" | "stopped" | "failed"; home: string; pid: number; sharedNativeExecutor: boolean; sharedGatewayExecutors: boolean };
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
-  constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, private readonly startHost: typeof startExecutionHost = startExecutionHost,
+  constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
     healing: Partial<SupervisorHealing> = {}) {
     this.heal = { ...defaultHealing, ...healing };
+    this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost, heal: this.heal,
+      registered: () => this.probes.registered(this.state),
+      relayPaused: () => this.slots.find(slot => slot.definition.kind === "native")?.state.state === "paused",
+      stopping: () => this.stopping, restarting: () => this.restarting, publish: () => this.publish(),
+      nativePaused: () => this.nativePaused(), restartWhenIdle: () => this.restartWhenIdle() });
     this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, quickExits: 0, pausedAt: 0, resumedOnce: false }));
   }
   /**
@@ -98,7 +75,7 @@ export class ServiceSupervisor {
    * the service, is reported at most once a minute, and the next heartbeat simply writes again. The promise never rejects.
    */
   private publish(): Promise<void> {
-    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.executionState ? { executionHost: { ...this.executionState } } : {}) };
+    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
     this.writes = this.writes.then(() => writePrivateJson(serviceStatusPath(this.state), snapshot)).catch(error => this.statusWriteFailed(error));
     return this.writes;
   }
@@ -111,24 +88,8 @@ export class ServiceSupervisor {
   async start(): Promise<void> {
     if (this.stopping) return;
     if (this.plan.sharedExecutors || this.plan.sharedNativeExecutor) {
-      const config = await loadConfig(this.plan.config); const paths = this.plan.sharedNativeExecutor ? serviceNativeExecutionPaths(this.plan) : serviceExecutionPaths(this.plan);
+      await this.host.start();
       if (this.stopping) return;
-      if (resolve(config.stateDirectory) !== resolve(this.state)) throw new Error("Shared executor state does not match the service plan");
-      this.executionState = { state: "starting", home: executionHostHome(this.plan.config, paths.nativeHome), pid: process.pid,
-        sharedNativeExecutor: this.plan.sharedNativeExecutor === true, sharedGatewayExecutors: this.plan.sharedExecutors === true };
-      this.hostConfig = config; this.hostPaths = paths;
-      await this.publish();
-      if (this.stopping) return;
-      // One watcher for this host folder, stopped in stopAll. An adapter that finds the host down writes `<home>/kick`: a
-      // failed host's backoff is shortened, a running one is probed. The handler never rejects into the watcher.
-      this.stopKickWatch = this.heal.watchKick(this.executionState.home, () => { void Promise.resolve().then(() => this.onHostKick()).catch(() => {}); });
-      // A failed host (for example after an app update changes its SDK) must not
-      // take inference, tunnels, or the relay down with it. Adapters that need the
-      // host fail closed until a retry succeeds.
-      await this.startExecutionHost();
-      if (this.stopping) return;
-      // The same tick asks again for a whole-service restart that a busy service refused after a failed host close.
-      this.hostProbe = setInterval(() => { void (this.hostCloseFailed ? this.restartAfterFailedClose() : this.checkHost()); }, this.heal.hostProbeMs); this.hostProbe.unref();
     }
     for (const slot of this.slots) await this.startSlot(slot);
     if (this.stopping) return;
@@ -138,166 +99,18 @@ export class ServiceSupervisor {
     if (this.slots.some(slot => slot.definition.kind === "native")) {
       // A re-check that cannot be answered is handled inside resumePaused; it never stops the service. The same tick
       // retries a host restart a busy host refused (see restartHostWhenIdle).
-      this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
+      this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
     }
     // The service itself moves to a newly installed release only when fully idle
     // (no app connected and no chat loaded); until then it keeps the previous one.
-    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.hostRestarting, () => this.restartWhenIdle());
+    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, () => this.restartWhenIdle());
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
     await this.publish();
   }
-  /**
-   * One host start at a time; a start that fails is retried after 1, 2, 5, 10 and 30 s, then every 60 s. A start that
-   * is not a kick's begins a new backoff step, which gives kicks their one extra start back.
-   */
-  private async startExecutionHost(kicked = false): Promise<void> {
-    if (this.stopping || !this.executionState || !this.hostConfig || !this.hostPaths || this.hostAttempt || this.hostCloseFailed) return;
-    clearTimeout(this.hostRetry); this.hostRetry = undefined;
-    if (!kicked) this.hostKickUsed = false;
-    this.hostLastStart = performance.now();
-    const attempt = this.attemptHost(this.hostConfig, this.hostPaths); this.hostAttempt = attempt;
-    try { await attempt; } finally { if (this.hostAttempt === attempt) this.hostAttempt = undefined; }
-  }
-  private async attemptHost(config: Awaited<ReturnType<typeof loadConfig>>, paths: ReturnType<typeof serviceExecutionPaths>): Promise<void> {
-    const execution = this.executionState!;
-    // Asked before the start and checked again after it: a stop during the question finds no host and must not get one.
-    const owns = await this.relayOwnsRegistration();
-    if (this.stopping) return;
-    const starting = this.startHost({ config, configPath: this.plan.config, ...paths,
-      capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
-      nativeRelayOwnsRegistration: owns });
-    this.executionStarting = starting;
-    try {
-      await starting;
-      if (this.hostFailures) telemetry("execution_host_recovered", { failures: this.hostFailures });
-      this.hostFailures = 0; this.hostFailureDeterministic = false; this.hostOwnsRelay = owns; this.hostUnhealthy = undefined; this.hostRestartReason = undefined; this.sdkBaseline = {};
-      this.hostGeneration++; this.hostProbeFailures = 0;
-      execution.state = "running"; await this.publish();
-      // The relay paused while this start was in the air: the host must give the app its remote control back.
-      if (owns && this.nativePaused()) this.requestHostRestart("relay_paused");
-    } catch (error) {
-      // A fixed reason, never the turn classifier: it read the uid in an SDK socket path as a 5xx status.
-      const reason = hostFailureReason(error); this.hostFailureDeterministic = deterministicFailures.has(reason);
-      telemetry("execution_host_failed", { failures: this.hostFailures + 1, reason });
-      reportException(error, "execution_host_start");
-      if (this.executionStarting === starting) this.executionStarting = undefined;
-      this.hostFailures++; execution.state = "failed"; await this.publish();
-      if (this.stopping) return;
-      this.scheduleHostRetry(hostRetryDelayMs(this.hostFailures, this.retryBaseMs));
-    }
-  }
-  /** Keeps the earliest due retry: a kick can bring a retry forward, never push one back. */
-  private scheduleHostRetry(ms: number, kicked = false): void {
-    const at = performance.now() + ms;
-    if (this.hostRetry && this.hostRetryAt <= at) return;
-    clearTimeout(this.hostRetry); this.hostRetryAt = at;
-    this.hostRetry = setTimeout(() => { this.hostRetry = undefined; void this.startExecutionHost(kicked); }, ms);
-  }
-  /**
-   * An adapter's kick. It only ever shortens the backoff of a failed host, never sooner than the kick gap after the last
-   * start, and does nothing while a start or a restart is in the air. A failure that a retry cannot fix (another live
-   * owner, a changed identity, an invalid SDK or receipt) gets one kicked start per backoff step, so kicks never turn the
-   * 60 s cap into a loop. A kick never stops a running host: it is probed, and restarted only when unhealthy and idle.
-   */
-  private onHostKick(): Promise<void> | undefined {
-    if (this.stopping || this.restarting || this.hostAttempt || this.hostRestarting || this.hostCloseFailed) return;
-    if (this.executionState?.state === "running") return this.checkHost();
-    if (this.executionState?.state !== "failed" || (this.hostFailureDeterministic && this.hostKickUsed)) return;
-    this.hostKickUsed = true;
-    this.scheduleHostRetry(Math.max(0, this.hostLastStart + this.heal.kickGapMs - performance.now()), true);
-  }
-  /**
-   * Probes the running host: its receipt, its control socket and one `execution/status` answer within 5 s, and, when
-   * native chats are shared, whether the app engine changed under it. Two failed probes in a row are reported once and
-   * restart the host only while it is idle; a busy host is asked again at the next probe. A probe that passes clears it.
-   * A verdict about a host that another start replaced while the probe was out is dropped: it says nothing about the new one.
-   */
-  async checkHost(): Promise<void> {
-    const execution = this.executionState;
-    if (!execution || this.stopping || this.restarting || this.hostChecking || this.hostAttempt || this.hostRestarting || execution.state !== "running") return;
-    this.hostChecking = true; const generation = this.hostGeneration;
-    try {
-      const target = { home: execution.home, pid: process.pid, ...(this.plan.sharedNativeExecutor && this.hostPaths ? { codex: this.hostPaths.codex } : {}) };
-      const reason = await this.heal.probeHost(target, this.sdkBaseline).catch(() => "status_failed" as const);
-      if (generation === this.hostGeneration && !this.stopping && !this.restarting && !this.hostRestarting && execution.state === "running") this.probed(reason);
-    } finally { this.hostChecking = false; }
-    // Also picks up a restart that was asked for while the probe was out (a relay set aside), which waited for it.
-    await this.restartHostWhenIdle();
-  }
-  private probed(reason: HostProbeReason | undefined): void {
-    if (!reason) {
-      this.hostProbeFailures = 0;
-      if (this.hostUnhealthy && this.hostRestartReason === this.hostUnhealthy) this.hostRestartReason = undefined;
-      this.hostUnhealthy = undefined; return;
-    }
-    if (++this.hostProbeFailures < hostProbeStrikes) return;
-    if (this.hostUnhealthy !== reason) telemetry("execution_host_unhealthy", { reason });
-    this.hostUnhealthy = reason; if (this.hostRestartReason !== "relay_paused") this.hostRestartReason = reason;
-  }
+  /** Probes the running host now; the service's own probe tick does the same (see ServiceHostKeeper.checkHost). */
+  checkHost(): Promise<void> { return this.host.checkHost(); }
   private nativePaused(): boolean { return this.slots.some(slot => slot.definition.kind === "native" && slot.state.state === "paused"); }
-  private requestHostRestart(reason: HostRestartReason): void {
-    if (this.hostRestartReason !== "relay_paused") this.hostRestartReason = reason;
-    void this.restartHostWhenIdle();
-  }
-  /**
-   * The one path that restarts only the execution host: idle check, close, start. It never stops inference, tunnels or
-   * the relay, and it never runs inside the kick gap after another start (it waits for the gap instead) or while a probe
-   * is out (the probe asks again when it ends). A host with a lease or a loaded chat refuses, and the next probe or relay
-   * re-check asks again.
-   */
-  private async restartHostWhenIdle(): Promise<void> {
-    const reason = this.hostRestartReason; const execution = this.executionState;
-    if (!reason || !execution || this.stopping || this.restarting || this.hostRestarting || this.hostAttempt || this.hostChecking || execution.state !== "running") return;
-    // A relay that came back, or a host that already gave the registration up, needs no restart.
-    if (reason === "relay_paused" && (!this.hostOwnsRelay || !this.nativePaused())) { this.hostRestartReason = undefined; return; }
-    const wait = this.hostLastStart + this.heal.kickGapMs - performance.now();
-    if (wait > 0) {
-      if (!this.hostRestartTimer) { this.hostRestartTimer = setTimeout(() => { this.hostRestartTimer = undefined; void this.restartHostWhenIdle(); }, wait); this.hostRestartTimer.unref(); }
-      return;
-    }
-    const starting = this.executionStarting;
-    this.hostRestarting = true; let closed = false;
-    try {
-      const host: ExecutionHost | undefined = await starting?.catch(() => undefined);
-      if (!host || this.stopping || !await host.prepareStop().catch(() => false)) return;
-      // A stop that came during the idle check closes the host itself; this is no restart.
-      if (this.stopping) return;
-      execution.state = "starting"; this.hostLastStart = performance.now(); await this.publish();
-      try { await host.close(); closed = true; }
-      catch (error) {
-        // Its receipt was preserved and names this live process, so no start here can pass (see hostCloseFailed).
-        telemetry("execution_host_failed", { failures: this.hostFailures + 1, reason: "close_failed" });
-        reportException(error, "execution_host_restart");
-        this.hostFailures++; this.hostCloseFailed = true; execution.state = "failed"; await this.publish();
-      }
-      if (closed) {
-        if (this.executionStarting === starting) this.executionStarting = undefined;
-        this.hostRestartReason = undefined; this.hostUnhealthy = undefined; telemetry("execution_host_restarted", { reason });
-      }
-    } finally { this.hostRestarting = false; }
-    if (closed) await this.startExecutionHost();
-    else if (this.hostCloseFailed) await this.restartAfterFailedClose();
-  }
-  /**
-   * The whole-service restart a failed host close calls for, with the host still referenced so the stop closes it again and
-   * rethrows its failure: the process exits and launchd starts a fresh one. A busy service refuses; the next probe tick asks again.
-   */
-  private async restartAfterFailedClose(): Promise<void> { await this.restartWhenIdle().catch(() => undefined); }
-  /**
-   * Whether the native relay, not the engine, owns this machine's remote-control registration:
-   * only a registered relay whose slot is not paused counts. A paused or missing relay leaves the
-   * app's own remote control alone. A relay that becomes live later takes effect at the next host
-   * start, which an idle restart is, because the receipt is read once when the host starts.
-   */
-  private async relayOwnsRegistration(): Promise<boolean> {
-    if (this.plan.sharedNativeExecutor !== true) return false;
-    const native = this.slots.find(slot => slot.definition.kind === "native");
-    if (native && native.state.state === "paused") return false;
-    // A question that cannot be answered is not an answer, so the start is left as it would have
-    // been; only a registration that really says otherwise takes ownership away from the relay.
-    return await this.probes.registered(this.state).catch(() => true);
-  }
   /**
    * The service never keeps the Mac awake. When a timer tick arrives far later than
    * scheduled, the system slept; SSH tunnels then restart at once instead of waiting
@@ -347,7 +160,7 @@ export class ServiceSupervisor {
     await this.publish();
     // A host started while this relay looked usable took the remote-control registration from the app. Only the host is
     // restarted, when idle, so it starts again without it; the boot order of everything else is left alone.
-    if (slot.definition.kind === "native" && this.hostOwnsRelay && this.executionState?.state === "running") this.requestHostRestart("relay_paused");
+    if (slot.definition.kind === "native") this.host.onRelayPaused();
   }
   /**
    * Re-checks the relay slots a timer put aside. It starts one again only when the relay is
@@ -444,14 +257,14 @@ export class ServiceSupervisor {
   }
   async restartWhenIdle(): Promise<boolean> {
     // A host-only restart in progress is finished first; the service restart is asked again later.
-    if (this.stopping || this.restarting || this.hostRestarting) return false;
+    if (this.stopping || this.restarting || this.host.hostRestarting) return false;
     const inference = this.slots.find(slot => slot.definition.kind === "inference");
     if (inference && !inference.child) return false;
     this.restarting = true;
     let executionHost: Awaited<ReturnType<typeof startExecutionHost>> | undefined;
     try {
       // A host whose close failed has already dropped every adapter and refuses any idle check, so it is not asked.
-      executionHost = this.hostCloseFailed ? undefined : await this.executionStarting;
+      executionHost = this.host.hostCloseFailed ? undefined : await this.host.executionStarting;
       if (executionHost && !await executionHost.prepareStop()) { this.restarting = false; return false; }
     } catch { executionHost?.resume(); this.restarting = false; return false; }
     if (!inference) { await this.stop(); return true; }
@@ -464,8 +277,8 @@ export class ServiceSupervisor {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); this.stopUpgradeWatch?.(); clearTimeout(this.hostRetry);
-    clearInterval(this.hostProbe); clearTimeout(this.hostRestartTimer); this.stopKickWatch?.();
+    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); this.stopUpgradeWatch?.();
+    this.host.stopWatching();
     // Stops the watchdog heartbeat and aborts a compatibility check it is still running.
     this.stopHealth?.();
     // Inference lets running streams finish before it exits, so it gets its drain on top
@@ -476,8 +289,8 @@ export class ServiceSupervisor {
     const inference = this.slots.filter(slot => slot.definition.kind === "inference" && slot.child);
     for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
     // A start still in the air is waited for (it sees `stopping` and starts nothing, or its host is closed here).
-    const executionClose = (this.executionStarting || this.hostAttempt) && Promise.all(inference.map(slot => within(slot.exited, grace(slot))))
-      .then(() => this.hostAttempt).then(() => this.executionStarting).then(host => host?.close());
+    const executionClose = (this.host.executionStarting || this.host.hostAttempt) && Promise.all(inference.map(slot => within(slot.exited, grace(slot))))
+      .then(() => this.host.hostAttempt).then(() => this.host.executionStarting).then(host => host?.close());
     // Observe rejection immediately while owned component processes shut down.
     const executionStopped = executionClose?.then(() => undefined, error => error as Error);
     const exited = Promise.all(this.slots.map(slot => slot.exited));
@@ -490,7 +303,7 @@ export class ServiceSupervisor {
     await within(exited, 1000);
     try {
       const failure = await executionStopped;
-      if (this.executionState) this.executionState.state = failure ? "failed" : "stopped";
+      if (this.host.executionState) this.host.executionState.state = failure ? "failed" : "stopped";
       await this.publish(); if (failure) throw failure;
     } finally { this.stoppedResolve(); }
   }

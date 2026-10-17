@@ -159,7 +159,7 @@ test("a probe that is out holds an idle restart back, and its verdict restarts n
   const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "process.exit(1)")] };
   // The relay re-check, which asks again for a refused host restart, runs every 150 ms; the probe tick never does.
   const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, registered, 150, 3_600_000, { ...quiet, kickGapMs: 0, probeHost });
-  const internals = supervisor as unknown as { hostGeneration: number };
+  const internals = (supervisor as unknown as { host: { hostGeneration: number } }).host;
   try {
     await supervisor.start();
     await until(async () => (await f.status()).components[0].state === "paused", "the relay set aside");
