@@ -18,17 +18,21 @@ import { gatewayFeatureArgs, nativeArguments, offersPriority } from "./gateway-e
 import { GatewayCompaction, type GatewayCompactionSession } from "./gateway-compaction.js";
 import { SharedNativeConnection, type NativeConnectionFactory, type NativeRpcConnection } from "./shared-native-connection.js";
 import { readServicePlan } from "./service-plan.js";
-import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { withStagedQueueInput } from "./queued-attachments.js";
 import { BoundedIdSet } from "./bounded-id-set.js";
 import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
-import { ChatIdentity, hasParent, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { executorOverrides, nativeEnvironment, newChatProvider } from "./executor-identity.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
-/** `creating` counts this connection's thread/start and thread/fork requests the engine has not finished answering. */
-interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void> }
+/**
+ * `creating` counts this connection's thread/start and thread/fork requests the engine has not finished answering. `provider` is
+ * the provider id the engine was launched to record new chats with, when this connection launched or acquired it.
+ */
+interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
 
 /** Socket clients of host-owned engines ignore the reason: only a process the adapter spawned can say why it stopped. */
@@ -64,6 +68,9 @@ export class AppServerBackends {
   /** This connection's chat classification; the router shares it, so both read one registry and one set of seen chats. */
   readonly identity: ChatIdentity;
   private readonly catalogs: IdentityCatalogs = { aliases: () => this.gatewayAliases(), nativeSlugs: () => this.catalog.nativeSlugs ?? noSlugs };
+  /** Finds and verifies the package's gateway SDK; a test can stand in for it. */
+  resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = () => gatewaySdkRuntime();
+  private chatProvider?: string;
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
     catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string, signal?: AbortSignal): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
@@ -116,7 +123,7 @@ export class AppServerBackends {
     };
     const nativeArgs = nativeArguments(this.args, overrides);
     this.native = nativeFactory ? nativeFactory(nativeArgs, message => this.forward(this.native, message), exited)
-      : new AppServerConnection(executable, nativeArgs, message => this.forward(this.native, message), exited, process.env, "native");
+      : new AppServerConnection(executable, nativeArgs, message => this.forward(this.native, message), exited, nativeEnvironment(), "native");
   }
   /** One engine process always gets exactly one exit record, with the reason it stopped for. */
   private reportEngineExit(connection: RpcConnection, activeTurns: number): void {
@@ -263,13 +270,13 @@ export class AppServerBackends {
     });
     this.creating = operation.catch(() => undefined); await operation;
   }
-  private async shared(record: ExecutionRecord, snapshot?: CompactionSnapshot): Promise<Engine> {
+  private async shared(record: ExecutionRecord, snapshot?: CompactionSnapshot, provider?: string): Promise<Engine> {
     const ready = this.engines.find(engine => engine.shared && engine.revision === record.revision && !engine.connection.closed);
-    if (ready) { ready.requests++; return ready; }
+    if (ready) { ready.requests++; ready.provider ??= provider; return ready; }
     const operation = this.creating.then(async () => {
       if (this.closing || !this.initialized) throw new Error("Initialize an open adapter before attaching a gateway executor");
       const existing = this.engines.find(engine => engine.shared && engine.revision === record.revision && !engine.connection.closed);
-      if (existing) { existing.requests++; return existing; }
+      if (existing) { existing.requests++; existing.provider ??= provider; return existing; }
       for (let index = this.engines.length - 1; index >= 0; index--) {
         const old = this.engines[index];
         if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) {
@@ -277,7 +284,7 @@ export class AppServerBackends {
           if (old.shared && old.revision !== record.revision) await (await this.pool())?.release(old.revision);
         }
       }
-      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true };
+      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, ...(provider ? { provider } : {}) };
       const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
         engine.exitPending = (async () => {
           await Promise.race([connection.drained, this.nativeClosing]);
@@ -313,8 +320,11 @@ export class AppServerBackends {
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
     const snapshot = this.catalog.current();
     const priority = offersPriority(snapshot.models);
-    const runtime = await gatewaySdkRuntime();
-    const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "")).digest("hex");
+    const runtime = await this.resolveRuntime();
+    const provider = await this.newChatProvider({ runtime });
+    // The identity is fixed for the connection; an executor that can no longer serve it fails closed instead of reaching OpenAI.
+    if (provider !== newChatProvider(this.config, runtime)) throw Object.assign(new Error("The gateway executor changed while this desktop connection was open; reconnect to continue gateway chats"), { code: -32001 });
+    const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "") + provider).digest("hex");
     const pool = await this.pool();
     if (pool) {
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
@@ -329,8 +339,7 @@ export class AppServerBackends {
         if (["-p", "--profile", "--listen"].includes(this.args[index])) { index++; continue; }
         if (!this.args[index].startsWith("--profile=") && !this.args[index].startsWith("--listen=") && this.args[index] !== "--stdio") forwarded.push(this.args[index]);
       }
-      const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
-        ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
+      const overrides = { model: snapshot.models[0].slug, ...executorOverrides(provider, this.overrides), "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}) };
       const args = trimGatewayFeatureArgs(normalizeCodexFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], settings), stats);
       reportGatewayFeatureTrim("spawn", stats);
       const combined = this.catalog.combined(snapshot);
@@ -338,7 +347,7 @@ export class AppServerBackends {
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
       await this.releaseIdleShared(sharedRevision);
       const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk });
-      return this.shared(record, { models: combined.models, settings, args });
+      return this.shared(record, { models: combined.models, settings, args }, provider);
     }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
     const ready = this.engines.find(engine => engine.revision === revision && !engine.connection.closed);
@@ -363,12 +372,11 @@ export class AppServerBackends {
         if (["-p", "--profile"].includes(this.args[index])) { index++; continue; }
         if (!this.args[index].startsWith("--profile=")) forwarded.push(this.args[index]);
       }
-      const overrides = { model: snapshot.models[0].slug, model_provider: "subscription_gateway", model_catalog_json: path,
-        "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}),
-        ...Object.fromEntries(Object.entries(this.overrides).map(([key, value]) => [`model_providers.subscription_gateway.${key}`, value])) };
+      const overrides = { model: snapshot.models[0].slug, ...executorOverrides(provider, this.overrides), model_catalog_json: path,
+        "features.step_model_switching": true, ...(priority ? { "features.fast_mode": true } : {}) };
       const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs([...gatewayFeatureArgs(forwarded, priority), ...Object.entries(overrides).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ["-c", `${key}=${JSON.stringify(value)}`])], stats));
       if (this.closing) throw new Error("Codex desktop connection is closing");
-      const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1 };
+      const engine: Engine = { connection: undefined!, revision, aliases: new Set(snapshot.models.map(model => String(model.slug))), threads: new Set(), active: new Map(), requests: 1, provider };
       engine.connection = new AppServerConnection(runtime?.executable || this.executable, args, message => this.forward(engine.connection, message), connection => {
         this.reportEngineExit(connection, engine.active.size);
         void engine.compaction?.close();
@@ -386,6 +394,17 @@ export class AppServerBackends {
     });
     this.creating = operation.catch(() => undefined); return operation;
   }
+  /**
+   * The provider id this connection records new gateway chats with, decided once from the configuration and the gateway SDK
+   * (see docs/harness-identity.md). `runtime` is the SDK a caller already resolved, so the first gateway chat costs no second check.
+   */
+  private async newChatProvider(resolved?: { runtime: GatewaySdkRuntime | undefined }): Promise<string> {
+    if (this.chatProvider === undefined) {
+      const runtime = resolved ? resolved.runtime : await this.resolveRuntime();
+      this.chatProvider ??= newChatProvider(this.config, runtime);
+    }
+    return this.chatProvider;
+  }
   /** Gateway aliases this connection knows: the current catalog and every generation it still has loaded. */
   private gatewayAliases(): ReadonlySet<string> {
     const aliases = new Set(this.catalog.current().models.map(model => String(model.slug)));
@@ -394,8 +413,20 @@ export class AppServerBackends {
   }
   /** A chat's kind from the SDK's record of it, after one registry read. */
   private async classify(thread: unknown, threadId: string, method: string): Promise<ChatKind> {
+    return (await this.verdict(thread, threadId, method)).kind;
+  }
+  private async verdict(thread: unknown, threadId: string, method: string): Promise<ReturnType<ChatIdentity["classify"]>> {
     await this.identity.refresh();
-    return this.identity.classify({ ...threadFacts(thread), id: threadId }, this.catalogs, method).kind;
+    return this.identity.classify({ ...threadFacts(thread), id: threadId }, this.catalogs, method);
+  }
+  /**
+   * A gateway chat found only through its parent or its alias is written to the registry when it is routed, so it no longer
+   * depends on its parent's record or its model: a sub-agent spawned while no desktop was connected, or a chat whose entry was
+   * lost. A throwaway chat stays memory-only.
+   */
+  private async keep(thread: unknown, threadId: string, rule: string): Promise<void> {
+    if ((rule !== "parent" && rule !== "alias") || object(thread).ephemeral === true || this.ephemeralThreads.has(threadId)) return;
+    await this.identity.record(threadId, rule === "parent" ? "subagent" : "started");
   }
   /** The native engine's read of a chat, when its saved provider is native and the chat's classification agrees. */
   private async verifiedNative(method: string, params: Message): Promise<Message | undefined> {
@@ -437,7 +468,8 @@ export class AppServerBackends {
         if (!engine) {
           const probe = await this.nativeRequest("thread/read", { threadId: params.threadId, includeTurns: false })
             .catch(error => { if (nativeThreadAbsent(error, String(params.threadId))) return undefined; throw error; });
-          if (probe && await this.classify(probe.thread, params.threadId, method) === "gateway") { engine = await this.gateway(); reserved = true; }
+          const found = probe && await this.verdict(probe.thread, params.threadId, method);
+          if (found && found.kind === "gateway") { await this.keep(probe!.thread, params.threadId, found.rule); engine = await this.gateway(); reserved = true; }
         }
       }
     }
@@ -451,6 +483,12 @@ export class AppServerBackends {
     const creating = method === "thread/start" || method === "thread/fork";
     if (creating) engine.creating = (engine.creating ?? 0) + 1;
     try {
+      // The router asks for a new gateway chat with the gateway's own provider id; the chat is recorded with this connection's
+      // identity. A resumed chat keeps the provider the router read from its record, so no saved chat is ever rewritten.
+      if (creating && params.modelProvider === legacyGatewayProvider) {
+        const provider = engine.provider ?? await this.newChatProvider();
+        if (provider !== legacyGatewayProvider) params = { ...params, modelProvider: provider };
+      }
       // Only gateway engines get here; native requests returned above and are forwarded untouched.
       params = trimmedGatewayFeatures("request", stats => trimGatewayFeatureRequest(method, params, stats));
       const model = object(object(params.collaborationMode).settings).model ?? params.model;

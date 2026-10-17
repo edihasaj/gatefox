@@ -6,7 +6,7 @@ import { telemetry } from "./telemetry.js";
 export type { ChatKind };
 /** The engine a request is meant for. The router decides it; a provider id in the request never does. */
 export interface EngineHint { engine: ChatKind }
-/** The provider id gateway chats were written with before the native identity. This release still writes it. */
+/** The provider id gateway chats were written with before the native identity (0.4.6), and still are with `chatIdentity: "legacy"`. */
 export const legacyGatewayProvider = "subscription_gateway";
 /** The catalogs a classification reads, as thunks: a chat that the provider or the registry answers never builds them. */
 export interface IdentityCatalogs { aliases: () => ReadonlySet<string>; nativeSlugs: () => ReadonlySet<string> }
@@ -92,8 +92,8 @@ export class ChatIdentity {
   }
   /**
    * Records a gateway chat and resolves once it is on disk, so the caller can forward the reply or notification after it.
-   * A chat already recorded costs no write. A failed write is reported once and never fails the chat: until the identity
-   * changes, a gateway chat is still recognized by its provider.
+   * A chat already recorded costs no write. A failed write is reported once and never fails the chat: a legacy chat is still
+   * recognized by its provider and an `openai` one by its alias (see docs/harness-identity.md).
    */
   async record(id: string, origin: GatewayChatOrigin): Promise<void> {
     const pending = this.recording.get(id);

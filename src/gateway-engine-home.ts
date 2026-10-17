@@ -6,6 +6,7 @@ import type { Message } from "./app-server-connection.js";
 import { normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
 import { testSafeRoot } from "./test-root-guard.js";
 import { trimGatewayFeatureConfig, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
+import { gatewayExecutorMarker } from "./executor-identity.js";
 
 function toml(value: unknown): string {
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -70,5 +71,7 @@ export function gatewayEnvironment(home: string): NodeJS.ProcessEnv {
   for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
   // Gateway engines run headless on the gateway's pinned SDK, so remote control has nothing to pair with.
   env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
+  // The gateway SDK serves `openai` as the gateway's own loopback provider only in a process marked as a gateway executor.
+  env[gatewayExecutorMarker] = "1";
   return env;
 }

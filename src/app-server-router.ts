@@ -21,6 +21,7 @@ import { ChatIdentity, legacyGatewayProvider as gatewayProvider, noSlugs, thread
 import { configEffort, enumEffort, object, requestedEffort, requestedModel, savedTier, tierId, tierSelection } from "./app-server-request-fields.js";
 import { gatewayModelList } from "./app-server-model-list.js";
 import { AppServerRoutingError } from "./app-server-routing-error.js";
+import { gatewayProviderIds, nativeIdentityProvider, savedChatProvider } from "./executor-identity.js";
 
 export { AppServerRoutingError };
 type ObjectValue = Record<string, unknown>;
@@ -242,11 +243,32 @@ export class AppServerRouter {
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
   }
+  /**
+   * A chat list that asks only for the native engine's default provider, by naming it or by naming none, also gets the chats
+   * saved with the gateway's own id, so a client that lists the native identity (the phone, through the relay) sees every
+   * gateway chat without any saved chat being rewritten. Every other list reaches the engine as it was sent: an empty list
+   * already means every provider, a parent or ancestor filter lists every provider, and a chosen set of providers is the
+   * caller's choice. The native default is read from the engine's configuration, `openai` when it names none.
+   */
+  private async listRequest(params: ObjectValue): Promise<ObjectValue> {
+    const requested = params.modelProviders;
+    const omitted = requested === undefined || requested === null;
+    if (omitted && (typeof params.parentThreadId === "string" || typeof params.ancestorThreadId === "string")) return params;
+    if (!omitted && (!Array.isArray(requested) || requested.length !== 1 || typeof requested[0] !== "string")) return params;
+    const configured = object((await this.backend("config/read", {}).catch((): ObjectValue => ({}))).config).model_provider;
+    const native = typeof configured === "string" && configured ? configured : nativeIdentityProvider;
+    if (native === gatewayProvider || (!omitted && (requested as string[])[0] !== native)) return params;
+    return { ...params, modelProviders: [native, gatewayProvider] };
+  }
   private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
     return { ...params, serviceTier: this.preferences.service_tier };
   }
-  private modelRequest(params: ObjectValue, model: string, newChat = false, restored?: ReasoningChoice | null): ObjectValue {
+  /**
+   * `provider` is the provider id the request names: the gateway's own id asks for a new gateway chat, which the backends record
+   * with the connection's identity, and a resumed chat names the id it was saved with.
+   */
+  private modelRequest(params: ObjectValue, model: string, newChat = false, restored?: ReasoningChoice | null, provider = gatewayProvider): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
     const levels = (metadata.supported_reasoning_levels as Array<{ effort: string }>).map(level => level.effort);
@@ -260,7 +282,7 @@ export class AppServerRouter {
     // default here would silently reset a Max chat to Medium on reload. A restored
     // choice is the chat's own setting, which the engine cannot recover on its own.
     const reasoning = restored === null ? {} : { model_reasoning_effort: restored?.effort ?? effort, model_reasoning_summary: restored?.summary ?? summary };
-    return { ...selected, model, modelProvider: gatewayProvider,
+    return { ...selected, model, modelProvider: provider,
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
   private assertSameProvider(kind: ChatKind, model: unknown): void {
@@ -375,6 +397,11 @@ export class AppServerRouter {
     // tier the model does not offer. Its per-turn field reads "priority", so the legacy "fast" alias is mapped.
     if (route.kind === "gateway" && params.serviceTierForTurn === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
     if (sessionStart && route.kind === "gateway") {
+      // A route learned from a settings notification may not know the saved provider; the chat's record does, and a resume must name it.
+      if (method === "thread/resume" && typeof route.provider !== "string") {
+        const saved = object((await this.backend("thread/read", { threadId: params.threadId, includeTurns: false })).thread).modelProvider;
+        if (typeof saved === "string") route.provider = saved;
+      }
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
       if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
@@ -384,7 +411,8 @@ export class AppServerRouter {
       let restored: ReasoningChoice | null | undefined = null;
       if (!sameModel) restored = undefined;
       else if (configEffort(params) === undefined) restored = await this.restoredReasoning(String(params.threadId), model, method);
-      forwarded = this.modelRequest(inherited, model, false, restored);
+      // A resume keeps the provider the chat was saved with, so it never rewrites the chat's record; a fork is a new chat.
+      forwarded = this.modelRequest(inherited, model, false, restored, method === "thread/resume" ? savedChatProvider(route.provider) : gatewayProvider);
     }
     // A native chat's request reaches the SDK exactly as the caller sent it: the SDK restores the chat's own model,
     // provider and effort, and any model or effort key added here would count as an override and defeat that restore.
@@ -403,6 +431,7 @@ export class AppServerRouter {
     }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
     if (method === "model/list") return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model);
+    if (method === "thread/list") return this.backend(method, await this.listRequest(params));
     if (method === "config/value/write" || method === "config/batchWrite") return this.writeConfig(method, params);
     let forwarded = params;
     const drops: TierDrop[] = [];
@@ -435,7 +464,8 @@ export class AppServerRouter {
     }
     if (createsThread.has(method)) {
       await this.remember(method, result, forwarded, expectedTier, requestStartedAtMs, inherited, routed);
-      if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
+      // A gateway chat is recorded with one of the ids a gateway executor serves; any other answer came from an engine that ignored the request.
+      if (forwarded.modelProvider === gatewayProvider && !gatewayProviderIds.has(String(result.modelProvider))) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
     if (typeof params.threadId === "string" && !wasEphemeral && this.routes.get(params.threadId)?.kind === "gateway" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
