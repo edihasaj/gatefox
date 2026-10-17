@@ -26,13 +26,24 @@ Added gateway model rows ignore task prompt text from older hosts and offline
 caches. The original native model catalog and explicit client instructions remain
 unchanged.
 
+### Live configuration
+
 An inference keeps the configuration snapshot with which it began. New requests
-load atomically replaced configuration. Invalid configuration fails closed until
-repaired. Existing aliases cannot change account, provider, credential source, or
-upstream model live. Add another alias or restart after active work finishes.
+load atomically replaced configuration. A change that cannot be applied live is
+refused, not served as an error: the last good configuration keeps serving every
+model and the refusal is recorded once per file version as `config_rejected` with
+a fixed `reason`, never a path, value or error text (see
+[diagnostics](diagnostics.md)). That covers an invalid or unreadable file
+(`invalid`, `unreadable`), a changed listener port, mode or state directory
+(`restart_required`), and an existing alias that would change account, provider,
+credential source, base URL or upstream model (`rebind`). The change takes effect
+only after the daemon restarts; to apply it live, add another alias instead. The
+next file that is valid and allowed is adopted at once and clears the refusal,
+and so does putting the applied file back. A gateway whose configuration is
+invalid at startup still fails to start. The gateway does not yet raise a
+`gateway health` finding for a refused change; read the `config_rejected` events.
 Retiring an alias does not release its identity until the daemon restarts.
-Labels and capability metadata can update live. Listener and state-directory
-changes require a restart.
+Labels and capability metadata can update live.
 
 A macOS user LaunchAgent keeps the daemon alive across app and terminal exits.
 Its environment contains PATH, not provider credentials. Credentials and gateway
