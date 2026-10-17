@@ -58,10 +58,12 @@ restart the app:
 
 1. Run `gateway desktop register`. This works for both the unified service and a
    standalone desktop LaunchAgent. Do not wait for the unified service to clear it
-   on its own: the supervisor moves to a new release only when it is fully idle,
-   with no app connected and no chat loaded (see `docs/RELEASING.md`), so it never
-   restarts while ChatGPT stays open. Quitting ChatGPT lets it go idle and restart,
-   and a standalone LaunchAgent also clears it at the next login.
+   on its own: the supervisor moves to a new release when it is fully idle, with no
+   app connected and no chat loaded, or, after 15 minutes of waiting, once it is quiet
+   (no turn running, no background terminal and no turn ended in the last 5 minutes;
+   see `docs/services.md`), so with ChatGPT open and busy it can wait a long time.
+   Quitting ChatGPT lets it go idle and restart, and a standalone LaunchAgent also
+   clears it at the next login.
 2. If registration refuses because no receipt proves the value, clear it yourself
    and register again: `launchctl unsetenv CODEX_APP_SERVER_FORCE_CLI`. That is
    the whole remedy for the missing-receipt case; nothing else in the gateway
