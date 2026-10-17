@@ -21,7 +21,8 @@ execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe'
 const signing = spawnSync('/usr/bin/codesign', ['--display', '--verbose=4', sdk], { encoding: 'utf8', timeout: 10000 });
 assert.match(signing.stderr, /^TeamIdentifier=2DC432GLL2$/m, 'Use the first-party signed SDK');
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
-assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2', 'Pass the pinned signed Mach-O, not its shell launcher');
+// The app's signed engine: 0.162 on a Mac not yet updated, 0.163 from the 0.4.7 relay pin (as e2e-native-relay accepts).
+assert.ok(['codex-cli 0.162.0-alpha.17.2', 'codex-cli 0.163.0-alpha.10.2'].includes(sdkVersion), 'Pass the pinned signed Mach-O, not its shell launcher');
 await mkdir(root, { mode: 0o700 }); // Refuses a reused root.
 
 const wire = []; let phase = 'setup';
