@@ -525,6 +525,34 @@ which were then in one node_repl group; only adapter tests cover a rejected swit
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
 goal continuation and every rendered control remain separate desktop checks.
 
+## Re-attaching a gateway chat
+
+A gateway chat runs on an executor that can go away under a loaded chat: the shared host
+restarts (a service upgrade or restart), a private executor exits, or the host drops this
+adapter's connection. Since 0.4.7 the chat's next request does not fail for that. The
+adapter first loads the chat again: it finds the host again (a kick and up to 20 seconds
+of waiting), takes the generation that still owns the chat or the current one, and sends
+`thread/resume` with the parameters this connection loaded the chat with (model, the
+provider id it is saved with, folder, approval and sandbox settings), then the request
+itself. A model the chat applied later replaces the loaded one. A chat this connection
+did not load, such as a sub-agent, is resumed with its saved settings.
+
+- One re-attach per chat at a time: requests that arrive meanwhile wait for it, so the
+  chat is resumed once.
+- Nothing of a turn that died with the executor is sent again. Stopping or steering that
+  turn afterwards gets the executor's own answer.
+- The host's owner and generation rules still decide, so a chat never gets a second
+  writer: a live generation that owns the chat serves it again.
+- A throwaway chat (a composer prediction) lived only in the executor that is gone and
+  is not re-attached, and a host that stays down past the wait, or an executor that
+  refuses the resume, gives the error from before: "The gateway executor connection was
+  lost; resume this chat to reconnect to its saved or running session." (code -32001),
+  or for a private executor "The gateway executor exited; …".
+- Native chats are unchanged: when the native engine goes away, the app reconnects.
+
+Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`
+([diagnostics](diagnostics.md)).
+
 ## Native chats keep their model
 
 The adapter never changes a native chat's model or provider. When "Authenticated

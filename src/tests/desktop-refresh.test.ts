@@ -104,12 +104,13 @@ test("gateway failure leaves native discovery and primary account requests usabl
   const c = await client();
   try {
     const thread = await c.rpc("thread/start", { model: "claude/model" });
+    const before = await c.rpc("engine/info", { threadId: thread.thread.id });
     await assert.rejects(c.rpc("crash", { threadId: thread.thread.id }), /exited/);
     assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
     assert.equal((await c.rpc("model/list")).data[0].model, "native");
-    await assert.rejects(c.rpc("turn/start", { threadId: thread.thread.id, model: "claude/model" }), /resume this chat/);
-    await c.rpc("thread/resume", { threadId: thread.thread.id });
-    assert.equal((await c.rpc("engine/info", { threadId: thread.thread.id })).primaryAuthPresent, false);
+    // The chat's next request loads it on a new gateway executor first (docs/app-server.md, re-attaching a gateway chat).
+    const after = await c.rpc("engine/info", { threadId: thread.thread.id });
+    assert.notEqual(after.pid, before.pid); assert.equal(after.primaryAuthPresent, false);
   } finally { await c.stop(); }
 });
 

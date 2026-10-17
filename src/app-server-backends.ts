@@ -26,6 +26,7 @@ import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
 import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { executorOverrides, nativeEnvironment, newChatProvider } from "./executor-identity.js";
+import { ChatLoads, Reattacher, ReattachError } from "./executor-reattach.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -71,6 +72,9 @@ export class AppServerBackends {
   /** Finds and verifies the package's gateway SDK; a test can stand in for it. */
   resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = () => gatewaySdkRuntime();
   private chatProvider?: string;
+  /** How each gateway chat was loaded, and the one re-attach per chat at a time when its executor is gone. */
+  private readonly loads = new ChatLoads();
+  private readonly reattacher = new Reattacher();
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
     catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string, signal?: AbortSignal): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
@@ -218,7 +222,7 @@ export class AppServerBackends {
       }
       if (!threadId || !this.ephemeralThreads.has(threadId)) await this.compaction.observe(message);
       if (message.method === "thread/started" && threadId) { engine.threads.add(threadId); this.bindings.set(threadId, engine); }
-      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId); }
+      if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) { this.bindings.delete(threadId); this.loads.forget(threadId); } }
       if (message.method === "turn/started" && threadId && typeof object(params.turn).id === "string") engine.active.set(threadId, String(object(params.turn).id));
       if (message.method === "turn/completed" && threadId && engine.active.get(threadId) === object(params.turn).id) engine.active.delete(threadId);
       // Executor account discovery is not the desktop's primary account state.
@@ -414,6 +418,23 @@ export class AppServerBackends {
   private newChatProvider(runtime: GatewaySdkRuntime | undefined): string {
     return this.chatProvider ??= newChatProvider(this.config, runtime);
   }
+  /**
+   * Loads a chat whose gateway executor is gone onto a live one: the host is found again (a kick and its usual wait), the
+   * generation that owns the chat or the current one is acquired, and the chat is resumed with the parameters this
+   * connection loaded it with, its saved provider among them. Nothing of a turn that died with the executor is sent again.
+   * Requests that find the same chat's executor gone meanwhile share this one re-attach. The host's owner and generation
+   * rules still decide, so a chat never gets a second writer.
+   */
+  private async reattach(threadId: string, closed: Engine): Promise<void> {
+    const host = this.nativeHost?.client ?? await this.poolPending?.catch(() => undefined);
+    const reason = closed.shared && host && !host.closed ? "generation_retired" : "engine_closed";
+    await this.reattacher.join(threadId, reason, async () => {
+      try { const target = await this.owner(threadId) ?? await this.gateway(); target.requests--; }
+      catch { throw new ReattachError("host_unavailable"); }
+      try { await this.request("thread/resume", this.loads.resumeParams(threadId)); }
+      catch { throw new ReattachError("resume_failed"); }
+    });
+  }
   /** Gateway aliases this connection knows: the current catalog and every generation it still has loaded. */
   private gatewayAliases(): ReadonlySet<string> {
     const aliases = new Set(this.catalog.current().models.map(model => String(model.slug)));
@@ -488,8 +509,18 @@ export class AppServerBackends {
     if (!engine) return this.nativeRequest(method, params);
     if (engine.connection.closed) {
       if (reserved) engine.requests--;
-      if (method !== "thread/resume") throw Object.assign(new Error(engine.shared ? "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session." : "The gateway executor exited; resume this chat before continuing. Ephemeral chats must be started again."), { code: -32001 });
-      engine = await this.owner(String(params.threadId)) || await this.gateway(); reserved = true;
+      const threadId = String(params.threadId);
+      if (method === "thread/resume") { engine = await this.owner(threadId) || await this.gateway(); reserved = true; }
+      else {
+        // The chat's executor is gone (its host restarted, or it exited): load the chat again on a live one and then send the
+        // request there, as the user would by resuming. A throwaway chat lived only in the engine that is gone.
+        const lost = Object.assign(new Error(engine.shared ? "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session." : "The gateway executor exited; resume this chat before continuing. Ephemeral chats must be started again."), { code: -32001 });
+        if (this.closing || this.ephemeralThreads.has(threadId)) throw lost;
+        try { await this.reattach(threadId, engine); } catch { throw lost; }
+        engine = this.bindings.get(threadId);
+        if (!engine) throw lost;
+        reserved = false;
+      }
     }
     if (!reserved) engine.requests++;
     const creating = method === "thread/start" || method === "thread/fork";
@@ -530,9 +561,13 @@ export class AppServerBackends {
         if (creating && typeof params.modelProvider === "string" && result.modelProvider !== params.modelProvider) {
           throw new Error("The gateway executor did not record this chat with the requested provider; start a new chat");
         }
+        if (!this.ephemeralThreads.has(id)) this.loads.remember(id, params, result);
       }
+      // A model the executor applied is the one a re-attach loads the chat with.
+      if (typeof params.threadId === "string" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) this.loads.model(params.threadId, params.model);
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
         engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); this.ephemeralThreads.delete(params.threadId); engine.compaction?.forget(params.threadId);
+        this.loads.forget(params.threadId);
       }
       return result;
     } finally { engine.requests--; if (creating) engine.creating!--; }

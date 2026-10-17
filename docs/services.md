@@ -626,10 +626,11 @@ asks again every 100 ms for up to 5 seconds before it reports that refusal.
 The service then stops as it does for any restart, and connected clients see the host
 go away as they do after a host restart. An adapter's engine connections close: when
 native chats are shared too, the adapter closes the app's connection and the app
-reconnects; otherwise a gateway chat's next request other than a resume reports that
-the executor connection was lost. Either way the app resumes the chat, and the resume
-kicks the service and waits up to 20 seconds for the new host, which then runs the
-chat's follow-up turns. Turns start on engine sockets, not through the host, so the
+reconnects; otherwise, since 0.4.7, the adapter re-attaches a gateway chat on its next
+request: it kicks the service, waits up to 20 seconds for the new host, resumes the chat
+there and then sends the request ([re-attaching gateway chats](app-server.md#re-attaching-a-gateway-chat)).
+Only when the host stays down does the request still report that the executor
+connection was lost. Turns start on engine sockets, not through the host, so the
 check cannot hold one back: a turn started in the second or two between the quiet check
 and the host's close (inference exits first) is cut, as at any service restart, and
 continues from saved history after a resume. `gateway service restart` keeps the idle
