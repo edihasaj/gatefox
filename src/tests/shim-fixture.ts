@@ -44,7 +44,10 @@ createInterface({input:process.stdin}).on('line',line=>{
    if(thread.modelProvider==='subscription_gateway')fs.appendFileSync(path.join(home,'config.toml'),'# automatic gateway trust entry\\n');
    send({id:m.id,result:{serviceTier:null,thread,modelProvider:thread.modelProvider,model:thread.model}});
  }
- else if(m.method==='thread/read'||m.method==='thread/resume'){try{const thread=readThread(m.params.threadId);threads.set(thread.id,thread);send({id:m.id,result:{...(m.method==='thread/resume'?{serviceTier:null}:{}),thread,modelProvider:thread.modelProvider,model:thread.model}});}catch{send({id:m.id,error:{code:-32000,message:'Thread not found'}});}}
+ else if(m.method==='thread/read'||m.method==='thread/resume'){try{const saved=readThread(m.params.threadId);threads.set(saved.id,saved);
+   // A resume that names a provider or model runs with it, as the SDK applies a resume override; the saved file keeps its own.
+   const thread=m.method==='thread/resume'?{...saved,modelProvider:m.params.modelProvider||saved.modelProvider,model:m.params.model||saved.model}:saved;
+   send({id:m.id,result:{...(m.method==='thread/resume'?{serviceTier:null}:{}),thread,modelProvider:thread.modelProvider,model:thread.model}});}catch{send({id:m.id,error:{code:-32000,message:'Thread not found'}});}}
  else if(m.method==='thread/unsubscribe'){threads.delete(m.params.threadId);send({id:m.id,result:{status:'unsubscribed'}});send({method:'thread/closed',params:{threadId:m.params.threadId}});}
  else if(m.method==='turn/start'){pending=m;send({id:m.id,method:'item/commandExecution/requestApproval',params:{threadId:m.params.threadId,turnId:'turn',itemId:'command'}});}
  else if(m.method==='engine/info')send({id:m.id,result:{pid:process.pid,home,stepModelSwitching:overrides['features.step_model_switching']===true,catalog:overrides.model_catalog_json?JSON.parse(fs.readFileSync(overrides.model_catalog_json,'utf8')).models.map(model=>({slug:model.slug,context:model.context_window})):[],primaryAuthPresent:fs.existsSync(path.join(home,'auth.json'))}});

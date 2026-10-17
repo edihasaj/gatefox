@@ -16,6 +16,8 @@ export interface GatewayCompactionOptions {
   selectedModelCompaction?: boolean;
   isActive: (threadId: string) => boolean;
   request: (method: string, params: Message) => Promise<Message>;
+  /** Whether an SDK thread record is a gateway chat; see CompactionRecoveryOptions. */
+  isGatewayThread?: (thread: Message) => boolean;
 }
 
 /** Public metadata only; native account/configuration and SDK history stay owned by Codex. */
@@ -48,7 +50,7 @@ export class GatewayCompactionSession {
   private closed = false;
   constructor(private readonly options: GatewayCompactionOptions, private readonly store: CompactionStateStore, private readonly nativeHome: string, private readonly warn: () => void) {
     this.policy = new CompactionPolicy(options.models, options.settings, options.args);
-    this.recovery = new CompactionRecovery({ request: options.request, aliases: options.aliases, isActive: options.isActive,
+    this.recovery = new CompactionRecovery({ request: options.request, aliases: options.aliases, isActive: options.isActive, isGatewayThread: options.isGatewayThread,
       checkGoal: threadId => this.policy.goalsEnabled(threadId),
       allowFailedState: async threadId => (await this.readState(threadId))?.compaction?.status === "failed",
       shouldRecover: (threadId, model) => this.shouldRecover(threadId, model) });
@@ -113,7 +115,7 @@ export class GatewayCompactionSession {
 
   private async shouldRecover(threadId: string, model: string): Promise<boolean> {
     const thread = object((await this.options.request("thread/read", { threadId, includeTurns: false })).thread);
-    if (thread.id !== threadId || thread.modelProvider !== "subscription_gateway") return false;
+    if (thread.id !== threadId || !this.recovery.isGatewayThread(thread)) return false;
     let state = await this.readState(threadId);
     if (!state?.usage && typeof thread.path === "string") {
       const usage = await readCompactionUsage(this.nativeHome, threadId, thread.path);

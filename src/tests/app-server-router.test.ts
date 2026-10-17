@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,11 +6,16 @@ import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { identityTest } from "./identity-cases.js";
+
+// A saved gateway chat and its engine's notifications carry the identity under test; requests the router sends still name the gateway's own provider.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 let notificationTimestamp = Date.now();
 const appliedSettings = (router: AppServerRouter, threadId: string, model: string, serviceTier: string | null) => router.observeNotification({
-  method: "thread/settings/updated", emittedAtMs: notificationTimestamp = Math.max(notificationTimestamp + 1, Date.now()), params: { threadId, threadSettings: { modelProvider: "subscription_gateway", model, serviceTier } },
+  method: "thread/settings/updated", emittedAtMs: notificationTimestamp = Math.max(notificationTimestamp + 1, Date.now()), params: { threadId, threadSettings: { modelProvider: gateway, model, serviceTier } },
 });
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-app-server-"));
@@ -27,7 +31,7 @@ async function fixture() {
     if (method === "model/list") return { data: [{ id: "native", model: "native", displayName: "Native", hidden: false }], nextCursor: null };
     if (method === "config/read") return { config: { model: "native", model_provider: "openai" }, origins: {}, layers: null };
     if (method === "thread/start") return { thread: { id: "test" }, modelProvider: params.modelProvider || "openai", model: params.model || "native", serviceTier: params.serviceTier ?? null };
-    if (method === "thread/read") return { thread: { id: "persisted", modelProvider: "subscription_gateway", model: "codex/model" } };
+    if (method === "thread/read") return { thread: { id: "persisted", modelProvider: gateway, model: "codex/model" } };
     if (method === "thread/resume" || method === "thread/fork") return { thread: { id: "persisted" }, modelProvider: params.modelProvider, model: params.model, serviceTier: params.serviceTier ?? null };
     if (method === "turn/start") return { turn: { id: "active" } };
     if (method === "turn/settings/update") return { status: "applied" };

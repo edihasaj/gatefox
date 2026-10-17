@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { readFile, writeFile } from "node:fs/promises";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 
 // The SDK writes a thread/start reply before announcing the thread. The desktop hides a
@@ -17,11 +19,17 @@ test("shim delivers each thread/start reply before that thread's notifications",
   const child = spawn(process.execPath, [files.cli, "codex-shim", "--config", files.config, "--codex", files.backend, "--", "app-server"], { stdio: ["pipe", "pipe", "pipe"], env: files.env });
   child.stderr.resume();
   const order: Array<{ kind: string; thread: string }> = []; const pending = new Map<number, (message: Record<string, unknown>) => void>(); let id = 0;
+  // Which chats the gateway registry held at the moment each reply reached the client.
+  const registry = join(files.value.stateDirectory, "gateway-chats");
+  const recorded = (): string[] => existsSync(registry) ? readdirSync(registry).filter(name => name.endsWith(".json"))
+    .flatMap(name => (JSON.parse(readFileSync(join(registry, name), "utf8")).chats as Array<{ id: string }>).map(chat => chat.id)) : [];
+  const atReply = new Map<string, boolean>();
   const lines = createInterface({ input: child.stdout });
   lines.on("line", line => {
     const message = JSON.parse(line);
     const thread = message.params?.thread?.id ?? message.params?.threadId ?? message.result?.thread?.id;
     if (typeof thread === "string") order.push({ kind: typeof message.id === "number" ? "reply" : String(message.method), thread });
+    if (typeof thread === "string" && typeof message.id === "number") atReply.set(thread, recorded().includes(thread));
     if (typeof message.id === "number") pending.get(message.id)?.(message);
   });
   const rpc = (method: string, params = {}) => new Promise<Record<string, unknown>>(resolve => { pending.set(++id, resolve); child.stdin.write(JSON.stringify({ id, method, params }) + "\n"); });
@@ -33,6 +41,8 @@ test("shim delivers each thread/start reply before that thread's notifications",
       await new Promise(resolve => setTimeout(resolve, 50));
       const kinds = order.filter(entry => entry.thread === thread).map(entry => entry.kind);
       assert.deepEqual(kinds, ["reply", "thread/started", "mcpServer/startupStatus/updated"], `${model} chat messages arrived out of SDK order`);
+      // A gateway chat is in the registry before its reply, and so before anything else about it, reaches the client.
+      assert.equal(atReply.get(thread), model === "claude/model", `${model} chat registry entry at reply time`);
     }
   } finally { child.kill("SIGKILL"); lines.close(); files.close(); }
 });

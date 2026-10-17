@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +7,11 @@ import { DesktopCatalog } from "../desktop-catalog.js";
 import { ThreadReasoningStore } from "../thread-reasoning.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import type { GatewayConfig } from "../config.js";
+import { identityTest } from "./identity-cases.js";
+
+// A saved gateway chat and its engine's notifications carry the identity under test; requests the router sends still name the gateway's own provider.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 const old = () => Date.now() - 60_000;
@@ -23,7 +27,7 @@ async function fixture() {
     { id: "codex", type: "codex-subscription", label: "Codex 2", credentialFile: "unused", models: { "codex/model": "model", "codex/plain": "plain" },
       modelMetadata: { "codex/model": { reasoningEfforts: ["low", "medium", "high", "xhigh", "max", "ultra"] }, "codex/plain": { reasoningEfforts: [] } } },
   ] };
-  const thread: ObjectValue = { id: "persisted", modelProvider: "subscription_gateway", model: "codex/model" };
+  const thread: ObjectValue = { id: "persisted", modelProvider: gateway, model: "codex/model" };
   const calls: Array<{ method: string; params: ObjectValue }> = [];
   const backend = async (method: string, params: ObjectValue): Promise<ObjectValue> => {
     calls.push({ method, params });
@@ -40,7 +44,7 @@ async function fixture() {
   const store = new ThreadReasoningStore(state, native);
   let stamp = Date.now();
   const notify = async (threadId: string, settings: ObjectValue) => {
-    const r = await router(); await r.observeNotification({ method: "thread/settings/updated", emittedAtMs: Math.max(++stamp, Date.now()), params: { threadId, threadSettings: { model: "codex/model", modelProvider: "subscription_gateway", ...settings } } });
+    const r = await router(); await r.observeNotification({ method: "thread/settings/updated", emittedAtMs: Math.max(++stamp, Date.now()), params: { threadId, threadSettings: { model: "codex/model", modelProvider: gateway, ...settings } } });
   };
   const rollout = async (threadId: string, lines: string[]) => {
     const sessions = join(native, "sessions"); await mkdir(sessions, { recursive: true, mode: 0o700 });

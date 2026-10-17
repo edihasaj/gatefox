@@ -17,7 +17,8 @@ export async function until(check: () => boolean | Promise<boolean>): Promise<vo
   throw new Error("Compaction integration fixture did not reach the expected state");
 }
 
-export async function compactionSdkFixture(shared = false, goalsEnabled = true) {
+/** `provider` is the id a started gateway chat is saved with; the gateway hint, not the id, sends it to the executor. */
+export async function compactionSdkFixture(shared = false, goalsEnabled = true, provider = "subscription_gateway") {
   const directory = await mkdtemp(join(tmpdir(), "gw-compact-backend-"));
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   const nativeConfig = 'model = "native-original"\n';
@@ -84,7 +85,7 @@ else createInterface({input:process.stdin}).on('line',line=>{void rpc(JSON.parse
   backends.notify({ method: "initialized" });
   const ledger = async (threadId: string) => (await backends.request("fixture/ledger", { threadId })).calls as FixtureCall[];
   return { directory, config, nativeHome, nativeConfig, backends, events, ledger, nextCatalog() { generation++; },
-    async start(threadId: string, model = largeModel) { return backends.request("thread/start", { fixtureId: threadId, model, modelProvider: "subscription_gateway" }); },
+    async start(threadId: string, model = largeModel) { return backends.request("thread/start", { fixtureId: threadId, model, modelProvider: provider }, { engine: "gateway" }); },
     async usage(threadId: string, lastTokens = 40010, contextWindow = 45000) {
       await backends.request("fixture/usage", { threadId, lastTokens, contextWindow });
       await until(() => events.some(e => e.method === "thread/tokenUsage/updated" && (e.params as Message)?.threadId === threadId));

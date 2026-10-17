@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { SharedNativeConnection } from "../shared-native-connection.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { gatewayIdentities } from "./identity-cases.js";
 
 isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
@@ -48,10 +49,10 @@ if(m.method==='thread/queue/add'){const item=(m.params.input||[]).find(i=>i.type
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'){
 if(m.params.delayMs)await new Promise(r=>setTimeout(r,m.params.delayMs));
-const id=m.params.fixtureId;const thread={id,modelProvider:'subscription_gateway',model:m.params.model};
-const all=metadata();all[id]=thread;writeFileSync(saved,JSON.stringify(all));loaded.add(id);result={thread,model:m.params.model,modelProvider:'subscription_gateway',executorPid:process.pid,serviceTier:m.params.serviceTier??null};
+const id=m.params.fixtureId;const thread={id,modelProvider:m.params.modelProvider||'subscription_gateway',model:m.params.model};
+const all=metadata();all[id]=thread;writeFileSync(saved,JSON.stringify(all));loaded.add(id);result={thread,model:m.params.model,modelProvider:thread.modelProvider,executorPid:process.pid,serviceTier:m.params.serviceTier??null};
 }
-if(m.method==='thread/resume'){const thread=metadata()[m.params.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}loaded.add(thread.id);result={thread,model:thread.model,modelProvider:'subscription_gateway',executorPid:process.pid};}
+if(m.method==='thread/resume'){const thread=metadata()[m.params.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}loaded.add(thread.id);result={thread,model:thread.model,modelProvider:m.params.modelProvider||thread.modelProvider,executorPid:process.pid};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
 if(m.method==='fixture/disconnect'){drop();return;}
 send({id:m.id,result});}
@@ -133,7 +134,8 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
   return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; },
     async another(variant?: FeatureVariant) { const adapter = await createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
-    start: (id: string, delayMs = 0) => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: "subscription_gateway" }),
+    // `provider` is the id the chat is saved with; the gateway hint, not the id, sends the start to the shared executor.
+    start: (id: string, delayMs = 0, provider = "subscription_gateway") => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: provider }, { engine: "gateway" }),
     clean,
   };
   } catch (error) {
@@ -240,10 +242,10 @@ test("unexpected shared gateway loss closes only frontend transport when native 
   } finally { await f.clean(); }
 });
 
-test("gateway ownership lookup outage preserves verified native reads and fails closed for gateway history", { timeout: 20000 }, async () => {
+for (const identity of gatewayIdentities) test(`gateway ownership lookup outage preserves verified native reads and fails closed for gateway history (${identity.name})`, { timeout: 20000 }, async () => {
   const f = await fixture();
   try {
-    await f.start("gateway-lookup-outage"); const second = await f.another(); await f.control.request("execution/find", { threadId: "gateway-lookup-outage" });
+    await f.start("gateway-lookup-outage", 0, identity.provider); const second = await f.another(); await f.control.request("execution/find", { threadId: "gateway-lookup-outage" });
     await f.control.request("execution/release", { revision: (await f.control.request("execution/find", { threadId: "gateway-lookup-outage" })).revision });
     // Fresh discovery cannot use this isolated execution host; native children stay alive.
     const state = second as unknown as { pool: () => Promise<unknown> }; await state.pool();
@@ -263,7 +265,7 @@ test("independent adapters share one writer despite different native settings ke
   try {
     const second = await f.another();
     const firstStart = await f.start("first-adapter");
-    const secondStart = await second.request("thread/start", { fixtureId: "second-adapter", model: alias, modelProvider: "subscription_gateway" });
+    const secondStart = await second.request("thread/start", { fixtureId: "second-adapter", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
     assert.equal(secondStart.executorPid, firstStart.executorPid);
     const status = await f.control.request("execution/status", {}); assert.equal((status.generations as Message[]).length, 1);
     assert.equal((await f.control.request("execution/find", { threadId: "first-adapter" })).revision, (await f.control.request("execution/find", { threadId: "second-adapter" })).revision);
@@ -275,7 +277,7 @@ test("legacy and canonical feature settings share one writer and retain current 
   try {
     const canonical = await f.another("canonical");
     const first = await f.start("legacy-feature-chat");
-    const second = await canonical.request("thread/start", { fixtureId: "canonical-feature-chat", model: alias, modelProvider: "subscription_gateway" });
+    const second = await canonical.request("thread/start", { fixtureId: "canonical-feature-chat", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
     assert.equal(first.executorPid, second.executorPid);
     const oldOwner = await f.control.request("execution/find", { threadId: "legacy-feature-chat" });
     const newOwner = await f.control.request("execution/find", { threadId: "canonical-feature-chat" });

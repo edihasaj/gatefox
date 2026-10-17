@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
@@ -8,11 +7,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { ThreadServiceTiers } from "../thread-service-tiers.js";
+import { identityTest } from "./identity-cases.js";
+
+// Gateway chats are saved, and announced by their engine, with the identity under test; requests the router sends still name the gateway's own provider.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 type Call = { method: string; params: ObjectValue };
 type Hook = (method: string, params: ObjectValue, result: ObjectValue, router: AppServerRouter) => Promise<ObjectValue>;
-const gateway = "subscription_gateway"; const fastModel = "codex/sol"; const standardModel = "codex/standard";
+const fastModel = "codex/sol"; const standardModel = "codex/standard";
 const threadId = (result: ObjectValue) => String((result.thread as ObjectValue).id);
 let notificationClock = Date.now();
 const emittedAt = () => notificationClock = Math.max(notificationClock + 1, Date.now());
@@ -49,7 +53,8 @@ async function fixture() {
       } else if (method === "thread/read") {
         const saved = metadata.get(String(params.threadId));
         assert.ok(saved, "thread/read must target an existing chat");
-        result = { thread: { id: params.threadId, ...saved } };
+        // The chat as saved under the identity under test: a gateway chat this router started carries that identity's provider.
+        result = { thread: { id: params.threadId, ...saved, ...(saved.modelProvider === "subscription_gateway" ? { modelProvider: gateway } : {}) } };
       } else if (method === "turn/start") result = { turn: { id: randomUUID() } };
       else if (method === "turn/settings/update") result = { status: "applied" };
       else if (method === "thread/settings/update") result = { status: "queued" };

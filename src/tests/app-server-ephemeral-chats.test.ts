@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,9 +7,12 @@ import { AppServerRouter } from "../app-server-router.js";
 import { ThreadReasoningStore } from "../thread-reasoning.js";
 import { configureTelemetry } from "../telemetry.js";
 import type { GatewayConfig } from "../config.js";
+import { identityTest, legacyProvider } from "./identity-cases.js";
 
 type ObjectValue = Record<string, unknown>;
-const gateway = "subscription_gateway";
+// Throwaway chats stay memory-only whichever provider id the gateway chat they came from was saved with.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 const prediction = (threadId: string) => ({ threadId, experimentalPredictionMode: true, ephemeral: true, excludeTurns: true, threadSource: "composer_predictions" });
 
 // An engine whose chats named fork-* or eph-* are throwaway: its own chat read reports them ephemeral.
@@ -48,7 +50,7 @@ const held = (router: AppServerRouter, id: string): string[] => {
 };
 const tracked = (router: AppServerRouter): string[] => [...(router as unknown as { ephemeralThreads: Set<string> }).ephemeralThreads];
 const settingsUpdated = (threadId: string, settings: ObjectValue) => ({ method: "thread/settings/updated", emittedAtMs: Date.now(), params: { threadId, threadSettings: settings } });
-const applied = { model: "codex/model", modelProvider: gateway, serviceTier: null, effort: "low" };
+const applied = () => ({ model: "codex/model", modelProvider: gateway, serviceTier: null, effort: "low" });
 
 async function assertNothingDurable(f: Awaited<ReturnType<typeof fixture>>, id: string, why: string): Promise<void> {
   assert.equal(await f.tiers.read(id), undefined, `no tier row: ${why}`);
@@ -68,7 +70,7 @@ for (const [name, forget] of [
   await f.router.request("turn/start", { threadId: "fork", input: [], effort: "low" });
   assert.equal(f.calls[0].method, "thread/read", "the forgotten fork was probed");
   assert.ok(tracked(f.router).includes("fork"), "the probe recognized the fork as ephemeral");
-  await f.router.observeNotification(settingsUpdated("fork", applied));
+  await f.router.observeNotification(settingsUpdated("fork", applied()));
   await assertNothingDurable(f, "fork", "a turn and an applied settings change on a forgotten fork");
 });
 
@@ -77,7 +79,7 @@ test("a fork evicted by the 256 cap is still not written to disk by a later turn
   for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
   assert.deepEqual(held(f.router, "fork-0"), [], "the oldest fork was evicted");
   await f.router.request("turn/start", { threadId: "fork-0", input: [], effort: "low" });
-  await f.router.observeNotification(settingsUpdated("fork-0", applied));
+  await f.router.observeNotification(settingsUpdated("fork-0", applied()));
   await assertNothingDurable(f, "fork-0", "a turn on an evicted fork");
   assert.equal(tracked(f.router).length, 256, "the probed fork counts toward the cap");
 });
@@ -111,7 +113,7 @@ test("a fork the 256 cap evicted is still not written to disk by its own setting
   for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
   assert.deepEqual(held(f.router, "fork-0"), [], "the oldest fork lost its route");
   // The engine keeps the fork subscribed, so it can still report an applied change with no turn before it.
-  await f.router.observeNotification(settingsUpdated("fork-0", applied));
+  await f.router.observeNotification(settingsUpdated("fork-0", applied()));
   await assertNothingDurable(f, "fork-0", "a settings notification on a fork the cap evicted");
   assert.deepEqual(held(f.router, "fork-0"), [], "and nothing about it was kept in memory");
 });
@@ -119,14 +121,14 @@ test("a fork the 256 cap evicted is still not written to disk by its own setting
 test("settings that arrive for a chat before its thread/start returns are still recorded", async () => {
   // The evicted-fork guard must not turn into a rule that drops notifications for chats with no route yet.
   const f = await fixture();
-  await f.router.observeNotification(settingsUpdated("early", applied));
+  await f.router.observeNotification(settingsUpdated("early", applied()));
   assert.equal((await f.store.read("early"))?.effort, "low");
   assert.equal((await f.tiers.read("early"))?.model, "codex/model");
 });
 
 test("a fork the cap evicted that is resumed is still memory-only even if its result is not flagged", async () => {
   const f = await fixture({ forkIds: Array.from({ length: 257 }, (_, i) => `fork-${i}`), read: () => ({ ephemeral: false }),
-    reply: method => method === "thread/resume" ? { thread: { id: "fork-0" }, modelProvider: gateway, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
+    reply: method => method === "thread/resume" ? { thread: { id: "fork-0" }, modelProvider: legacyProvider, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
   for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
   await f.router.request("thread/resume", { threadId: "fork-0" });
   await assertNothingDurable(f, "fork-0", "a resume of a fork the cap evicted");
@@ -164,14 +166,15 @@ test("a durable chat read by a probe is still recorded", async () => {
   // Control for the probe tests: only an ephemeral chat is exempt from its tier and reasoning rows.
   const f = await fixture();
   await f.router.request("turn/start", { threadId: "durable", input: [], effort: "low" });
-  await f.router.observeNotification(settingsUpdated("durable", applied));
+  await f.router.observeNotification(settingsUpdated("durable", applied()));
   assert.deepEqual(held(f.router, "durable").includes("ephemeralThreads"), false);
   assert.equal((await f.store.read("durable"))?.effort, "low");
   assert.equal((await f.tiers.read("durable"))?.model, "codex/model");
 });
 
 test("an ephemeral thread/start result is memory-only", async () => {
-  const result = { modelProvider: gateway, model: "codex/model", serviceTier: null, reasoningEffort: "high" };
+  // The engine answers a start or resume with the provider the router sent, which is still the gateway's own id.
+  const result = { modelProvider: legacyProvider, model: "codex/model", serviceTier: null, reasoningEffort: "high" };
   const f = await fixture({ reply: method => method === "thread/start" ? { ...result, thread: { id: "eph-start", ephemeral: true } } : undefined });
   await f.router.request("thread/start", { model: "codex/model", ephemeral: true });
   await assertNothingDurable(f, "eph-start", "an ephemeral chat start");
@@ -180,7 +183,7 @@ test("an ephemeral thread/start result is memory-only", async () => {
 });
 
 test("a durable thread/start result is recorded, so the memory-only test above can fail", async () => {
-  const f = await fixture({ reply: method => method === "thread/start" ? { thread: { id: "kept" }, modelProvider: gateway, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
+  const f = await fixture({ reply: method => method === "thread/start" ? { thread: { id: "kept" }, modelProvider: legacyProvider, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
   await f.router.request("thread/start", { model: "codex/model" });
   assert.equal((await f.tiers.read("kept"))?.model, "codex/model");
   assert.equal((await f.store.read("kept"))?.effort, "high");
@@ -189,7 +192,7 @@ test("a durable thread/start result is recorded, so the memory-only test above c
 test("an ephemeral thread/resume result is memory-only", async () => {
   // The chat read does not flag it, so only the resume result can mark the chat throwaway.
   const f = await fixture({ read: () => ({ ephemeral: false }), reply: method => method === "thread/resume"
-    ? { thread: { id: "resumed", ephemeral: true }, modelProvider: gateway, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
+    ? { thread: { id: "resumed", ephemeral: true }, modelProvider: legacyProvider, model: "codex/model", serviceTier: null, reasoningEffort: "high" } : undefined });
   await f.router.request("thread/resume", { threadId: "resumed" });
   await assertNothingDurable(f, "resumed", "an ephemeral chat resume");
   assert.ok(tracked(f.router).includes("resumed"));
@@ -214,15 +217,15 @@ const routeOf = (router: AppServerRouter, id: string) => (router as unknown as {
 test("a fork's in-memory route follows its applied settings, and nothing is written", async () => {
   const f = await fixture();
   await f.router.request("thread/fork", prediction("parent"));
-  assert.deepEqual(routeOf(f.router, "fork"), { provider: gateway, model: "codex/model", serviceTier: null });
+  assert.deepEqual(routeOf(f.router, "fork"), { kind: "gateway", provider: gateway, model: "codex/model", serviceTier: null });
   await f.router.observeNotification(settingsUpdated("fork", { model: "codex/other", modelProvider: gateway, serviceTier: "fast", effort: "high" }));
-  assert.deepEqual(routeOf(f.router, "fork"), { provider: gateway, model: "codex/other", serviceTier: "priority" }, "the route took the applied model and tier");
+  assert.deepEqual(routeOf(f.router, "fork"), { kind: "gateway", provider: gateway, model: "codex/other", serviceTier: "priority" }, "the route took the applied model and tier");
   assert.equal(describe(f.router, "fork"), "codex/other");
   await f.router.observeNotification(settingsUpdated("fork", { model: "codex/model", modelProvider: gateway, serviceTier: "default", effort: "low" }));
-  assert.deepEqual(routeOf(f.router, "fork"), { provider: gateway, model: "codex/model", serviceTier: null }, "a later applied change replaces it again");
+  assert.deepEqual(routeOf(f.router, "fork"), { kind: "gateway", provider: gateway, model: "codex/model", serviceTier: null }, "a later applied change replaces it again");
   // Settings that do not describe a gateway chat leave the route alone.
   await f.router.observeNotification(settingsUpdated("fork", { model: "native", modelProvider: "openai", serviceTier: null }));
   await f.router.observeNotification(settingsUpdated("fork", { model: "codex/other", modelProvider: gateway }));
-  assert.deepEqual(routeOf(f.router, "fork"), { provider: gateway, model: "codex/model", serviceTier: null });
+  assert.deepEqual(routeOf(f.router, "fork"), { kind: "gateway", provider: gateway, model: "codex/model", serviceTier: null });
   await assertNothingDurable(f, "fork", "applied settings on a fork");
 });

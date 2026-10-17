@@ -44,7 +44,7 @@ createInterface({input:process.stdin}).on('line',line=>{
 test("a gateway engine that never finished initializing is stopped as spawn_error, not as a replacement", { timeout: 20000 }, async () => {
   const f = await fixture(true);
   try {
-    await assert.rejects(() => f.backend.request("thread/start", { model: "gateway/model", modelProvider: "subscription_gateway" }));
+    await assert.rejects(() => f.backend.request("thread/start", { model: "gateway/model", modelProvider: "subscription_gateway" }, { engine: "gateway" }));
     await delay(50); // Its process dies from the stop the adapter started, so give the close a beat.
     const exits = await f.exits("gateway");
     assert.deepEqual(exits.map(event => [event.initiatedBy, event.reason]), [["adapter", "spawn_error"]]); // One record, and not "replaced".
