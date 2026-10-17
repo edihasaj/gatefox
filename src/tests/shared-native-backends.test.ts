@@ -16,6 +16,11 @@ import { executionHostHome, executionHostMarker, sdkIdentity, socketIdentity } f
 import type { ExecutionHostClient } from "../execution-host-client.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 400; attempt++) { if (check()) return; await delay(5); }
@@ -114,6 +119,7 @@ async function fixture() {
   }
   return { directory, nativeHome, config, configPath, home, sdk, create, calls, nativeCalls, threads, initializations, replies, owner, hooks, snapshot, spawnMarker,
     disconnectControl() { for (const client of control.sockets.clients) client.terminate(); },
+    closeNative: () => native.close(),
     nativeMessages(messages: Message[]) { for (const client of native.sockets.clients) for (const message of messages) send(client, message); },
     nativeDeath(observationDelayMs = 0) { hooks.nativeState = "exited"; hooks.deathObservedAt = Date.now() + observationDelayMs; for (const client of native.sockets.clients) client.terminate(); },
     async noSpawn() { await assert.rejects(readFile(spawnMarker), { code: "ENOENT" }); },
@@ -154,7 +160,7 @@ test("native-only adapter intent does not inherit gateway sharing from an older 
     const first = await f.create(); assert.equal(first.adapter.native.shared, true);
     // The fixture CLI exits after recording its private gateway home. A shared
     // route would instead call the host's forbidden execution/acquire method.
-    await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture", modelProvider: "subscription_gateway" }), /exited/);
+    await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture", modelProvider: "subscription_gateway" }, { engine: "gateway" }), /exited/);
     const spawned = JSON.parse(await readFile(f.spawnMarker, "utf8"));
     assert.notEqual(spawned.home, f.nativeHome); assert.ok(spawned.home.startsWith(join(f.config.stateDirectory, "desktop-generations") + "/"));
     assert.equal(spawned.authPresent, false); assert.equal(f.calls.some(message => String(message.method).startsWith("execution/")), false);
@@ -367,19 +373,27 @@ async function sharedPlan(f: Awaited<ReturnType<typeof fixture>>, capabilities: 
 }
 const fallbackEvents = async (f: Awaited<ReturnType<typeof fixture>>, since: number) => { await flushTelemetry(); return (await readTelemetry(f.config.stateDirectory, since)).filter(event => event.event === "native_sharing_fallback"); };
 
-test("a gateway-only host makes the adapter fall back to a private native engine and keep sharing gateway chats", { timeout: 10000 }, async () => {
+test("a gateway-only host makes the adapter fall back to a private native engine under the native-home lease and keep sharing gateway chats", { timeout: 10000 }, async () => {
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
-    await sharedPlan(f, ["gateway"]);
-    const adapter = await AppServerBackends.create(f.sdk, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
+    // A host without native sharing runs no native engine, so nothing answers at its native socket.
+    await sharedPlan(f, ["gateway"]); await f.closeNative();
+    // Like the real engine, this one runs until its adapter closes its pipe; it records whether the lease was there first.
+    const engine = join(f.directory, "engine"); const receipt = nativeHomeOwnerPath(f.nativeHome);
+    await writeFile(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(f.spawnMarker)},JSON.stringify({lease:fs.existsSync(${JSON.stringify(receipt)})}));process.stdin.on('end',()=>process.exit(0));process.stdin.resume();\n`, { mode: 0o700 });
+    const adapter = await AppServerBackends.create(engine, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
       async () => {}, () => {}, f.configPath);
     try {
       assert.notEqual(adapter.native.shared, true); assert.equal((adapter as unknown as { sharedGateway?: boolean }).sharedGateway, true);
       assert.equal(f.calls.some(message => message.method === "native/acquire"), false);
-      await until(() => existsSync(f.spawnMarker));
-      const events = await fallbackEvents(f, since); assert.equal(events.length, 1);
-      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid"]);
+      await until(() => existsSync(f.spawnMarker)); assert.deepEqual(JSON.parse(await readFile(f.spawnMarker, "utf8")), { lease: true });
+      const events = await fallbackEvents(f, since); assert.equal(events.length, 1); assert.equal(events[0].reason, "other");
+      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
+      // Like a host that is down, a host without native sharing leaves the native home to this adapter's lease alone.
+      const lease = JSON.parse(await readFile(receipt, "utf8"));
+      assert.equal(lease.hostPid, process.pid); assert.equal(lease.pid, (adapter.native as unknown as { pid?: number }).pid); assert.equal(typeof lease.privateOwner?.instanceId, "string");
     } finally { await adapter.stop(); }
+    assert.equal(existsSync(receipt), false);
   } finally { await f.clean(); }
 });
 
@@ -393,7 +407,8 @@ test("a full host keeps the shared native path and emits no fallback", { timeout
   } finally { await f.clean(); }
 });
 
-test("only a missing native capability falls back; an unavailable host still fails closed", { timeout: 10000 }, async () => {
+// A host that is down may leave native chats to a private engine (see native-fallback.test.ts), but never while its native engine still answers.
+test("an unavailable host whose native engine still answers fails closed", { timeout: 10000 }, async () => {
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
     await sharedPlan(f, ["native", "gateway"]); await rm(join(f.home, "owner.json"));

@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/promises";
+import { readFile, mkdir, open, rename, chmod, link, unlink, utimes } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
@@ -164,6 +164,22 @@ function validateAccountEngines(value: unknown, providers: ProviderConfig[]): Ac
   });
 }
 
+/** Every alias the configuration routes, across providers. */
+const configuredAliases = (config: Pick<GatewayConfig, "providers">): string[] => config.providers.flatMap(provider => Object.keys(provider.models));
+
+/**
+ * Once the native catalog is known, an alias that equals one of its slugs is refused: chat classification lets the native
+ * slug win such a tie, so the alias could never start a gateway chat, and its chats would run on the native engine.
+ */
+export function validateAliasesAgainstNative(config: Pick<GatewayConfig, "providers">, nativeSlugs: ReadonlySet<string>): void {
+  if (configuredAliases(config).some(alias => nativeSlugs.has(alias))) throw new Error("A gateway model alias collides with a native model ID; rename that alias");
+}
+
+/** Aliases without a `/` are valid but could collide with a native model added later; the adapter warns about them at load. */
+export function unscopedAliasCount(config: Pick<GatewayConfig, "providers">): number {
+  return configuredAliases(config).filter(alias => !alias.includes("/")).length;
+}
+
 export async function loadConfig(path: string): Promise<GatewayConfig> {
   let parsed: unknown;
   try { parsed = JSON.parse(await readFile(path, "utf8")); }
@@ -171,13 +187,18 @@ export async function loadConfig(path: string): Promise<GatewayConfig> {
   return validateConfig(parsed, dirname(resolve(path)));
 }
 
-export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+/** `mtimeMs` gives the file that modification time before the rename, so no reader ever sees the new contents with another one. */
+export async function writePrivateJson(path: string, value: unknown, options: { mtimeMs?: number } = {}): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
-  finally { await file.close(); }
-  await rename(temporary, path); await chmod(path, 0o600);
+  try {
+    try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
+    finally { await file.close(); }
+    if (options.mtimeMs !== undefined) await utimes(temporary, new Date(), new Date(options.mtimeMs));
+    await rename(temporary, path);
+  } catch (error) { await unlink(temporary).catch(() => {}); throw error; } // A failed write or rename leaves no temp file behind.
+  await chmod(path, 0o600);
 }
 
 export async function readClientToken(path: string): Promise<string> {

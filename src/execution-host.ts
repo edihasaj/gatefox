@@ -18,20 +18,59 @@ export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engi
 export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined> }
 const maxFrame = 4 * 1024 * 1024;
 
+/** Why a host start failed, from a fixed vocabulary; the error's own text and paths are never part of it. */
+export type HostFailureReason = "live_owner" | "identity_changed" | "socket_occupied" | "sdk_invalid" | "sdk_dir_missing" | "receipt_invalid" | "io_error" | "other";
+/** Errors raised while checking the engine binaries themselves (missing, changed, unsigned or the wrong version), whatever their code. */
+const sdkFailures = new WeakSet<object>();
+async function sdkCheck<T>(check: () => Promise<T>): Promise<T> {
+  try { return await check(); } catch (error) { if (error && typeof error === "object") sdkFailures.add(error); throw error; }
+}
+const failureMessages: Array<[HostFailureReason, RegExp]> = [
+  ["live_owner", /^(An execution host already owns this configuration|An execution generation is still running|A native execution owner (is still running|already owns this native home)|Native execution launch is unconfirmed|A live execution listener was preserved|Private preferences are busy)/],
+  ["identity_changed", /^(Execution host identity changed|Native execution ownership changed|Execution host ownership changed)/],
+  ["socket_occupied", /^(Execution control socket target is occupied|Execution socket (belongs to another listener|changed during recovery|must be private)|Execution SDK socket (rendezvous points to an unrelated target|target must be private)|Native execution socket (is occupied|ownership changed))/],
+  ["sdk_invalid", /^(Execution host (SDK |requires the pinned)|Native execution (requires|SDK signature|SDK changed)|Gateway executor artifact does not match)/],
+  ["receipt_invalid", /^(Execution host ownership receipt is (invalid|unreadable)|Native execution ownership receipt is invalid|Execution generation receipt is invalid|Native execution (SDK identity|death metadata) is invalid|Execution host capabilities are invalid|Private preference lock is invalid)/],
+];
+/** The SDK's fixed socket folder: a missing one was the 2026-10-16 reboot incident, reported as overloaded by the turn classifier. */
+const sdkSocketFolder = /(^|\/)codex-daemon-\d+(\/|$)/;
+/**
+ * Classifies a failed host start for telemetry and retry policy. It reads the error's fixed message, its errno code and,
+ * for a missing file, whether the path lies in the SDK's socket folder; none of them is ever returned or logged.
+ */
+export function hostFailureReason(error: unknown): HostFailureReason {
+  if (!error || typeof error !== "object") return "other";
+  const { message, code, path } = error as { message?: unknown; code?: unknown; path?: unknown };
+  const text = typeof message === "string" ? message : "";
+  if (text.startsWith("Execution SDK socket directory is missing") || code === "ENOENT" && typeof path === "string" && sdkSocketFolder.test(path)) return "sdk_dir_missing";
+  if (sdkFailures.has(error)) return "sdk_invalid";
+  for (const [reason, pattern] of failureMessages) if (pattern.test(text)) return reason;
+  if (code === "EADDRINUSE") return "socket_occupied";
+  if (typeof code === "string" && /^E[A-Z0-9]+$/.test(code) || /^(Execution (host|SDK socket) directory must be private|Execution ownership archive is full)/.test(text)) return "io_error";
+  return "other";
+}
+
 /** One owned SDK writer per gateway generation, independent of adapter clients. */
 export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
-  const sdk = await sdkIdentity(options.codex);
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
   if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !requested.includes("native")) throw new Error("Execution host native relay ownership is invalid");
   // Generations run this release's pinned gateway SDK, so that is the binary to pin. Without one (older layouts) they spawn the app's codex.
   // A runtime that cannot be resolved (a damaged install) falls back to pinning the app's codex, as releases before 0.4.3 did.
   const runtime = requested.includes("gateway") ? await resolveRuntime().catch(() => undefined) : undefined;
-  await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
+  // A gateway-only host runs its own pinned runtime, so an app that was updated or uninstalled must not stop it from starting.
+  // Its receipt then names that runtime instead of a binary nothing checks, and the runtime checksum below stays the guard.
+  let sdk: { codex: string; sdkSha256: string };
+  try { sdk = await sdkCheck(() => sdkIdentity(options.codex)); }
+  catch (error) {
+    if (!runtime || requested.includes("native")) throw error;
+    sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
+  }
+  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
-    try { nativeSdk = await (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex); }
+    try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }
     catch (error) {
       // An app whose engine differs from the verified one cannot be shared, but must not take gateway chats down with it.
       if (!requested.includes("gateway")) throw error;
@@ -70,8 +109,21 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); throw error; }
   };
+  // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
+  // while this host was down, say), at the next native request: until then this host refuses native ownership and keeps
+  // serving gateway chats, so it never becomes a second native writer and never takes gateway chats down with it. A receipt
+  // left under another configuration or spelling of the native home is refused the same way, with its own fixed message.
+  const claimNative = async (): Promise<void> => { nativeLease ??= await claimNativeHome(owner, home); };
   const acquireNative = async (params: Message): Promise<NativeExecutionRecord> => {
-    if (!capabilities.includes("native") || !nativeLease) throw new Error("Execution host does not offer native ownership");
+    if (!capabilities.includes("native")) throw new Error("Execution host does not offer native ownership");
+    if (!nativeLease) {
+      try { await claimNative(); }
+      catch (error) {
+        if (hostFailureReason(error) !== "live_owner") throw error;
+        telemetry("native_acquire", { outcome: "refused_owner" });
+        throw new Error("Native execution ownership is held by a live owner; existing ownership was preserved");
+      }
+    }
     const descriptor = nativeDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
     if (native && !native.closed) {
       const relation = compareNativeLaunch(native.descriptor, descriptor);
@@ -158,7 +210,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
           return result;
         });
         serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -188,11 +240,25 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
+    // A host that never claimed the native home (a live owner held it) may find it free now, holding the receipt a fallback
+    // put back, such as a crashed host's that still says running: it claims it once, so the publish below writes a clean
+    // stopped receipt. An owner that still lives, or any other refusal, keeps the receipt as it is.
+    if (capabilities.includes("native") && !nativeLease) await claimNative().catch(() => undefined);
     engines.clear(); await removeOwnedSocket(socketPath, owner.socket);
     owner.pid = 0; owner.state = "stopped"; await publish();
   })();
   try {
-    if (capabilities.includes("native")) nativeLease = await claimNativeHome(owner, home);
+    if (capabilities.includes("native")) {
+      try { await claimNative(); }
+      catch (error) {
+        // A native-only host has nothing else to offer, so it still fails closed and the service retries it. A receipt that
+        // names another configuration or spelling of the native home is not this host's to take either, but it must not take
+        // gateway chats down: like a live owner, it leaves native ownership to the next native request.
+        const reason = hostFailureReason(error);
+        if (!capabilities.includes("gateway") || reason !== "live_owner" && reason !== "identity_changed") throw error;
+        telemetry("native_sharing_unavailable", { reason: reason === "live_owner" ? "native_owner" : "native_identity" });
+      }
+    }
     // Codex sandboxes always hide this SDK-reserved physical directory, including
     // access through links. The generation-control API must share that boundary.
     const physicalPath = await sdkSocketTarget(socketPath);

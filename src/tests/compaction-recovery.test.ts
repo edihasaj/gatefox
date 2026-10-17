@@ -1,8 +1,12 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { setTimeout as delay } from "node:timers/promises";
 import { CompactionRecovery, CompactionRecoveryError } from "../compaction-recovery.js";
 import type { Message } from "../app-server-connection.js";
+import { identityTest } from "./identity-cases.js";
+
+// Every case runs for a gateway chat saved with the gateway's own provider id and with the native identity.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 const threadId = "fixture-thread";
 const target = "claude/target";
@@ -26,7 +30,7 @@ function fixture(options: { recover?: boolean; model?: string; provider?: string
     request: async (method, params) => {
       calls.push({ method, params });
       const custom = await hook.run?.(method, params); if (custom !== undefined) return custom;
-      if (method === "thread/read") return { thread: { id: threadId, modelProvider: options.provider || "subscription_gateway", model, reasoningEffort: effort, status: { type: status } } };
+      if (method === "thread/read") return { thread: { id: threadId, modelProvider: options.provider || gateway, model, reasoningEffort: effort, status: { type: status } } };
       if (method === "thread/goal/get") return { goal: null };
       if (method === "thread/settings/update") {
         if (typeof params.model === "string") model = params.model;
@@ -81,7 +85,8 @@ test("cancellation winning a healthy-policy race still prevents the original use
 });
 
 test("a stale gateway binding never applies settings or compaction to the primary account", async () => {
-  const f = fixture({ provider: "openai" }); await f.recovery.prepare(threadId, target);
+  // A primary-account chat is one on a native model: the provider id alone no longer tells the two apart.
+  const f = fixture({ provider: "openai", model: "native-gpt" }); await f.recovery.prepare(threadId, target);
   assert.deepEqual(f.calls.map(call => call.method), ["thread/read"]); await f.recovery.close();
 });
 
@@ -194,7 +199,7 @@ test("queued model updates wait applied state and never compact with the old mod
   await until(() => f.calls.filter(call => call.method === "thread/read").length === 2);
   assert.equal(f.calls.some(call => call.method === "thread/compact/start"), false);
   appliedModel = target; f.setModel(target);
-  f.notify("thread/settings/updated", { threadSettings: { modelProvider: "subscription_gateway", model: target } });
+  f.notify("thread/settings/updated", { threadSettings: { modelProvider: gateway, model: target } });
   await prepared; await f.recovery.close();
 });
 
@@ -334,7 +339,7 @@ test("cancel during model confirmation starts no compaction, even if the pending
   const prepared = f.recovery.prepare(threadId, target); const rejected = assert.rejects(prepared, reason("interrupted"));
   await until(() => f.calls.length === 1);
   await f.recovery.interceptInterrupt(threadId); await rejected;
-  read.resolve({ thread: { id: threadId, modelProvider: "subscription_gateway", model: source, status: { type: "idle" } } });
+  read.resolve({ thread: { id: threadId, modelProvider: gateway, model: source, status: { type: "idle" } } });
   await delay(1); assert.deepEqual(f.calls.map(call => call.method), ["thread/read"]);
   await f.recovery.close();
 });

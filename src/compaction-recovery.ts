@@ -1,4 +1,5 @@
 import { object, type Message } from "./app-server-connection.js";
+import { classifyThread } from "./gateway-chat-classifier.js";
 
 type Failure = "busy" | "failed" | "interrupted" | "timeout" | "closed" | "unconfirmed" | "shared" | "incompatible" | "goal" | "reconnect";
 const messages: Record<Failure, string> = {
@@ -29,6 +30,11 @@ export interface CompactionRecoveryOptions {
   checkGoal?: boolean | ((threadId: string) => boolean | Promise<boolean>);
   /** Only true for a known terminal failed compaction, never unknown SDK errors. */
   allowFailedState?: (threadId: string) => boolean | Promise<boolean>;
+  /**
+   * Whether the SDK's thread record is a gateway chat. The adapter passes its full classification (registry, sub-agent
+   * parents and the native catalog); without one, the saved provider or one of `aliases` decides.
+   */
+  isGatewayThread?: (thread: Message) => boolean;
   timeoutMs?: number;
   cleanupMs?: number;
 }
@@ -64,12 +70,17 @@ export class CompactionRecovery {
   private closed = false;
   private readonly timeoutMs: number;
   private readonly cleanupMs: number;
+  private readonly isGateway: (thread: Message) => boolean;
   constructor(private readonly options: CompactionRecoveryOptions) {
+    this.isGateway = options.isGatewayThread ?? (thread => classifyThread(thread, { aliases: options.aliases, nativeSlugs: [],
+      registry: { has: () => false }, readParent: () => undefined }).kind === "gateway");
     this.timeoutMs = bounded(options.timeoutMs, 600000, 900000);
     this.cleanupMs = bounded(options.cleanupMs, 5000, 10000);
   }
 
   isBusy(threadId: string): boolean { return this.barriers.has(threadId); }
+  /** The classification this recovery applies, for callers that decide before it runs. */
+  isGatewayThread(thread: Message): boolean { return this.isGateway(thread); }
   assertAvailable(threadId: string): void {
     const barrier = this.barriers.get(threadId);
     if (barrier) throw new CompactionRecoveryError(barrier.detached ? "reconnect" : "busy");
@@ -91,7 +102,7 @@ export class CompactionRecovery {
       let thread = await this.read(barrier);
       this.check(barrier);
       // Even a stale adapter binding cannot change a primary-account chat.
-      if (thread.modelProvider !== "subscription_gateway") return;
+      if (!this.isGateway(thread)) return;
       if (inferred && thread.model !== targetModel) {
         if (typeof thread.model !== "string") throw new CompactionRecoveryError("unconfirmed");
         if (!this.options.aliases.has(thread.model)) return;
@@ -119,7 +130,7 @@ export class CompactionRecovery {
       await this.confirmGoal(barrier);
       thread = await this.read(barrier);
       await this.confirmIdle(barrier, thread);
-      if (thread.modelProvider !== "subscription_gateway" || !matches(thread)) throw new CompactionRecoveryError("unconfirmed");
+      if (!this.isGateway(thread) || !matches(thread)) throw new CompactionRecoveryError("unconfirmed");
       this.assertIdle(barrier);
       // Register the barrier before issuing RPC: notifications can precede ACK.
       barrier.phase = "starting";

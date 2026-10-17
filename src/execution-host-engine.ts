@@ -7,10 +7,11 @@ import { type GatewayConfig, writePrivateJson } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
-import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
+import { archiveStaleReceipt, privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { spawnStamp } from "./boot-identity.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
@@ -56,6 +57,13 @@ export async function validateExecutionSdk(codex: string): Promise<void> {
   } finally { clearTimeout(timer); }
 }
 
+/** A JSON object read from a file, or undefined when the file does not hold one. */
+async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
+  let value: unknown;
+  try { value = JSON.parse(await readFile(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) return; throw error; }
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
 export class ExecutionEngine {
   private child?: ChildProcess;
   private admin?: SocketAppServerConnection;
@@ -88,14 +96,23 @@ export class ExecutionEngine {
     const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: runtime?.binarySha256 ?? this.identity.sdkSha256 };
     const saved = await lstat(metadata).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (saved) {
-      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(runtime ? { ...JSON.parse(await readFile(metadata, "utf8")), sdkSha256: expected.sdkSha256 } : JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
+      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077)) throw new Error("Execution generation identity changed; existing files were preserved");
+      // A record this code wrote and that names another identity protects that generation's files. One that is not such a
+      // record at all (truncated, garbled, foreign) proves nothing: it is moved aside and rewritten, so the revision is not lost.
+      const recorded = saved.size > 4096 ? undefined : await readJson(metadata);
+      if (!recorded || recorded.managed !== expected.managed) { await archiveStaleReceipt(metadata, "generation", "invalid_receipt"); await writePrivateJson(metadata, expected); }
+      else if (JSON.stringify(runtime ? { ...recorded, sdkSha256: expected.sdkSha256 } : recorded) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
     } else await writePrivateJson(metadata, expected);
     const home = await gatewayEngineHome(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
     const catalog = resolve(directory, "catalog.json");
-    try {
-      const existing = JSON.parse(await readFile(catalog, "utf8"));
-      if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writePrivateJson(catalog, descriptor.catalog); }
+    let existing: unknown;
+    try { existing = JSON.parse(await readFile(catalog, "utf8")); }
+    catch (error) {
+      if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (error instanceof SyntaxError) await archiveStaleReceipt(catalog, "generation", "invalid_receipt"); // Garbled: kept aside, then rewritten.
+    }
+    if (existing === undefined) await writePrivateJson(catalog, descriptor.catalog);
+    else if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
     // The runtime is guarded by its checksum above. Only a generation that spawns the app's own codex depends on that binary staying put.
     if (!runtime) {
       if (!this.codexValidated) throw new Error("Execution generation requires this release's gateway SDK; its ownership was preserved");
@@ -111,7 +128,7 @@ export class ExecutionEngine {
       child.once("error", () => { this.closed = true; });
       child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); void changed().catch(() => {}); resolve(); });
     });
-    this.owner.pid = child.pid || 0; await changed();
+    this.owner.pid = child.pid || 0; Object.assign(this.owner, child.pid ? await spawnStamp(child.pid) : {}); await changed();
     const deadline = Date.now() + 10000;
     for (;;) {
       if (this.closed || this.stopped) throw new Error("Execution SDK exited before initialization");

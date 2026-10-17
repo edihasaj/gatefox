@@ -8,29 +8,27 @@ import type { DesktopCatalog } from "./desktop-catalog.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { applyDesktopEdits, isDesktopPreferenceKey, mergeDesktopPreferences, readDesktopPreferences } from "./desktop-preferences.js";
 import { gatewayUsage, mergeGatewayUsage } from "./provider-usage.js";
-import { declaresServiceTier, loggableTier, offersServiceTier, recordableTier } from "./app-server-tier-offers.js";
+import { declaresServiceTier, recordableTier } from "./app-server-tier-offers.js";
+import { dropUnsupportedTier, inheritedTier, recordTierDrops, type TierDrop } from "./app-server-tier-requests.js";
 import { storableServiceTier, ThreadServiceTiers, type ThreadServiceTier } from "./thread-service-tiers.js";
 import { ThreadReasoningStore, isModelName, isReasoningEffort, isReasoningSummary, type ThreadReasoningSelection } from "./thread-reasoning.js";
 import { ResumeReasoning, fitEffort, type ReasoningChoice, type ThreadReasonSnapshot } from "./resume-reasoning.js";
 import { homedir } from "node:os";
 import { telemetry } from "./telemetry.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
+import type { ClassifyThread } from "./gateway-chat-classifier.js";
+import { ChatIdentity, legacyGatewayProvider as gatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { configEffort, enumEffort, object, requestedEffort, requestedModel, savedTier, tierId, tierSelection } from "./app-server-request-fields.js";
+import { gatewayModelList } from "./app-server-model-list.js";
+import { AppServerRoutingError } from "./app-server-routing-error.js";
 
+export { AppServerRoutingError };
 type ObjectValue = Record<string, unknown>;
-export type BackendRequest = (method: string, params: ObjectValue) => Promise<ObjectValue>;
-const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
-const gatewayProvider = "subscription_gateway";
-const requestedModel = (params: ObjectValue): unknown => object(object(params.collaborationMode).settings).model ?? params.model ?? object(params.config).model;
-const tierSelection = (params: ObjectValue): { value: unknown } | undefined => Object.hasOwn(params, "serviceTier") && params.serviceTier !== undefined
-  ? { value: params.serviceTier } : Object.hasOwn(object(params.config), "service_tier") ? { value: object(params.config).service_tier } : undefined;
-const tierId = (value: unknown): unknown => value === "fast" ? "priority" : value;
-const savedTier = (value: string | null): string | null => value === "default" ? null : tierId(value) as string | null;
-// An effort can arrive as a turn setting or inside the collaboration mode that carries it.
-const requestedEffort = (params: ObjectValue): unknown => params.effort ?? object(object(params.collaborationMode).settings).reasoning_effort;
-const configEffort = (params: ObjectValue): unknown => object(params.config).model_reasoning_effort;
-const enumEffort = (value: unknown): string | undefined => typeof value === "string" && ["none","minimal","low","medium","high","xhigh","max","ultra"].includes(value) ? value : undefined;
-type TierDrop = { model: string; tier: string; method: string };
-type ThreadRoute = { provider: string; model?: string; serviceTier?: string | null };
+/** One engine request. `hint` names the engine a thread/start is for; the backends never infer it from the provider id. */
+export type BackendRequest = (method: string, params: ObjectValue, hint?: EngineHint) => Promise<ObjectValue>;
+/** `kind` decides every gateway rule; `provider` is only what the chat was saved with, reported as its identity. */
+type ThreadRoute = { kind: ChatKind; provider?: string; model?: string; serviceTier?: string | null };
+const createsThread = new Set(["thread/start", "thread/resume", "thread/fork"]);
 // Throwaway prediction forks are tracked in this order-bounded set while they may still be routed.
 const maxEphemeralThreads = 256;
 // A fork pushed out of that set may still be subscribed and keep emitting; its id alone is kept longer.
@@ -43,10 +41,6 @@ const maxEvictedEphemeralIds = 4096;
  */
 export const inheritsParentSettings = (method: string, params: ObjectValue): boolean =>
   method === "thread/fork" && params.experimentalPredictionMode === true;
-
-export class AppServerRoutingError extends Error {
-  constructor(message: string, readonly code: number = -32600) { super(message); }
-}
 
 /** Adds gateway routes without replacing the native engine's authentication or defaults. */
 export class AppServerRouter {
@@ -66,7 +60,12 @@ export class AppServerRouter {
   private readonly preferencesPath: string;
   readonly catalogPath: string;
   private extraModels: ObjectValue[];
-  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog, private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex")) {
+  private readonly identity: ChatIdentity;
+  private readonly catalogs: IdentityCatalogs = { aliases: () => this.aliases, nativeSlugs: () => this.source?.nativeSlugs ?? noSlugs };
+  /** `identity` is the connection's, shared with its backends so both classify from one registry read and one set of seen chats. */
+  constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog,
+    private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex"), identity?: ChatIdentity) {
+    this.identity = identity ?? new ChatIdentity(config.stateDirectory, nativeHome);
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
     this.extraModels = modelCatalog(config).models;
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
@@ -91,24 +90,33 @@ export class AppServerRouter {
       if (Object.keys(desktop).length) this.preferences.desktop = desktop;
     } catch { throw new AppServerRoutingError("Gateway desktop display preferences are invalid"); }
   }
-  private async remember(result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number, inherited = false): Promise<void> {
+  /**
+   * `routed` is the kind of engine the request was sent to: the start hint, or the route of the chat it resumed or forked.
+   * A reply the router did not route itself (a resume by path, a prediction fork of a chat it never saw) is classified.
+   */
+  private async remember(method: string, result: ObjectValue, params: ObjectValue, expected: ThreadServiceTier | undefined, requestStartedAtMs: number,
+    inherited: boolean, routed: ChatKind | undefined): Promise<void> {
     const thread = object(result.thread);
+    if (typeof thread.id !== "string") return;
     // A prediction fork is throwaway: only its in-memory route is kept, never a durable record.
-    const ephemeral = inherited || thread.ephemeral === true || (typeof thread.id === "string" && this.evictedEphemeralIds.has(thread.id));
-    if (typeof thread.id === "string" && ephemeral) this.trackEphemeral(thread.id);
+    const ephemeral = inherited || thread.ephemeral === true || this.evictedEphemeralIds.has(thread.id);
+    if (ephemeral) this.trackEphemeral(thread.id);
+    // A fork belongs with the chat it came from, so its parent answers when the router has no route for that chat.
+    const parent = method === "thread/fork" && typeof params.threadId === "string" ? { parentThreadId: params.threadId } : {};
+    const kind = routed ?? await this.classify({ ...parent, ...threadFacts(thread, result), id: thread.id }, method);
     // Only a gateway chat's reasoning is ever read back; a native chat keeps its own in the SDK.
-    if (typeof thread.id === "string" && !ephemeral && result.modelProvider === gatewayProvider) {
+    if (!ephemeral && kind === "gateway") {
       const config = object(params.config);
       await this.recordReasoning(thread.id, { model: typeof result.model === "string" ? result.model : params.model,
         effort: result.reasoningEffort ?? config.model_reasoning_effort, summary: result.reasoningSummary ?? config.model_reasoning_summary }, requestStartedAtMs);
     }
-    if (typeof thread.id === "string" && typeof result.modelProvider === "string") {
+    if (typeof result.modelProvider === "string") {
       const tier = Object.hasOwn(result, "serviceTier") ? result.serviceTier : tierSelection(params)?.value;
-      const route: ThreadRoute = { provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
+      const route: ThreadRoute = { kind, provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
         ...(tier === null || (typeof tier === "string" && storableServiceTier(tierId(tier))) ? { serviceTier: tierId(tier) as string | null } : {}) };
       this.routes.set(thread.id, route);
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
-      if (!ephemeral && route.provider === gatewayProvider && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
+      if (!ephemeral && route.kind === "gateway" && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
         const record = { model: route.model, serviceTier: recordableTier(this.extraModels, route.model, savedTier(result.serviceTier)) };
         const against = thread.id === params.threadId ? expected ?? null : null;
         // The SDK accepted a tier the private store cannot hold, so the chat's tier is recorded as unknown. The route above already leaves it out.
@@ -122,7 +130,12 @@ export class AppServerRouter {
       }
     }
   }
-  private async route(threadId: string): Promise<ThreadRoute | undefined> {
+  /** Classification after one registry read; the parent rule reads only chats this connection has seen. */
+  private async classify(thread: ClassifyThread, method: string): Promise<ChatKind> {
+    await this.identity.refresh();
+    return this.identity.classify(thread, this.catalogs, method).kind;
+  }
+  private async route(threadId: string, method: string): Promise<ThreadRoute | undefined> {
     let route = this.routes.get(threadId);
     if (!route) {
       let probe: ObjectValue;
@@ -130,13 +143,15 @@ export class AppServerRouter {
       catch (error) { if (nativeThreadAbsent(error, threadId)) return undefined; throw error; }
       const thread = object(probe.thread);
       if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
-      route = { provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
+      this.identity.learnReply("thread/read", probe);
+      // The saved record decides, never the request: a native chat resumed with no model stays native.
+      route = { kind: await this.classify({ ...threadFacts(thread), id: threadId }, method), provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
       this.routes.set(threadId, route);
       this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
       // A forgotten throwaway fork can still be loaded in the engine; it must stay memory-only.
       if (thread.ephemeral === true || this.evictedEphemeralIds.has(threadId)) this.trackEphemeral(threadId);
     }
-    if (route.provider === gatewayProvider && !this.ephemeralThreads.has(threadId)) {
+    if (route.kind === "gateway" && !this.ephemeralThreads.has(threadId)) {
       const current = await this.threadTiers.read(threadId);
       if (current && (!this.tierRecords.has(threadId) || JSON.stringify(current) !== JSON.stringify(this.tierRecords.get(threadId)))) {
         route.model = current.model; route.serviceTier = current.serviceTier;
@@ -159,34 +174,58 @@ export class AppServerRouter {
     this.ephemeralThreads.delete(threadId); this.routes.delete(threadId); this.tierRecords.delete(threadId);
     this.activeTurns.delete(threadId); this.settingsVersions.delete(threadId); this.chatSnapshots.delete(threadId);
   }
-  /** Provider family and model for diagnostics; no settings or content. */
-  describeThread(threadId: string): { provider?: string; model?: string } {
+  /**
+   * Engine kind and model for diagnostics; no settings or content. A gateway chat also says which provider id it was saved
+   * with: `legacy` for the gateway's own id, `openai` for the native identity.
+   */
+  describeThread(threadId: string): { provider?: string; model?: string; identity?: string } {
     const route = this.routes.get(threadId);
-    return route ? { provider: route.provider === gatewayProvider ? "gateway" : "native", ...(typeof route.model === "string" ? { model: route.model } : {}) } : {};
+    if (!route) return {};
+    const identity = route.kind === "gateway" && typeof route.provider === "string" ? { identity: route.provider === gatewayProvider ? "legacy" : "openai" } : {};
+    return { provider: route.kind, ...(typeof route.model === "string" ? { model: route.model } : {}), ...identity };
   }
-  /** Only applied thread settings are durable; active-turn settings remain connection-local. */
-  async observeNotification(message: ObjectValue): Promise<void> {
+  /** A notification's chat kind: the engine that sent it, else the chat's route, else its classification. */
+  private async notifiedKind(threadId: string, settings: ObjectValue, engine?: ChatKind): Promise<ChatKind> {
+    const route = this.routes.get(threadId);
+    if (engine || route) return engine ?? route!.kind;
+    return this.classify({ id: threadId, ...(typeof settings.modelProvider === "string" ? { modelProvider: settings.modelProvider } : {}),
+      ...(typeof settings.model === "string" ? { model: settings.model } : {}) }, "thread/settings/updated");
+  }
+  /** The provider id a settings notification names, or the one the chat's route already holds. */
+  private savedProvider(threadId: string, settings: ObjectValue): { provider?: string } {
+    const provider = typeof settings.modelProvider === "string" ? settings.modelProvider : this.routes.get(threadId)?.provider;
+    return typeof provider === "string" ? { provider } : {};
+  }
+  /**
+   * Only applied thread settings are durable; active-turn settings remain connection-local. `engine` is the kind of engine
+   * that emitted the message, so a gateway chat is recognized whatever provider id it carries.
+   */
+  async observeNotification(message: ObjectValue, engine?: ChatKind): Promise<void> {
     const params = object(message.params);
+    if (message.method === "thread/started") this.identity.learn(threadFacts(params.thread));
     if (message.method === "thread/closed" && typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId)) this.forgetEphemeral(params.threadId);
     if (message.method === "thread/settings/updated" && typeof params.threadId === "string") {
       // The pinned SDK stamps the envelope before fan-out to clients on this host.
       const emittedAtMs = message.emittedAtMs;
       if (!Number.isSafeInteger(emittedAtMs) || Number(emittedAtMs) <= 0 || Number(emittedAtMs) > Date.now() + 1000) return;
       const settings = object(params.threadSettings);
+      // Only settings on a gateway alias are kept: a resume or fork can restore no other model on a gateway chat.
+      const servable = typeof settings.model === "string" && this.aliases.has(settings.model);
       if (this.ephemeralThreads.has(params.threadId)) {
         // A throwaway fork's applied settings stay in its route; nothing about it is recorded durably.
         this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
-        if (settings.modelProvider === gatewayProvider && typeof settings.model === "string" && (settings.serviceTier === null || typeof settings.serviceTier === "string")) {
+        if (servable && typeof settings.model === "string" && (settings.serviceTier === null || typeof settings.serviceTier === "string") && await this.notifiedKind(params.threadId, settings, engine) === "gateway") {
           // Only a tier a later fork or resume can forward is kept; an odd one leaves the route without a tier, as for a durable chat.
           const tier = savedTier(settings.serviceTier);
-          this.routes.set(params.threadId, { provider: gatewayProvider, model: settings.model, ...(storableServiceTier(tier) ? { serviceTier: tier } : {}) });
+          this.routes.set(params.threadId, { kind: "gateway", ...this.savedProvider(params.threadId, settings), model: settings.model, ...(storableServiceTier(tier) ? { serviceTier: tier } : {}) });
         }
         return;
       }
       // A fork the cap evicted has no route to update, and nothing about it may be recorded.
       if (this.evictedEphemeralIds.has(params.threadId)) return;
-      if (settings.modelProvider === gatewayProvider) await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
-      if (settings.modelProvider !== gatewayProvider || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
+      const gateway = servable && await this.notifiedKind(params.threadId, settings, engine) === "gateway";
+      if (gateway) await this.recordReasoning(params.threadId, { model: settings.model, effort: settings.effort, summary: settings.summary }, Number(emittedAtMs));
+      if (!gateway || typeof settings.model !== "string" || (settings.serviceTier !== null && typeof settings.serviceTier !== "string")) return;
       const record = { model: settings.model, serviceTier: recordableTier(this.extraModels, settings.model, savedTier(settings.serviceTier)), emittedAtMs: Number(emittedAtMs) };
       this.settingsVersions.set(params.threadId, (this.settingsVersions.get(params.threadId) || 0) + 1);
       // Duplicate notifications from slower shared clients cannot replace newer settings.
@@ -196,40 +235,12 @@ export class AppServerRouter {
         : await this.threadTiers.markUnknown(params.threadId, { model: settings.model, emittedAtMs: record.emittedAtMs });
       const current = await this.threadTiers.read(params.threadId);
       const route = this.routes.get(params.threadId);
-      if (current) this.routes.set(params.threadId, { provider: gatewayProvider, ...current });
+      if (current) this.routes.set(params.threadId, { kind: "gateway", ...this.savedProvider(params.threadId, settings), ...current });
       // No readable tier: unknown (this notification or a newer one from a peer), so the route must not keep an older tier.
       else if (route) { if (!storable && applied) route.model = settings.model; delete route.serviceTier; }
       this.tierRecords.set(params.threadId, current);
     }
     if (message.method === "turn/completed" && typeof params.threadId === "string" && this.activeTurns.get(params.threadId)?.turnId === object(params.turn).id) this.activeTurns.delete(params.threadId);
-  }
-  /**
-   * Recorded only once the SDK accepted the request, so a rejected request leaves no event. A loaded chat
-   * ignores a session-start override and answers with the tier it kept, so nothing was dropped then.
-   */
-  private recordTierDrops(drops: TierDrop[], result: ObjectValue): void {
-    if (result.serviceTier !== undefined && result.serviceTier !== null && result.serviceTier !== "default") return;
-    for (const drop of drops) telemetry("service_tier_dropped", { model: drop.model, tier: loggableTier(this.extraModels, drop.tier), method: drop.method });
-  }
-  /**
-   * At session start the SDK drops a tier the model lacks and starts Standard, so the gateway sends
-   * serviceTier null. A tier that is not a string is left for the SDK to reject as invalid params.
-   */
-  private dropUnsupportedTier(params: ObjectValue, model: string, method: string, drops: TierDrop[]): ObjectValue {
-    const tier = tierSelection(params);
-    if (!tier || typeof tier.value !== "string" || offersServiceTier(this.extraModels, model, tier.value)) return params;
-    const { service_tier: _dropped, ...config } = object(params.config);
-    drops.push({ model, tier: tier.value, method });
-    return { ...params, serviceTier: null, ...(params.config === undefined ? {} : { config }) };
-  }
-  /** A resumed or forked chat starts with its own tier; one its row lacks starts Standard. A tier the gateway never read is left to the SDK. */
-  private inheritedTier(params: ObjectValue, route: ThreadRoute, model: string, method: string, drops: TierDrop[]): ObjectValue {
-    if (tierSelection(params) || route.serviceTier === undefined) return params;
-    if (route.serviceTier !== null && !offersServiceTier(this.extraModels, model, route.serviceTier)) {
-      drops.push({ model, tier: route.serviceTier, method });
-      return { ...params, serviceTier: null };
-    }
-    return { ...params, serviceTier: route.serviceTier };
   }
   private preferenceRequest(params: ObjectValue, model: string): ObjectValue {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
@@ -252,39 +263,11 @@ export class AppServerRouter {
     return { ...selected, model, modelProvider: gatewayProvider,
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
-  private assertSameProvider(provider: string, model: unknown): void {
+  private assertSameProvider(kind: ChatKind, model: unknown): void {
     if (typeof model !== "string") return;
-    if ((provider === gatewayProvider) !== this.aliases.has(model)) {
+    if ((kind === "gateway") !== this.aliases.has(model)) {
       throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Reset to default selects a model; it does not reload the model list. Your account and existing chat are unchanged.", -32002);
     }
-  }
-  private async models(params: ObjectValue): Promise<ObjectValue> {
-    const cursor = params.cursor;
-    if (cursor !== undefined && cursor !== null && (typeof cursor !== "string" || !/^gateway-models:\d+$/.test(cursor))) throw new AppServerRoutingError("Invalid gateway model cursor");
-    const limit = params.limit ?? 100;
-    if (!Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 1000) throw new AppServerRoutingError("Model list limit must be 1 through 1000");
-    const native: ObjectValue[] = []; let nextCursor: unknown = null;
-    do {
-      if (native.length >= 4096) throw new AppServerRoutingError("Native catalog exceeds the gateway model limit");
-      const page = await this.backend("model/list", { ...params, cursor: nextCursor, limit: 100 });
-      if (!Array.isArray(page.data)) throw new AppServerRoutingError("Native engine returned an invalid model list");
-      native.push(...page.data.map(object).filter(model => !this.aliases.has(String(model.model)))); nextCursor = page.nextCursor;
-    } while (typeof nextCursor === "string" && nextCursor);
-    const extra = this.extraModels.map(model => ({
-      id: model.slug, model: model.slug, displayName: model.display_name, description: model.description,
-      upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
-      supportedReasoningEfforts: (model.supported_reasoning_levels as Array<{ effort: string; description: string }>).map(level => ({ reasoningEffort: level.effort, description: level.description })),
-      defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
-      multiAgentVersion: null, additionalSpeedTiers: model.additional_speed_tiers || [], serviceTiers: model.service_tiers || [], defaultServiceTier: model.default_service_tier ?? null, availableAccessPrograms: null, isDefault: false,
-    }));
-    let models = [...native, ...extra];
-    const preferred = this.preferences.model;
-    if (typeof preferred === "string" && models.some(model => model.model === preferred)) {
-      models = models.map(model => ({ ...model, isDefault: model.model === preferred }));
-    }
-    const offset = cursor ? Number(String(cursor).split(":")[1]) : 0;
-    if (!Number.isSafeInteger(offset) || offset > models.length) throw new AppServerRoutingError("Invalid gateway model cursor");
-    return { data: models.slice(offset, offset + Number(limit)), nextCursor: offset + Number(limit) < models.length ? `gateway-models:${offset + Number(limit)}` : null };
   }
   /**
    * Gateway defaults are saved privately; every other edit is the caller's own native
@@ -385,17 +368,17 @@ export class AppServerRouter {
     if (typeof params.threadId !== "string") return forwarded;
     const active = this.activeTurns.get(params.threadId);
     const route = method === "turn/settings/update" && active && active.turnId === params.turnId ? active.route : threadRoute;
-    this.assertSameProvider(route.provider, requestedModel(params));
+    this.assertSameProvider(route.kind, requestedModel(params));
     const sessionStart = method === "thread/resume" || method === "thread/fork";
     // Inside a running chat the SDK keeps the chat's chosen tier and leaves it off an outgoing request only
     // while the model lacks it, so the gateway neither clears nor injects a tier here. The SDK also accepts a
     // tier the model does not offer. Its per-turn field reads "priority", so the legacy "fast" alias is mapped.
-    if (route.provider === gatewayProvider && params.serviceTierForTurn === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
-    if (sessionStart && route.provider === gatewayProvider) {
+    if (route.kind === "gateway" && params.serviceTierForTurn === "fast") forwarded = { ...params, serviceTierForTurn: "priority" };
+    if (sessionStart && route.kind === "gateway") {
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
       if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
-      const inherited = this.inheritedTier(this.dropUnsupportedTier(params, model, method, drops), route, model, method, drops);
+      const inherited = inheritedTier(this.extraModels, dropUnsupportedTier(this.extraModels, params, model, method, drops), route.serviceTier, model, method, drops);
       // A typed model override disables the engine's persisted-settings restore,
       // so the gateway supplies the chat's own reasoning for the model it keeps.
       let restored: ReasoningChoice | null | undefined = null;
@@ -413,43 +396,49 @@ export class AppServerRouter {
     if (!inherited && ["model/list", "thread/start", "thread/resume", "thread/fork"].includes(method)) await this.readPreferences();
     if (this.source && !inherited && ["model/list", "thread/start", "thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method)) {
       const requested = requestedModel(params) ?? (method === "thread/start" ? this.preferences.model : undefined);
-      const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.provider === gatewayProvider);
+      const strict = (typeof requested === "string" && !this.source.isNative(requested)) || params.modelProvider === gatewayProvider || (typeof params.threadId === "string" && this.routes.get(params.threadId)?.kind === "gateway");
       this.extraModels = (await this.source.refresh(strict)).models;
       for (const model of this.extraModels) this.aliases.add(String(model.slug));
       if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
     }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
-    if (method === "model/list") return this.models(params);
+    if (method === "model/list") return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model);
     if (method === "config/value/write" || method === "config/batchWrite") return this.writeConfig(method, params);
     let forwarded = params;
     const drops: TierDrop[] = [];
+    // The kind of engine this request goes to, when the router decides it: a new chat's, or the routed chat's.
+    let routed: ChatKind | undefined;
     if (method === "thread/start") {
       const model = requestedModel(params) ?? this.preferences.model;
+      const alias = typeof model === "string" && this.aliases.has(model);
       // The saved new-chat default applies first, so a Fast default the row no longer offers starts Standard.
-      if (typeof model === "string" && this.aliases.has(model)) forwarded = this.modelRequest(this.dropUnsupportedTier(this.preferenceRequest(params, model), model, method, drops), model, true);
+      if (alias) forwarded = this.modelRequest(dropUnsupportedTier(this.extraModels, this.preferenceRequest(params, model), model, method, drops), model, true);
       else if (typeof model === "string") forwarded = { ...this.preferenceRequest(params, model), model, config: { ...(typeof this.preferences.model_reasoning_effort === "string" && this.preferences.model === model ? { model_reasoning_effort: this.preferences.model_reasoning_effort } : {}), ...object(params.config) } };
+      // A gateway alias, or a caller that names the gateway's own provider id, starts a gateway chat; "openai" never does.
+      routed = alias || params.modelProvider === gatewayProvider ? "gateway" : "native";
     } else if (!inherited && ["thread/resume", "thread/fork", "turn/start", "thread/settings/update", "turn/settings/update"].includes(method) && typeof params.threadId === "string") {
       // No SDK knows this chat: forward the request unchanged so the SDK gives its own answer.
-      const threadRoute = await this.route(params.threadId);
+      const threadRoute = await this.route(params.threadId, method);
       if (threadRoute) forwarded = await this.routedRequest(method, params, threadRoute, drops);
-    }
+      routed = threadRoute?.kind;
+    } else if (inherited && typeof params.threadId === "string") routed = this.routes.get(params.threadId)?.kind;
     // Settled before the engine call: a close or cap eviction during the call must not make the chat durable.
     const wasEphemeral = typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId);
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;
     const settingsVersion = typeof params.threadId === "string" ? this.settingsVersions.get(params.threadId) || 0 : 0;
     const requestStartedAtMs = Date.now();
-    const result = await this.backend(method, forwarded);
-    this.recordTierDrops(drops, result);
+    const result = await this.backend(method, forwarded, method === "thread/start" ? { engine: routed! } : undefined);
+    recordTierDrops(this.extraModels, drops, result);
     if (method === "account/rateLimits/read") {
       try { return mergeGatewayUsage(result, await gatewayUsage(this.config)); }
       catch { return result; }
     }
-    if (["thread/start", "thread/resume", "thread/fork"].includes(method)) {
-      await this.remember(result, forwarded, expectedTier, requestStartedAtMs, inherited);
+    if (createsThread.has(method)) {
+      await this.remember(method, result, forwarded, expectedTier, requestStartedAtMs, inherited, routed);
       if (forwarded.modelProvider === gatewayProvider && result.modelProvider !== gatewayProvider) throw new AppServerRoutingError("The native engine did not apply the requested gateway provider; start a new chat");
     }
     // An applied settings change or a turn that carries one is durable from this request on.
-    if (typeof params.threadId === "string" && !wasEphemeral && this.routes.get(params.threadId)?.provider === gatewayProvider && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
+    if (typeof params.threadId === "string" && !wasEphemeral && this.routes.get(params.threadId)?.kind === "gateway" && (method === "turn/start" || (method === "thread/settings/update" && result.status === "applied"))) {
       await this.recordReasoning(params.threadId, { model: requestedModel(params) ?? this.routes.get(params.threadId)?.model, effort: requestedEffort(params), summary: params.summary }, requestStartedAtMs);
     }
     const selected = requestedModel(params);

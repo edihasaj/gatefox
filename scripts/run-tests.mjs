@@ -2,10 +2,11 @@
 // Runs the compiled test suite in its own process group under a private temp folder and a private home folder, so that the real
 // ones are left as they were and a broken test fails the run instead of hanging it. The execution-host tests keep their host
 // folders, receipts and socket links under the home folder (`$HOME/.local/state/gw-exec`), so HOME points at `<folder>/home`
-// for the whole suite and nothing of theirs reaches the real one. (One thing stays outside: the fixed `/tmp/codex-daemon-<uid>`
-// socket rendezvous the pinned SDK uses for the sockets themselves, where the execution-host tests remove what they make. A run
-// that was stopped may leave a socket there; the runner removes each one that the run's folder links to and that no process
-// listens on, after asking again for a few seconds in case its owner is still being torn down.)
+// for the whole suite and nothing of theirs reaches the real one. (The fixed `/tmp/codex-daemon-<uid>` socket rendezvous the pinned SDK
+// uses for the sockets themselves is kept out by the tests: each file that starts a host points it at a folder of its own, see
+// src/tests/isolated-execution-roots.ts. Should a stopped run still leave a socket there, the runner removes each one that the run's
+// folder links to and that no process listens on, after asking again for a few seconds in case its owner is still being torn down.
+// GATEWAY_TEST_SDK_ROOT names another folder for that cleanup; only the runner's own tests set it, so they never touch the real one.)
 //
 // Several tests start gateways and fixture Copilot CLIs. Their startup sweep and their folders live under
 // `<TMPDIR>/harness-gateway-copilot-<uid>`, and a test that wrote there would delete a running gateway's leftovers or leave
@@ -67,7 +68,7 @@ child.once("error", error => { process.stderr.write(`Could not start the test ru
  */
 async function removeStaleSockets() {
   if (process.platform === "win32" || !process.getuid) return;
-  let rendezvous; try { rendezvous = join(realpathSync("/tmp"), `codex-daemon-${process.getuid()}`); } catch { return; }
+  let rendezvous; try { rendezvous = process.env.GATEWAY_TEST_SDK_ROOT ? realpathSync(process.env.GATEWAY_TEST_SDK_ROOT) : join(realpathSync("/tmp"), `codex-daemon-${process.getuid()}`); } catch { return; }
   const targets = new Set();
   const walk = path => {
     let entries; try { entries = readdirSync(path, { withFileTypes: true }); } catch { return; }

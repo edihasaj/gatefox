@@ -126,6 +126,8 @@ export class AppServerConnection {
       } catch (error) { if (!this.stopping) process.stderr.write(`gateway: ${error instanceof Error ? error.message : "App-server stream failed"}\n`); this.pipeFailed("stream_error"); }
     })();
   }
+  /** The engine's process id, for an ownership receipt that must name the writer; undefined when the spawn failed. */
+  get pid(): number | undefined { return this.child.pid; }
   /** What the exit telemetry may say once the process is gone; no paths, ids or output are included. */
   get exitFacts(): { code: number | null; signal: NodeJS.Signals | null; uptimeMs: number; initiatedBy: "adapter" | "engine"; reason: EngineStopReason | "none" } {
     return { code: this.exitCode, signal: this.exitSignal, uptimeMs: (this.closedAt ?? Date.now()) - this.startedAt,

@@ -58,7 +58,7 @@ test("a shared gateway executor is acquired with trimmed launch flags and settin
   (f.backend as unknown as { pool: () => Promise<unknown> }).pool = async () => ({ release: async () => {}, find: async () => undefined,
     acquire: async (descriptor: ExecutionDescriptor) => { acquired.push(descriptor); throw new Error("lease refused by the test host"); } });
   try {
-    await assert.rejects(f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" }), /lease refused by the test host/);
+    await assert.rejects(f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" }, { engine: "gateway" }), /lease refused by the test host/);
     assert.equal(acquired.length, 1);
     const [descriptor] = acquired;
     assert.deepEqual(descriptor.settings, { features: { async_compaction: true, multi_agent_v2: { enabled: true }, fast_mode: false } });

@@ -45,7 +45,7 @@ export async function featureFixture(args = ["app-server", "--listen", "stdio://
 
 /** Start a gateway chat and return its id. */
 export async function startGatewayChat(backend: AppServerBackends): Promise<string> {
-  const started = await backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" });
+  const started = await backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" }, { engine: "gateway" });
   return (started.thread as { id: string }).id;
 }
 
