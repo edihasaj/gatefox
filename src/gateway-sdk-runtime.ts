@@ -5,14 +5,21 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const gatewaySdkRevision = "740e5af33c71225640e0c1c1555c514c2c93ab74";
-export const gatewaySdkPatchSha256 = "9b59500683b66fab9dd0ecc2384d3046fb2fe8d506278ac767c81bf1c6061f36";
+export const gatewaySdkPatchSha256 = "261266e3664a4f140d987332ddeca5c440943caa31ef3cb1c91fa751a54d3718";
 const archiveSha256 = "25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83";
 const lockfileSha256 = "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb";
 const lockfileRepairSha256 = "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8";
-const sourceSha256 = "66c1dec57d10efb9f18bd480786b88f4fba0f9922263b1bc34c341f5a6c720a9";
+const sourceSha256 = "e068c16e07773892d27c6a4afd118191a3f7cc85102fc627a7f01e7e5a92844e";
 const componentFiles = ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"];
 const invalid = () => new Error("Gateway executor artifact does not match this release. Reinstall the gateway before loading another gateway chat.");
-export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true }
+/**
+ * A verified gateway SDK. `selectedModelCompaction`: the SDK compacts on the selected model inside the user's turn.
+ * `executorIdentity`: inside a gateway executor (HARNESS_GATEWAY_EXECUTOR=1) the SDK resolves `openai` to the gateway's own
+ * loopback provider, so new gateway chats can be recorded as `openai` (see docs/harness-identity.md).
+ */
+export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true; executorIdentity: true }
+/** The one capability this release's gateway SDK declares: patch v2, keyed on the executor marker. */
+export const gatewaySdkCapability = "gateway-executor-v2";
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
@@ -79,10 +86,10 @@ export async function gatewaySdkRuntime(packageDirectory = fileURLToPath(new URL
     metadata.profile !== "release" || metadata.platform !== process.platform || metadata.arch !== process.arch ||
     typeof metadata.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.sourceSha256) ||
     typeof metadata.binarySha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.binarySha256) ||
-    !Array.isArray(metadata.capabilities) || metadata.capabilities.length !== 1 || metadata.capabilities[0] !== "selected-model-compaction-v1") throw invalid();
+    !Array.isArray(metadata.capabilities) || metadata.capabilities.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability) throw invalid();
   const binarySha256 = metadata.version === version
     ? (await componentHash(executable, 512 * 1024 * 1024, true)).sha256
     : await reusedBinaryHash(packageDirectory, directory, version, metadata, receiptBytes).catch(() => { throw invalid(); });
   if (binarySha256 !== metadata.binarySha256) throw invalid();
-  return { executable, binarySha256: metadata.binarySha256, selectedModelCompaction: true };
+  return { executable, binarySha256: metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true };
 }
