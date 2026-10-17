@@ -18,8 +18,8 @@ test("a replayed resume omits what the SDK restores and strips the config keys t
       approvals_reviewer: "user", sandbox_mode: "read-only", default_permissions: "p", model_catalog_json: "/c.json", web_search: "disabled" },
     baseInstructions: "b", developerInstructions: "d", personality: "friendly", input: [{ type: "text", text: "turn content never replays" }] } as Message);
   const resume = loads.resumeParams("chat");
-  assert.deepEqual(Object.keys(resume).sort(), ["baseInstructions", "config", "cwd", "developerInstructions", "excludeTurns", "personality",
-    "runtimeWorkspaceRoots", "serviceTier", "threadId"], "no model, provider, approvals, sandbox or permissions replay");
+  assert.deepEqual(Object.keys(resume).sort(), ["baseInstructions", "config", "developerInstructions", "excludeTurns", "personality",
+    "serviceTier", "threadId"], "no model, provider, approvals, sandbox, permissions, folder or workspace roots replay");
   assert.deepEqual(resume.config, { model_catalog_json: "/c.json", web_search: "disabled" }, "the config keeps only keys that gate nothing");
   assert.equal(resume.excludeTurns, true);
   assert.equal(resume.serviceTier, "priority");
@@ -31,18 +31,18 @@ test("an unknown chat re-attaches with its saved settings alone", () => {
 
 test("the load store holds 512 chats and evicts the oldest first", () => {
   const loads = new ChatLoads();
-  for (let index = 0; index <= 513; index++) loads.remember(`chat-${index}`, { threadId: `chat-${index}`, cwd: `/w/${index}` } as Message);
+  for (let index = 0; index <= 513; index++) loads.remember(`chat-${index}`, { threadId: `chat-${index}`, personality: `p${index}` } as Message);
   assert.deepEqual(loads.resumeParams("chat-0"), { threadId: "chat-0", excludeTurns: true }, "the evicted chat re-attaches from its saved settings");
   assert.deepEqual(loads.resumeParams("chat-1"), { threadId: "chat-1", excludeTurns: true });
-  assert.deepEqual(loads.resumeParams("chat-2"), { threadId: "chat-2", cwd: "/w/2", excludeTurns: true }, "the kept set starts at chat-2");
-  assert.deepEqual(loads.resumeParams("chat-513"), { threadId: "chat-513", cwd: "/w/513", excludeTurns: true });
+  assert.deepEqual(loads.resumeParams("chat-2"), { threadId: "chat-2", personality: "p2", excludeTurns: true }, "the kept set starts at chat-2");
+  assert.deepEqual(loads.resumeParams("chat-513"), { threadId: "chat-513", personality: "p513", excludeTurns: true });
 });
 
 test("a chat a connection never loaded keeps its saved settings, and remembering replaces its old parameters", () => {
   const loads = new ChatLoads();
-  loads.remember("chat", { cwd: "/first", model: "claude/old" } as Message);
-  loads.remember("chat", { cwd: "/second" } as Message);
-  assert.deepEqual(loads.resumeParams("chat"), { threadId: "chat", cwd: "/second", excludeTurns: true });
+  loads.remember("chat", { personality: "first", model: "claude/old" } as Message);
+  loads.remember("chat", { personality: "second" } as Message);
+  assert.deepEqual(loads.resumeParams("chat"), { threadId: "chat", personality: "second", excludeTurns: true });
   loads.forget("chat");
   assert.deepEqual(loads.resumeParams("chat"), { threadId: "chat", excludeTurns: true });
 });
@@ -117,4 +117,36 @@ test("an executor that refuses the resume records resume_failed and opens no fai
     const events = (await readTelemetry(directory, Date.now() - 60_000)).filter(event => event.event === "executor_reattach_failed");
     assert.deepEqual(events.map(event => event.reason), ["resume_failed", "resume_failed"]);
   } finally { setHostDownWindowForTests(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a host lookup that finds a live host ends the fail-fast window at once", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gw-reattach-unit-"));
+  configureTelemetry(directory, "test");
+  setHostDownWindowForTests(5_000);
+  try {
+    const reattacher = new Reattacher();
+    let attempts = 0;
+    await assert.rejects(reattacher.join("a", "engine_closed", async () => { throw new ReattachError("host_unavailable"); }), ReattachError);
+    await assert.rejects(reattacher.join("b", "engine_closed", async () => { attempts++; }), ReattachError);
+    assert.equal(attempts, 0, "inside the window the attempt is refused");
+    reattacher.hostAvailable();
+    await reattacher.join("b", "engine_closed", async () => { attempts++; });
+    assert.equal(attempts, 1, "once a lookup found the host, attempts reach it again");
+  } finally { setHostDownWindowForTests(); await flushTelemetry(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("running() answers for a chat only while its re-attach is in flight", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gw-reattach-unit-"));
+  configureTelemetry(directory, "test");
+  try {
+    const reattacher = new Reattacher();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    assert.equal(reattacher.running("chat"), undefined);
+    const flight = reattacher.join("chat", "engine_closed", () => gate);
+    assert.ok(reattacher.running("chat"), "claimed with nothing awaited");
+    assert.equal(reattacher.running("other"), undefined);
+    release(); await flight;
+    assert.equal(reattacher.running("chat"), undefined, "a settled flight is gone");
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -11,12 +11,13 @@ export type ReattachFailure = "host_unavailable" | "resume_failed";
 
 /**
  * The `thread/resume` fields that describe how a chat was loaded; nothing about a turn or its content. Only what the SDK
- * cannot restore from the chat's history is replayed: model, provider, reasoning effort, approval policy, approvals
- * reviewer and permissions are deliberately absent, because a resume that omits them makes the SDK apply the latest
- * values saved with the chat, and replaying load-time ones would revert any change the chat made after it was loaded.
+ * cannot restore from the chat's history is replayed: speed tier, config, instructions and personality. Model, provider,
+ * reasoning effort, approval policy, approvals reviewer, permissions, folder and workspace roots are deliberately absent,
+ * because a resume that omits them makes the SDK apply the latest values saved with the chat (the newest settings change,
+ * else the chat's start), and replaying load-time ones would revert any change the chat made after it was loaded. An
+ * explicit folder wins over the saved one and explicit roots skip the roots restore, so neither is ever replayed.
  */
-const resumeFields = ["serviceTier", "cwd", "runtimeWorkspaceRoots", "config", "baseInstructions", "developerInstructions",
-  "personality"] as const;
+const resumeFields = ["serviceTier", "config", "baseInstructions", "developerInstructions", "personality"] as const;
 /**
  * The `config` keys that act as those fields: the SDK lets any of them stand in for a value it would otherwise restore,
  * so a replayed `config` must not carry them.
@@ -50,6 +51,15 @@ export class ChatLoads {
   }
 }
 
+/** Errors that came from finding or talking to the shared host, as opposed to a gateway or resume failure of the chat's own. */
+const hostFailures = new WeakSet<object>();
+/** Marks an error as a host lookup failure and rethrows it. */
+export function markHostFailure(error: unknown): never {
+  if (typeof error === "object" && error !== null) hostFailures.add(error);
+  throw error;
+}
+export function isHostFailure(error: unknown): boolean { return typeof error === "object" && error !== null && hostFailures.has(error); }
+
 /** A failed re-attach step, carrying its fixed reason; the cause stays out of telemetry. */
 export class ReattachError extends Error {
   constructor(readonly reason: ReattachFailure) { super("Gateway executor re-attach failed"); }
@@ -65,13 +75,18 @@ export function setHostDownWindowForTests(ms?: number): void { hostDownWindowMs 
  * One re-attach per chat at a time: every request that finds the chat's executor gone while one is running waits for it and
  * gets its outcome, so the chat is resumed once. `join` checks for a running flight synchronously, before anything is awaited.
  * While a failed host lookup is recent, later attempts fail at once instead of kicking the host and waiting through it again;
- * the window is cleared by a re-attach that got a host. `executor_reattached` and `executor_reattach_failed` record the
+ * the window is cleared by a re-attach that got a host, and by any host lookup that finds a live one (`hostAvailable`), so a host
+ * that came back is never treated as down. Only host lookup failures arm it. `executor_reattached` and `executor_reattach_failed` record the
  * reason, how long it took and how many requests shared it; never a chat id, a model or a path. A `host_unavailable`
  * failure records at most one event per window, so a host that stays down cannot spam them.
  */
 export class Reattacher {
   private readonly flights = new Map<string, { done: Promise<void>; requests: number }>();
   private hostDownUntil = 0;
+  /** The running re-attach of a chat, if any; it settles when the chat is loaded again or the attempt failed. */
+  running(threadId: string): Promise<void> | undefined { return this.flights.get(threadId)?.done; }
+  /** A host lookup found a live host: the fail-fast window of an earlier failed lookup no longer applies. */
+  hostAvailable(): void { this.hostDownUntil = 0; }
   join(threadId: string, reason: ReattachReason, attempt: () => Promise<void>): Promise<void> {
     const running = this.flights.get(threadId);
     if (running) { running.requests++; return running.done; }

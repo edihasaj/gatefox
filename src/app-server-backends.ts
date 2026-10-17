@@ -26,7 +26,7 @@ import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
 import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { executorOverrides, nativeEnvironment, newChatProvider } from "./executor-identity.js";
-import { ChatLoads, Reattacher, ReattachError } from "./executor-reattach.js";
+import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -258,7 +258,18 @@ export class AppServerBackends {
     approval.connection.send({ ...message, id: approval.id }); return true;
   }
   notify(message: Message): void { this.native.send(message); }
+  /**
+   * The shared host's control connection. A live one clears the re-attach fail-fast window (a host that is answering is not
+   * down), and every failure is marked as a host failure so a re-attach can tell it from a gateway or resume failure.
+   */
   private async pool(): Promise<ExecutionHostClient | undefined> {
+    try {
+      const client = await this.lookupPool();
+      if (client && !client.closed) this.reattacher.hostAvailable();
+      return client;
+    } catch (error) { return markHostFailure(error); }
+  }
+  private async lookupPool(): Promise<ExecutionHostClient | undefined> {
     if (this.closing || this.sharedGateway === false) return;
     if (this.nativeHost) {
       if (!this.nativeHost.client.capabilities.includes("gateway")) return;
@@ -272,10 +283,17 @@ export class AppServerBackends {
     // One discovery at a time: a caller that finds the settled one gone follows a newer attempt if another caller already
     // started one, and only a caller still seeing that same closed value starts the next. A discovery of its own per closed
     // generation would leak a control connection each, and the host takes at most eight.
+    // stop() closes the connection it finds pending; a caller that wakes after it must not start or keep another, so every
+    // await below is followed by a check of `closing`.
+    const stopped = (client?: ExecutionHostClient): never => {
+      if (client && !client.closed) client.close();
+      throw Object.assign(new Error("Codex desktop connection is closing"), { code: -32001 });
+    };
     for (;;) {
       const waiting = this.poolPending;
       if (!waiting) break;
       const existing = await waiting.catch(() => undefined);
+      if (this.closing) return stopped(existing);
       if (existing && !existing.closed) { this.poolClient = existing; return existing; }
       if (this.poolPending !== waiting) continue;
       this.poolPending = undefined;
@@ -285,6 +303,7 @@ export class AppServerBackends {
       .catch(error => { if (this.sharedGateway === true) Object.assign(error, { code: -32001 }); throw error; });
     this.poolPending = pending;
     const client = await pending;
+    if (this.closing) return stopped(client);
     if (client && !client.closed) this.poolClient = client;
     if (!client && this.poolPending === pending) this.poolPending = undefined;
     return client;
@@ -376,7 +395,7 @@ export class AppServerBackends {
       const sdk = runtime ? { gatewaySdkSha256: runtime.binarySha256 } : {};
       const sharedRevision = createHash("sha256").update(canonicalJson({ catalog: combined, settings, args, ...sdk })).digest("hex");
       await this.releaseIdleShared(sharedRevision);
-      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk });
+      const record = await pool.acquire({ revision: sharedRevision, args, settings, catalog: combined, aliases: snapshot.models.map(model => String(model.slug)), ...sdk }).catch(markHostFailure);
       return this.shared(record, { models: combined.models, settings, args }, provider);
     }
     if (!snapshot.models.length) throw new Error("No gateway models are currently offered; check the gateway catalog");
@@ -443,8 +462,10 @@ export class AppServerBackends {
     const host = this.nativeHost?.client ?? this.poolClient;
     const reason = closed.shared && host && !host.closed ? "generation_retired" : "engine_closed";
     await this.reattacher.join(threadId, reason, async () => {
-      try { const target = await this.owner(threadId) ?? await this.gateway(); target.requests--; }
-      catch { throw new ReattachError("host_unavailable"); }
+      // Only a failed host lookup (finding the host, or asking it) is "host_unavailable" and arms the fail-fast window; a
+      // gateway() that refused for its own reasons (catalog, generation limit, a changed provider) is the chat's own failure.
+      try { const target = await this.owner(threadId).catch(markHostFailure) ?? await this.gateway(); target.requests--; }
+      catch (error) { throw new ReattachError(isHostFailure(error) ? "host_unavailable" : "resume_failed"); }
       try { await this.request("thread/resume", this.loads.resumeParams(threadId)); }
       catch { throw new ReattachError("resume_failed"); }
     });
@@ -526,12 +547,20 @@ export class AppServerBackends {
       const threadId = String(params.threadId);
       if (method === "thread/resume") { engine = await this.owner(threadId) || await this.gateway(); reserved = true; }
       else if (method === "thread/unsubscribe") {
-        // The chat is loaded nowhere this connection can reach, and unloading it asks nothing of a host: answer the SDK's
-        // own "not loaded" here, with the chat's local records cleared, instead of waking a generation just to unload it.
-        engine.threads.delete(threadId);
-        if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId);
-        this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); this.loads.forget(threadId);
-        return { status: "notLoaded" };
+        // A re-attach of this chat that is running now would load the chat again after a local answer and undo the unload:
+        // wait for it, then unload the chat where it landed. Otherwise the chat is loaded nowhere this connection can reach,
+        // and unloading it asks nothing of a host: answer the SDK's own "not loaded" here, with the chat's local records
+        // cleared, instead of waking a generation just to unload it.
+        const flight = this.reattacher.running(threadId);
+        if (flight) await flight.catch(() => undefined);
+        const moved = flight ? this.bindings.get(threadId) : undefined;
+        if (moved && !moved.connection.closed) { engine = moved; reserved = false; }
+        else {
+          engine.threads.delete(threadId);
+          if (this.bindings.get(threadId) === engine) this.bindings.delete(threadId);
+          this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); this.loads.forget(threadId);
+          return { status: "notLoaded" };
+        }
       }
       else {
         // The chat's executor is gone (its host restarted, or it exited): load the chat again on a live one and then send the
