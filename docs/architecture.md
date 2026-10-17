@@ -143,9 +143,14 @@ its owner is proven dead by the same rule, so a crash cannot block it for good.
 An adapter whose required host is missing, not running, dead, or no longer matches
 its socket asks the service for an immediate retry by writing the private file
 `kick` in the host folder, and waits up to 20 seconds, looking every 250 ms, for a
-running, live host. The service watches that file once a second and retries at most
-once every five seconds. A host that stays down fails with the same error as before
-the wait; a live host that does not match fails at once.
+running, live host. The service watches that file once a second. A kick only brings a
+failed host's next start forward, never within five seconds of the previous start and
+never while a start or restart is running; a failure that retrying cannot fix (another
+live owner, a changed identity, an invalid engine or receipt) gets one kicked start per
+backoff step. A kick to a running host never stops it: the service probes it and
+restarts it only when the probe fails and the host is idle (see
+[diagnostics](diagnostics.md#service-self-heal)). A host that stays down fails with the
+same error as before the wait; a live host that does not match fails at once.
 
 Process start times come from the operating system (`ps`, read in UTC with the C
 locale) both for the stamp a process records about itself and for every check, so a

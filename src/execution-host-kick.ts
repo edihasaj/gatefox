@@ -25,9 +25,10 @@ export interface HostKickWatchOptions { intervalMs?: number; minimumGapMs?: numb
  * when the file was written again since the last look, at most once every five seconds. A kick inside that gap is kept
  * and delivered when the gap ends, so an adapter's request is never lost to the rate limit. A kick written before the
  * watch began is not a new request. A write is told apart by the file's inode and time together, so a clock that
- * stepped back still counts as a new write. Returns the function that stops the watch.
+ * stepped back still counts as a new write. Returns the function that stops the watch. `onKick` may be async: whatever it
+ * throws or rejects with is dropped here, so a failing handler never becomes an unhandled rejection or stops the watch.
  */
-export function watchHostKick(home: string, onKick: () => void, options: HostKickWatchOptions = {}): () => void {
+export function watchHostKick(home: string, onKick: () => unknown, options: HostKickWatchOptions = {}): () => void {
   const path = resolve(home, "kick"); const intervalMs = options.intervalMs ?? 1000; const minimumGapMs = options.minimumGapMs ?? 5000;
   const stamp = (info?: { isFile(): boolean; ino: bigint; mtimeNs: bigint }) => info?.isFile() ? `${info.ino}:${info.mtimeNs}` : undefined;
   let seen: string | undefined;
@@ -43,7 +44,7 @@ export function watchHostKick(home: string, onKick: () => void, options: HostKic
       const now = performance.now();
       if (pending && !stopped && now - lastKick >= minimumGapMs) {
         pending = false; lastKick = now;
-        try { onKick(); } catch { /* The service's own handler reports its failures. */ }
+        void Promise.resolve().then(onKick).catch(() => { /* The service's own handler reports its failures. */ });
       }
     } finally { polling = false; }
   };

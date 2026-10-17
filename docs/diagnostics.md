@@ -24,7 +24,7 @@ only a fixed class such as `stream_disconnected`, `usage_limit` or `attachment` 
 | --- | --- |
 | Adapter | `turn_started`, `turn_completed`, `turn_empty_completion` (completed with no answer and no tool call), `turn_error`, `turn_quiet` (no events for five minutes), `rpc_error`, `adapter_client`, `adapter_session_end`, `native_sharing_fallback` (no fields: the plan shares native chats, but the host runs without native sharing, so this adapter started its own native engine and kept gateway chats on the host), `native_relay_skipped` (exactly `reason`: `not_registered`, `not_connected` or `unreachable`; this adapter found a relay registration but no usable relay, so the app engine kept its own remote control; a machine that never registered a relay records nothing), `reasoning_restored` (provider `gateway`, method and source `record`, `rollout` or `thread` of a gateway chat's recovered effort, adjusted; native chats are never restored by the adapter, so 0.4.1 no longer logs `provider: native`), `reasoning_effort_reset` (from, to, model and method when a restored level had to be fitted), `reasoning_unrecovered` (model when no effort could be recovered), `gateway_features_trimmed` (exactly `site`, one of `request`, `spawn`, `home` or `retry`, and `count`: how many feature settings were dropped, reduced to a boolean or rewritten so the pinned gateway SDK accepts them; a structured table that had fields removed also counts, once per entry however many fields went; `retry` is the strict form sent once after the SDK refused a thread request's configuration; never names or values; only when count is above zero), `service_tier_dropped` (exactly `model`, `tier` and `method`: a speed tier the selected gateway row does not offer was dropped, so the session starts as Standard; `method` is `thread/start`, `thread/resume` or `thread/fork`; `tier` is one of `priority`, `fast` or a tier id from the gateway model catalog, and any other value is logged as `other`; Flex is never dropped, so it is never logged; recorded only after the SDK accepted the request, and only when the SDK's answer carries no tier, `null` or `default`, because a loaded chat that kept its tier was not dropped), `ssh_listener_replaced` (`from` and `to` releases, no paths: a bootstrap on the installed release replaced a remote listener that was running another release; `from` is `unknown` when that listener recorded no release, which means it started from a checkout or from a release before 0.4.4, so the first 0.4.4 rollout logs `from: "unknown"` for every listener it replaces) |
 | Server | `request_completed`, `request_empty`, `request_failed` (queue time, time to first event, tool calls, input, cached, cache-write, reasoning and output tokens, `providerType`, Copilot `nanoAiu` credits with `nanoAiuStatus` and the `initiator` of its model calls (`user`, `agent` or `mixed`), whether a Codex turn-state was echoed and returned, and `abortCause` such as `shutdown`), `request_unsupported` (a Messages `count_tokens` call, which the gateway declines with a 501: `requestId`, `route` and `endpoint` only, with no `request_failed` and no stderr line), `provider_retry`, `claude_cli` (mode, toolCalls, input, cache read and write, and output tokens, interrupted, retry, `threadKey` — the same first 8 hex `claude_session` reports, when the request carried a thread id, so one thread's one-shot and live events line up — and `systemPrefixOnly` set when its cache read reached only the system prefix, the same test `claude_session` applies below; also on tool turns and cancellations), `claude_session` (live sessions: outcome such as spawned, continued, reseeded, fallback, interrupted, reaped, evicted or crashed, the miss reason (a `fallback` outcome carries `capacity` when every slot held a warm session, or the replay-hold reason `prefix_diverged`, `unexpected_tail`, `forced_choice`, `effort_midturn` or `session_dead`), cache read and write, input and output tokens, `threadKey` — the first 8 hex of the thread's session key — and `systemPrefixOnly` on a spawn or reseed that read only the system prefix — reported once the request's cache read plus write pass that prefix by a margin, since the threshold (32,035 tokens) is calibrated to the Codex system prefix and a shorter prompt says nothing either way), `copilot_session` (live Copilot sessions, on by default: `outcome` spawned, continued, reseeded, fallback, interrupted, reaped, evicted, crashed or closed; `missReason`, which is the reseed or fallback reason of a request and the reason a session ended; `threadKey`; `liveSessions`; `divergedAt`; `parkedMs`; `failed`; and the request's own `initiator` (`user`, `agent` or `mixed`), `inputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `outputTokens`, `reasoningTokens`, `nanoAiu` and `toolCalls`; every outcome, field and reason is listed in [live Copilot sessions](copilot-sessions.md#billing-and-diagnostics)), `model_alias_resolved`, `server_hot_swap`, `model_metadata_refreshed`, `model_metadata_skipped` (the six-hour metadata refresh left one provider out: `provider` and a fixed `reason`, `refresh_deferred` when serving a Codex login's access token would need a refresh (it has expired, or expires within two minutes unless the issuer's `earliest_refresh_at` is still in the future) and the refresh was left to the next real request, or `discovery_failed` for any other failure; the error text is never recorded), `server_shutdown_signal`, `server_drain` (requests drained, drain time, requests aborted) |
-| Service | `component_exit`, `component_paused` (the optional native relay was set aside: `component`, `kind` and a fixed `reason` — `not_registered` when `<state>/native-registration.json` is missing or says the relay is gone, `failing` after three non-zero exits in a row, each within 60 s of its start, or after one such exit following a resume; a signal death or a binary that never spawned counts as one; once a slot is paused nothing more is logged for it), `component_resumed` (`component` and `kind`: a paused relay was started again by the five minute re-check, which also restarts a relay that is still failing every half hour), `execution_host_failed`, `execution_host_recovered`, `native_acquire` (attached, launched, replaced, refused), `native_sharing_unavailable` (exactly `reason`: `sdk_version`, `sdk_signature` or `other`; the host started without native sharing because the app's native engine was not the verified one), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` (the moved process names itself in `component`: `adapter`, `service`, `server`, or `ssh_listener` when an idle SSH listener retired itself after an install; a listener replaced by a bootstrap logs `ssh_listener_replaced` on the Adapter row instead) |
+| Service | `component_exit`, `component_paused` (the optional native relay was set aside: `component`, `kind` and a fixed `reason` — `not_registered` when `<state>/native-registration.json` is missing or says the relay is gone, `failing` after three non-zero exits in a row, each within 60 s of its start, or after one such exit following a resume that has not yet run past its first minute; a signal death or a binary that never spawned counts as one; once a slot is paused nothing more is logged until the next re-check starts it), `component_resumed` (`component` and `kind`: a paused relay was started again by the five minute re-check, which also restarts a relay that is still failing every half hour), `component_failing` (an inference or tunnel child exited within 60 s of its start five times in a row: `component`, `kind`, `failures` (5) and `reason`, `exit_<code>`, `signal_<NAME>` or `spawn_failed`; once per streak, and a run of a minute or more ends the streak; the component stays `waiting` between starts and keeps its backoff), `execution_host_failed` (`failures` and `reason`, see [service self-heal](#service-self-heal)), `execution_host_recovered` (`failures` before the start that worked), `execution_host_unhealthy` (`reason` of a failed probe of the running host, once until the reason changes or a probe passes), `execution_host_restarted` (`reason`: the probe's, or `relay_paused`; only the host was stopped, while idle, and started again), `execution_owner_reclaimed` (`scope`: `host`, `native_home` or `generation`; `reason`: `previous_boot`, `dead_pids` or `invalid_receipt`; a dead owner's receipt was moved aside, see [architecture](architecture.md)), `status_write_failed` (exactly `code`, an errno name such as `ENOSPC` or `EACCES`, or `other`; at most once a minute), `login_consolidation_restored` (`jobs`: how many original login jobs were put back after an interrupted next-login consolidation), `native_acquire` (attached, launched, replaced, refused), `native_sharing_unavailable` (exactly `reason`: `sdk_version`, `sdk_signature` or `other`; the host started without native sharing because the app's native engine was not the verified one), `system_wake`, `tunnel_stale_listener_cleared`, `sharing_disabled`, `sharing_disable_failed`, `self_upgrade` (the moved process names itself in `component`: `adapter`, `service`, `server`, or `ssh_listener` when an idle SSH listener retired itself after an install; a listener replaced by a bootstrap logs `ssh_listener_replaced` on the Adapter row instead) |
 
 An adapter `rpc_error` records the method, the JSON-RPC code and either `reason` (the
 adapter's own fixed routing message) or `errorClass`. It also records `rejection`, named
@@ -104,16 +104,24 @@ A service slot that owns the relay reports `component_paused` once and then says
 nothing at all: no exit, no restart and no log line, until something changes.
 `gateway service status` shows the slot as `paused` with its reason, and a
 paused slot has no process to print, so `gateway versions` simply leaves it
-out. The service looks again every five minutes and starts the relay once a
+out. A relay whose log cannot be opened is set aside at once, without waiting for
+three exits. The service looks again every five minutes and starts the relay once a
 registration exists, no ChatGPT app is open, and the binaries or the registration
 changed since the pause — or, with nothing changed at all, once half an hour has passed
 since it was set aside, so a brief start-up problem never pauses a working relay for
 good. That start reports `component_resumed`. A resumed relay is out of retries: one
-more exit within a minute of its start sets it aside again at once, so a relay that
-cannot run costs at most two starts an hour. A re-check whose own question cannot be
-answered (a `ps` that will not reply) is treated as a failing relay: the slot stays
-paused, announced once, and the rest of the service is untouched — as it is when the
-relay's log cannot be opened at all. An adapter decides the same thing
+more non-zero exit within a minute of its start sets it aside again at once, so a relay that
+cannot run costs at most two starts an hour. A resumed relay that runs past its first
+minute has proved itself and gets three strikes again. A re-check whose questions cannot
+all be answered leaves the rest of the service untouched: a process list that will not
+come counts as an open app, so the slot simply stays paused with no new event, and only
+a probe that throws sets the slot paused again as `failing` (one `component_paused`).
+When the shared execution host started while the relay still looked usable, it took the
+machine's remote-control registration for the relay. Once the relay is set aside the
+service restarts only the execution host, while it is idle, so it starts again without
+the registration and the app keeps its own remote control (`execution_host_restarted`
+with reason `relay_paused`); a busy host is asked again at its next probe, a minute later,
+and at each five minute re-check. An adapter decides the same thing
 once when it starts and records `native_relay_skipped` when the relay it was
 registered for is not connected or not reachable, so a relay that comes up
 later is used from the next app start or the next listener start. Consolidation
@@ -121,6 +129,55 @@ and the shared-service migrations accept a paused relay as ready, and wait for a
 to connect only where a registration says one is set up and its relay slot is actually
 running. See the
 [app-server adapter](app-server.md#the-native-relay-is-optional).
+
+## Service self-heal
+
+The unified service repairs its own parts without restarting the others. Each event below
+carries fixed words and counts only, never paths, error text or environment values.
+
+| Event | When | What the service does |
+| --- | --- | --- |
+| `status_write_failed` | `service-status.json` could not be written (a full disk, a read-only folder). | Keeps running; the status file is advisory. The next five-second heartbeat writes again. Reported at most once a minute. |
+| `execution_host_failed` | A shared execution host start failed. | Retries after 1, 2, 5, 10 and 30 s, then every 60 s. Inference, tunnels and the relay keep running. |
+| `execution_host_unhealthy` | The running host failed its probe, made every 60 s. | Restarts only the host, and only while it is idle; a busy host is probed again a minute later. A probe that passes again cancels the restart. |
+| `execution_host_restarted` | An idle host was stopped and started again. | A start that then fails reports `execution_host_failed` and backs off as above. |
+| `component_failing` | An inference or tunnel child exited within 60 s of its start five times in a row. | Keeps restarting it with its usual backoff (up to 30 s), so a passing fault heals; the event is not repeated during the streak. |
+| `login_consolidation_restored` | A `--next-login` consolidation was interrupted (its staging process is gone) and the daemon found it at start. | Puts the original login jobs back and stays idle until the next login; see [services](services.md#one-managed-service). |
+
+`execution_host_failed` names its `reason` from a fixed set, never the error text:
+
+| Reason | Meaning | Retried by a kick |
+| --- | --- | --- |
+| `live_owner` | Another live host or writer still owns the folder, a generation or the native home. | Once per backoff step |
+| `identity_changed` | The folder's live owner has another configuration, native home, engine or socket. | Once per backoff step |
+| `receipt_invalid` | An ownership receipt is invalid and its owner cannot be proven gone. | Once per backoff step |
+| `sdk_invalid` | The engine binary is missing, changed, unsigned or the wrong version. | Once per backoff step |
+| `sdk_dir_missing` | The SDK socket folder (`/tmp/codex-daemon-<uid>`) is gone, as after a reboot. | Each kick, five seconds apart |
+| `socket_occupied` | A socket path is held by another listener. | Each kick, five seconds apart |
+| `io_error` | A file system error, such as a folder with the wrong permissions. | Each kick, five seconds apart |
+| `other` | Anything else. | Each kick, five seconds apart |
+
+An adapter that finds the host down writes the private `kick` file in the host folder.
+The service watches it once a second. A kick only brings a failed host's next start
+forward, never sooner than five seconds after the previous start and never while a start
+or restart is running; the first four reasons above cannot pass by retrying, so they get
+one kicked start between two backoff starts. A kick to a running host never stops it: it
+probes the host, which restarts only when the probe fails and the host is idle.
+
+The probe (`execution_host_unhealthy`) reads the host's receipt, its control socket and one
+`execution/status` answer, and on a Mac that shares native chats also the app's engine:
+
+| Reason | Meaning |
+| --- | --- |
+| `receipt_mismatch` | `owner.json` no longer says this service runs the host at its control socket. |
+| `socket_mismatch` | The control link, or the SDK socket it names, is gone or replaced, for example by the periodic `/tmp` cleanup; no adapter can reach the host. |
+| `status_timeout` | `execution/status` did not answer within 5 s. |
+| `status_failed` | The socket refused the connection or answered for another process. |
+| `sdk_changed` | The app's engine was replaced under a host that shares native chats, as an app update does. The file is hashed once per host start and again only when its size, times or inode change. |
+
+The service also runs the watchdog heartbeat ([health](health.md#schedule)) in-process
+for the configuration its plan names; stopping the service stops it and a smoke run
+still in progress.
 
 ## Native relay records
 

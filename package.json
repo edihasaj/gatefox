@@ -38,6 +38,10 @@
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "devDependencies": {
     "@types/node": "^22.10.7",
     "@types/ws": "8.18.2",

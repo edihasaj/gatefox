@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, lstat, chmod, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stageLoginConsolidation, activatePendingLoginConsolidation, readPendingLoginConsolidation, pendingLoginConsolidationPath, type LoginConsolidationDependencies } from "../mac-login-consolidate.js";
+import { stageLoginConsolidation, activatePendingLoginConsolidation, activateLoginConsolidation, readPendingLoginConsolidation, pendingLoginConsolidationPath, type LoginConsolidationDependencies } from "../mac-login-consolidate.js";
 import { serviceLabel, servicePlanPath, readServicePlan, type ServicePlan, type ServiceComponent } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 async function fixture() {
@@ -216,4 +219,59 @@ test("unsafe source ownership, symlinks, ambiguous native arguments, disabled jo
     assert.equal(await readPendingLoginConsolidation(f.state), undefined); assert.equal(await readServicePlan(f.state), undefined);
     assert.equal(await readFile(join(f.directory, serviceLabel + ".plist"), "utf8"), f.originals.get(join(f.directory, serviceLabel + ".plist")));
   }
+});
+
+/** A staging process that is gone: a pid that exited, stamped with a start no live process can have. */
+async function deadStager(): Promise<{ pid: number; startedAtMs: number }> {
+  const child = spawn("/usr/bin/true"); await once(child, "exit");
+  return { pid: child.pid!, startedAtMs: 1 };
+}
+async function interrupted(f: Awaited<ReturnType<typeof fixture>>, stager: unknown): Promise<void> {
+  await stageLoginConsolidation(f.config, f.deps);
+  const pending = await readPendingLoginConsolidation(f.state); assert.ok(pending);
+  // What a crash between publishing the future primary and marking the staging ready leaves behind.
+  await writePrivateJson(pendingLoginConsolidationPath(f.state), { ...pending, phase: "preparing", stager });
+}
+
+test("staging records the process that stages, so a marker it leaves can be told apart from one in progress", async () => {
+  const f = await fixture(); await stageLoginConsolidation(f.config, f.deps);
+  assert.equal((await readPendingLoginConsolidation(f.state))?.stager?.pid, process.pid);
+  await writePrivateJson(pendingLoginConsolidationPath(f.state), { ...await readPendingLoginConsolidation(f.state), stager: { pid: "1" } });
+  await assert.rejects(readPendingLoginConsolidation(f.state), /Invalid pending/);
+});
+
+test("a staging interrupted by a process that is gone is rolled back at the daemon's start instead of failing every restart", async () => {
+  for (const stager of [await deadStager(), undefined]) {
+    const f = await fixture(); configureTelemetry(f.state, "test");
+    await interrupted(f, stager);
+    const result = await activateLoginConsolidation(f.config, f.deps);
+    assert.deepEqual(result, { plan: undefined, restored: true });
+    for (const [path, original] of f.originals) assert.equal(await readFile(path, "utf8"), original, "every original comes back byte for byte");
+    assert.equal(await readPendingLoginConsolidation(f.state), undefined); assert.equal(await readServicePlan(f.state), undefined);
+    const pending = (await readdir(join(f.state, "service-backups"))).map(name => join(f.state, "service-backups", name));
+    assert.equal((await Promise.all(pending.map(path => readdir(path)))).flat().filter(name => /^login-recovered\.[0-9a-f]+\.json$/.test(name)).length, 1, "the marker is kept in the backup");
+    await flushTelemetry();
+    assert.deepEqual((await readTelemetry(f.state, Date.now() - 60_000)).filter(event => event.event === "login_consolidation_restored").map(event => event.jobs), [4]);
+    // The next launchd restart finds nothing pending and nothing to fail on.
+    assert.deepEqual(await activateLoginConsolidation(f.config, f.deps), { plan: undefined, restored: false });
+  }
+});
+
+test("a staging whose process is still alive keeps its marker and changes nothing", async () => {
+  const f = await fixture();
+  const live = spawn(process.execPath, ["-e", "const parent = process.ppid; setInterval(() => { if (process.ppid !== parent) process.exit(0); }, 250)"], { stdio: "ignore" });
+  try {
+    await once(live, "spawn"); await interrupted(f, { pid: live.pid });
+    const primary = join(f.directory, serviceLabel + ".plist"); const staged = await readFile(primary);
+    await assert.rejects(activateLoginConsolidation(f.config, f.deps), /did not finish staging/);
+    assert.deepEqual(await readFile(primary), staged); assert.equal((await readPendingLoginConsolidation(f.state))?.phase, "preparing");
+  } finally { live.kill("SIGKILL"); }
+});
+
+test("a rollback that would overwrite a changed original refuses and keeps the marker", async () => {
+  const f = await fixture(); await interrupted(f, await deadStager());
+  const backup = (await readPendingLoginConsolidation(f.state))!.backup;
+  await writeFile(join(backup, serviceLabel + ".native.plist"), "tampered", { mode: 0o600 });
+  await assert.rejects(activateLoginConsolidation(f.config, f.deps), /backup changed/);
+  assert.equal((await readPendingLoginConsolidation(f.state))?.phase, "preparing");
 });

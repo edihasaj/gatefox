@@ -103,16 +103,18 @@ executors are separate: they run headless on the gateway's own SDK, so
 A shared native execution host is asked the same question once, when it starts: only a
 registered relay whose slot the service is really running (not holding paused) owns the
 machine's remote control. A relay that becomes live later takes effect at the next host
-start, which an idle restart gives.
+start, which an idle restart gives. A relay that is set aside after the host took the
+registration for it gets the reverse: the service restarts only the host, once it is
+idle, so the app keeps its own remote control.
 
 The unified service keeps the same rule for its `native` component. Before it
 spawns the relay it reads `<state>/native-registration.json`, and a slot whose
 relay was never registered, or was uninstalled, is left `paused` with reason
 `not_registered` and is never started. A relay with three non-zero exits in a row,
 each within 60 s of its start, is left `paused` with reason `failing`; a relay killed
-by a signal, one whose binary is missing, and one whose log cannot be opened count the
-same way, so a relay that cannot start at all is set aside rather than retried once a
-minute forever.
+by a signal and one whose binary is missing count as such exits, and one whose log
+cannot be opened is set aside at once, so a relay that cannot start at all is set aside
+rather than retried once a minute forever.
 A paused slot writes no log lines and reports no exits, and `gateway service
 status` shows `paused` with its reason instead of a process id; because no
 relay process is running, `gateway versions` does not list one either. Every five
@@ -124,10 +126,12 @@ these hold:
 | The registration says the relay is registered | `<state>/native-registration.json` |
 | Something a restart would use has changed | `dev:inode:size:mtime` of the app's `codex` executable, the relay binary and that registration file; a relay paused for `not_registered` only needs the registration to exist |
 | No ChatGPT app is open | a `ps -axo comm=` line for `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`, the same check native installation makes, so a newly connected relay never competes with an app's own remote control |
-| The same relay has been set aside for half an hour | the time it was paused, so a relay that failed once during a busy start-up is started again on its own, and a relay that fails again after a resume is set aside at once instead of being given a fresh three-strike budget. Two such starts an hour is all a broken relay ever costs |
+| The same relay has been set aside for half an hour | the time it was paused, so a relay that failed once during a busy start-up is started again on its own, and a relay that fails again within a minute of a resume is set aside at once instead of being given a fresh three-strike budget. Two such starts an hour is all a broken relay ever costs. A resumed relay that runs past its first minute gets three strikes again |
 
-A re-check whose own question cannot be answered is treated as a failing relay: the
-slot stays paused with one `component_paused` and the rest of the service is untouched.
+A re-check whose questions cannot all be answered leaves the rest of the service
+untouched. A process list that does not come counts as an open app, so the slot stays
+paused with no new event; only a probe that throws sets it paused again as `failing`,
+with one `component_paused`.
 
 Consolidation and the two shared-service migrations treat a paused relay as ready: it
 is a `components_not_running` gap only for components that are neither running nor a

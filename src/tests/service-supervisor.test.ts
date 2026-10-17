@@ -9,6 +9,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ServiceSupervisor } from "../service-supervisor.js";
 import { readServicePlan, validateServicePlan, serviceStatusPath, type ServiceComponent } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
+import { fixtureComponent, killFixtures, killFixturesAfterTests } from "./supervisor-fixture.js";
+
+// Every child these tests start is SIGKILLed when the file ends, including one that ignores SIGTERM in a test that failed.
+killFixturesAfterTests();
 
 // Waits up to a minute: a state that is never reached fails the test, and a loaded machine (children are processes) fails nothing.
 async function until(predicate: () => Promise<boolean>): Promise<void> {
@@ -16,7 +20,7 @@ async function until(predicate: () => Promise<boolean>): Promise<void> {
   assert.fail("Service did not reach the expected state");
 }
 function component(directory: string, id: string, kind: ServiceComponent["kind"], source: string): ServiceComponent {
-  return { id, kind, command: process.execPath, args: ["-e", source], log: join(directory, id + ".log") };
+  return fixtureComponent(directory, id, kind, source);
 }
 function live(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 // The relay is optional, so a native component only starts where a registration says it belongs.
@@ -183,7 +187,7 @@ test("inference gets its drain on top of the grace while a tunnel is still kille
     assert.ok(ended.tunnel >= 2400 && ended.tunnel < 3200, `a tunnel that ignores SIGTERM is killed at 2.5 s (${ended.tunnel} ms)`);
     assert.ok(ended.inference >= 2900, `inference was not killed before drain + 2.5 s (${ended.inference} ms)`);
     assert.match(await readFile(join(directory, "inference.log"), "utf8"), /DRAINED/, "inference exited on its own");
-  } finally { delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; await supervisor.stop(); }
+  } finally { delete process.env.GATEWAY_SHUTDOWN_DRAIN_MS; await supervisor.stop(); await killFixtures(directory); }
 });
 
 test("the shared execution host closes only after inference has drained", { skip: process.platform === "win32", timeout: 20000 }, async () => {
@@ -217,10 +221,12 @@ test("a stopped supervisor exits at once instead of waiting out the inference gr
     await supervisor.start(); await new Promise(resolve => setTimeout(resolve, 300)); await supervisor.stop(); console.log("STOPPED");`;
   const { GATEWAY_SHUTDOWN_DRAIN_MS: _drain, ...env } = process.env;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { env, stdio: ["ignore", "pipe", "inherit"] });
-  let stoppedAt = 0; child.stdout!.on("data", chunk => { if (String(chunk).includes("STOPPED")) stoppedAt = Date.now(); });
-  const [code] = await once(child, "exit");
-  assert.equal(code, 0); assert.ok(stoppedAt, "the supervisor stopped");
-  assert.ok(Date.now() - stoppedAt < 1500, `no grace timer keeps the stopped service alive (${Date.now() - stoppedAt} ms)`);
+  try {
+    let stoppedAt = 0; child.stdout!.on("data", chunk => { if (String(chunk).includes("STOPPED")) stoppedAt = Date.now(); });
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0); assert.ok(stoppedAt, "the supervisor stopped");
+    assert.ok(Date.now() - stoppedAt < 1500, `no grace timer keeps the stopped service alive (${Date.now() - stoppedAt} ms)`);
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await killFixtures(directory); }
 });
 
 test("a wake during a slot's start never spawns a second process for it", async () => {

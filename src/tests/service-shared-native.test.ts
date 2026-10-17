@@ -130,18 +130,20 @@ test("a host that starts again while its relay is set aside leaves remote contro
   const f = await fixture();
   try {
     // The relay is registered here but exits at once, so the service sets it aside; the execution
-    // host starts again after that and must not claim a relay it is not running. A shell exit is
-    // used so the three strikes are spent long before the host's next start.
+    // host starts again after that and must not claim a relay it is not running. Whether the retry
+    // of the failed start comes before the relay's three strikes or after them, the host that runs
+    // once the relay is set aside starts without it: a retry that came first is restarted (idle).
     const dying = { ...f.plan.components[0], command: "/bin/sh", args: ["-c", "exit 1", "--", "--daemon", "--codex", f.codex, "--native-home", f.nativeHome, "--relay-home", f.relayHome] };
     const owns: boolean[] = []; let attempt = 0;
     const supervisor = new ServiceSupervisor({ ...f.plan, sharedNativeExecutor: true, components: [dying] }, f.state, 20, options => {
       owns.push(options.nativeRelayOwnsRegistration === true);
       return ++attempt === 1 ? Promise.reject(new Error("the host could not start")) : idleHost();
-    });
+    }, undefined, undefined, undefined, { kickGapMs: 0, hostProbeMs: 3_600_000, watchKick: () => () => {}, healthSchedule: () => () => {} });
     try {
       await supervisor.start();
-      await until(async () => owns.length === 2, "the failed host start again");
-      assert.deepEqual(owns, [true, false], "the relay was live for the first start and set aside for the second");
+      await until(async () => owns.at(-1) === false, "a host start without the relay");
+      assert.equal(owns[0], true, "the relay was live for the first start");
+      assert.ok(owns.length <= 3, `one retry and at most one idle restart (${owns.length} starts)`);
     } finally { await supervisor.stop(); }
   } finally { await f.cleanup(); }
 });

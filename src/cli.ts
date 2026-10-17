@@ -27,8 +27,8 @@ import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
 import { macNative } from "./mac-native.js";
 import { consolidateService } from "./mac-consolidate.js";
-import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./mac-login-consolidate.js";
-import { runServiceSupervisor } from "./service-supervisor.js";
+import { stageLoginConsolidation } from "./mac-login-consolidate.js";
+import { runServiceDaemon } from "./service-daemon.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
 import { disableSharing } from "./mac-shared-disable.js";
@@ -131,9 +131,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }
   if (command === "executor-host") { await runExecutionHostCommand(path, values.codex, values["native-home"]); return; }
   if (command === "daemon") {
-    const config = await loadConfig(path); const plan = await activatePendingLoginConsolidation(path);
-    if (!plan || plan.config !== resolve(path)) throw new Error("Unified service plan is missing or uses another configuration");
-    await runServiceSupervisor(plan, config.stateDirectory); return;
+    await runServiceDaemon(path); return;
   }
   if (command === "native") { process.stdout.write(JSON.stringify(await macNative(id, path, { codex: values.codex, nativeHome: values["native-home"] }), null, 2) + "\n"); return; }
   if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }
