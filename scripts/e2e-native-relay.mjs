@@ -2,8 +2,10 @@
 // ChatGPT backend and the phone: it hands out the server token, accepts the relay's websocket, and sends remote-control
 // envelopes as the mobile app would. Each stream reaches the gateway's app-server router (`gateway codex-shim`) in the
 // relay's session child, which runs the real engine for native chats and gateway executors for gateway chats; both
-// infer from the same mock. Every home is a fresh folder under --root with fake ChatGPT tokens, and on macOS the run
-// re-executes itself in a sandbox that refuses every connection off this machine. Nothing is registered or activated.
+// infer from the same mock. The state is a Mac like Studio or macbook-server (a unified plan without native sharing and a
+// registered relay), and the Mac's own app adapter then runs beside the relay on the same native home. Every home is a fresh
+// folder under --root with fake ChatGPT tokens, and on macOS the run re-executes itself in a sandbox that refuses every
+// connection off this machine. Nothing real is registered or activated.
 //
 //   node scripts/e2e-native-relay.mjs --root /tmp/gwrl-1 [--relay PATH] [--codex PATH] [--gateway dist/cli.js]
 import assert from 'node:assert/strict';
@@ -18,6 +20,8 @@ import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocketServer } from 'ws';
+import { readdirSync, lstatSync, realpathSync, unlinkSync } from 'node:fs';
+import { isStale, ownSocket, sdkSocketName } from './stale-sockets.mjs';
 
 const app = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex';
 const { values: v } = parseArgs({ options: { root: { type: 'string' }, relay: { type: 'string', default: '.state/native-relay-build/artifact/gateway-native-relay' },
@@ -36,7 +40,13 @@ for (const native of [join(homedir(), '.codex'), join(homedir(), '.local/state')
 }
 const engineVersion = execFileSync(codex, ['--version'], { encoding: 'utf8' }).trim();
 await mkdir(root, { mode: 0o700 }); // Refuses a reused root.
-const nativeHome = join(root, 'native'), relayHome = join(root, 'r'), state = join(root, 'state'), fakeHome = join(root, 'home'), work = join(root, 'work'), bin = join(root, 'bin');
+// The real engines put their sockets in the SDK's fixed folder and remove them when they exit; the run removes any of its own
+// that outlive their engine, and only those: new since it started, this user's, named like an SDK socket and not listening.
+const daemonFolder = join(realpathSync('/tmp'), `codex-daemon-${process.getuid()}`);
+const daemonBefore = new Set((() => { try { return readdirSync(daemonFolder); } catch { return []; } })());
+// The relay home lies under the fake HOME's relay root, where adapters look for a registered relay.
+const nativeHome = join(root, 'native'), state = join(root, 'state'), fakeHome = join(root, 'h'), work = join(root, 'work'), bin = join(root, 'bin');
+const relayHome = join(fakeHome, '.local/state/gw-native/r');
 for (const dir of [nativeHome, state, fakeHome, work, bin]) await mkdir(dir, { mode: 0o700 });
 assert.ok(Buffer.byteLength(join(relayHome, 'app-server-control/app-server-control.sock')) < 100, 'Use a shorter --root: the relay socket path must fit in 104 bytes');
 
@@ -90,6 +100,11 @@ const serverConfig = join(root, 'server.json'), clientConfig = join(root, 'clien
 await writeFile(serverConfig, JSON.stringify({ version: 1, port: servePort, stateDirectory: state, timeoutMs: 20000, providers: [{ id: 'fixture', type: 'responses-api',
   baseUrl: `http://127.0.0.1:${port}`, apiKeyEnv: 'RELAY_FIXTURE_KEY', models: { 'fixture/gateway': 'mock-gateway' }, modelMetadata: { 'fixture/gateway': { contextWindow: 32768, reasoningEfforts: ['low'] } } }] }), { mode: 0o600 });
 await writeFile(clientConfig, JSON.stringify({ version: 1, port: servePort, stateDirectory: state, clientOnly: true, providers: [] }), { mode: 0o600 });
+// A Mac like Studio or macbook-server: a unified plan whose host shares no native engine, and a registered relay.
+const relayArgs = ['--native-home', nativeHome, '--relay-home', relayHome, '--gateway', join(bin, 'gateway'), '--gateway-config', clientConfig, '--codex', codex];
+await writeFile(join(state, 'service-plan.json'), JSON.stringify({ version: 1, config: clientConfig, sharedExecutors: false, sharedNativeExecutor: false,
+  components: [{ id: 'native', kind: 'native', command: relayBinary, args: [...relayArgs, '--daemon'], log: join(root, 'native.log') }] }), { mode: 0o600 });
+await writeFile(join(state, 'native-registration.json'), JSON.stringify({ registered: true, home: relayHome, nativeHome, codex }), { mode: 0o600 });
 // A sandboxed process may not run the setuid /bin/ps, so `ps` answers as if a start time were unreadable, which every
 // gateway caller already handles; nothing here depends on process start times.
 if (process.env.GATEWAY_E2E_SANDBOXED === '1') { await writeFile(join(bin, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o700 }); env.PATH = `${bin}:${env.PATH}`; }
@@ -124,11 +139,34 @@ let phase = 'setup', relay, serving;
 
 /** The relay with the given app CLI: `--check` mode resolves everything up to the websocket and prints readiness. */
 async function relayCheck(cli) {
-  const run = spawnSync(relayBinary, ['--native-home', nativeHome, '--relay-home', relayHome, '--gateway', gateway, '--gateway-config', clientConfig, '--codex', cli, '--check'],
+  const run = spawnSync(relayBinary, [...relayArgs.slice(0, -1), cli, '--check'],
     { env, encoding: 'utf8', timeout: 60000 });
   return { code: run.status, ready: run.status === 0 ? JSON.parse(run.stdout.trim().split('\n').at(-1)) : undefined };
 }
 const fakeCli = async version => { const path = join(bin, 'codex-' + version.replace(/\W/g, '_')); await writeFile(path, `#!/bin/sh\necho ${JSON.stringify(version)}\n`, { mode: 0o700 }); return path; };
+
+/** A desktop-style adapter over stdio: one JSON-RPC message per line. */
+function stdioAdapter(child) {
+  let id = 0; const pending = new Map(), events = [];
+  createInterface({ input: child.stdout }).on('line', line => {
+    const message = JSON.parse(line);
+    if (message.id !== undefined && message.method === undefined) {
+      const entry = pending.get(message.id); if (!entry) return; pending.delete(message.id); clearTimeout(entry.timer);
+      message.error ? entry.reject(Object.assign(Error(`${entry.method} rejected: ${message.error.message}`), { code: message.error.code })) : entry.resolve(message.result);
+    } else if (message.method !== undefined && message.id !== undefined) child.stdin.write(JSON.stringify({ id: message.id, error: { code: -32601, message: 'No handler in this fixture' } }) + '\n');
+    else events.push(message);
+  });
+  const rpc = (method, params = {}) => new Promise((done, fail) => {
+    const key = ++id, timer = setTimeout(() => { pending.delete(key); fail(Error(method + ' timed out')); }, 90000);
+    pending.set(key, { resolve: done, reject: fail, timer, method }); child.stdin.write(JSON.stringify({ id: key, method, params }) + '\n');
+  });
+  const turn = async (threadId, kind) => {
+    const offset = events.length, started = await rpc('turn/start', { threadId, input: [{ type: 'text', text: `Reply with the ${kind} relay marker.` }] });
+    const done = await until(() => events.slice(offset).find(event => event.method === 'turn/completed' && event.params.turn.id === started.turn.id), `${kind} app turn`, 90000);
+    assert.equal(done.params.turn.status, 'completed', `${kind} app turn status`);
+  };
+  return { rpc, turn, notify: (method, params = {}) => child.stdin.write(JSON.stringify({ method, params }) + '\n'), close: async () => { child.stdin.end(); await stop(child); } };
+}
 
 /** One phone stream over the backend websocket: numbered client envelopes, acknowledged server envelopes. */
 function phoneStream(socket, inbox, clientId, streamId) {
@@ -208,7 +246,7 @@ try {
     });
   });
   // As the service runs it: a daemon with no stdin, whose stdout carries only status notifications.
-  relay = start(relayBinary, ['--native-home', nativeHome, '--relay-home', relayHome, '--gateway', gateway, '--gateway-config', clientConfig, '--codex', codex, '--daemon'],
+  relay = start(relayBinary, [...relayArgs, '--daemon'],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   const relayOut = []; createInterface({ input: relay.stdout }).on('line', line => relayOut.push(JSON.parse(line)));
   const relayLog = []; createInterface({ input: relay.stderr }).on('line', line => relayLog.push(line));
@@ -255,6 +293,26 @@ try {
   await b.turn(gatewayChat.id, 'gateway');
   const last = evidence.inference.at(-1); assert.equal(last.model, 'mock-gateway'); assert.ok(last.history >= 1, 'the continued turn carried the earlier reply');
   check('gateway_chat_continued_on_new_stream', { model: resumed.model, historyMarkers: last.history });
+
+  // The Mac's own app, opened after the relay connected: its adapter leaves remote control to the relay and runs a private
+  // native engine on the same home as the relay's session. Never two writers for one chat: the SDK's per-chat writer lock.
+  phase = 'desktop-beside-relay';
+  const desktop = stdioAdapter(start(process.execPath, [gatewayCli, 'codex-shim', '--config', clientConfig, '--codex', codex, '--', 'app-server', '--listen', 'stdio://'],
+    { env: { ...env, CODEX_HOME: nativeHome }, cwd: work, stdio: ['pipe', 'pipe', 'ignore'] }));
+  await desktop.rpc('initialize', { clientInfo: { name: 'Codex Desktop', version: 'relay-e2e' }, capabilities: { experimentalApi: true } }); desktop.notify('initialized');
+  const desktopStatus = await desktop.rpc('remoteControl/status/read');
+  assert.equal(desktopStatus.status, 'connected'); assert.equal(desktopStatus.environmentId, 'env-relay-e2e', 'the app adapter reads remote control from the relay');
+  const desktopChat = (await desktop.rpc('thread/start', { model: 'native-fixture', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' })).thread;
+  await desktop.turn(desktopChat.id, 'native');
+  const whileHeld = await b.rpc('thread/resume', { threadId: desktopChat.id, cwd: work }).then(() => undefined, error => ({ code: error.code, message: String(error.message) }));
+  assert.ok(whileHeld && /already has an active writer/.test(whileHeld.message), 'the SDK refuses a second writer for a chat the app holds');
+  // Once the app's engine lets the chat go (here: the app quits), the phone continues it.
+  await desktop.close();
+  let lastRefusal;
+  await until(async () => b.rpc('thread/resume', { threadId: desktopChat.id, cwd: work }).then(() => true, error => { lastRefusal = String(error.message).slice(0, 200); return false; }), 'resume after the app released the chat', 60000)
+    .catch(error => { throw Error(`${error.message}: ${lastRefusal}`); });
+  await b.turn(desktopChat.id, 'native');
+  check('app_and_relay_private_engines_share_the_home', { remoteControlFromRelay: true, phoneWhileAppHoldsChat: `refused ${whileHeld.code}: already has an active writer`, phoneContinuedAfterAppReleased: true });
   b.close();
 
   phase = 'relay-stop';
@@ -273,6 +331,13 @@ try {
 finally {
   for (const child of [...owned]) await stop(child);
   mock.closeAllConnections(); await new Promise(done => mock.close(done));
+  const sockets = { newAtEnd: 0, removed: 0, kept: 0 };
+  for (const name of (() => { try { return readdirSync(daemonFolder); } catch { return []; } })()) {
+    if (daemonBefore.has(name)) continue; sockets.newAtEnd++;
+    const path = join(daemonFolder, name); let info; try { info = lstatSync(path); } catch { continue; }
+    if (sdkSocketName(name) && ownSocket(info, process.getuid()) && await isStale(path)) { unlinkSync(path); sockets.removed++; } else sockets.kept++;
+  }
+  result.daemonSockets = sockets;
 }
 await writeFile(join(root, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
 console.log(JSON.stringify({ passed: result.passed, failure: result.failure, result: join(root, 'result.json') }));
