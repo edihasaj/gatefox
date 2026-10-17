@@ -146,7 +146,7 @@ test("refused restart restores the old plan, and a replacement that cannot be re
     let restarts = 0;
     await assert.rejects(enableSharedNative(f.configPath, true, { ...f.dependencies,
       restart: async () => { restarts++; f.setPid(102); throw new Error(restarts === 1 ? "replacement startup failed" : "loaded native work refuses idle shutdown"); },
-    }), /could not roll back safely/);
+    }), /keeps running the plan with shared-native.*`gateway service shared-native --disable --apply` when idle/);
     // The replacement still runs the native plan, so the plan file names it; no receipt was archived and nothing was started.
     assert.equal(JSON.parse(await readFile(servicePlanPath(f.state), "utf8")).sharedNativeExecutor, true);
     assert.equal(restarts, 3, "the migration restart and two rollback attempts");

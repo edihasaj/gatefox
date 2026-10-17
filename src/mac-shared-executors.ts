@@ -15,7 +15,7 @@ import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { sharedServiceRegistration } from "./mac-shared-native.js";
-import { defaultPlanSwapServices, rollBackEnable } from "./mac-shared-plan-swap.js";
+import { defaultPlanSwapServices, enableRollbackMessage, rollBackEnable } from "./mac-shared-plan-swap.js";
 
 export async function executionHostReady(plan: ServicePlan, pid: number): Promise<boolean> {
   if (!plan.sharedExecutors && !plan.sharedNativeExecutor) return true;
@@ -95,10 +95,9 @@ export async function enableSharedExecutors(configPath: string, apply = false): 
       if (JSON.stringify(latest) !== JSON.stringify(next)) throw new Error(`Shared migration failed and the service plan changed; review the saved plan in ${backup}`);
       // The plan swap: the previous plan goes back first and the replacement restarts onto it through its own idle guard, so launchd's
       // KeepAlive cannot relaunch the plan being undone. Stopping the job and waiting for it to stay down loses that race.
-      const outcome = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: defaultPlanSwapServices,
+      const result = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: defaultPlanSwapServices,
         beforePid: typeof before.pid === "number" ? before.pid : undefined, archive: () => archiveStoppedExecutionReceipt({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup) });
-      if (outcome === "preserved") throw new Error(`Shared migration could not roll back safely; its ownership plan and active writers were preserved. Review ${backup}`);
-      if (outcome === "needs_recovery") throw new Error(`Shared migration failed; the previous plan is restored in ${backup}, but its service needs recovery`);
+      const message = enableRollbackMessage("shared-executors", error, backup, path, result); if (message) throw new Error(message);
       throw error;
     }
   });

@@ -18,7 +18,7 @@ import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { inspectNativeWriters, type LegacyNativeWriter } from "./service-native-writers.js";
 import { executionHostReady } from "./mac-shared-executors.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
-import { planSwapTiming, rollBackEnable, serviceHealthy, type PlanSwapTiming } from "./mac-shared-plan-swap.js";
+import { enableRollbackMessage, planSwapTiming, rollBackEnable, serviceHealthy, type PlanSwapTiming } from "./mac-shared-plan-swap.js";
 
 const exec = promisify(execFile);
 type Status = Record<string, unknown>;
@@ -143,10 +143,9 @@ export async function enableSharedNative(configPath: string, apply = false, over
       if (JSON.stringify(await readServicePlan(config.stateDirectory)) !== JSON.stringify(next)) throw new Error(`Native migration failed and its plan changed; review ${backup}`);
       // The plan swap: the previous plan goes back first and the replacement restarts onto it through its own idle guard, so launchd's
       // KeepAlive cannot relaunch the plan being undone. Stopping the job and waiting for it to stay down loses that race.
-      const outcome = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: deps, timing: { ...planSwapTiming, ...deps.rollbackTiming },
+      const result = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: deps, timing: { ...planSwapTiming, ...deps.rollbackTiming },
         beforePid: typeof before.pid === "number" ? before.pid : undefined, archive: () => deps.archive({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup) });
-      if (outcome === "preserved") throw new Error(`Native migration could not roll back safely. Its ownership plan and writers were preserved; review ${backup}`);
-      if (outcome === "needs_recovery") throw new Error(`The previous native plan is restored but its service needs recovery; review ${backup}`);
+      const message = enableRollbackMessage("shared-native", error, backup, path, result); if (message) throw new Error(message);
       throw error;
     }
   });

@@ -7,7 +7,7 @@ import { readOwner, sdkIdentity } from "./execution-host-storage.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js";
 import { sharedServiceRegistration } from "./mac-shared-native.js";
-import { archiveStoppedNativeHomeReceipt, defaultPlanSwapServices, planSharesExecutors, relaunchOntoPlan, writePlanText, type PlanSwapServices, type PlanSwapTiming, type RelaunchOutcome } from "./mac-shared-plan-swap.js";
+import { archiveStoppedNativeHomeReceipt, defaultPlanSwapServices, planNotWrittenBackMessage, planSharesExecutors, relaunchOntoPlan, writePlanText, type PlanSwapServices, type PlanSwapTiming, type RelaunchOutcome, type RunningPlan } from "./mac-shared-plan-swap.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 import { executionHostHome } from "./execution-host.js";
 import { safeErrorMessage } from "./error-message.js";
@@ -22,7 +22,7 @@ export type DisableOutcome = RelaunchOutcome | "not_restored";
  * safeErrorMessage: a JSON parse error quotes a slice of the plan it tripped over, which can
  * hold a credential, so the snippet never reaches the terminal.
  */
-export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, backup: string, outcome: DisableOutcome): string {
+export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, backup: string, outcome: DisableOutcome, lost: { running: RunningPlan; path: string } = { running: "unknown", path: "the plan file" }): string {
   const reason = `Turning off ${mode} failed (${safeErrorMessage(error, "Unknown failure")}).`;
   switch (outcome) {
     case "restarted": return `${reason} The previous plan is restored from ${backup} and the service was restarted.`;
@@ -31,7 +31,7 @@ export function sharingDisableFailureMessage(mode: SharingMode, error: unknown, 
     case "stuck": return `${reason} The plan file is restored from ${backup}; the service still runs the plan without ${mode}; run \`gateway service restart\` when idle.`;
     case "down": return `${reason} The plan file is restored from ${backup}, but the service is down and could not be started; run \`gateway service install\`.`;
     case "unknown": return `${reason} The plan file is restored from ${backup}, but the service could not be checked; run \`gateway service status\`, then \`gateway service restart\` when idle.`;
-    case "not_restored": return `${reason} The previous plan could not be written back, so the plan file still holds the plan without ${mode}, which a running service reads at its next restart. The previous plan is saved in ${backup}.`;
+    case "not_restored": return planNotWrittenBackMessage(reason, backup, lost.path, lost.running, { previous: `the plan with ${mode}`, replacement: `the plan without ${mode}` });
   }
 }
 
@@ -95,12 +95,15 @@ export async function disableSharing(configPath: string, mode: SharingMode, appl
     } catch (error) {
       // Never leave inference and tunnels down: restore the previous plan and run it. The plan goes back first, through a rename,
       // because a relaunch may read the file at any moment; then the service restarts onto it.
-      let restored = false; let outcome: DisableOutcome = "not_restored";
+      let restored = false; let outcome: DisableOutcome = "not_restored"; let running: RunningPlan = "unknown";
       try { await writePlanText(path, original); restored = true; } catch { /* Reported below. */ }
       // A relaunch that was started from the next plan is still starting and refuses the idle restart; relaunchOntoPlan waits for it.
       if (restored) outcome = await relaunchOntoPlan(deps, configPath, config.stateDirectory, before.pid as number | undefined, deps.timing).catch((): DisableOutcome => "unknown");
+      // The plan file still holds the plan without the mode. The process that ran the plan before the change (before.pid) still runs the
+      // previous plan; any other process was relaunched from the plan without the mode.
+      else running = await deps.status(config.stateDirectory).then((now): RunningPlan => typeof now.pid !== "number" ? "down" : now.pid === before.pid ? "previous" : "replacement", (): RunningPlan => "unknown");
       telemetry("sharing_disable_failed", { mode, outcome }); await flushTelemetry();
-      throw new Error(sharingDisableFailureMessage(mode, error, backup, outcome));
+      throw new Error(sharingDisableFailureMessage(mode, error, backup, outcome, { running, path }));
     }
     telemetry("sharing_disabled", { mode }); await flushTelemetry();
     return { ...preview, applied: true, backup, ...await deps.status(config.stateDirectory) };

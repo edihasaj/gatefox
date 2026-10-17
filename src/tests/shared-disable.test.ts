@@ -42,6 +42,11 @@ test("the failure message collapses a JSON parse error but keeps an ordinary rea
   assert.match(sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "unknown"), /could not be checked; run `gateway service status`/);
   const lost = sharingDisableFailureMessage("shared-native", "not an error", "/tmp/backup", "not_restored");
   assert.match(lost, /failed \(Unknown failure\)\./); assert.match(lost, /could not be written back/); assert.doesNotMatch(lost, /is restored|was restored/);
+  const where = (running: "previous" | "replacement" | "down" | "unknown") => sharingDisableFailureMessage("shared-native", reason, "/tmp/backup", "not_restored", { running, path: "/state/service-plan.json" });
+  assert.match(where("previous"), /still holds the plan without shared-native \(\/state\/service-plan\.json\)\..*still runs the plan with shared-native; .*copy \/tmp\/backup\/service-plan\.json over \/state\/service-plan\.json\. No restart is needed\.$/);
+  assert.match(where("replacement"), /runs the plan without shared-native; to go back, copy \/tmp\/backup\/service-plan\.json over \/state\/service-plan\.json, then run `gateway service restart` when idle\.$/);
+  assert.match(where("down"), /The service is down; copy \/tmp\/backup\/service-plan\.json over \/state\/service-plan\.json, then run `gateway service install`\.$/);
+  assert.match(where("unknown"), /could not be checked; run `gateway service status`, copy .* then run `gateway service restart` when idle\.$/);
 });
 
 const planOnDisk = async (path: string) => JSON.parse(await readFile(path, "utf8")) as ServicePlan;
@@ -177,8 +182,23 @@ test("a rollback that cannot write the previous plan back says so instead of cla
     await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
       assert.match(error.message, /^Turning off shared-executors failed \(archive failed\)\. The previous plan could not be written back, so the plan file still holds the plan without shared-executors/);
       assert.doesNotMatch(error.message, /is restored|was restored|restarted/);
+      // The restart relaunched the service on the plan without sharing, so the message says that plan runs and how to go back.
+      assert.match(error.message, /The service runs the plan without shared-executors; to go back, copy .*\/service-plan\.json over .*service-plan\.json, then run `gateway service restart` when idle\.$/);
       return true;
     });
     assert.ok((await readdir(f.directory)).every(name => !name.endsWith(".tmp")), "no temporary plan is left behind");
+  } finally { await f.cleanup(); }
+});
+
+test("a rollback that cannot write the plan back while the original process still runs says the previous plan runs and needs no restart", { skip: process.platform !== "darwin" }, async () => {
+  const f = await standInFixture({ sharedExecutors: true });
+  try {
+    f.deps.restart = async () => { await rm(f.planPath); await mkdir(f.planPath); await writeFile(join(f.planPath, "keep"), "x"); throw new Error("idle restart refused"); };
+    await assert.rejects(disableSharing(f.config, "shared-executors", true, f.deps), (error: Error) => {
+      assert.match(error.message, /^Turning off shared-executors failed \(idle restart refused\)\. The previous plan could not be written back/);
+      assert.match(error.message, /The service still runs the plan with shared-executors; to make the file match it, copy .*\/service-plan\.json over .*service-plan\.json\. No restart is needed\.$/);
+      return true;
+    });
+    assert.equal(f.launchd.pid, 1000, "the service never left its plan");
   } finally { await f.cleanup(); }
 });

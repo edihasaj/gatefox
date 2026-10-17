@@ -29,7 +29,7 @@ test("a failed shared-executors enable is undone by the plan swap and the stoppe
   try {
     const { original, archived, rollback } = await failedEnable(f, { ...f.plan, sharedExecutors: true });
     assert.deepEqual(f.launchd.relaunched, [{ pid: 1001, sharedExecutors: true, sharedNativeExecutor: false }]);
-    assert.equal(await rollback(f.plan), "restored");
+    assert.equal((await rollback(f.plan)).outcome, "restored");
     assert.equal(await readFile(f.planPath, "utf8"), original);
     // The replacement host was stopped by the restart, the relaunch ran the previous plan without a host, and then the receipt was archived.
     assert.deepEqual(f.launchd.relaunched.at(-1), { pid: 1002, sharedExecutors: false, sharedNativeExecutor: false });
@@ -42,7 +42,7 @@ test("a rollback to a plan that still shares native leaves the receipt to the re
   const f = await standInFixture({ sharedNativeExecutor: true });
   try {
     const { original, archived, rollback } = await failedEnable(f, { ...f.plan, sharedExecutors: true });
-    assert.equal(await rollback(f.plan), "restored");
+    assert.equal((await rollback(f.plan)).outcome, "restored");
     assert.equal(await readFile(f.planPath, "utf8"), original); assert.deepEqual(archived, []); assert.deepEqual(f.host.errors, []);
     const owner = await readOwner(join(executionHostHome(f.config, f.nativeHome), "owner.json"));
     assert.equal(owner?.state, "running"); assert.deepEqual(owner?.capabilities, ["native"]);
@@ -56,7 +56,7 @@ test("a refused migration restart leaves the original process, which needs no re
     const original = await readFile(f.planPath, "utf8"); await writePrivateJson(f.planPath, next);
     const outcome = await rollBackEnable({ configPath: f.config, state: f.directory, path: f.planPath, original, previous: f.plan, next, beforePid: 1000,
       archive: async () => assert.fail("nothing to archive"), services: f.launchd.services(), timing: fastTiming });
-    assert.equal(outcome, "restored"); assert.equal(await readFile(f.planPath, "utf8"), original); assert.equal(f.launchd.restartCalls, 0);
+    assert.equal(outcome.outcome, "restored"); assert.equal(await readFile(f.planPath, "utf8"), original); assert.equal(f.launchd.restartCalls, 0);
   } finally { await f.cleanup(); }
 });
 
@@ -65,7 +65,7 @@ test("a replacement whose restart is refused keeps running and the plan file kee
   try {
     const next = { ...f.plan, sharedExecutors: true }; const { archived, rollback } = await failedEnable(f, next);
     f.launchd.refuseIdle = true;
-    assert.equal(await rollback(f.plan), "preserved");
+    assert.equal((await rollback(f.plan)).outcome, "preserved");
     assert.deepEqual(await planOnDisk(f.planPath), next); assert.deepEqual(archived, []);
     assert.equal(f.launchd.pid, 1001); assert.equal(f.launchd.restartCalls, 1 + fastTiming.restartAttempts);
     assert.equal((await readOwner(join(executionHostHome(f.config, f.nativeHome), "owner.json")))?.state, "running", "its receipt is untouched");
@@ -73,14 +73,14 @@ test("a replacement whose restart is refused keeps running and the plan file kee
   } finally { await f.cleanup(); }
 });
 
-test("an archive that fails after the service runs the previous plan needs recovery, with the plan restored", { skip }, async () => {
+test("an archive that fails after the service runs the previous plan is reported as such, with the plan restored", { skip }, async () => {
   const f = await standInFixture({});
   try {
     const next = { ...f.plan, sharedExecutors: true }; const original = await readFile(f.planPath, "utf8");
     await writePrivateJson(f.planPath, next); await f.launchd.restart();
     const outcome = await rollBackEnable({ configPath: f.config, state: f.directory, path: f.planPath, original, previous: f.plan, next, beforePid: 1000,
       archive: async () => { throw new Error("receipt could not be archived"); }, services: f.launchd.services(), timing: fastTiming });
-    assert.equal(outcome, "needs_recovery"); assert.equal(await readFile(f.planPath, "utf8"), original);
+    assert.equal(outcome.outcome, "archive_failed"); assert.equal(await readFile(f.planPath, "utf8"), original);
   } finally { await f.cleanup(); }
 });
 

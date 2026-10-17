@@ -9,6 +9,7 @@ import { nativeHomeOwnerPath, readNativeHomeOwner } from "./native-execution-hos
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { macService } from "./mac-service.js";
+import { safeErrorMessage } from "./error-message.js";
 
 /**
  * The plan swap. launchd's KeepAlive relaunches the service within milliseconds (at most launchd's ThrottleInterval of 10 s
@@ -116,7 +117,8 @@ export const planSharesExecutors = (plan: ServicePlan): boolean => plan.sharedEx
 /**
  * Releases only the native-home receipt of a stopped host, never the host's own owner.json. Used after a relaunch that keeps
  * gateway executors: the new host claimed owner.json already, but it does not claim the native home, so the stopped native
- * receipt would stay behind. Everything archiveStoppedExecutionReceipt proves for it is proven here.
+ * receipt would stay behind. It checks that the receipt names this configuration and native home and that its state and pids
+ * say stopped (no live pid); it does not check socketPath, the Codex executable, the SDK identity or the revision.
  */
 export async function archiveStoppedNativeHomeReceipt(identity: { configPath: string; nativeHome: string }, backup: string): Promise<string | undefined> {
   const receipt = nativeHomeOwnerPath(identity.nativeHome);
@@ -133,38 +135,87 @@ export async function archiveStoppedNativeHomeReceipt(identity: { configPath: st
   });
 }
 
+/** Which plan a service runs while the plan file names another one. */
+export type RunningPlan = "previous" | "replacement" | "down" | "unknown";
+
 export type EnableRollbackOutcome =
   /** The plan file holds the previous plan and the service runs it. */
   "restored"
   /** The replacement could not be restarted: it keeps running, and the plan file holds the plan it runs. */
   | "preserved"
-  /** The previous plan is restored, but its service or receipt needs the user. */
-  | "needs_recovery";
+  /** The service could not be read before anything was undone: the plan file holds the replacement plan, the running plan is unknown. */
+  | "unchecked"
+  /** The plan file holds the previous plan, but the service still runs the replacement. */
+  | "stuck"
+  /** The plan file holds the previous plan, but the service is down and could not be started. */
+  | "down"
+  /** The plan file holds the previous plan, but the service could not be read afterwards. */
+  | "unknown"
+  /** The service runs the previous plan, which the plan file holds; only the stopped host receipt could not be archived. */
+  | "archive_failed"
+  /** The previous plan could not be written back: the plan file still holds the replacement plan. `running` says what runs. */
+  | "not_restored";
+
+export interface EnableRollback { outcome: EnableRollbackOutcome; running?: RunningPlan }
 
 /**
  * Undoes a failed enable by the plan swap. The previous plan is written first and the replacement is restarted through its own
  * idle guard, so launchd's KeepAlive cannot relaunch it on the plan being undone. Once the service runs the previous plan its
  * stopped host receipt is archived, unless that plan shares executors itself: its new host then takes the receipt over.
  * A replacement that cannot be restarted (loaded chats refuse the idle guard) keeps running its own plan, so the plan file is
- * put back to match it: the file never names a plan the service is not running.
+ * put back to match it: the file never names a plan the service is not running, unless the outcome says otherwise.
  */
 export async function rollBackEnable(options: { configPath: string; state: string; path: string; original: string; previous: ServicePlan; next: ServicePlan;
-  beforePid: number | undefined; archive(): Promise<unknown>; services: PlanSwapServices; timing?: PlanSwapTiming }): Promise<EnableRollbackOutcome> {
+  beforePid: number | undefined; archive(): Promise<unknown>; services: PlanSwapServices; timing?: PlanSwapTiming }): Promise<EnableRollback> {
   const { configPath, state, path, original, next, services } = options; const timing = options.timing ?? planSwapTiming;
   let replacement: unknown;
-  try { replacement = (await services.status(state)).pid; } catch { return "preserved"; }
+  try { replacement = (await services.status(state)).pid; } catch { return { outcome: "unchecked" }; }
   // A refused idle restart leaves the original process running the plan being restored; it needs no restart.
-  if (options.beforePid && replacement === options.beforePid) { await writePlanText(path, original); return "restored"; }
-  await writePlanText(path, original);
+  const originalRuns = !!options.beforePid && replacement === options.beforePid;
+  try { await writePlanText(path, original); } catch {
+    return { outcome: "not_restored", running: originalRuns ? "previous" : typeof replacement === "number" ? "replacement" : "down" };
+  }
+  if (originalRuns) return { outcome: "restored" };
   const outcome = await relaunchOntoPlan(services, configPath, state, options.beforePid, timing);
+  if (outcome === "down" || outcome === "unknown") return { outcome };
   if (outcome === "stuck") {
     // The replacement still runs `next`, unless a late relaunch happened after all.
-    const pid = await services.status(state).then(value => value.pid, () => undefined);
-    if (pid !== undefined && pid === replacement) { await writePrivateJson(path, next); return "preserved"; }
-    return "needs_recovery";
+    let pid: unknown;
+    try { pid = (await services.status(state)).pid; } catch { return { outcome: "unknown" }; }
+    if (typeof pid !== "number") return { outcome: "down" };
+    if (pid === replacement) {
+      try { await writePrivateJson(path, next); return { outcome: "preserved" }; } catch { return { outcome: "stuck" }; }
+    }
+    // A late relaunch read the previous plan from the file: the service runs it, so the receipt is archived below.
   }
-  if (outcome === "down" || outcome === "unknown") return "needs_recovery";
-  if (planSharesExecutors(options.previous)) return "restored";
-  try { await options.archive(); } catch { return "needs_recovery"; }
-  return "restored";
+  if (planSharesExecutors(options.previous)) return { outcome: "restored" };
+  try { await options.archive(); } catch { return { outcome: "archive_failed" }; }
+  return { outcome: "restored" };
+}
+
+/** What a rollback that could not write the previous plan back says about the plan that runs and how to fix it. */
+export function planNotWrittenBackMessage(reason: string, backup: string, path: string, running: RunningPlan, names: { previous: string; replacement: string }): string {
+  const saved = `${backup}/service-plan.json`;
+  const head = `${reason} The previous plan could not be written back, so the plan file still holds ${names.replacement} (${path}). The previous plan is saved in ${saved}.`;
+  switch (running) {
+    case "previous": return `${head} The service still runs ${names.previous}; to make the file match it, copy ${saved} over ${path}. No restart is needed.`;
+    case "replacement": return `${head} The service runs ${names.replacement}; to go back, copy ${saved} over ${path}, then run \`gateway service restart\` when idle.`;
+    case "down": return `${head} The service is down; copy ${saved} over ${path}, then run \`gateway service install\`.`;
+    case "unknown": return `${head} The service could not be checked; run \`gateway service status\`, copy ${saved} over ${path}, then run \`gateway service restart\` when idle.`;
+  }
+}
+
+/** The message of a failed enable whose rollback did not end clean, or undefined when it did (the original error then stands). */
+export function enableRollbackMessage(mode: string, error: unknown, backup: string, path: string, result: EnableRollback): string | undefined {
+  const reason = `Enabling ${mode} failed (${safeErrorMessage(error, "Unknown failure")}).`; const withMode = `the plan with ${mode}`; const without = `the plan without ${mode}`;
+  switch (result.outcome) {
+    case "restored": return undefined;
+    case "preserved": return `${reason} The replacement could not be restarted and keeps running ${withMode}; the plan file holds that plan, so the file and the service match, and its active writers were preserved. The previous plan is saved in ${backup}/service-plan.json. To go back, run \`gateway service ${mode} --disable --apply\` when idle.`;
+    case "unchecked": return `${reason} The service could not be checked, so which plan it runs is unknown; the plan file holds ${withMode}. Run \`gateway service status\`, then \`gateway service ${mode} --disable --apply\` when idle to go back to the previous plan saved in ${backup}/service-plan.json.`;
+    case "stuck": return `${reason} The plan file is restored from ${backup}, but the service still runs ${withMode}; run \`gateway service restart\` when idle.`;
+    case "down": return `${reason} The plan file is restored from ${backup}, but the service is down and could not be started; run \`gateway service install\`.`;
+    case "unknown": return `${reason} The plan file is restored from ${backup}, but the service could not be checked; run \`gateway service status\`, then \`gateway service restart\` when idle.`;
+    case "archive_failed": return `${reason} The previous plan is restored from ${backup} and the service runs it, so the plan file and the service match. The stopped host receipt could not be archived and stays in place for the next host to take over.`;
+    case "not_restored": return planNotWrittenBackMessage(reason, backup, path, result.running ?? "unknown", { previous: without, replacement: withMode });
+  }
 }

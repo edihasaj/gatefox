@@ -334,7 +334,9 @@ rename, and the service is brought onto it:
 | The service was down (for example in the throttle gap), so the restore starts it | Plan restored, service started | the service, which was down, was started |
 | The service already relaunched on the new plan | The command waits up to 30 seconds for the relaunched service to be current and answer `/health` (it starts its host before inference), then retries the idle restart up to three times | the service was restarted |
 | Every retry was refused (loaded chats, or the service never became healthy) | Plan file restored; the service still runs the plan without the mode | run `gateway service restart` when idle |
-| The previous plan could not be written back | The plan file still holds the new plan | the previous plan is saved in the backup |
+| The service was down and could not be started | Plan file restored; the service is down | run `gateway service install` |
+| The service could not be read (launchctl failed) | Plan file restored; which plan runs is unknown | run `gateway service status`, then `gateway service restart` when idle |
+| The previous plan could not be written back | The plan file still holds the plan without the mode (the new plan) | the plan that runs, taken from the process id before and after: the original process still runs the previous plan (copy `<backup>/service-plan.json` back; no restart needed), any other process runs the new plan (copy it back, then `gateway service restart` when idle), no process means copy it back, then `gateway service install`, and an unreadable service means `gateway service status` first |
 
 In the fourth case the plan file and the service differ until the restart runs.
 The next restart or crash relaunch reads the restored plan, so it heals itself.
@@ -347,7 +349,15 @@ the replacement restarts onto it through its idle guard, and the stopped host
 receipt is archived once the service runs it (not when the previous plan still
 shares executors itself). A replacement that cannot be restarted keeps running its
 own plan, so there the plan file is put back to name that plan and the command
-reports that rollback was not safe.
+says which mode still runs and gives `gateway service <mode> --disable --apply`
+for when the service is idle. Every other failed rollback ends with a message
+that names the plan that runs and one command: `gateway service restart` when
+the service still runs the new plan, `gateway service install` when it is down,
+`gateway service status` first when it could not be read. When only the stopped
+host receipt could not be archived, the plan file and the service match and the
+receipt stays for the next host to take over. When the previous plan could not
+be written back, the message names the plan that runs and says to copy
+`<backup>/service-plan.json` over the plan file first.
 
 The service never keeps a Mac awake. While the inference host sleeps, other Macs'
 gateway requests fail and Codex retries them. When the supervisor sees a timer tick

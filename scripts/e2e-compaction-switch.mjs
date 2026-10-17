@@ -12,19 +12,22 @@ import { connect } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compaction-selected-turn.mjs';
+import { resolveExpectation, selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compaction-selected-turn.mjs';
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, root: { type: 'string' },
-  package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string', default: 'automatic' },
+  package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string' },
   shared: { type: 'boolean', default: false }, codex: { type: 'string' }, 'keep-fixture': { type: 'boolean', default: false } } });
 for (const key of ['gateway', 'root']) assert.ok(v[key], 'Missing --' + key);
 const gateway = resolve(v.gateway), root = resolve(v.root);
 const packageDirectory = resolve(v.package || join(gateway, '../..'));
-// The version check below needs the pinned SDK. The machine's ChatGPT app moves on to newer SDKs, so it cannot be the default:
-// use the signed gateway SDK the package ships. `--expect baseline` reproduces the failure of the stock SDK and needs that
-// stock pinned Mach-O passed explicitly; the patched gateway SDK recovers the switch, so that run would not fail as it expects.
-assert.ok(['automatic', 'baseline', 'selected-turn'].includes(v.expect));
-assert.ok(v.expect !== 'baseline' || v.codex, '--expect baseline needs --codex with the stock pinned SDK Mach-O: the gateway SDK recovers the switch, so it cannot reproduce the baseline failure');
+// A package that ships gateway-sdk (0.4.3 and later) compacts inside the user turn, so the only expectation it can pass is
+// `selected-turn`, which is also the default for it. `automatic` and `baseline` are for legacy packages without gateway-sdk and are
+// refused for any other. `--codex` does not change the gateway executor's SDK: the adapter runs the package's own gateway SDK.
+// The version check below needs the pinned SDK, so the signed gateway SDK the package ships is the default, not the machine's app.
+if (v.expect !== undefined && !['automatic', 'baseline', 'selected-turn'].includes(v.expect)) { console.error('--expect must be selected-turn, automatic or baseline'); process.exit(2); }
+const resolved = await resolveExpectation(packageDirectory, v.expect);
+if (resolved.error) { console.error(resolved.error); process.exit(2); }
+v.expect = resolved.expect;
 const sdk = resolve(v.codex || join(packageDirectory, 'gateway-sdk/gateway-codex'));
 assert.ok(await access(sdk).then(() => true, () => false), v.codex ? '--codex does not exist: ' + sdk : 'The package has no gateway-sdk/gateway-codex at ' + sdk + '; pass --package with an installed release or --codex with a pinned SDK');
 const transports = v.expect === 'baseline' ? ['stdio'] : v.transports.split(',');
