@@ -2,7 +2,7 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired, ChatGPTRefreshFailed, type OAuthFailureDetail } from "../auth/chatgpt.js";
 import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
-import type { ResponsesInputItem, ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
+import type { ResponsesInputItem, ResponsesNamespaceTool, ResponsesRequest, ResponsesTool, ResponsesToolSearchTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
@@ -96,15 +96,17 @@ export class ResponsesAPI implements Provider {
       const namespaces = new Set(request.tools?.filter(tool => tool.type === "namespace").map(tool => tool.name));
       defaultNamespace = "gateway";
       while (namespaces.has(defaultNamespace)) defaultNamespace += "_";
-      const flat = request.tools?.filter(tool => tool.type !== "namespace") || [];
-      body.tools = [...(request.tools?.filter(tool => tool.type === "namespace") || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
+      // Native tool search is the client's own tool: it goes upstream byte for byte, never inside the gateway namespace.
+      const forwarded = (tool: ResponsesTool) => tool.type === "namespace" || tool.type === "tool_search";
+      const flat = (request.tools?.filter(tool => !forwarded(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
+      body.tools = [...(request.tools?.filter(forwarded) || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
       // Only calls of top-level tools move into the gateway namespace; tools declared
       // in Responses lite `additional_tools` items keep their own namespace.
       const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
       if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace && flatNames.has(String(item.name)) ? { ...item, namespace: defaultNamespace } : item);
       if (typeof body.tool_choice === "object" && "name" in body.tool_choice && !body.tool_choice.namespace) body.tool_choice = { ...body.tool_choice, namespace: defaultNamespace };
     }
-    const definitions = normalizeResponsesTools(declaredResponsesTools(request));
+    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan });
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
@@ -171,7 +173,21 @@ export class ResponsesAPI implements Provider {
         name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
       } } }];
     };
+    // Search items the ChatGPT backend produced (client or server executed) reach the client as sent, once each.
+    const searchItems = new Set<string>();
+    const searchItem = (item: Record<string, unknown>): InferenceEvent[] => {
+      const key = `${item.type}:${typeof item.id === "string" && item.id ? item.id : typeof item.call_id === "string" && item.call_id ? item.call_id : JSON.stringify(item)}`;
+      if (searchItems.has(key)) return [];
+      if (searchItems.size >= 1024) throw new ProviderError("invalid_output", "Provider returned too many search items");
+      searchItems.add(key); output.toolBoundary();
+      return [{ type: "native-item", item }];
+    };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
+      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
+        // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
+        if (interrupted && item.status !== "completed") return [];
+        return searchItem(item);
+      }
       if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
       if (item.type === "function_call" || item.type === "custom_tool_call") {
         // An interrupted final snapshot can contain an unfinished call. Only a

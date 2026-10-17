@@ -37,6 +37,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       // Without its own maximum a row would inherit Codex's global cap (872K), which cuts Claude's 1M.
       max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
+      // Off for every published row. The desktop adapter copies the native value onto Codex 2 rows (the Codex route passes tool_search through); other routes reject it.
       supports_search_tool: false, supports_experimental_context: false,
       // The strictest node_repl policy; the desktop adapter replaces it with the native rows' policy.
       node_repl_disabled: true, node_repl_auto_review_required: true,

@@ -310,6 +310,34 @@ The current Copilot CLI exposes no selected-model priority tier. Direct
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
 
+## Tool search on the Codex subscription route
+
+Native Codex rows can enable `supports_search_tool`, so the client sends a `tool_search`
+tool, declares it either at the top level or inside a Responses lite `additional_tools`
+input item, and later replays `tool_search_call` and `tool_search_output` items.
+
+- **Codex subscription route.** These pass through unchanged. The `tool_search` tool
+  goes upstream byte for byte (it is not wrapped in the gateway namespace), the two
+  replayed item types keep their order and content, and a `tool_search_call` or
+  `tool_search_output` that the upstream produces streams back to the client as sent,
+  once each. A forced tool choice (`tool_choice: "required"`) is satisfied by a declared
+  search tool. An interrupted final snapshot withholds a search item whose status is
+  not `completed`, as it does an unfinished function call.
+- **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic
+  Responses routes keep rejecting them before any provider runs: a `tool_search` tool
+  fails with `unsupported_tool`, and the two item types fail with
+  `unsupported_input_item`, both as a 400 `invalid_request`. The gateway does not
+  translate search for them. Anthropic Messages requests carry only function tools.
+- **Catalog.** `supports_search_tool` follows the native row on Codex 2 rows and on the
+  native rows carried for sub-agents; every other row publishes it off. A carried row
+  whose slug a non-Codex provider names as an alias keeps it off, because that
+  provider takes the request first
+  ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
+- **Ownership.** The client executes search and owns the deferred tool list. The
+  gateway never runs a search and never adds or removes deferred tools. Tool names,
+  queries and outputs are never logged; failures record only the fixed reason and the
+  allowlisted item type.
+
 ## WebSocket refusals, internal fields, and control items
 
 The gateway serves `/v1/responses` over plain HTTP only. A WebSocket (or any other) upgrade

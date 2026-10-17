@@ -39,8 +39,11 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.deepEqual(row.model_messages, messages); assert.notEqual(row.model_messages, messages);
   for (const key of ["tool_mode", "shell_type", "apply_patch_tool_type", "default_reasoning_level", "default_verbosity", "default_reasoning_summary", "support_verbosity", "effective_context_window_percent", "truncation_policy", ...usageFlags] as const) assert.deepEqual(row[key], nativeSol[key], key);
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
-  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "supports_search_tool", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
-  assert.equal(row.supports_search_tool, false);
+  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
+  assert.equal(published.supports_search_tool, false, "the gateway publishes search off");
+  assert.equal(row.supports_search_tool, true, "a Codex 2 row follows the native row, because the Codex route passes tool_search through");
+  assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: false }]).supports_search_tool, false);
+  for (const value of [undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);
   for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
@@ -106,12 +109,11 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.deepEqual(combined.models.map((row: { slug: string }) => row.slug), ["gpt-6.1-sol", "codex/sol", "codex/next", "codex/odd"]);
     const [, sol, next, odd] = combined.models;
     assert.deepEqual(sol.model_messages, messages); assert.equal(sol.tool_mode, "code_mode_only"); assert.equal(sol.context_window, 800000);
-    assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, false); assert.deepEqual(sol.service_tiers, [tier]);
+    assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, true); assert.deepEqual(sol.service_tiers, [tier]);
     for (const key of usageFlags) { assert.equal(sol[key], false, key); assert.equal(next[key], true, key); }
     for (const row of [next, odd]) { assert.deepEqual(row.model_messages, { instructions_template: "" }); assert.equal(row.tool_mode, "direct"); assert.equal(row.context_window, 500000); }
-    assert.deepEqual(combined.models[0], { ...nativeSol, supports_search_tool: false }, "the carried native row keeps tool search off, as the Codex 2 rows do");
-    assert.equal(nativeSol.supports_search_tool, true, "the client's own native row keeps it");
-    assert.equal(combined.models.slice(0, native.length).every((row: { supports_search_tool?: unknown }) => row.supports_search_tool !== true), true, "no native row in the executor catalog turns tool search on");
+    assert.deepEqual(combined.models[0], nativeSol, "the carried native row keeps tool search on, as the Codex 2 row for it does");
+    assert.equal(next.supports_search_tool, false, "a Codex 2 row with no native row stays off");
     assert.equal(JSON.stringify(combined).includes("upstream_slug"), false);
     const cache = await readFile(join(f.value.stateDirectory, "desktop-public-models.json"), "utf8");
     assert.equal(cache.includes("native base prompt"), false); assert.equal(JSON.parse(cache).models[0].upstream_slug, "gpt-6.1-sol");
@@ -124,18 +126,16 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
   } finally { f.close(); }
 });
 
-test("a native row that turns tool search on is carried with it off", () => {
+test("a native row is carried with its own tool search value", () => {
   const carried = executorNativeRow(nativeSol, [nativeSol]);
-  assert.equal(carried.supports_search_tool, false);
-  assert.equal(Object.is(carried, nativeSol), false, "a row whose search must change is copied, never mutated");
-  const source: Record<string, unknown> = nativeSol;
-  for (const key of Object.keys(source)) if (key !== "supports_search_tool") assert.deepEqual(carried[key], source[key], key);
-  assert.equal(nativeSol.supports_search_tool, true, "the native row and catalog the client reads stay unchanged");
-  // Nothing else to change: the row keeps its own object.
+  assert.equal(carried.supports_search_tool, true);
+  assert.equal(carried, nativeSol, "a row whose node_repl policy already matches is returned as it is");
   const off = { ...nativeSol, supports_search_tool: false };
   assert.equal(executorNativeRow(off, [off]), off);
-  const unstated = { ...nativeSol, supports_search_tool: undefined };
-  assert.equal(executorNativeRow(unstated, [unstated]), unstated, "search that is not plainly on is left as the row states it");
+  const stated = { ...nativeSol, node_repl_disabled: undefined, supports_search_tool: true };
+  const changed = executorNativeRow(stated, [stated]);
+  assert.equal(changed.supports_search_tool, true, "a changed node_repl policy never changes search");
+  assert.equal(changed.node_repl_disabled, true);
 });
 
 test("the first host read replaces the plain startup catalog even when the host rows match the local config", async () => {
