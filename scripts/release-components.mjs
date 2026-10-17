@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync, writeFileSync, lstatSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { nativeSourceDigest } from './native-source.mjs';
+import { sdkArchiveSha256 as relaySdkArchiveSha256, sdkCodexVersion as relaySdkCodexVersion, sdkRevision as relaySdkRevision } from './native-relay-sdk.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkPatchDigest,
   gatewaySdkRevision, gatewaySdkSourceDigest, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
@@ -130,9 +131,12 @@ export function verifyReleaseComponents(archivePath, expectedSha256, selected) {
     const names = [...payload.keys()].filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).sort();
     if (JSON.stringify(names) !== JSON.stringify(filesFor(binary))) throw invalid(`unexpected ${key} component files`);
     const metadata = json(entries, `${root}/${prefix}build.json`);
-    if (metadata.version !== version || metadata.profile !== 'release' || metadata.codexVersion !== gatewaySdkCodexVersion ||
-        metadata.revision !== gatewaySdkRevision || metadata.archiveSha256 !== gatewaySdkArchiveSha256 ||
-        metadata.sourceSha256 !== (key === 'native' ? nativeSourceDigest() : gatewaySdkSourceDigest())) throw invalid(`${key} source or build receipt changed`);
+    // The relay links its own pinned SDK (the app's newest verified engine); the gateway SDK keeps the gateway pin.
+    const pins = key === 'native' ? { codexVersion: relaySdkCodexVersion, revision: relaySdkRevision, archiveSha256: relaySdkArchiveSha256, sourceSha256: nativeSourceDigest() }
+      : { codexVersion: gatewaySdkCodexVersion, revision: gatewaySdkRevision, archiveSha256: gatewaySdkArchiveSha256, sourceSha256: gatewaySdkSourceDigest() };
+    if (metadata.version !== version || metadata.profile !== 'release' || metadata.codexVersion !== pins.codexVersion ||
+        metadata.revision !== pins.revision || metadata.archiveSha256 !== pins.archiveSha256 ||
+        metadata.sourceSha256 !== pins.sourceSha256) throw invalid(`${key} source or build receipt changed`);
     if (key === 'gatewaySdk' && (metadata.schemaVersion !== 1 || metadata.platform !== 'darwin' || metadata.arch !== 'arm64' ||
         metadata.patchSha256 !== gatewaySdkPatchDigest() || metadata.lockfileRepairSha256 !== gatewaySdkLockRepairDigest() ||
         metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.testRunnerSha256 !== gatewaySdkTestRunnerDigest() ||

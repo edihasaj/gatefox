@@ -1,3 +1,4 @@
+mod cli_version;
 mod control;
 mod diagnostics;
 #[cfg(test)]
@@ -171,9 +172,7 @@ async fn run() -> io::Result<()> {
         .arg("--version")
         .output()
         .await?;
-    if !cli.status.success()
-        || String::from_utf8_lossy(&cli.stdout).trim() != "codex-cli 0.162.0-alpha.17.2"
-    {
+    if !cli.status.success() || !cli_version::verified(&cli.stdout) {
         return Err(io::Error::other(
             "Native relay requires the matching Codex CLI build",
         ));

@@ -4,6 +4,7 @@ import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { nativeSourceDigest } from './native-source.mjs';
+import { sdkArchiveSha256 as relaySdkArchiveSha256, sdkCodexVersion as relaySdkCodexVersion, sdkRevision as relaySdkRevision } from './native-relay-sdk.mjs';
 import { releaseVersionProblem } from './release-version.mjs';
 import { releaseComponentPlan, verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
@@ -37,7 +38,7 @@ const nativeArtifact = resolve('.state/native-relay-build/artifact');
 if (reused) copyReleaseComponents(reused, join(directory, 'package'));
 if (plan.freshNative) {
   const metadata = JSON.parse(readFileSync(join(nativeArtifact, 'build.json'), 'utf8'));
-  if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== '740e5af33c71225640e0c1c1555c514c2c93ab74' || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
+  if (metadata.version !== version || metadata.profile !== 'release' || metadata.revision !== relaySdkRevision || metadata.codexVersion !== relaySdkCodexVersion || metadata.archiveSha256 !== relaySdkArchiveSha256 || metadata.sourceSha256 !== nativeSourceDigest()) throw new Error('Native relay artifact does not match this release source');
   cpSync(nativeArtifact, join(directory, 'package/native'), { recursive: true });
 }
 const gatewayArtifact = resolve('.state/gateway-sdk-build/artifact');

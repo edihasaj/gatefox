@@ -2,12 +2,17 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { gatewaySdkLockSha256, repairGatewaySdkLock } from './gateway-sdk-lock.mjs';
+import { relaySdkLockSha256, repairRelaySdkLock } from './native-relay-sdk-lock.mjs';
 import { sdkPatches } from './native-relay-sdk-patches.mjs';
 
 export { sdkPatches };
-export const sdkRevision = '740e5af33c71225640e0c1c1555c514c2c93ab74';
-export const sdkArchiveSha256 = '25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83';
+// rust-v0.163.0-alpha.10.2, the engine ChatGPT ships from 16 October 2026. Its app-server-transport crate is byte-identical
+// to 0.162.0-alpha.17.2's, so the same patches apply and the relay speaks the same remote-control protocol to both apps.
+export const sdkRevision = '4ebc485ca321243727539187169425fcf972f2c4';
+export const sdkArchiveSha256 = '7cfc5ed8f8e058cf50fc83483d47f65e82bbf08ebe740e6fe6be393ead2fe49f';
+export const sdkCodexVersion = '0.163.0-alpha.10.2';
+/** Build storage for this revision, so another pinned archive (the gateway SDK's) keeps its own bytes and checkout. */
+export const sdkBuildKey = sdkRevision.slice(0, 12);
 export const sdkOverlay = 'native-relay/sdk-overlay';
 const lockPath = 'codex-rs/Cargo.lock';
 const manifestName = '.gateway-materialized.json';
@@ -100,7 +105,7 @@ export function materializeSdk({ archive, sdk, root, overlay = sdkOverlay }) {
   const archiveRoot = entries.find(entry => !entry.startsWith('pax_global_header'))?.split('/')[0];
   if (!archiveRoot) throw Error('Pinned SDK archive has no root directory');
   const patched = [...new Set(sdkPatches.map(patch => patch.file))].sort();
-  const pristine = join(root, 'pristine');
+  const pristine = join(root, `pristine-${sdkBuildKey}`);
   mkdirSync(pristine, { recursive: true });
   execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', pristine,
     ...[...patched, lockPath].map(path => `${archiveRoot}/${path}`)]);
@@ -108,9 +113,9 @@ export function materializeSdk({ archive, sdk, root, overlay = sdkOverlay }) {
     writeIfChanged(join(sdk, file), Buffer.from(applyPatches(readFileSync(join(pristine, file), 'utf8'), file)));
   }
   const lock = join(sdk, lockPath);
-  if (!existsSync(lock) || digest(readFileSync(lock)) !== gatewaySdkLockSha256) {
+  if (!existsSync(lock) || digest(readFileSync(lock)) !== relaySdkLockSha256) {
     writeFileSync(lock, readFileSync(join(pristine, lockPath)));
-    repairGatewaySdkLock(lock);
+    repairRelaySdkLock(lock);
   }
   const overlays = overlayFiles(overlay);
   checkOverlayPaths(overlays, entries, archiveRoot);
