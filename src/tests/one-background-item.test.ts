@@ -141,3 +141,16 @@ test("a standalone register still writes the agent, and status says which setter
     assert.deepEqual([status.loginEnv, status.envAgent], ["service", false], "with a unified service the daemon sets it");
   });
 });
+
+test("under the test runner the default launchctl refuses, so a registered fixture never reaches the real session", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const { runtime } = await registered(f);
+    configureTelemetry(f.state, "service");
+    assert.ok(process.env.NODE_TEST_CONTEXT !== undefined, "this file runs under node:test");
+    // No exec seam: the default would be the real login session, which a test must never reach.
+    assert.equal(await presetDesktopEnv(f.state, undefined, runtime), "failed");
+    assert.deepEqual(f.calls, [], "nothing went through the fixture either");
+    assert.deepEqual((await presetEvents(f)).map(event => event.reason), ["read"]);
+  });
+});

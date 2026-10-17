@@ -22,7 +22,15 @@ type ExecFileWithTimeout = (file: string, args: string[], options: { timeout: nu
 /** The real session's launchctl: every call, including enable and bootstrap, is bounded by the same 10 s timeout. The buffer is sized for `launchctl print gui/<uid>`, which lists the whole login domain. */
 export const launchctlRunner = (run: ExecFileWithTimeout = (file, args, options) => execFileAsync(file, args, options)): LaunchctlExec =>
   (file, args) => run(file, args, { timeout: 10000, maxBuffer: 16 * 1024 * 1024 });
-const launchctlExec = launchctlRunner();
+const realLaunchctl = launchctlRunner();
+/**
+ * The login session is one per user, so a test may never reach it: a test passes its own exec. Under the test runner the
+ * default refuses (the same rule as testSafeRoot), so a fixture that happens to hold a receipt cannot set CODEX_CLI_PATH
+ * in the developer's real session; the daemon's preset then just records a failure and goes on.
+ */
+const launchctlExec: LaunchctlExec = (file, args) => process.env.NODE_TEST_CONTEXT !== undefined
+  ? Promise.reject(new Error("A test process reached the real launchctl session; pass an exec seam"))
+  : realLaunchctl(file, args);
 /** The part of an entry's status that ownership needs: what kind of entry it is, and who owns it. */
 export type WrapperStat = (path: string) => Promise<{ isFile(): boolean; isSymbolicLink(): boolean; uid: number }>;
 /**
