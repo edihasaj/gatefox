@@ -4,7 +4,7 @@ import { open, realpath } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { sdkIdentity } from "./execution-host-storage.js";
 import { validateExecutionSdk } from "./execution-host-engine.js";
-import { verifiedAppEngines } from "./native-engine-versions.js";
+import { hostVerifiedAppEngines } from "./native-engine-versions.js";
 
 export interface NativeSdkIdentity { nativeSdkExecutable: string; nativeSdkSha256: string }
 export type NativeSdkVerifier = (codex: string) => Promise<NativeSdkIdentity>;
@@ -17,11 +17,18 @@ async function prefix(path: string): Promise<Buffer> {
   finally { await file.close(); }
 }
 
-/** The app's own engine, not the gateway SDK: it is held to the app engines this release verified. */
-export const validateNativeEngine = (codex: string): Promise<void> => validateExecutionSdk(codex, verifiedAppEngines);
+/** The app's own engine, not the gateway SDK: the host shares it only when this release verified it for sharing. */
+export const validateNativeEngine = (codex: string): Promise<void> => validateExecutionSdk(codex, hostVerifiedAppEngines);
 
-/** Verify the loaded binary, rather than trusting an unchanged shell launcher. */
-export async function verifyNativeSdk(codex: string): Promise<NativeSdkIdentity> {
+/** OpenAI's Developer ID signature on the loaded binary; it throws when the binary is unsigned, altered or signed by anyone else. */
+export async function verifyOpenAiSignature(executable: string): Promise<void> {
+  await execute("/usr/bin/codesign", ["--verify", "--strict", executable], { timeout: 10000, maxBuffer: 65536 });
+  const metadata = await execute("/usr/bin/codesign", ["-d", "--verbose=2", executable], { timeout: 10000, maxBuffer: 65536 });
+  if (!/(?:^|\n)TeamIdentifier=2DC432GLL2(?:\r?\n|$)/.test(metadata.stderr)) throw new Error("Signature team differs");
+}
+
+/** Verify the loaded binary, rather than trusting an unchanged shell launcher. Tests replace only the signature step. */
+export async function verifyNativeSdk(codex: string, signature: (executable: string) => Promise<void> = verifyOpenAiSignature): Promise<NativeSdkIdentity> {
   let executable = await realpath(codex); const header = await prefix(executable);
   if (!macho.has(header.subarray(0, 4).toString("hex"))) {
     // Only the first-party bundle's known relative launcher may select a binary.
@@ -33,11 +40,7 @@ export async function verifyNativeSdk(codex: string): Promise<NativeSdkIdentity>
   }
   if (process.platform !== "darwin") throw new Error("Native execution requires a verified macOS Codex SDK");
   const identity = await sdkIdentity(executable);
-  try {
-    await execute("/usr/bin/codesign", ["--verify", "--strict", executable], { timeout: 10000, maxBuffer: 65536 });
-    const metadata = await execute("/usr/bin/codesign", ["-d", "--verbose=2", executable], { timeout: 10000, maxBuffer: 65536 });
-    if (!/(?:^|\n)TeamIdentifier=2DC432GLL2(?:\r?\n|$)/.test(metadata.stderr)) throw new Error("Signature team differs");
-  } catch { throw new Error("Native execution SDK signature verification failed"); }
+  try { await signature(executable); } catch { throw new Error("Native execution SDK signature verification failed"); }
   if ((await sdkIdentity(executable)).sdkSha256 !== identity.sdkSha256) throw new Error("Native execution SDK changed during signature verification");
   await validateNativeEngine(identity.codex);
   return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 };
