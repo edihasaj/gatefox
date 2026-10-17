@@ -191,17 +191,13 @@ export function withFallback(model: Row, fallback: NodeReplFallback): Row {
 /**
  * A native row carried into the executor catalog keeps its own values apart from the two node_repl
  * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. Its
- * `supports_search_tool` is the native value: a bare model name from a sub-agent resolves to the Codex
- * subscription route, which passes `tool_search` through. The exception is a slug that another
- * provider route has as an alias: an alias spelled exactly like a native slug takes the request before the
- * bare-name lookup, and only the Codex subscription route accepts `tool_search`, so that row keeps search off.
- * `searchOff` holds those slugs (the aliases of every provider that is not a Codex subscription). A row whose
- * policy and search value already match is returned unchanged. The native engine's own catalog is unchanged.
+ * `supports_search_tool` is always the native value: a bare model name from a sub-agent resolves to the Codex
+ * subscription route, which passes `tool_search` through. No provider can take that name first, because a gateway
+ * alias spelled like a native slug is refused when the catalog loads (validateAliasesAgainstNative). A row whose
+ * policy already matches is returned unchanged. The native engine's own catalog is unchanged.
  */
-export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers, searchOff: ReadonlySet<string> = noSlugs): Row {
+export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): Row {
   const policy = nodeReplPolicy(model, native, reviewers);
-  const search = typeof model.slug === "string" && searchOff.has(model.slug) && model.supports_search_tool === true ? { supports_search_tool: false } : {};
-  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required && !Object.keys(search).length
-    ? model : { ...model, ...policy, ...search };
+  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required
+    ? model : { ...model, ...policy };
 }
-const noSlugs: ReadonlySet<string> = new Set();

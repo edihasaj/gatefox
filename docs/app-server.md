@@ -519,13 +519,12 @@ Codex and take the native code mode. The same rule covers the native rows that t
 executor catalog carries for sub-agents naming a model directly (a role's model,
 `default_subagent_model` or Ultra delegation): without the host those rows get
 `direct` tools in executors, so their commands run instead of failing with "failed
-to spawn code-mode host". Those carried rows follow the native search flag, as the
+to spawn code-mode host". Those carried rows always follow the native search flag, as the
 Codex 2 rows do: a bare model name resolves to the Codex subscription route, which
-passes `tool_search` through. The one exception is a slug that another provider has
-as an alias. An alias spelled exactly like a native slug takes the request before
-the bare-name lookup, and only the Codex subscription route accepts `tool_search`,
-so that carried row keeps search off. (Before 0.4.4 every such sub-agent request
-failed with `unsupported_tool`.) The native engine keeps its own catalog unchanged.
+passes `tool_search` through. No provider can take that name first, because a gateway
+model alias spelled exactly like a native slug is refused when the adapter launches
+(see the start of this page). (Before 0.4.4 every such sub-agent request failed with
+`unsupported_tool`.) The native engine keeps its own catalog unchanged.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global

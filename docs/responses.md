@@ -330,8 +330,8 @@ input item, and later replays `tool_search_call` and `tool_search_output` items.
   translate search for them. Anthropic Messages requests carry only function tools.
 - **Catalog.** `supports_search_tool` follows the native row on Codex 2 rows and on the
   native rows carried for sub-agents; every other row publishes it off. A carried row
-  whose slug a non-Codex provider names as an alias keeps it off, because that
-  provider takes the request first
+  always keeps the native value, because a gateway alias spelled like a native slug,
+  which would take the request first, is refused when the adapter launches
   ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
 - **Ownership.** The client executes search and owns the deferred tool list. The
   gateway never runs a search and never adds or removes deferred tools. Tool names,

@@ -135,15 +135,14 @@ export class DesktopCatalog {
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
    * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
-   * and its review text stays the SDK's own. A carried row follows the native tool search flag, because a bare
-   * model name resolves to the Codex subscription route, which passes `tool_search` through; a slug that a
-   * non-Codex provider names as an alias keeps search off, since that provider takes the request and rejects it.
+   * and its review text stays the SDK's own. A carried row always follows the native tool search flag, because a bare
+   * model name resolves to the Codex subscription route, which passes `tool_search` through; an alias spelled like a
+   * native slug, which could take that name first, is refused when the catalog loads.
    * The native engine keeps its own catalog unchanged.
    */
   private executorNative(reviewers: ReadonlySet<string>): Message[] {
-    const searchOff = new Set(this.config.providers.filter(provider => provider.type !== "codex-subscription").flatMap(provider => Object.keys(provider.models)));
     return this.native.map(model => {
-      const row = executorNativeRow(model, this.native, reviewers, searchOff);
+      const row = executorNativeRow(model, this.native, reviewers);
       return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
     });
   }
