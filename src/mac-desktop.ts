@@ -11,7 +11,8 @@ import { readServicePlan } from "./service-plan.js";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
-import { envAgentNames, readEnvAgent, readGuiCliPath, removeEnvAgent, writeEnvAgent } from "./desktop-env-agent.js";
+import { envAgentFailure, envAgentNames, readEnvAgent, readGuiDesktopEnv, removeEnvAgent, writeEnvAgent } from "./desktop-env-agent.js";
+import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 
 const execFileAsync = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 /** Seam for every launchctl call so a registration test can observe the GUI session without changing it. */
@@ -160,6 +161,13 @@ export async function planDesktopUnregister(configPath: string, exec: LaunchctlE
   return { unregisterReady: true, loginAgent: plan.existing ? "managed" : "absent", envAgent: plan.envAgent ? "managed" : "absent", cliPathOurs: plan.ownPath,
     receiptNamesWrapper: plan.registered, ...(plan.ownPath && !plan.registered && plan.force === "1" ? { legacyForceCliKept: true } : {}) };
 }
+/** One `desktop_env_agent_failed` event with a fixed `reason`; error text and paths never reach telemetry. */
+async function reportEnvAgentFailure(stateDirectory: string, error: unknown): Promise<void> {
+  // `gateway desktop-restore` is a short-lived child of the service and has not configured telemetry itself.
+  configureTelemetry(stateDirectory, "service");
+  telemetry("desktop_env_agent_failed", { reason: envAgentFailure(error) });
+  await flushTelemetry();
+}
 async function desktopOperation(action: string, configPath: string, app: string, restoreOnly: boolean, exec: LaunchctlExec): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["register", "unregister", "status"].includes(action)) throw new Error("Choose gateway desktop register, unregister or status on macOS");
   const config = await loadConfig(configPath);
@@ -170,23 +178,28 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const path = resolve(homedir(), "Library/LaunchAgents", label + ".plist"); const domain = `gui/${process.getuid!()}`; const target = `${domain}/${label}`;
   const registration = await readReceipt(receipt);
   if (action === "status") {
-    // The login (GUI) domain's value, not the caller's: `launchctl getenv` over SSH reads another domain.
-    const cliPath = await readGuiCliPath(exec, () => getenv(exec, "CODEX_CLI_PATH"));
-    // One getenv answers both FORCE_CLI questions. A real `launchctl getenv` exits 0 with empty stdout for an
-    // unset name, so the variable counts as set only when it holds a non-empty value; the value itself never
-    // reaches the output.
-    const force = await getenv(exec, "CODEX_APP_SERVER_FORCE_CLI");
+    // The login (GUI) domain's values, not the caller's: `launchctl getenv` over SSH reads another domain.
+    // `launchctl getenv` answers only if the print fails.
+    const { cliPath, forceCliSet, forceCli1 } = await readGuiDesktopEnv(exec, name => getenv(exec, name));
+    // The variable counts as set only when it holds a non-empty value (a real `launchctl getenv` exits 0 with empty
+    // stdout for an unset name); the value itself is never kept or reported, only whether it is "1".
     const fromReceipt = !!registration.wrapper && cliPath === registration.wrapper;
     const owned = fromReceipt || (!!cliPath && await ownWrapper(config.stateDirectory, cliPath));
     // Future launches use the registered wrapper, so an older one we still own is stale, not active. Ownership
     // only decides whether the legacy FORCE_CLI value is ours to clear.
-    const envAgent = envAgentNames(await readEnvAgent(), registration.wrapper);
-    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, envAgent, forceCliSet: force !== "",
-      legacyForceCli: owned && !!registration.wrapper && force === "1",
+    // Status never refuses: a plist that is not ours simply is not our agent.
+    const envAgent = envAgentNames(await readEnvAgent().catch(() => undefined), registration.wrapper);
+    return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, envAgent, forceCliSet,
+      legacyForceCli: owned && !!registration.wrapper && forceCli1,
       ...(owned && !fromReceipt ? { staleWrapper: true } : {}) };
   }
   const existing = await readDesktopPlist(path);
-  const envExisting = await readEnvAgent();
+  // Where the unified service sets the variable (restore, a unified plan, a pending login plan) the agent is only
+  // a safeguard, so a failure there is reported and must not fail the service's desktop component. The interactive
+  // command keeps failing loudly, and an unmanaged plist still refuses before any session change.
+  const safeguard = restoreOnly || !!unified || !!pending;
+  let envExisting: string | undefined; let envFailure: unknown;
+  try { envExisting = await readEnvAgent(); } catch (error) { if (!safeguard) throw error; envFailure = error; }
   const { wrapper } = await prepareDesktop(configPath, app); const previous = await getenv(exec, "CODEX_CLI_PATH");
   const ownPrevious = !!previous && await ownWrapper(config.stateDirectory, previous);
   // The refusal names the variable it refuses, never its value, and gives the next step for an override the
@@ -213,8 +226,9 @@ async function desktopOperation(action: string, configPath: string, app: string,
   await exec("/bin/launchctl", ["setenv", "CODEX_CLI_PATH", wrapper]);
   // Belt and braces: the service and this command set the variable now, and the agent sets it at the next login
   // before the service is up, so a login item such as ChatGPT never starts without it.
-  await writeEnvAgent(config.stateDirectory, wrapper, envExisting, exec);
-  if (restoreOnly || unified || pending) return { registered: true, activeForFutureLaunches: true, envAgent: true, nativeConfigUntouched: true, loginHook: pending ? "unified service at next login" : "unified service" };
+  if (!envFailure) { try { await writeEnvAgent(config.stateDirectory, wrapper, envExisting, exec); } catch (error) { if (!safeguard) throw error; envFailure = error; } }
+  if (envFailure) await reportEnvAgentFailure(config.stateDirectory, envFailure);
+  if (safeguard) return { registered: true, activeForFutureLaunches: true, envAgent: !envFailure, nativeConfigUntouched: true, loginHook: pending ? "unified service at next login" : "unified service" };
   if (existing !== contents) { if (existing) await exec("/bin/launchctl", ["bootout", target]).catch(() => undefined); await mkdir(dirname(path), { recursive: true }); await writeFile(path, contents, { mode: 0o600 }); }
   let loaded = false; try { await exec("/bin/launchctl", ["print", target]); loaded = true; } catch { /* Restore an explicitly registered login hook. */ }
   // One path for production and tests: every launchctl call goes through exec, so no branch decides whether a test reaches the real session.

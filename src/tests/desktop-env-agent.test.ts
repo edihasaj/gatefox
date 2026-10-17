@@ -2,16 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { macDesktop, planDesktopUnregister, type LaunchctlExec } from "../mac-desktop.js";
-import { envAgentLabel, envAgentPlist, readGuiCliPath, writeEnvAgent } from "../desktop-env-agent.js";
+import { envAgentLabel, envAgentPlist, readGuiDesktopEnv, writeEnvAgent } from "../desktop-env-agent.js";
 import { prepareDesktop } from "../desktop-launch.js";
 import { writePrivateJson } from "../config.js";
 import { uninstallGateway, type UninstallDeps } from "../uninstall.js";
 import { kindFor, collectServicePlan } from "../mac-consolidate.js";
 import { validateServicePlan } from "../service-plan.js";
 import { classifyCommand } from "../versions.js";
+import { readTelemetry } from "../telemetry.js";
 import { PATH_KEY, FORCE, inDesktopHome, desktopFixture, type DesktopFixture as Fixture } from "./desktop-fixture.js";
 
 const mac = { skip: process.platform !== "darwin" };
@@ -174,10 +175,10 @@ test("gateway uninstall removes the agent through the desktop unregister step", 
 const guiPrint = (environment: string[]) => ["gui/501 = {", "\ttype = login", "\tenvironment = {", ...environment.map(line => `\t\t${line}`), "\t}",
   "\tdefault environment = {", "\t\tCODEX_CLI_PATH => /wrong/default", "\t}", "\tservices = {", "\t\tCODEX_CLI_PATH => /wrong/service", "\t}", "}"].join("\n");
 /** Session seam: `print gui/<uid>` answers `printed` (or fails), while `getenv` answers what an SSH session would see. */
-const sessionExec = (f: Fixture, printed: string | undefined, getenvValue = ""): LaunchctlExec => async (file, args) => {
+const sessionExec = (f: Fixture, printed: string | undefined, getenvValue = "", forceGetenv = ""): LaunchctlExec => async (file, args) => {
   f.calls.push(args.join(" "));
   if (args[0] === "print" && args[1] === `gui/${process.getuid!()}`) { if (printed === undefined) throw new Error("print failed"); return { stdout: printed }; }
-  if (args[0] === "getenv") return { stdout: args[1] === PATH_KEY ? getenvValue : "" };
+  if (args[0] === "getenv") return { stdout: args[1] === PATH_KEY ? getenvValue : forceGetenv };
   return { stdout: "" };
 };
 
@@ -227,14 +228,119 @@ test("status reports envAgent false for a missing agent and for one naming anoth
   });
 });
 
-test("the GUI environment parser reads one key from the first environment block only", async () => {
-  const exec: LaunchctlExec = async () => ({ stdout: guiPrint([`${PATH_KEY} => /a b/c`]) });
-  assert.equal(await readGuiCliPath(exec, async () => assert.fail("no fallback")), "/a b/c");
+test("status reads FORCE_CLI presence from the GUI domain too, keeping no value", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await prepareDesktop(f.config, f.app);
+    await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
+    const shapes: Array<[string[], boolean, boolean]> = [
+      [[`${PATH_KEY} => ${wrapper}`, `${FORCE} => 1`], true, true],
+      [[`${PATH_KEY} => ${wrapper}`, `${FORCE} => secret-looking-value`], true, false],
+      [[`${PATH_KEY} => ${wrapper}`, `${FORCE} => `], false, false],
+      [[`${PATH_KEY} => ${wrapper}`], false, false],
+    ];
+    for (const [environment, set, legacy] of shapes) {
+      f.calls.length = 0;
+      // getenv, as an SSH session would see it, claims the opposite so only the GUI domain can be the source.
+      const status = await macDesktop("status", f.config, f.app, false, sessionExec(f, guiPrint(environment), "", set ? "" : "1"));
+      assert.equal(status.forceCliSet, set, environment.join(" | "));
+      assert.equal(status.legacyForceCli, legacy, environment.join(" | "));
+      assert.equal(JSON.stringify(status).includes("secret-looking-value"), false, "the value is never reported");
+      assert.equal(f.calls.some(call => call.startsWith("getenv")), false, "getenv is not asked while print answers");
+    }
+    f.calls.length = 0;
+    const fallback = await macDesktop("status", f.config, f.app, false, sessionExec(f, undefined, wrapper, "1"));
+    assert.deepEqual([fallback.forceCliSet, fallback.legacyForceCli, fallback.activeForFutureLaunches], [true, true, true], "a failing print falls back to getenv for both");
+    assert.deepEqual(f.calls.filter(call => call.startsWith("getenv")), [`getenv ${PATH_KEY}`, `getenv ${FORCE}`]);
+  });
+});
+
+test("the GUI environment parser reads two keys from the first environment block only", async () => {
+  const never = async (): Promise<string> => assert.fail("no fallback");
+  const exec: LaunchctlExec = async () => ({ stdout: guiPrint([`${PATH_KEY} => /a b/c`, `${FORCE} => 1`, "OTHER => z"]) });
+  assert.deepEqual(await readGuiDesktopEnv(exec, never), { cliPath: "/a b/c", forceCliSet: true, forceCli1: true });
   const crlf: LaunchctlExec = async () => ({ stdout: "x = {\r\n\tenvironment = {\r\n\t\tCODEX_CLI_PATH => /p\r\n\t}\r\n}" });
-  assert.equal(await readGuiCliPath(crlf, async () => assert.fail("no fallback")), "/p");
+  assert.deepEqual(await readGuiDesktopEnv(crlf, never), { cliPath: "/p", forceCliSet: false, forceCli1: false });
   const broken: LaunchctlExec = async () => { throw new Error("nope"); };
-  assert.equal(await readGuiCliPath(broken, async () => "from getenv"), "from getenv");
-  await assert.rejects(readGuiCliPath(broken, async () => { throw new Error("getenv failed"); }), /getenv failed/);
+  assert.deepEqual(await readGuiDesktopEnv(broken, async name => name === PATH_KEY ? "from getenv" : "2"), { cliPath: "from getenv", forceCliSet: true, forceCli1: false });
+  await assert.rejects(readGuiDesktopEnv(broken, async () => { throw new Error("getenv failed"); }), /getenv failed/);
+});
+
+// The agent is a safeguard where the unified service sets the variable: its failure is reported, never thrown.
+const secretText = "SECRET_ERROR_TEXT /Users/someone/private/path";
+const servicePaths = ["restore-only", "unified plan", "pending login"] as const;
+async function seedServicePath(f: Fixture, mode: (typeof servicePaths)[number]) {
+  const plan = { version: 1, config: f.config, components: [{ id: "inference", kind: "inference", command: f.gateway, args: [], log: join(f.state, "inference.log") }] };
+  if (mode === "unified plan") await writePrivateJson(join(f.state, "service-plan.json"), plan);
+  if (mode === "pending login") await writePrivateJson(join(f.state, "service-login-pending.json"), {
+    version: 1, phase: "ready", config: f.config, plan, primaryLabel: "com.edihasaj.subscription-gateway", primaryPlistDigest: "a".repeat(64), removedLabels: [],
+    backup: join(f.state, "service-backups", "bundle"), sources: [{ label: "com.edihasaj.subscription-gateway", digest: "b".repeat(64), mode: 0o600 }] });
+}
+/** The telemetry the failure left in the state directory, as text, and its parsed events. */
+async function failureEvents(f: Fixture) {
+  const events = (await readTelemetry(f.state, 0)).filter(event => event.event === "desktop_env_agent_failed");
+  const raw = (await Promise.all((await readdir(join(f.state, "telemetry"))).map(name => readFile(join(f.state, "telemetry", name), "utf8")))).join("");
+  return { events, raw };
+}
+
+test("a failing bootstrap does not fail the service paths; it is reported with a fixed reason", mac, async () => {
+  for (const mode of servicePaths) {
+    const f = await fixture();
+    await inDesktopHome(f, async () => {
+      await seedServicePath(f, mode);
+      const failing: LaunchctlExec = async (file, args) => { if (args[0] === "bootstrap") { f.calls.push(args.join(" ")); throw new Error(secretText); } return f.exec(file, args); };
+      const result = await macDesktop("register", f.config, f.app, mode === "restore-only", failing);
+      const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
+      assert.deepEqual([result.registered, result.activeForFutureLaunches, result.envAgent, result.nativeConfigUntouched], [true, true, false, true], mode);
+      assert.equal(f.values.get(PATH_KEY), wrapper, mode + ": the session was still set");
+      const { events, raw } = await failureEvents(f);
+      assert.equal(events.length, 1, mode); assert.equal(events[0]!.reason, "bootstrap", mode);
+      assert.equal(raw.includes("SECRET_ERROR_TEXT") || raw.includes("someone") || raw.includes(f.root), false, mode + ": no error text or path in telemetry");
+    });
+  }
+});
+
+test("an unmanaged agent plist does not fail the service paths either, and is left alone", mac, async () => {
+  for (const mode of servicePaths) {
+    const f = await fixture();
+    await inDesktopHome(f, async () => {
+      await seedServicePath(f, mode);
+      await writeFile(plistOf(f), "<plist>someone else's job</plist>\n");
+      const result = await macDesktop("register", f.config, f.app, mode === "restore-only", f.exec);
+      assert.equal(result.envAgent, false, mode); assert.equal(result.registered, true, mode);
+      assert.ok(f.calls.some(call => call.startsWith(`setenv ${PATH_KEY} `)), mode + ": the session was still set");
+      assert.equal(f.calls.some(call => call.includes(envAgentLabel)), false, mode + ": the unmanaged job is not touched");
+      assert.equal(await read(plistOf(f)), "<plist>someone else's job</plist>\n");
+      const { events } = await failureEvents(f);
+      assert.deepEqual(events.map(event => event.reason), ["unmanaged"], mode);
+    });
+  }
+});
+
+test("a write failure is reported as write, and a clean run reports nothing", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const agents = join(f.home, "Library/LaunchAgents");
+    await chmod(agents, 0o500);
+    try {
+      assert.equal((await macDesktop("register", f.config, f.app, true, f.exec)).envAgent, false);
+      assert.deepEqual((await failureEvents(f)).events.map(event => event.reason), ["write"]);
+    } finally { await chmod(agents, 0o700); }
+    assert.equal((await macDesktop("register", f.config, f.app, true, f.exec)).envAgent, true, "and the next start writes it");
+    assert.equal((await failureEvents(f)).events.length, 1, "a success adds no event");
+  });
+});
+
+test("the interactive register still fails loudly when the agent cannot be written", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const failing: LaunchctlExec = async (file, args) => { if (args[0] === "bootstrap") throw new Error("bootstrap boom"); return f.exec(file, args); };
+    await assert.rejects(macDesktop("register", f.config, f.app, false, failing), /bootstrap boom/);
+    await rm(plistOf(f), { force: true });
+    await writeFile(plistOf(f), "<plist>someone else's job</plist>\n");
+    await assert.rejects(macDesktop("register", f.config, f.app, false, f.exec), /unmanaged desktop environment LaunchAgent/);
+    await assert.rejects(readdir(join(f.state, "telemetry")), { code: "ENOENT" }, "the interactive command reports no telemetry event");
+  });
 });
 
 // Every place that enumerates or migrates our LaunchAgent labels, against the new label.

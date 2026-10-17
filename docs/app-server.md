@@ -420,6 +420,15 @@ sets the variable, write or update it, so it follows the registration. The servi
 still sets the variable itself as before. A plist with that label that does not
 carry the gateway's marker is refused, and nothing is changed.
 
+The agent is a safeguard, not a requirement. Where the unified service sets the
+variable (the desktop component's `desktop-restore`, or a registration while a unified
+or staged plan owns it), a failure to write or load the agent is caught: the registration
+keeps going and returns `envAgent: false`, and the service records a
+`desktop_env_agent_failed` event with a fixed `reason` (`write`, `bootstrap`,
+`unmanaged` or `other`, see [diagnostics](diagnostics.md)), never the error text or a
+path. The next start tries again. A hand-run `gateway desktop register` still fails
+loudly.
+
 `gateway desktop unregister` and `gateway uninstall` boot the agent out and move its
 plist to the Trash, before they clear the variable. The agent is not a service
 component: consolidation does not collect or retire it.
@@ -430,7 +439,10 @@ and falls back to `launchctl getenv` only when the print fails. `launchctl geten
 over SSH reads a different domain and reported `activeForFutureLaunches: false`
 even when the login session held the right value. Status also reports
 `envAgent: true` when the agent exists, is the gateway's, and names the registered
-wrapper. `forceCliSet` still uses `launchctl getenv`.
+wrapper. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
+only whether `CODEX_APP_SERVER_FORCE_CLI` is present and non-empty (and whether it is
+`1`), never its value, and uses `launchctl getenv` for both variables only when the
+print fails.
 
 The client owns chat naming. The adapter forwards native `thread/name/set`,
 saved-title reads, and live name notifications; it adds no title tool or naming
