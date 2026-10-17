@@ -12,6 +12,54 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+## The name macOS shows
+
+macOS names a LaunchAgent item after the program in the first `ProgramArguments`
+entry, and shows that name in System Settings, Login Items, under "Allow in the
+Background", and in the "Background Items Added" notification. Since 0.4.6 the
+installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
+`~/.local/bin/gateway` as a second launcher with the same contents (both set
+`GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
+either command names `harness-gateway`. The service, desktop login, native
+relay (its `--gateway` argument) and consolidated plans all use it. The
+login environment agent runs `<state>/harness-gateway-login-env`, a private script,
+instead of `launchctl`, so it is not listed as "launchctl" either. The launchd labels
+stay `com.edihasaj.subscription-gateway*`.
+
+Older plists keep working, and a rollback to 0.4.5 needs no plist change: the checks that
+read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
+accept both `.../bin/gateway` and `.../bin/harness-gateway`. A running standalone native relay
+whose plist names `bin/gateway` in its `--gateway` argument counts as the same registration as
+one written now within the same release, so `gateway native install` there no longer asks you to uninstall it first; across releases the relay path differs too and the existing refusal stands. An existing
+`harness-gateway` link to `gateway` is replaced by the launcher file; any other file with that
+name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
+while that file carries the installer's marker line; otherwise they keep `gateway`.
+
+Migration is one-time and happens when a plist is next written by 0.4.6:
+
+- A standalone service: `gateway service install`, which upgrades the running
+  service when it is idle like any other install.
+- `gateway service consolidate --apply` and `--next-login` write a newly unified
+  service with the new name. They do nothing to a Mac that is already unified.
+- `gateway desktop register` rewrites the standalone desktop login agent and the
+  login environment agent.
+- An already-unified service (a `service-plan.json` exists, as on every production Mac):
+  `gateway service install` renames the launcher in the service plist file, and in the
+  desktop login plist if one exists. It changes only the first program argument, writes
+  atomically, keeps the label, and does only that and what it always did (start the service if it
+  is not loaded or has no process). It never boots out, restarts or replaces a running
+  service, and it rewrites a file only when it carries the gateway's marker and names a managed
+  `gateway` launcher whose sibling `harness-gateway` is managed too. The result says
+  `programRewritten: true|false` (and `desktopRewritten`), and `appliesAt: "next login"`:
+  launchd reads the file at its next load, so the running service keeps its current definition
+  until you log in again (or restart through `launchctl bootout` and `bootstrap`), and shows the
+  new name from then. `appliesAt` is `"now"` when that same call had to load a stopped service.
+  Run it once per Mac after installing 0.4.6.
+
+At the first load of a renamed plist macOS posts one "Background Items Added" notification
+for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
+definition is no longer loaded, which is the next login for a unified service.
+
 Preview the existing installation:
 
 ```sh
@@ -61,6 +109,16 @@ timeout names which readiness condition never held (`status_not_current`,
 `native_relay_not_connected`). The installed native binary replaces earlier
 test paths while retaining the original relay home and connected-machine
 registration.
+
+The login environment agent, `com.edihasaj.subscription-gateway.desktop-env`, is
+not a service component and stays a separate LaunchAgent on purpose. ChatGPT can
+start at login before this service has set `CODEX_CLI_PATH`; the agent runs
+`/bin/launchctl setenv CODEX_CLI_PATH <registered wrapper>` at login, ahead of
+anything slower, and exits. Consolidation does not collect it into the plan,
+retire it, or count it as a separate login job, and the unified service's
+desktop component keeps it in step with the registration. `gateway desktop
+unregister` and `gateway uninstall` remove it. See
+[the registration section](app-server.md#the-login-environment-agent).
 
 The supervisor retries failed children with a delay that grows from one second
 to thirty seconds. A child failure does not replace the other children. An
@@ -240,7 +298,7 @@ nothing, so a plan someone later edits by hand is still refused as `No tunnel <i
 Nothing restarts: the result says `appliesAt: next service restart`, and a repeat
 says the same. The tunnel stops when the unified service next starts from the
 shorter plan. That is any restart, not only one you run: `gateway service
-restart`, an idle self-upgrade restart after an update, a launchd restart after a
+restart`, a self-upgrade restart after an update, a launchd restart after a
 crash, or the next login. Until then `gateway tunnel status --tunnel-id <id>`
 shows `component: null` because the tunnel is gone from the plan, but its ssh
 process keeps running. Restore the saved file over `service-plan.json` and restart
@@ -375,6 +433,14 @@ fix (another live owner, a changed identity, an invalid engine or receipt) gets 
 kicked start per backoff step. Adapters that need the host fail closed until a retry
 succeeds.
 
+The first host start after an install is the first run of that release's engine
+binary, and macOS checks a newly written executable before its first run prints
+anything: about 3 seconds for the 335 MB gateway SDK on an M5 Pro, 0.01 seconds
+from the second run on. The host's `codex --version` check therefore allows 15
+seconds. Its earlier 5-second limit could fail that start as `sdk_invalid` on a
+slower or busier Mac, and the retry a second later passed (`execution_host_recovered`),
+which matches the pair one Mac logged at its 0.4.4 switch on 2026-10-17.
+
 The service probes a running host every 60 seconds: its ownership receipt, its
 control socket and one `execution/status` answer within 5 seconds, and, when native
 chats are shared, whether the app's engine was replaced under it. The host answers
@@ -475,7 +541,8 @@ those workers with a bounded TERM/KILL sequence. Idle restart first checks lease
 and loaded SDK chats, then freezes new acquisitions while the HTTP daemon checks
 its own idle guard. A refusal resumes the host and keeps its workers. A finished
 turn can leave a chat loaded; close or unsubscribe it and allow SDK idle unload
-before retrying the restart.
+before retrying the restart. An upgrade that has waited 15 minutes uses the quiet
+rule instead (see [Moving to a new release](#moving-to-a-new-release)).
 
 A failed migration restores the previous service plan. To restore legacy writers,
 rollback first stops its own replacement daemon and proves every recorded SDK
@@ -492,6 +559,82 @@ gateway executor-host --config /absolute/test/gateway.json \
 
 The command requires both explicit paths and the pinned SDK version. Ctrl-C stops
 its owned host and workers. Use the unified service for normal desktop work.
+
+# Moving to a new release
+
+Installing a release only switches the `current` link. The supervisor checks once a
+minute and, when `current` names another release, restarts itself; launchd starts it
+again on the installed release. It waits for one of two moments:
+
+1. **Idle**, tried first at every attempt: the execution host has no adapter lease and
+   no loaded chat, then inference accepts its own idle guard.
+2. **Quiet**, once the newer release has been installed for 15 minutes and the idle
+   restart still refuses: no turn is running in any engine, gateway or native, no chat
+   keeps a background terminal, and no turn ended in the last 5 minutes. A turn waiting
+   for an approval or for user input counts as running. Leases and loaded chats do not
+   block it. Inference must still accept its idle guard, so a running inference request
+   still refuses, and the next attempt asks again.
+
+The 15 minutes count from when the running service first saw the release, on the
+monotonic clock, which stops while the Mac sleeps: they are 15 minutes of awake time,
+so a Mac that sleeps right after an install waits that much longer after it wakes.
+
+The idle rule alone can wait forever: a ChatGPT on another Mac stays connected over
+SSH for days, holds a lease, and its SDK keeps its chats loaded. On 2026-10-17 a Mac
+stayed on the previous release for this reason until an operator stopped the
+service.
+
+The host never sees turn notifications: adapters talk to engine sockets directly, and
+a client the host kept open would be subscribed to new chats by the SDK and keep them
+loaded. So each quiet check opens one short admin connection per engine and asks the
+engine itself (the pinned gateway SDK, or for native chats the app's own signed codex)
+about every loaded chat:
+
+- its live `thread/read` status;
+- its background terminals (`thread/backgroundTerminals/list`). They are on by
+  default, outlive the turn that started them and end only when the engine closes the
+  chat's session, so a dev server an agent left running would die with the restart. A
+  chat that keeps one is never quiet, and the upgrade waits until the terminal ends or
+  is closed;
+- its newest turn (`thread/turns/list`, with the running turn merged in), which ended
+  at its `completedAt`, or, when it has none, at the later of its start and the chat's
+  `updatedAt`. Reading it replays the chat's whole saved history, so a saved chat whose
+  `updatedAt` is more than the quiet time plus a minute old is judged by its read
+  alone: the SDK touches `updatedAt` whenever it appends to that history, at most 5
+  seconds apart. A chat with no turns has nothing that ended.
+
+A throwaway chat, and one that has saved nothing yet, cannot list its turns, and its
+`updatedAt` is the time of the read, so neither tells when a turn ended. Only such
+chats are judged by the host's own watch: one is quiet once the host has seen it
+settled (not running, no terminal) at every check for 5 minutes; a check that sees it
+running, or that cannot read an engine, starts that watch again. The watch cannot see a
+throwaway chat's turn that starts and ends entirely between two checks, which run about
+every 2 minutes. A saved chat with a real `updatedAt` whose turn list fails is not
+watched: it ended its newest turn no later than its `updatedAt`. A chat or a status the
+check cannot read, or more than 256 loaded chats in one engine, counts as not quiet. A
+chat that was running at the previous check and is not now (its turn ended, the chat was
+unloaded, or its engine exited) counts as having ended at this check. Each reason a
+quiet attempt waited is logged once per pending release as `self_upgrade_waiting`
+([diagnostics](diagnostics.md)).
+
+The check runs in the host's control queue like the idle check and closes the gate the
+same way: once it passes, `execution/acquire`, `execution/find` and `native/acquire`
+are refused as quiescing until the service stops or the attempt is refused and the gate
+reopens, which takes up to 3 seconds when inference refuses its idle guard. An adapter
+asks again every 100 ms for up to 5 seconds before it reports that refusal.
+
+The service then stops as it does for any restart, and connected clients see the host
+go away as they do after a host restart. An adapter's engine connections close: when
+native chats are shared too, the adapter closes the app's connection and the app
+reconnects; otherwise a gateway chat's next request other than a resume reports that
+the executor connection was lost. Either way the app resumes the chat, and the resume
+kicks the service and waits up to 20 seconds for the new host, which then runs the
+chat's follow-up turns. Turns start on engine sockets, not through the host, so the
+check cannot hold one back: a turn started in the second or two between the quiet check
+and the host's close (inference exits first) is cut, as at any service restart, and
+continues from saved history after a resume. `gateway service restart` keeps the idle
+rule and its maintenance window. Each move is logged as `self_upgrade` with `mode`
+`idle` or `quiet`, and for `quiet` the number of chats still loaded.
 
 # Shared native session ownership
 

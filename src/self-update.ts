@@ -29,25 +29,42 @@ export function newerReleaseInstalled(state = releaseState()): boolean {
   return !!state?.installed && state.installed !== state.running;
 }
 
+/** How a process moved to a newer release: `idle` (nothing connected or loaded), or the service's `quiet` rule. */
+export type UpgradeMode = "idle" | "quiet";
+/** What an accepted upgrade reports for `self_upgrade`; `loadedChats` (a count) only for a quiet one. Plain `true` means idle. */
+export interface UpgradeOutcome { mode: UpgradeMode; loadedChats?: number }
+
+/** A newer release waiting: the running and installed release names, and how long (ms) this watcher has seen it installed. */
+export interface PendingRelease { from: string; to: string; pendingMs: number }
+
 /**
  * Checks once a minute. When a different release is installed and `isIdle` stays true
- * for two checks in a row, it calls `upgrade`. An upgrade that reports false (work
- * arrived meanwhile) is retried at a later idle moment.
+ * for two checks in a row, it calls `upgrade` with the pending release. The wait is
+ * measured with the monotonic clock, which does not advance while the Mac sleeps, so
+ * it counts awake time only. An upgrade that reports false (work arrived meanwhile) is
+ * retried at a later idle moment.
  */
-export function watchForUpgrade(component: string, isIdle: () => boolean | Promise<boolean>, upgrade: () => boolean | Promise<boolean>,
+export function watchForUpgrade(component: string, isIdle: () => boolean | Promise<boolean>,
+  upgrade: (pending: PendingRelease) => boolean | UpgradeOutcome | Promise<boolean | UpgradeOutcome>,
   options: { intervalMs?: number; state?: () => ReleaseState | undefined } = {}): () => void {
-  const read = options.state ?? (() => releaseState()); let idleChecks = 0; let done = false; let cancelled = false;
+  const read = options.state ?? (() => releaseState()); let idleChecks = 0; let done = false; let cancelled = false; let pendingSince: number | undefined;
   const timer = setInterval(() => {
     if (done || cancelled) return;
     const state = read();
-    if (!newerReleaseInstalled(state)) { idleChecks = 0; return; }
+    if (!newerReleaseInstalled(state)) { idleChecks = 0; pendingSince = undefined; return; }
+    pendingSince ??= performance.now();
     void Promise.resolve(isIdle()).then(idle => {
       if (done || cancelled) return;
       idleChecks = idle ? idleChecks + 1 : 0;
       if (idleChecks < 2) return;
       done = true;
-      return Promise.resolve(upgrade()).then(started => {
-        if (started) { clearInterval(timer); telemetry("self_upgrade", { component, from: state!.running, to: state!.installed }); }
+      return Promise.resolve(upgrade({ from: state!.running, to: state!.installed!, pendingMs: performance.now() - (pendingSince ?? performance.now()) })).then(started => {
+        if (started) {
+          clearInterval(timer);
+          const outcome: UpgradeOutcome = started === true ? { mode: "idle" } : started;
+          telemetry("self_upgrade", { component, from: state!.running, to: state!.installed, mode: outcome.mode,
+            ...(outcome.mode === "quiet" ? { loadedChats: outcome.loadedChats ?? 0 } : {}) });
+        }
         else { done = false; idleChecks = 0; }
       });
     }).catch(() => { done = false; idleChecks = 0; });

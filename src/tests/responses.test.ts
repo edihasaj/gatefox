@@ -54,10 +54,10 @@ test("opaque reasoning remains transport state while provider-exposed summaries 
 const invalid = [
   { input: [{ role: "unknown", content: "text" }] }, { input: [{ type: "function_call_output", output: "result" }] },
   { input: [{ type: "custom_tool_call", call_id: "one", name: "patch", input: {} }] }, { tools: [{ type: "web_search" }] },
-  { tools: [{ type: "function", name: "same" }, { type: "function", name: "same" }] }, { tool_choice: { type: "function", name: "missing" } },
+  { tool_choice: { type: "function", name: "missing" } },
   { tools: [{ type: "namespace", name: "group", tools: [{ type: "namespace", name: "nested", tools: [] }] }] },
 ];
-test("invalid roles, unsupported capabilities, duplicate definitions and unavailable forced tools fail before inference", () => {
+test("invalid roles, unsupported capabilities and unavailable forced tools (repeated definitions merge, see tool-merge.test.ts) fail before inference", () => {
   for (const options of invalid) assert.throws(() => responsesToChatRequest({ model: "test", input: "hello", ...options } as ResponsesRequest), ResponsesTranslationError);
 });
 

@@ -57,7 +57,7 @@ export interface HealthReport {
   errors: {
     windowMinutes: number;
     rpcErrors: Record<string, number>;
-    /** Every session refusal in the window; 1-2 warn, `refusalFailThreshold` and up fail. */
+    /** Every session refusal in the window. Only an ongoing run of `refusalFailThreshold` or more fails (see health-telemetry). */
     refusals: number;
     configRetries: number;
     configRetryRpcErrors: number;

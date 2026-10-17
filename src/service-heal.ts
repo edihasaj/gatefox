@@ -3,6 +3,7 @@ import { startHealthSchedule } from "./health-schedule.js";
 import { watchHostKick } from "./execution-host-kick.js";
 import type { HostFailureReason } from "./execution-host.js";
 import { probeExecutionHost, type HostProbeReason, type HostProbeTarget, type SdkBaseline } from "./service-host-probe.js";
+import { releaseState, type ReleaseState } from "./self-update.js";
 
 /**
  * The fixed numbers and vocabularies of the supervisor's self-heal. Nothing here reads an error's text, a path or an
@@ -52,7 +53,7 @@ export function scheduleServiceHealth(stateDirectory: string, configPath: string
 /**
  * The self-heal's watchers and clocks; tests replace them. A running host is probed every `hostProbeMs`, an adapter's
  * kick is watched in the host folder (once a second), a kicked or probed start never follows another start inside
- * `kickGapMs`, and the watchdog heartbeat runs while the service does.
+ * `kickGapMs`, the watchdog heartbeat runs while the service does, and the upgrade watcher reads `releaseState`.
  */
 export interface SupervisorHealing {
   probeHost: (target: HostProbeTarget, baseline: SdkBaseline) => Promise<HostProbeReason | undefined>;
@@ -60,8 +61,19 @@ export interface SupervisorHealing {
   watchKick: (home: string, onKick: () => unknown) => () => void;
   kickGapMs: number;
   healthSchedule: (stateDirectory: string, configPath: string) => () => void;
+  releaseState: () => ReleaseState | undefined;
 }
-export const defaultHealing: SupervisorHealing = { probeHost: probeExecutionHost, hostProbeMs: 60_000, watchKick: (home, onKick) => watchHostKick(home, onKick), kickGapMs: 5000, healthSchedule: scheduleServiceHealth };
+export const defaultHealing: SupervisorHealing = { probeHost: probeExecutionHost, hostProbeMs: 60_000, watchKick: (home, onKick) => watchHostKick(home, onKick), kickGapMs: 5000, healthSchedule: scheduleServiceHealth,
+  releaseState: () => releaseState() };
+
+/**
+ * A newer release waits this long for an idle service (no adapter lease, no loaded chat) before the quiet rule may move it;
+ * after that, quiet means no turn running and none ended within `upgradeQuietMs`. The values are fixed: like
+ * GATEWAY_UPGRADE_CHECK_MS, GATEWAY_UPGRADE_GRACE_MS and GATEWAY_UPGRADE_QUIET_MS are test hooks that nothing the gateway
+ * installs sets (a service plan passes only PATH and SSH_AUTH_SOCK to the service).
+ */
+export function upgradeGraceMs(): number { return Number(process.env.GATEWAY_UPGRADE_GRACE_MS) || 15 * 60_000; }
+export function upgradeQuietMs(): number { return Number(process.env.GATEWAY_UPGRADE_QUIET_MS) || 5 * 60_000; }
 /** Failed probes in a row before a running host counts as unhealthy: one slow answer can be a busy moment, not a hung host. */
 export const hostProbeStrikes = 2;
 /** Failures a retry cannot fix by itself: a kick buys at most one extra start for them between two backoff starts. */

@@ -237,5 +237,12 @@ gateway executor; newer chats are stored as `openai`, see [harness identity](doc
 `com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
 the state folder `~/Library/Application Support/Subscription Gateway`, and the
 ownership markers in service and execution-host receipts. Changing any of them
-needs a migration on every Mac. The `gateway` command remains; the installer also
-adds `harness-gateway`.
+needs a migration on every Mac. The installed command is `harness-gateway`, and
+`gateway` remains as a second launcher with the same contents, so existing scripts
+and old LaunchAgents keep working. macOS names a background item after the program a
+LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System
+Settings, Login Items shows "harness-gateway" under "Allow in the Background"; the
+login environment agent runs a private script, `harness-gateway-login-env`, for the
+same reason. When a service is rewritten by 0.4.6 macOS posts one "Background Items
+Added" notification for harness-gateway, and the old "gateway" entry disappears from
+the list. See [services](docs/services.md).
