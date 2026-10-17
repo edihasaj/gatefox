@@ -183,7 +183,11 @@ export class ResponsesAPI implements Provider {
       return [{ type: "native-item", item }];
     };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
-      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) return searchItem(item);
+      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
+        // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
+        if (interrupted && item.status !== "completed") return [];
+        return searchItem(item);
+      }
       if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
       if (item.type === "function_call" || item.type === "custom_tool_call") {
         // An interrupted final snapshot can contain an unfinished call. Only a

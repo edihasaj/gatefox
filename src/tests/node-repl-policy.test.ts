@@ -148,6 +148,29 @@ test("a carried native row keeps the tool search value of the native row", () =>
   }
 });
 
+test("a carried native row keeps search off when a provider that is not the Codex subscription names its slug as an alias", () => {
+  const searchable: Row = { ...lax, supports_search_tool: true };
+  const other: Row = { ...strict, supports_search_tool: true };
+  const aliasOf = (type: ProviderConfig["type"], alias: string): ProviderConfig => ({ id: `p-${type}`, type, baseUrl: "https://example.invalid/v1", apiKeyEnv: "FIXTURE_KEY", models: { [alias]: "upstream" } });
+  const searchOf = (rows: Row[], codeMode: boolean, ...providers: ProviderConfig[]) =>
+    Object.fromEntries(desktop(rows, codeMode, ...providers).combined().models.slice(0, rows.length).map(row => [row.slug, row.supports_search_tool]));
+  // The alias takes the request before the bare-name lookup, and only the Codex route accepts tool_search.
+  for (const type of ["responses-api", "chat-completions-api", "anthropic-api", "claude-subscription", "copilot-subscription"] as const) {
+    for (const codeMode of modes) {
+      assert.deepEqual(searchOf([searchable, other, reviewer], codeMode, sol, aliasOf(type, "gpt-6-luna")), { "gpt-6-luna": false, "gpt-6.1-sol": true, "codex-auto-review": undefined }, `${type}, ${codeMode}`);
+    }
+  }
+  // An alias on a Codex subscription is the same route, and a different alias on another provider does not matter.
+  assert.deepEqual(searchOf([searchable, other], true, codex({ "gpt-6-luna": "gpt-6-luna", "codex/sol": "gpt-6.1-sol" })), { "gpt-6-luna": true, "gpt-6.1-sol": true });
+  assert.deepEqual(searchOf([searchable, other], true, sol, aliasOf("responses-api", "api/gpt-6-luna")), { "gpt-6-luna": true, "gpt-6.1-sol": true });
+  // The function leaves a row alone unless it is a listed slug that says search is on.
+  const off = new Set(["gpt-6-luna", "gpt-6-unlisted"]);
+  assert.equal(executorNativeRow(lax, [lax, reviewer], served, off), lax, "a row that states no search is carried as it is");
+  assert.equal(executorNativeRow(searchable, [searchable, reviewer], served, new Set()), searchable);
+  assert.equal(executorNativeRow(searchable, [searchable, reviewer], served, off).supports_search_tool, false);
+  assert.equal(searchable.supports_search_tool, true, "the native row is never modified");
+});
+
 test("guardian shapes decide review the same way through withNativeRow, executorNativeRow and nodeReplFallback, whether code mode is on or off", () => {
   // [guardian, node_repl_disabled, node_repl_auto_review_required] -> [Codex 2 row, native row in the executor catalog, fallback row]
   type Case = [unknown, boolean, boolean, object, object, object, string];

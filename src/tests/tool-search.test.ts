@@ -109,6 +109,27 @@ test("a search item that only appears in the final snapshot is still delivered o
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("an interrupted final snapshot withholds a search item that did not complete, like an unfinished function call", async t => {
+  const { directory, credentialFile } = await fixture();
+  const unfinished = [{ ...searchCall, call_id: "call_u1", status: "in_progress" }, { ...searchCall, call_id: "call_u2", status: "incomplete" }, { ...searchCall, call_id: "call_u3", status: undefined },
+    { type: "tool_search_output", call_id: "call_u4", execution: "client", status: "in_progress", tools: [] }];
+  const finished = { ...searchCall, call_id: "call_done", status: "completed" };
+  const finishedOutput = { ...searchOutput, call_id: "call_done" };
+  let snapshot: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async () => new Response(sse({ type: "response.incomplete", response: { id: "r", status: "incomplete", incomplete_details: { reason: "interrupted" }, output: snapshot, usage } }), { headers: { "Content-Type": "text/event-stream" } }));
+  try {
+    const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
+    snapshot = [...unfinished, finished, finishedOutput];
+    const events = await drain(provider.infer(request(), new AbortController().signal));
+    assert.deepEqual(events.filter(event => event.type === "native-item"), [{ type: "native-item", item: finished }, { type: "native-item", item: finishedOutput }], "only the completed search items are delivered");
+    assert.equal(events.at(-1)!.type, "done");
+    assert.equal((events.at(-1) as { interrupted?: boolean }).interrupted, true);
+    // The same unfinished item is still delivered when the stream completes normally: only an interrupted snapshot withholds it.
+    t.mock.method(globalThis, "fetch", async () => new Response(sse({ type: "response.completed", response: { id: "r", status: "completed", output: [unfinished[0]], usage } }), { headers: { "Content-Type": "text/event-stream" } }));
+    assert.deepEqual((await drain(provider.infer(request(), new AbortController().signal))).filter(event => event.type === "native-item"), [{ type: "native-item", item: unfinished[0] }]);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("every other provider type rejects search exactly as before", async t => {
   const { directory, credentialFile } = await fixture();
   let reached = 0;
