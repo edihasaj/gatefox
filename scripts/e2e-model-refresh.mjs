@@ -39,7 +39,7 @@ async function turn(threadId, text, model, effort = 'low') {
 try {
   await rpc('initialize', { clientInfo: { name: 'gateway_refresh_verification', version: '0.1.0' } }); child.stdin.write(JSON.stringify({ method: 'initialized', params: {} }) + '\n');
   const nativePids = pids(); assert.equal(nativePids.length, 1);
-  const old = await rpc('thread/start', { model: v.model, cwd: work, approvalPolicy: 'never', sandbox: 'workspace-write' }); assert.equal(old.modelProvider, 'subscription_gateway');
+  const old = await rpc('thread/start', { model: v.model, cwd: work, approvalPolicy: 'never', sandbox: 'workspace-write' }); assert.ok(['openai', 'subscription_gateway'].includes(old.modelProvider));
   const read = await turn(old.thread.id, `Read ${sample} with a tool and give its proof value.`, v.model); assert.ok(read.text.includes(proof)); assert.ok(read.events.some(event => event.method === 'item/completed' && event.params.item.type === 'commandExecution'));
   const oldPids = pids(); assert.equal(oldPids.length, 2);
   const offset = events.length; const active = await rpc('turn/start', { threadId: old.thread.id, model: v.model, effort: 'low', input: [{ type: 'text', text: 'Use exec_command to run sleep 30 with yield_time_ms 30000. Wait for its result, then reply exactly: old-done.' }] });
@@ -47,7 +47,7 @@ try {
   record('await-catalog-addition', { oldTurnActive: true, nativePids, oldPids });
   await until(async () => (await rpc('model/list')).data.some(model => model.model === v['new-model']), 'catalog addition', 60000);
   assert.ok(!final.has(active.turn.id), 'Old stream ended before the live addition check');
-  const fresh = await rpc('thread/start', { model: v['new-model'], cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.equal(fresh.modelProvider, 'subscription_gateway');
+  const fresh = await rpc('thread/start', { model: v['new-model'], cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.ok(['openai', 'subscription_gateway'].includes(fresh.modelProvider));
   const newPids = pids(); assert.equal(newPids.length, 3); assert.ok(oldPids.every(pid => newPids.includes(pid)));
   const answer = await turn(fresh.thread.id, 'Reply exactly: new-catalog-ok. Do not use tools.', v['new-model']); assert.equal(answer.text.trim(), 'new-catalog-ok');
   const windows = answer.events.filter(event => event.method === 'thread/tokenUsage/updated').map(event => event.params.tokenUsage.modelContextWindow);
@@ -55,9 +55,9 @@ try {
   record('new-model-live', { passed: true, oldEnginesPreserved: true, nativeEnginePreserved: true, newPids, modelContextWindows: windows, temporaryAliasOfExistingSonnet: true });
   const at = Date.now(); await rpc('turn/interrupt', { threadId: old.thread.id, turnId: active.turn.id }); const interrupted = await until(() => final.get(active.turn.id), 'old cancellation'); assert.equal(interrupted.status, 'interrupted');
   record('old-tool-turn-cancelled', { passed: true, acknowledgementMs: Date.now() - at });
-  const listed = await rpc('thread/list', { modelProviders: ['subscription_gateway'], limit: 100 }); assert.ok(listed.data.some(thread => thread.id === old.thread.id));
+  const listed = await rpc('thread/list', { modelProviders: [old.modelProvider], limit: 100 }); assert.ok(listed.data.some(thread => thread.id === old.thread.id));
   await rpc('thread/unsubscribe', { threadId: old.thread.id }); await delay(200);
-  const resumed = await rpc('thread/resume', { threadId: old.thread.id, model: v['new-model'], cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.equal(resumed.modelProvider, 'subscription_gateway');
+  const resumed = await rpc('thread/resume', { threadId: old.thread.id, model: v['new-model'], cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.equal(resumed.modelProvider, old.modelProvider);
   const follow = await turn(old.thread.id, 'Give only the proof value you read earlier. Do not use tools.', v['new-model']); assert.ok(follow.text.includes(proof));
   assert.equal(digest(), before); record('saved-history-and-config', { passed: true, sharedThreadList: true, nativeConfigUnchanged: true, proofRetained: true });
   const reasonOffset = events.length;

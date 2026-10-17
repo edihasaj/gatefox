@@ -428,7 +428,9 @@ refusal above. `openai-internal-strip` is the removal of internal fields and con
 `native-identity-v1` means this inference server accepts requests from a gateway executor that runs
 under the native `openai` provider identity: the two behaviors above, which such an executor needs,
 are both present. It describes the server only; whether executors run under that identity is a
-separate setting of the desktop adapter.
+separate setting of the desktop adapter (`chatIdentity`, `subscription_gateway` by default). Since 0.4.7
+executors reach this server through the gateway's own provider definition even for chats recorded as
+`openai`, so they do not depend on these two behaviors; see [harness identity](harness-identity.md).
 
 ## Ordinary Anthropic API
 

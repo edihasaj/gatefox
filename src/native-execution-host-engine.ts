@@ -7,6 +7,7 @@ import { object, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { privateDirectory, removeOwnedSocket, sameSocketIdentity, sdkIdentity, sdkSocketTarget, socketIdentity, type EngineOwner, type HostIdentity, type NativeDeath } from "./execution-host-storage.js";
 import { spawnStamp } from "./boot-identity.js";
+import { nativeEnvironment } from "./executor-identity.js";
 
 export interface NativeExecutionDescriptor { args: string[]; cwd: string }
 export interface NativeExecutionRecord { kind: "native"; revision: string; socketPath: string; pid: number; instanceId: string }
@@ -95,8 +96,9 @@ export function nativeExecutionArgs(args: string[], socket: string, managedRelay
   if (managedRelay && args.some(arg => arg === "--remote-control" || arg.startsWith("--remote-control="))) throw new Error("Native execution remote-control flag conflicts with managed relay ownership");
   return [...nativeTransportArgs(args), "--listen", `unix://${socket}`];
 }
+/** The shared native engine's environment: never the gateway executor marker, even when the host inherited one. */
 export function nativeExecutionEnvironment(nativeHome: string, managedRelay: boolean): NodeJS.ProcessEnv {
-  return { ...process.env, CODEX_HOME: nativeHome, ...(managedRelay ? { CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" } : {}) };
+  return { ...nativeEnvironment(), CODEX_HOME: nativeHome, ...(managedRelay ? { CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" } : {}) };
 }
 
 /** The host owns this native-home writer; frontend connection lifetimes do not. */

@@ -75,6 +75,12 @@ export interface GatewayConfig {
   timeoutMs?: number;
   clientOnly?: boolean;
   accountEngines?: AccountEngineConfig[];
+  /**
+   * The provider id new gateway chats are recorded with: `legacy` (the default) for `subscription_gateway`, or `openai`, an
+   * opt-in for a Mac whose native relay is verified, so a stock engine lists them too. Existing chats keep the id they were
+   * saved with either way. See docs/harness-identity.md.
+   */
+  chatIdentity?: "openai" | "legacy";
 }
 
 const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
@@ -89,6 +95,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.clientOnly && (config.providers.length || !config.port)) throw new Error("Remote clients require a fixed forwarded port and no local providers");
   if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
+  if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const ids = new Set<string>(); const aliases = new Set<string>();
   const providers = config.providers.map(provider => {
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
@@ -146,7 +153,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
-    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}) };
+    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
+    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}) };
 }
 
 function validateAccountEngines(value: unknown, providers: ProviderConfig[]): AccountEngineConfig[] {

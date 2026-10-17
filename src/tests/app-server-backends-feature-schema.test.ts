@@ -63,7 +63,7 @@ test("a shared gateway executor is acquired with trimmed launch flags and settin
     const [descriptor] = acquired;
     assert.deepEqual(descriptor.settings, { features: { async_compaction: true, multi_agent_v2: { enabled: true }, fast_mode: false } });
     assert.deepEqual(descriptor.args, ["app-server", "-c", "features.async_compaction=true", "-c", "features.fast_mode=false",
-      "-c", 'model="claude/model"', "-c", 'model_provider="subscription_gateway"', "-c", "features.step_model_switching=true"]);
+      "-c", 'model="claude/model"', "-c", 'model_provider="subscription_gateway"', "-c", "analytics.enabled=false", "-c", 'shell_environment_policy.set.HARNESS_GATEWAY_EXECUTOR="0"', "-c", "features.step_model_switching=true"]);
     const sdk = descriptor.gatewaySdkSha256 ? { gatewaySdkSha256: descriptor.gatewaySdkSha256 } : {};
     assert.equal(descriptor.revision, createHash("sha256").update(canonicalJson({ catalog: descriptor.catalog, settings: descriptor.settings, args: descriptor.args, ...sdk })).digest("hex"));
   } finally { await f.clean(); }

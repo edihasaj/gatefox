@@ -94,7 +94,7 @@ nodeTest("a new chat's engine is the router's hint: an alias or the gateway's ow
   const f = await fixture();
   await f.router.request("thread/start", { model: sol, modelProvider: "openai" });
   assert.deepEqual(f.sent("thread/start").hint, { engine: "gateway" });
-  assert.equal(f.sent("thread/start").params.modelProvider, legacyProvider, "this release still writes the gateway's own provider id");
+  assert.equal(f.sent("thread/start").params.modelProvider, legacyProvider, "the router asks for a gateway chat; the backends record it with the connection's identity");
   const nativeStart = { model: native, modelProvider: "openai", config: { trusted: true } };
   await f.router.request("thread/start", structuredClone(nativeStart));
   assert.deepEqual(f.sent("thread/start"), { method: "thread/start", params: nativeStart, hint: { engine: "native" } });
@@ -111,7 +111,8 @@ test("the desktop's resume with no model restores a saved gateway chat on the ga
   const f = await fixture();
   const resumed = await f.router.request("thread/resume", desktopResume("gw"));
   const forwarded = f.sent("thread/resume").params;
-  assert.deepEqual({ provider: forwarded.modelProvider, model: forwarded.model, answered: resumed.model }, { provider: legacyProvider, model: sol, answered: sol });
+  assert.deepEqual({ provider: forwarded.modelProvider, model: forwarded.model, answered: resumed.model }, { provider: identity.provider, model: sol, answered: sol },
+    "the resume names the provider the chat was saved with, so neither its rollout nor its SQLite row is rewritten");
   assert.equal(f.router.describeThread("gw").provider, "gateway");
   // A gateway chat saved on a native slug is still the gateway's; no gateway row serves that slug, so its resume is refused
   // with the gateway's own message instead of running on the native engine.
@@ -136,6 +137,17 @@ test("a new chat keeps the engine the router sent it to when the reply classifie
   await f.router.request("turn/start", { threadId: "disagreeing", input: [], effort: "low" });
   assert.equal(f.sent("turn/start").hint, undefined);
   assert.equal(f.router.describeThread("disagreeing").provider, "native", "the remembered route still decides");
+});
+
+test("a gateway chat whose route came from a settings notification still resumes with the provider it was saved with", async () => {
+  const f = await fixture();
+  // The notification names no provider, so the route it creates does not know the saved one; the resume must read it.
+  await f.router.observeNotification(settingsUpdated("gw", { model: sol, serviceTier: null, effort: "low" }), "gateway");
+  assert.equal(f.router.describeThread("gw").provider, "gateway");
+  assert.equal(f.calls.some(call => call.method === "thread/read"), false, "the route came from the notification alone");
+  await f.router.request("thread/resume", { threadId: "gw" });
+  assert.equal(f.sent("thread/resume").params.modelProvider, identity.provider, "the saved provider, never a rewrite");
+  assert.equal(f.router.describeThread("gw").identity, identity.name === "legacy" ? "legacy" : "openai");
 });
 
 test("forks follow their chat: a gateway fork gets the gateway's request, a native or prediction fork reaches the engine as sent", async () => {

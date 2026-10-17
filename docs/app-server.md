@@ -11,13 +11,19 @@ The experimental adapter keeps the original Codex executable and native login.
 It adds configured gateway models after the native models and routes every chat by its
 kind, not by its provider id. The adapter classifies a chat with the first rule that
 answers, in this order: the legacy provider id `subscription_gateway`; the registry of
-gateway chats; the parent of a sub-agent; and a model alias that is not a native model
-slug. Any other chat is native and keeps its provider. The registry is the file
+gateway chats; a gateway ancestor of a sub-agent, read from its saved record when this
+connection has not seen it; and a model alias that is not a native model slug. Any other chat is native and keeps its provider. The registry is the file
 `<state directory>/gateway-chats/<scope>.json`, where `<scope>` identifies the native
 Codex home. The adapter writes a gateway chat's start or fork to the registry before it
-returns the reply, and a sub-agent that a gateway engine announces before it forwards
-the announcement. Release 0.4.4 still writes `subscription_gateway` as the provider id
-of every gateway chat, so release 0.4.3 can still resume those chats. A gateway model
+returns the reply, a sub-agent that a gateway engine announces before it forwards
+the announcement, and a chat that only its ancestors or alias identified when it routes
+it to an executor. New gateway chats are recorded as `subscription_gateway` by default; a
+Mac whose native relay is verified can opt in to `"chatIdentity": "openai"` (0.4.7), so a
+stock engine lists them too. Existing chats keep the id they were saved with. A chat list
+that asks only for the native default provider also gets the `subscription_gateway`
+chats, which is how the phone sees them through the relay. See
+[harness identity](harness-identity.md) for when to opt in, the executor contract, the
+phone and rollback. A gateway model
 alias that equals a native model slug is refused when the catalog loads, because the
 native slug would otherwise take over the alias's chats.
 
@@ -157,7 +163,9 @@ and writes a combined catalog. Cache identity and authentication are excluded.
 The public rows form a combined catalog for gateway executors. The original
 native process keeps its native model and account defaults. The adapter registers
 only the added `subscription_gateway` provider through process arguments, so
-saved gateway chats can resolve that provider when read or resumed. It does not
+saved gateway chats can resolve that provider when read or resumed. Gateway
+executors get it too, and serve `openai` as a second name for it
+([harness identity](harness-identity.md)). It does not
 write the native configuration. A mismatched or
 unavailable cache prevents startup.
 
@@ -523,6 +531,34 @@ These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol,
 which were then in one node_repl group; only adapter tests cover a rejected switch.
 Goal creation, reads, updates, notifications, and clearing were tested. Automatic
 goal continuation and every rendered control remain separate desktop checks.
+
+## Re-attaching a gateway chat
+
+A gateway chat runs on an executor that can go away under a loaded chat: the shared host
+restarts (a service upgrade or restart), a private executor exits, or the host drops this
+adapter's connection. Since 0.4.7 the chat's next request does not fail for that. The
+adapter first loads the chat again: it finds the host again (a kick and up to 20 seconds
+of waiting), takes the generation that still owns the chat or the current one, and sends
+`thread/resume` with the parameters this connection loaded the chat with (model, the
+provider id it is saved with, folder, approval and sandbox settings), then the request
+itself. A model the chat applied later replaces the loaded one. A chat this connection
+did not load, such as a sub-agent, is resumed with its saved settings.
+
+- One re-attach per chat at a time: requests that arrive meanwhile wait for it, so the
+  chat is resumed once.
+- Nothing of a turn that died with the executor is sent again. Stopping or steering that
+  turn afterwards gets the executor's own answer.
+- The host's owner and generation rules still decide, so a chat never gets a second
+  writer: a live generation that owns the chat serves it again.
+- A throwaway chat (a composer prediction) lived only in the executor that is gone and
+  is not re-attached, and a host that stays down past the wait, or an executor that
+  refuses the resume, gives the error from before: "The gateway executor connection was
+  lost; resume this chat to reconnect to its saved or running session." (code -32001),
+  or for a private executor "The gateway executor exited; …".
+- Native chats are unchanged: when the native engine goes away, the app reconnects.
+
+Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`
+([diagnostics](diagnostics.md)).
 
 ## Native chats keep their model
 

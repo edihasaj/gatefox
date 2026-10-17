@@ -8,7 +8,8 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { identityTest } from "./identity-cases.js";
 
-// A saved gateway chat and its engine's notifications carry the identity under test; requests the router sends still name the gateway's own provider.
+// A saved gateway chat and its engine's notifications carry the identity under test. A new chat's request names the gateway's own
+// provider (the backends record it with the connection's identity); a resume names the provider the chat was saved with.
 let gateway = "subscription_gateway";
 const test = identityTest(identity => { gateway = identity.provider; });
 
@@ -75,7 +76,7 @@ test("native chat never receives a gateway alias and persisted gateway chats ret
   await assert.rejects(router.request("turn/start", { threadId: "test", model: "native", collaborationMode: { settings: { model: "claude/model" } } }), /Start a new chat/);
   assert.equal(calls.length, count);
   await router.request("thread/resume", { threadId: "persisted" });
-  assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
+  assert.equal(calls.at(-1)!.params.modelProvider, gateway, "a resume names the provider the chat was saved with, so its record is never rewritten");
   assert.equal(calls.at(-1)!.params.model, "codex/model");
 });
 

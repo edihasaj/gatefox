@@ -26,7 +26,7 @@ export interface ClassifyContext {
 /** Providers older than the alias catalog wrote on the thread; a gateway chat even when its alias is gone. */
 const legacyProvider = "subscription_gateway";
 /** How far up the sub-agent chain a gateway parent is still followed. */
-const maxParentDepth = 8;
+export const maxParentDepth = 8;
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
 /** The first of these keys that holds usable text; harnesses spell the same field both ways. */
@@ -35,7 +35,7 @@ function pick(value: Record<string, unknown>, keys: string[]): string | undefine
   return undefined;
 }
 /** The parent a thread records for itself: its own field first, then whichever sub-agent shape the rollout used. */
-function parentOf(thread: ClassifyThread): string | undefined {
+export function parentOf(thread: ClassifyThread): string | undefined {
   if (text(thread.parentThreadId)) return thread.parentThreadId;
   const source = thread.source;
   if (!object(source)) return undefined;

@@ -1,10 +1,10 @@
 import nodeTest, { type TestContext } from "node:test";
 
 /**
- * The two provider ids a gateway chat can be saved with: the gateway's own, which every release so far writes, and the
- * native identity a later release writes. A gateway chat must behave the same under both, so the tests that read a saved
- * gateway chat or a gateway engine's notification run once per identity. Requests the router sends still carry the
- * gateway's own id in this release; tests assert those with the literal.
+ * The two provider ids a gateway chat can be saved with: the gateway's own, which releases before 0.4.6 write, and the
+ * native identity 0.4.6 writes by default. A gateway chat must behave the same under both, so the tests that read a saved
+ * gateway chat or a gateway engine's notification run once per identity. A new chat's request from the router carries the
+ * gateway's own id (the backends record the chat with the connection's identity); a resume carries the saved one.
  */
 export const gatewayIdentities = [
   { name: "legacy", provider: "subscription_gateway" },

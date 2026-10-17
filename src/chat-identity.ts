@@ -1,12 +1,12 @@
 import { BoundedIdSet } from "./bounded-id-set.js";
-import { classifyThread, type ChatKind, type ClassifyContext, type ClassifyRule, type ClassifyThread } from "./gateway-chat-classifier.js";
+import { classifyThread, maxParentDepth, parentOf, type ChatKind, type ClassifyContext, type ClassifyRule, type ClassifyThread } from "./gateway-chat-classifier.js";
 import { GatewayChatRegistry, type GatewayChatOrigin } from "./gateway-chat-registry.js";
 import { telemetry } from "./telemetry.js";
 
 export type { ChatKind };
 /** The engine a request is meant for. The router decides it; a provider id in the request never does. */
 export interface EngineHint { engine: ChatKind }
-/** The provider id gateway chats were written with before the native identity. This release still writes it. */
+/** The provider id gateway chats are written with by default; `chatIdentity: "openai"` (0.4.7) opts a Mac into the native identity. */
 export const legacyGatewayProvider = "subscription_gateway";
 /** The catalogs a classification reads, as thunks: a chat that the provider or the registry answers never builds them. */
 export interface IdentityCatalogs { aliases: () => ReadonlySet<string>; nativeSlugs: () => ReadonlySet<string> }
@@ -73,6 +73,32 @@ export class ChatIdentity {
     if (method === "thread/list" && Array.isArray(result.data)) for (const item of result.data.slice(0, maxListed)) this.learn(threadFacts(item));
   }
   readonly readParent = (id: string): ClassifyThread | undefined => this.threads.get(id);
+  /**
+   * Reads the ancestors of a chat that this connection has not seen and the registry does not hold, so the parent rule can
+   * answer for a sub-agent whose chain was spawned while no desktop was connected, or whose registry entries were lost. It
+   * follows the chain as far as the classifier does (8 levels), stops at a registered or legacy ancestor, a repeat, or one
+   * it cannot read, and reads each chat at most once per connection. `read` returns a chat's saved thread (metadata only).
+   * A chat that its own provider id, registry entry or gateway alias already makes a gateway chat needs no ancestor, so
+   * nothing is read for it. Call it after `refresh`, so the registry answers from the file's current state.
+   */
+  async learnAncestors(thread: ClassifyThread, catalogs: IdentityCatalogs, read: (id: string) => Promise<unknown>): Promise<void> {
+    if (thread.modelProvider === legacyGatewayProvider || (text(thread.id) && this.registry.hasCached(thread.id))) return;
+    if (text(thread.model) && catalogs.aliases().has(thread.model) && !catalogs.nativeSlugs().has(thread.model)) return;
+    const seen = new Set<string>(text(thread.id) ? [thread.id] : []);
+    let parent = parentOf(thread);
+    for (let depth = 0; parent !== undefined && depth < maxParentDepth && !seen.has(parent); depth++) {
+      seen.add(parent);
+      if (this.registry.hasCached(parent)) return;
+      let facts = this.threads.get(parent);
+      if (!facts) {
+        facts = threadFacts(await read(parent).catch(() => undefined));
+        if (facts?.id !== parent) return;
+        this.learn(facts);
+      }
+      if (facts.modelProvider === legacyGatewayProvider) return;
+      parent = parentOf(facts);
+    }
+  }
   /** Brings the registry up to date; an unreadable one counts as empty and is reported by the registry itself. */
   async refresh(): Promise<void> { await this.registry.refresh().catch(() => undefined); }
   /** Synchronous after `refresh`: the registry answers from memory and parents come from what this connection saw. */
@@ -92,8 +118,9 @@ export class ChatIdentity {
   }
   /**
    * Records a gateway chat and resolves once it is on disk, so the caller can forward the reply or notification after it.
-   * A chat already recorded costs no write. A failed write is reported once and never fails the chat: until the identity
-   * changes, a gateway chat is still recognized by its provider.
+   * A chat already recorded costs no write. A failed write is reported once and never fails the chat: a legacy chat is still
+   * recognized by its provider, an `openai` chat on a gateway alias by its alias, and an `openai` sub-agent on a native model
+   * only through its ancestors, which `learnAncestors` reads (see docs/harness-identity.md).
    */
   async record(id: string, origin: GatewayChatOrigin): Promise<void> {
     const pending = this.recording.get(id);

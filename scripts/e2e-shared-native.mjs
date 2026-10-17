@@ -182,7 +182,7 @@ try {
     const followRequests = requests.slice(followAt); assert.ok(followRequests.length && followRequests.every(row => row.model === 'native-fixture' && row.hasSeed && row.serviceTier !== 'priority'));
     await save({ phase, passed: true, historyReplayed: true, nativeStandardPreserved: true });
     phase = transport + '-gateway-capability-separation'; const gatewayChat = await reader.client.rpc('thread/start', { model: 'fixture/gateway', cwd: work, approvalPolicy: 'never', sandbox: 'read-only', serviceTier: 'priority' });
-    assert.equal(gatewayChat.modelProvider, 'subscription_gateway'); const gatewayAt = requests.length; await complete(reader.client, gatewayChat.thread.id, 'fixture/gateway');
+    assert.ok(['openai', 'subscription_gateway'].includes(gatewayChat.modelProvider)); const gatewayAt = requests.length; await complete(reader.client, gatewayChat.thread.id, 'fixture/gateway');
     assert.ok(requests.slice(gatewayAt).length && requests.slice(gatewayAt).every(row => row.model === 'mock-gateway' && row.serviceTier === 'priority'));
     const status = await control.request('execution/status', {});
     if (sharedGateway) {
@@ -209,10 +209,10 @@ try {
     if (sharedGateway) {
       phase = transport + '-shared-gateway-reader-stop'; const gatewayPid = status.generations[0].pid;
       const gatewayHeld = await heldTurn(reader.client, gatewayChat.thread.id, 'fixture/gateway');
-      const gatewayOwnerView = await readActive(reader.client, gatewayHeld, 'subscription_gateway');
+      const gatewayOwnerView = await readActive(reader.client, gatewayHeld, gatewayChat.modelProvider);
       // This client has never resumed/bound this gateway chat. Its read must
       // find the live gateway owner before consulting native saved metadata.
-      const gatewayReaderView = await readActive(reconnected.client, gatewayHeld, 'subscription_gateway');
+      const gatewayReaderView = await readActive(reconnected.client, gatewayHeld, gatewayChat.modelProvider);
       assert.deepEqual(gatewayReaderView, gatewayOwnerView); assert.deepEqual(await nativeStatus(), native);
       await interrupt(reconnected.client, reader.client, gatewayHeld);
       assert.equal((await control.request('execution/status', {})).generations[0].pid, gatewayPid); assert.deepEqual(await nativeStatus(), native);
