@@ -1,13 +1,12 @@
 import { createServer } from "node:http";
 import { chmod, lstat, symlink, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
 import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
-import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
+import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, listenPrivate, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
@@ -332,14 +331,17 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const occupied = await lstat(physicalPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) {
       // A host that died between its listen and its link left a socket at this configuration's own hashed path that nothing
-      // recorded: it would block every later start until a reboot cleared the folder. Only a private socket of this user that
-      // refuses a connect, and is still the same file when it goes, is removed; anything else is preserved as before.
-      const orphan = occupied.isSocket() && occupied.uid === process.getuid?.() && !(occupied.mode & 0o077) && !await socketAnswers(physicalPath);
+      // recorded: it would block every later start until a reboot cleared the folder. Only a socket of this user that refuses
+      // a connect, and is still the same file when it goes, is removed, whatever its mode: a host that died before its chmod
+      // (releases before 0.4.7 listened with the process umask) left it open to others, yet nothing listens there. A socket
+      // that answers is never removed, and anything else is preserved as before.
+      const orphan = occupied.isSocket() && occupied.uid === process.getuid?.() && !await socketAnswers(physicalPath);
       const again = orphan ? await lstat(physicalPath).catch(() => undefined) : undefined;
       if (!again || again.ino !== occupied.ino || again.dev !== occupied.dev) throw new Error("Execution control socket target is occupied; its listener was preserved");
       await unlink(physicalPath);
     }
-    server.listen(physicalPath); await once(server, "listening"); await chmod(physicalPath, 0o600);
+    // Private from its first instant; the chmod stays as a second guard.
+    await listenPrivate(server, physicalPath); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();
     return { close, prepareStop, prepareQuietStop, resume: () => { if (!stopping) quiescing = false; } };

@@ -139,8 +139,13 @@ folder and rewritten (an `execution_owner_reclaimed` event with the scope
 `generation`); a record that names another identity still refuses the generation.
 A host that died between creating its control socket at its SDK target and linking it
 leaves a socket nothing recorded at that configuration's own target; the next start
-removes it when it is a private socket of this user that refuses a connect, and any
-other file there still refuses the start as occupied.
+removes it when it is a socket of this user, whatever its mode, that refuses a connect
+(ECONNREFUSED), and any other file, or any socket that answers, still refuses the start
+as occupied and is never removed. The host creates its socket under a private umask
+(`0077`, restored right after the bind) so that a host killed before its `chmod` leaves a
+socket closed to others; the `chmod` stays as a second guard. Releases before 0.4.7
+bound with the process umask and could leave a `0755` socket, which the next start now
+reclaims too.
 Rollback to legacy writers treats a receipt still marked running as stopped once
 its owner is proven dead by the same rule, so a crash cannot block it for good. It then
 clears that owner's links the way a claim does, including a link the owner recorded

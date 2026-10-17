@@ -14,7 +14,7 @@ import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type E
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
-import { sdkSocketTarget, socketIdentity } from "../execution-host-storage.js";
+import { connectOnce, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
@@ -244,6 +244,78 @@ test("execution control removes an orphan socket at its own target that nothing 
     assert.equal(await readlink(join(f.hostHome, "host.sock")), target, "the host listens at its own target again");
     await host.close(); host = undefined;
   } finally { orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+});
+
+// A host killed after `listen` but before its chmod left the socket at the mode the process umask gave it. That orphan used to
+// fail every later start as "occupied" until a reboot cleared the folder; whatever its mode, a socket of this user that
+// refuses connects is reclaimed, and one that answers is never removed.
+test("execution control reclaims a dead orphan socket at its own target whatever its mode, and starts", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const mode of [0o755, 0o666]) {
+    const f = await fixture(); let host; let orphan;
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+      await once(orphan.stdout!, "data"); await chmod(target, mode);
+      const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+      assert.equal((await lstat(target)).mode & 0o777, mode, "the orphan is left open to others");
+      host = await startExecutionHost(f);
+      assert.equal(await readlink(join(f.hostHome, "host.sock")), target, `the host listens at its own target again (orphan mode ${mode.toString(8)})`);
+      assert.equal((await lstat(target)).mode & 0o777, 0o600);
+      await host.close(); host = undefined;
+    } finally { orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+  }
+});
+
+test("execution control never removes a live listener at its own target, whatever its mode", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const mode of [0o755, 0o700, 0o666]) {
+    const f = await fixture(); const server = createServer();
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const path = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(path), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      server.listen(path); await once(server, "listening"); await chmod(path, mode);
+      const before = await lstat(path);
+      await assert.rejects(startExecutionHost(f), /occupied/, `a live listener of mode ${mode.toString(8)} is refused`);
+      const after = await lstat(path);
+      assert.deepEqual([after.ino, after.dev, after.mode & 0o777], [before.ino, before.dev, mode]); assert.ok(server.listening);
+      await new Promise<void>((resolve, reject) => { const client = connect(path); client.once("connect", () => { client.destroy(); resolve(); }); client.once("error", reject); });
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
+  }
+});
+
+// On macOS a live listener whose accept queue is full also answers ECONNREFUSED, so a single refusal must not unlink a socket.
+test("execution control asks a refused socket twice: one that then answers is kept, one refused twice is removed", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const [script, outcome] of [[["refused", "answered"], "kept"], [["refused", "refused"], "removed"]] as Array<[ProbeResult[], string]>) {
+    const f = await fixture(); let host; let orphan; const asked: string[] = [];
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+      await once(orphan.stdout!, "data"); await chmod(target, 0o600);
+      const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+      const before = await lstat(target); const answers = [...script];
+      // Only the probes of the orphan's own path are scripted; every other path is asked for real.
+      setSocketProbeForTests({ retryMs: 5, probe: async path => { if (path !== target || !answers.length) return connectOnce(path); asked.push(path); return answers.shift()!; } });
+      if (outcome === "kept") {
+        await assert.rejects(startExecutionHost(f), /occupied/);
+        const after = await lstat(target); assert.deepEqual([after.ino, after.dev], [before.ino, before.dev], "the socket stayed");
+      } else {
+        host = await startExecutionHost(f); assert.equal(await readlink(join(f.hostHome, "host.sock")), target); await host.close(); host = undefined;
+      }
+      assert.equal(asked.length, 2, `the orphan was asked twice (${outcome})`);
+    } finally { setSocketProbeForTests(); orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+  }
+});
+
+test("a failed host start restores the process umask it narrowed for the listen", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); const server = createServer(); const before = process.umask(0o022);
+  try {
+    await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const path = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+    await mkdir(dirname(path), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    server.listen(path); await once(server, "listening");
+    await assert.rejects(startExecutionHost(f), /occupied/); assert.equal(process.umask(), 0o022);
+    const host = await startExecutionHost({ ...f, configPath: join(f.directory, "other.json") }); assert.equal(process.umask(), 0o022); await host.close();
+  } finally { process.umask(before); await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
 });
 
 test("idle restart preserves leased and loaded SDK writers and atomically quiesces new work", { timeout: 20000 }, async () => {

@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { linkAnswers, removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketAnswers, socketIdentity } from "../execution-host-storage.js";
+import { linkAnswers, listenPrivate, removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketAnswers, socketIdentity } from "../execution-host-storage.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
 const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
@@ -118,4 +118,12 @@ test("only a socket can answer: a plain file, a folder or a pipe never keeps an 
     await kill(child); child = undefined;
     assert.equal(await socketAnswers(f.target), false); assert.equal(await socketAnswers(join(f.directory, "missing.sock")), false);
   } finally { await kill(child); await f.clean(); }
+});
+
+test("a socket is private from its first instant, whatever the process umask, and the umask comes back", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); const server = createServer(); const before = process.umask(0o000);
+  try {
+    await listenPrivate(server, f.target); // No chmod follows: this is the mode a host killed right after its listen leaves behind.
+    assert.equal((await lstat(f.target)).mode & 0o077, 0, "no group or other access"); assert.equal(process.umask(), 0o000);
+  } finally { process.umask(before); await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
 });
