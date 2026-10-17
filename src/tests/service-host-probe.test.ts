@@ -97,6 +97,8 @@ test("a host whose SDK socket was cleaned out of /tmp is found by its probe and 
     // What macOS's periodic /tmp cleanup does to a long-running host: the SDK socket its link names disappears.
     await unlink(await readlink(join(home, "host.sock")));
     assert.equal(await probeExecutionHost({ home, pid: process.pid }), "socket_mismatch");
+    // Two failed probes in a row: the first alone could be a busy moment.
+    await supervisor.checkHost(); assert.deepEqual(await events("execution_host_restarted"), []);
     await supervisor.checkHost();
     for (let attempt = 0; attempt < 500 && (await hostState() !== "running" || await probeExecutionHost({ home, pid: process.pid }) !== undefined); attempt++) await delay(20);
     assert.equal(await probeExecutionHost({ home, pid: process.pid }), undefined, "the restarted host answers on a fresh socket");

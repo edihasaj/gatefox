@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { promisify } from "node:util";
@@ -39,6 +39,21 @@ test("a short folder for a socket test is made inside the runner's folder, so no
   try { assert.ok(folder.directory.startsWith(given + sep), "inside the runner's folder, not beside it in /tmp"); }
   finally { await folder.remove(); }
   assert.equal(await exists(folder.directory), false, "and removed by its owner");
+});
+
+test("a test process writes no diagnostic report on a signal, and no shipped file turns reports on", async () => {
+  // Node's test runner starts this process with `--report-signal=SIGUSR2`, which alone turns report-on-signal on: one SIGUSR2
+  // would write a report, environment values included, into the repository. scripts/test-preload.mjs turns it off.
+  assert.equal(process.report.reportOnSignal, false, "no report on a signal in a test process");
+  assert.ok(process.env.GATEWAY_TEST_TMPDIR, "run the suite with `npm test`");
+  assert.equal(process.report.directory, process.env.GATEWAY_TEST_TMPDIR, "and any other report lands in the run's private folder");
+  const root = fileURLToPath(new URL("../..", import.meta.url)); const shipped: string[] = [];
+  for (const folder of ["dist", "dist/auth", "dist/providers", "dist/protocol"]) {
+    for (const name of await readdir(join(root, folder))) if (name.endsWith(".js")) shipped.push(join(root, folder, name));
+  }
+  shipped.push(join(root, "scripts", "codex-desktop-shim"), join(root, "scripts", "e2e-fast-mode.mjs"));
+  assert.ok(shipped.length > 50, "the compiled files were found");
+  for (const file of shipped) assert.doesNotMatch(await readFile(file, "utf8"), /--report-|\breportOn|report\.writeReport\(/, `${file} turns diagnostic reports on`);
 });
 
 test("the test runner gives a run its own temp folder, passes the exit code on, and removes the folder after a pass and after a failure", { timeout: 60000 }, async () => {

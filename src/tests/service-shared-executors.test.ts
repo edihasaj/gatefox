@@ -20,9 +20,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { externalLegacyWriters } from "../service-legacy-writers.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { fixtureComponent, killFixturesAfterTests } from "./supervisor-fixture.js";
 
 const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
+killFixturesAfterTests(); // A relay child cannot outlive the file's tests.
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-shared-")); const state = join(directory, "state"); const nativeHome = join(directory, "native");
@@ -40,7 +42,8 @@ sockets.on('connection',client=>client.on('message',bytes=>{const m=JSON.parse(b
 server.listen(path,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],String(process.pid)));
 process.on('SIGTERM',()=>{for(const c of sockets.clients)c.terminate();server.close(()=>process.exit(0));});
 `, { mode: 0o700 });
-  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: true, components: [{ id: "native", kind: "native", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)", "--", "--codex", codex, "--native-home", nativeHome], log: join(state, "native.log") }] };
+  const relay = fixtureComponent(state, "native", "native", "setInterval(()=>{},1000)"); relay.args.push("--", "--codex", codex, "--native-home", nativeHome);
+  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: true, components: [relay] };
   const home = executionHostHome(configPath, nativeHome);
   return { directory, state, configPath, nativeHome, codex, plan, home, cleanup: async () => { await rm(directory, { recursive: true, force: true }); await rm(home, { recursive: true, force: true }); } };
 }

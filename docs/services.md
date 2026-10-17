@@ -274,15 +274,47 @@ separate checks; historical records can remain visible after registration ends.
 Staging records which process staged. If that process is gone before the staging
 finished (a crash, a reboot, or a rollback of its own that failed), the gateway
 LaunchAgent can still start at the next login with an unfinished `preparing` record.
-The daemon then rolls the staging back itself instead of failing at every launchd
-restart: it puts back each original login job whose saved copy still has the digest
-recorded at staging, moves the record into the backup as `login-recovered.*.json`, and
-logs `login_consolidation_restored`. The original jobs load at the following login;
-until then the daemon has no plan to run and stays idle, because exiting would only
-make launchd start it again every ten seconds. A saved copy that changed stops the
-rollback with the record kept, as it does for repeated staging. A staging process that
-is still alive keeps the old refusal. Records written before 0.4.4 name no process; the
-login lock the staging holds throughout is the proof that it is gone.
+The daemon starts only from the staged LaunchAgent, so the staging got as far as its
+last file write and missed only its `ready` mark. The daemon therefore finishes it
+first: it runs the same checks as for a `ready` record (the staged LaunchAgent is
+unchanged, no retired job came back or is still loaded, no other gateway job appeared,
+and launchd runs this daemon as the primary job), promotes the plan, logs
+`login_consolidation_completed`, and runs it. A check that cannot run at all (launchctl
+or the disk failing) changes nothing, and launchd's next start tries again.
+
+Only a check that refuses rolls the staging back. The daemon puts back each original
+login job whose saved copy still has the digest recorded at staging, moves the record
+into the backup as `login-recovered.*.json`, and writes the private mark
+`<state>/service-login-recovered.json`. It then loads every restored job except the
+primary one with `launchctl bootstrap`, so tunnels, the relay and desktop setup run in
+this session; a job that is already loaded is left alone, and one that fails to load
+is counted. `login_consolidation_restored` reports how many jobs were put back,
+started and failed. The primary job, normally inference, cannot be loaded while the
+daemon holds its label, so inference stays down until the next login or the recovery
+below. The daemon has no plan to run and stays idle. Every relaunch in the same boot
+(a crash, `launchctl kickstart -k`, a stop) finds the mark and stays idle too, instead
+of failing every ten seconds, and an idle-restart `SIGUSR2` does not end it. A saved
+copy that changed stops the rollback with the record kept, as it does for repeated
+staging. A staging process that is still alive keeps the old refusal. Records written
+before 0.4.4 name no process; the login lock the staging holds throughout is the proof
+that it is gone.
+
+To recover after a rollback without logging out:
+
+1. Check that it happened: the service log has the line `an interrupted next-login
+   consolidation was rolled back`, and `<state>/service-login-recovered.json` exists.
+2. Replace the idle daemon with the restored primary job:
+
+   ```sh
+   launchctl bootout gui/$(id -u)/com.edihasaj.subscription-gateway
+   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.edihasaj.subscription-gateway.plist
+   ```
+
+   When the staging had no original primary job, there is no plist to load; the
+   bootout alone stops the idle daemon.
+3. Run `gateway service status` and `gateway health` to confirm inference answers.
+4. Stage again with `gateway service consolidate --next-login` when you want the
+   unified service. A promoted staging removes the mark.
 
 Explicit tunnel installation and desktop registration enable their managed
 LaunchAgent before loading it. This repairs a disabled registration without
@@ -339,12 +371,23 @@ succeeds.
 
 The service probes a running host every 60 seconds: its ownership receipt, its
 control socket and one `execution/status` answer within 5 seconds, and, when native
-chats are shared, whether the app's engine was replaced under it. A host that fails
-the probe, for example because the periodic `/tmp` cleanup removed its SDK socket, is
-restarted on its own, without the other components, but only while it is idle (no
-adapter lease and no loaded chat); a busy host is probed again a minute later. The
-same idle restart gives the app its remote control back when the host took the
-registration for a relay that the service then set aside.
+chats are shared, whether the app's engine was replaced under it. The host answers
+`execution/status` at once, ahead of any acquire or idle check it is working on, so a
+busy host does not time out. A host that fails two probes in a row, for example
+because the periodic `/tmp` cleanup removed its SDK socket, is restarted on its own,
+without the other components, but only while it is idle (no adapter lease and no
+loaded chat); a busy host is probed again a minute later. A kick from an adapter also
+probes it, so an adapter that cannot reach the host shortens the wait. A probe that
+is still running holds a restart back until it ends, and a verdict about a host that
+another start replaced in the meantime is dropped. The same idle restart gives the app
+its remote control back when the host took the registration for a relay that the
+service then set aside.
+
+If the old host cannot be closed during that restart, its receipt still names the
+running service, so no new host could start in the same process. The service keeps
+the old host, so a stop still closes it, and restarts as a whole once inference is
+idle; launchd then starts a fresh process that reclaims the receipt. A busy service is
+asked again at the next probe tick, and no host start is tried meanwhile.
 
 `gateway service shared-executors --disable --apply` and `gateway service
 shared-native --disable --apply` turn a sharing mode off again. Without `--apply`

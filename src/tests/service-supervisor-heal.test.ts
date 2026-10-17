@@ -116,7 +116,7 @@ test("a failed host is started again at once on an adapter's kick, never twice i
   } finally { release(); await supervisor.stop(); await f.remove(); }
 });
 
-test("a running host that fails its probe is restarted only when idle, never inside the kick gap, and a passing probe clears it", async () => {
+test("a running host that fails two probes in a row is restarted only when idle, never inside the kick gap, and a passing probe clears it", async () => {
   const f = await folder("gwh-probe-");
   let idle = false; let verdict: HostProbeReason | undefined = "status_timeout"; const targets: HostProbeTarget[] = [];
   const host = hosts({ idle: () => idle });
@@ -126,6 +126,8 @@ test("a running host that fails its probe is restarted only when idle, never ins
   try {
     await supervisor.start(); assert.equal((await f.status()).executionHost?.state, "running");
     assert.equal(targets.length, 0, "nothing is probed before the first tick");
+    await supervisor.checkHost();
+    assert.deepEqual(await f.events("execution_host_unhealthy"), [], "one slow answer can be a busy moment");
     await supervisor.checkHost(); await supervisor.checkHost();
     assert.deepEqual((await f.events("execution_host_unhealthy")).map(event => event.reason), ["status_timeout"], "reported once while it stays unhealthy");
     assert.equal(host.record.closes, 0, "a busy host is never restarted");
@@ -134,16 +136,75 @@ test("a running host that fails its probe is restarted only when idle, never ins
     idle = true; await delay(450); await supervisor.checkHost();
     assert.equal(host.record.closes, 0, "a probe that passes again clears the restart");
     verdict = "socket_mismatch"; await supervisor.checkHost();
+    await delay(50); assert.equal(host.record.closes, 0, "the pass in between started the count again");
+    await supervisor.checkHost();
     await until(() => host.record.starts === 2, "the restarted host");
     assert.equal(host.record.closes, 1);
     assert.deepEqual((await f.events("execution_host_unhealthy")).map(event => event.reason), ["status_timeout", "socket_mismatch"]);
     assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["socket_mismatch"]);
     await until(async () => (await f.status()).executionHost?.state === "running", "the new host running");
     // Right after that start the gap holds the next restart back, then lets it through.
-    await supervisor.checkHost(); assert.equal(host.record.closes, 1, "no restart inside the kick gap");
+    await supervisor.checkHost(); await supervisor.checkHost(); assert.equal(host.record.closes, 1, "no restart inside the kick gap");
     await until(async () => { await supervisor.checkHost(); return host.record.closes === 2; }, "the restart once the gap ended");
     assert.ok(host.record.startedAt[2] - host.record.startedAt[1] >= 380, "two restarts are a kick gap apart");
   } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("a probe that is out holds an idle restart back, and its verdict restarts nothing more (stale-probe regression)", async () => {
+  const f = await folder("gwh-stale-");
+  let idle = false; let gated = false; let release: (reason: HostProbeReason | undefined) => void = () => {};
+  const host = hosts({ idle: () => idle });
+  const probeHost = async () => gated ? new Promise<HostProbeReason | undefined>(resolve => { release = resolve; }) : undefined;
+  const registered: NativeProbes = { registered: async () => true, fingerprint: async () => "same", appRunning: async () => false };
+  const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "process.exit(1)")] };
+  // The relay re-check, which asks again for a refused host restart, runs every 150 ms; the probe tick never does.
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, registered, 150, 3_600_000, { ...quiet, kickGapMs: 0, probeHost });
+  const internals = supervisor as unknown as { hostGeneration: number };
+  try {
+    await supervisor.start();
+    await until(async () => (await f.status()).components[0].state === "paused", "the relay set aside");
+    assert.deepEqual(host.record.owns, [true], "the first host took the relay's registration, so it is due a restart once idle");
+    // A probe of the first host is out when that host turns idle.
+    gated = true; const probing = supervisor.checkHost();
+    idle = true; await delay(500);
+    assert.equal(host.record.starts, 1, "no restart while a probe is out");
+    release("status_failed"); await probing;
+    await until(() => host.record.starts === 2, "the restart once the probe ended");
+    await delay(500);
+    assert.equal(host.record.starts, 2, "the probe's verdict did not restart the new host"); assert.equal(host.record.closes, 1);
+    assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["relay_paused"]);
+    // Two failed verdicts in a row, each about a host that another start replaced while it was out: both are dropped.
+    for (let round = 0; round < 2; round++) { const stale = supervisor.checkHost(); internals.hostGeneration++; release("status_failed"); await stale; }
+    await delay(300);
+    assert.deepEqual(await f.events("execution_host_unhealthy"), [], "a verdict about a replaced host never counts");
+    assert.equal(host.record.starts, 2);
+  } finally { gated = false; release(undefined); await supervisor.stop(); await f.remove(); }
+});
+
+test("a host that fails to close in an idle restart stays referenced, and the whole service restarts when idle instead of looping starts", async () => {
+  const f = await folder("gwh-close-");
+  let verdict: HostProbeReason | undefined; const record = { starts: 0, closes: 0 };
+  const start = async () => { record.starts++; return { close: async () => { record.closes++; throw new Error("An execution generation did not stop; its ownership record was preserved"); }, prepareStop: async () => true, resume: () => {} }; };
+  // Inference is busy for the first idle restart and accepts the second.
+  const signals = join(f.directory, "usr2");
+  const inference = fixtureComponent(f.directory, "inference", "inference", `const fs = require('node:fs'); process.on('SIGUSR2', () => { fs.appendFileSync(${JSON.stringify(signals)}, 'x'); if (fs.readFileSync(${JSON.stringify(signals)}, 'utf8').length >= 2) process.exit(0); }); setInterval(()=>{},1000);`);
+  const plan: ServicePlan = { version: 1, config: f.config, sharedExecutors: true, components: [inference, relay(f.directory, "setInterval(()=>{},1000)")] };
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, start as never, unregistered, undefined, undefined, { ...quiet, kickGapMs: 0, hostProbeMs: 200, probeHost: async () => verdict });
+  let stopped = false; void supervisor.stopped.then(() => { stopped = true; });
+  try {
+    await supervisor.start();
+    await until(async () => (await f.status()).components.some(component => component.id === "inference" && component.state === "running"), "inference running");
+    verdict = "socket_mismatch";
+    await until(() => record.closes === 1, "the idle restart's close");
+    await delay(1000);
+    assert.equal(record.starts, 1, "no start in a process whose host receipt still names it");
+    await until(() => stopped, "the whole-service restart once inference was idle");
+    assert.equal((await readFile(signals, "utf8")).length, 2, "the busy refusal was asked again at the next tick");
+    assert.equal(record.starts, 1); assert.equal(record.closes, 2, "the stop closed the host it still referenced");
+    await assert.rejects(supervisor.stop(), /did not stop/, "the stop reports the failure, so the process exits and launchd starts it anew");
+    assert.equal((await f.status()).executionHost?.state, "failed");
+    assert.deepEqual((await f.events("execution_host_failed")).map(event => event.reason), ["close_failed"]);
+  } finally { await supervisor.stop().catch(() => undefined); await f.remove(); }
 });
 
 test("a stop while the host start waits on the relay question starts no host", async () => {

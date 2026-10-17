@@ -7,7 +7,8 @@ import { SocketAppServerConnection } from "./socket-app-server-connection.js";
  * Why a running execution host failed its probe, from a fixed vocabulary:
  * - `receipt_mismatch`: `owner.json` no longer says this process runs the host at its control socket;
  * - `socket_mismatch`: the control link, or the SDK socket it names, is gone or is another socket than the receipt's;
- * - `status_timeout`: `execution/status` did not answer within the probe's limit (5 s);
+ * - `status_timeout`: `execution/status` did not answer within the probe's limit (5 s); the host answers it at once, ahead of
+ *   any acquire or idle check it is working on, so only a hung host times out;
  * - `status_failed`: the control socket refused the connection, or answered for another process;
  * - `sdk_changed`: the app engine a shared native host was verified against was replaced under it.
  */
@@ -52,7 +53,8 @@ async function executionStatus(socketPath: string, timeoutMs: number): Promise<{
     const opened = connection;
     // Settled on its own, so a late answer or a late refusal after the timeout is never an unhandled rejection.
     const answer = opened.ready.then(() => opened.request("execution/status", {})).catch(() => undefined);
-    const timeout = new Promise<"timeout">(done => { timer = setTimeout(() => done("timeout"), timeoutMs); });
+    // Unreferenced: a probe that is still waiting never keeps a stopping service alive.
+    const timeout = new Promise<"timeout">(done => { timer = setTimeout(() => done("timeout"), timeoutMs); timer.unref(); });
     return await Promise.race([answer, timeout]);
   } catch { return undefined; }
   finally { clearTimeout(timer); connection?.stop(); }

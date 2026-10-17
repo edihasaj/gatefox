@@ -14,9 +14,10 @@ export interface ServiceDaemonDependencies {
 
 /**
  * `gateway daemon`, the unified LaunchAgent's process. It promotes a staged next-login consolidation and runs the plan.
- * When the staging was interrupted instead, activation rolls it back to the original login jobs, which launchd loads at
- * the next login. Until then this job has no plan to run, so it stays up and idle: exiting would only make launchd's
- * KeepAlive start it again every ten seconds, each start failing the same way.
+ * When activation had to roll an interrupted staging back instead, it put the original login jobs back and loaded all but
+ * the primary one, whose label this job holds. This job then has no plan to run, so it stays up and idle, and so does every
+ * relaunch of it in the same boot: exiting would only make launchd's KeepAlive start it again every ten seconds, each start
+ * failing the same way. The original primary job starts at the next login (see docs/services.md for doing it sooner).
  */
 export async function runServiceDaemon(configPath: string, overrides: Partial<ServiceDaemonDependencies> = {}): Promise<void> {
   const deps: ServiceDaemonDependencies = { activate: activateLoginConsolidation, run: runServiceSupervisor, standby: untilStopped,
@@ -27,19 +28,22 @@ export async function runServiceDaemon(configPath: string, overrides: Partial<Se
   const { plan, restored } = await deps.activate(path);
   if (plan && plan.config === path) { await deps.run(plan, config.stateDirectory); return; }
   if (!restored) throw new Error("Unified service plan is missing or uses another configuration");
-  deps.notice("gateway: an interrupted next-login consolidation was rolled back to the original login jobs, which start at the next login; this job stays idle until then");
+  deps.notice("gateway: an interrupted next-login consolidation was rolled back; the original login jobs are back and loaded, except the primary one, which starts at the next login; this job stays idle until then");
   await deps.standby();
 }
 
 /**
- * Resolves on SIGTERM, SIGINT or (an idle restart) SIGUSR2. A long timer keeps the process alive meanwhile; it never wakes.
+ * Resolves on SIGTERM or SIGINT. An idle restart's SIGUSR2 is taken and dropped: a relaunch would only stand by again, and
+ * the signal's default action would end the process. A long timer keeps the process alive meanwhile; it never wakes.
  * `signals` is the process; a test hands in an emitter of its own instead of raising signals in the test process.
  */
-export function untilStopped(signals: Pick<NodeJS.EventEmitter, "once" | "off"> = process): Promise<void> {
+export function untilStopped(signals: Pick<NodeJS.EventEmitter, "on" | "once" | "off"> = process): Promise<void> {
   return new Promise(done => {
     const keep = setInterval(() => {}, 2 ** 30);
-    const names: NodeJS.Signals[] = ["SIGTERM", "SIGINT", ...(process.platform === "win32" ? [] : ["SIGUSR2" as const])];
-    const finish = () => { clearInterval(keep); for (const name of names) signals.off(name, finish); done(); };
+    const names: NodeJS.Signals[] = ["SIGTERM", "SIGINT"]; const held: NodeJS.Signals[] = process.platform === "win32" ? [] : ["SIGUSR2"];
+    const ignore = () => {};
+    const finish = () => { clearInterval(keep); for (const name of names) signals.off(name, finish); for (const name of held) signals.off(name, ignore); done(); };
     for (const name of names) signals.once(name, finish);
+    for (const name of held) signals.on(name, ignore);
   });
 }

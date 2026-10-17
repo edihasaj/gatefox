@@ -190,13 +190,17 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         if (!isId(message.id) || typeof message.method !== "string" || ids.has(message.id)) { client.close(1008, "Invalid control request"); return; }
         if (pending >= 64) { client.close(1013, "Execution control busy"); return; }
         const id = message.id; ids.add(id); pending++;
-        const operation = serial.then(async () => {
+        const run = async () => {
           const result = await dispatch(message.method as string, object(message.params), held);
           if (["execution/acquire", "execution/find"].includes(message.method as string) && typeof object(result).revision === "string") held.add((result as ExecutionRecord).revision);
           if (message.method === "native/acquire") held.add(`native:${(result as NativeExecutionRecord).revision}`);
           return result;
-        });
-        serial = operation.catch(() => undefined);
+        };
+        // `execution/status` only reads memory, so it is answered at once rather than behind an acquire or an idle check
+        // in the queue: the service's 5 s probe must never read a busy host as a hung one.
+        const status = message.method === "execution/status";
+        const operation = status ? Promise.resolve().then(run) : serial.then(run);
+        if (!status) serial = operation.catch(() => undefined);
         void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;

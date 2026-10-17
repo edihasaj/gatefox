@@ -16,9 +16,11 @@ import { legacyNativeWriters } from "../service-native-writers.js";
 import { writePrivateJson } from "../config.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { fixtureComponent, killFixturesAfterTests } from "./supervisor-fixture.js";
 
 isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
+killFixturesAfterTests(); // A relay child cannot outlive the file's tests.
 
 async function until(predicate: () => Promise<boolean>, what: string): Promise<void> {
   for (let attempt = 0; attempt < 600; attempt++) { if (await predicate()) return; await delay(20); }
@@ -34,9 +36,9 @@ async function fixture() {
   const codex = join(directory, "codex"); await writeFile(codex, `#!${process.execPath}\nconsole.log('codex-cli 0.162.0-alpha.17.2');\n`, { mode: 0o700 });
   const configPath = join(directory, "gateway.json");
   await writePrivateJson(configPath, { version: 1, port: 3459, clientOnly: true, stateDirectory: state, providers: [] });
-  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: false, components: [{
-    id: "native", kind: "native", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)", "--", "--daemon", "--codex", codex, "--native-home", nativeHome, "--relay-home", relayHome], log: join(state, "native.log"),
-  }] };
+  const relay = fixtureComponent(state, "native", "native", "setInterval(()=>{},1000)");
+  relay.args.push("--", "--daemon", "--codex", codex, "--native-home", nativeHome, "--relay-home", relayHome);
+  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: false, components: [relay] };
   await writePrivateJson(servicePlanPath(state), plan);
   await writePrivateJson(join(relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine" });
   // A machine that shares native chats runs the relay it registered; that receipt is what the

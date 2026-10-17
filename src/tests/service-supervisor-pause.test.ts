@@ -6,6 +6,9 @@ import { ServiceSupervisor, type NativeProbes } from "../service-supervisor.js";
 import { serviceStatusPath, type ServiceComponent } from "../service-plan.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { shortFolder } from "./short-folder.js";
+import { fixtureComponent, killFixturesAfterTests } from "./supervisor-fixture.js";
+
+killFixturesAfterTests();
 
 /**
  * The relay is optional: a slot that cannot run is paused quietly instead of
@@ -36,7 +39,7 @@ async function fixture(prefix: string, build: (directory: string) => ServiceComp
 
 /** A child that notes every start in its own folder, then lives or dies at once with a non-zero code. */
 function relayComponent(source: string): (directory: string) => ServiceComponent {
-  return directory => ({ id: "native", kind: "native", command: process.execPath, args: ["-e", `require('node:fs').appendFileSync(${JSON.stringify(`${directory}/starts`)}, 'x'); ${source}`], log: `${directory}/native.log` });
+  return directory => fixtureComponent(directory, "native", "native", `require('node:fs').appendFileSync(${JSON.stringify(`${directory}/starts`)}, 'x'); ${source}`);
 }
 const alive = "setInterval(()=>{},1000)";
 const dies = "process.exit(1)";
@@ -115,7 +118,7 @@ test("a failing relay waits for its binaries to change before it is tried again"
 test("only the relay pauses: inference and tunnels keep their backoff", async () => {
   const directory = (await shortFolder("gw-pause-kinds-")).directory;
   const other = probes({ registered: true });
-  const failing = (id: ServiceComponent["kind"]) => ({ id, kind: id, command: process.execPath, args: ["-e", "process.exit(1)"], log: `${directory}/${id}.log` });
+  const failing = (id: ServiceComponent["kind"]) => fixtureComponent(directory, id, id, "process.exit(1)");
   const supervisor = new ServiceSupervisor({ version: 1, config: `${directory}/gateway.json`, components: [failing("inference"), failing("tunnel")] }, directory, 5, undefined, other, 60000);
   try {
     await supervisor.start();
@@ -188,8 +191,8 @@ test("a relay that cannot even open its log is set aside while the service keeps
   const directory = (await shortFolder("gw-pause-logdir-")).directory;
   const relay = probes({ registered: true });
   // The log path is a folder, so opening it fails: the relay cannot start here at all.
-  const broken: ServiceComponent = { id: "native", kind: "native", command: process.execPath, args: ["-e", alive], log: directory };
-  const tunnel: ServiceComponent = { id: "tunnel", kind: "tunnel", command: process.execPath, args: ["-e", alive], log: `${directory}/tunnel.log` };
+  const broken: ServiceComponent = { ...fixtureComponent(directory, "native", "native", alive), log: directory };
+  const tunnel = fixtureComponent(directory, "tunnel", "tunnel", alive);
   const supervisor = new ServiceSupervisor({ version: 1, config: `${directory}/gateway.json`, components: [broken, tunnel] }, directory, 5, undefined, relay, 60000, 60000);
   const read = async () => (JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components) as Array<{ id: string; state: string; pausedReason?: string; pid?: number }>;
   try {

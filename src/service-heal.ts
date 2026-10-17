@@ -62,6 +62,8 @@ export interface SupervisorHealing {
   healthSchedule: (stateDirectory: string, configPath: string) => () => void;
 }
 export const defaultHealing: SupervisorHealing = { probeHost: probeExecutionHost, hostProbeMs: 60_000, watchKick: (home, onKick) => watchHostKick(home, onKick), kickGapMs: 5000, healthSchedule: scheduleServiceHealth };
+/** Failed probes in a row before a running host counts as unhealthy: one slow answer can be a busy moment, not a hung host. */
+export const hostProbeStrikes = 2;
 /** Failures a retry cannot fix by itself: a kick buys at most one extra start for them between two backoff starts. */
 export const deterministicFailures = new Set<HostFailureReason>(["identity_changed", "sdk_invalid", "receipt_invalid", "live_owner"]);
 /** Why a running host is restarted: a failed probe, or a relay it owned the registration for that was set aside. */

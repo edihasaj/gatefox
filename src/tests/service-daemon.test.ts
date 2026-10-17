@@ -36,13 +36,16 @@ test("after rolling an interrupted consolidation back the daemon stays idle inst
   } finally { await f.remove(); }
 });
 
-test("standing by ends on the stop and idle-restart signals and leaves no listener behind", async () => {
+test("standing by ends on the stop signals only, holds an idle restart's SIGUSR2, and leaves no listener behind", async () => {
   // An emitter of the test's own: emitting real signal events in the test process would reach the runner's handlers.
-  const names = ["SIGTERM", "SIGINT", ...(process.platform === "win32" ? [] : ["SIGUSR2"])];
-  for (const name of names) {
-    const signals = new EventEmitter();
-    const waiting = untilStopped(signals);
-    assert.deepEqual(names.map(other => signals.listenerCount(other)), names.map(() => 1));
+  const stops = ["SIGTERM", "SIGINT"]; const held = process.platform === "win32" ? [] : ["SIGUSR2"]; const names = [...stops, ...held];
+  for (const name of stops) {
+    const signals = new EventEmitter(); let ended = false;
+    const waiting = untilStopped(signals).then(() => { ended = true; });
+    assert.deepEqual(names.map(other => signals.listenerCount(other)), names.map(() => 1), "a listener for each, so SIGUSR2's default action cannot end the process");
+    for (const other of held) signals.emit(other);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(ended, false, "an idle restart's signal does not end standby: a relaunch would only stand by again");
     signals.emit(name); await waiting;
     assert.deepEqual(names.map(other => signals.listenerCount(other)), names.map(() => 0));
   }

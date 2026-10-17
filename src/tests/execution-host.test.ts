@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
@@ -27,17 +28,19 @@ async function fixture() {
   await writeFile(join(nativeHome, "auth.json"), '{"fixture":"must-not-be-copied"}', { mode: 0o600 });
   const sdk = join(directory, "codex");
   await writeFile(sdk, `#!${process.execPath}\nimport {createServer} from 'node:http';
-import {writeFileSync} from 'node:fs';
+import {existsSync, writeFileSync} from 'node:fs';
 import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)};
 if(process.argv.includes('--version')) { console.log('codex-cli 0.162.0-alpha.17.2'); process.exit(0); }
 const args=process.argv.slice(2);const socket=args[args.indexOf('--listen')+1].slice(7);
+const gate=args.includes('--fixture-gate')?args[args.indexOf('--fixture-gate')+1]:undefined;
 const server=createServer();const ws=new WebSocketServer({server});const loaded=new Set();
 ws.on('connection',client=>client.on('message',bytes=>{const m=JSON.parse(bytes);if(m.id==null)return;let result={};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'||m.method==='thread/resume'){const id=m.params.threadId||'fixture-thread';loaded.add(id);result={thread:{id}};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
 client.send(JSON.stringify({id:m.id,result}));}));
-server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
+const listen=()=>server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
+if(gate){const wait=setInterval(()=>{if(existsSync(gate)){clearInterval(wait);listen();}},20);}else listen();
 process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close(()=>process.exit(0));});
 `, { mode: 0o700 });
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
@@ -127,6 +130,25 @@ test("execution generations preserve loaded/leased owners and retire only unowne
     const e = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("e")); assert.equal(e.revision, "e".repeat(64));
     const state = await client.request<{ generations: ExecutionRecord[] }>("execution/status"); assert.equal(state.generations.length, 4); assert.ok(state.generations.some(g => g.revision === "a".repeat(64))); assert.ok(!state.generations.some(g => g.revision === "b".repeat(64)));
   } finally { engineClient?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
+});
+
+test("execution/status answers at once while an acquire holds the control queue, so a busy host never looks hung", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    host = await startExecutionHost(f); client = await control(join(f.hostHome, "host.sock"));
+    // The engine this acquire starts listens only once the gate file exists, so the acquire holds the queue until then.
+    const gate = join(f.directory, "listen"); const descriptor = f.descriptor("a"); descriptor.args.push("--fixture-gate", gate);
+    let acquired = false;
+    const acquiring = client.request<ExecutionRecord>("execution/acquire", descriptor).then(record => { acquired = true; return record; });
+    await delay(300);
+    const asked = performance.now();
+    const status = await client.request<{ version: number; pid: number }>("execution/status");
+    assert.equal(acquired, false, "the acquire was still waiting for its engine");
+    assert.ok(performance.now() - asked < 2000, "the answer did not wait behind it");
+    assert.equal(status.version, 1); assert.equal(status.pid, process.pid);
+    await writeFile(gate, "");
+    assert.equal((await acquiring).revision, "a".repeat(64), "the acquire then finished as usual");
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
 test("execution host refuses unrecorded occupied sockets", { timeout: 10000 }, async () => {
