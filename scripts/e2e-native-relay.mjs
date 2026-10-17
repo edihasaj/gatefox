@@ -26,7 +26,7 @@ import { isStale, ownSocket, sdkSocketName } from './stale-sockets.mjs';
 const app = '/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex';
 const { values: v } = parseArgs({ options: { root: { type: 'string' }, relay: { type: 'string', default: '.state/native-relay-build/artifact/gateway-native-relay' },
   codex: { type: 'string', default: app }, gateway: { type: 'string', default: 'dist/cli.js' }, 'expect-unfiltered-gateway-listing': { type: 'boolean' },
-  'no-sandbox': { type: 'boolean' } } });
+  'no-sandbox': { type: 'boolean' }, 'shared-native-plan': { type: 'boolean' } } });
 assert.ok(v.root, 'Missing --root');
 // Outbound connections are refused off this machine for the whole run, children included.
 if (process.platform === 'darwin' && !v['no-sandbox'] && process.env.GATEWAY_E2E_SANDBOXED !== '1') {
@@ -100,9 +100,11 @@ const serverConfig = join(root, 'server.json'), clientConfig = join(root, 'clien
 await writeFile(serverConfig, JSON.stringify({ version: 1, port: servePort, stateDirectory: state, timeoutMs: 20000, providers: [{ id: 'fixture', type: 'responses-api',
   baseUrl: `http://127.0.0.1:${port}`, apiKeyEnv: 'RELAY_FIXTURE_KEY', models: { 'fixture/gateway': 'mock-gateway' }, modelMetadata: { 'fixture/gateway': { contextWindow: 32768, reasoningEfforts: ['low'] } } }] }), { mode: 0o600 });
 await writeFile(clientConfig, JSON.stringify({ version: 1, port: servePort, stateDirectory: state, clientOnly: true, providers: [] }), { mode: 0o600 });
-// A Mac like Studio or macbook-server: a unified plan whose host shares no native engine, and a registered relay.
+// A Mac like Studio or macbook-server: a unified plan whose host shares no native engine, and a registered relay. With
+// --shared-native-plan the plan shares native chats but no host runs, so every adapter falls back to a private engine under
+// the native-home lease (`host_unavailable`), as a Mac whose host cannot share the app's engine does (`other`).
 const relayArgs = ['--native-home', nativeHome, '--relay-home', relayHome, '--gateway', join(bin, 'gateway'), '--gateway-config', clientConfig, '--codex', codex];
-await writeFile(join(state, 'service-plan.json'), JSON.stringify({ version: 1, config: clientConfig, sharedExecutors: false, sharedNativeExecutor: false,
+await writeFile(join(state, 'service-plan.json'), JSON.stringify({ version: 1, config: clientConfig, sharedExecutors: false, sharedNativeExecutor: !!v['shared-native-plan'],
   components: [{ id: 'native', kind: 'native', command: relayBinary, args: [...relayArgs, '--daemon'], log: join(root, 'native.log') }] }), { mode: 0o600 });
 await writeFile(join(state, 'native-registration.json'), JSON.stringify({ registered: true, home: relayHome, nativeHome, codex }), { mode: 0o600 });
 // A sandboxed process may not run the setuid /bin/ps, so `ps` answers as if a start time were unreadable, which every
@@ -133,7 +135,7 @@ async function until(check, label, timeout = 60000) {
   while (Date.now() < end) { const value = await check(); if (value) return value; await delay(50); }
   throw Error(label + ' timed out');
 }
-const result = { checkedAt: new Date().toISOString(), engineVersion, relay: relayBinary, sandboxed: process.env.GATEWAY_E2E_SANDBOXED === '1', paidInferenceRequests: 0, checks: [], passed: false };
+const result = { checkedAt: new Date().toISOString(), engineVersion, relay: relayBinary, sharedNativePlan: !!v['shared-native-plan'], sandboxed: process.env.GATEWAY_E2E_SANDBOXED === '1', paidInferenceRequests: 0, checks: [], passed: false };
 const check = (name, details = {}) => { result.checks.push({ name, ...details }); console.log(JSON.stringify({ check: name, ...details })); };
 let phase = 'setup', relay, serving;
 
