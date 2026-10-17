@@ -108,9 +108,15 @@ Macs do not get the drain. The drain deadline in `cli.ts` and the supervisor tak
 effect only after a service or inference restart; an in-place upgrade keeps the
 running process's previous deadline.
 
-After consolidation, a separate native install or `gateway tunnel install` refuses
-changes that would create competing jobs. Their status commands inspect the unified
-service. Desktop registration can refresh the launch environment without creating
+After consolidation, `gateway tunnel install` and `gateway native uninstall` refuse
+changes that would create competing jobs. `gateway native install` installs no job
+either: it only registers the relay the service already runs, for a relay slot that
+waits as `not_registered`. It uses the plan's own relay binary, relay home, native
+home and app CLI, refuses while ChatGPT is open, runs the relay's `--check` and
+`--enable` against the existing, enabled Codex Desktop registration (it never enrolls
+a new machine), and then writes `<state>/native-registration.json`. The service starts
+the relay at its next five-minute check while ChatGPT stays closed. Their status
+commands inspect the unified service. Desktop registration can refresh the launch environment without creating
 another login job. Transport changes other than tunnel removal currently require
 stopping the unified service and registering the required components again before
 reconsolidation.
