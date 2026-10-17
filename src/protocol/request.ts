@@ -1,5 +1,6 @@
 import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesMessageItem, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
 import { inlineImage } from "./images.js";
+import { telemetry } from "../telemetry.js";
 
 type Data = Record<string, unknown>;
 /** Why a request could not be translated. Fixed values only; never caller text. */
@@ -180,7 +181,66 @@ export function normalizeResponsesToolChoice(choice: ResponsesRequest["tool_choi
   return { type: "function", function: { name: named(selection) } };
 }
 
-/** Tools a request declares, at the top level and in Responses lite `additional_tools` input items. */
+/** One declared tool, as the merge sees it: the tool itself, the namespace it came from (if any), and how it ranks. */
+interface Declaration { tool: unknown; group?: { source: Data; name: string }; rank: number; text: string }
+const topLevelRank = 2 ** 30;
+const reported = new WeakSet<object>();
+/** Key order must not make two equal definitions look different. */
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) => inner !== null && typeof inner === "object" && !Array.isArray(inner)
+    ? Object.fromEntries(Object.entries(inner as Data).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : inner);
+}
+/** Identity of a declaration: its catalog name for function and custom tools, its type for the rest. Undefined when malformed, so validation reports it. */
+function declarationKey(tool: unknown, group?: string): string | undefined {
+  if (tool === null || typeof tool !== "object" || Array.isArray(tool)) return;
+  const source = tool as Data;
+  if (source.type === "function" || source.type === "custom") {
+    const definition = source.type === "function" && source.function !== undefined ? source.function : source;
+    if (definition === null || typeof definition !== "object" || Array.isArray(definition)) return;
+    const local = (definition as Data).name;
+    if (typeof local !== "string" || !local.trim()) return;
+    return `name:${group && group !== "functions" ? `${group}.${local}` : local}`;
+  }
+  return typeof source.type === "string" && source.type !== "namespace" ? `type:${source.type}` : undefined;
+}
+/**
+ * Merge repeated declarations by identity. A request's own top-level tools win over history, a later `additional_tools`
+ * item over an earlier one, and a later entry of one list over an earlier one. Position follows the first declaration.
+ */
+function mergeDeclarations(lists: Array<{ tools: unknown[]; top: boolean }>): { tools: ResponsesTool[]; replaced: number; identical: number } {
+  const merged = new Map<string, Declaration>();
+  let replaced = 0, identical = 0, sequence = 0;
+  const add = (key: string | undefined, entry: Omit<Declaration, "rank">, top: boolean) => {
+    const rank = (top ? topLevelRank : 0) + sequence++;
+    const id = key ?? `unkeyed:${sequence}`;
+    const known = merged.get(id);
+    if (!known) { merged.set(id, { ...entry, rank }); return; }
+    if (known.text === entry.text) identical++; else replaced++;
+    if (rank > known.rank) merged.set(id, { ...entry, rank });
+  };
+  for (const { tools, top } of lists) for (const tool of tools) {
+    const group = tool !== null && typeof tool === "object" && !Array.isArray(tool) && (tool as Data).type === "namespace" ? tool as Data : undefined;
+    if (!group || typeof group.name !== "string" || !group.name.trim() || !Array.isArray(group.tools) || !group.tools.length) { add(declarationKey(tool), { tool, text: stable(tool) }, top); continue; }
+    const description = typeof group.description === "string" ? group.description : "";
+    for (const child of group.tools) add(declarationKey(child, group.name), { tool: child, group: { source: group, name: group.name }, text: `${description}\0${stable(child)}` }, top);
+  }
+  const tools: ResponsesTool[] = [], namespaces = new Map<string, Data & { tools: unknown[] }>();
+  for (const { tool, group } of merged.values()) {
+    if (!group) { tools.push(tool as ResponsesTool); continue; }
+    // Children keep the description of the namespace they were declared in, so one namespace name can appear more than once.
+    const slot = `${group.name}\0${String(group.source.description ?? "")}`;
+    let namespace = namespaces.get(slot);
+    if (!namespace) { namespace = { ...group.source, tools: [] }; namespaces.set(slot, namespace); tools.push(namespace as unknown as ResponsesTool); }
+    namespace.tools.push(tool);
+  }
+  return { tools, replaced, identical };
+}
+
+/**
+ * Tools a request declares, at the top level and in Responses lite `additional_tools` input items, with repeated
+ * declarations merged: the current top-level list wins over history, and a later declaration wins over an earlier one.
+ * Merging is silent apart from the counts in the `tool_declarations_merged` event, which carries no names or definitions.
+ */
 export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool[] {
   const lifted = Array.isArray(request.input) ? request.input.flatMap(source => {
     const item = record(source);
@@ -189,7 +249,13 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
     return item.tools as ResponsesTool[];
   }) : [];
   if (request.tools !== undefined && request.tools !== null && !Array.isArray(request.tools)) reject("tools must be an array", "invalid_shape");
-  return [...(request.tools ?? []), ...lifted];
+  const result = mergeDeclarations([{ tools: request.tools ?? [], top: true }, { tools: lifted, top: false }]);
+  // The server validates a request and then its provider translates it again; report one request once.
+  if ((result.replaced || result.identical) && !reported.has(request)) {
+    reported.add(request);
+    telemetry("tool_declarations_merged", { replaced: result.replaced, identical: result.identical });
+  }
+  return result.tools;
 }
 
 export function responsesToChatRequest(request: ResponsesRequest, options: TranslationOptions = {}): OpenAIChatRequest {

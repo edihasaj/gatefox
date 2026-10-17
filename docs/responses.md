@@ -310,6 +310,31 @@ The current Copilot CLI exposes no selected-model priority tier. Direct
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
 
+## Repeated tool declarations
+
+A long chat can declare the same tool more than once: in several Responses lite
+`additional_tools` input items, or in an `additional_tools` item and again in the current
+top-level `tools` list. The ChatGPT backend accepts this, so the gateway merges the
+declarations into its own catalog instead of refusing the request (`duplicate_tool`).
+
+- **Identity.** A function or custom tool is identified by its name, qualified by its
+  namespace for a namespace tool (the default `functions` namespace is unqualified, like a
+  top-level tool). Any other typed tool, such as `tool_search`, is identified by its
+  `type`. The same local name in two different namespaces stays two tools.
+- **Precedence.** The current request's top-level `tools` win over any history
+  declaration. Among `additional_tools` items a later item wins over an earlier one, and
+  within one list a later entry wins over an earlier one. An exact duplicate is dropped; a
+  differing one is replaced by the winner. A tool keeps the position of its first
+  declaration.
+- **Scope.** Only the gateway's own catalog is merged. On the Codex route the original
+  input items still go upstream unchanged (apart from the `tool_search` drops below).
+- **Telemetry.** When anything merged, the gateway records `tool_declarations_merged` with
+  the counts `replaced` and `identical`, once per request, never a name, definition or
+  argument ([diagnostics](diagnostics.md#local-telemetry)).
+
+Malformed declarations still fail with their own reasons (`invalid_shape`,
+`unsupported_tool`); only a repeated name no longer fails a request.
+
 ## Tool search on the Codex subscription route
 
 Native Codex rows can enable `supports_search_tool`, so the client sends a `tool_search`
