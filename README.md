@@ -53,11 +53,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.4.5 -R edihasaj/harness-gateway \
+gh release download v0.4.7 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf harness-gateway-0.4.5-macos-arm64.tar.gz
-./harness-gateway-0.4.5-macos-arm64/install
+tar -xzf harness-gateway-0.4.7-macos-arm64.tar.gz
+./harness-gateway-0.4.7-macos-arm64/install
 gateway --version
 ```
 
@@ -244,6 +244,6 @@ and old LaunchAgents keep working. macOS names a background item after the progr
 LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System
 Settings, Login Items shows "harness-gateway" under "Allow in the Background"; the
 login environment agent runs a private script, `harness-gateway-login-env`, for the
-same reason. When a service is rewritten by 0.4.6 macOS posts one "Background Items
+same reason. When a service is rewritten by 0.4.7 macOS posts one "Background Items
 Added" notification for harness-gateway, and the old "gateway" entry disappears from
 the list. See [services](docs/services.md).

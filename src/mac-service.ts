@@ -42,7 +42,7 @@ export interface UnifiedInstallTools {
 }
 /**
  * `gateway service install` on a unified Mac. It never restarts or replaces a running service and swaps no plan: it starts
- * the service only when it is not loaded or has no process, as it always did. New in 0.4.6, it first renames the launcher in
+ * the service only when it is not loaded or has no process, as it always did. New in 0.4.7, it first renames the launcher in
  * the service plist file (and the desktop login plist, if one exists) from the managed `gateway` to `harness-gateway`, so
  * macOS lists the background item under that name. launchd reads the file at its next load, so a loaded service keeps its
  * current definition and shows the new name from the next login (or at once when this call loads it).

@@ -16,7 +16,7 @@ outside this service.
 
 macOS names a LaunchAgent item after the program in the first `ProgramArguments`
 entry, and shows that name in System Settings, Login Items, under "Allow in the
-Background", and in the "Background Items Added" notification. Since 0.4.6 the
+Background", and in the "Background Items Added" notification. Since 0.4.7 the
 installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
 `~/.local/bin/gateway` as a second launcher with the same contents (both set
 `GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
@@ -35,7 +35,7 @@ one written now within the same release, so `gateway native install` there no lo
 name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
 while that file carries the installer's marker line; otherwise they keep `gateway`.
 
-Migration is one-time and happens when a plist is next written by 0.4.6:
+Migration is one-time and happens when a plist is next written by 0.4.7:
 
 - A standalone service: `gateway service install`, which upgrades the running
   service when it is idle like any other install.
@@ -54,7 +54,7 @@ Migration is one-time and happens when a plist is next written by 0.4.6:
   launchd reads the file at its next load, so the running service keeps its current definition
   until you log in again (or restart through `launchctl bootout` and `bootstrap`), and shows the
   new name from then. `appliesAt` is `"now"` when that same call had to load a stopped service.
-  Run it once per Mac after installing 0.4.6.
+  Run it once per Mac after installing 0.4.7.
 
 At the first load of a renamed plist macOS posts one "Background Items Added" notification
 for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
