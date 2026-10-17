@@ -24,15 +24,32 @@ export const sessionMethods = new Set(["thread/start", "thread/resume", "thread/
 /** The JSON-RPC code the adapter and the pinned SDK refuse unavailable shared execution with. */
 export const unavailableCode = -32001;
 
+/** A refusal this recent, after the latest recovery marker, is a Mac that is still refusing. */
+export const refusalOngoingMs = 5 * 60_000;
+/** How far from a `self_upgrade` or `server_drain` a `component_exit` still counts as the restart's own. */
+export const restartExplainsExitMs = 15_000;
+/** The `self_upgrade` components whose arrival means the service or the inference server was replaced. */
+const upgradeMarkers = new Set(["service", "server"]);
+
 export interface TelemetrySignals {
   /** `execution_host_failed` events in the window. */
   hostFailures: number;
-  /** `component_exit` events in the window, per component kind. */
+  /** `component_exit` events in the window, per component kind, minus the exits a restart explains. */
   exits: Record<string, number>;
+  /** Exits a `self_upgrade` or a requested restart explained, per kind; they never move a verdict. */
+  explainedExits: Record<string, number>;
   /** `rpc_error` events that stopped a session method, per method. */
   rpcErrors: Record<string, number>;
   /** Every session refusal in the window, whichever method it stopped. 1-2 warn, `refusalFailThreshold` and up fail. */
   refusals: number;
+  /** Refusals after the latest recovery marker: the ones a restart has not already answered. */
+  activeRefusals: number;
+  /** Whether one of them is within the last `refusalOngoingMs`. Only an ongoing refusal can fail. */
+  refusalsOngoing: boolean;
+  /** The methods that have an ongoing refusal. */
+  ongoingMethods: string[];
+  /** When the last refusal of each method happened, as an instant, whatever the markers say. */
+  lastRefusalAt: Record<string, number>;
   /** `gateway_features_trimmed` events whose site was the one configuration retry. */
   featureRetries: number;
   /** Feature retries in the window that were followed by a refusal of a session method. */
@@ -44,7 +61,7 @@ export interface TelemetrySignals {
 }
 
 export const emptySignals = (): TelemetrySignals =>
-  ({ hostFailures: 0, exits: {}, rpcErrors: {}, refusals: 0, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
+  ({ hostFailures: 0, exits: {}, explainedExits: {}, rpcErrors: {}, refusals: 0, activeRefusals: 0, refusalsOngoing: false, ongoingMethods: [], lastRefusalAt: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
 
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
@@ -81,30 +98,61 @@ function refusedSessionMethod(row: HealthEvent): boolean {
   return row.code === unavailableCode || row.rejection === "other";
 }
 
+export interface SummarizeOptions {
+  /** The instant the window ends at; the clock "ongoing" is measured against. */
+  now?: number;
+  /** Instants that mark a recovery the telemetry cannot show, such as the service process's own start. */
+  markers?: number[];
+}
+
+/**
+ * Whether a restart explains a `component_exit`: a `self_upgrade` of the service explains any
+ * component, one of the inference server or a `server_drain` explains an inference exit, and
+ * the two have to be within `restartExplainsExitMs` of each other.
+ */
+function explainedByRestart(kind: string, at: number, rows: HealthEvent[]): boolean {
+  return rows.some(row => {
+    if (Math.abs(row.at - at) > restartExplainsExitMs) return false;
+    if (row.event === "self_upgrade") return row.component === "service" || (row.component === "server" && kind === "inference");
+    return row.event === "server_drain" && kind === "inference";
+  });
+}
+
 /** Reduces the window's lines to counts. `at` is the epoch millisecond the parser kept. */
-export function summarizeHealthEvents(rows: HealthEvent[]): TelemetrySignals {
+export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOptions = {}): TelemetrySignals {
   const signals = emptySignals();
+  const now = options.now ?? Date.now();
   const retries: number[] = [];
   const refusals: { at: number; method: string }[] = [];
+  // The latest recovery marker: an event that says the thing which was refusing has been replaced or has healed.
+  const marker = Math.max(0, ...(options.markers ?? []), ...rows.filter(row => row.event === "execution_host_recovered"
+    || (row.event === "self_upgrade" && upgradeMarkers.has(String(row.component)))).map(row => row.at));
   for (const row of rows) {
     const at = typeof row.at === "number" ? row.at : 0;
     if (row.event === "execution_host_failed") signals.hostFailures++;
     if (row.event === "component_exit") {
       const kind = typeof row.kind === "string" ? row.kind : "unknown";
-      signals.exits[kind] = (signals.exits[kind] ?? 0) + 1;
-      if (kind === "native") signals.nativeExited = true;
+      const into = explainedByRestart(kind, at, rows) ? signals.explainedExits : signals.exits;
+      into[kind] = (into[kind] ?? 0) + 1;
+      if (kind === "native" && into === signals.exits) signals.nativeExited = true;
     }
     if (row.event === "gateway_features_trimmed" && row.site === "retry") signals.featureRetries++, retries.push(at);
     if (refusedSessionMethod(row)) {
       const method = String(row.method);
       signals.rpcErrors[method] = (signals.rpcErrors[method] ?? 0) + 1;
       signals.refusals++;
+      signals.lastRefusalAt[method] = Math.max(signals.lastRefusalAt[method] ?? 0, at);
       refusals.push({ at, method });
     }
     if ((row.event === "native_sharing_unavailable" || row.event === "native_sharing_fallback") && !signals.nativeSharing.includes(row.event)) signals.nativeSharing.push(row.event);
   }
-  // A retry that still ends in a refusal is the one config-load failure worth alerting on.
-  signals.retriedThenRefused = refusals.filter(refusal => retries.some(retry => refusal.at >= retry)).length;
+  const active = refusals.filter(refusal => refusal.at > marker);
+  const recent = active.filter(refusal => refusal.at >= now - refusalOngoingMs);
+  signals.activeRefusals = active.length;
+  signals.refusalsOngoing = recent.length > 0;
+  signals.ongoingMethods = [...new Set(recent.map(refusal => refusal.method))].sort();
+  // A retry that still ends in a refusal is the one config-load failure worth alerting on, while that refusal is ongoing.
+  signals.retriedThenRefused = signals.refusalsOngoing ? active.filter(refusal => retries.some(retry => refusal.at >= retry)).length : 0;
   return signals;
 }
 

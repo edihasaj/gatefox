@@ -34,7 +34,8 @@ the same verdict as one machine-readable object.
 | components | `gateway versions`: every role still running an older release. | A lag is a warning; the same component more than one minor behind for over 48 hours fails. The clock starts when `current` was switched (the link's own mtime), not when the process started, and a different major always counts as more than one minor behind. |
 | service | The unified service snapshot: component states, execution-host state, and host restarts in the last 15 minutes of telemetry. | A failed host fails; a non-running component warns, except a `paused` native relay, which is info. |
 | inference | `GET http://127.0.0.1:<port>/health` from the configured port. | Anything not serving, a non-200 answer, or a release header that is not the installed one moves the verdict. `clientOnly` configs report the section as remote. |
-| errors | The local telemetry window (today's and yesterday's JSONL, fixed fields, counts only): session-method refusals, config retries followed by a refusal, and component exits. | One or two refusals in fifteen minutes warn; three or more fail. A config retry that still ends in a refusal fails; exits warn. |
+| errors | The local telemetry window (today's and yesterday's JSONL, fixed fields, counts only): session-method refusals, config retries followed by a refusal, and component exits. | A refusal fails only while it is ongoing and there are three or more since the last recovery; a refusal that has stopped warns with the time it stopped. A config retry that still ends in an ongoing refusal fails; exits warn unless a restart explains them. See [what is wrong now](#what-is-wrong-now). |
+| desktop | The ChatGPT process tree, when `<state>/desktop-registration.json` names a wrapper. | ChatGPT running on its stock engine warns; ChatGPT not running is info. See [the stock engine](#the-stock-engine). |
 | smoke | The packaged compatibility check against the installed release and the app's engine. | A failing check fails; a check that cannot run warns. |
 
 Findings use a fixed vocabulary of phrases plus counts and versions. Reports
@@ -47,6 +48,68 @@ A section that cannot be read says so once, as a warning (`versions unreadable`,
 `telemetry unreadable`, `inference unreadable`), and the rest of the run
 continues, push included. A watchdog that could not run `ps` is degraded, not
 broken, and it still has to answer.
+
+## What is wrong now
+
+The watchdog reports what is wrong now, not what was wrong somewhere in the last
+15 minutes. A Mac that healed itself must not page for the rest of the window,
+because `--push` turns a `fail` into a "down" on the alert monitor.
+
+**Refusals.** A session refusal (`rpc_error` on `thread/start`, `thread/resume`,
+`thread/fork` or `turn/start`) is *ongoing* when at least one happened in the
+last 5 minutes and after the latest recovery marker. The markers are an
+`execution_host_recovered` event, a `self_upgrade` of the `service` or the
+`server`, and the start of the service process itself (read from the `service`
+row of `gateway versions`, since the service logs no start event). Only an
+ongoing refusal can fail, and only when three or more happened after the marker;
+fewer warn. A refusal that is no longer ongoing warns and says when it stopped
+(UTC): `refused thread/resume 14x, none since 07:25`. A config retry followed by
+a refusal fails only while the refusal is ongoing. Nothing about the counts in
+`--json` changes: `errors.rpcErrors` and `errors.refusals` still cover the whole
+window.
+
+**Exits a restart explains.** A `component_exit` is not counted when it is within
+15 seconds (either side) of a restart that explains it, matched by component:
+
+| Event near the exit | Explains an exit of |
+| --- | --- |
+| `self_upgrade` of the `service` | any component (the whole service restarts) |
+| `self_upgrade` of the `server` | `inference` |
+| `server_drain` | `inference` |
+
+An exit of the same kind far from any such event, or of a component the restart
+does not touch (a tunnel next to a `server_drain`), still warns. Without this
+every Mac warned `inference exited 1x` right after its own self-upgrade, which
+was the idle restart itself.
+
+### The stock engine
+
+With an active desktop registration (the receipt has a `wrapper`) and ChatGPT
+running, the watchdog reads `ps` (pid, ppid and command only) through the same
+injectable command seam as the app check, and looks at ChatGPT's direct children:
+
+| Child of `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT` | Meaning |
+| --- | --- |
+| `<install>/current/runtime/bin/node <install>/current/package/dist/cli.js codex-shim ...` | The app runs on the gateway. Nothing is reported. |
+| `.../CodexCLI.app/Contents/MacOS/codex ... app-server` | The app runs on its own engine. Warns: "ChatGPT started before the gateway (for example right after a reboot); quit and reopen ChatGPT to use gateway chats". |
+| `Codex (Service)`, `Codex (Renderer)`, `codex ... exec-server` | Ignored. |
+
+ChatGPT not running is reported as info (`ChatGPT not running`), and a Mac with
+no registration is not checked at all. No process's environment is ever read.
+
+### Verdict mapping
+
+| Situation | Finding | Verdict |
+| --- | --- | --- |
+| 3+ refusals since the last marker, one in the last 5 minutes | `refused <method> Nx` | fail (exit 2) |
+| 1-2 refusals since the last marker, one in the last 5 minutes | `refused <method> Nx` | warn (exit 1) |
+| Refusals that stopped, or that a marker ended | `refused <method> Nx, none since HH:MM` | warn |
+| Exit explained by a restart | none | no change |
+| Any other component exit | `<kind> exited Nx` | warn |
+| Registered ChatGPT on the stock engine | the sentence above | warn |
+| Registered, ChatGPT not running | `ChatGPT not running` | ok (info) |
+
+Exit codes are unchanged: `0` ok, `1` warn, `2` fail, `3` push not taken.
 
 ## The compatibility smoke
 

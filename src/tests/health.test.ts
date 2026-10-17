@@ -16,7 +16,7 @@ const iso = (msAgo = 0) => new Date(at - msAgo).toISOString();
 const secretUrl = "https://kuma.invalid.example/api/push/Zm9vYmFyLXNlY3JldA";
 
 const versions = (installed: string | null, rows: Array<[string, string]> = [["service", installed ?? "none"]]): VersionsResult =>
-  ({ installed, lagging: 0, processes: rows.map(([role, release], index) => ({ role: role as VersionsResult["processes"][number]["role"], pid: 100 + index, startedAt: iso(), release })) });
+  ({ installed, lagging: 0, processes: rows.map(([role, release], index) => ({ role: role as VersionsResult["processes"][number]["role"], pid: 100 + index, startedAt: iso(60 * 60_000), release })) });
 const runningStatus: ServiceStatus = { installed: true, published: true, components: [{ kind: "inference", state: "running" }] };
 const healthyProbe: InferenceProbe = { state: "answered", status: 200, release: "0.4.4", bodyStatus: "ok" };
 
