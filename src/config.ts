@@ -175,9 +175,12 @@ export async function writePrivateJson(path: string, value: unknown): Promise<vo
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
-  finally { await file.close(); }
-  await rename(temporary, path); await chmod(path, 0o600);
+  try {
+    try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
+    finally { await file.close(); }
+    await rename(temporary, path);
+  } catch (error) { await unlink(temporary).catch(() => {}); throw error; } // A failed write or rename leaves no temp file behind.
+  await chmod(path, 0o600);
 }
 
 export async function readClientToken(path: string): Promise<string> {

@@ -18,6 +18,11 @@ import { sdkIdentity } from "../execution-host-storage.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { externalLegacyWriters } from "../service-legacy-writers.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-shared-")); const state = join(directory, "state"); const nativeHome = join(directory, "native");
@@ -112,7 +117,9 @@ test("shared migration preview preserves the existing plan and foreground CLI re
     const preview = await enableSharedExecutors(f.configPath); assert.equal(preview.applied, false); assert.equal(preview.alreadyEnabled, false);
     assert.equal(await readFile(join(f.state, "service-plan.json"), "utf8"), before); await assert.rejects(readFile(join(f.home, "owner.json")), { code: "ENOENT" });
     await assert.rejects(promisify(execFile)(process.execPath, [resolve("dist/cli.js"), "executor-host", "--config", f.configPath]), /explicit --codex/);
-    const child = spawn(process.execPath, [resolve("dist/cli.js"), "executor-host", "--config", f.configPath, "--codex", f.codex, "--native-home", f.nativeHome], { stdio: ["ignore", "pipe", "pipe"] });
+    // The host runs in a child process of its own, which gets this file's roots too, never the real SDK folder or host homes.
+    const isolated = roots.child();
+    const child = spawn(process.execPath, [...isolated.args, resolve("dist/cli.js"), "executor-host", "--config", f.configPath, "--codex", f.codex, "--native-home", f.nativeHome], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...isolated.env } });
     try {
       const chunk = await once(child.stdout!, "data"); const receipt = JSON.parse(String(chunk[0])); assert.equal(receipt.pid, child.pid);
       assert.equal(await executionHostReady(f.plan, child.pid!), true);
