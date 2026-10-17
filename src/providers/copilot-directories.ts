@@ -36,12 +36,29 @@ export async function ensureCopilotParent(base = tmpdir()): Promise<string> {
   return path;
 }
 
-/** When a process started, in whole seconds since the epoch (`ps -o lstart`), or undefined when that cannot be read. */
-export function processStart(pid: number): Promise<number | undefined> {
-  return new Promise(resolve => execFile("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 3000, env: { PATH: process.env.PATH, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
-    const time = Date.parse(`${String(stdout).trim().replace(/\s+/g, " ")} UTC`);
-    resolve(error || !Number.isFinite(time) ? undefined : Math.floor(time / 1000));
-  }));
+/** What `processStart` needs of `execFile`: a spawn that reports through a callback and returns a child that may emit `error`. */
+export type PsSpawn = (
+  file: string, args: string[], options: { timeout: number; env: NodeJS.ProcessEnv },
+  callback: (error: Error | null, stdout: string | Buffer) => void,
+) => { on(event: "error", listener: (error: Error) => void): unknown };
+
+/**
+ * When a process started, in whole seconds since the epoch (`ps -o lstart`), or undefined when that cannot be read.
+ * It never rejects: `execFile` can throw while spawning (EPERM inside a macOS sandbox) or emit `error` without calling back,
+ * and either one means the start is unknown, which callers already handle like a process that is gone. `spawn` is a test seam.
+ */
+export function processStart(pid: number, spawn: PsSpawn = execFile as PsSpawn): Promise<number | undefined> {
+  return new Promise<number | undefined>(resolve => {
+    try {
+      const child = spawn("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 3000, env: { PATH: process.env.PATH, LC_ALL: "C", TZ: "UTC" } }, (error, stdout) => {
+        const time = Date.parse(`${String(stdout).trim().replace(/\s+/g, " ")} UTC`);
+        resolve(error || !Number.isFinite(time) ? undefined : Math.floor(time / 1000));
+      });
+      child?.on("error", () => resolve(undefined));
+    } catch {
+      resolve(undefined);
+    }
+  });
 }
 
 /** Two readings of one process's start differ by at most this many seconds (Linux derives it from the boot time). */
