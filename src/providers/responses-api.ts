@@ -122,6 +122,11 @@ export class ResponsesAPI implements Provider {
     }
     const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan });
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
+    // On the Codex route top-level tools go up inside the gateway namespace and `additional_tools` tools keep their own, so a
+    // call is resolved against the list it was declared in first. A tool whose type changed between history and the current
+    // list then keeps the type of the declaration the call belongs to; the merged catalog is the fallback.
+    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
+    const current = plan ? scoped({ input: [] }) : identities, history = plan ? scoped({ tools: [] }) : identities;
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
     // when it sees the caller's own session and thread identifiers.
@@ -140,7 +145,7 @@ export class ResponsesAPI implements Provider {
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
       const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
       const name = String(item.name); const alias = namespace ? `${namespace}.${name}` : name;
-      const identity = identities.get(alias);
+      const identity = (item.namespace === defaultNamespace ? current : plan ? history : identities).get(alias) ?? identities.get(alias);
       if (!identity) throw new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
       return identity;
     };
