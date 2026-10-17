@@ -19,7 +19,10 @@ const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes
 const unique = () => randomBytes(8).toString("hex");
 const encoded = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 export const pendingLoginConsolidationPath = (state: string) => resolve(state, "service-login-pending.json");
-/** Written when the daemon rolls an interrupted staging back; it keeps every relaunch of that daemon idle in the same boot. */
+/**
+ * Written when the daemon rolls an interrupted staging back, before the staging record is archived; it keeps every relaunch
+ * of that daemon idle in the same boot and names the restored jobs each relaunch loads again when they are not loaded.
+ */
 export const recoveredLoginConsolidationPath = (state: string) => resolve(state, "service-login-recovered.json");
 /** A check that answered no. Only a refusal rolls an interrupted staging back; a check that could not run (launchctl, the disk) is retried. */
 class LoginRefusal extends Error {}
@@ -137,8 +140,10 @@ async function verifyPending(pending: PendingLoginConsolidation, config: string,
 async function promotable(pending: PendingLoginConsolidation, config: string, state: string, deps: LoginConsolidationDependencies): Promise<ServicePlan | undefined> {
   await verifyPending(pending, config, deps);
   const primary = await deps.status(deps.label);
-  if (!primary.loaded || primary.pid !== process.pid) throw refuse("Pending gateway login consolidation activates only in its primary launchd process");
-  for (const label of pending.removedLabels) if ((await deps.status(label)).loaded) throw refuse("An earlier gateway login job remains loaded; consolidation waits for the next login");
+  // Both of these only say "not yet" (a manual start, or an old job still unloading at login), so they are plain errors: the
+  // next launchd start tries again, and a fully staged consolidation is never rolled back for timing.
+  if (!primary.loaded || primary.pid !== process.pid) throw new Error("Pending gateway login consolidation activates only in its primary launchd process");
+  for (const label of pending.removedLabels) if ((await deps.status(label)).loaded) throw new Error("An earlier gateway login job remains loaded; consolidation waits for the next login");
   await noDuplicates(deps);
   const existing = await readServicePlan(state);
   if (existing && JSON.stringify(existing) !== JSON.stringify(pending.plan)) throw refuse("A different unified gateway service plan already exists");
@@ -156,28 +161,39 @@ async function promote(pending: PendingLoginConsolidation, state: string, existi
  * this session instead of at the next login. The primary job cannot be loaded: this daemon holds its label. A job that
  * is already loaded is left alone, and a job that fails to load is counted, never thrown.
  */
-async function startRestored(pending: PendingLoginConsolidation, deps: LoginConsolidationDependencies): Promise<{ started: number; failed: number }> {
+async function startRestored(labels: string[], deps: LoginConsolidationDependencies): Promise<{ started: number; failed: number }> {
   let started = 0; let failed = 0;
-  for (const label of pending.removedLabels) {
+  for (const label of labels) {
+    if (label === deps.label || !owns(label, deps.label)) continue;
     try { if (!(await deps.status(label)).loaded) { await deps.bootstrap(resolve(deps.directory, label + ".plist")); started++; } }
     catch { failed++; }
   }
   return { started, failed };
 }
-/** Whether a rollback this boot left the daemon with nothing to run. A record without a boot (none could be read) counts. */
-async function recoveredThisBoot(state: string): Promise<boolean> {
-  const file = await bytes(recoveredLoginConsolidationPath(state), true).catch(() => undefined); if (!file) return false;
-  let record: { version?: unknown; bootId?: unknown } | undefined;
-  try { record = JSON.parse(file.data.toString("utf8")) as typeof record; } catch { return false; }
-  if (record?.version !== 1) return false;
-  if (typeof record.bootId !== "string") return true;
+/**
+ * The jobs a rollback this boot restored, when one left the daemon with nothing to run; undefined when none did. A record
+ * without a boot (none could be read) counts. A record from before 0.4.4 names no jobs.
+ */
+async function recoveredThisBoot(state: string): Promise<{ removedLabels: string[] } | undefined> {
+  const file = await bytes(recoveredLoginConsolidationPath(state), true).catch(() => undefined); if (!file) return;
+  let record: { version?: unknown; bootId?: unknown; removedLabels?: unknown } | undefined;
+  try { record = JSON.parse(file.data.toString("utf8")) as typeof record; } catch { return; }
+  if (record?.version !== 1) return;
+  const removedLabels = Array.isArray(record.removedLabels) ? record.removedLabels.filter((label): label is string => typeof label === "string") : [];
+  if (typeof record.bootId !== "string") return { removedLabels };
   const boot = await bootIdentity().catch(() => undefined);
-  return !boot?.id || boot.id === record.bootId;
+  return !boot?.id || boot.id === record.bootId ? { removedLabels } : undefined;
 }
-/** What the daemon runs when nothing is pending: the published plan, or nothing at all while a rollback this boot stands. */
-async function settled(state: string): Promise<{ plan?: ServicePlan; restored: boolean }> {
-  const plan = await readServicePlan(state);
-  return { plan, restored: !plan && await recoveredThisBoot(state) };
+/**
+ * What the daemon runs when nothing is pending: the published plan, or nothing at all while a rollback this boot stands.
+ * Given the dependencies (under the login lock), a relaunch after that rollback also loads each restored job that is not
+ * loaded yet, so a daemon that stopped between its rollback and those loads finishes them.
+ */
+async function settled(state: string, deps?: LoginConsolidationDependencies): Promise<{ plan?: ServicePlan; restored: boolean }> {
+  const plan = await readServicePlan(state); if (plan) return { plan, restored: false };
+  const recovered = await recoveredThisBoot(state); if (!recovered) return { plan, restored: false };
+  if (deps) await startRestored(recovered.removedLabels, deps);
+  return { plan, restored: true };
 }
 async function retire(path: string, destination: string, expected: string, deps: LoginConsolidationDependencies, rollback = false): Promise<void> {
   await deps.move(path, destination);
@@ -293,17 +309,19 @@ export async function activatePendingLoginConsolidation(configPath: string, over
  * first write to its own rollback, so a `preparing` record seen under that lock was left by a staging process that is gone
  * (a crash, a reboot, a failed rollback); one whose process is still alive keeps the old refusal (a record from before
  * 0.4.4 names none). This daemon starts only from the staged LaunchAgent, so such a staging reached its last file write and
- * missed only its `ready` mark: it is finished and promoted like a `ready` one after the same checks. Only a check that
- * refuses rolls it back instead: each original is put back when its backup still has the digest recorded at staging, the
- * record is kept in the backup as `login-recovered.*.json`, every restored job but the primary one is loaded at once, and
- * `restored` keeps this daemon, and each relaunch of it in this boot, idle.
+ * missed only its `ready` mark: it is finished and promoted like a `ready` one after the same checks. A check that only says
+ * "not yet" (this is not the primary launchd process, or an old job is still loaded) fails this start, and the next one tries
+ * again. Only a check that refuses rolls it back instead: each original is put back when its backup still has the digest
+ * recorded at staging, the rollback mark is written, the record is kept in the backup as `login-recovered.*.json`, every
+ * restored job but the primary one is loaded at once, and `restored` keeps this daemon, and each relaunch of it in this boot,
+ * idle; each relaunch also loads a restored job that is not loaded yet.
  */
 export async function activateLoginConsolidation(configPath: string, overrides: Partial<LoginConsolidationDependencies> = {}): Promise<{ plan?: ServicePlan; restored: boolean }> {
   const config = resolve(configPath); const { stateDirectory: state } = await loadConfig(config);
-  if (!await readPendingLoginConsolidation(state)) return settled(state);
+  if (!await readPendingLoginConsolidation(state)) { const now = await settled(state); if (!now.restored) return now; }
   const deps = dependencies(state, overrides);
   return locked(state, deps, async () => {
-    const pending = await readPendingLoginConsolidation(state); if (!pending) return settled(state);
+    const pending = await readPendingLoginConsolidation(state); if (!pending) return settled(state, deps);
     if (pending.phase !== "ready") {
       if (pending.config !== config || pending.primaryLabel !== deps.label) throw new Error("Pending gateway login consolidation belongs to another installation");
       const marker = await lstat(pendingLoginConsolidationPath(state));
@@ -315,10 +333,12 @@ export async function activateLoginConsolidation(configPath: string, overrides: 
       } catch (error) { if (!(error instanceof LoginRefusal)) throw error; }
       await restore(pending, deps);
       await directory(dirname(pending.backup), false); await directory(pending.backup, false);
-      await rename(pendingLoginConsolidationPath(state), resolve(pending.backup, "login-recovered." + unique() + ".json"));
+      // The mark goes before the record is archived: a relaunch after a crash between the two rolls back again (restore
+      // leaves files that already match alone), and one after the archive finds the mark, never neither.
       const boot = await bootIdentity().catch(() => undefined);
-      await atomic(recoveredLoginConsolidationPath(state), encoded({ version: 1, ...(boot?.id ? { bootId: boot.id } : {}) }));
-      const { started, failed } = await startRestored(pending, deps);
+      await atomic(recoveredLoginConsolidationPath(state), encoded({ version: 1, ...(boot?.id ? { bootId: boot.id } : {}), removedLabels: pending.removedLabels }));
+      await rename(pendingLoginConsolidationPath(state), resolve(pending.backup, "login-recovered." + unique() + ".json"));
+      const { started, failed } = await startRestored(pending.removedLabels, deps);
       telemetry("login_consolidation_restored", { jobs: pending.sources.length, started, failed });
       return { plan: await readServicePlan(state), restored: true };
     }

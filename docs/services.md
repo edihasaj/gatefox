@@ -280,15 +280,21 @@ first: it runs the same checks as for a `ready` record (the staged LaunchAgent i
 unchanged, no retired job came back or is still loaded, no other gateway job appeared,
 and launchd runs this daemon as the primary job), promotes the plan, logs
 `login_consolidation_completed`, and runs it. A check that cannot run at all (launchctl
-or the disk failing) changes nothing, and launchd's next start tries again.
+or the disk failing) changes nothing, and launchd's next start tries again. So do the
+two checks that only mean "not yet": a retired job that is still loaded, and a start
+that is not launchd's primary job (a manual start). They fail this start and keep the
+record, so a fully staged consolidation is never rolled back for timing.
 
 Only a check that refuses rolls the staging back. The daemon puts back each original
-login job whose saved copy still has the digest recorded at staging, moves the record
-into the backup as `login-recovered.*.json`, and writes the private mark
-`<state>/service-login-recovered.json`. It then loads every restored job except the
+login job whose saved copy still has the digest recorded at staging, writes the private
+mark `<state>/service-login-recovered.json` (its boot and the restored job labels), and
+only then moves the record into the backup as `login-recovered.*.json`, so a daemon that
+stops between the two rolls back again at its next start and one that stops later finds
+the mark. It then loads every restored job except the
 primary one with `launchctl bootstrap`, so tunnels, the relay and desktop setup run in
 this session; a job that is already loaded is left alone, and one that fails to load
-is counted. `login_consolidation_restored` reports how many jobs were put back,
+is counted. Every relaunch in the same boot loads, again, each restored job that is
+still not loaded, so a daemon that stopped before its loads finishes them. `login_consolidation_restored` reports how many jobs were put back,
 started and failed. The primary job, normally inference, cannot be loaded while the
 daemon holds its label, so inference stays down until the next login or the recovery
 below. The daemon has no plan to run and stays idle. Every relaunch in the same boot
