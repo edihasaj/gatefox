@@ -439,7 +439,25 @@ editing native configuration.
 ChatGPT is a login item and can start before the unified service has set
 `CODEX_CLI_PATH`. When that happens the app launches its own bundled engine and
 runs without the gateway until it is restarted; this was seen on a Mac that
-rebooted after a power outage. To close the race, registration also writes a
+rebooted after a power outage.
+
+**With the unified service (0.4.8 and later)** the gateway has one background item,
+`harness-gateway`, and no separate agent. The service daemon closes the race itself:
+its very first step, before consolidation, any wait, the network or any child, is
+`/bin/launchctl setenv CODEX_CLI_PATH <registered wrapper>`. It runs only when
+`desktop-registration.json` names this gateway's own wrapper (the same ownership proof
+registration uses), the wrapper is executable, the release runtime exists, and the
+login session holds no value or one of the gateway's own wrappers. A foreign override is
+never replaced. A failure never stops the daemon: it records one
+`desktop_env_preset_failed` event with a fixed `reason` (`read` or `setenv`, see
+[diagnostics](diagnostics.md)), never a value or a path. The `desktop-restore` child that
+runs at every service start no longer writes the agent; it removes a managed one that
+0.4.7 left, so a 0.4.7 Mac loses the `harness-gateway-login-env` item at its first 0.4.8
+start. A plist at that label without the gateway's marker is left alone and reported as
+`unmanaged`.
+
+**Standalone registration (no unified service and no pending login plan)** keeps the
+agent described below. To close the race there, registration also writes a
 small LaunchAgent, `com.edihasaj.subscription-gateway.desktop-env`. It runs one
 command at login and exits. macOS names a background item after the program a
 LaunchAgent runs, so the agent does not run `launchctl` directly (Login Items would
@@ -460,22 +478,21 @@ private and written atomically, the script first, and the agent is bootstrapped 
 `gui/<uid>` when written. An agent written by 0.4.5 or earlier ran `launchctl`
 directly; registering again replaces it with the script form. A script at that
 path without the gateway's marker is refused, like an unmanaged plist.
-`gateway desktop register`, and the unified service's desktop component when it
-sets the variable, write or update it, so it follows the registration. The service
-still sets the variable itself as before. A plist with that label that does not
-carry the gateway's marker is refused, and nothing is changed.
+A standalone `gateway desktop register` writes or updates it, so it follows the
+registration. A plist with that label that does not carry the gateway's marker is
+refused, and nothing is changed (on the unified service path it is only reported).
 
-The agent is a safeguard, not a requirement. Where the unified service sets the
-variable (the desktop component's `desktop-restore`, or a registration while a unified
-or staged plan owns it), a failure to write or load the agent is caught: the registration
-keeps going and returns `envAgent: false`, and the service records a
-`desktop_env_agent_failed` event with a fixed `reason` (`write`, `bootstrap`,
-`unmanaged` or `other`, see [diagnostics](diagnostics.md)), never the error text or a
-path. The next start tries again. On a Mac that runs the unified service (or has a staged
-plan), which is where this agent matters, a hand-run `gateway desktop register` takes the
-same path: it returns `envAgent: false` and records the event under the component
-`service`. Only on a Mac without a unified plan does a hand-run `gateway desktop register`
-fail loudly, and it records no event.
+Where the unified service owns the variable (the desktop component's `desktop-restore`,
+or a registration while a unified or staged plan owns it) no agent is written, and
+registration returns `envAgent: false` and `loginEnv: "service"`, plus `envAgentRemoved:
+true` when it removed a 0.4.7 agent. A failure to remove the agent or an unmanaged plist at
+its label is caught: registration keeps going, and the service records a
+`desktop_env_agent_failed` event with a fixed `reason` (`other` or `unmanaged`, see
+[diagnostics](diagnostics.md)), never the error text or a path. The next start tries
+again. A hand-run `gateway desktop register` on such a Mac takes the same path and records
+the event under the component `service`. Only on a Mac without a unified plan does a
+hand-run `gateway desktop register` write the agent, fail loudly when it cannot, and
+record no event.
 
 The script sets nothing unless the gateway can still run: before the `launchctl setenv` it
 checks that the registered wrapper is executable and that the installed release's
@@ -500,7 +517,9 @@ and falls back to `launchctl getenv` only when the print fails. `launchctl geten
 over SSH reads a different domain and reported `activeForFutureLaunches: false`
 even when the login session held the right value. Status also reports
 `envAgent: true` when the agent exists, is the gateway's, and its script sets the
-registered wrapper. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
+registered wrapper. `loginEnv` says who sets the variable at login: `"service"` when a
+unified service (or its pending login plan) exists, `"agent"` when the standalone agent
+is in place, otherwise `"none"`. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
 only whether `CODEX_APP_SERVER_FORCE_CLI` is present and non-empty (and whether it is
 `1`), never its value, and uses `launchctl getenv` for both variables only when the
 print fails.

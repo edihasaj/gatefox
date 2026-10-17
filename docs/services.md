@@ -22,9 +22,10 @@ installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
 `GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
 either command names `harness-gateway`. The service, desktop login, native
 relay (its `--gateway` argument) and consolidated plans all use it. The
-login environment agent runs `<state>/harness-gateway-login-env`, a private script,
-instead of `launchctl`, so it is not listed as "launchctl" either. The launchd labels
-stay `com.edihasaj.subscription-gateway*`.
+login environment agent (0.4.7, and a standalone registration today) runs
+`<state>/harness-gateway-login-env`, a private script, instead of `launchctl`, so it is
+not listed as "launchctl" either. With the unified service it does not exist since
+0.4.8. The launchd labels stay `com.edihasaj.subscription-gateway*`.
 
 Older plists keep working, and a rollback to 0.4.5 needs no plist change: the checks that
 read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
@@ -41,8 +42,8 @@ Migration is one-time and happens when a plist is next written by 0.4.7:
   service when it is idle like any other install.
 - `gateway service consolidate --apply` and `--next-login` write a newly unified
   service with the new name. They do nothing to a Mac that is already unified.
-- `gateway desktop register` rewrites the standalone desktop login agent and the
-  login environment agent.
+- `gateway desktop register` rewrites the standalone desktop login agent and, without a
+  unified service, the login environment agent.
 - An already-unified service (a `service-plan.json` exists, as on every production Mac):
   `gateway service install` renames the launcher in the service plist file, and in the
   desktop login plist if one exists. It changes only the first program argument, writes
@@ -110,14 +111,20 @@ timeout names which readiness condition never held (`status_not_current`,
 test paths while retaining the original relay home and connected-machine
 registration.
 
-The login environment agent, `com.edihasaj.subscription-gateway.desktop-env`, is
-not a service component and stays a separate LaunchAgent on purpose. ChatGPT can
-start at login before this service has set `CODEX_CLI_PATH`; the agent runs
-`/bin/launchctl setenv CODEX_CLI_PATH <registered wrapper>` at login, ahead of
-anything slower, and exits. Consolidation does not collect it into the plan,
-retire it, or count it as a separate login job, and the unified service's
-desktop component keeps it in step with the registration. `gateway desktop
-unregister` and `gateway uninstall` remove it. See
+With the unified service the gateway has exactly one background item, `harness-gateway`.
+ChatGPT can start at login before this service has set `CODEX_CLI_PATH`, so the
+daemon (`gateway daemon`) runs `/bin/launchctl setenv CODEX_CLI_PATH <registered
+wrapper>` as its very first step, before consolidation, any wait or any child. It does so
+only when the registration receipt names this gateway's own executable wrapper, the
+release runtime exists, and the login session holds no value or one of the gateway's own
+wrappers; a foreign override is never replaced. The 0.4.7 login environment agent,
+`com.edihasaj.subscription-gateway.desktop-env`
+(`harness-gateway-login-env` in Login Items), is no longer written next to a unified
+service, and the service's desktop component removes a managed one it finds, so a 0.4.7
+Mac loses that extra item at its first 0.4.8 service start. A standalone
+`gateway desktop register` (no unified service, no pending login plan) keeps the agent.
+Consolidation does not collect it into the plan, and `gateway desktop unregister` and
+`gateway uninstall` remove any that is left. See
 [the registration section](app-server.md#the-login-environment-agent).
 
 The supervisor retries failed children with a delay that grows from one second
