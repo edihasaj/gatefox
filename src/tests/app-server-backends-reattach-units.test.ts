@@ -10,6 +10,7 @@ import { ExecutionHostClient } from "../execution-host-client.js";
 import type { Message } from "../app-server-connection.js";
 import type { NativeRpcConnection } from "../shared-native-connection.js";
 import type { GatewayConfig } from "../config.js";
+import { ReattachError, setHostDownWindowForTests } from "../executor-reattach.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 /**
@@ -22,13 +23,14 @@ import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.
  * rules the re-attach path depends on that no executor can be watched from: one discovery per dead host connection, a
  * flight claimed before anything is awaited, and an unload that never wakes a host.
  */
-type HostStub = { closed: boolean };
+type HostStub = { closed: boolean; close?: () => void };
 interface UnitAdapter {
   pool: () => Promise<HostStub | undefined>;
   reattach: (threadId: string, engine: unknown) => Promise<void>;
   poolClient?: HostStub;
   poolPending?: Promise<HostStub | undefined>;
-  reattacher: { flights: Map<string, unknown> };
+  reattacher: { flights: Map<string, unknown>; hostDownUntil: number };
+  gateway: () => Promise<unknown>;
   owner: (threadId: string) => Promise<unknown>;
   bindings: Map<string, unknown>;
   loads: { remember(threadId: string, params: Message): void; resumeParams(threadId: string): Message };
@@ -107,5 +109,73 @@ test("unsubscribing a chat whose executor is gone is answered here, without waki
     assert.deepEqual(internals.loads.resumeParams("chat"), { threadId: "chat", excludeTurns: true });
   } finally {
     ExecutionHostClient.discover = discoverAll; await backends.stop(); await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stopping while a caller waits in pool() leaves no host connection open, even if the host is reachable right after the abort", async () => {
+  const { directory, backends, internals } = await unitAdapter();
+  const discoverAll = ExecutionHostClient.discover;
+  const opened: HostStub[] = [];
+  let discovers = 0;
+  ExecutionHostClient.discover = async (...ask: Parameters<typeof ExecutionHostClient.discover>) => {
+    discovers++;
+    if (discovers === 1) { // The host is down: the first lookup fails when stop() aborts it.
+      await new Promise<void>(resolveWait => ask[5]!.addEventListener("abort", () => resolveWait()));
+      throw Object.assign(new Error("Shared gateway executor host is unavailable"), { code: -32001 });
+    }
+    // The host is reachable by the time anyone looks again.
+    const client: HostStub = { closed: false, close() { this.closed = true; } }; opened.push(client);
+    return client as unknown as ExecutionHostClient;
+  };
+  (backends as unknown as { sharedGateway: boolean }).sharedGateway = true;
+  try {
+    const first = internals.pool().then(() => undefined, (error: Error & { code?: number }) => error);
+    const second = internals.pool().then(() => undefined, (error: Error & { code?: number }) => error); // Follows the first lookup.
+    await delay(10); assert.equal(discovers, 1);
+    await backends.stop();
+    const errors = await Promise.all([first, second]);
+    assert.equal(opened.filter(client => !client.closed).length, 0, "no host connection is left open after the stop");
+    assert.equal(discovers, 1, "the caller that woke after the stop started no lookup of its own");
+    assert.deepEqual(errors.map(error => error?.code), [-32001, -32001], "both callers got the coded error");
+    // A lookup that finishes only after the stop is closed, too.
+    let late: HostStub | undefined;
+    (backends as unknown as { closing: boolean }).closing = false; internals.poolPending = undefined;
+    ExecutionHostClient.discover = async () => { await delay(20); late = { closed: false, close() { this.closed = true; } }; return late as unknown as ExecutionHostClient; };
+    const lookup = internals.pool().then(() => undefined, (error: Error & { code?: number }) => error);
+    (backends as unknown as { closing: boolean }).closing = true;
+    assert.equal((await lookup)?.code, -32001);
+    assert.equal(late?.closed, true, "a client obtained after the stop is closed");
+  } finally {
+    ExecutionHostClient.discover = discoverAll; await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("only a failed host lookup arms the fail-fast window; a gateway() refusal is the chat's own failure", async () => {
+  const { directory, stateDirectory, backends, internals } = await unitAdapter();
+  const discoverAll = ExecutionHostClient.discover;
+  setHostDownWindowForTests(5_000);
+  const closedEngine = { connection: { closed: true }, threads: new Set<string>(), active: new Map<string, string>(), requests: 0, shared: true };
+  let gateways = 0;
+  const reason = (error: unknown) => (error as ReattachError).reason;
+  try {
+    internals.owner = async () => undefined;
+    internals.gateway = async () => { gateways++; throw Object.assign(new Error("The gateway executor changed while this desktop connection was open"), { code: -32001 }); };
+    const first = await internals.reattach("a", closedEngine).catch(error => error);
+    const second = await internals.reattach("b", closedEngine).catch(error => error);
+    assert.deepEqual([reason(first), reason(second)], ["resume_failed", "resume_failed"], "a refused gateway() is not a host problem, whatever its code");
+    assert.equal(gateways, 2, "the second chat reached gateway() again: no window was armed");
+    assert.equal(internals.reattacher.hostDownUntil, 0);
+    assert.deepEqual((await unitTelemetry(stateDirectory, "executor_reattach_failed")).map(event => event.reason), ["resume_failed", "resume_failed"]);
+    // A failed host lookup, through the real pool(), is still host_unavailable and arms the window.
+    delete (internals as { owner?: unknown }).owner;
+    ExecutionHostClient.discover = async () => { throw Object.assign(new Error("Shared gateway executor host is unavailable"), { code: -32001 }); };
+    (backends as unknown as { sharedGateway: boolean }).sharedGateway = true;
+    const down = await internals.reattach("c", closedEngine).catch(error => error);
+    assert.equal(reason(down), "host_unavailable");
+    assert.ok(internals.reattacher.hostDownUntil > Date.now(), "a failed host lookup arms the window");
+    assert.equal(reason(await internals.reattach("d", closedEngine).catch(error => error)), "host_unavailable", "and the next attempt is refused inside it");
+    assert.equal(gateways, 2);
+  } finally {
+    ExecutionHostClient.discover = discoverAll; setHostDownWindowForTests(); await backends.stop(); await rm(directory, { recursive: true, force: true });
   }
 });

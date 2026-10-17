@@ -20,7 +20,7 @@ isolateExecutionRoots(); // The SDK rendezvous, host homes and native-home recei
 hostRunsInThisProcess(); // The shared host runs inside the test process: see src/tests/in-process-host.ts.
 
 const alias = "claude/fixture"; const otherAlias = "claude/other";
-type Logged = { pid: number; method: string; threadId?: string; turnId?: string; modelProvider?: string; model?: string; cwd?: string;
+type Logged = { pid: number; method: string; threadId?: string; turnId?: string; modelProvider?: string; model?: string; cwd?: string; runtimeWorkspaceRoots?: string[];
   approvalPolicy?: string; text?: string; excludeTurns?: boolean; config?: Message; serviceTier?: string | null };
 
 /**
@@ -28,7 +28,7 @@ type Logged = { pid: number; method: string; threadId?: string; turnId?: string;
  * `<root>/threads.json`, shared by every process as rollouts are; every request a process answers is appended to
  * `<root>/log.jsonl` with the process id, so a test sees which executor got which request. Like the real one, a thread/start
  * or a turn that carries one saves the chat's model, reasoning effort and approval policy, and a thread/resume restores the
- * saved values unless the resume names a model or provider itself or carries a `config.model` / `config.model_reasoning_effort`
+ * saved values (and the saved cwd, which a turn or a settings update changes and an explicit resume cwd overrides) unless the resume names a model or provider itself or carries a `config.model` / `config.model_reasoning_effort`
  * key (the SDK's own gate). `fixtureActive` on turn/start leaves the turn running; `fixture/exit` ends a stdio executor as a
  * crash would; `fixture/close` unloads a chat as the engine's own `thread/closed` would; a `<root>/refuse-resume` file makes
  * every executor refuse to resume.
@@ -49,7 +49,7 @@ const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+
 const all=()=>existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};
 const keep=v=>{const a=all();a[v.id]=v;writeFileSync(saved,JSON.stringify(a));};
 const typed=v=>v!==undefined&&v!==null;
-const log=(m)=>{const p=m.params||{};appendFileSync(root+'/log.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:p.threadId,turnId:p.turnId,modelProvider:p.modelProvider,model:p.model,cwd:p.cwd,approvalPolicy:p.approvalPolicy,excludeTurns:p.excludeTurns,config:p.config,serviceTier:p.serviceTier,text:p.input?.[0]?.text})+'\\n');};
+const log=(m)=>{const p=m.params||{};appendFileSync(root+'/log.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:p.threadId,turnId:p.turnId,modelProvider:p.modelProvider,model:p.model,cwd:p.cwd,runtimeWorkspaceRoots:p.runtimeWorkspaceRoots,approvalPolicy:p.approvalPolicy,excludeTurns:p.excludeTurns,config:p.config,serviceTier:p.serviceTier,text:p.input?.[0]?.text})+'\\n');};
 async function rpc(m,send,drop){if(m.id==null)return;log(m);const p=m.params||{};let result={};
 if(m.method==='fixture/disconnect'){drop?.();return;}
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
@@ -71,11 +71,11 @@ if(m.method==='thread/resume'){if(existsSync(root+'/refuse-resume')){send({id:m.
 if(m.method==='thread/read'){const thread=all()[p.threadId];result={thread:thread?{...thread,turns:[]}:{id:p.threadId,modelProvider:'openai'}};}
 if(m.method==='thread/turns/list')result={data:[],nextCursor:null};
 if(m.method==='turn/start'){const a=all();const thread=a[p.threadId];
- if(thread){if(p.model)thread.model=p.model;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}
+ if(thread){if(p.model)thread.model=p.model;if(p.cwd)thread.cwd=p.cwd;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}
  const turn={id:'turn-'+process.pid+'-'+(++sequence),status:p.fixtureActive?'inProgress':'completed'};turns.set(p.threadId,turn);result={turn};send({method:'turn/started',params:{threadId:p.threadId,turn}});if(!p.fixtureActive)send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
 if(m.method==='turn/interrupt'){const turn=turns.get(p.threadId);if(turn?.id!==p.turnId||turn.status!=='inProgress'){send({id:m.id,error:{code:-32600,message:'no active turn to interrupt'}});return;}turn.status='interrupted';send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
 if(m.method==='thread/settings/update'){const a=all();const thread=a[p.threadId];
- if(thread){if(p.model)thread.model=p.model;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}result={};}
+ if(thread){if(p.model)thread.model=p.model;if(p.cwd)thread.cwd=p.cwd;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}result={};}
 send({id:m.id,result});}
 const listen=args.includes('--listen')?args[args.indexOf('--listen')+1]:'stdio://';
 if(listen.startsWith('unix://')){
@@ -151,7 +151,7 @@ test("a host restarted under a loaded chat re-attaches with a resume that leaves
     assert.equal(resume.approvalPolicy, undefined, "no start-time approvals to loosen the chat's own");
     assert.equal(resume.serviceTier, undefined, "nothing loaded without it replays nothing");
     assert.deepEqual(resume.config, { model_catalog_json: "/catalog.json" }, "the replayed config cannot gate the SDK's effort restore");
-    assert.equal(resume.cwd, "/work"); assert.equal(resume.excludeTurns, true);
+    assert.equal(resume.cwd, undefined, "no start-time folder to revert the chat's own"); assert.equal(resume.excludeTurns, true);
     const kept = (await f.backends.request("thread/read", { threadId: "switched", includeTurns: false })).thread as Message;
     assert.deepEqual({ model: kept.model, effort: kept.effort, approvals: kept.approvalPolicy, provider: kept.modelProvider },
       { model: otherAlias, effort: "high", approvals: "on-request", provider: "openai" }, "the chat kept what it changed after loading");
@@ -359,7 +359,7 @@ test("an executor the host restarts refuses the resume, and the chat recovers wh
   } finally { await f.clean(); }
 });
 
-test("a forked chat re-attaches with its own load parameters, kept under the fork's id", { timeout: 30000 }, async () => {
+test("a forked chat re-attaches keeping its own folder, not its parent's", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
     await f.start("parent");
@@ -368,20 +368,21 @@ test("a forked chat re-attaches with its own load parameters, kept under the for
     await f.startHost();
     await f.backends.request("turn/start", turn("kid", "hello"));
     const resume = (await f.logged()).find(row => row.method === "thread/resume" && row.threadId === "kid")!;
-    assert.equal(resume.cwd, "/fork", "the fork re-attaches the way it was loaded, not the way its parent was");
+    assert.equal(resume.cwd, undefined, "the fork's folder is left to the SDK too");
+    assert.equal(((await f.backends.request("thread/read", { threadId: "kid", includeTurns: false })).thread as Message).cwd, "/fork", "the fork kept its own folder, not its parent's");
     await f.stopHost(); await f.until(() => f.engine("kid")?.connection.closed === true, "the executor connection closing again");
     await f.startHost();
     await f.backends.request("turn/start", turn("parent", "back"));
-    assert.equal((await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "parent").pop()!.cwd, "/work");
+    assert.equal(((await f.backends.request("thread/read", { threadId: "parent", includeTurns: false })).thread as Message).cwd, "/work");
   } finally { await f.clean(); }
 });
 
 test("thread/closed clears the chat's records, so a later re-attach resumes it from its saved settings alone", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
-    await f.start("doomed");
+    await f.backends.request("thread/start", { fixtureId: "doomed", model: alias, serviceTier: "priority", cwd: "/work" }, { engine: "gateway" });
     const loads = (f.backends as unknown as { loads: { resumeParams(threadId: string): Message } }).loads;
-    assert.equal(loads.resumeParams("doomed").cwd, "/work", "the connection remembers how it loaded the chat");
+    assert.equal(loads.resumeParams("doomed").serviceTier, "priority", "the connection remembers how it loaded the chat");
     await f.backends.request("fixture/close", { threadId: "doomed" });
     await f.until(() => f.engine("doomed") === undefined, "the thread/closed notice to clear the chat");
     assert.deepEqual(loads.resumeParams("doomed"), { threadId: "doomed", excludeTurns: true }, "after the unload the connection replays nothing it once remembered");
@@ -431,5 +432,59 @@ test("a connection the live host dropped is re-attached to the generation that s
     const rows = (await f.logged()).filter(row => row.threadId === "kept" && ["thread/resume", "turn/start"].includes(row.method));
     assert.deepEqual(rows.map(row => [row.method, row.pid === owner]), [["thread/resume", true], ["turn/start", true]], "the owning generation serves the chat again");
     assert.deepEqual((await f.telemetry("executor_reattached")).map(event => event.reason), ["generation_retired"]);
+  } finally { await f.clean(); }
+});
+
+test("a chat whose folder changed after loading re-attaches without a folder or roots, and stays where it moved", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.backends.request("thread/start", { fixtureId: "moved", model: alias, cwd: "/dir-a", runtimeWorkspaceRoots: ["/dir-a"], approvalPolicy: "never" }, { engine: "gateway" });
+    await f.backends.request("thread/settings/update", { threadId: "moved", cwd: "/dir-b" });
+    const before = (await f.logged()).find(row => row.method === "thread/start")!.pid;
+    await f.stopHost(); await f.until(() => f.engine("moved")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    await f.backends.request("thread/turns/list", { threadId: "moved", includeTurns: false });
+    const resume = (await f.logged()).find(row => row.method === "thread/resume" && row.threadId === "moved" && row.pid !== before)!;
+    assert.equal(resume.cwd, undefined, "an explicit folder would win over the one the chat moved to");
+    assert.equal(resume.runtimeWorkspaceRoots, undefined, "explicit roots would skip the SDK's restore of the chat's own");
+    assert.equal(((await f.backends.request("thread/read", { threadId: "moved", includeTurns: false })).thread as Message).cwd, "/dir-b", "the chat stays in the folder it moved to");
+  } finally { await f.clean(); }
+});
+
+test("an unsubscribe that arrives during a re-attach unloads the chat on the executor it landed on, and leaves no binding", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("leaving");
+    const before = (await f.logged()).find(row => row.method === "thread/start")!.pid;
+    await f.stopHost(); await f.until(() => f.engine("leaving")?.connection.closed === true, "the executor connection closing");
+    await f.startHost();
+    const reattacher = (f.backends as unknown as { reattacher: { running(threadId: string): unknown } }).reattacher;
+    const turnRequest = f.backends.request("turn/start", turn("leaving", "starts the re-attach")).then(() => undefined, () => undefined);
+    assert.ok(reattacher.running("leaving"), "the re-attach is running when the unsubscribe arrives");
+    const answer = await f.backends.request("thread/unsubscribe", { threadId: "leaving" });
+    await turnRequest;
+    assert.deepEqual(answer, { status: "unsubscribed" }, "the executor the chat landed on answered, not a local notLoaded");
+    const rows = (await f.logged()).filter(row => row.threadId === "leaving" && row.pid !== before);
+    const resume = rows.find(row => row.method === "thread/resume")!; const unsubscribe = rows.find(row => row.method === "thread/unsubscribe")!;
+    assert.ok(resume && unsubscribe, "the chat was resumed, then unsubscribed");
+    assert.equal(unsubscribe.pid, resume.pid, "the unsubscribe reached the new executor");
+    assert.equal(f.engine("leaving"), undefined, "no binding is left behind");
+  } finally { await f.clean(); }
+});
+
+test("a host that came back inside the fail-fast window ends it: another chat re-attaches without waiting it out", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("first"); await f.start("second");
+    await f.stopHost(); await f.until(() => f.engine("first")?.connection.closed === true, "the executor connection closing");
+    await assert.rejects(f.backends.request("turn/start", turn("first", "while the host is down")), (error: Error & { code?: number }) => lost(error));
+    const window = (f.backends as unknown as { reattacher: { hostDownUntil: number } }).reattacher;
+    assert.ok(Date.now() < window.hostDownUntil, "the failed lookup opened the fail-fast window");
+    await f.startHost();
+    await f.backends.request("thread/resume", { threadId: "first" }); // The user resumes the chat; the host answers.
+    assert.equal(window.hostDownUntil, 0, "a live host lookup clears the window");
+    await f.backends.request("turn/start", turn("second", "the host is back"));
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "second").length, 1, "the other chat re-attached at once");
+    assert.equal((await f.telemetry("executor_reattach_failed")).length, 1, "only the first failed lookup was recorded");
   } finally { await f.clean(); }
 });

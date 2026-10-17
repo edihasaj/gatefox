@@ -541,11 +541,12 @@ adapter first loads the chat again: it finds the host again (a kick and up to 20
 of waiting, taken once however many chats wait), takes the generation that still owns the
 chat or the current one, and sends `thread/resume` the way a desktop resume does, then the
 request itself. The resume carries only what the SDK cannot restore from the chat's own
-history (folder, workspace roots, config, instructions, personality and the speed tier),
-always with `excludeTurns: true`, and never a model, provider id, approval policy,
-approvals reviewer or permissions: the SDK applies the latest values saved with the chat
-to a resume that omits them, so a chat that tightened its approvals or changed its model
-and effort after loading keeps those changes through a re-attach. A chat this connection
+history (config, instructions, personality and the speed tier), always with
+`excludeTurns: true`, and never a model, provider id, approval policy, approvals reviewer,
+permissions, folder or workspace roots: the SDK applies the latest values saved with the
+chat to a resume that omits them (an explicit folder wins over the saved one, and explicit
+roots skip their restore), so a chat that tightened its approvals, changed its model and
+effort or moved to another folder after loading keeps those changes through a re-attach. A chat this connection
 did not load, such as a sub-agent, one it has forgotten, or one whose parameters it
 evicted (a connection keeps the most recent 512), is resumed with its saved settings
 alone; the replayed `config` drops the keys that would block that restore.
@@ -559,10 +560,15 @@ alone; the replayed `config` drops the keys that would block that restore.
 - `thread/unsubscribe` asks nothing of an executor: on a closed engine the adapter clears
   the chat's records and answers `notLoaded` itself instead of waking the host.
   `thread/delete` and `thread/archive` still re-attach first, because the SDK must load
-  the chat to unload or remove it.
+  the chat to unload or remove it. An unsubscribe that arrives while that chat's re-attach
+  is running waits for it and then unloads the chat on the executor it landed on, so the
+  re-attach never undoes it.
 - A host that stays down fails fast: after one failed lookup, attempts on that connection
   for the next 5 seconds get the old error at once instead of kicking and waiting through
-  the host again, and one such window records at most one failure.
+  the host again, and one such window records at most one failure. Only a failed host
+  lookup opens the window; a refusal from the gateway itself (the catalog, the generation
+  limit, a changed provider) or from the resume is the chat's own failure and opens none.
+  The window ends as soon as any host lookup on the connection finds the host alive.
 - A throwaway chat (a composer prediction) lived only in the executor that is gone and
   is not re-attached, and a host that stays down past the wait, an executor that refuses
   the resume, or a shutdown that has begun gives the error from before: "The gateway
