@@ -140,8 +140,9 @@ test("a host that never claimed the native home claims it on close, so the recei
   } finally { await Promise.allSettled([...f.adapters].map(adapter => adapter.stop())); await host?.close(); await f.clean(); }
 });
 
-// close() claims the home last, after its own control socket is gone, so the claim never judges the home while this host's
-// listener still stands in it. A host that never claimed the home (a live owner held it at its start) closes after that owner died.
+// The end state of a close: a host that never claimed the home (a live owner held it at its start) closes after that owner died,
+// and the dead owner's receipt becomes the clean stopped one. This does not pin the order of the claim and the removal of the
+// control socket; the test below it does.
 test("a host that never claimed the native home closes over a dead owner's receipt and leaves the clean stopped one", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   let host: Awaited<ReturnType<typeof startExecutionHost>> | undefined;

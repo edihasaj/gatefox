@@ -60,7 +60,9 @@ export async function socketAnswers(path: string): Promise<boolean> {
 /**
  * Binds `server` to a Unix socket path that is private to this user from its first instant. The process umask is narrowed
  * around the bind only (it happens synchronously inside `listen`, never across an await), so a host that dies before its
- * chmod leaves a 0600 socket, not one open to others that every later start would refuse as occupied.
+ * chmod leaves a 0600 socket, not one open to others that every later start would refuse as occupied. While it is narrowed,
+ * a libuv threadpool file creation in the same process may briefly pick the mask up too; a mask of 0077 can only make such
+ * a file narrower than it would have been, never wider.
  */
 export async function listenPrivate(server: Server, path: string): Promise<void> {
   const previous = process.umask(0o077);
@@ -140,17 +142,37 @@ async function inspectSocket(path: string, allowMissingTarget: boolean): Promise
   if (!physical.isSocket() || physical.uid !== process.getuid?.() || (physical.mode & 0o077)) throw new Error("Execution SDK socket target must be private and user-owned");
   return { ...identity, targetPath: target, targetInode: String(physical.ino), targetDevice: String(physical.dev) };
 }
-async function listening(path: string): Promise<boolean> {
+/** One connect attempt: it answered, was refused (ECONNREFUSED) or found nothing there (ENOENT); any other failure rejects. */
+export type ProbeResult = "answered" | "refused" | "absent";
+export function connectOnce(path: string): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
     const socket = connect(path); const timer = setTimeout(() => { socket.destroy(); reject(new Error("Execution socket liveness check timed out")); }, 1500);
-    const finish = (value: boolean) => { clearTimeout(timer); socket.destroy(); resolve(value); };
-    socket.once("connect", () => finish(true));
+    const finish = (value: ProbeResult) => { clearTimeout(timer); socket.destroy(); resolve(value); };
+    socket.once("connect", () => finish("answered"));
     socket.once("error", error => {
       const code = (error as NodeJS.ErrnoException).code;
-      if (["ECONNREFUSED", "ENOENT"].includes(code || "")) finish(false);
+      if (code === "ECONNREFUSED") finish("refused");
+      else if (code === "ENOENT") finish("absent");
       else { clearTimeout(timer); socket.destroy(); reject(Object.assign(new Error("Execution socket liveness check failed"), { code })); }
     });
   });
+}
+/** How long a refused connect waits before it is tried once more (see `listening`). */
+const defaultRefusedRetryMs = 200;
+let probeConnect: (path: string) => Promise<ProbeResult> = connectOnce; let refusedRetryMs = defaultRefusedRetryMs;
+/** Tests replace the connect attempt and shorten the wait before the second one. Called with nothing it restores the production ones. */
+export function setSocketProbeForTests(options: { probe?: (path: string) => Promise<ProbeResult>; retryMs?: number } = {}): void { probeConnect = options.probe ?? connectOnce; refusedRetryMs = options.retryMs ?? defaultRefusedRetryMs; }
+/**
+ * Whether anything accepts a connect at `path`. A refusal is asked again after a short wait before it counts: on macOS a live
+ * listener whose accept queue is full also answers ECONNREFUSED, so one refusal could take a wedged but live listener for a
+ * dead one, and every caller of this removes what it judges dead. A path with nothing at it is not asked twice.
+ */
+async function listening(path: string): Promise<boolean> {
+  const first = await probeConnect(path);
+  if (first === "answered") return true;
+  if (first === "absent") return false;
+  await new Promise(resolve => setTimeout(resolve, refusedRetryMs));
+  return await probeConnect(path) === "answered";
 }
 /** Recovery never removes a live or unrecorded listener. */
 export async function removeOwnedSocket(path: string, expected?: SocketIdentity, staleOwner = false): Promise<void> {
