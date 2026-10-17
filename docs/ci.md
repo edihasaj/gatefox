@@ -21,8 +21,14 @@ real ones are left as they were. It also fails a test that hangs (120 s by defau
 its own), lets a test file exit once its tests have ended, and stops every test process
 when the run is signalled: the test processes exit on the signal, which stops the Copilot CLIs
 they started (those run in process groups of their own), and the runner removes the stale
-sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders. The tests that need macOS retain
-their explicit platform guards.
+sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders.
+Every test process, and every process a test starts with its environment, refuses the real per-user roots
+(`gw-exec`, `gw-native`, `gw-ssh`, the SDK rendezvous and a linked native Codex home) unless they lie in a
+temporary folder (`src/test-root-guard.ts`), so a test file run on its own with `node --test` fails instead of
+writing there; run single files through `node scripts/run-tests.mjs <file>`. As a backstop the runner notes the
+entries of the real `~/.local/state/gw-native` and `gw-exec` before the run and fails it, naming the files, when a new
+entry's `owner.json` points its configuration or native home into a temporary folder; it never removes anything there.
+The tests that need macOS retain their explicit platform guards.
 
 `macos-native` uses GitHub's macOS 15 Apple Silicon runner only for an intentional
 native validation: an explicit dispatch from `production` with

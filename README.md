@@ -188,6 +188,8 @@ after `--` to run only those. The runner fails a test that sets no timeout after
 process group, so a signal to the runner stops every test process and it exits with 128 plus the signal. Each test
 process exits on the signal, so the Copilot CLIs it started (they run in groups of their own) stop with it, and the runner
 removes the stale sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders.
+Test processes refuse the real per-user roots outside a temporary folder, and the runner fails a run that left a test
+receipt in the real `gw-native` or `gw-exec` ([CI](docs/ci.md)).
 Hosted macOS native CI is manual-only: dispatch from `production` with
 **Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).

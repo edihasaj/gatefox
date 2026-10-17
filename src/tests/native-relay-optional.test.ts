@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
-import { mkdir, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { activeNativeRelay, relaySocketPath } from "../native-control.js";
@@ -12,13 +11,15 @@ import { shortFolder } from "./short-folder.js";
 
 /**
  * The relay the adapter may use is the one that is registered, connected and reachable.
- * Each of the three answers is checked here without a ChatGPT app or a real relay; the
- * runner gives every test a private home folder, which is where a registration points.
+ * Each of the three answers is checked here without a ChatGPT app or a real relay. A registration must point under
+ * `$HOME/.local/state/gw-native`, so each fixture points HOME at a folder of its own for its test, whether the file runs
+ * under npm test or on its own, and the real home is never touched.
  */
 async function relayFixture(registered: boolean | undefined): Promise<{ config: GatewayConfig; home: string; reasons: () => Promise<unknown[]>; close: () => Promise<void> }> {
   const folder = await shortFolder("gw-relay-");
   const nativeHome = join(folder.directory, "codex"); await mkdir(nativeHome, { mode: 0o700 });
-  const home = join(homedir(), ".local/state/gw-native", "fixture");
+  const previousHome = process.env.HOME; process.env.HOME = join(folder.directory, "h");
+  const home = join(folder.directory, "h", ".local/state/gw-native", "fx");
   await mkdir(home, { recursive: true, mode: 0o700 });
   if (registered !== undefined) await writePrivateJson(join(folder.directory, "native-registration.json"), { registered, home, nativeHome });
   configureTelemetry(folder.directory, "test");
@@ -27,7 +28,11 @@ async function relayFixture(registered: boolean | undefined): Promise<{ config: 
   return {
     config, home,
     reasons: async () => { await flushTelemetry(); return (await readTelemetry(folder.directory, Date.now() - 60_000)).filter(event => event.event === "native_relay_skipped").map(event => event.reason); },
-    close: async () => { process.env.CODEX_HOME = previous; await rm(home, { recursive: true, force: true }); await folder.remove(); },
+    close: async () => {
+      if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous;
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+      await folder.remove();
+    },
   };
 }
 

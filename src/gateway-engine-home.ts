@@ -4,6 +4,7 @@ import { resolve, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Message } from "./app-server-connection.js";
 import { normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
+import { testSafeRoot } from "./test-root-guard.js";
 import { trimGatewayFeatureConfig, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 
 function toml(value: unknown): string {
@@ -18,7 +19,8 @@ export interface GatewayHomeOptions { nativeHome?: string; sharedWriterLocks?: b
 
 /** Share chat storage; isolate every automatic config write and all provider auth. */
 export async function gatewayEngineHome(state: string, settings: Message, options: GatewayHomeOptions = {}): Promise<string> {
-  const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || join(homedir(), ".codex"));
+  // A test that linked the real native home would write its fixture chats into the real `sessions` folder.
+  const nativeHome = testSafeRoot(resolve(options.nativeHome || process.env.CODEX_HOME || join(homedir(), ".codex")), "native Codex home");
   const home = resolve(state, "desktop-engine");
   if (home === nativeHome) throw new Error("The gateway executor home must be separate from native Codex");
   await mkdir(home, { recursive: true, mode: 0o700 });

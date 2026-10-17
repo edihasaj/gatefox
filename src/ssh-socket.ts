@@ -6,10 +6,11 @@ import type { BigIntStats } from "node:fs";
 import { connect } from "node:net";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
+import { testSafeRoot } from "./test-root-guard.js";
 import { releasePattern, releaseState, type ReleaseState } from "./self-update.js";
 
 /** The folder that holds every managed SSH control home. */
-const sshStateRoot = () => resolve(homedir(), ".local/state/gw-ssh");
+const sshStateRoot = () => testSafeRoot(resolve(homedir(), ".local/state/gw-ssh"), "SSH control root");
 
 export function sshControlHome(configPath: string, nativeHome = process.env.CODEX_HOME || resolve(homedir(), ".codex")): string {
   const scope = createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16);

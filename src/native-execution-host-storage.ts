@@ -6,6 +6,7 @@ import { basename, dirname, resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { archiveStaleReceipt, executionHostRoot, lenientRecord, linkAnswers, privateDirectory, readLenientJson, receiptPidAlive, removeOwnedSocket, sdkIdentity, type EngineOwner, type HostIdentity, type OwnerReclaim, type ReceiptOwner, type SocketIdentity } from "./execution-host-storage.js";
+import { testSafeRoot } from "./test-root-guard.js";
 import { fromPreviousBoot, ownerStamp, spawnStamp } from "./boot-identity.js";
 
 const marker = "subscription-gateway-native-execution-owner";
@@ -23,7 +24,7 @@ export function setNativeOwnerRootForTests(root?: string): void { nativeOwnerRoo
 export function nativeHomeOwnerPath(nativeHome: string): string {
   let canonical: string; try { canonical = realpathSync(nativeHome); } catch { canonical = resolve(nativeHome); }
   const scope = createHash("sha256").update(canonical).digest("hex").slice(0, 16);
-  return resolve(nativeOwnerRootOverride ?? resolve(homedir(), ".local/state/gw-native"), scope, "owner.json");
+  return resolve(nativeOwnerRootOverride ?? testSafeRoot(resolve(homedir(), ".local/state/gw-native"), "native-home receipt root"), scope, "owner.json");
 }
 /** writePrivateJson replaces the receipt by atomic rename, so a reader can see two inodes across lstat and open. */
 const replacedDuringRead = Symbol("native-owner-replaced");

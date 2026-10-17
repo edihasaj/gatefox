@@ -21,13 +21,17 @@
 // exit handlers, and then exits with 128 plus the signal, with no test process left behind.
 // Each test process also exits on the signal instead of dying of it (scripts/test-preload.mjs), so the Copilot CLIs it started,
 // which run in groups of their own, are stopped with it; the fixture CLIs leave when their parent does as well.
+//
+// A run that left a test's receipt in the user's real `~/.local/state/gw-native` or `gw-exec` fails, naming each file and
+// removing none (scripts/real-state-guard.mjs); test processes themselves refuse those roots (src/test-root-guard.ts).
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
-import { constants, tmpdir } from "node:os";
+import { constants, homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { groupGone } from "./group-gone.mjs";
 import { isStale, ownSocket, sdkSocketName } from "./stale-sockets.mjs";
+import { watchRealState } from "./real-state-guard.mjs";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const testsFolder = join(root, "dist", "tests");
@@ -46,6 +50,8 @@ const folder = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp"
 const home = join(folder, "home"); mkdirSync(home, { mode: 0o700 });
 const remove = () => { try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Best effort; it is one folder under the temp folder. */ } };
 const grouped = process.platform !== "win32";
+// The user's own state folders, taken before the run: a receipt a test left there fails the run (see real-state-guard.mjs).
+const realStateLeaks = watchRealState(homedir());
 // How long a stopped suite may take to end before its group gets SIGKILL.
 const killGrace = Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) > 0 ? Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) : 10000;
 const preload = pathToFileURL(join(root, "scripts", "test-preload.mjs")).href;
@@ -99,5 +105,7 @@ child.once("exit", async (code, signal) => {
   if (grouped && child.pid) await groupGone(child.pid, 10000);
   await removeStaleSockets().catch(() => {}); remove();
   const name = stopped ?? signal;
-  process.exit(name ? 128 + (constants.signals[name] ?? 15) : code ?? 1);
+  const leaks = realStateLeaks();
+  if (leaks.length) process.stderr.write(`The run left test receipts in the real gateway state; nothing was removed:\n${leaks.map(path => `  ${path}\n`).join("")}`);
+  process.exit(name ? 128 + (constants.signals[name] ?? 15) : leaks.length && !code ? 1 : code ?? 1);
 });

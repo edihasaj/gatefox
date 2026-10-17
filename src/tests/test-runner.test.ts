@@ -89,7 +89,7 @@ test("a runner with nothing compiled says to build first instead of printing a s
   const w = await workspace();
   try {
     // The runner finds the compiled tests next to itself: a copy in a folder with no dist has none.
-    await mkdir(join(w.work, "scripts")); for (const name of ["run-tests.mjs", "stale-sockets.mjs", "group-gone.mjs"]) await copyFile(join(dirname(runner), name), join(w.work, "scripts", name));
+    await mkdir(join(w.work, "scripts")); for (const name of ["run-tests.mjs", "stale-sockets.mjs", "group-gone.mjs", "real-state-guard.mjs"]) await copyFile(join(dirname(runner), name), join(w.work, "scripts", name));
     const child = spawn(process.execPath, [join(w.work, "scripts", "run-tests.mjs")], { env: w.environment, stdio: ["ignore", "ignore", "pipe"] });
     let stderr = ""; child.stderr.on("data", chunk => { stderr += String(chunk); });
     const [code] = await once(child, "exit");
@@ -301,4 +301,31 @@ test("waits", () => { writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.st
     assert.ok(await wait(() => !alive(started!.pids[0]), 20000), "and it is gone");
     passed = true;
   } finally { if (!passed) await cleanUp(child, started); await rm(w.work, { recursive: true, force: true }); }
+});
+
+test("a receipt a test leaves in the real state folders fails the run, names the file and is left in place", { skip: process.platform === "win32", timeout: 60000 }, async () => {
+  const w = await workspace();
+  try {
+    // The nested runner's own HOME stands in for the real one; its tests run under a private HOME of their own, so this suite
+    // writes to the stand-in by its absolute path, as a test that reached the real folders would.
+    const real = join(w.work, "real-home"); const state = (name: string, entry: string) => join(real, ".local", "state", name, entry, "owner.json");
+    const receipt = async (path: string, configPath: string) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, JSON.stringify({ configPath, nativeHome: join(dirname(configPath), "native") })); };
+    await receipt(state("gw-native", "before"), join(tmpdir(), "gateway-old", "gateway.json"));
+    const file = await w.suite("leaks", `import { mkdirSync, writeFileSync } from "node:fs"; import { dirname, join } from "node:path"; import { tmpdir } from "node:os";
+const put = (path, configPath) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify({ configPath, nativeHome: "/Users/someone/.codex" })); };
+test("leaks", () => {
+  put(${JSON.stringify(state("gw-native", "leaked"))}, join(tmpdir(), "gateway-service-native-x", "gateway.json"));
+  put(${JSON.stringify(state("gw-exec", "leaked"))}, "/tmp/gw-host-x/gateway.json");
+  put(${JSON.stringify(state("gw-native", "user"))}, "/Users/someone/gateway.json");
+});`);
+    const result = await run(w.environment, [file], { HOME: real });
+    assert.equal(result.code, 1, "the passing suite failed the run");
+    for (const path of [state("gw-native", "leaked"), state("gw-exec", "leaked")]) {
+      assert.ok(result.stderr.includes(path), `the run named ${basename(dirname(dirname(path)))}'s new receipt`);
+      assert.equal(await exists(path), true, "and left it in place");
+    }
+    assert.equal(result.stderr.includes(state("gw-native", "before")), false, "an entry from before the run is not the run's");
+    assert.equal(result.stderr.includes(state("gw-native", "user")), false, "a receipt that names real paths is the user's gateway");
+    assert.equal(result.stderr.includes("/Users/someone"), false, "no receipt content is printed");
+  } finally { await rm(w.work, { recursive: true, force: true }); }
 });

@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import type { GatewayConfig } from "./config.js";
 import { object, isId, type Message } from "./app-server-connection.js";
 import { nativeRegistrationRecord } from "./native-pause.js";
+import { testSafeRoot } from "./test-root-guard.js";
 import { telemetry } from "./telemetry.js";
 
 /** The private socket a running relay listens on inside its own control home. */
@@ -46,8 +47,10 @@ export async function activeNativeRelay(config: GatewayConfig, reachable: (home:
   return registration;
 }
 
+/** The folder of every relay control home: `~/.local/state/gw-native`. */
+const relayRoot = () => testSafeRoot(resolve(homedir(), ".local/state/gw-native"), "native relay root");
 export function nativeRelayHome(configPath: string, nativeHome: string): string {
-  return resolve(homedir(), ".local/state/gw-native", createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16));
+  return resolve(relayRoot(), createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16));
 }
 
 export async function nativeRegistration(config: GatewayConfig): Promise<{ home: string; nativeHome: string } | undefined> {
@@ -58,7 +61,7 @@ export async function nativeRegistration(config: GatewayConfig): Promise<{ home:
   if (saved.registered !== true) return;
   const nativeHome = resolve(process.env.CODEX_HOME || resolve(homedir(), ".codex"));
   if (saved.nativeHome !== nativeHome) return;
-  if (typeof saved.home !== "string" || !saved.home.startsWith(resolve(homedir(), ".local/state/gw-native") + "/")) throw new Error("Native relay control home is invalid");
+  if (typeof saved.home !== "string" || !saved.home.startsWith(relayRoot() + "/")) throw new Error("Native relay control home is invalid");
   return { home: saved.home, nativeHome };
 }
 

@@ -7,6 +7,7 @@ import { connect } from "node:net";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { fromPreviousBoot, ownerAlive, ownerStamp } from "./boot-identity.js";
+import { testSafeRoot } from "./test-root-guard.js";
 import { telemetry } from "./telemetry.js";
 
 export const executionHostMarker = "subscription-gateway-execution-host";
@@ -28,7 +29,7 @@ export function executionCapabilities(value?: unknown): ExecutionCapability[] {
 }
 let executionHostRootOverride: string | undefined;
 /** The folder that holds every configuration's host home. Production: `~/.local/state/gw-exec`. */
-export function executionHostRoot(): string { return executionHostRootOverride ?? resolve(homedir(), ".local/state/gw-exec"); }
+export function executionHostRoot(): string { return executionHostRootOverride ?? testSafeRoot(resolve(homedir(), ".local/state/gw-exec"), "execution host root"); }
 /** Tests keep host homes in a folder of their own; production never calls it. Undefined restores the real root. */
 export function setExecutionHostRootForTests(root?: string): void { executionHostRootOverride = root ? resolve(root) : undefined; }
 export function executionHostHome(configPath: string, nativeHome: string): string {
@@ -98,7 +99,7 @@ let sdkSocketRootOverride: string | undefined;
 /** Tests point the rendezvous at a short folder of their own; production always uses the fixed SDK one. */
 export function setSdkSocketRootForTests(root?: string): void { sdkSocketRootOverride = root ? resolve(root) : undefined; }
 async function sdkSocketRoot(): Promise<string> {
-  return sdkSocketRootOverride ?? resolve(await realpath("/tmp"), `codex-daemon-${process.getuid!()}`);
+  return sdkSocketRootOverride ?? testSafeRoot(resolve(await realpath("/tmp"), `codex-daemon-${process.getuid!()}`), "SDK socket rendezvous", { fixed: true });
 }
 export function sameSocketIdentity(a: SocketIdentity, b: SocketIdentity): boolean {
   return a.inode === b.inode && a.device === b.device && a.targetPath === b.targetPath && a.targetInode === b.targetInode && a.targetDevice === b.targetDevice;
