@@ -167,6 +167,7 @@ gateway uninstall</code></pre>
       <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
         <tr><td>Model not supported with a ChatGPT account</td><td>Start a new chat with the gateway model selected. A model name alone cannot switch a loaded native provider.</td></tr>
         <tr><td>Model provider <code>subscription_gateway</code> not found</td><td>Register the adapter on the computer that owns the chat's workspace, then reopen that chat.</td></tr>
+        <tr><td>A gateway chat on the phone fails with an unknown model</td><td>Without the native relay the phone continues chats on the app's own engine, which sends the gateway model name to OpenAI. Continue it on the Mac or through the relay; see <a href="harness-identity.md">harness identity</a>.</td></tr>
         <tr><td>Added models missing</td><td>Run <code>gateway doctor</code> on that execution machine. Check the host, tunnel, desktop registration, and current catalog.</td></tr>
         <tr><td>Streaming closes before completion</td><td>Check daemon and connection status. Keep the failed chat and logs for diagnosis; do not silently retry on another account.</td></tr>
         <tr><td>Max or Ultra disappears</td><td>Check the model's advertised efforts and the app's enabled effort controls. Verify the active adapter version.</td></tr>

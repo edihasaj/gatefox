@@ -50,6 +50,14 @@ belongs in the release archive.
    It proves requested and returned tiers, settings changes, saved-history resume,
    and native isolation; it sends no subscription inference and does not prove
    rendered desktop controls or the built-in cloud transport.
+   For chat identity changes, run `scripts/e2e-identity.mjs --package
+   INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
+   gateway SDK and a mock upstream it proves that a new gateway chat is recorded as
+   `openai` (thread, rollout and SQLite), is in the registry when its start returns,
+   compacts locally on the selected model, routes to the gateway when a new connection
+   resumes it, sends nothing with the gateway token to the ChatGPT backend, and is
+   listed by a default `thread/list`; and that a legacy chat stays
+   `subscription_gateway` and is listed through the router but not by a stock engine.
    For compaction changes, run `scripts/e2e-compaction-switch.mjs --gateway
    INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
    --expect selected-turn --shared`. This is the release step. A package that
@@ -200,11 +208,18 @@ while its lockfile retains `0.0.0`. A guarded helper repairs exactly those 161
 source-less workspace versions. All external package versions, sources, checksums,
 and dependency blocks remain byte-identical. The repaired lockfile and helper are
 hashed in the receipt; Cargo tests and builds still use `--locked`.
-The four compaction cases use the upstream compact suite with its original test
-aliases and constructor. The runner temporarily narrows the suite aggregator to
-that module, avoiding unrelated upstream test compilation errors, then restores
-the exact original bytes. Its digest joins the receipt; the verified SDK source
-tree must match again before building the executable.
+The test gate runs three executor-identity unit tests in `codex-model-provider-info`
+and six compaction cases: the four for `subscription_gateway` and native chats, and
+two for `openai` inside a marked gateway executor. The compaction cases use the
+upstream compact suite with its original test aliases and constructor. The runner
+temporarily narrows the suite aggregator to that module, avoiding unrelated upstream
+test compilation errors, then restores the exact original bytes. Its digest joins the
+receipt; the verified SDK source tree must match again before building the executable.
+The cases set the executor marker in the process environment, so the gate runs every
+case on one thread. Patch v2 (`scripts/patches/gateway-executor.patch`, capability
+`gateway-executor-v2`, see [harness identity](harness-identity.md)) changed the source
+digest, so the first release with it builds the gateway SDK again; it cannot reuse the
+component of a release built with patch v1.
 
 A JavaScript-only fix can explicitly reuse unchanged native components from a
 previous published installer instead of rebuilding Rust. Download the exact

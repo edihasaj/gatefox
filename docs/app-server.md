@@ -15,9 +15,14 @@ gateway chats; the parent of a sub-agent; and a model alias that is not a native
 slug. Any other chat is native and keeps its provider. The registry is the file
 `<state directory>/gateway-chats/<scope>.json`, where `<scope>` identifies the native
 Codex home. The adapter writes a gateway chat's start or fork to the registry before it
-returns the reply, and a sub-agent that a gateway engine announces before it forwards
-the announcement. Release 0.4.4 still writes `subscription_gateway` as the provider id
-of every gateway chat, so release 0.4.3 can still resume those chats. A gateway model
+returns the reply, a sub-agent that a gateway engine announces before it forwards
+the announcement, and a chat that only its parent or alias identified when it routes it
+to an executor. Since 0.4.6 new gateway chats are recorded with the provider id `openai`,
+so the phone and the native engine list them; existing chats keep the id they were saved
+with, and `"chatIdentity": "legacy"` keeps recording `subscription_gateway`. A chat list
+that asks only for the native default provider also gets the `subscription_gateway`
+chats. See [harness identity](harness-identity.md) for the executor contract, the phone
+and rollback. A gateway model
 alias that equals a native model slug is refused when the catalog loads, because the
 native slug would otherwise take over the alias's chats.
 
@@ -157,7 +162,9 @@ and writes a combined catalog. Cache identity and authentication are excluded.
 The public rows form a combined catalog for gateway executors. The original
 native process keeps its native model and account defaults. The adapter registers
 only the added `subscription_gateway` provider through process arguments, so
-saved gateway chats can resolve that provider when read or resumed. It does not
+saved gateway chats can resolve that provider when read or resumed. Gateway
+executors get it too, and serve `openai` as a second name for it
+([harness identity](harness-identity.md)). It does not
 write the native configuration. A mismatched or
 unavailable cache prevents startup.
 
