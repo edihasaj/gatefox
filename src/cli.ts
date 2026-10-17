@@ -27,14 +27,15 @@ import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
 import { macNative } from "./mac-native.js";
 import { consolidateService } from "./mac-consolidate.js";
-import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./mac-login-consolidate.js";
-import { runServiceSupervisor } from "./service-supervisor.js";
+import { stageLoginConsolidation } from "./mac-login-consolidate.js";
+import { runServiceDaemon } from "./service-daemon.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
 import { versionsCommand } from "./versions.js";
+import { healthCommand } from "./health.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -58,6 +59,7 @@ const help = `gateway — local subscription and API inference
   gateway catalog [--config PATH] [--model ALIAS]
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
+  gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
@@ -80,6 +82,7 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
+  if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
@@ -128,9 +131,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }
   if (command === "executor-host") { await runExecutionHostCommand(path, values.codex, values["native-home"]); return; }
   if (command === "daemon") {
-    const config = await loadConfig(path); const plan = await activatePendingLoginConsolidation(path);
-    if (!plan || plan.config !== resolve(path)) throw new Error("Unified service plan is missing or uses another configuration");
-    await runServiceSupervisor(plan, config.stateDirectory); return;
+    await runServiceDaemon(path); return;
   }
   if (command === "native") { process.stdout.write(JSON.stringify(await macNative(id, path, { codex: values.codex, nativeHome: values["native-home"] }), null, 2) + "\n"); return; }
   if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }

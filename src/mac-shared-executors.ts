@@ -14,6 +14,7 @@ import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js"
 import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { componentUp, nativeRegistrationEnabled } from "./native-pause.js";
 import { sharedServiceRegistration } from "./mac-shared-native.js";
 import { defaultPlanSwapServices, enableRollbackMessage, rollBackEnable } from "./mac-shared-plan-swap.js";
 
@@ -35,24 +36,40 @@ export async function executionHostReady(plan: ServicePlan, pid: number): Promis
   } finally { connection.stop(); }
 }
 
+/** The two questions one service snapshot cannot answer about itself; tests replace both. */
+export interface SharedReadyChecks { ready(plan: ServicePlan, pid: number): Promise<boolean>; registered(state: string): Promise<boolean> }
+const sharedReadyChecks = (): SharedReadyChecks => ({ ready: executionHostReady, registered: nativeRegistrationEnabled });
+
+/**
+ * Whether one snapshot of the running service is a ready shared service. A paused relay counts as
+ * up and is never waited for: the relay is optional, so a Mac that had to set it aside still finishes
+ * its migration instead of hanging 45 s on a process that is never coming back. Only a machine whose
+ * registration is live and whose relay slot is running has to see one connect.
+ */
+export async function sharedServiceReady(plan: ServicePlan, status: Record<string, unknown>, state: string, port: number, began: number, checks = sharedReadyChecks()): Promise<boolean> {
+  const runtime = status.runtime as { executionHost?: { state: string }; components?: Array<{ state: string; kind?: string }> };
+  if (!status.statusCurrent || typeof status.pid !== "number" || runtime.executionHost?.state !== "running" || runtime.components?.length !== plan.components.length) return false;
+  const components = runtime.components;
+  if (!components.every(componentUp)) return false;
+  if (!await checks.ready(plan, status.pid)) return false;
+  if (plan.components.some(component => component.kind === "inference")) {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    if (!response.ok || (await response.json() as { status?: string }).status !== "ok") return false;
+  }
+  const native = plan.components.find(component => component.kind === "native");
+  if (!native || components.some(component => component.kind === "native" && component.state === "paused") || !await checks.registered(state)) return true;
+  // A live relay that has not written its receipt yet is simply not ready yet, not a failed migration.
+  try {
+    const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const path = resolve(relayHome, "status.json");
+    return (await stat(path)).mtimeMs >= began && JSON.parse(await readFile(path, "utf8")).status === "connected";
+  } catch { return false; }
+}
+
 async function awaitSharedReady(plan: ServicePlan, state: string, port: number, began: number): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt < 225; attempt++) {
-    const status = await consolidatedStatus(state); const runtime = status.runtime as { executionHost?: { state: string }; components?: Array<{ state: string }> };
-    if (status.statusCurrent && typeof status.pid === "number" && runtime.executionHost?.state === "running" && runtime.components?.length === plan.components.length && runtime.components.every(component => ["running", "complete"].includes(component.state))) {
-      try {
-        let ready = await executionHostReady(plan, status.pid);
-        if (ready && plan.components.some(component => component.kind === "inference")) {
-          const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
-          ready = response.ok && (await response.json() as { status?: string }).status === "ok";
-        }
-        const native = plan.components.find(component => component.kind === "native");
-        if (ready && native) {
-          const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const path = resolve(relayHome, "status.json");
-          ready = (await stat(path)).mtimeMs >= began && JSON.parse(await readFile(path, "utf8")).status === "connected";
-        }
-        if (ready) return status;
-      } catch { /* Startup can race the first readiness receipt. */ }
-    }
+    const status = await consolidatedStatus(state);
+    // Startup can race the first readiness receipt, so an unreadable answer is simply not ready yet.
+    try { if (await sharedServiceReady(plan, status, state, port, began)) return status; } catch { /* Look again in a moment. */ }
     await delay(200);
   }
   throw new Error("Shared execution host did not become ready; restoring the previous service plan");

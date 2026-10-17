@@ -24,6 +24,7 @@
     "dist/protocol/*.d.ts",
     "LICENSE",
     "scripts/codex-desktop-shim",
+    "scripts/e2e-fast-mode.mjs",
     "README.md",
     "docs"
   ],
@@ -37,6 +38,10 @@
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "devDependencies": {
     "@types/node": "^22.10.7",
     "@types/ws": "8.18.2",

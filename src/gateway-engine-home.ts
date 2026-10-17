@@ -66,5 +66,7 @@ export function gatewayEnvironment(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home };
   // Inference must use the gateway helper, never an inherited platform credential.
   for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
+  // Gateway engines run headless on the gateway's pinned SDK, so remote control has nothing to pair with.
+  env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   return env;
 }

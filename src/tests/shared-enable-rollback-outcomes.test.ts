@@ -6,6 +6,11 @@ import { writePrivateJson } from "../config.js";
 import { type ServicePlan } from "../service-plan.js";
 import { enableRollbackMessage, rollBackEnable, type EnableRollback, type PlanSwapServices } from "../mac-shared-plan-swap.js";
 import { fastTiming, standInFixture, type StandInFixture } from "./launchd-stand-in.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // The stand-in host claims its receipts inside the test process: see src/tests/in-process-host.ts.
 
 // Every way rollBackEnable can end, and the message the caller builds for it: the message names the plan that runs and the one
 // command that fixes it. The stand-in service is a launchd with KeepAlive; the services below wrap it where a call must fail.

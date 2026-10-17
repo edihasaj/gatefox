@@ -14,7 +14,7 @@ import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { watchForUpgrade } from "./self-update.js";
 import { sshControlHome, reuseSshSocket, type SshSocketReuse, type SshSocketReplacement } from "./ssh-socket.js";
-import { nativeRegistration } from "./native-control.js";
+import { activeNativeRelay } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 
 export function appServerIndex(args: string[]): number {
@@ -87,7 +87,10 @@ export async function codexShim(argv: string[]): Promise<void> {
   }
   const path = resolve(values.config); const config = await loadConfig(path);
   configureTelemetry(config.stateDirectory, "adapter"); startErrorReports(config.stateDirectory, "adapter");
-  if (await nativeRegistration(config)) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
+  // One relay decision per process: this adapter or SSH listener never re-checks it while running,
+  // so a relay that connects later is used from the next app or listener start.
+  const relay = await activeNativeRelay(config);
+  if (relay) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();
   const overrides = {
@@ -101,16 +104,16 @@ export async function codexShim(argv: string[]): Promise<void> {
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
   try {
     const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
-      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path, preflightArgs);
+      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path, preflightArgs, relay);
     if (socketPath) {
       // One listener serves every reconnect for as long as it lives. An SSH listener follows
       // installs itself, because the next connection's bootstrap binds the installed release;
       // a custom listen path has no such bootstrap, so nothing retires it after an install.
       await serveWithRecovery(socketPath, !!controlHome, async () => {
-        // Hand the deferred swap to serveUnix, which takes the lease lock, re-checks the alias,
-        // and unlinks it only there, after this process has bound its own socket. The
+        // Hand the deferred swap to serveUnix, which renames its staged link over the alias
+        // inside the publish lock, after this process has bound its own socket. The
         // replacement stays pending, and is logged and cleared only when serveUnix reports it
-        // actually dropped the alias; if someone else already did, this bootstrap logs nothing.
+        // actually replaced the alias; if someone else already did, this bootstrap logs nothing.
         const pending = replacement;
         let stopWatching: (() => void) | undefined;
         try {

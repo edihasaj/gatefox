@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { ServiceSupervisor } from "../service-supervisor.js";
 import { serviceExecutionPaths, serviceStatusPath, validateServicePlan, type ServicePlan } from "../service-plan.js";
 import { executionHostHome } from "../execution-host.js";
-import { executionHostReady, enableSharedExecutors } from "../mac-shared-executors.js";
+import { executionHostReady, enableSharedExecutors, sharedServiceReady } from "../mac-shared-executors.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
 import { writePrivateJson } from "../config.js";
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
@@ -20,14 +20,18 @@ import { setTimeout as delay } from "node:timers/promises";
 import { externalLegacyWriters } from "../service-legacy-writers.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { fixtureComponent, killFixturesAfterTests } from "./supervisor-fixture.js";
 
 const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
+killFixturesAfterTests(); // A relay child cannot outlive the file's tests.
 
 async function setup() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-shared-")); const state = join(directory, "state"); const nativeHome = join(directory, "native");
   await mkdir(nativeHome, { mode: 0o700 }); await writeFile(join(nativeHome, "config.toml"), 'model="original"\n', { mode: 0o600 });
-  const configPath = join(directory, "gateway.json"); await writePrivateJson(configPath, { version: 1, port: 3459, clientOnly: true, stateDirectory: state, providers: [] });
+  const configPath = join(directory, "gateway.json");
+  // A shared plan owns the relay only where one is registered, which is what the service checks before starting it.
+  await writePrivateJson(join(state, "native-registration.json"), { registered: true }); await writePrivateJson(configPath, { version: 1, port: 3459, clientOnly: true, stateDirectory: state, providers: [] });
   const codex = join(directory, "codex");
   await writeFile(codex, `#!${process.execPath}\nimport {createServer} from 'node:http';
 import {writeFileSync} from 'node:fs';
@@ -38,7 +42,8 @@ sockets.on('connection',client=>client.on('message',bytes=>{const m=JSON.parse(b
 server.listen(path,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],String(process.pid)));
 process.on('SIGTERM',()=>{for(const c of sockets.clients)c.terminate();server.close(()=>process.exit(0));});
 `, { mode: 0o700 });
-  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: true, components: [{ id: "native", kind: "native", command: process.execPath, args: ["-e", "setInterval(()=>{},1000)", "--", "--codex", codex, "--native-home", nativeHome], log: join(state, "native.log") }] };
+  const relay = fixtureComponent(state, "native", "native", "setInterval(()=>{},1000)"); relay.args.push("--", "--codex", codex, "--native-home", nativeHome);
+  const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: true, components: [relay] };
   const home = executionHostHome(configPath, nativeHome);
   return { directory, state, configPath, nativeHome, codex, plan, home, cleanup: async () => { await rm(directory, { recursive: true, force: true }); await rm(home, { recursive: true, force: true }); } };
 }
@@ -126,6 +131,23 @@ test("shared migration preview preserves the existing plan and foreground CLI re
       const exited = once(child, "close"); child.kill("SIGTERM"); await exited;
       assert.equal(JSON.parse(await readFile(join(f.home, "owner.json"), "utf8")).state, "stopped");
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+  } finally { await f.cleanup(); }
+});
+
+test("a shared-executors migration never waits for a relay the service set aside", async () => {
+  const f = await setup();
+  try {
+    const checks = { ready: async () => true, registered: async () => true };
+    const snapshot = (state: string) => ({ statusCurrent: true, pid: process.pid, runtime: { executionHost: { state: "running" }, components: [{ id: "native", kind: "native", state }] } });
+    const relayHome = join(f.directory, "relay"); // Nothing has been written into it yet.
+    const plan = { ...f.plan, components: [{ ...f.plan.components[0], args: [...f.plan.components[0].args, "--relay-home", relayHome] }] };
+    assert.equal(await sharedServiceReady(plan, snapshot("paused"), f.state, 3459, Date.now() - 1000, checks), true, "a paused relay is the optional relay being optional");
+    assert.equal(await sharedServiceReady(plan, snapshot("waiting"), f.state, 3459, Date.now() - 1000, checks), false, "a relay that will not start is not a paused one");
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, checks), false, "a running relay still has to report a connection");
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, { ready: async () => true, registered: async () => false }), true, "a machine that never registered a relay is never asked for one");
+    await writePrivateJson(join(relayHome, "status.json"), { status: "connected" });
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, checks), true, "the receipt closes the gap");
+    assert.equal(await sharedServiceReady(plan, snapshot("paused"), f.state, 3459, Date.now() - 1000, checks), true);
   } finally { await f.cleanup(); }
 });
 

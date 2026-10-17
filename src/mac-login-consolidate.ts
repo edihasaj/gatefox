@@ -11,16 +11,25 @@ import { collectServicePlan } from "./mac-consolidate.js";
 import { servicePlist } from "./mac-service.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { readServicePlan, serviceLabel, servicePlanPath, validateServicePlan, type ServicePlan } from "./service-plan.js";
+import { bootIdentity, ownerAlive, ownerStamp, type OwnerRecord } from "./boot-identity.js";
+import { telemetry } from "./telemetry.js";
 
 const exec = promisify(execFile);
 const digest = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
 const unique = () => randomBytes(8).toString("hex");
 const encoded = (value: unknown) => JSON.stringify(value, null, 2) + "\n";
 export const pendingLoginConsolidationPath = (state: string) => resolve(state, "service-login-pending.json");
+/** Written when the daemon rolls an interrupted staging back; it keeps every relaunch of that daemon idle in the same boot. */
+export const recoveredLoginConsolidationPath = (state: string) => resolve(state, "service-login-recovered.json");
+/** A check that answered no. Only a refusal rolls an interrupted staging back; a check that could not run (launchctl, the disk) is retried. */
+class LoginRefusal extends Error {}
+const refuse = (message: string) => new LoginRefusal(message);
 interface Source { label: string; digest: string; mode: number }
 export interface PendingLoginConsolidation {
   version: 1; phase: "preparing" | "ready"; config: string; plan: ServicePlan;
   primaryLabel: string; primaryPlistDigest: string; removedLabels: string[]; backup: string; sources: Source[];
+  /** The staging process, so a marker it left behind can be told apart from a staging still under way. Absent before 0.4.4. */
+  stager?: OwnerRecord;
 }
 interface JobStatus { loaded: boolean; pid?: number }
 interface Plist { Label?: string; Program?: string; ProgramArguments?: string[] }
@@ -32,6 +41,8 @@ export interface LoginConsolidationDependencies {
   status: (label: string) => Promise<JobStatus>; listLabels: () => Promise<string[]>;
   disabled: (label: string) => Promise<boolean>; inspect: (path: string) => Promise<Plist>;
   move: typeof rename; discard: (path: string) => Promise<void>;
+  /** `launchctl bootstrap` of a restored login job, so it runs in this session. */
+  bootstrap: (path: string) => Promise<void>;
 }
 const owns = (label: string, primary: string) => label === primary || ["desktop", "native", "macbook-pro-2"].some(suffix => label === primary + "." + suffix) || new RegExp("^" + primary.replace(/\./g, "\\.") + "\\.tunnel\\.[a-z][a-z0-9-]{0,63}$").test(label);
 function dependencies(state: string, overrides: Partial<LoginConsolidationDependencies>): LoginConsolidationDependencies {
@@ -55,6 +66,7 @@ function dependencies(state: string, overrides: Partial<LoginConsolidationDepend
       return stdout.split("\n").some(line => line.includes(`"${label}"`) && /=>\s*(?:true|disabled)\b/.test(line));
     },
     inspect: async path => JSON.parse((await exec("/usr/bin/plutil", ["-convert", "json", "-o", "-", path])).stdout) as Plist,
+    bootstrap: async path => { await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }); },
     ...overrides,
   };
 }
@@ -85,11 +97,20 @@ async function savePending(state: string, pending: PendingLoginConsolidation): P
   if (Buffer.byteLength(encoded(pending)) > 131072 || Buffer.byteLength(encoded(pending.plan)) > 65536) throw new Error("Gateway login consolidation plan is too large to load safely");
   await atomic(pendingLoginConsolidationPath(state), encoded(pending));
 }
+/** A staging record from before 0.4.4 has no stager; a present one must name a pid and, at most, its boot and start. */
+function validStager(value: unknown): boolean {
+  if (value === undefined) return true;
+  const stager = value as Partial<OwnerRecord> | null;
+  return !!stager && typeof stager === "object" && Number.isSafeInteger(stager.pid) && stager.pid! >= 1 &&
+    (stager.bootId === undefined || typeof stager.bootId === "string" && stager.bootId.length <= 128) &&
+    (stager.startedAtMs === undefined || Number.isSafeInteger(stager.startedAtMs) && stager.startedAtMs! >= 0);
+}
 export async function readPendingLoginConsolidation(stateDirectory: string): Promise<PendingLoginConsolidation | undefined> {
   const file = await bytes(pendingLoginConsolidationPath(stateDirectory), true); if (!file) return undefined;
   const value = JSON.parse(file.data.toString("utf8")) as PendingLoginConsolidation;
   const hash = (text: unknown) => typeof text === "string" && /^[a-f0-9]{64}$/.test(text);
   if (value.version !== 1 || !["preparing", "ready"].includes(value.phase) || typeof value.config !== "string" || !isAbsolute(value.config) || typeof value.primaryLabel !== "string" || !/^com\.edihasaj\.subscription-gateway(?:\.[a-zA-Z0-9-]+)*$/.test(value.primaryLabel) || !hash(value.primaryPlistDigest) || typeof value.backup !== "string" || dirname(value.backup) !== resolve(stateDirectory, "service-backups") || !Array.isArray(value.sources) || !value.sources.length || value.sources.some(source => !owns(source.label, value.primaryLabel) || !hash(source.digest) || !Number.isInteger(source.mode) || source.mode < 0 || source.mode > 0o777 || (source.mode & 0o022)) || new Set(value.sources.map(source => source.label)).size !== value.sources.length || !Array.isArray(value.removedLabels) || JSON.stringify(value.removedLabels) !== JSON.stringify(value.sources.filter(source => source.label !== value.primaryLabel).map(source => source.label))) throw new Error("Invalid pending gateway login consolidation");
+  if (!validStager(value.stager)) throw new Error("Invalid pending gateway login consolidation");
   value.plan = validateServicePlan(value.plan);
   if (Buffer.byteLength(encoded(value.plan)) > 65536) throw new Error("Pending gateway login service plan is too large");
   if (resolve(value.plan.config) !== resolve(value.config)) throw new Error("Pending gateway login configuration does not match its plan");
@@ -102,15 +123,61 @@ async function locked<T>(state: string, deps: LoginConsolidationDependencies, ac
 }
 async function noDuplicates(deps: LoginConsolidationDependencies): Promise<void> {
   const labels = [...(await readdir(deps.directory)).map(name => name.endsWith(".plist") ? name.slice(0, -6) : ""), ...await deps.listLabels()];
-  if (labels.some(label => label !== deps.label && owns(label, deps.label))) throw new Error("Separate gateway login jobs still exist; leave the running service unchanged");
+  if (labels.some(label => label !== deps.label && owns(label, deps.label))) throw refuse("Separate gateway login jobs still exist; leave the running service unchanged");
 }
 async function verifyPending(pending: PendingLoginConsolidation, config: string, deps: LoginConsolidationDependencies): Promise<void> {
-  if (pending.config !== config || pending.primaryLabel !== deps.label) throw new Error("Pending gateway login consolidation belongs to another installation");
+  if (pending.config !== config || pending.primaryLabel !== deps.label) throw refuse("Pending gateway login consolidation belongs to another installation");
   const primary = await bytes(resolve(deps.directory, deps.label + ".plist"));
-  if (!primary || digest(primary.data) !== pending.primaryPlistDigest) throw new Error("The staged gateway LaunchAgent changed; refusing to replace it");
-  for (const label of pending.removedLabels) if (await bytes(resolve(deps.directory, label + ".plist"))) throw new Error("A retired gateway LaunchAgent was recreated; refusing consolidation");
-  for (const name of await readdir(deps.directory)) if (name.endsWith(".plist") && name !== deps.label + ".plist" && owns(name.slice(0, -6), deps.label)) throw new Error("Another gateway LaunchAgent appeared after staging");
-  for (const label of await deps.listLabels()) if (label !== deps.label && owns(label, deps.label) && !pending.removedLabels.includes(label)) throw new Error("Another gateway login job loaded after staging");
+  if (!primary || digest(primary.data) !== pending.primaryPlistDigest) throw refuse("The staged gateway LaunchAgent changed; refusing to replace it");
+  for (const label of pending.removedLabels) if (await bytes(resolve(deps.directory, label + ".plist"))) throw refuse("A retired gateway LaunchAgent was recreated; refusing consolidation");
+  for (const name of await readdir(deps.directory)) if (name.endsWith(".plist") && name !== deps.label + ".plist" && owns(name.slice(0, -6), deps.label)) throw refuse("Another gateway LaunchAgent appeared after staging");
+  for (const label of await deps.listLabels()) if (label !== deps.label && owns(label, deps.label) && !pending.removedLabels.includes(label)) throw refuse("Another gateway login job loaded after staging");
+}
+/** Every check a staged consolidation passes before this process promotes it; returns the plan already published, if any. */
+async function promotable(pending: PendingLoginConsolidation, config: string, state: string, deps: LoginConsolidationDependencies): Promise<ServicePlan | undefined> {
+  await verifyPending(pending, config, deps);
+  const primary = await deps.status(deps.label);
+  if (!primary.loaded || primary.pid !== process.pid) throw refuse("Pending gateway login consolidation activates only in its primary launchd process");
+  for (const label of pending.removedLabels) if ((await deps.status(label)).loaded) throw refuse("An earlier gateway login job remains loaded; consolidation waits for the next login");
+  await noDuplicates(deps);
+  const existing = await readServicePlan(state);
+  if (existing && JSON.stringify(existing) !== JSON.stringify(pending.plan)) throw refuse("A different unified gateway service plan already exists");
+  return existing;
+}
+async function promote(pending: PendingLoginConsolidation, state: string, existing: ServicePlan | undefined): Promise<ServicePlan> {
+  if (!existing) await atomic(servicePlanPath(state), encoded(pending.plan), 0o600, true);
+  await directory(dirname(pending.backup), false); await directory(pending.backup, false);
+  await rename(pendingLoginConsolidationPath(state), resolve(pending.backup, "login-activated." + unique() + ".json"));
+  await unlink(recoveredLoginConsolidationPath(state)).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+  return pending.plan;
+}
+/**
+ * After a rollback, loads each restored job other than the primary one now, so tunnels, the relay and desktop setup run
+ * this session instead of at the next login. The primary job cannot be loaded: this daemon holds its label. A job that
+ * is already loaded is left alone, and a job that fails to load is counted, never thrown.
+ */
+async function startRestored(pending: PendingLoginConsolidation, deps: LoginConsolidationDependencies): Promise<{ started: number; failed: number }> {
+  let started = 0; let failed = 0;
+  for (const label of pending.removedLabels) {
+    try { if (!(await deps.status(label)).loaded) { await deps.bootstrap(resolve(deps.directory, label + ".plist")); started++; } }
+    catch { failed++; }
+  }
+  return { started, failed };
+}
+/** Whether a rollback this boot left the daemon with nothing to run. A record without a boot (none could be read) counts. */
+async function recoveredThisBoot(state: string): Promise<boolean> {
+  const file = await bytes(recoveredLoginConsolidationPath(state), true).catch(() => undefined); if (!file) return false;
+  let record: { version?: unknown; bootId?: unknown } | undefined;
+  try { record = JSON.parse(file.data.toString("utf8")) as typeof record; } catch { return false; }
+  if (record?.version !== 1) return false;
+  if (typeof record.bootId !== "string") return true;
+  const boot = await bootIdentity().catch(() => undefined);
+  return !boot?.id || boot.id === record.bootId;
+}
+/** What the daemon runs when nothing is pending: the published plan, or nothing at all while a rollback this boot stands. */
+async function settled(state: string): Promise<{ plan?: ServicePlan; restored: boolean }> {
+  const plan = await readServicePlan(state);
+  return { plan, restored: !plan && await recoveredThisBoot(state) };
 }
 async function retire(path: string, destination: string, expected: string, deps: LoginConsolidationDependencies, rollback = false): Promise<void> {
   await deps.move(path, destination);
@@ -200,7 +267,8 @@ export async function stageLoginConsolidation(configPath: string, overrides: Par
     }
     const paths = [...new Set([resolve(homedir(), ".local/bin"), ...(process.env.PATH || "/usr/bin:/bin").split(":").filter(path => path.startsWith("/"))])].join(":");
     const future = servicePlist("", "", config, resolve(state, "service.log"), paths, deps.command.command, "daemon").replace(`<string>${serviceLabel}</string>`, `<string>${deps.label}</string>`);
-    const pending: PendingLoginConsolidation = { version: 1, phase: "preparing", config, plan, primaryLabel: deps.label, primaryPlistDigest: digest(future), removedLabels: sources.filter(source => source.label !== deps.label).map(source => source.label), backup, sources };
+    const pending: PendingLoginConsolidation = { version: 1, phase: "preparing", config, plan, primaryLabel: deps.label, primaryPlistDigest: digest(future), removedLabels: sources.filter(source => source.label !== deps.label).map(source => source.label), backup, sources,
+      stager: { pid: process.pid, ...await ownerStamp() } };
     try {
       await savePending(state, pending);
       for (const source of sources) {
@@ -218,22 +286,42 @@ export async function stageLoginConsolidation(configPath: string, overrides: Par
   });
 }
 export async function activatePendingLoginConsolidation(configPath: string, overrides: Partial<LoginConsolidationDependencies> = {}): Promise<ServicePlan | undefined> {
+  return (await activateLoginConsolidation(configPath, overrides)).plan;
+}
+/**
+ * Promotes a staged next-login consolidation, and returns the plan the service runs. Staging holds the login lock from its
+ * first write to its own rollback, so a `preparing` record seen under that lock was left by a staging process that is gone
+ * (a crash, a reboot, a failed rollback); one whose process is still alive keeps the old refusal (a record from before
+ * 0.4.4 names none). This daemon starts only from the staged LaunchAgent, so such a staging reached its last file write and
+ * missed only its `ready` mark: it is finished and promoted like a `ready` one after the same checks. Only a check that
+ * refuses rolls it back instead: each original is put back when its backup still has the digest recorded at staging, the
+ * record is kept in the backup as `login-recovered.*.json`, every restored job but the primary one is loaded at once, and
+ * `restored` keeps this daemon, and each relaunch of it in this boot, idle.
+ */
+export async function activateLoginConsolidation(configPath: string, overrides: Partial<LoginConsolidationDependencies> = {}): Promise<{ plan?: ServicePlan; restored: boolean }> {
   const config = resolve(configPath); const { stateDirectory: state } = await loadConfig(config);
-  if (!await readPendingLoginConsolidation(state)) return readServicePlan(state);
+  if (!await readPendingLoginConsolidation(state)) return settled(state);
   const deps = dependencies(state, overrides);
   return locked(state, deps, async () => {
-    const pending = await readPendingLoginConsolidation(state); if (!pending) return readServicePlan(state);
-    if (pending.phase !== "ready") throw new Error("Gateway login consolidation did not finish staging; repeat staging to recover its saved originals");
-    await verifyPending(pending, config, deps);
-    const primary = await deps.status(deps.label);
-    if (!primary.loaded || primary.pid !== process.pid) throw new Error("Pending gateway login consolidation activates only in its primary launchd process");
-    for (const label of pending.removedLabels) if ((await deps.status(label)).loaded) throw new Error("An earlier gateway login job remains loaded; consolidation waits for the next login");
-    await noDuplicates(deps);
-    const existing = await readServicePlan(state);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(pending.plan)) throw new Error("A different unified gateway service plan already exists");
-    if (!existing) await atomic(servicePlanPath(state), encoded(pending.plan), 0o600, true);
-    await directory(dirname(pending.backup), false); await directory(pending.backup, false);
-    await rename(pendingLoginConsolidationPath(state), resolve(pending.backup, "login-activated." + unique() + ".json"));
-    return pending.plan;
+    const pending = await readPendingLoginConsolidation(state); if (!pending) return settled(state);
+    if (pending.phase !== "ready") {
+      if (pending.config !== config || pending.primaryLabel !== deps.label) throw new Error("Pending gateway login consolidation belongs to another installation");
+      const marker = await lstat(pendingLoginConsolidationPath(state));
+      if (pending.stager && await ownerAlive(pending.stager, marker.mtimeMs)) throw new Error("Gateway login consolidation did not finish staging; repeat staging to recover its saved originals");
+      try {
+        const plan = await promote(pending, state, await promotable(pending, config, state, deps));
+        telemetry("login_consolidation_completed", { jobs: pending.sources.length });
+        return { plan, restored: false };
+      } catch (error) { if (!(error instanceof LoginRefusal)) throw error; }
+      await restore(pending, deps);
+      await directory(dirname(pending.backup), false); await directory(pending.backup, false);
+      await rename(pendingLoginConsolidationPath(state), resolve(pending.backup, "login-recovered." + unique() + ".json"));
+      const boot = await bootIdentity().catch(() => undefined);
+      await atomic(recoveredLoginConsolidationPath(state), encoded({ version: 1, ...(boot?.id ? { bootId: boot.id } : {}) }));
+      const { started, failed } = await startRestored(pending, deps);
+      telemetry("login_consolidation_restored", { jobs: pending.sources.length, started, failed });
+      return { plan: await readServicePlan(state), restored: true };
+    }
+    return { plan: await promote(pending, state, await promotable(pending, config, state, deps)), restored: false };
   });
 }

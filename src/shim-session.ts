@@ -4,7 +4,7 @@ import { AppServerRouter, AppServerRoutingError, inheritsParentSettings } from "
 import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
-import { NativeControl, nativeRegistration } from "./native-control.js";
+import { NativeControl } from "./native-control.js";
 import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
@@ -22,12 +22,13 @@ export function operationalStartFailure(error: unknown): boolean {
 
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
-  input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args): Promise<number> {
+  input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args,
+  relay?: { home: string; nativeHome: string }): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
   await source.initialize();
   let closing = false;
-  const registration = await nativeRegistration(config);
-  const control = registration ? new NativeControl(registration.home, emit) : undefined;
+  // The caller decided once whether a live relay exists; without one the app engine keeps its own remote control.
+  const control = relay ? new NativeControl(relay.home, emit) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
   let router: AppServerRouter | undefined;
   const order = new ThreadStartOrder();

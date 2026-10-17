@@ -8,6 +8,11 @@ import { executionHostHome, readOwner } from "../execution-host-storage.js";
 import { rollBackEnable, relaunchOntoPlan } from "../mac-shared-plan-swap.js";
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
 import { fastTiming, standInFixture, type StandInFixture } from "./launchd-stand-in.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // The stand-in host claims its receipts inside the test process: see src/tests/in-process-host.ts.
 
 // enableSharedExecutors and enableSharedNative undo a failed migration through rollBackEnable. The stand-in service is a launchd
 // with KeepAlive that claims receipts with the real claimHost, and the real archiveStoppedExecutionReceipt archives them.
