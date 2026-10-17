@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { ensureLaunchAgent } from "./mac-launch-agent.js";
 import { isOwnWrapperPath } from "./desktop-wrapper-path.js";
+import { gatewayCommand } from "./command.js";
 
 /**
  * The login-time environment agent. ChatGPT is a login item and can start before the unified service has set
@@ -37,9 +38,22 @@ const unxml = (value: string) => value.replaceAll("&apos;", "'").replaceAll("&qu
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
 export const envAgentPath = () => resolve(homedir(), "Library/LaunchAgents", envAgentLabel + ".plist");
 export const envAgentScriptPath = (stateDirectory: string) => resolve(stateDirectory, envAgentScriptName);
-/** The private script for one registered wrapper: the whole agent is this one `launchctl setenv`. */
-export const envAgentScript = (wrapper: string): string =>
-  `#!/bin/sh\n${envAgentScriptMarker}\nexec /bin/launchctl setenv CODEX_CLI_PATH ${shellQuote(wrapper)}\n`;
+/**
+ * The file that proves a gateway can still run: the installed release's CLI, or the CLI this process runs from where the
+ * command is not installed. The script checks it at every login, so an agent left behind by a gateway that was removed
+ * (for example by a rollback to a release that does not know the agent) sets nothing.
+ */
+export function agentRuntimeFile(): string {
+  const command = gatewayCommand();
+  return command.args.length ? command.args[0]! : resolve(dirname(command.command), "../share/subscription-gateway/current/package/dist/cli.js");
+}
+/**
+ * The private script for one registered wrapper. It sets the variable only while both the wrapper and the gateway
+ * release exist; otherwise it exits 0 and sets nothing, so a gateway that was uninstalled or unregistered by an older
+ * release is not set up again at the next login.
+ */
+export const envAgentScript = (wrapper: string, runtimeFile = agentRuntimeFile()): string =>
+  `#!/bin/sh\n${envAgentScriptMarker}\n[ -x ${shellQuote(wrapper)} ] && [ -f ${shellQuote(runtimeFile)} ] || exit 0\nexec /bin/launchctl setenv CODEX_CLI_PATH ${shellQuote(wrapper)}\n`;
 /** The whole plist for one script; its only program argument is the script, so macOS lists it by that name. */
 export function envAgentPlist(script: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${envAgentMarker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${envAgentLabel}</string>\n<key>ProgramArguments</key><array><string>${xml(script)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>LimitLoadToSessionType</key><string>Aqua</string>\n</dict></plist>\n`;

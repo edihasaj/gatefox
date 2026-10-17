@@ -26,25 +26,39 @@ login environment agent runs `<state>/harness-gateway-login-env`, a private scri
 instead of `launchctl`, so it is not listed as "launchctl" either. The launchd labels
 stay `com.edihasaj.subscription-gateway*`.
 
-Every check that reads a plist's arguments accepts both `.../bin/gateway` and
-`.../bin/harness-gateway`, so older plists keep working and a rollback to 0.4.5
-needs no plist change. An existing `harness-gateway` link to `gateway` is replaced
-by the launcher file; any other file with that name is left alone and the installer
-refuses to continue.
+Older plists keep working, and a rollback to 0.4.5 needs no plist change: the checks that
+read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
+accept both `.../bin/gateway` and `.../bin/harness-gateway`. A running standalone native relay
+whose plist names `bin/gateway` in its `--gateway` argument counts as the same registration as
+one written now, so `gateway native install` no longer asks you to uninstall it first. An existing
+`harness-gateway` link to `gateway` is replaced by the launcher file; any other file with that
+name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
+while that file carries the installer's marker line; otherwise they keep `gateway`.
 
 Migration is one-time and happens when a plist is next written by 0.4.6:
 
 - A standalone service: `gateway service install`, which upgrades the running
   service when it is idle like any other install.
-- Consolidation (`gateway service consolidate --apply`, `--next-login`) writes the
-  unified service with the new name.
-- `gateway desktop register` rewrites the desktop login agent and the login
-  environment agent.
-- An already-unified service keeps its current plist until it is consolidated or
-  reinstalled; it works unchanged under the old `gateway` name until then.
+- `gateway service consolidate --apply` and `--next-login` write a newly unified
+  service with the new name. They do nothing to a Mac that is already unified.
+- `gateway desktop register` rewrites the standalone desktop login agent and the
+  login environment agent.
+- An already-unified service (a `service-plan.json` exists, as on every production Mac):
+  `gateway service install` renames the launcher in the service plist file, and in the
+  desktop login plist if one exists. It changes only the first program argument, writes
+  atomically, keeps the label, and does only that and what it always did (start the service if it
+  is not loaded or has no process). It never boots out, restarts or replaces a running
+  service, and it rewrites a file only when it carries the gateway's marker and names a managed
+  `gateway` launcher whose sibling `harness-gateway` is managed too. The result says
+  `programRewritten: true|false` (and `desktopRewritten`), and `appliesAt: "next login"`:
+  launchd reads the file at its next load, so the running service keeps its current definition
+  until you log in again (or restart through `launchctl bootout` and `bootstrap`), and shows the
+  new name from then. `appliesAt` is `"now"` when that same call had to load a stopped service.
+  Run it once per Mac after installing 0.4.6.
 
-macOS then posts one "Background Items Added" notification for `harness-gateway`,
-and the old "gateway" entry disappears from the list once its plist is replaced.
+At the first load of a renamed plist macOS posts one "Background Items Added" notification
+for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
+definition is no longer loaded, which is the next login for a unified service.
 
 Preview the existing installation:
 

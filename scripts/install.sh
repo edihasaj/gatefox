@@ -54,12 +54,14 @@ fi
 if [ -e "$compat" ] || [ -L "$compat" ]; then
   test -f "$compat" && grep -q "$managed" "$compat" || { echo 'gateway command is occupied by another installation.' >&2; exit 2; }
 fi
+# A leftover staging name (even a link) is removed first, and the write fails if the name exists, so nothing is written through a link.
+rm -f "$launcher.new" "$compat.new"
 ./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" <<'JS'
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const [root,launcher,...files]=process.argv.slice(2);
 const text='#!/bin/sh\n# Managed by subscription-gateway installer\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec '+quote(root+'/current/runtime/bin/node')+' '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
-for(const file of files)writeFileSync(file,text);
+for(const file of files)writeFileSync(file,text,{flag:'wx'});
 JS
 chmod 700 "$launcher.new" "$compat.new"
 ln -s "releases/$version" "$root/current.new-$$"

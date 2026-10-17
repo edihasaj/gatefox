@@ -435,8 +435,23 @@ or staged plan owns it), a failure to write or load the agent is caught: the reg
 keeps going and returns `envAgent: false`, and the service records a
 `desktop_env_agent_failed` event with a fixed `reason` (`write`, `bootstrap`,
 `unmanaged` or `other`, see [diagnostics](diagnostics.md)), never the error text or a
-path. The next start tries again. A hand-run `gateway desktop register` still fails
-loudly.
+path. The next start tries again. On a Mac that runs the unified service (or has a staged
+plan), which is where this agent matters, a hand-run `gateway desktop register` takes the
+same path: it returns `envAgent: false` and records the event under the component
+`service`. Only on a Mac without a unified plan does a hand-run `gateway desktop register`
+fail loudly, and it records no event.
+
+The script sets nothing unless the gateway can still run: before the `launchctl setenv` it
+checks that the registered wrapper is executable and that the installed release's
+`package/dist/cli.js` exists, and otherwise exits 0. A login after the gateway was
+uninstalled, or unregistered by an older release, therefore does not set the variable again.
+
+Rolling back to 0.4.5 or earlier: those releases do not know this agent, so their
+`gateway desktop unregister` and `gateway uninstall` leave its plist and script behind. Before
+running either, remove them: `launchctl bootout gui/$UID/com.edihasaj.subscription-gateway.desktop-env`,
+then move `~/Library/LaunchAgents/com.edihasaj.subscription-gateway.desktop-env.plist` and
+`<state>/harness-gateway-login-env` to the Trash. Even if you do not, the guard above stops
+the script from setting the variable once the release is gone.
 
 `gateway desktop unregister` and `gateway uninstall` boot the agent out and move its
 script and plist to the Trash (the script only when it carries the gateway's marker),

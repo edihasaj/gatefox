@@ -80,3 +80,16 @@ test("a foreign harness-gateway or gateway is never touched, and the installer s
     } finally { await l.cleanup(); }
   }
 });
+
+test("a stale staging name, even a link to another file, is replaced and never written through", apple, async () => {
+  const l = await layout();
+  try {
+    const victim = join(l.root, "victim"); await writeFile(victim, "keep me\n", { mode: 0o644 });
+    await symlink(victim, l.bin("harness-gateway.new")); await symlink(victim, l.bin("gateway.new"));
+    assert.equal((await l.install()).code, 0);
+    assert.equal(await readFile(victim, "utf8"), "keep me\n", "the file behind the link is untouched");
+    assert.equal((await lstat(victim)).mode & 0o777, 0o644, "and not made executable");
+    for (const name of ["harness-gateway", "gateway"]) assert.ok((await readFile(l.bin(name), "utf8")).includes(marker));
+    assert.equal(await lstat(l.bin("gateway.new")).then(() => true, () => false), false, "no staging file is left");
+  } finally { await l.cleanup(); }
+});

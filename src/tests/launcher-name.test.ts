@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { chmod, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { gatewayCommand, preferredLauncher } from "../command.js";
+import { gatewayCommand, preferredLauncher, isManagedLauncher } from "../command.js";
+import { renameLauncherInPlist, renameLaunchers } from "../mac-launcher-rename.js";
+import { installUnifiedService, type UnifiedInstallTools } from "../mac-service.js";
+import { sameNativeRegistration } from "../mac-native.js";
 import { servicePlist } from "../mac-service.js";
 import { collectServicePlan } from "../mac-consolidate.js";
 import { macDesktop } from "../mac-desktop.js";
@@ -38,6 +41,13 @@ test("gatewayCommand names harness-gateway for either launcher, and leaves the o
     }
     assert.deepEqual(await withCommand(join(only.bin, "gateway"), async () => gatewayCommand()), { command: join(only.bin, "gateway"), args: [] }, "a rollback layout keeps what it has");
     assert.equal(preferredLauncher("/x/bin/gateway", () => true), "/x/bin/harness-gateway");
+    // A harness-gateway without the installer's marker, or one that is only a link, is not ours to name in a plist.
+    await writeFile(join(only.bin, "harness-gateway"), "#!/bin/sh\necho foreign\n", { mode: 0o700 });
+    assert.deepEqual(await withCommand(join(only.bin, "gateway"), async () => gatewayCommand()), { command: join(only.bin, "gateway"), args: [] }, "no marker: keep gateway");
+    assert.equal(isManagedLauncher(join(only.bin, "harness-gateway")), false);
+    await rm(join(only.bin, "harness-gateway")); await symlink("gateway", join(only.bin, "harness-gateway"));
+    assert.equal(isManagedLauncher(join(only.bin, "harness-gateway")), false, "a link is not a managed launcher file");
+    assert.equal(isManagedLauncher(join(only.bin, "gateway")), true);
     assert.equal(preferredLauncher("/x/bin/gateway", () => false), "/x/bin/gateway");
     assert.equal(preferredLauncher("/x/bin/other", () => true), "/x/bin/other", "only the older launcher name is mapped");
   } finally { await rm(both.root, { recursive: true, force: true }); await rm(only.root, { recursive: true, force: true }); }
@@ -72,7 +82,8 @@ test("the service plist and plans written from the older command name harness-ga
 test("the desktop login agent is written with harness-gateway as its program", mac, async () => {
   const f = await desktopFixture("launcher-name");
   await inDesktopHome(f, async () => {
-    const harness = join(f.root, "harness-gateway"); await writeFile(harness, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    const harness = join(f.root, "harness-gateway"); await writeFile(harness, "#!/bin/sh\n# Managed by subscription-gateway installer\nexit 0\n", { mode: 0o700 });
+    await writeFile(f.gateway, "#!/bin/sh\n# Managed by subscription-gateway installer\nexit 0\n", { mode: 0o700 });
     // The fixture's installed command is the older name; the plist still names the sibling harness-gateway.
     await macDesktop("register", f.config, f.app, false, f.exec);
     const text = await readFile(join(f.home, "Library/LaunchAgents", label + ".desktop.plist"), "utf8");
@@ -117,4 +128,97 @@ test("uninstall moves both launchers to the Trash whichever one ran it, and leav
       await rm(l.home, { recursive: true, force: true });
     }
   }
+});
+
+const unifiedPlist = (program: string, config: string, extra = "") => servicePlist(process.execPath, "/unused/cli.js", config, "/tmp/service.log", "/usr/bin:/bin", program, "daemon") + extra;
+
+test("an already-unified service plist is rewritten in place to harness-gateway, changing nothing else", async () => {
+  const l = await installed(); const file = join(l.root, `${label}.plist`); const config = "/Users/x/Library/Application Support/gw & co/config.json";
+  const legacy = join(l.bin, "gateway"); const harness = join(l.bin, "harness-gateway");
+  try {
+    const original = unifiedPlist(legacy, config); await writeFile(file, original, { mode: 0o600 });
+    assert.equal(await renameLauncherInPlist(file), true);
+    const text = await readFile(file, "utf8");
+    assert.equal(text, original.replace(`<string>${legacy}</string>`, `<string>${harness}</string>`), "only the program changed (label, arguments, KeepAlive and the rest are as they were)");
+    assert.ok(text.includes(`<key>Label</key><string>${label}</string>`));
+    assert.equal((await lstat(file)).mode & 0o777, 0o600);
+    assert.deepEqual((await readdir(l.root)).filter(name => name.includes("rename") || name.includes("tmp")), [], "no temporary file is left");
+    assert.equal(await renameLauncherInPlist(file), false, "a second run changes nothing");
+    assert.equal(await renameLauncherInPlist(join(l.root, "missing.plist")), false, "and a missing file is not an error");
+  } finally { await rm(l.root, { recursive: true, force: true }); }
+});
+
+test("the launcher rename refuses what is not ours: foreign plist, foreign launcher, missing or unmarked harness-gateway, links", async () => {
+  const l = await installed(); const config = "/c.json"; const legacy = join(l.bin, "gateway");
+  const check = async (name: string, text: string) => { const file = join(l.root, name + ".plist"); await writeFile(file, text); assert.equal(await renameLauncherInPlist(file), false, name); assert.equal(await readFile(file, "utf8"), text, name + ": untouched"); return file; };
+  try {
+    await check("foreign-plist", unifiedPlist(legacy, config).replace("<!-- Managed by subscription-gateway -->", ""));
+    await check("other-program", unifiedPlist(join(l.bin, "elsewhere"), config));
+    await check("node-program", unifiedPlist("/usr/bin/node", config));
+    await writeFile(legacy, "#!/bin/sh\necho foreign\n", { mode: 0o700 });
+    await check("foreign-launcher", unifiedPlist(legacy, config));
+    await writeFile(legacy, "#!/bin/sh\n# Managed by subscription-gateway installer\n", { mode: 0o700 });
+    await writeFile(join(l.bin, "harness-gateway"), "#!/bin/sh\necho foreign\n", { mode: 0o700 });
+    await check("unmarked-harness", unifiedPlist(legacy, config));
+    await rm(join(l.bin, "harness-gateway"));
+    await check("no-harness", unifiedPlist(legacy, config));
+    await writeFile(join(l.bin, "harness-gateway"), "#!/bin/sh\n# Managed by subscription-gateway installer\n", { mode: 0o700 });
+    const real = join(l.root, "real.plist"); await writeFile(real, unifiedPlist(legacy, config)); const link = join(l.root, "link.plist"); await symlink(real, link);
+    assert.equal(await renameLauncherInPlist(link), false, "a link is never followed"); assert.equal(await readFile(real, "utf8"), unifiedPlist(legacy, config));
+  } finally { await rm(l.root, { recursive: true, force: true }); }
+});
+
+/** launchd, recorded: a test never reaches the real session. */
+function fakeLaunchd(installedState: { installed: boolean; pid?: number }) {
+  const calls: string[] = [];
+  const tools: UnifiedInstallTools = { status: async () => { calls.push("print"); return installedState; }, launchctl: async args => { calls.push(args.join(" ")); }, finish: async () => ({ service: label, mode: "supervised" }) };
+  return { calls, tools };
+}
+
+test("gateway service install on a unified Mac renames the launcher without booting out or restarting anything", async () => {
+  const l = await installed(); const file = join(l.root, `${label}.plist`); const desktop = join(l.root, `${label}.desktop.plist`); const config = "/c.json";
+  const legacy = join(l.bin, "gateway"); const harness = join(l.bin, "harness-gateway");
+  try {
+    await writeFile(file, unifiedPlist(legacy, config), { mode: 0o600 });
+    await writeFile(desktop, `<?xml version="1.0"?><!-- Managed by subscription-gateway --><plist version="1.0"><dict><key>Label</key><string>${label}.desktop</string><key>ProgramArguments</key><array><string>${legacy}</string><string>desktop</string><string>register</string></array></dict></plist>\n`);
+    const running = fakeLaunchd({ installed: true, pid: 4242 });
+    const result = await installUnifiedService({ service: file, desktop, target: `gui/501/${label}`, domain: "gui/501" }, running.tools);
+    assert.deepEqual(running.calls, ["print"], "a running service gets no launchctl write at all: no bootout, kickstart or bootstrap");
+    assert.deepEqual([result.programRewritten, result.desktopRewritten, result.appliesAt, result.mode], [true, true, "next login", "supervised"]);
+    assert.ok((await readFile(file, "utf8")).includes(`<array><string>${harness}</string><string>daemon</string>`));
+    assert.ok((await readFile(desktop, "utf8")).includes(`<array><string>${harness}</string><string>desktop</string>`));
+    const again = await installUnifiedService({ service: file, desktop, target: `gui/501/${label}`, domain: "gui/501" }, fakeLaunchd({ installed: true, pid: 4242 }).tools);
+    assert.deepEqual([again.programRewritten, again.desktopRewritten, "appliesAt" in again], [false, false, false], "a second install rewrites nothing and promises nothing");
+  } finally { await rm(l.root, { recursive: true, force: true }); }
+});
+
+test("a unified install still starts a stopped service as before, and a rewrite that failed does not stop it", async () => {
+  const l = await installed(); const file = join(l.root, `${label}.plist`); const legacy = join(l.bin, "gateway");
+  try {
+    await writeFile(file, unifiedPlist(legacy, "/c.json"), { mode: 0o600 });
+    const stopped = fakeLaunchd({ installed: false });
+    const started = await installUnifiedService({ service: file, desktop: join(l.root, "none.plist"), target: `gui/501/${label}`, domain: "gui/501" }, stopped.tools);
+    assert.deepEqual(stopped.calls, ["print", `enable gui/501/${label}`, `bootstrap gui/501 ${file}`]);
+    assert.equal(started.appliesAt, "now", "loaded after the rewrite, so it applies at once");
+    const idle = fakeLaunchd({ installed: true });
+    await installUnifiedService({ service: file, desktop: join(l.root, "none.plist"), target: `gui/501/${label}`, domain: "gui/501" }, idle.tools);
+    assert.deepEqual(idle.calls, ["print", `kickstart gui/501/${label}`], "loaded without a process: kickstart, as before");
+    // A write that fails (a directory in the way of the temporary file) is reported and the service still starts.
+    await writeFile(file, unifiedPlist(legacy, "/c.json"), { mode: 0o600 }); await mkdir(`${file}.${process.pid}.rename`);
+    const blocked = fakeLaunchd({ installed: true, pid: 1 });
+    const result = await installUnifiedService({ service: file, desktop: join(l.root, "none.plist"), target: `gui/501/${label}`, domain: "gui/501" }, blocked.tools);
+    assert.deepEqual([result.programRewritten, result.launcherRenameFailed], [false, true]);
+    assert.ok((await readFile(file, "utf8")).includes(`<string>${legacy}</string>`), "the plist is as it was");
+    assert.deepEqual((await renameLaunchers(file, join(l.root, "none.plist"))).failed, true);
+  } finally { await rm(l.root, { recursive: true, force: true }); }
+});
+
+test("a native relay started with the older launcher name is the same registration as the one written now", () => {
+  const harness = "/h/.local/bin/harness-gateway"; const legacy = "/h/.local/bin/gateway";
+  const written = (command: string) => `<array><string>/r/gateway-native-relay</string><string>--gateway</string><string>${command}</string><string>--daemon</string></array>`;
+  assert.equal(sameNativeRegistration(written(harness), written(harness), harness), true);
+  assert.equal(sameNativeRegistration(written(legacy), written(harness), harness), true, "the 0.4.5 relay is not 'another registration'");
+  assert.equal(sameNativeRegistration(written("/h/.local/bin/other"), written(harness), harness), false);
+  assert.equal(sameNativeRegistration(undefined, written(harness), harness), false);
+  assert.equal(sameNativeRegistration(written(harness), written(legacy), legacy), false, "only the harness-gateway form is migrated from");
 });

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,15 +9,28 @@ import { fileURLToPath } from "node:url";
 export const launcherName = "harness-gateway";
 export const legacyLauncherName = "gateway";
 
+/** The line the installer puts in both launchers; a file without it is not ours to name in a plist. */
+export const launcherMarker = "# Managed by subscription-gateway installer";
+/** Whether a path is a regular file (not a link) that carries the installer's marker line. */
+export function isManagedLauncher(path: string): boolean {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); if (!fstatSync(fd).isFile()) return false;
+    const buffer = Buffer.alloc(4096); const length = readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, length).toString("utf8").split("\n").includes(launcherMarker);
+  } catch { return false; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
 /**
  * The launcher a plist should name. The installer's launchers both export the harness-gateway path as GATEWAY_COMMAND;
  * a value that still names the older `gateway` (inherited environment) is moved to the sibling harness-gateway launcher
- * when that file exists, and left alone where it does not (a rollback to a release without it).
+ * when that file is the installer's own (it carries the managed marker), and left alone where it is absent, foreign,
+ * or not a regular file (a rollback to a release without it).
  */
-export function preferredLauncher(command: string, exists: (path: string) => boolean = existsSync): string {
+export function preferredLauncher(command: string, managed: (path: string) => boolean = isManagedLauncher): string {
   if (basename(command) !== legacyLauncherName) return command;
   const preferred = resolve(dirname(command), launcherName);
-  return exists(preferred) ? preferred : command;
+  return managed(preferred) ? preferred : command;
 }
 
 export function gatewayCommand(): { command: string; args: string[] } {
