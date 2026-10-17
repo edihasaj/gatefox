@@ -36,9 +36,17 @@ else
   "$stage/runtime/bin/node" "$stage/package/dist/cli.js" --version >/dev/null
   mv "$stage" "$release"
 fi
+# macOS scans a new large executable the first time it runs, which can make the service's first host start time out.
+# Run it once now, before current switches. A failure or a stuck run never stops the install.
+prewarm="$release/package/gateway-sdk/gateway-codex"
+if [ -f "$prewarm" ]; then
+  ./runtime/bin/node -e 'const r=require("child_process").spawnSync(process.argv[1],["--version"],{stdio:"ignore",timeout:60000,killSignal:"SIGKILL"});if(r.error||r.status!==0)console.error("Warning: gateway-codex did not pre-warm; its first start may be slow.")' "$prewarm" || true
+fi
 if [ -e "$root/current" ] || [ -L "$root/current" ]; then
   test -L "$root/current" || { echo 'Current release path is not a managed link.' >&2; exit 2; }
-  readlink "$root/current" > "$root/previous-release"
+  # Installing the same version again must not turn previous-release into the current one, so it keeps the last different release.
+  current_target=$(readlink "$root/current")
+  [ "$current_target" = "releases/$version" ] || printf '%s\n' "$current_target" > "$root/previous-release"
 fi
 # harness-gateway is the managed launcher, because macOS names a background item after the executable a LaunchAgent runs.
 # gateway stays a second managed launcher with the same contents, so the older command and old LaunchAgents keep working.

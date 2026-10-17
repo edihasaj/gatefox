@@ -15,16 +15,20 @@ async function layout() {
   const root = await mkdtemp(join(tmpdir(), "gateway-install-"));
   const source = join(root, "release"); const prefix = join(root, "prefix"); const home = join(root, "home");
   await mkdir(join(source, "package/dist"), { recursive: true }); await mkdir(join(source, "runtime/bin"), { recursive: true }); await mkdir(home); await mkdir(join(prefix, "bin"), { recursive: true });
-  await writeFile(join(source, "package/package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version: "9.9.9" }));
   await writeFile(join(source, "package/dist/cli.js"), "console.log(`${process.env.GATEWAY_INSTALLED}:${process.env.GATEWAY_COMMAND}`);\n");
   await symlink(process.execPath, join(source, "runtime/bin/node"));
   await copyFile(new URL("../../scripts/install.sh", import.meta.url), join(source, "install")); await chmod(join(source, "install"), 0o755);
-  const sums = await run("/usr/bin/shasum", ["-a", "256", "package/package.json", "package/dist/cli.js"], { cwd: source });
-  await writeFile(join(source, "checksums.txt"), sums.stdout);
+  /** Makes the release folder carry this version (a different version is a different release to the installer). */
+  const publish = async (version: string) => {
+    await writeFile(join(source, "package/package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version }));
+    const sums = await run("/usr/bin/shasum", ["-a", "256", "package/package.json", "package/dist/cli.js"], { cwd: source });
+    await writeFile(join(source, "checksums.txt"), sums.stdout);
+  };
+  await publish("9.9.9");
   const install = () => run("/bin/sh", [join(source, "install"), "--prefix", prefix], { cwd: source, env: { ...process.env, HOME: home } })
     .then(result => ({ code: 0, stderr: result.stderr }), (error: { code: number; stderr: string }) => ({ code: error.code, stderr: error.stderr }));
   const bin = (name: string) => join(prefix, "bin", name);
-  return { root, prefix, home, install, bin, cleanup: () => rm(root, { recursive: true, force: true }) };
+  return { root, source, prefix, home, install, bin, publish, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
 const managedFile = `#!/bin/sh\n${marker}\nexec echo old\n`;
 
@@ -91,5 +95,47 @@ test("a stale staging name, even a link to another file, is replaced and never w
     assert.equal((await lstat(victim)).mode & 0o777, 0o644, "and not made executable");
     for (const name of ["harness-gateway", "gateway"]) assert.ok((await readFile(l.bin(name), "utf8")).includes(marker));
     assert.equal(await lstat(l.bin("gateway.new")).then(() => true, () => false), false, "no staging file is left");
+  } finally { await l.cleanup(); }
+});
+
+test("installing the same version again keeps the last different release as previous-release", apple, async () => {
+  const l = await layout();
+  try {
+    const previous = join(l.prefix, "share/subscription-gateway/previous-release");
+    const none = () => readFile(previous, "utf8").then(() => false, () => true);
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    assert.equal(await none(), true, "a first install has no previous release");
+    await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
+    assert.equal((await readFile(previous, "utf8")).trim(), "releases/1.0.0");
+    assert.equal((await l.install()).code, 0, "the same version again");
+    assert.equal((await readFile(previous, "utf8")).trim(), "releases/1.0.0", "still the last different release");
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    assert.equal((await readFile(previous, "utf8")).trim(), "releases/2.0.0", "switching back records the release it left");
+  } finally { await l.cleanup(); }
+});
+
+test("the installer runs gateway-codex --version once before current switches, and skips it when the file is missing", apple, async () => {
+  const l = await layout();
+  try {
+    const calls = join(l.home, "prewarm-calls"); const current = join(l.prefix, "share/subscription-gateway/current");
+    assert.equal((await l.install()).code, 0, "no gateway-sdk in the release");
+    assert.equal(await readFile(calls, "utf8").then(() => true, () => false), false, "nothing was run");
+    const sdk = join(l.source, "package/gateway-sdk"); await mkdir(sdk);
+    // The stub records its arguments and whether current already pointed at the new release.
+    await writeFile(join(sdk, "gateway-codex"), `#!/bin/sh\nprintf '%s|%s\\n' "$*" "$(readlink '${current}' 2>/dev/null)" >> "$HOME/prewarm-calls"\n`, { mode: 0o755 });
+    await l.publish("9.9.8"); assert.equal((await l.install()).code, 0);
+    assert.equal(await readFile(calls, "utf8"), "--version|releases/9.9.9\n", "one call, while current still named the old release");
+    assert.equal(await readlink(current), "releases/9.9.8");
+  } finally { await l.cleanup(); }
+});
+
+test("a gateway-codex that fails does not stop the install, and the failure is reported on stderr", apple, async () => {
+  const l = await layout();
+  try {
+    const sdk = join(l.source, "package/gateway-sdk"); await mkdir(sdk);
+    await writeFile(join(sdk, "gateway-codex"), "#!/bin/sh\nexit 3\n", { mode: 0o755 });
+    const result = await l.install();
+    assert.equal(result.code, 0); assert.match(result.stderr, /did not pre-warm/);
+    assert.equal(await readlink(join(l.prefix, "share/subscription-gateway/current")), "releases/9.9.9");
   } finally { await l.cleanup(); }
 });
