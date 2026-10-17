@@ -257,8 +257,12 @@ Run the installed SDK checks for the changed JavaScript path before publishing.
 # Upgrade and recovery
 
 The installer verifies file checksums before changing the current release link.
-It saves the previous release target. Reinstalling identical content is safe;
-different content under the same version is rejected. Preserve the existing data
+It saves the previous release target, and only when the current release is a
+different version, so reinstalling the same version keeps the last different
+release for rollback. Before switching, it runs the packaged `gateway-codex
+--version` once (60 s limit, failures only warn) so macOS scans the new large
+executable then and not during the service's first host start. Reinstalling
+identical content is safe; different content under the same version is rejected. Preserve the existing data
 directory. Service migration requests a safe idle stop before replacing a managed
 LaunchAgent. Busy inference or request uploads refuse the upgrade.
 The managed job is temporarily disabled during migration. The owning daemon
