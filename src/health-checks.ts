@@ -150,9 +150,12 @@ export function inferenceFindings(probe: InferenceProbe, installed: string | nul
   if (probe.bodyStatus !== undefined && safeToken(probe.bodyStatus) !== "ok") {
     return [{ level: "fail", reason: `inference ${safeToken(probe.bodyStatus) ?? "unknown"}` }];
   }
-  if (!probe.release || release === "unknown") return [{ level: "warn", reason: "inference release unknown" }];
-  if (installed && release !== installed) return [{ level: "warn", reason: `lagging inference@${release}` }];
-  return [];
+  // The server answers while it holds back a change to gateway.json, so this is a warning about the file, not about serving.
+  // It reads the server's own answer rather than telemetry, so it stays for as long as the file stays refused.
+  const refused: Finding[] = probe.configRejected ? [{ level: "warn", reason: `gateway.json change not applied (${probe.configRejected}); fix it or restart the service` }] : [];
+  if (!probe.release || release === "unknown") return [...refused, { level: "warn", reason: "inference release unknown" }];
+  if (installed && release !== installed) return [...refused, { level: "warn", reason: `lagging inference@${release}` }];
+  return refused;
 }
 
 /** A failing phase is the loudest signal the watchdog has: the app moved and chats broke. */

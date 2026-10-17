@@ -1,3 +1,4 @@
+import type { ConfigRejection } from "./config-rejection.js";
 /**
  * The vocabulary `gateway health` speaks in. Every reason is a fixed phrase plus
  * counts and versions, so a verdict can be read by a person, by `--json`, and by an
@@ -40,7 +41,9 @@ export interface ServiceSnapshot { installed: boolean; components: ServiceCompon
  * The loopback inference answer: whether anything served, and with which release.
  * `unreadable` is the probe itself failing, which is a warning about the check, not about the server.
  */
-export interface InferenceProbe { state: "answered" | "unreachable" | "skipped" | "unreadable"; status?: number; release?: string | null; bodyStatus?: string | null }
+export interface InferenceProbe { state: "answered" | "unreachable" | "skipped" | "unreadable"; status?: number; release?: string | null; bodyStatus?: string | null;
+  /** Why the server holds back a change to `gateway.json`, from the fixed list in `config-rejection.ts`; absent while the file in place serves. */
+  configRejected?: ConfigRejection }
 
 /** This run's smoke answer, or the recorded one when nothing needed re-running. */
 export interface SmokeOutcome { ran: boolean; result: "pass" | "fail" | "unavailable" | "skipped"; phase?: string; recorded?: "pass" | "fail" | "unavailable" }

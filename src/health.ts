@@ -1,3 +1,4 @@
+import { parseConfigRejection } from "./config-rejection.js";
 import { access, constants, lstat, readFile as readTextFile } from "node:fs/promises";
 import { readServicePlan, serviceStatusPath, type ServicePlan } from "./service-plan.js";
 import { locateInstall, runVersions, type VersionsResult } from "./versions.js";
@@ -68,12 +69,13 @@ export interface HealthDeps {
 const owned = (path: string) => access(path, constants.F_OK).then(() => true, () => false);
 
 /** The loopback answer: whether inference serves at all, and which release replies. */
-async function probeInference(port: number): Promise<InferenceProbe> {
+export async function probeInference(port: number): Promise<InferenceProbe> {
   try {
     const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(probeTimeoutMs), redirect: "error" });
-    const body = await response.json().catch(() => undefined) as { status?: unknown } | undefined;
+    const body = await response.json().catch(() => undefined) as { status?: unknown; configRejected?: unknown } | undefined;
+    const configRejected = parseConfigRejection(body?.configRejected);
     return { state: "answered", status: response.status, release: response.headers.get("x-gateway-release"),
-      ...(typeof body?.status === "string" ? { bodyStatus: body.status } : {}) };
+      ...(typeof body?.status === "string" ? { bodyStatus: body.status } : {}), ...(configRejected ? { configRejected } : {}) };
   } catch { return { state: "unreachable" }; }
 }
 

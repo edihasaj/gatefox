@@ -81,7 +81,8 @@ test("retiring and restoring an alias cannot change its account identity within 
   const { path, source, live } = await setup(); await live.current();
   await writePrivateJson(path, { ...source, providers: [{ ...source.providers[0], models: { newer: "new-model" } }] }); const retired = await live.current();
   await writePrivateJson(path, { ...source, providers: [{ ...source.providers[0], id: "another-account" }] });
-  assert.equal(await live.current(), retired); assert.equal(live.rejection, "rebind");
+  // The refused file has no `newer`, so that alias stops; the retired `old` stays unbound to the other account.
+  assert.deepEqual((await live.current()).providers, []); assert.equal(live.rejection, "rebind"); assert.equal(retired.providers[0].models.newer, "new-model");
   await writePrivateJson(path, source); assert.equal((await live.current()).providers[0].id, "one"); assert.equal(live.rejection, undefined);
 });
 
