@@ -329,19 +329,21 @@ Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
 appear as an organization-settings error.
 
-This release verifies the app engines `0.163.0-alpha.10.2` and `0.162.0-alpha.17.2`
-for native sharing, the same list the native relay accepts
-([verified app engines](native-remote.md#verified-app-engines)). A native-only host
-holds the app's engine to that list too; a binary that gateway generations will run
-keeps the gateway SDK pin. If the app's native engine is not a verified one (for
-example after an app update), the host starts without native sharing and keeps
-offering gateway chats;
+The host shares only the app engine this release verified for sharing,
+`0.162.0-alpha.17.2`. The native relay also accepts `0.163.0-alpha.10.2`, because it
+never needs the host's engine ([verified app engines](native-remote.md#verified-app-engines)).
+If the app's native engine is not the verified one (for example after an app update),
+the host starts without native sharing and keeps offering gateway chats;
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
 adapter then falls back to its own native engine and records `native_sharing_fallback`
-with `reason: other`. Gateway chats keep using the host. While the fallback lasts, the
-native relay cannot share the engine either, so remote control of that Mac is
-unavailable. The fallback lasts until a release verifies the app's engine. It runs under
+with `reason: other`. Gateway chats keep using the host. The relay cannot use the host's
+engine either, but from 0.4.7, where private engines share the native home, a registered
+relay that is live keeps remote control available while the fallback lasts: each phone
+stream runs the gateway router, whose adapter runs a private native engine of its own on
+the same home, and the SDK refuses a second writer for a chat another engine holds
+([relay sessions](native-remote.md#relay-sessions-and-native-chats)). The fallback lasts
+until a release verifies the app's engine. It runs under
 the same native-home lease as the host-down fallback below: a host that regains native
 sharing meanwhile finds a live owner and claims the home only after that engine has
 exited, and a second adapter on the same home, such as a connected machine's SSH
