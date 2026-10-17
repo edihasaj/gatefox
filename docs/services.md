@@ -12,6 +12,54 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+## The name macOS shows
+
+macOS names a LaunchAgent item after the program in the first `ProgramArguments`
+entry, and shows that name in System Settings, Login Items, under "Allow in the
+Background", and in the "Background Items Added" notification. Since 0.4.6 the
+installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
+`~/.local/bin/gateway` as a second launcher with the same contents (both set
+`GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
+either command names `harness-gateway`. The service, desktop login, native
+relay (its `--gateway` argument) and consolidated plans all use it. The
+login environment agent runs `<state>/harness-gateway-login-env`, a private script,
+instead of `launchctl`, so it is not listed as "launchctl" either. The launchd labels
+stay `com.edihasaj.subscription-gateway*`.
+
+Older plists keep working, and a rollback to 0.4.5 needs no plist change: the checks that
+read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
+accept both `.../bin/gateway` and `.../bin/harness-gateway`. A running standalone native relay
+whose plist names `bin/gateway` in its `--gateway` argument counts as the same registration as
+one written now within the same release, so `gateway native install` there no longer asks you to uninstall it first; across releases the relay path differs too and the existing refusal stands. An existing
+`harness-gateway` link to `gateway` is replaced by the launcher file; any other file with that
+name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
+while that file carries the installer's marker line; otherwise they keep `gateway`.
+
+Migration is one-time and happens when a plist is next written by 0.4.6:
+
+- A standalone service: `gateway service install`, which upgrades the running
+  service when it is idle like any other install.
+- `gateway service consolidate --apply` and `--next-login` write a newly unified
+  service with the new name. They do nothing to a Mac that is already unified.
+- `gateway desktop register` rewrites the standalone desktop login agent and the
+  login environment agent.
+- An already-unified service (a `service-plan.json` exists, as on every production Mac):
+  `gateway service install` renames the launcher in the service plist file, and in the
+  desktop login plist if one exists. It changes only the first program argument, writes
+  atomically, keeps the label, and does only that and what it always did (start the service if it
+  is not loaded or has no process). It never boots out, restarts or replaces a running
+  service, and it rewrites a file only when it carries the gateway's marker and names a managed
+  `gateway` launcher whose sibling `harness-gateway` is managed too. The result says
+  `programRewritten: true|false` (and `desktopRewritten`), and `appliesAt: "next login"`:
+  launchd reads the file at its next load, so the running service keeps its current definition
+  until you log in again (or restart through `launchctl bootout` and `bootstrap`), and shows the
+  new name from then. `appliesAt` is `"now"` when that same call had to load a stopped service.
+  Run it once per Mac after installing 0.4.6.
+
+At the first load of a renamed plist macOS posts one "Background Items Added" notification
+for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
+definition is no longer loaded, which is the next login for a unified service.
+
 Preview the existing installation:
 
 ```sh
@@ -61,6 +109,16 @@ timeout names which readiness condition never held (`status_not_current`,
 `native_relay_not_connected`). The installed native binary replaces earlier
 test paths while retaining the original relay home and connected-machine
 registration.
+
+The login environment agent, `com.edihasaj.subscription-gateway.desktop-env`, is
+not a service component and stays a separate LaunchAgent on purpose. ChatGPT can
+start at login before this service has set `CODEX_CLI_PATH`; the agent runs
+`/bin/launchctl setenv CODEX_CLI_PATH <registered wrapper>` at login, ahead of
+anything slower, and exits. Consolidation does not collect it into the plan,
+retire it, or count it as a separate login job, and the unified service's
+desktop component keeps it in step with the registration. `gateway desktop
+unregister` and `gateway uninstall` remove it. See
+[the registration section](app-server.md#the-login-environment-agent).
 
 The supervisor retries failed children with a delay that grows from one second
 to thirty seconds. A child failure does not replace the other children. An

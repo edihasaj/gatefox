@@ -3,11 +3,11 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { readFile, mkdir, writeFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
-import { gatewayCommand } from "./command.js";
+import { gatewayCommand, launcherName, legacyLauncherName } from "./command.js";
 import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
@@ -46,6 +46,17 @@ async function enable(binary: string, args: string[]): Promise<void> {
   }
 }
 
+/**
+ * Whether the installed plist is this registration. A relay started by 0.4.5 names `.../bin/gateway` in its `--gateway`
+ * argument and the same plist written now names `.../bin/harness-gateway`; both launchers run the same command, so
+ * that difference alone is not "another registration" and does not force an uninstall.
+ */
+export function sameNativeRegistration(existing: string | undefined, contents: string, command: string): boolean {
+  if (existing === contents) return true;
+  if (existing === undefined || basename(command) !== launcherName) return false;
+  const older = `<string>${xml(resolve(dirname(command), legacyLauncherName))}</string>`; const current = `<string>${xml(command)}</string>`;
+  return existing === contents.replace(current, older);
+}
 export async function macNative(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string } = {}): Promise<Record<string, unknown>> {
   if (action === "status") return nativeOperation(action, configPath, options);
   const config = await loadConfig(configPath);
@@ -83,7 +94,7 @@ async function nativeOperation(action: string | undefined, configPath: string, o
   const log = resolve(home, "service.log");
   const contents = `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${[binary, ...args, "--daemon"].map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(paths)}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(log)}</string><key>StandardErrorPath</key><string>${xml(log)}</string></dict></plist>\n`;
   const current = await status(target);
-  if (current.installed && existing !== contents) throw new Error("The native relay is running with another registration; keep it until active chats finish, then uninstall and install the new registration");
+  if (current.installed && !sameNativeRegistration(existing, contents, command.command)) throw new Error("The native relay is running with another registration; keep it until active chats finish, then uninstall and install the new registration");
   if (!current.installed) {
     const { stdout } = await exec("/bin/ps", ["-axo", "comm="]);
     if (stdout.split("\n").some(command => command.trim() === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT")) throw new Error("Quit ChatGPT normally on this test machine before activating the native adapter; it must replace the original remote transport without two hosts competing");

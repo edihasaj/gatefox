@@ -398,6 +398,77 @@ clears only a legacy `CODEX_APP_SERVER_FORCE_CLI=1` that an older gateway set.
 This keeps normal Dock launches configured after initial activation without
 editing native configuration.
 
+### The login environment agent
+
+ChatGPT is a login item and can start before the unified service has set
+`CODEX_CLI_PATH`. When that happens the app launches its own bundled engine and
+runs without the gateway until it is restarted; this was seen on a Mac that
+rebooted after a power outage. To close the race, registration also writes a
+small LaunchAgent, `com.edihasaj.subscription-gateway.desktop-env`. It runs one
+command at login and exits. macOS names a background item after the program a
+LaunchAgent runs, so the agent does not run `launchctl` directly (Login Items would
+list "launchctl"). Its only program argument is a private script in the gateway
+state directory, `harness-gateway-login-env`, which Login Items lists by that name:
+
+```text
+#!/bin/sh
+# Managed by subscription-gateway desktop-env
+exec /bin/launchctl setenv CODEX_CLI_PATH '<state>/desktop-wrapper-<hash>'
+```
+
+It has `RunAtLoad`, no `KeepAlive`, `LimitLoadToSessionType` `Aqua`, no node and no
+other environment. The script names the stable registered wrapper in the gateway state
+directory, never a release path, and registration refuses any other path; the wrapper
+is single-quoted for the shell. The script (mode 700) and the plist (mode 600) are
+private and written atomically, the script first, and the agent is bootstrapped into
+`gui/<uid>` when written. An agent written by 0.4.5 or earlier ran `launchctl`
+directly; registering again replaces it with the script form. A script at that
+path without the gateway's marker is refused, like an unmanaged plist.
+`gateway desktop register`, and the unified service's desktop component when it
+sets the variable, write or update it, so it follows the registration. The service
+still sets the variable itself as before. A plist with that label that does not
+carry the gateway's marker is refused, and nothing is changed.
+
+The agent is a safeguard, not a requirement. Where the unified service sets the
+variable (the desktop component's `desktop-restore`, or a registration while a unified
+or staged plan owns it), a failure to write or load the agent is caught: the registration
+keeps going and returns `envAgent: false`, and the service records a
+`desktop_env_agent_failed` event with a fixed `reason` (`write`, `bootstrap`,
+`unmanaged` or `other`, see [diagnostics](diagnostics.md)), never the error text or a
+path. The next start tries again. On a Mac that runs the unified service (or has a staged
+plan), which is where this agent matters, a hand-run `gateway desktop register` takes the
+same path: it returns `envAgent: false` and records the event under the component
+`service`. Only on a Mac without a unified plan does a hand-run `gateway desktop register`
+fail loudly, and it records no event.
+
+The script sets nothing unless the gateway can still run: before the `launchctl setenv` it
+checks that the registered wrapper is executable and that the installed release's
+`package/dist/cli.js` exists, and otherwise exits 0. A login after the gateway was
+uninstalled, or unregistered by an older release, therefore does not set the variable again.
+
+Rolling back to 0.4.5 or earlier: those releases do not know this agent, so their
+`gateway desktop unregister` and `gateway uninstall` leave its plist and script behind. Before
+running either, remove them: `launchctl bootout gui/$UID/com.edihasaj.subscription-gateway.desktop-env`,
+then move `~/Library/LaunchAgents/com.edihasaj.subscription-gateway.desktop-env.plist` and
+`<state>/harness-gateway-login-env` to the Trash. Even if you do not, the guard above stops
+the script from setting the variable once the release is gone.
+
+`gateway desktop unregister` and `gateway uninstall` boot the agent out and move its
+script and plist to the Trash (the script only when it carries the gateway's marker),
+before they clear the variable. The agent is not a service
+component: consolidation does not collect or retire it.
+
+`gateway desktop status` reads `CODEX_CLI_PATH` from the login (GUI) domain: it
+parses only that key from the `environment` block of `launchctl print gui/<uid>`,
+and falls back to `launchctl getenv` only when the print fails. `launchctl getenv`
+over SSH reads a different domain and reported `activeForFutureLaunches: false`
+even when the login session held the right value. Status also reports
+`envAgent: true` when the agent exists, is the gateway's, and its script sets the
+registered wrapper. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
+only whether `CODEX_APP_SERVER_FORCE_CLI` is present and non-empty (and whether it is
+`1`), never its value, and uses `launchctl getenv` for both variables only when the
+print fails.
+
 The client owns chat naming. The adapter forwards native `thread/name/set`,
 saved-title reads, and live name notifications; it adds no title tool or naming
 instructions. Caller-supplied dynamic tools remain unchanged. Read-only saved-chat

@@ -18,7 +18,11 @@ const exec = promisify(execFile);
 interface Job { path: string; label: string; text: string; loaded: boolean; kind: ServiceComponent["kind"]; component: ServiceComponent }
 const domain = () => `gui/${process.getuid!()}`;
 async function loaded(label: string): Promise<boolean> { try { await exec("/bin/launchctl", ["print", `${domain()}/${label}`], { timeout: 5000 }); return true; } catch { return false; } }
-const kindFor = (label: string): ServiceComponent["kind"] | undefined => label === serviceLabel ? "inference" : label === serviceLabel + ".desktop" ? "desktop" : label === serviceLabel + ".native" ? "native" : /^com\.edihasaj\.subscription-gateway\.tunnel\.[a-z][a-z0-9-]{0,63}$/.test(label) || label === serviceLabel + ".macbook-pro-2" ? "tunnel" : undefined;
+/**
+ * Which service component a LaunchAgent label is, by exact match. The login-time environment agent
+ * (`<service>.desktop-env`) is deliberately not one: it is no daemon, so it is neither collected into a plan nor retired.
+ */
+export const kindFor = (label: string): ServiceComponent["kind"] | undefined => label === serviceLabel ? "inference" : label === serviceLabel + ".desktop" ? "desktop" : label === serviceLabel + ".native" ? "native" : /^com\.edihasaj\.subscription-gateway\.tunnel\.[a-z][a-z0-9-]{0,63}$/.test(label) || label === serviceLabel + ".macbook-pro-2" ? "tunnel" : undefined;
 
 export async function collectServicePlan(configPath: string, directory = resolve(homedir(), "Library/LaunchAgents")): Promise<{ plan: ServicePlan; jobs: Job[] }> {
   const config = await loadConfig(configPath); const command = gatewayCommand();

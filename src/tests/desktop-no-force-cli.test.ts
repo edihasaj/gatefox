@@ -445,8 +445,8 @@ test("exactly one trailing newline is stripped from FORCE_CLI", mac, async () =>
 });
 
 test("the default launchctl runner bounds every call with a timeout", async () => {
-  const seen: Array<[string, string[], { timeout: number }]> = [];
+  const seen: Array<[string, string[], { timeout: number; maxBuffer: number }]> = [];
   const run = launchctlRunner(async (file, args, options) => { seen.push([file, args, options]); return { stdout: "value\n" }; });
   assert.deepEqual(await run("/bin/launchctl", ["getenv", PATH_KEY]), { stdout: "value\n" });
-  assert.deepEqual(seen, [["/bin/launchctl", ["getenv", PATH_KEY], { timeout: 10000 }]]);
+  assert.deepEqual(seen, [["/bin/launchctl", ["getenv", PATH_KEY], { timeout: 10000, maxBuffer: 16 * 1024 * 1024 }]]);
 });
