@@ -370,7 +370,9 @@ The adapter records `native_sharing_fallback` with `reason: host_unavailable`. A
 adapter that starts while the host refuses native ownership that way, such as an SSH
 session after a reboot where the app's adapter started first, does not fail: it joins
 the private engines with one of its own and records `native_sharing_fallback` with
-`reason: native_owner`. Chats its engine verifies as native never wait for the host;
+`reason: native_owner`. It only joins: when no private engine is left by then, it asks
+the host once more and shares the host's engine, and a second refusal fails the
+connection. Chats its engine verifies as native never wait for the host;
 gateway chats still need the host and fail closed until it returns. A host that does
 not match the adapter, a changed host socket, an unreadable host receipt, a live host
 writer or a private engine of release 0.4.5 or earlier still fails the connection.

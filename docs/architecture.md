@@ -237,8 +237,11 @@ anything answers at the host's native socket. A private engine of release 0.4.5 
 earlier keeps its own `owner.json` (no `shared`) and holds the home alone: a new adapter
 fails closed, saying such a release started that engine and naming its process, until
 that connection moves to this release. A lease that cannot write the marker removes its
-own receipt again, and a release that fails (a busy lock, say) is tried once more when
-the adapter stops.
+own receipt again and brings the marker back in line with the remaining leases. A
+release that fails (a busy lock, say) is retried by the lease's own timer until it
+succeeds, and once more when the adapter stops; the timer ends only after a release has
+succeeded, so a long-lived SSH listener never keeps the host out after its engine has
+gone.
 Rollback and `shared-native --disable` treat a live lease like any live native owner:
 they refuse (and the disable restores the previous plan) until every lease's engine
 has exited.
@@ -249,7 +252,10 @@ with `reason: native_owner`, serves gateway chats, and refuses native requests
 (`native_acquire` with `refused_owner`) until one finds the home free and claims it,
 so the next adapter start returns to sharing. An adapter whose native request the host
 refuses that way joins the private engines instead of failing (`native_sharing_fallback`
-with `reason: native_owner`). It skips the check that keeps a private engine away from a
+with `reason: native_owner`). Its lease may only join: with no live private receipt it
+is refused as retryable, before anything is written, and the adapter asks the host once
+more (the refusal may have come from a busy lock, or the engines ended meanwhile), so it
+never starts a private engine beside a host that could share. It skips the check that keeps a private engine away from a
 live host with native sharing, since its lease is taken under the receipt's lock and is
 refused beside the host's writer, a private engine of 0.4.5 or earlier, or anything
 answering at the host's native socket. A receipt from a dead owner that names

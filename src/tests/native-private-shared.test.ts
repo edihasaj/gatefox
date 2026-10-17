@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { writePrivateJson } from "../config.js";
 import { executionHostHome, executionHostMarker, livePid, receiptPidAlive, sdkIdentity, type HostIdentity } from "../execution-host-storage.js";
-import { claimNativeHome, claimPrivateNativeHome, nativeHomeOwnerPath, nativeHomeOwnership, privateNativeHolders, readNativeHomeOwner, type NativeHomeOwner } from "../native-execution-host-storage.js";
+import { claimNativeHome, claimPrivateNativeHome, nativeHomeOwnerPath, nativeHomeOwnership, nothingToJoin, privateNativeHolders, readNativeHomeOwner, setClaimMarkerWriteForTests, setPrivateMarkerRefreshForTests, type NativeHomeOwner } from "../native-execution-host-storage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { until } from "./native-fallback-fixture.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
@@ -244,4 +244,45 @@ test("a lease looks again at the marker, so an older release sees a live holder 
     const older = await olderRelease(f.receipt); assert.deepEqual([older.v043, older.v044], [true, true]);
     assert.equal((await readNativeHomeOwner(f.nativeHome) as NativeHomeOwner).privateOwner?.shared, true); assert.equal((await f.holderFiles()).length, 1);
   } finally { await f.clean(); }
+});
+
+test("a lease that may only join private engines is refused, writing nothing, once none holds the home", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home, { joinOnly: true }), error => nothingToJoin(error) && /gateway host can take it/.test((error as Error).message));
+    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined); assert.deepEqual(await f.holderFiles(), []);
+    // With a live private engine there, it joins.
+    const first = await claimPrivateNativeHome(f.identity, f.home); const joined = await claimPrivateNativeHome(f.identity, f.home, { joinOnly: true });
+    assert.equal(joined.holders, 2); await joined.release(); await first.release();
+    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined); assert.deepEqual(await f.holderFiles(), []);
+  } finally { await f.clean(); }
+});
+
+test("a lease whose marker cannot be written takes its own receipt back, so the host is not kept out", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    const first = await claimPrivateNativeHome(f.identity, f.home); const marker = await readFile(f.receipt, "utf8");
+    setClaimMarkerWriteForTests(async () => { throw new Error("fixture disk is full"); });
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home), /fixture disk is full/);
+    setClaimMarkerWriteForTests();
+    // Only the first lease's receipt is left, and the marker still names it alone.
+    assert.equal((await f.holderFiles()).length, 1); assert.equal(await readFile(f.receipt, "utf8"), marker); assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
+    await first.release(); await claimNativeHome(f.host, f.home);
+    assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
+  } finally { setClaimMarkerWriteForTests(); await f.clean(); }
+});
+
+test("a release that failed is retried by the lease's own timer until it succeeds", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture(); const holder = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+  try {
+    await once(holder, "spawn");
+    setPrivateMarkerRefreshForTests(100); const lease = await claimPrivateNativeHome(f.identity, f.home); setPrivateMarkerRefreshForTests();
+    // Another process holds the receipt's lock past the five seconds a release waits.
+    const lock = `${f.receipt}.lock`; await writeFile(lock, String(holder.pid), { mode: 0o600 });
+    await assert.rejects(lease.release(), /busy/); assert.equal((await f.holderFiles()).length, 1);
+    // Nobody calls release again: the timer does, once the lock is free.
+    await rm(lock);
+    for (const deadline = Date.now() + 10_000; (await f.holderFiles()).length;) { assert.ok(Date.now() < deadline, "the timer never released the lease"); await new Promise(done => setTimeout(done, 50)); }
+    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+  } finally { setPrivateMarkerRefreshForTests(); holder.kill("SIGKILL"); await f.clean(); }
 });

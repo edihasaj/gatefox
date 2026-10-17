@@ -352,7 +352,20 @@ export class NativeHomeLease {
  * by the usual rules: after a crash it is a dead owner the host or the next lease archives. The receipt `owner.json` held
  * before the first lease is kept in the marker and put back, file time included, when the last lease is released.
  */
-export async function claimPrivateNativeHome(identity: { configPath: string; nativeHome: string; codex: string }, hostHome: string): Promise<PrivateNativeLease> {
+/** The refusal of a lease that may only join private engines when none holds the home any more: the host can take it now. */
+const nothingToJoinMessage = "No private native engine holds this native home any more, so the gateway host can take it; reconnect to share it. Its chats were preserved.";
+export function nothingToJoin(error: unknown): boolean { return (error as { nothingToJoin?: unknown } | undefined)?.nothingToJoin === true; }
+/** How a lease writes the marker; tests make it fail, to prove a lease that cannot write it leaves nothing behind. */
+const writeMarkerFile = (path: string, marker: NativeHomeOwner): Promise<void> => writePrivateJson(path, marker);
+let writeClaimMarker = writeMarkerFile;
+/** Tests replace the marker write of a claim. Undefined restores the production one. */
+export function setClaimMarkerWriteForTests(write?: typeof writeMarkerFile): void { writeClaimMarker = write ?? writeMarkerFile; }
+/**
+ * `joinOnly`: the lease may only join private engines that already hold the home, as for an adapter whose host is up but
+ * refused native ownership to them. With none left it is refused (see `nothingToJoin`), so that adapter asks the host again
+ * instead of starting a private era beside a host that could share.
+ */
+export async function claimPrivateNativeHome(identity: { configPath: string; nativeHome: string; codex: string }, hostHome: string, options: { joinOnly?: boolean } = {}): Promise<PrivateNativeLease> {
   const path = nativeHomeOwnerPath(identity.nativeHome); await privateDirectory(dirname(path));
   const socketPath = resolve(hostHome, "native.sock"); const instanceId = randomUUID();
   const self = { configPath: identity.configPath, nativeHome: identity.nativeHome, socketPath };
@@ -391,6 +404,8 @@ export async function claimPrivateNativeHome(identity: { configPath: string; nat
     // A private engine whose receipt cannot be read, or that runs under another configuration or spelling of the home, is
     // not one this lease can share with.
     if (live.some(holder => !holder.owner || differs(holder.owner, ["configPath", "nativeHome", "socketPath"]))) throw new Error("A native execution owner already owns this native home; its chats were preserved");
+    // Nothing to join: whatever answers at the host's native socket, the host is the one to ask again.
+    if (options.joinOnly && !live.length) throw Object.assign(new Error(nothingToJoinMessage), { nothingToJoin: true });
     // Nothing answers at the host's native socket either: an engine that lost its receipt still keeps the home.
     if (await linkAnswers(socketPath)) throw new Error("A native execution owner already owns this native home; its chats were preserved");
     if (archiveOwner) await archiveStaleReceipt(path, "native_home", archiveOwner);
@@ -400,10 +415,11 @@ export async function claimPrivateNativeHome(identity: { configPath: string; nat
       privateOwner: { instanceId } } as NativeHomeOwner;
     const file = resolve(dirname(path), `private-${process.pid}-${instanceId}.json`);
     // Both are written before the engine is spawned: a crash in between leaves a launch the host treats as unconfirmed. A
-    // marker that cannot be written takes the receipt with it, so a refused lease never keeps the host out.
+    // marker that cannot be written takes the receipt with it, and the marker is brought back in line with the holders that
+    // remain (a write that failed after its rename, say), so a refused lease never keeps the host out.
     await writePrivateJson(file, holder);
-    try { await writePrivateJson(path, markerFor([...live.map(other => other.owner!), holder], { ...base, engine })); }
-    catch (error) { await unlink(file).catch(() => {}); throw error; }
+    try { await writeClaimMarker(path, markerFor([...live.map(other => other.owner!), holder], { ...base, engine })); }
+    catch (error) { await unlink(file).catch(() => {}); await syncPrivateMarker(path, hostHome).catch(() => {}); throw error; }
     return { file, holder, holders: live.length + 1 };
   });
   return new PrivateNativeLease(path, claimed.file, claimed.holder, claimed.holders);
@@ -416,15 +432,19 @@ export function setPrivateMarkerRefreshForTests(ms?: number): void { markerRefre
 
 export class PrivateNativeLease {
   private released?: Promise<void>;
+  private releaseWanted = false;
   private refreshing = false;
   /**
    * Every lease looks at the marker again on a timer, so when the holders it names have crashed and others still run, an
    * older release soon sees a live one again. It writes only when something changed, and it never keeps the process alive.
+   * A release that was asked for and failed (a busy lock, say) is retried by the same timer until it succeeds, so a
+   * long-lived process never keeps a lease, and with it the host, out after its engine has gone.
    */
   private readonly refresh = setInterval(() => {
-    if (this.refreshing) return; this.refreshing = true;
-    void withPrivateFileLock(this.path, async () => { if (!this.released && await this.own()) await syncPrivateMarker(this.path, this.hostHome); })
-      .catch(() => {}).finally(() => { this.refreshing = false; }); // A busy lock or a full disk is tried again at the next tick.
+    if (this.refreshing || this.released) return; this.refreshing = true;
+    const tick = this.releaseWanted ? this.release()
+      : withPrivateFileLock(this.path, async () => { if (!this.released && await this.own()) await syncPrivateMarker(this.path, this.hostHome); });
+    void tick.catch(() => {}).finally(() => { this.refreshing = false; }); // A busy lock or a full disk is tried again at the next tick.
   }, markerRefreshMs).unref();
   /** `holders`: how many private engines held the native home once this lease was taken, this one included. */
   constructor(private readonly path: string, private readonly file: string, private readonly owner: NativeHomeOwner, readonly holders: number) {}
@@ -447,16 +467,17 @@ export class PrivateNativeLease {
    * Called once the engine has exited. Removes this lease's receipt; the last lease to go puts back the receipt the first
    * one replaced, or removes `owner.json` when there was none. An engine that still answers keeps the home: the adapter
    * steps back and the receipt names only the engine, which the dead owner rules release once it has gone. A receipt that
-   * is no longer this lease's is left alone. A release that fails (a busy lock, say) is not remembered, so it can be retried.
+   * is no longer this lease's is left alone. A release that fails (a busy lock, say) is not remembered: the timer and the
+   * adapter's stop try it again, and the timer stops only once a release has succeeded.
    */
   release(): Promise<void> {
-    clearInterval(this.refresh);
+    this.releaseWanted = true;
     return this.released ??= withPrivateFileLock(this.path, async () => {
       if (!await this.own()) return;
       if (this.owner.pid > 0 && await receiptPidAlive({ pid: this.owner.pid, bootId: this.owner.sdkBootId, startedAtMs: this.owner.sdkStartedAtMs }, Date.now())) {
         await writePrivateJson(this.file, { ...this.owner, hostPid: 0 });
       } else await unlink(this.file).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
       await syncPrivateMarker(this.path, this.hostHome);
-    }).catch(error => { this.released = undefined; throw error; });
+    }).then(() => { clearInterval(this.refresh); }, error => { this.released = undefined; throw error; });
   }
 }

@@ -233,3 +233,19 @@ test("a shared marker beside a host native socket that answers is refused as tha
     assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
   } finally { await new Promise<void>(done => server.close(() => done())); await Promise.allSettled([...f.adapters].map(adapter => adapter.stop())); await host?.close(); await f.clean(); }
 });
+
+test("a release that failed when the engine exited is tried again when the adapter stops", { timeout: 30000 }, async () => {
+  const f = await fallbackFixture(); const holder = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+  try {
+    await once(holder, "spawn");
+    const first = await f.create(); assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
+    // Another process holds the receipt's lock while the engine exits, so the release at its exit fails after five seconds.
+    const lock = `${f.receipt}.lock`; await writeFile(lock, String(holder.pid), { mode: 0o600 });
+    await first.adapter.request("fixture/exit", {}).catch(() => {}); await until(() => first.exits() === 1, "the engine exit");
+    await (first.adapter as unknown as { leaseReleased?: Promise<void> }).leaseReleased;
+    assert.equal((await readdir(dirname(f.receipt))).filter(name => name.startsWith("private-")).length, 1);
+    // The lock is free again; stopping the adapter releases the lease.
+    await rm(lock); await first.adapter.stop();
+    assert.deepEqual((await readdir(dirname(f.receipt))).filter(name => name.startsWith("private-")), []); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+  } finally { holder.kill("SIGKILL"); await f.clean(); }
+});

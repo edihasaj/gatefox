@@ -38,11 +38,12 @@ export async function privateNativeOwnership(configPath: string | undefined, nat
   let lease: PrivateNativeLease | undefined;
   try {
     // A host that refused native ownership to private engines is itself live with native sharing, so its receipt would keep
-    // this adapter out; the lease below only joins those engines and is refused beside the host's writer, under its lock.
+    // this adapter out; the lease below only joins those engines (refused with `nothingToJoin` once none is left) and is
+    // refused beside the host's writer, under its lock.
     if (fallback !== "native_owner") await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
     if (fallback) {
       if (!configPath) throw new Error("A private native fallback requires this adapter's configuration path");
-      lease = await claimPrivateNativeHome({ configPath: resolve(configPath), nativeHome, codex }, executionHostHome(configPath, nativeHome));
+      lease = await claimPrivateNativeHome({ configPath: resolve(configPath), nativeHome, codex }, executionHostHome(configPath, nativeHome), { joinOnly: fallback === "native_owner" });
     }
   } catch (error) {
     // Private engines of this release share the home, so the private owner that keeps one out is an earlier release's engine,
