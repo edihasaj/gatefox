@@ -1,10 +1,50 @@
 import { WebSocket } from "ws";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { connect } from "node:net";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
 import type { GatewayConfig } from "./config.js";
 import { object, isId, type Message } from "./app-server-connection.js";
+import { nativeRegistrationRecord } from "./native-pause.js";
+import { telemetry } from "./telemetry.js";
+
+/** The private socket a running relay listens on inside its own control home. */
+export const relaySocketPath = (home: string): string => resolve(home, "app-server-control/app-server-control.sock");
+
+/** Whether a process can reach the relay's socket at all; it never speaks the protocol here. */
+async function relayReachable(home: string): Promise<boolean> {
+  return new Promise<boolean>(done => {
+    const socket = connect({ path: relaySocketPath(home) });
+    let settled = false;
+    const settle = (value: boolean): void => { if (settled) return; settled = true; socket.destroy(); done(value); };
+    socket.setTimeout(1000);
+    socket.once("connect", () => settle(true));
+    socket.once("timeout", () => settle(false));
+    socket.once("error", () => settle(false));
+    socket.once("close", () => settle(false));
+  });
+}
+
+/**
+ * The relay a caller may use right now, or nothing. A machine without a relay,
+ * one that is registered but not connected, and one whose socket is dead all
+ * return undefined so the app engine keeps its own remote control; only a real
+ * registration says anything was skipped.
+ */
+export async function activeNativeRelay(config: GatewayConfig, reachable: (home: string) => Promise<boolean> = relayReachable): Promise<{ home: string; nativeHome: string } | undefined> {
+  const registration = await nativeRegistration(config);
+  if (!registration) {
+    if (await nativeRegistrationRecord(config.stateDirectory)) telemetry("native_relay_skipped", { reason: "not_registered" });
+    return;
+  }
+  let status: unknown;
+  try { status = JSON.parse(await readFile(resolve(registration.home, "status.json"), "utf8")); }
+  catch { telemetry("native_relay_skipped", { reason: "not_connected" }); return; }
+  if (object(status).status !== "connected") { telemetry("native_relay_skipped", { reason: "not_connected" }); return; }
+  if (!await reachable(registration.home)) { telemetry("native_relay_skipped", { reason: "unreachable" }); return; }
+  return registration;
+}
 
 export function nativeRelayHome(configPath: string, nativeHome: string): string {
   return resolve(homedir(), ".local/state/gw-native", createHash("sha256").update(resolve(configPath) + "\0" + resolve(nativeHome)).digest("hex").slice(0, 16));
@@ -32,7 +72,7 @@ export class NativeControl {
   private readonly pending = new Map<number, { resolve: (value: Message) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   constructor(private readonly home: string, private readonly emit: (message: Message) => Promise<void>) { this.connect(); }
   private connect(): void {
-    const socket = new WebSocket(`ws+unix://${resolve(this.home, "app-server-control/app-server-control.sock") }:/`, { maxPayload: 16 * 1024 * 1024 }); this.socket = socket;
+    const socket = new WebSocket(`ws+unix://${relaySocketPath(this.home)}:/`, { maxPayload: 16 * 1024 * 1024 }); this.socket = socket;
     this.ready = new Promise((resolve, reject) => {
       const timeout = setTimeout(() => { socket.terminate(); reject(new Error("Native connected-machine relay handshake timed out")); }, 5000).unref();
       socket.once("open", () => { clearTimeout(timeout); resolve(); });

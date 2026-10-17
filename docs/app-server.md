@@ -82,6 +82,60 @@ and bypasses a desktop or SSH wrapper. The separate
 registration and routes that connection through the same gateway router. Its
 rendered checks are still in progress on the test Mac.
 
+## The native relay is optional
+
+Nothing in the gateway depends on the native relay. Unless a live relay is really
+being used, ChatGPT keeps its own remote control, so a machine without a working
+relay still works, and a relay that cannot run is set aside quietly instead of
+restarted forever.
+
+An adapter, or an SSH listener, asks once when it starts whether a relay is
+usable: it must be registered for this configuration and native home (its
+`<state>/native-registration.json` must say `registered: true`), its `status.json`
+must say `connected`, and its private control socket must answer
+within one second. When any of that fails the engine is started without
+`CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED` and keeps its own remote
+control, and `remoteControl/*` is no longer intercepted. The answer is not asked
+again while the process runs, so a relay that connects later is used from the
+next app start or the next listener start, not from the current one. Gateway
+executors are separate: they run headless on the gateway's own SDK, so
+`gatewayEnvironment` always sets that variable and they never try remote control.
+A shared native execution host is asked the same question once, when it starts: only a
+registered relay whose slot the service is really running (not holding paused) owns the
+machine's remote control. A relay that becomes live later takes effect at the next host
+start, which an idle restart gives.
+
+The unified service keeps the same rule for its `native` component. Before it
+spawns the relay it reads `<state>/native-registration.json`, and a slot whose
+relay was never registered, or was uninstalled, is left `paused` with reason
+`not_registered` and is never started. A relay with three non-zero exits in a row,
+each within 60 s of its start, is left `paused` with reason `failing`; a relay killed
+by a signal, one whose binary is missing, and one whose log cannot be opened count the
+same way, so a relay that cannot start at all is set aside rather than retried once a
+minute forever.
+A paused slot writes no log lines and reports no exits, and `gateway service
+status` shows `paused` with its reason instead of a process id; because no
+relay process is running, `gateway versions` does not list one either. Every five
+minutes the service looks at the paused relay once and starts it again when
+these hold:
+
+| Condition to start a paused relay again | Where it comes from |
+| --- | --- |
+| The registration says the relay is registered | `<state>/native-registration.json` |
+| Something a restart would use has changed | `dev:inode:size:mtime` of the app's `codex` executable, the relay binary and that registration file; a relay paused for `not_registered` only needs the registration to exist |
+| No ChatGPT app is open | a `ps -axo comm=` line for `/Applications/ChatGPT.app/Contents/MacOS/ChatGPT`, the same check native installation makes, so a newly connected relay never competes with an app's own remote control |
+| The same relay has been set aside for half an hour | the time it was paused, so a relay that failed once during a busy start-up is started again on its own, and a relay that fails again after a resume is set aside at once instead of being given a fresh three-strike budget. Two such starts an hour is all a broken relay ever costs |
+
+A re-check whose own question cannot be answered is treated as a failing relay: the
+slot stays paused with one `component_paused` and the rest of the service is untouched.
+
+Consolidation and the two shared-service migrations treat a paused relay as ready: it
+is a `components_not_running` gap only for components that are neither running nor a
+paused relay, and they wait for a relay to connect only on a machine whose registration
+says one is set up and whose relay slot is running. A native migration additionally
+only waits for the machine's own relay to reconnect when that relay was connected
+before the migration.
+
 On startup, a bounded native app-server process refreshes its own model metadata.
 The adapter copies only public model rows from that engine's configured catalog
 or model cache. It validates that the rows cover the engine's available models

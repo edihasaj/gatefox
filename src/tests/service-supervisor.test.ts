@@ -19,9 +19,11 @@ function component(directory: string, id: string, kind: ServiceComponent["kind"]
   return { id, kind, command: process.execPath, args: ["-e", source], log: join(directory, id + ".log") };
 }
 function live(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
+// The relay is optional, so a native component only starts where a registration says it belongs.
+async function relayRegistered(directory: string): Promise<void> { await writePrivateJson(join(directory, "native-registration.json"), { registered: true }); }
 
 test("one failed child restarts without replacing another child or rerunning the login hook", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-")); const statusFile = serviceStatusPath(directory);
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-")); const statusFile = serviceStatusPath(directory); await relayRegistered(directory);
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
     component(directory, "tunnel", "tunnel", "setInterval(()=>{},1000)"),
     component(directory, "native", "native", "setInterval(()=>{},1000)"),
@@ -45,9 +47,9 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
-test("a missing child executable waits for its backoff and shutdown stops it", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-"));
-  const child = component(directory, "native", "native", ""); child.command = join(directory, "absent");
+test("a missing child executable is retried with a backoff, and shutdown stops it", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-")); await relayRegistered(directory);
+  const child = component(directory, "tunnel", "tunnel", ""); child.command = join(directory, "absent");
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
   try {
     await supervisor.start();
@@ -60,7 +62,7 @@ test("a missing child executable waits for its backoff and shutdown stops it", a
 test("shutdown during a failed component's backoff cancels its retry", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-cancel-")); const marker = join(directory, "starts");
   // A child that exists, notes each start by appending one byte, and exits at once.
-  const failing = component(directory, "native", "native", `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(1)`);
+  const failing = component(directory, "tunnel", "tunnel", `require('node:fs').appendFileSync(${JSON.stringify(marker)}, 'x'); process.exit(1)`);
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [failing] }, directory, 400);
   const status = async () => JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components[0] as { state: string; restarts: number; nextRestartAt?: string };
   const starts = async () => (await readFile(marker, "utf8").catch(() => "")).length;
@@ -107,7 +109,7 @@ test("service plans reject duplicates, credential environment overrides, and pub
 });
 
 test("an inference child that refuses idle restart keeps the relay and its own process", { skip: process.platform === "win32" }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-busy-"));
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-busy-")); await relayRegistered(directory);
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
     component(directory, "inference", "inference", "process.on('SIGUSR2',()=>{}); console.log('BUSY_READY'); setInterval(()=>{},1000)"),
     component(directory, "native", "native", "setInterval(()=>{},1000)"),
@@ -122,7 +124,7 @@ test("an inference child that refuses idle restart keeps the relay and its own p
 });
 
 test("a failed shared execution host leaves inference and tunnels running and retries the host", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-host-"));
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-host-")); await relayRegistered(directory);
   const config = join(directory, "config.json");
   await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: directory, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_SUPERVISOR_FIXTURE_KEY", models: { fixture: "upstream" } }] });
   const native = component(directory, "native", "native", "setInterval(()=>{},1000)");
@@ -147,7 +149,7 @@ test("a failed shared execution host leaves inference and tunnels running and re
 });
 
 test("waking from sleep restarts tunnels at once and leaves other components alone", async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-wake-"));
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-wake-")); await relayRegistered(directory);
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [
     component(directory, "tunnel", "tunnel", "setInterval(()=>{},1000)"),
     component(directory, "native", "native", "setInterval(()=>{},1000)"),
@@ -185,7 +187,7 @@ test("inference gets its drain on top of the grace while a tunnel is still kille
 });
 
 test("the shared execution host closes only after inference has drained", { skip: process.platform === "win32", timeout: 20000 }, async () => {
-  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-order-"));
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-order-")); await relayRegistered(directory);
   const config = join(directory, "config.json");
   await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: directory, providers: [{ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_SUPERVISOR_FIXTURE_KEY", models: { fixture: "upstream" } }] });
   const native = component(directory, "native", "native", "setInterval(()=>{},1000)");
