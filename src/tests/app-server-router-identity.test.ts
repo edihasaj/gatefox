@@ -47,6 +47,8 @@ async function fixture() {
     ["nat", { id: "nat", modelProvider: "openai", model: native }],
   ]);
   const calls: Call[] = []; let created = 0;
+  // When set, the next thread/start is answered with exactly this thread, whatever the request said.
+  const next: { thread?: ObjectValue } = {};
   const backend = async (method: string, params: ObjectValue, hint?: EngineHint): Promise<ObjectValue> => {
     calls.push({ method, params: structuredClone(params), ...(hint ? { hint } : {}) });
     const config = (params.config ?? {}) as ObjectValue;
@@ -55,6 +57,10 @@ async function fixture() {
       const thread = saved.get(String(params.threadId));
       if (!thread) throw Object.assign(new Error(`no rollout found for thread id ${params.threadId}`), { code: -32600 });
       return { thread: { ...thread } };
+    }
+    if (method === "thread/start" && next.thread) {
+      const thread = next.thread; next.thread = undefined; saved.set(String(thread.id), thread);
+      return { thread, model: thread.model, modelProvider: thread.modelProvider, serviceTier: null, reasoningEffort: null };
     }
     if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
       const parent = saved.get(String(params.threadId)) ?? {};
@@ -78,7 +84,7 @@ async function fixture() {
   const router = await connect();
   const sent = (method: string) => calls.filter(call => call.method === method).at(-1)!;
   const events = async (name: string) => { await flushTelemetry(); return (await readTelemetry(state, Date.now() - 60_000)).filter(event => event.event === name); };
-  return { root, state, nativeHome, config, calls, router, connect, sent, events,
+  return { root, state, nativeHome, config, calls, router, connect, sent, events, next,
     tiers: new ThreadServiceTiers(state, nativeHome), reasoning: new ThreadReasoningStore(state, nativeHome) };
 }
 let stamp = Date.now();
@@ -116,6 +122,20 @@ test("the desktop's resume with no model restores a saved gateway chat on the ga
   await f.router.request("thread/resume", structuredClone(nativeResume));
   assert.deepEqual(f.sent("thread/resume"), { method: "thread/resume", params: nativeResume }, "nothing added, not even a hint");
   assert.equal(f.router.describeThread("nat").provider, "native");
+});
+
+test("a new chat keeps the engine the router sent it to when the reply classifies differently", async () => {
+  const f = await fixture();
+  // Sent to the native engine (a native model, the native provider id), but the reply names the gateway's own provider id.
+  // The router chose the engine, so the chat stays native: it is never written to the gateway's tier or reasoning stores.
+  f.next.thread = { id: "disagreeing", modelProvider: legacyProvider, model: native };
+  await f.router.request("thread/start", { model: native, modelProvider: "openai", effort: "high" });
+  assert.deepEqual(f.sent("thread/start").hint, { engine: "native" });
+  assert.deepEqual(f.router.describeThread("disagreeing"), { provider: "native", model: native });
+  assert.equal(await f.tiers.read("disagreeing"), undefined); assert.equal(await f.reasoning.read("disagreeing"), undefined);
+  await f.router.request("turn/start", { threadId: "disagreeing", input: [], effort: "low" });
+  assert.equal(f.sent("turn/start").hint, undefined);
+  assert.equal(f.router.describeThread("disagreeing").provider, "native", "the remembered route still decides");
 });
 
 test("forks follow their chat: a gateway fork gets the gateway's request, a native or prediction fork reaches the engine as sent", async () => {
