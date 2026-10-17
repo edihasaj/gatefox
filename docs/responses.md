@@ -6,6 +6,10 @@ read_when:
 
 # Responses support
 
+This document describes the OpenAI Responses ingress. The same provider catalog
+also serves [native Anthropic Messages clients](messages.md), including Claude
+Code. Selecting an inbound protocol does not select an upstream provider.
+
 The gateway translates the caller's instructions and tool catalog. It does not
 assign agent roles, choose workers, add task instructions, or provide agent-only
 tools. Its catalog rows carry an empty instruction template, and the desktop
@@ -305,6 +309,65 @@ The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
+
+## WebSocket refusals, internal fields, and control items
+
+The gateway serves `/v1/responses` over plain HTTP only. A WebSocket (or any other) upgrade
+attempt to `/v1/responses` with a valid bearer gets `HTTP/1.1 426 Upgrade Required` with no body
+and `Connection: close`. The checks run in this order: a request target that cannot be parsed
+(`GET http://[ HTTP/1.1`) gets `400`; a request with an `Origin` header gets `403`; a missing or
+wrong bearer gets `401`; an upgrade to any other path gets `404`. The refusal runs in the server's
+`upgrade` listener. On Node builds that pass upgrades to the request handler instead, that handler
+gives an upgrade to `/v1/responses` the same checks and the same 426, and serves an upgrade to any
+other path as an ordinary request; there a request counts as an upgrade only when `Connection`
+names the `upgrade` token beside an `Upgrade` header, as Node's own parser requires, so a `POST`
+with `Upgrade: h2c` is served normally. It never admits a request, changes the health admission
+counters, or invokes a provider.
+
+The upgrade listener closes the socket as soon as the refusal is flushed, and after two seconds
+at the latest if the client never reads it. A server accepts half-open sockets and applies no
+timeout once a request has asked for an upgrade, so a client that keeps its side open would
+otherwise hold the socket, and the server's `close()` with it, until the process ends.
+
+An unreadable request target on an ordinary request also gets `400` (`invalid_request`). If the
+request handler fails in a way nothing else caught, the client gets `500` (`internal_error`) while
+the response head is unsent, or the connection is cut once it is not. The failure is reported as a
+scrubbed exception and never ends the process.
+
+Recent Codex builds carry internal transport state beside the conversation. Before translation or
+any provider sees a request, the gateway removes it once in the request handler:
+`internal_chat_message_metadata_passthrough` from every input item, `encrypted_function_args` from
+`function_call` items (their plaintext `arguments` stay), and `mcp_attribution` from
+`client_metadata`; every other `client_metadata` key passes through untouched. When nothing is
+removed the parsed body is forwarded as the same object, so Responses upstreams receive
+byte-identical requests to before the strip existed. The strip covers every route, including a
+Messages request after it has been translated. Shapes that are not objects (`client_metadata`
+that is `null`, an array or a string, an input item that is `null`, a number or an array) are not
+read as maps and are left for translation to accept or reject.
+
+Two input items are executor control, not model input. A `configuration_update` item is removed
+before translation and counted in the request's telemetry record as `droppedControlItems` (a count
+only, never item content). A `compaction_trigger` item fails the request as final: streams get a
+`response.failed` with Codex's non-retryable `invalid_prompt` code and the fixed message "This
+gateway serves compaction inside the gateway executor; this Codex build sent remote compaction,
+which the gateway does not support yet."; nonstream requests get HTTP 400 `invalid_request` with
+that message. `request_failed` records `translation_reason: unsupported_compaction`, and the
+stderr `provider_failure` line and `gateway diagnostics` carry it too
+([diagnostics](diagnostics.md#gateway-rule-refusals-and-dropped-control-items)). Neither invokes a
+provider nor takes an admission slot, and the refusal is final. A gateway at capacity (`maxConcurrent`
+plus 32 requests in flight) answers every inference request (`/v1/responses` and `/v1/messages`)
+with a retryable `429` before reading its body,
+so an overload never buffers bodies; a compaction refused that way is retried and gets this final
+refusal once a slot is free.
+
+`/health` adds `features`: `["responses-ws-426", "openai-internal-strip", "native-identity-v1"]`,
+the behaviors this release guarantees (the exported `gatewayFeatures`), so an operator can tell an
+updated daemon from an old one without reading its code. `responses-ws-426` is the WebSocket
+refusal above. `openai-internal-strip` is the removal of internal fields and control items.
+`native-identity-v1` means this inference server accepts requests from a gateway executor that runs
+under the native `openai` provider identity: the two behaviors above, which such an executor needs,
+are both present. It describes the server only; whether executors run under that identity is a
+separate setting of the desktop adapter.
 
 ## Ordinary Anthropic API
 

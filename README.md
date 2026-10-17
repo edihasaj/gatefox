@@ -13,8 +13,11 @@ installation, separate account registration, desktop models, shared Macs,
 and service recovery. Open `docs/index.html` in a browser, or
 serve the `docs/` folder with any static web server.
 
-Clients send OpenAI Responses requests. A provider adapter handles authentication
+Clients send OpenAI Responses or Anthropic Messages requests. Both interfaces use
+the same model aliases and provider routes. A provider adapter handles authentication
 and inference. The client executes tools and returns their results to the gateway.
+Claude Code can use GPT, Claude, and local model routes through its native Messages
+interface; see [Claude Code setup and Messages compatibility](docs/messages.md).
 
 Claude runs the unmodified Claude Code binary using its subscription login.
 A private virtual MCP server declares the client's tools. The gateway returns
@@ -101,10 +104,11 @@ anything.
 For an optional Codex CLI installation, generate settings in a separate home:
 
 ```sh
-gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
-gateway codex-config --model codex/gpt-6.1-sol > "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
+gateway codex-config --model codex/gpt-6.1-sol > "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex
 ```
 
 Keep the native account’s base configuration unchanged. The generated file is
@@ -197,7 +201,7 @@ Spark through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
 streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
 Its current gateway route supports text only.
 
-The gateway translates subscription and API inference into the caller's Responses
+The gateway translates subscription and API inference into the caller's Responses or Messages
 protocol. The client owns agent roles, delegation, model selection, permissions,
 tool execution, and chat names. The gateway adds no role instructions, default
 worker, or agent-only tools. Saved gateway chats remain readable before model
@@ -219,7 +223,7 @@ The verified formats are PNG, JPEG, GIF, and WebP. See [Responses support](docs/
 for payload limits and provider preprocessing. Stop/continue and saved-chat image
 history have passed through the real Codex engine on the test Mac.
 
-See [architecture](docs/architecture.md), [Responses support](docs/responses.md),
+See [architecture](docs/architecture.md), [Responses support](docs/responses.md), [Messages support](docs/messages.md),
 [verification](docs/verification.md), [desktop adapter](docs/app-server.md), [remote clients](docs/remote.md).
 
 ## Compatibility names

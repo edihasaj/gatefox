@@ -15,7 +15,7 @@ import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
 import type { InferenceEvent, ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
 import type { ClaudeLimit } from "../providers/claude-usage.js";
-import { sessionLimits } from "../providers/claude-session.js";
+import { ClaudeSession, sessionLimits } from "../providers/claude-session.js";
 
 const tools = ["alpha", "beta"].map(name => ({ type: "function" as const, name, description: `Tool ${name}`, parameters: { type: "object", properties: { id: { type: "number" } } } }));
 const thread: InferenceContext = { threadId: "thread-1" };
@@ -406,16 +406,16 @@ test("a session retired during a turn closes when that turn is cancelled after i
 
 test("each provider's park time applies to its own sessions, whatever another provider sent since", { timeout: 30000 }, async () => {
   const { f } = await setup({ replies: [{ calls: [{ tool: "alpha", input: { id: 1 } }] }, { calls: [{ tool: "alpha", input: { id: 1 } }] }] });
-  // Record each pid while its turn runs: the 240 ms park can expire before a loaded test runner resumes after the turn.
-  const pids = new Map<string, number>();
-  const record = () => { for (const session of claudeLive({ max: 6, parkMinutes: 60 }).sessions()) if (session.pid) pids.set(session.key, session.pid); };
-  const watch = setInterval(record, 2);
-  const pidOf = (threadId: string) => { const pid = pids.get(sessionKey(threadId)); assert.ok(pid, `a live session ran for ${threadId}`); return pid; };
+  // A session is parked when its request starts, before its park timer can have fired, so that call names the process and the park
+  // time of each session. Sampling the registry afterwards would race the 240 ms park, which can end before a loaded runner resumes.
+  const parked = new Map<string, { pid: number; ms: number }>(); const park = ClaudeSession.prototype.park;
+  ClaudeSession.prototype.park = function (this: ClaudeSession, ms: number) { if (this.pid) parked.set(this.key, { pid: this.pid, ms }); return park.call(this, ms); };
   try {
     // The second provider's request arrives while the first one's process is still starting.
-    const short = turn(adapter({ parkMinutes: 0.004 }), [user("short")]); const long = turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } });
-    await Promise.all([short, long]); record(); clearInterval(watch); const shortPid = pidOf("thread-1"); const longPid = pidOf("thread-2");
-    assert.ok(await gone(shortPid), "the short park reaps its session");
-    assert.equal(alive(longPid), true, "the long park keeps the other one");
-  } finally { clearInterval(watch); await teardown(f); }
+    await Promise.all([turn(adapter({ parkMinutes: 0.004 }), [user("short")]), turn(adapter({ parkMinutes: 60 }), [user("long")], { context: { threadId: "thread-2" } })]);
+    const short = parked.get(sessionKey("thread-1")); const long = parked.get(sessionKey("thread-2"));
+    assert.equal(short?.ms, 240, "the first provider's park time"); assert.equal(long?.ms, 60 * 60000, "the second provider's park time");
+    assert.ok(await gone(short!.pid), "the short park reaps its session");
+    assert.equal(alive(long!.pid), true, "the long park keeps the other one");
+  } finally { ClaudeSession.prototype.park = park; await teardown(f); }
 });

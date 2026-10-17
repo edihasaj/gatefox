@@ -189,7 +189,7 @@ test("a one-shot text turn ends at its end_turn delta with that usage, keeping a
       const events: InferenceEvent[] = [];
       for await (const event of adapter.infer({ model: "fixture", input: "hello" }, new AbortController().signal)) events.push(event);
       assert.equal(await f.results(), resultMs === "hold" ? 0 : 1, `${resultMs}: ${resultMs === "hold" ? "the CLI printed no result, and the request ended" : "the CLI printed its result"}`);
-      assert.deepEqual(events, [{ type: "text", text: "Hi" }, { type: "done", usage: { input_tokens: 60, output_tokens: 5, total_tokens: 65, input_tokens_details: { cached_tokens: 50 } }, accounting: { cacheWriteTokens: 7 } }]);
+      assert.deepEqual(events, [{ type: "text", text: "Hi" }, { type: "done", usage: { input_tokens: 60, output_tokens: 5, total_tokens: 65, input_tokens_details: { cached_tokens: 50, cache_creation_tokens: 7 } }, accounting: { cacheWriteTokens: 7 } }]);
     }
     assert.deepEqual(limits.map(limit => limit.status), ["allowed_warning", "allowed_warning"], "the rate limit printed right after the turn is kept");
     assert.deepEqual(windows, [["fixture", 300000]], "a result that follows promptly still reports its window");

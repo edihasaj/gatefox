@@ -18,6 +18,7 @@ import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { inspectNativeWriters, type LegacyNativeWriter } from "./service-native-writers.js";
 import { executionHostReady } from "./mac-shared-executors.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
+import { enableRollbackMessage, planSwapTiming, rollBackEnable, serviceHealthy, type PlanSwapTiming } from "./mac-shared-plan-swap.js";
 
 const exec = promisify(execFile);
 type Status = Record<string, unknown>;
@@ -34,7 +35,9 @@ export interface SharedNativeMigrationDependencies {
   validateSdk(codex: string): Promise<void>;
   ready(plan: ServicePlan, pid: number): Promise<boolean>;
   restart(config: string): Promise<unknown>;
-  stopReplacement(config: string, state: string, pid: number): Promise<void>;
+  /** Whether the service answers /health; a rollback waits for it before it restarts a relaunched service. */
+  health(config: string): Promise<boolean>;
+  rollbackTiming?: Partial<PlanSwapTiming>;
   archive(identity: Parameters<typeof archiveStoppedExecutionReceipt>[0], backup: string): Promise<unknown>;
   install(config: string): Promise<unknown>;
 }
@@ -51,31 +54,6 @@ export async function sharedServiceRegistration(config: string): Promise<boolean
   } catch { return false; }
   finally { await file?.close(); }
 }
-export async function stopSharedServiceReplacement(config: string, state: string, pid: number): Promise<void> {
-  const target = `gui/${process.getuid!()}/${serviceLabel}`;
-  const plist = resolve(homedir(), "Library/LaunchAgents", serviceLabel + ".plist");
-  const text = await readFile(plist, "utf8");
-  const args = JSON.parse((await exec("/usr/bin/plutil", ["-extract", "ProgramArguments", "json", "-o", "-", plist])).stdout) as unknown;
-  if (!text.includes(serviceMarker) || !Array.isArray(args) || args.some(arg => typeof arg !== "string") || !args.includes("daemon") ||
-    args[args.indexOf("--config") + 1] !== resolve(config) || (await consolidatedStatus(state)).pid !== pid) throw new Error("Native migration rollback refused an unrelated replacement service");
-  let disabled = false;
-  try {
-    // Disabling KeepAlive preserves the live process. Its own idle guard must
-    // release native leases and loaded chats before any transport is stopped.
-    await exec("/bin/launchctl", ["disable", target], { timeout: 5000 }); disabled = true;
-    process.kill(pid, "SIGUSR2");
-    for (let attempt = 0; attempt < 150; attempt++) {
-      const current = await consolidatedStatus(state);
-      if (current.pid && current.pid !== pid) throw new Error("Replacement ownership changed; its native writers were preserved");
-      if (!livePid(pid)) {
-        if (current.installed) await exec("/bin/launchctl", ["bootout", target], { timeout: 10000 });
-        return;
-      }
-      await delay(100);
-    }
-    throw new Error("Replacement native work is still loaded; rollback preserved its writers");
-  } finally { if (disabled) await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); }
-}
 function dependencies(overrides: Partial<SharedNativeMigrationDependencies>): SharedNativeMigrationDependencies {
   return {
     platform: process.platform, pending: async state => !!await readPendingLoginConsolidation(state), status: consolidatedStatus, registration: sharedServiceRegistration,
@@ -84,7 +62,7 @@ function dependencies(overrides: Partial<SharedNativeMigrationDependencies>): Sh
       const result = [...await inspectLegacyWriters(config, state, supervisorPid), ...await inspectNativeWriters(config, codex, nativePid)];
       return [...new Map(result.map(value => [value.pid, value])).values()];
     },
-    restart: config => macService("restart", config), stopReplacement: stopSharedServiceReplacement, archive: archiveStoppedExecutionReceipt,
+    restart: config => macService("restart", config), health: serviceHealthy, archive: archiveStoppedExecutionReceipt,
     install: config => macService("install", config), ...overrides,
   };
 }
@@ -163,17 +141,11 @@ export async function enableSharedNative(configPath: string, apply = false, over
       return { ...preview, applied: true, backup, ...await awaitReady(next, config.stateDirectory, config.port, began, oldRelay, deps) };
     } catch (error) {
       if (JSON.stringify(await readServicePlan(config.stateDirectory)) !== JSON.stringify(next)) throw new Error(`Native migration failed and its plan changed; review ${backup}`);
-      const replacement = await deps.status(config.stateDirectory);
-      if (before.pid && replacement.pid === before.pid) { await writePrivateJson(path, plan); throw error; }
-      let restored = false;
-      try {
-        if (typeof replacement.pid === "number") await deps.stopReplacement(configPath, config.stateDirectory, replacement.pid);
-        await deps.archive({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup);
-        await writePrivateJson(path, plan); restored = true; await deps.install(configPath);
-      } catch {
-        throw new Error(restored ? `The previous native plan is restored but its service needs recovery; review ${backup}`
-          : `Native migration could not roll back safely. Its ownership plan and writers were preserved; review ${backup}`);
-      }
+      // The plan swap: the previous plan goes back first and the replacement restarts onto it through its own idle guard, so launchd's
+      // KeepAlive cannot relaunch the plan being undone. Stopping the job and waiting for it to stay down loses that race.
+      const result = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: deps, timing: { ...planSwapTiming, ...deps.rollbackTiming },
+        beforePid: typeof before.pid === "number" ? before.pid : undefined, archive: () => deps.archive({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup) });
+      const message = enableRollbackMessage("shared-native", error, backup, path, result); if (message) throw new Error(message);
       throw error;
     }
   });

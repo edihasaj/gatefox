@@ -1,14 +1,25 @@
 import { ProviderError } from "./provider.js";
 
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-export const contextWindowFailure = () => new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400);
+/** `contextTokens` are the counts a native "prompt is too long: N tokens > M maximum" message reported; the message text stays fixed. */
+export const contextWindowFailure = (contextTokens?: { used: number; maximum: number }) =>
+  new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400, contextTokens ? { contextTokens } : undefined);
 const nativePromptTooLong = (value: unknown) => typeof value === "string" && /^(?:prompt is too long|prompt is too long: \d+ tokens > \d+ maximum)\.?$/i.test(value.trim());
+/** The Claude CLI also prints a longer form ("Prompt is too long · …") for a conversation it cannot compact; inside a native CLI error envelope that is still an overflow. */
+const cliPromptTooLong = (value: unknown) => nativePromptTooLong(value) || (typeof value === "string" && /^prompt is too long\s*[·:\u2014-]/i.test(value.trim()));
+/** The token counts of a native overflow message; nothing when it carries none or they are not safe integers. */
+function promptTokens(value: unknown): { used: number; maximum: number } | undefined {
+  const match = typeof value === "string" ? /^prompt is too long: (\d+) tokens > (\d+) maximum\.?$/i.exec(value.trim()) : null;
+  if (!match) return;
+  const [used, maximum] = [Number(match[1]), Number(match[2])];
+  return Number.isSafeInteger(used) && Number.isSafeInteger(maximum) ? { used, maximum } : undefined;
+}
 const contextCode = (value: unknown) => value === "context_length_exceeded";
 
 /** Anthropic documents this exact invalid_request_error as input context overflow. */
 export function anthropicContextFailure(value: unknown): ProviderError | undefined {
   const error = object(object(value).error);
-  if (contextCode(error.code) || (error.type === "invalid_request_error" && nativePromptTooLong(error.message))) return contextWindowFailure();
+  if (contextCode(error.code) || (error.type === "invalid_request_error" && nativePromptTooLong(error.message))) return contextWindowFailure(promptTokens(error.message));
 }
 
 /** Bound failure metadata before parsing; no upstream message is exposed. */
@@ -34,7 +45,8 @@ export function claudeContextFailure(message: Record<string, unknown>): Provider
   if (resultError && message.subtype !== "error_during_execution") return;
   const texts = resultError ? [message.result, ...(Array.isArray(message.errors) ? message.errors : [])]
     : (Array.isArray(object(message.message).content) ? object(message.message).content as unknown[] : []).flatMap(part => object(part).type === "text" ? [object(part).text] : []);
-  if (texts.some(nativePromptTooLong)) return contextWindowFailure();
+  const overflow = texts.find(cliPromptTooLong);
+  if (overflow !== undefined) return contextWindowFailure(promptTokens(overflow));
 }
 
 /** Copilot's session.error has structured categories; prose alone is insufficient. */

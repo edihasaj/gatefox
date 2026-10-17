@@ -28,8 +28,10 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
     }
     if (event.event.startsWith("request_")) {
       const entry = requests[model] ||= {};
-      // Translation failures also carry their fixed reason, so a 400 is separable per model.
-      bump(entry, event.event === "request_failed" ? `failed:${event.code}${event.reason ? ":" + event.reason : ""}` : event.event.slice(8));
+      // Translation failures also carry their fixed reason, so a 400 is separable per model. A gateway-rule refusal
+      // (remote compaction) names itself in `translation_reason` instead.
+      const why = event.reason ?? event.translation_reason;
+      bump(entry, event.event === "request_failed" ? `failed:${event.code}${why ? ":" + why : ""}` : event.event.slice(8));
       // Auto-review requests, of any kind, counted apart from chat requests.
       if (event.autoReview === true) bump(autoReview, event.event === "request_failed" ? `failed:${event.code}` : event.event.slice(8));
       if (typeof event.inputTokens === "number") entry.input = (entry.input || 0) + event.inputTokens;

@@ -38,10 +38,29 @@ belongs in the release archive.
    rendered desktop controls or the built-in cloud transport.
    For compaction changes, run `scripts/e2e-compaction-switch.mjs --gateway
    INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
-   --shared`. It reproduces the previous-model failure with `--expect baseline`
-   and verifies selected-model recovery, Stop, failures, and reconnect through
-   stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
-   checked for safe refusal of automatic compaction, not seamless recovery.
+   --expect selected-turn --shared`. This is the release step. A package that
+   ships `gateway-sdk` (0.4.3 and later) compacts inside the user turn, so the
+   run verifies the package's own gateway SDK receipt and selected-model recovery,
+   Stop, failures, and reconnect through stdio and Unix with a mock upstream and
+   the signed SDK. The script detects `gateway-sdk` in the package (through its
+   `dist/gateway-sdk-runtime.js`, else the same file layout). When the package
+   has it, `selected-turn` is the default and `automatic` and `baseline` are
+   refused; when it does not, `selected-turn` is refused. `--expect automatic`
+   and `--expect baseline` are for legacy packages without `gateway-sdk` only
+   (baseline reproduces the previous-model failure of the stock SDK). `--codex`
+   does not change the SDK of the gateway executor, which always runs the
+   package's own `gateway-sdk`; it only replaces the SDK the script itself
+   starts and checks. The script uses `gateway-sdk/gateway-codex` in the package
+   and says so if it is missing.
+   Every child runs under a private HOME inside the run folder, so no execution
+   host home or receipt reaches `~/.local/state`. Only the pinned SDK's fixed
+   socket folder, `/tmp/codex-daemon-UID`, stays outside, because the SDK
+   hard-codes it; the script removes its own stale sockets there. A passing run
+   removes its `/tmp/gw-compact-switch-*` run folder; a failing run keeps it, and
+   `--keep-fixture` keeps it on request. With `--shared`, the
+   `selected-turn` run also checks the shared execution host over stdio; a legacy
+   `automatic` run only checks the safe refusal of automatic compaction, not
+   seamless recovery.
    For Responses continuation changes, run
    `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
    SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies actual
@@ -93,13 +112,20 @@ release and moves to it at an idle moment:
 | Process | Moves when | How |
 | --- | --- | --- |
 | Adapter (one per app connection) | no active turn, no pending request, 30 seconds quiet | exits; the app starts a new adapter on the new release within seconds |
+| SSH listener (remote Mac) | a bootstrap on the installed release finds it running another release, or a newer release is installed and two idle checks in a row (about 1–2 minutes) pass with no active session | on bootstrap replacement the old listener keeps serving its open sessions and the new one binds a fresh alias; on self-retire the listener exits and the next connection's bootstrap starts the new one |
 | Inference server | at its next check, busy or not | the installed release's handler takes over the same socket in the same process: new requests use the new code at once, running requests finish on the old code; no connection is refused. A release whose serve runtime is incompatible falls back to an idle restart |
 | Supervisor, execution host, relay | fully idle: no app connected and no chat loaded | idle restart; launchd starts it on the new release |
 
 Every server response carries `X-Gateway-Release` with the release that served it.
 Until the supervisor is idle it keeps the previous release, so adapters and the
 host must stay protocol-compatible across one release. Each move is logged as
-`self_upgrade`. Processes started from a checkout never move. Releases before
+`self_upgrade`, except an SSH listener replaced by a bootstrap, which is logged
+as `ssh_listener_replaced`. In that event `from` is `unknown` when the old
+listener recorded no release, which means it started from a checkout or from a
+release before 0.4.4, so the first 0.4.4 rollout logs `from: "unknown"` for
+every listener it replaces. Processes started from a checkout never move
+themselves, except that an SSH listener started from a checkout is replaced
+when a bootstrap on the installed release connects. Releases before
 0.2.32 do not have this; moving from them needs one service restart. In-place
 server takeover starts with 0.2.35; a 0.2.32 to 0.2.34 server needs one restart of
 its inference process to reach it.

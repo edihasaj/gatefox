@@ -27,11 +27,12 @@ The desktop and SSH adapters fetch this shared selection. Each device can also
 generate an opt-in CLI configuration in a separate home:
 
 ```sh
-gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
+gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
 gateway codex-config --model codex/gpt-6.1-sol \
-  > "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex
+  > "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex
 ```
 
 Regenerate the CLI snapshot after changing the host's selection. This separate
@@ -110,6 +111,9 @@ the remote Mac. Then add its existing host alias under the client's SSH connecti
 settings. Those rows are native SSH connections: the desktop runs Codex on the
 remote Mac, so the gateway models available in them come from that Mac's own
 `gateway ssh register` and gateway configuration, not from the client's catalog.
+The gateway listener on that Mac follows installs by itself: the first
+connection made after an update starts a listener on the new release, and any
+session already running finishes on the old one.
 The app's Unix socket and native proxy must reach the gateway adapter on that
 machine; the built-in Control other devices connection currently bypasses it. See
 [the adapter setup](app-server.md) for command protection and removal.

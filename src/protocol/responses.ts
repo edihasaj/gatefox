@@ -34,6 +34,12 @@ export function responseToolFrames(calls: OpenAIToolCall[], offset: number): str
   return frames;
 }
 
+/** Cache writes are billing detail that stays in the local ledger: a Responses client sees its cached reads only. */
+function clientUsage(usage: Usage): Usage {
+  const { input_tokens_details: details, ...counts } = usage;
+  return details ? { ...counts, input_tokens_details: { cached_tokens: details.cached_tokens } } : counts;
+}
+
 type Thought = { item: Item; position: number; parts: Map<number, string> };
 type Message = { id: string; position: number; value: string; providerId?: string; phase?: AssistantMessagePhase; closed?: boolean };
 
@@ -165,7 +171,7 @@ export class ResponsesWriter {
       case "done": {
         if (event.interrupted && event.endTurn !== false) throw new Error("Interrupted inference cannot finish the user turn");
         for (const message of this.messages.values()) this.closeMessage(message, event.interrupted ? "incomplete" : "completed");
-        this.closeThoughts(); this.tokens = event.usage;
+        this.closeThoughts(); this.tokens = clientUsage(event.usage);
         this.serviceTier = publicServiceTier(event.serviceTier); this.status = event.interrupted ? "incomplete" : "completed";
         this.endTurn = typeof event.endTurn === "boolean" ? event.endTurn : undefined;
         this.publish({ type: event.interrupted ? "response.incomplete" : "response.completed", response: this.snapshot(this.status) }); return;
