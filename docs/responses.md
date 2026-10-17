@@ -315,23 +315,30 @@ Normal requests retain the selected model, reasoning, and subscription route.
 Native Codex rows can enable `supports_search_tool`, so the client sends a `tool_search`
 tool, declares it either at the top level or inside a Responses lite `additional_tools`
 input item, and later replays `tool_search_call` and `tool_search_output` items.
+**Search is off on every gateway row.** The ChatGPT backend answers HTTP 400 when the
+gateway forwards a `tool_search` tool (seen in production on 0.4.4, where every Codex 2
+turn failed with "Provider returned HTTP 400"), so the gateway does not forward it.
+Support returns once forwarding is verified against the real backend.
 
-- **Codex subscription route.** These pass through unchanged. The `tool_search` tool
-  goes upstream byte for byte (it is not wrapped in the gateway namespace), the two
-  replayed item types keep their order and content, and a `tool_search_call` or
-  `tool_search_output` that the upstream produces streams back to the client as sent,
-  once each. A forced tool choice (`tool_choice: "required"`) is satisfied by a declared
-  search tool. An interrupted final snapshot withholds a search item whose status is
-  not `completed`, as it does an unfinished function call.
+- **Codex subscription route.** Before sending upstream, the gateway drops any
+  `tool_search` tool, at the top level or inside an `additional_tools` item (an item left
+  with no tool is dropped too), and any `tool_search_call` or `tool_search_output` input
+  item. This covers an engine that still holds an older catalog with search on. The rest
+  of the request is unchanged and keeps its order, including `tool_choice`, so the turn
+  runs as it would without search. When anything was dropped, the gateway records
+  `tool_search_dropped` with the count of tools and items
+  ([diagnostics](diagnostics.md#local-telemetry)). If the
+  upstream ever produces a `tool_search_call` or `tool_search_output`, it still streams
+  back to the client as sent, once each; an interrupted final snapshot withholds a search
+  item whose status is not `completed`, as it does an unfinished function call.
 - **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic
   Responses routes keep rejecting them before any provider runs: a `tool_search` tool
   fails with `unsupported_tool`, and the two item types fail with
   `unsupported_input_item`, both as a 400 `invalid_request`. The gateway does not
   translate search for them. Anthropic Messages requests carry only function tools.
-- **Catalog.** `supports_search_tool` follows the native row on Codex 2 rows and on the
-  native rows carried for sub-agents; every other row publishes it off. A carried row
-  always keeps the native value, because a gateway alias spelled like a native slug,
-  which would take the request first, is refused when the adapter launches
+- **Catalog.** `supports_search_tool` is off on every row: Codex 2 rows and the native
+  rows carried for sub-agents have it forced off, whatever the native row says, so Codex
+  does not add the tool
   ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
 - **Ownership.** The client executes search and owns the deferred tool list. The
   gateway never runs a search and never adds or removes deferred tools. Tool names,
@@ -381,7 +388,7 @@ gateway serves compaction inside the gateway executor; this Codex build sent rem
 which the gateway does not support yet."; nonstream requests get HTTP 400 `invalid_request` with
 that message. `request_failed` records `translation_reason: unsupported_compaction`, and the
 stderr `provider_failure` line and `gateway diagnostics` carry it too
-([diagnostics](diagnostics.md#gateway-rule-refusals-and-dropped-control-items)). Neither invokes a
+([diagnostics](diagnostics.md#local-telemetry)). Neither invokes a
 provider nor takes an admission slot, and the refusal is final. A gateway at capacity (`maxConcurrent`
 plus 32 requests in flight) answers every inference request (`/v1/responses` and `/v1/messages`)
 with a retryable `429` before reading its body,

@@ -62,46 +62,55 @@ const failure = async (response: Response) => ({ status: response.status, body: 
 
 const exec = { type: "function", name: "exec_command", description: "Run", parameters: { type: "object", properties: { cmd: { type: "string" } } } };
 
-test("the Codex route forwards a top-level tool_search unchanged and streams an upstream tool_search_call back unchanged", async t => {
+const hasSearch = (value: unknown) => JSON.stringify(value).includes("tool_search");
+
+test("the Codex route drops a top-level tool_search, completes the turn, and streams an upstream tool_search_call back unchanged", async t => {
   const h = await harness(t);
   try {
     const top = await h.post({ model: "codex/gpt-6.1-sol", input: [user("find it")], tools: [exec, searchTool] });
     assert.equal(top.status, 200);
     const sent = h.upstream[0] as { tools: Array<Record<string, unknown>> };
-    assert.equal(JSON.stringify(sent.tools.find(tool => tool.type === "tool_search")), JSON.stringify(searchTool), "the search tool is forwarded byte for byte");
-    const done = events(await top.text()).filter(event => event.type === "response.output_item.done").map(event => event.item);
+    assert.equal(hasSearch(sent.tools), false, "the ChatGPT backend refuses a forwarded tool_search, so none is sent");
+    assert.equal(JSON.stringify(sent.tools.flatMap(tool => (tool.tools as Array<{ name: string }> | undefined) ?? []).map(tool => tool.name)), JSON.stringify(["exec_command"]), "the other tools are unchanged");
+    const received = events(await top.text());
+    assert.equal(received.some(event => event.type === "response.completed"), true, "the turn completes");
+    const done = received.filter(event => event.type === "response.output_item.done").map(event => event.item);
     assert.deepEqual(done, [emitted]);
     assert.equal(JSON.stringify(done[0]), JSON.stringify(emitted));
-    // Search is the only addition: another unsupported tool still fails on the Codex route, and nothing else reaches upstream.
+    // Search is the only thing dropped: another unsupported tool still fails on the Codex route, and nothing else reaches upstream.
     assert.equal((await failure(await h.post({ model: "codex/gpt-6.1-sol", input: [user("hi")], tools: [{ type: "web_search" }] }))).status, 400);
     assert.equal(h.upstream.length, 1);
   } finally { await h.close(); }
 });
 
-test("the Codex route forwards the Responses lite additional_tools item with tool_search and a required tool choice unchanged", async t => {
+test("the Codex route drops tool_search from a Responses lite additional_tools item, keeps its other tools and the tool choice, and completes the turn", async t => {
   const h = await harness(t);
   try {
-    const input = [lite, user("hi")];
-    const response = await h.post({ model: "codex/gpt-6.1-sol", input, tool_choice: "required" });
+    const both = { type: "additional_tools", tools: [searchTool, exec] };
+    const response = await h.post({ model: "codex/gpt-6.1-sol", input: [both, lite, user("hi")], tool_choice: "required" });
     assert.equal(response.status, 200);
     assert.equal(events(await response.text()).some(event => event.type === "response.completed"), true);
     const sent = h.upstream[0] as { input: unknown[]; tool_choice: unknown };
-    assert.equal(JSON.stringify(sent.input), JSON.stringify(input));
-    assert.equal(sent.tool_choice, "required");
+    assert.equal(hasSearch(sent.input), false);
+    // An item left with only the search tool goes away; one with other tools keeps them in order.
+    assert.equal(JSON.stringify(sent.input), JSON.stringify([{ type: "additional_tools", tools: [exec] }, user("hi")]));
+    assert.equal(sent.tool_choice, "required", "the caller's tool choice is not changed");
   } finally { await h.close(); }
 });
 
-test("the Codex route forwards replayed tool_search_call and tool_search_output items unchanged, also for a sub-agent's bare model name", async t => {
+test("the Codex route drops replayed tool_search_call and tool_search_output items, also for a sub-agent's bare model name, and completes the turn", async t => {
   const h = await harness(t);
   try {
     const input = [user("find it"), searchCall, searchOutput, user("now use it")];
     // The bare vendor name from a sub-agent resolves to the same route.
     for (const [index, model] of ["codex/gpt-6.1-sol", "gpt-6.1-sol"].entries()) {
       const response = await h.post({ model, input, tools: [searchTool] });
-      assert.equal(response.status, 200, model); await response.text();
-      const sent = h.upstream[index] as { input: unknown[]; tools: unknown[] };
-      assert.equal(JSON.stringify(sent.input), JSON.stringify(input), model);
-      assert.equal(JSON.stringify(sent.tools), JSON.stringify([searchTool]), model);
+      assert.equal(response.status, 200, model);
+      assert.equal(events(await response.text()).some(event => event.type === "response.completed"), true, model);
+      const sent = h.upstream[index] as { input: unknown[]; tools?: unknown[] };
+      assert.equal(JSON.stringify(sent.input), JSON.stringify([user("find it"), user("now use it")]), model);
+      assert.equal(hasSearch(sent), false, model);
+      assert.deepEqual(sent.tools, [], model);
     }
   } finally { await h.close(); }
 });

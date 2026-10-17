@@ -128,13 +128,14 @@ test("combined() gives the native rows the Codex 2 rule: both fields kept where 
   assert.equal(executorNativeRow(lax, rows), lax);
 });
 
-test("a carried native row keeps the tool search value of the native row", () => {
+test("a carried native row has tool search off whatever the native row says", () => {
   const searchable: Row = { ...lax, supports_search_tool: true };
-  assert.equal(executorNativeRow(searchable, [searchable, reviewer], served), searchable, "the row is carried as it is");
-  // A changed node_repl policy never touches search, in either direction.
+  assert.deepEqual(executorNativeRow(searchable, [searchable, reviewer], served), { ...searchable, supports_search_tool: false }, "only the search flag changes");
+  assert.equal(searchable.supports_search_tool, true, "the native row is never modified");
+  // A changed node_repl policy and the search flag apply together.
   const strictSearch: Row = { ...strict, supports_search_tool: true };
   const adjusted = executorNativeRow(strictSearch, [strictSearch], noReviewers);
-  assert.equal(adjusted.node_repl_disabled, true); assert.equal(adjusted.supports_search_tool, true);
+  assert.equal(adjusted.node_repl_disabled, true); assert.equal(adjusted.supports_search_tool, false);
   for (const value of [false, undefined, "true", null]) {
     const row = { ...lax, supports_search_tool: value };
     assert.equal(Object.is(executorNativeRow(row, [row, reviewer], served), row), true, `search ${JSON.stringify(value)} is left as the row states it`);
@@ -143,12 +144,12 @@ test("a carried native row keeps the tool search value of the native row", () =>
     const combined = desktop([searchable, strict, reviewer], codeMode, sol).combined().models;
     const nativeRows = combined.filter(row => row.slug === "gpt-6-luna" || row.slug === "gpt-6.1-sol");
     assert.equal(nativeRows.length, 2);
-    assert.equal(nativeRows.find(row => row.slug === "gpt-6-luna")?.supports_search_tool, true, `${codeMode}: a carried row that says search is on keeps it`);
+    assert.equal(nativeRows.find(row => row.slug === "gpt-6-luna")?.supports_search_tool, false, `${codeMode}: a carried row that says search is on is carried with it off`);
     assert.equal(nativeRows.find(row => row.slug === "gpt-6.1-sol")?.supports_search_tool, undefined, `${codeMode}: a carried row that states none stays as it is`);
   }
 });
 
-test("an alias spelled like a native slug is refused when the catalog loads, so a carried row always keeps its native search flag", () => {
+test("an alias spelled like a native slug is refused when the catalog loads, so a carried row cannot be taken over by an alias", () => {
   const searchable: Row = { ...lax, supports_search_tool: true };
   const other: Row = { ...strict, supports_search_tool: true };
   const aliasOf = (type: ProviderConfig["type"], alias: string): ProviderConfig => ({ id: `p-${type}`, type, baseUrl: "https://example.invalid/v1", apiKeyEnv: "FIXTURE_KEY", models: { [alias]: "upstream" } });
@@ -158,10 +159,10 @@ test("an alias spelled like a native slug is refused when the catalog loads, so 
       assert.throws(() => desktop([searchable, other, reviewer], codeMode, sol, aliasOf(type, "gpt-6-luna")), /A gateway model alias collides with a native model ID/, `${type}, ${codeMode}`);
     }
   }
-  // An alias that only resembles a slug is not refused, and the carried rows keep the native value.
+  // An alias that only resembles a slug is not refused, and the carried rows still have search off.
   const searchOf = (rows: Row[], ...providers: ProviderConfig[]) =>
     Object.fromEntries(desktop(rows, true, ...providers).combined().models.slice(0, rows.length).map(row => [row.slug, row.supports_search_tool]));
-  assert.deepEqual(searchOf([searchable, other], sol, aliasOf("responses-api", "api/gpt-6-luna")), { "gpt-6-luna": true, "gpt-6.1-sol": true });
+  assert.deepEqual(searchOf([searchable, other], sol, aliasOf("responses-api", "api/gpt-6-luna")), { "gpt-6-luna": false, "gpt-6.1-sol": false });
   assert.equal(searchable.supports_search_tool, true, "the native row is never modified");
 });
 

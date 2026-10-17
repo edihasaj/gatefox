@@ -490,12 +490,14 @@ local native catalog it loaded at startup and copies these fields:
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
-`comp_hash` is never copied. `supports_search_tool` follows the native row, because
-the Codex subscription route passes `tool_search` through unchanged
+`comp_hash` is never copied. `supports_search_tool` stays off on a Codex 2 row even
+when the native row has it on: the ChatGPT backend refuses a `tool_search` tool that the
+gateway forwards, so the gateway drops it on that route, and support returns once it is
+verified against the real backend
 ([details](responses.md#tool-search-on-the-codex-subscription-route)). The adapter
 still keeps the hosted `web_search` tool disabled; that is a separate setting. A
 slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it (search off, since those routes reject `tool_search`), apart from the strictest native node_repl policy and the
+gateway published it (search off), apart from the strictest native node_repl policy and the
 native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
 preflight first writes `desktop-models.json` with the plain gateway rows, marker
@@ -520,9 +522,9 @@ Codex and take the native code mode. The same rule covers the native rows that t
 executor catalog carries for sub-agents naming a model directly (a role's model,
 `default_subagent_model` or Ultra delegation): without the host those rows get
 `direct` tools in executors, so their commands run instead of failing with "failed
-to spawn code-mode host". Those carried rows always follow the native search flag, as the
-Codex 2 rows do: a bare model name resolves to the Codex subscription route, which
-passes `tool_search` through. No provider can take that name first, because a gateway
+to spawn code-mode host". Those carried rows have the search flag off, as the Codex 2
+rows do: a bare model name resolves to the Codex subscription route, which drops
+`tool_search` because the ChatGPT backend refuses it. No provider can take that name first, because a gateway
 model alias spelled exactly like a native slug is refused when the adapter launches
 (see the start of this page). (Before 0.4.4 every such sub-agent request failed with
 `unsupported_tool`.) The native engine keeps its own catalog unchanged.

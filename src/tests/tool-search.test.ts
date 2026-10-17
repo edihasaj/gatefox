@@ -9,6 +9,7 @@ import { ChatCompletionsAPI } from "../providers/chat-completions-api.js";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import type { InferenceEvent, ResponsesRequest, WireEvent } from "../protocol/types.js";
 import type { ProviderConfig } from "../config.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 // Fixture values only. The shapes follow what the native Codex engine sends and receives.
 const searchTool = { type: "tool_search", execution: "client", description: "Search deferred tools", parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "number" } }, required: ["query"], additionalProperties: false } };
@@ -59,8 +60,9 @@ async function fixture() {
 const sse = (...events: Array<Record<string, unknown>>) => events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("");
 const usage = { input_tokens: 1, output_tokens: 1, total_tokens: 2 };
 
-test("the Codex route forwards the search tool and replayed search items byte for byte and streams search output back unchanged", async t => {
+test("the Codex route drops the search tool and replayed search items, counts them, and still streams an upstream search item back unchanged", async t => {
   const { directory, credentialFile } = await fixture();
+  configureTelemetry(directory, "test");
   const bodies: Array<Record<string, unknown>> = [];
   const emitted = { type: "tool_search_call", id: "ts_1", call_id: "call_s2", execution: "client", status: "completed", arguments: { query: "other fixture query" } };
   const served = { type: "tool_search_output", id: "tso_1", call_id: "call_s3", execution: "server", status: "completed", tools: [] };
@@ -77,14 +79,21 @@ test("the Codex route forwards the search tool and replayed search items byte fo
     const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
     const events = await drain(provider.infer(request(), new AbortController().signal));
     const sent = bodies[0] as { tools: unknown[]; input: unknown[] };
-    // Same JSON, same key order: compare the serialized text, not only the parsed values.
-    assert.equal(JSON.stringify(sent.tools.find(tool => (tool as { type: string }).type === "tool_search")), JSON.stringify(searchTool));
-    assert.equal(JSON.stringify(sent.input.slice(1, 3)), JSON.stringify([searchCall, searchOutput]));
-    assert.deepEqual(sent.input.map(item => (item as { type: string }).type), ["message", "tool_search_call", "tool_search_output", "message"], "order is kept");
-    assert.deepEqual(sent.tools.map(tool => (tool as { type: string }).type).sort(), ["namespace", "namespace", "tool_search"], "the search tool is not wrapped in the gateway namespace");
+    // The ChatGPT backend refuses a forwarded tool_search (HTTP 400 in production), so neither the tool nor the items go upstream.
+    assert.deepEqual(sent.tools.map(tool => (tool as { type: string }).type).sort(), ["namespace", "namespace"], "no search tool upstream; the other tools are unchanged");
+    assert.equal(JSON.stringify(sent.tools).includes("tool_search"), false);
+    assert.deepEqual(sent.input.map(item => (item as { type: string }).type), ["message", "message"], "no search item upstream; the rest keeps its order");
+    assert.equal(JSON.stringify(sent.input).includes("tool_search"), false);
     const gateway = sent.tools.find(tool => (tool as { name?: string }).name === "gateway") as { tools: Array<{ name: string }> };
     assert.deepEqual(gateway.tools.map(tool => tool.name), ["exec_command"], "only the caller's function tools join the gateway namespace");
+    // Counts only: never a definition, query or argument.
+    await flushTelemetry();
+    const dropped = (await readTelemetry(directory, 0)).filter(event => event.event === "tool_search_dropped");
+    assert.equal(dropped.length, 1);
+    assert.deepEqual([dropped[0].provider, dropped[0].tools, dropped[0].items], ["codex", 1, 2]);
+    assert.equal(JSON.stringify(dropped[0]).includes("fixture query"), false);
 
+    // An upstream search item, if one ever arrives, keeps today's handling.
     assert.deepEqual(events.filter(event => event.type === "native-item"), [{ type: "native-item", item: emitted }, { type: "native-item", item: served }]);
     assert.equal(events.filter(event => event.type === "tool").length, 1, "search items are not function calls");
     assert.equal(events.at(-1)!.type, "done");
@@ -96,7 +105,24 @@ test("the Codex route forwards the search tool and replayed search items byte fo
     assert.deepEqual(done, [emitted, served, { ...call, id: "fc_call_f1" }]);
     assert.equal(JSON.stringify(wire.find(event => event.type === "response.output_item.added" && (event.item as { type: string }).type === "tool_search_call")!.item), JSON.stringify(emitted));
     assert.deepEqual((wire.at(-1)!.response as { output: unknown[] }).output.slice(0, 2), [emitted, served]);
-  } finally { await rm(directory, { recursive: true, force: true }); }
+  } finally { await flushTelemetry(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("a Codex request without search sends no tool_search_dropped event", async t => {
+  const { directory, credentialFile } = await fixture();
+  configureTelemetry(directory, "test");
+  const bodies: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => {
+    bodies.push(JSON.parse(String(options.body)));
+    return new Response(sse({ type: "response.completed", response: { id: "r", status: "completed", usage } }), { headers: { "Content-Type": "text/event-stream" } });
+  });
+  try {
+    const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
+    await drain(provider.infer({ model: "upstream", stream: true, tools: [exec], input: [{ type: "message", role: "user", content: "hi" }] } as unknown as ResponsesRequest, new AbortController().signal));
+    assert.equal((bodies[0].tools as unknown[]).length, 1);
+    await flushTelemetry();
+    assert.deepEqual((await readTelemetry(directory, 0)).filter(event => event.event === "tool_search_dropped"), []);
+  } finally { await flushTelemetry(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test("a search item that only appears in the final snapshot is still delivered once", async t => {

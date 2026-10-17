@@ -96,9 +96,23 @@ export class ResponsesAPI implements Provider {
       const namespaces = new Set(request.tools?.filter(tool => tool.type === "namespace").map(tool => tool.name));
       defaultNamespace = "gateway";
       while (namespaces.has(defaultNamespace)) defaultNamespace += "_";
-      // Native tool search is the client's own tool: it goes upstream byte for byte, never inside the gateway namespace.
-      const forwarded = (tool: ResponsesTool) => tool.type === "namespace" || tool.type === "tool_search";
-      const flat = (request.tools?.filter(tool => !forwarded(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
+      // The ChatGPT backend refuses a forwarded `tool_search` tool (HTTP 400, seen in production on 0.4.4), so the tool, in the
+      // request or in a Responses lite `additional_tools` item, and any replayed search items are dropped; the rest of the turn
+      // runs as it would without search. Codex rows keep search off, so only an engine that still holds an older catalog sends them.
+      const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
+      const searchItem = (item: ResponsesInputItem) => "type" in item && (item.type === "tool_search_call" || item.type === "tool_search_output");
+      let droppedTools = (request.tools || []).filter(search).length, droppedItems = 0;
+      const forwarded = (tool: ResponsesTool) => tool.type === "namespace";
+      const flat = (request.tools?.filter(tool => !forwarded(tool) && !search(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
+      if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
+        if (searchItem(item)) { droppedItems++; return []; }
+        const lite = item as unknown as { type?: unknown; tools?: unknown };
+        if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
+        const kept = lite.tools.filter(tool => !search(tool));
+        droppedTools += lite.tools.length - kept.length;
+        return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
+      });
+      if (droppedTools || droppedItems) telemetry("tool_search_dropped", { provider: this.config.id, tools: droppedTools, items: droppedItems });
       body.tools = [...(request.tools?.filter(forwarded) || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
       // Only calls of top-level tools move into the gateway namespace; tools declared
       // in Responses lite `additional_tools` items keep their own namespace.

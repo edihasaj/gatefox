@@ -41,9 +41,8 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
   for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
   assert.equal(published.supports_search_tool, false, "the gateway publishes search off");
-  assert.equal(row.supports_search_tool, true, "a Codex 2 row follows the native row, because the Codex route passes tool_search through");
-  assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: false }]).supports_search_tool, false);
-  for (const value of [undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);
+  assert.equal(row.supports_search_tool, false, "a Codex 2 row keeps search off even though the native row has it on: the ChatGPT backend refuses a forwarded tool_search");
+  for (const value of [false, undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);
   for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
@@ -109,10 +108,10 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.deepEqual(combined.models.map((row: { slug: string }) => row.slug), ["gpt-6.1-sol", "codex/sol", "codex/next", "codex/odd"]);
     const [, sol, next, odd] = combined.models;
     assert.deepEqual(sol.model_messages, messages); assert.equal(sol.tool_mode, "code_mode_only"); assert.equal(sol.context_window, 800000);
-    assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, true); assert.deepEqual(sol.service_tiers, [tier]);
+    assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, false); assert.deepEqual(sol.service_tiers, [tier]);
     for (const key of usageFlags) { assert.equal(sol[key], false, key); assert.equal(next[key], true, key); }
     for (const row of [next, odd]) { assert.deepEqual(row.model_messages, { instructions_template: "" }); assert.equal(row.tool_mode, "direct"); assert.equal(row.context_window, 500000); }
-    assert.deepEqual(combined.models[0], nativeSol, "the carried native row keeps tool search on, as the Codex 2 row for it does");
+    assert.deepEqual(combined.models[0], { ...nativeSol, supports_search_tool: false }, "the carried native row has tool search off, as the Codex 2 row for it does");
     assert.equal(next.supports_search_tool, false, "a Codex 2 row with no native row stays off");
     assert.equal(JSON.stringify(combined).includes("upstream_slug"), false);
     const cache = await readFile(join(f.value.stateDirectory, "desktop-public-models.json"), "utf8");
@@ -126,15 +125,16 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
   } finally { f.close(); }
 });
 
-test("a native row is carried with its own tool search value", () => {
+test("a native row is carried with tool search off", () => {
   const carried = executorNativeRow(nativeSol, [nativeSol]);
-  assert.equal(carried.supports_search_tool, true);
-  assert.equal(carried, nativeSol, "a row whose node_repl policy already matches is returned as it is");
+  assert.equal(carried.supports_search_tool, false, "the ChatGPT backend refuses a forwarded tool_search, so Codex must not add one");
+  assert.deepEqual(carried, { ...nativeSol, supports_search_tool: false }, "only the search flag changes when the node_repl policy already matches");
+  assert.equal(nativeSol.supports_search_tool, true, "the native row is never modified");
   const off = { ...nativeSol, supports_search_tool: false };
-  assert.equal(executorNativeRow(off, [off]), off);
+  assert.equal(executorNativeRow(off, [off]), off, "a row that already has search off is returned as it is");
   const stated = { ...nativeSol, node_repl_disabled: undefined, supports_search_tool: true };
   const changed = executorNativeRow(stated, [stated]);
-  assert.equal(changed.supports_search_tool, true, "a changed node_repl policy never changes search");
+  assert.equal(changed.supports_search_tool, false, "a changed node_repl policy and search off apply together");
   assert.equal(changed.node_repl_disabled, true);
 });
 

@@ -135,9 +135,9 @@ export class DesktopCatalog {
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
    * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
-   * and its review text stays the SDK's own. A carried row always follows the native tool search flag, because a bare
-   * model name resolves to the Codex subscription route, which passes `tool_search` through; an alias spelled like a
-   * native slug, which could take that name first, is refused when the catalog loads.
+   * and its review text stays the SDK's own. A carried row has the tool search flag off, as a Codex 2 row does: a bare
+   * model name resolves to the Codex subscription route, which drops `tool_search` because the ChatGPT backend refuses
+   * it; an alias spelled like a native slug, which could take that name first, is refused when the catalog loads.
    * The native engine keeps its own catalog unchanged.
    */
   private executorNative(reviewers: ReadonlySet<string>): Message[] {
