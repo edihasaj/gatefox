@@ -6,7 +6,7 @@ import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
 import { ExecutionHostClient, nativeFallbackReason, type NativeFallbackReason, type NativeLaunchRecord } from "./execution-host-client.js";
 import type { PrivateNativeLease } from "./native-execution-host-storage.js";
-import { privateNativeOwnership } from "./native-fallback.js";
+import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
@@ -66,15 +66,13 @@ export class AppServerBackends {
     catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
     const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
-    // A private native engine, with gateway chats on the shared host only when the plan shares them. When the host stayed down,
-    // the engine runs only under the native-home lease, taken before it is spawned and held until it exits.
+    // A private native engine, with gateway chats on the shared host only when the plan shares them. A fallback engine runs only
+    // under the native-home lease, taken before it is spawned and held until it exits (or given back if the spawn never happens).
     const privateNative = async (fallback?: NativeFallbackReason) => {
-      const lease = await privateNativeOwnership(configPath, nativeHome, executable, fallback);
-      const backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath, undefined, lease);
-      backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined;
-      // The lease names the spawned engine; an engine it cannot name is stopped, and its exit releases the lease.
-      if (lease) await lease.engineStarted((backend.native as AppServerConnection).pid ?? 0).catch(async error => { await backend.stop("spawn_error"); throw error; });
-      return backend;
+      const lease = await privateNativeOwnership(configPath, nativeHome, executable, fallback, plan);
+      const backend = await underPrivateLease(lease, () => new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath, undefined, lease),
+        value => (value.native as AppServerConnection).pid ?? 0);
+      backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined; return backend;
     };
     if (object(plan).sharedNativeExecutor !== true) return privateNative();
     let client: ExecutionHostClient | undefined; let backend: AppServerBackends | undefined;
@@ -84,9 +82,9 @@ export class AppServerBackends {
       catch (error) {
         // Only a host that stayed down through the wait, or one that shares gateway chats without native sharing, falls back;
         // a host that does not match, a changed socket and every other failure keep failing closed. A fallback that a live
-        // native owner refuses reports the host's own failure.
+        // native owner refuses reports the host's own failure, unless the refusal names a cause of its own.
         const fallback = nativeFallbackReason(error, plan.sharedExecutors === true); if (!fallback) throw error;
-        return await privateNative(fallback).catch(refusal => { throw fallback === "host_unavailable" ? error : refusal; });
+        return await privateNative(fallback).catch(refusal => { throw refusedFallback(fallback, error, refusal); });
       }
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
       const record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));

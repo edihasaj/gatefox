@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
-import { lstat, open, readdir, stat, unlink, utimes } from "node:fs/promises";
+import { lstat, open, readdir, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
@@ -275,8 +275,9 @@ export class PrivateNativeLease {
         await writePrivateJson(this.path, { ...this.owner, hostPid: 0 }); return;
       }
       const previous = this.owner.privateOwner?.previous; const time = this.owner.privateOwner?.previousMtimeMs;
-      // Its file time comes back too: a receipt without a boot stamp is judged by it.
-      if (previous) { await writePrivateJson(this.path, previous); if (time !== undefined) await utimes(this.path, new Date(), new Date(time)); }
+      // Its file time comes back too, set before the rename: a receipt without a boot stamp is judged by it, so it never shows
+      // the restored contents with the current time (a reused pid could look live, a `starting` launch get a fresh grace).
+      if (previous) await writePrivateJson(this.path, previous, time !== undefined ? { mtimeMs: time } : {});
       else await unlink(this.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
     });
   }

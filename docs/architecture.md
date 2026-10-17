@@ -175,7 +175,13 @@ A desktop adapter whose plan shares native chats falls back to its own native en
 when its host stays down through the wait, so native chats keep working. Discovery
 must have failed because there is no host receipt, or because a valid receipt names
 no running, live host; a host that does not match, a changed host socket, an
-unreadable receipt and every other failure still fail closed. The native-home
+unreadable receipt and every other failure still fail closed. An adapter whose plan
+also shares gateway chats falls back the same way when the running host offers no
+native sharing (an app engine it could not verify). Either fallback needs the
+adapter's native home to be the plan's own: the same folder, spelled the same way.
+The host folder is keyed by that spelling, so an adapter that reaches the folder
+through a link or another path looked at a host folder the service never runs, and
+it is refused with a message saying so. The native-home
 verdict must also be clear: a live or unconfirmed owner, or anything answering at the
 host's native socket, keeps the adapter out. Before it spawns the engine, the adapter
 takes the per-native-home lease under the receipt's own lock. Its receipt names the
@@ -183,13 +189,38 @@ host's configuration and native socket path, the adapter as the owner process an
 launch marked `starting`, then the engine's pid once it runs. It also keeps the
 engine identity and the whole receipt it replaced. When the engine exits (the adapter
 stopping, or the engine leaving by itself), the adapter puts that receipt back with
-its file time, or removes the file when there was none, so the host and rollback see
-the home as they did before the fallback. While the lease is live, a host that
+its file time, set before the atomic rename so no reader sees the restored receipt with
+the current time, or removes the file when there was none, so the host and rollback see
+the home as they did before the fallback. An adapter that fails to build after taking
+the lease spawned nothing and gives the lease straight back. An engine that still runs
+when the lease is released keeps the home: the receipt then names only that engine
+(`hostPid` 0) until the dead owner rules release it.
+
+The lease allows one fallback engine per native home. A second adapter on the same
+home, such as a connected machine's SSH session while the desktop's fallback runs,
+fails closed instead of becoming a second writer. When the host is down it reports the
+host's own failure; when the host only lacks native sharing it says that another
+connection's native engine already writes the home. A host without native sharing
+used to let every adapter run its own engine on the home; correctness wins over that
+convenience, so such a second adapter now fails closed until the first one closes or
+native sharing returns.
+Rollback and `shared-native --disable` treat a live lease like any live native owner:
+they refuse (and the disable restores the previous plan) until that adapter's engine
+has exited.
+
+While the lease is live, a host that
 starts claims everything but the native home: it records `native_sharing_unavailable`
 with `reason: native_owner`, serves gateway chats, and refuses native requests
 (`native_acquire` with `refused_owner`) until one finds the home free and claims it,
-so the next adapter start returns to sharing. A native-only host still fails its
-start, as before. A fallback adapter that crashes leaves a receipt naming its own
+so the next adapter start returns to sharing. A receipt from a dead owner that names
+another configuration or another spelling of the native home is not the host's to take
+either: the host records `native_sharing_unavailable` with `reason: native_identity`, serves gateway chats, and refuses
+each native request (`Native execution ownership changed`) until the receipt is moved
+aside. A native-only host still fails its start in both cases, as before. A host that
+never claimed the home claims it once when it stops, if the home is free by then (a
+fallback ended and put back, say, a crashed host's receipt that still says running), so
+its stop writes a clean stopped receipt and rollback is not blocked by a stale one. A
+fallback adapter that crashes leaves a receipt naming its own
 process and its engine; once both are gone, the host (or the next fallback, which
 keeps the receipt the crashed one had replaced) reclaims it as a dead owner.
 

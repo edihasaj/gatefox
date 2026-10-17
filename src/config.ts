@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/promises";
+import { readFile, mkdir, open, rename, chmod, link, unlink, utimes } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
@@ -187,13 +187,15 @@ export async function loadConfig(path: string): Promise<GatewayConfig> {
   return validateConfig(parsed, dirname(resolve(path)));
 }
 
-export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+/** `mtimeMs` gives the file that modification time before the rename, so no reader ever sees the new contents with another one. */
+export async function writePrivateJson(path: string, value: unknown, options: { mtimeMs?: number } = {}): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const file = await open(temporary, "wx", 0o600);
   try {
     try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
     finally { await file.close(); }
+    if (options.mtimeMs !== undefined) await utimes(temporary, new Date(), new Date(options.mtimeMs));
     await rename(temporary, path);
   } catch (error) { await unlink(temporary).catch(() => {}); throw error; } // A failed write or rename leaves no temp file behind.
   await chmod(path, 0o600);

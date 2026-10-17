@@ -1,11 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { chmod, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { AppServerBackends } from "../app-server-backends.js";
 import { object, type Message } from "../app-server-connection.js";
 import { writePrivateJson } from "../config.js";
+import type { DesktopCatalog } from "../desktop-catalog.js";
 import { livePid, sdkIdentity } from "../execution-host-storage.js";
 import { hostUnavailable, nativeFallbackReason } from "../execution-host-client.js";
 import { claimPrivateNativeHome, nativeHomeOwnership, readNativeHomeOwner } from "../native-execution-host-storage.js";
@@ -134,5 +137,61 @@ test("a lease taken over from a crashed fallback keeps the receipt that fallback
     const next = await claimPrivateNativeHome({ configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), codex: f.sdk }, f.home);
     assert.deepEqual((await readNativeHomeOwner(f.nativeHome))?.privateOwner?.previous, original);
     await next.release(); assert.deepEqual(JSON.parse(await readFile(f.receipt, "utf8")), original);
+  } finally { await f.clean(); }
+});
+
+test("a lease released while its engine still runs keeps naming that engine, without the adapter, until the engine is gone", { timeout: 20000 }, async () => {
+  const f = await fallbackFixture(); let engine: ChildProcess | undefined;
+  try {
+    await nativeReceipt(f, { hostPid: 0, pid: 0, state: "stopped", sdkState: "stopped" }); const original = JSON.parse(await readFile(f.receipt, "utf8"));
+    const identity = { configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), codex: f.sdk };
+    const lease = await claimPrivateNativeHome(identity, f.home);
+    // A stand-in for an engine that outlives its adapter's release: it only sleeps.
+    engine = spawn("/bin/sleep", ["30"], { stdio: "ignore" }); await once(engine, "spawn");
+    await lease.engineStarted(engine.pid!); const named = await readNativeHomeOwner(f.nativeHome);
+    assert.equal(named?.pid, engine.pid); assert.equal(named?.hostPid, process.pid);
+    await lease.release();
+    // The adapter steps back; the receipt still names the engine and keeps the receipt the lease replaced.
+    const kept = await readNativeHomeOwner(f.nativeHome);
+    assert.deepEqual(kept, { ...named, hostPid: 0 }); assert.deepEqual(kept?.privateOwner?.previous, original);
+    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "live");
+    await assert.rejects(claimPrivateNativeHome(identity, f.home), /already owns this native home/);
+    // Once the engine is gone, the dead owner rules release the home.
+    engine.kill("SIGKILL"); await once(engine, "exit");
+    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "dead_pids");
+  } finally { engine?.kill("SIGKILL"); await f.clean(); }
+});
+
+test("an adapter that cannot be built after its lease was taken gives the lease straight back", { timeout: 20000 }, async () => {
+  const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    await nativeReceipt(f, { hostPid: 0, pid: 0, state: "stopped", sdkState: "stopped" });
+    const before = await readFile(f.receipt, "utf8"); const old = new Date(Date.now() - 3_600_000); await utimes(f.receipt, old, old);
+    const snapshot = { models: [] as Message[], revision: "fixture" };
+    const catalog = { current: () => snapshot, refresh: async () => snapshot, combined: (value: typeof snapshot) => ({ models: value.models }), nativeSlugs: new Set<string>() } as unknown as DesktopCatalog;
+    // An argument the operating system cannot pass makes the engine's spawn throw inside the constructor, after the lease.
+    await assert.rejects(AppServerBackends.create(f.sdk, ["app-server", "--listen", "stdio://", "bad\0argument"], f.config, {}, {}, catalog, async () => {}, () => {}, f.configPath), unavailable);
+    // The lease was taken (the fallback is recorded only then), and the receipt it replaced is back, file time included.
+    assert.equal((await f.events("native_sharing_fallback", since)).length, 1);
+    assert.equal(await readFile(f.receipt, "utf8"), before); assert.equal(Math.floor((await stat(f.receipt)).mtimeMs), Math.floor(old.getTime()));
+    assert.deepEqual(await f.launches(), []);
+    // The next adapter is not kept out by a lease nothing holds.
+    await f.create(); assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
+  } finally { await f.clean(); }
+});
+
+test("an adapter whose native home is not the plan's, even a link to the same folder, never falls back", { timeout: 20000 }, async () => {
+  const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    const link = join(f.directory, "linked-native"); await symlink(f.nativeHome, link);
+    const elsewhere = join(f.directory, "elsewhere"); await mkdir(elsewhere, { mode: 0o700 });
+    for (const home of [link, elsewhere]) {
+      process.env.CODEX_HOME = home;
+      await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /not the one the gateway service shares/.test(error.message), home === link ? "link" : "elsewhere");
+    }
+    assert.deepEqual(await f.launches(), []); assert.equal((await f.events("native_sharing_fallback", since)).length, 0);
+    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined); assert.equal(await readNativeHomeOwner(elsewhere), undefined);
+    // The plan's own spelling still falls back.
+    process.env.CODEX_HOME = f.nativeHome; await f.create(); assert.ok((await readNativeHomeOwner(f.nativeHome))?.privateOwner);
   } finally { await f.clean(); }
 });

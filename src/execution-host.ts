@@ -111,7 +111,8 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   };
   // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
   // while this host was down, say), at the next native request: until then this host refuses native ownership and keeps
-  // serving gateway chats, so it never becomes a second native writer and never takes gateway chats down with it.
+  // serving gateway chats, so it never becomes a second native writer and never takes gateway chats down with it. A receipt
+  // left under another configuration or spelling of the native home is refused the same way, with its own fixed message.
   const claimNative = async (): Promise<void> => { nativeLease ??= await claimNativeHome(owner, home); };
   const acquireNative = async (params: Message): Promise<NativeExecutionRecord> => {
     if (!capabilities.includes("native")) throw new Error("Execution host does not offer native ownership");
@@ -209,7 +210,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
           return result;
         });
         serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership is held by a live owner)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -239,6 +240,10 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
+    // A host that never claimed the native home (a live owner held it) may find it free now, holding the receipt a fallback
+    // put back, such as a crashed host's that still says running: it claims it once, so the publish below writes a clean
+    // stopped receipt. An owner that still lives, or any other refusal, keeps the receipt as it is.
+    if (capabilities.includes("native") && !nativeLease) await claimNative().catch(() => undefined);
     engines.clear(); await removeOwnedSocket(socketPath, owner.socket);
     owner.pid = 0; owner.state = "stopped"; await publish();
   })();
@@ -246,9 +251,12 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (capabilities.includes("native")) {
       try { await claimNative(); }
       catch (error) {
-        // A native-only host has nothing else to offer, so it still fails closed and the service retries it.
-        if (!capabilities.includes("gateway") || hostFailureReason(error) !== "live_owner") throw error;
-        telemetry("native_sharing_unavailable", { reason: "native_owner" });
+        // A native-only host has nothing else to offer, so it still fails closed and the service retries it. A receipt that
+        // names another configuration or spelling of the native home is not this host's to take either, but it must not take
+        // gateway chats down: like a live owner, it leaves native ownership to the next native request.
+        const reason = hostFailureReason(error);
+        if (!capabilities.includes("gateway") || reason !== "live_owner" && reason !== "identity_changed") throw error;
+        telemetry("native_sharing_unavailable", { reason: reason === "live_owner" ? "native_owner" : "native_identity" });
       }
     }
     // Codex sandboxes always hide this SDK-reserved physical directory, including

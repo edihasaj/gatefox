@@ -119,6 +119,7 @@ async function fixture() {
   }
   return { directory, nativeHome, config, configPath, home, sdk, create, calls, nativeCalls, threads, initializations, replies, owner, hooks, snapshot, spawnMarker,
     disconnectControl() { for (const client of control.sockets.clients) client.terminate(); },
+    closeNative: () => native.close(),
     nativeMessages(messages: Message[]) { for (const client of native.sockets.clients) for (const message of messages) send(client, message); },
     nativeDeath(observationDelayMs = 0) { hooks.nativeState = "exited"; hooks.deathObservedAt = Date.now() + observationDelayMs; for (const client of native.sockets.clients) client.terminate(); },
     async noSpawn() { await assert.rejects(readFile(spawnMarker), { code: "ENOENT" }); },
@@ -372,21 +373,27 @@ async function sharedPlan(f: Awaited<ReturnType<typeof fixture>>, capabilities: 
 }
 const fallbackEvents = async (f: Awaited<ReturnType<typeof fixture>>, since: number) => { await flushTelemetry(); return (await readTelemetry(f.config.stateDirectory, since)).filter(event => event.event === "native_sharing_fallback"); };
 
-test("a gateway-only host makes the adapter fall back to a private native engine and keep sharing gateway chats", { timeout: 10000 }, async () => {
+test("a gateway-only host makes the adapter fall back to a private native engine under the native-home lease and keep sharing gateway chats", { timeout: 10000 }, async () => {
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
-    await sharedPlan(f, ["gateway"]);
-    const adapter = await AppServerBackends.create(f.sdk, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
+    // A host without native sharing runs no native engine, so nothing answers at its native socket.
+    await sharedPlan(f, ["gateway"]); await f.closeNative();
+    // Like the real engine, this one runs until its adapter closes its pipe; it records whether the lease was there first.
+    const engine = join(f.directory, "engine"); const receipt = nativeHomeOwnerPath(f.nativeHome);
+    await writeFile(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(f.spawnMarker)},JSON.stringify({lease:fs.existsSync(${JSON.stringify(receipt)})}));process.stdin.on('end',()=>process.exit(0));process.stdin.resume();\n`, { mode: 0o700 });
+    const adapter = await AppServerBackends.create(engine, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
       async () => {}, () => {}, f.configPath);
     try {
       assert.notEqual(adapter.native.shared, true); assert.equal((adapter as unknown as { sharedGateway?: boolean }).sharedGateway, true);
       assert.equal(f.calls.some(message => message.method === "native/acquire"), false);
-      await until(() => existsSync(f.spawnMarker));
+      await until(() => existsSync(f.spawnMarker)); assert.deepEqual(JSON.parse(await readFile(f.spawnMarker, "utf8")), { lease: true });
       const events = await fallbackEvents(f, since); assert.equal(events.length, 1); assert.equal(events[0].reason, "other");
       assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
-      // Only a host that is down leaves the native home to a lease; this fallback takes none, as before.
-      assert.equal(existsSync(nativeHomeOwnerPath(f.nativeHome)), false);
+      // Like a host that is down, a host without native sharing leaves the native home to this adapter's lease alone.
+      const lease = JSON.parse(await readFile(receipt, "utf8"));
+      assert.equal(lease.hostPid, process.pid); assert.equal(lease.pid, (adapter.native as unknown as { pid?: number }).pid); assert.equal(typeof lease.privateOwner?.instanceId, "string");
     } finally { await adapter.stop(); }
+    assert.equal(existsSync(receipt), false);
   } finally { await f.clean(); }
 });
 
