@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import {spawn, execFile} from 'node:child_process';
 import {randomUUID, timingSafeEqual} from 'node:crypto';
-import {appendFileSync, mkdtempSync, realpathSync, rmSync} from 'node:fs';
+import {appendFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync} from 'node:fs';
 import {mkdir, readFile, readdir, rm, writeFile, realpath, lstat, readlink, stat} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {homedir} from 'node:os';
 import {dirname, resolve, sep} from 'node:path';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {createInterface} from 'node:readline';
 import {Readable} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
@@ -19,12 +20,19 @@ import {watchHostKick} from '../dist/execution-host-kick.js';
 import {servicePlanPath} from '../dist/service-plan.js';
 import {SocketAppServerConnection} from '../dist/socket-app-server-connection.js';
 import {groupGone} from './group-gone.mjs';
+import {resolveDistDirectory} from './e2e-package-dist.mjs';
 
-const {values:v}=parseArgs({options:{help:{type:'boolean',default:false},gateway:{type:'string'},config:{type:'string'},codex:{type:'string'},'native-home':{type:'string'},workspace:{type:'string'},output:{type:'string'},models:{type:'string',default:'claude/claude-sonnet-5-5,codex/gpt-6.1-sol,qwen/qwen3.8-flash-next'},inference:{type:'boolean',default:false},image:{type:'string'},expected:{type:'string'}}});
-if(v.help){console.log(`Usage: node scripts/e2e-shared-execution.mjs --gateway COMMAND --config SOURCE_CONFIG --codex PINNED_SDK --native-home ISOLATED_HOME --workspace DIR --output FILE [--models a,b] [--inference [--image PNG --expected TEXT]]
+const {values:v}=parseArgs({options:{help:{type:'boolean',default:false},gateway:{type:'string'},package:{type:'string'},config:{type:'string'},codex:{type:'string'},'native-home':{type:'string'},workspace:{type:'string'},output:{type:'string'},models:{type:'string',default:'claude/claude-sonnet-5-5,codex/gpt-6.1-sol,qwen/qwen3.8-flash-next'},inference:{type:'boolean',default:false},image:{type:'string'},expected:{type:'string'}}});
+if(v.help){console.log(`Usage: node scripts/e2e-shared-execution.mjs --gateway COMMAND [--package INSTALLED_PACKAGE] --config SOURCE_CONFIG --codex PINNED_SDK --native-home ISOLATED_HOME --workspace DIR --output FILE [--models a,b] [--inference [--image PNG --expected TEXT]]
+The host loads execution-host.js and config.js from INSTALLED_PACKAGE/dist; without --package that package is the one --gateway's launcher runs
+(its current/package), and only when neither has them does it use this checkout's ../dist. The first JSON line names the dist used.
 The source config's gateway must be running and serve every --models alias in its catalog. Its state, the workspace and the native home share one isolated
 fixture folder, and the native home holds no auth.json. Without --inference no provider request is made; the host restart phase answers its turns locally.`);process.exit(0);}
 for(const key of ['gateway','config','codex','native-home','workspace','output'])if(!v[key])throw new Error(`Missing --${key}`);
+// The host must come from the package that ships gateway-sdk; the checkout's dist refuses with "requires a matching installed gateway SDK".
+const hostDist=resolveDistDirectory({package:v.package,gateway:v.gateway,fallback:fileURLToPath(new URL('../dist',import.meta.url)),exists:existsSync,
+  readText:path=>{try{return statSync(path).size<=65536?readFileSync(path,'utf8'):undefined;}catch{return undefined;}}});
+console.log(JSON.stringify({dist:hostDist.directory,distSource:hostDist.source}));
 if(Boolean(v.image)!==Boolean(v.expected)||v.image&&!v.inference)throw new Error('--image and --expected require each other and --inference');
 // Every process this check starts leads a process group of its own (an adapter with its private engine, the host with its gateway
 // engines) and stays listed until that group is empty. No exit path leaves one behind: success and failure stop them in order, a
@@ -78,7 +86,7 @@ function fixtureStream(response){
     {type:'response.completed',response:{object:'response',id,created_at:created,model:'fixture',status:'completed',usage,output:[message],output_text:fixtureText}}];
   response.writeHead(200,{'content-type':'text/event-stream'});for(const frame of frames)response.write(`event: ${frame.type}\ndata: ${JSON.stringify({...frame,sequence_number:sequence++})}\n\n`);response.end();
 }
-const record=data=>{results.push(data);return writeFile(output,JSON.stringify({checkedAt:new Date().toISOString(),sdkVersion:version,inferenceEnabled:v.inference,results},null,2)+'\n',{mode:0o600}).then(()=>console.log(JSON.stringify(data)));};
+const record=data=>{results.push(data);return writeFile(output,JSON.stringify({checkedAt:new Date().toISOString(),dist:hostDist.directory,sdkVersion:version,inferenceEnabled:v.inference,results},null,2)+'\n',{mode:0o600}).then(()=>console.log(JSON.stringify(data)));};
 const proxy=createServer((request,response)=>{
   void(async()=>{
     const supplied=Buffer.from(request.headers.authorization||'');const expected=Buffer.from(`Bearer ${token}`);
@@ -133,7 +141,7 @@ catch{if(!closing){process.stdout.write('HOST_FAILED\\n');process.exit(1);}}
 if(closing)await closing;
 process.stdout.write('HOST_READY\\n');`;
 async function startHost(){
-  const child=startGroup(process.execPath,['--input-type=module','-e',hostRunner,new URL('../dist/execution-host.js',import.meta.url).href,new URL('../dist/config.js',import.meta.url).href,JSON.stringify({configPath,nativeHome,codex:sdk,home:fakeHome})],{env:childEnv(),stdio:['ignore','pipe','ignore']});
+  const child=startGroup(process.execPath,['--input-type=module','-e',hostRunner,pathToFileURL(resolve(hostDist.directory,'execution-host.js')).href,pathToFileURL(resolve(hostDist.directory,'config.js')).href,JSON.stringify({configPath,nativeHome,codex:sdk,home:fakeHome})],{env:childEnv(),stdio:['ignore','pipe','ignore']});
   const exited=new Promise(resolve=>child.once('close',resolve));const lines=createInterface({input:child.stdout});let connection;let stopping;
   const entry={pid:child.pid,exited,stop:()=>stopping??=(async()=>{if(connection&&control===connection){control.stop();await control.exited;}child.kill('SIGTERM');if(!await Promise.race([exited.then(()=>true),delay(10000).then(()=>false)]))try{process.kill(-child.pid,'SIGKILL');}catch{}await reapGroup(child.pid,5000);hosts.delete(entry);})()};
   hosts.add(entry);
