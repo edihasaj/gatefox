@@ -139,6 +139,17 @@ test("a new chat keeps the engine the router sent it to when the reply classifie
   assert.equal(f.router.describeThread("disagreeing").provider, "native", "the remembered route still decides");
 });
 
+test("a gateway chat whose route came from a settings notification still resumes with the provider it was saved with", async () => {
+  const f = await fixture();
+  // The notification names no provider, so the route it creates does not know the saved one; the resume must read it.
+  await f.router.observeNotification(settingsUpdated("gw", { model: sol, serviceTier: null, effort: "low" }), "gateway");
+  assert.equal(f.router.describeThread("gw").provider, "gateway");
+  assert.equal(f.calls.some(call => call.method === "thread/read"), false, "the route came from the notification alone");
+  await f.router.request("thread/resume", { threadId: "gw" });
+  assert.equal(f.sent("thread/resume").params.modelProvider, identity.provider, "the saved provider, never a rewrite");
+  assert.equal(f.router.describeThread("gw").identity, identity.name === "legacy" ? "legacy" : "openai");
+});
+
 test("forks follow their chat: a gateway fork gets the gateway's request, a native or prediction fork reaches the engine as sent", async () => {
   const f = await fixture();
   await f.router.request("thread/resume", { threadId: "gw" });

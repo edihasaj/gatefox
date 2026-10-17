@@ -76,8 +76,9 @@ export interface GatewayConfig {
   clientOnly?: boolean;
   accountEngines?: AccountEngineConfig[];
   /**
-   * The provider id new gateway chats are recorded with: `openai` (the default) so the phone and the native engine list them,
-   * or `legacy` for `subscription_gateway`. Existing chats keep the id they were saved with either way. See docs/harness-identity.md.
+   * The provider id new gateway chats are recorded with: `legacy` (the default) for `subscription_gateway`, or `openai`, an
+   * opt-in for a Mac whose native relay is verified, so a stock engine lists them too. Existing chats keep the id they were
+   * saved with either way. See docs/harness-identity.md.
    */
   chatIdentity?: "openai" | "legacy";
 }

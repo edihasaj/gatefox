@@ -14,12 +14,13 @@ export const gatewayExecutorMarker = "HARNESS_GATEWAY_EXECUTOR";
 export const gatewayProviderIds: ReadonlySet<string> = new Set([legacyGatewayProvider, nativeIdentityProvider]);
 
 /**
- * The provider id this adapter's new gateway chats are recorded with. It is `openai`, so the phone and the native engine
- * list them, unless the configuration asks for `legacy` or the executor is not a gateway SDK that can serve that id: a stock
- * Codex (a checkout without the artifact) would send `openai` to OpenAI's own provider.
+ * The provider id this adapter's new gateway chats are recorded with. The default is the legacy `subscription_gateway`: the
+ * phone reaches gateway chats through the native relay, which lists and continues them on the gateway. `openai` is an opt-in
+ * per Mac (`chatIdentity: "openai"`), for a Mac whose relay is verified, and needs a gateway SDK that serves that id: a stock
+ * Codex (a checkout without the artifact) would send `openai` to OpenAI's own provider. See docs/harness-identity.md.
  */
 export function newChatProvider(config: Pick<GatewayConfig, "chatIdentity">, runtime: GatewaySdkRuntime | undefined): string {
-  return config.chatIdentity !== "legacy" && runtime?.executorIdentity === true ? nativeIdentityProvider : legacyGatewayProvider;
+  return config.chatIdentity === "openai" && runtime?.executorIdentity === true ? nativeIdentityProvider : legacyGatewayProvider;
 }
 
 /**
@@ -35,12 +36,14 @@ export function savedChatProvider(saved: unknown): string {
  * The gateway's own provider is always registered, so a legacy chat still resumes, and the SDK aliases `openai` to it inside the
  * executor. `openai_base_url` points the built-in `openai` at the gateway too, so an executor that is not a gateway SDK sends a
  * native-identity chat to the loopback gateway, which refuses it, never to OpenAI. Analytics stay off: an executor has no
- * ChatGPT account, and its events would otherwise carry whatever credential the SDK found.
+ * ChatGPT account, and its events would otherwise carry whatever credential the SDK found. The marker is set to `0` for the
+ * commands, hooks and shells the executor starts, so nothing a chat runs (another Codex among them) counts as an executor.
  */
 export function executorOverrides(provider: string, providerOverrides: Message): Message {
   return {
     model_provider: provider,
     "analytics.enabled": false,
+    [`shell_environment_policy.set.${gatewayExecutorMarker}`]: "0",
     ...(typeof providerOverrides.base_url === "string" ? { openai_base_url: providerOverrides.base_url } : {}),
     ...Object.fromEntries(Object.entries(providerOverrides).map(([key, value]) => [`model_providers.${legacyGatewayProvider}.${key}`, value])),
   };

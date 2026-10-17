@@ -337,7 +337,7 @@ export class AppServerBackends {
     const snapshot = this.catalog.current();
     const priority = offersPriority(snapshot.models);
     const runtime = await this.resolveRuntime();
-    const provider = await this.newChatProvider({ runtime });
+    const provider = this.newChatProvider(runtime);
     // The identity is fixed for the connection; an executor that can no longer serve it fails closed instead of reaching OpenAI.
     if (provider !== newChatProvider(this.config, runtime)) throw Object.assign(new Error("The gateway executor changed while this desktop connection was open; reconnect to continue gateway chats"), { code: -32001 });
     const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "") + provider).digest("hex");
@@ -410,16 +410,9 @@ export class AppServerBackends {
     });
     this.creating = operation.catch(() => undefined); return operation;
   }
-  /**
-   * The provider id this connection records new gateway chats with, decided once from the configuration and the gateway SDK
-   * (see docs/harness-identity.md). `runtime` is the SDK a caller already resolved, so the first gateway chat costs no second check.
-   */
-  private async newChatProvider(resolved?: { runtime: GatewaySdkRuntime | undefined }): Promise<string> {
-    if (this.chatProvider === undefined) {
-      const runtime = resolved ? resolved.runtime : await this.resolveRuntime();
-      this.chatProvider ??= newChatProvider(this.config, runtime);
-    }
-    return this.chatProvider;
+  /** The provider id this connection records new gateway chats with, decided once from the configuration and the gateway SDK (docs/harness-identity.md). */
+  private newChatProvider(runtime: GatewaySdkRuntime | undefined): string {
+    return this.chatProvider ??= newChatProvider(this.config, runtime);
   }
   /** Gateway aliases this connection knows: the current catalog and every generation it still has loaded. */
   private gatewayAliases(): ReadonlySet<string> {
@@ -433,7 +426,10 @@ export class AppServerBackends {
   }
   private async verdict(thread: unknown, threadId: string, method: string): Promise<ReturnType<ChatIdentity["classify"]>> {
     await this.identity.refresh();
-    return this.identity.classify({ ...threadFacts(thread), id: threadId }, this.catalogs, method);
+    const facts = { ...threadFacts(thread), id: threadId };
+    // Ancestors come from the native engine's saved records: every chat's rollout is in the shared home, gateway ones included.
+    await this.identity.learnAncestors(facts, async id => (await this.nativeRequest("thread/read", { threadId: id, includeTurns: false })).thread);
+    return this.identity.classify(facts, this.catalogs, method);
   }
   /**
    * A gateway chat found only through its parent or its alias is written to the registry when it is routed, so it no longer
@@ -499,10 +495,12 @@ export class AppServerBackends {
     const creating = method === "thread/start" || method === "thread/fork";
     if (creating) engine.creating = (engine.creating ?? 0) + 1;
     try {
-      // The router asks for a new gateway chat with the gateway's own provider id; the chat is recorded with this connection's
-      // identity. A resumed chat keeps the provider the router read from its record, so no saved chat is ever rewritten.
+      // The router asks for a new gateway chat with the gateway's own provider id; the chat is recorded with the identity the
+      // engine was launched with. An engine this connection did not launch (a shared host's, found by its chat) may run an SDK
+      // that cannot serve `openai`, so its new chats keep the legacy id. A resumed chat keeps the provider the router read
+      // from its record, so no saved chat is ever rewritten.
       if (creating && params.modelProvider === legacyGatewayProvider) {
-        const provider = engine.provider ?? await this.newChatProvider();
+        const provider = engine.provider ?? legacyGatewayProvider;
         if (provider !== legacyGatewayProvider) params = { ...params, modelProvider: provider };
       }
       // Only gateway engines get here; native requests returned above and are forwarded untouched.
@@ -528,6 +526,10 @@ export class AppServerBackends {
         // A new gateway chat is in the registry before its reply reaches the client; a throwaway one, flagged here or by
         // the engine's own announcement, stays memory-only.
         if (!this.ephemeralThreads.has(id) && method !== "thread/resume") await this.identity.record(id, method === "thread/start" ? "start" : "fork");
+        // A new chat must carry the provider it was asked for; any other answer comes from an executor that ignored the request.
+        if (creating && typeof params.modelProvider === "string" && result.modelProvider !== params.modelProvider) {
+          throw new Error("The gateway executor did not record this chat with the requested provider; start a new chat");
+        }
       }
       if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && typeof params.threadId === "string") {
         engine.threads.delete(params.threadId); this.bindings.delete(params.threadId); this.ephemeralThreads.delete(params.threadId); engine.compaction?.forget(params.threadId);

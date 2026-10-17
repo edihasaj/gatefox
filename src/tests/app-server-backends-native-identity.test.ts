@@ -37,7 +37,7 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
  if(m.method==='config/read')result={config:{model:'${nativeModel}',model_provider:'openai'}};
  if(m.method==='fixture/ledger')result={gateway};
  if(m.method==='thread/start'||m.method==='thread/fork'){const parent=m.method==='thread/fork'?all()[p.threadId]:{};
-  const t={id:p.fixtureId||(gateway?'gw-':'native-')+(++sequence),model:p.model||parent.model||'${nativeModel}',modelProvider:p.modelProvider||fallback,requested:p.modelProvider??null,ephemeral:p.ephemeral===true};
+  const t={id:p.fixtureId||(gateway?'gw-':'native-')+(++sequence),model:p.model||parent.model||'${nativeModel}',modelProvider:p.answerProvider||p.modelProvider||fallback,requested:p.modelProvider??null,ephemeral:p.ephemeral===true};
   if(!t.ephemeral)keep(t);send({id:m.id,result:{thread:t,model:t.model,modelProvider:t.modelProvider,serviceTier:null}});send({method:'thread/started',params:{thread:t}});return;}
  if(m.method==='thread/read'||m.method==='thread/resume'){const t=all()[p.threadId];if(!t){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id '+p.threadId}});return;}
   if(m.method==='thread/resume'&&p.modelProvider){t.resumedWith=p.modelProvider;keep(t);}result={thread:t,model:t.model,modelProvider:t.modelProvider,serviceTier:null};}
@@ -74,8 +74,8 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
     } };
 }
 
-test("by default an executor records new gateway chats as openai, registers the legacy provider and runs without analytics", { timeout: 20000 }, async () => {
-  const f = await fixture();
+test("an opted-in executor records new gateway chats as openai, registers the legacy provider and runs without analytics", { timeout: 20000 }, async () => {
+  const f = await fixture("openai");
   // As when the adapter itself was started from inside a gateway chat: its native engine must still not be marked.
   const inherited = process.env.HARNESS_GATEWAY_EXECUTOR; process.env.HARNESS_GATEWAY_EXECUTOR = "1";
   try {
@@ -86,7 +86,7 @@ test("by default an executor records new gateway chats as openai, registers the 
     assert.equal((await f.saved())["new-chat"].requested, "openai", "the executor was asked for the native identity");
     assert.equal(await f.registry().has("new-chat"), true, "recorded before the reply returned");
     const executor = (await f.launches()).find(launch => launch.gateway)!;
-    for (const setting of ['model_provider="openai"', "analytics.enabled=false", 'openai_base_url="http://127.0.0.1:3457/v1"',
+    for (const setting of ['model_provider="openai"', "analytics.enabled=false", 'shell_environment_policy.set.HARNESS_GATEWAY_EXECUTOR="0"', 'openai_base_url="http://127.0.0.1:3457/v1"',
       'model_providers.subscription_gateway.base_url="http://127.0.0.1:3457/v1"', "model_providers.subscription_gateway.supports_websockets=false",
       "model_providers.subscription_gateway.request_max_retries=2", "model_providers.subscription_gateway.stream_idle_timeout_ms=90000"]) {
       assert.ok(executor.args.includes(setting), setting);
@@ -107,7 +107,7 @@ test("by default an executor records new gateway chats as openai, registers the 
 });
 
 test("a resumed chat keeps the provider it was saved with; only the router's request for a new chat is given the identity", { timeout: 20000 }, async () => {
-  const f = await fixture();
+  const f = await fixture("openai");
   try {
     await f.save({ id: "legacy-chat", model: alias, modelProvider: "subscription_gateway" });
     const backends = await f.open();
@@ -121,8 +121,8 @@ test("a resumed chat keeps the provider it was saved with; only the router's req
   } finally { await f.clean(); }
 });
 
-test("chatIdentity legacy, or a gateway SDK without patch v2, keeps recording new gateway chats as subscription_gateway", { timeout: 20000 }, async () => {
-  for (const [identity, servesIdentity] of [["legacy", true], [undefined, false]] as const) {
+test("the default, chatIdentity legacy, or a gateway SDK without patch v2, keeps recording new gateway chats as subscription_gateway", { timeout: 20000 }, async () => {
+  for (const [identity, servesIdentity] of [[undefined, true], ["legacy", true], ["openai", false]] as const) {
     const f = await fixture(identity, servesIdentity);
     try {
       const backends = await f.open({ base_url: "http://127.0.0.1:3457/v1" });
@@ -137,7 +137,7 @@ test("chatIdentity legacy, or a gateway SDK without patch v2, keeps recording ne
 });
 
 test("an openai gateway chat found through its parent or alias is written to the registry when it is routed; a native one never is", { timeout: 20000 }, async () => {
-  const f = await fixture();
+  const f = await fixture("openai");
   try {
     await f.registry().record("parent", "start");
     await f.save({ id: "parent", model: alias, modelProvider: "openai" });
@@ -153,5 +153,51 @@ test("an openai gateway chat found through its parent or alias is written to the
     // The sub-agent no longer needs its parent: a registry without the parent still routes it.
     const raw = JSON.parse(await readFile(join(f.state, "gateway-chats", (await readdir(join(f.state, "gateway-chats"))).find(name => name.endsWith(".json"))!), "utf8"));
     assert.deepEqual(raw.chats.map((chat: Message) => [chat.id, chat.origin]).sort(), [["alias-chat", "started"], ["orphan-sub-agent", "subagent"], ["parent", "start"]]);
+  } finally { await f.clean(); }
+});
+
+test("a sub-agent on a native model is routed to the gateway through ancestors this connection never saw (no registry entry, or two levels deep)", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    // (a) The registry lost every entry: the parent is known only by its gateway alias, which only its own record carries.
+    await f.save({ id: "lost-parent", model: alias, modelProvider: "openai" });
+    await f.save({ id: "lost-sub-agent", model: nativeModel, modelProvider: "openai", source: { subAgent: { thread_spawn: { parent_thread_id: "lost-parent", depth: 1 } } } });
+    // (b) Spawned two levels deep while no desktop was connected: only the root chat is registered.
+    await f.registry().record("root-chat", "start");
+    await f.save({ id: "root-chat", model: nativeModel, modelProvider: "openai" });
+    await f.save({ id: "middle-agent", model: nativeModel, modelProvider: "openai", source: { subAgent: { thread_spawn: { parent_thread_id: "root-chat", depth: 1 } } } });
+    await f.save({ id: "deep-agent", model: nativeModel, modelProvider: "openai", source: { subAgent: { thread_spawn: { parent_thread_id: "middle-agent", depth: 2 } } } });
+    // A native sub-agent of a native chat stays native, and reading its chain records nothing.
+    await f.save({ id: "native-parent", model: nativeModel, modelProvider: "openai" });
+    await f.save({ id: "native-sub-agent", model: nativeModel, modelProvider: "openai", source: { subAgent: { thread_spawn: { parent_thread_id: "native-parent", depth: 1 } } } });
+    const backends = await f.open();
+    for (const id of ["lost-sub-agent", "deep-agent", "native-sub-agent"]) await backends.request("thread/resume", { threadId: id });
+    assert.deepEqual(await Promise.all(["lost-sub-agent", "deep-agent", "native-sub-agent"].map(id => f.engineOf(backends, id))), ["gateway", "gateway", "native"]);
+    assert.deepEqual(await Promise.all(["lost-sub-agent", "deep-agent", "native-sub-agent", "native-parent"].map(id => f.registry().has(id))), [true, true, false, false]);
+    // The next connection finds both sub-agents in the registry, without reading their ancestors again.
+    const later = await f.open();
+    await later.request("thread/resume", { threadId: "deep-agent" });
+    assert.equal(await f.engineOf(later, "deep-agent"), "gateway");
+  } finally { await f.clean(); }
+});
+
+test("a new chat on an engine this connection did not launch keeps the legacy id, and an executor that ignores the requested provider is refused", { timeout: 20000 }, async () => {
+  const f = await fixture("openai");
+  try {
+    const backends = await f.open();
+    await backends.request("thread/start", { fixtureId: "launched", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    // As for an engine found through a shared host by its chat: this connection does not know what its SDK can serve.
+    const engine = (backends as unknown as { bindings: Map<string, { provider?: string }> }).bindings.get("launched")!;
+    delete engine.provider;
+    const fork = await backends.request("thread/fork", { threadId: "launched", fixtureId: "unknown-engine-fork", modelProvider: "subscription_gateway" });
+    assert.equal((await f.saved())["unknown-engine-fork"].requested, "subscription_gateway"); assert.equal(fork.modelProvider, "subscription_gateway");
+    engine.provider = "openai";
+    // The executor answers with another provider than it was asked for: the chat is not handed to the client as a gateway chat.
+    for (const answerProvider of ["azure", "subscription_gateway"]) {
+      await assert.rejects(backends.request("thread/start", { fixtureId: `ignored-${answerProvider}`, model: alias, modelProvider: "subscription_gateway", answerProvider }, { engine: "gateway" }),
+        /did not record this chat with the requested provider/, answerProvider);
+    }
+    // A request that names no provider is not checked: the executor's default applies.
+    await backends.request("thread/start", { fixtureId: "unnamed-answer", model: alias, answerProvider: "openai" }, { engine: "gateway" });
   } finally { await f.clean(); }
 });

@@ -63,6 +63,8 @@ export class AppServerRouter {
   private extraModels: ObjectValue[];
   private readonly identity: ChatIdentity;
   private readonly catalogs: IdentityCatalogs = { aliases: () => this.aliases, nativeSlugs: () => this.source?.nativeSlugs ?? noSlugs };
+  /** The native engine's default provider, read once per connection for chat lists and read again after a configuration write. */
+  private nativeDefault?: Promise<string>;
   /** `identity` is the connection's, shared with its backends so both classify from one registry read and one set of seen chats. */
   constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog,
     private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex"), identity?: ChatIdentity) {
@@ -134,6 +136,7 @@ export class AppServerRouter {
   /** Classification after one registry read; the parent rule reads only chats this connection has seen. */
   private async classify(thread: ClassifyThread, method: string): Promise<ChatKind> {
     await this.identity.refresh();
+    await this.identity.learnAncestors(thread, async id => (await this.backend("thread/read", { threadId: id, includeTurns: false })).thread);
     return this.identity.classify(thread, this.catalogs, method).kind;
   }
   private async route(threadId: string, method: string): Promise<ThreadRoute | undefined> {
@@ -248,15 +251,18 @@ export class AppServerRouter {
    * saved with the gateway's own id, so a client that lists the native identity (the phone, through the relay) sees every
    * gateway chat without any saved chat being rewritten. Every other list reaches the engine as it was sent: an empty list
    * already means every provider, a parent or ancestor filter lists every provider, and a chosen set of providers is the
-   * caller's choice. The native default is read from the engine's configuration, `openai` when it names none.
+   * caller's choice. The native default is read from the engine's configuration, `openai` when it names none, once per
+   * connection and again after a configuration write.
    */
   private async listRequest(params: ObjectValue): Promise<ObjectValue> {
     const requested = params.modelProviders;
     const omitted = requested === undefined || requested === null;
     if (omitted && (typeof params.parentThreadId === "string" || typeof params.ancestorThreadId === "string")) return params;
     if (!omitted && (!Array.isArray(requested) || requested.length !== 1 || typeof requested[0] !== "string")) return params;
-    const configured = object((await this.backend("config/read", {}).catch((): ObjectValue => ({}))).config).model_provider;
-    const native = typeof configured === "string" && configured ? configured : nativeIdentityProvider;
+    const native = await (this.nativeDefault ??= this.backend("config/read", {}).then(result => {
+      const configured = object(result.config).model_provider;
+      return typeof configured === "string" && configured ? configured : nativeIdentityProvider;
+    }, () => { this.nativeDefault = undefined; return nativeIdentityProvider; }));
     if (native === gatewayProvider || (!omitted && (requested as string[])[0] !== native)) return params;
     return { ...params, modelProviders: [native, gatewayProvider] };
   }
@@ -322,7 +328,8 @@ export class AppServerRouter {
       })
       // No private part: the whole request belongs to the native engine and is forwarded unchanged.
       : this.backend(method, params);
-    const operation = this.writes.then(queued);
+    // A native write may change the engine's default provider, so the next chat list reads it again.
+    const operation = this.writes.then(queued).finally(() => { if (nativeEdits.length) this.nativeDefault = undefined; });
     this.writes = operation.catch(() => undefined); return operation;
   }
   /** Checks a batch aimed at gateway defaults and returns the file it produces, without saving it. */
