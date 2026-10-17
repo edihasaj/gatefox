@@ -25,7 +25,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 }
 
 async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
-  const f = await fixture(t); const sourceSha256 = "e068c16e07773892d27c6a4afd118191a3f7cc85102fc627a7f01e7e5a92844e";
+  const f = await fixture(t); const sourceSha256 = "ebab4827d4410db13581634f192ecec034a6741253b6ef4c90cfcb935b01bb99";
   await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" })); await f.save({ sourceSha256 });
   for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) await writeFile(join(f.directory, name), `fixture ${name}`, { mode: 0o600 });
   const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {

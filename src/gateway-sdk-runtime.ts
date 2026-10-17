@@ -5,11 +5,11 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const gatewaySdkRevision = "740e5af33c71225640e0c1c1555c514c2c93ab74";
-export const gatewaySdkPatchSha256 = "261266e3664a4f140d987332ddeca5c440943caa31ef3cb1c91fa751a54d3718";
+export const gatewaySdkPatchSha256 = "fcdb52af736450504304b7fda69fa0ebef8fa27d46ddde8eae329749a0c6de08";
 const archiveSha256 = "25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83";
 const lockfileSha256 = "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb";
 const lockfileRepairSha256 = "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8";
-const sourceSha256 = "e068c16e07773892d27c6a4afd118191a3f7cc85102fc627a7f01e7e5a92844e";
+const sourceSha256 = "ebab4827d4410db13581634f192ecec034a6741253b6ef4c90cfcb935b01bb99";
 const componentFiles = ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"];
 const invalid = () => new Error("Gateway executor artifact does not match this release. Reinstall the gateway before loading another gateway chat.");
 /**

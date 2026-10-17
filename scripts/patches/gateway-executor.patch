@@ -21,26 +21,29 @@ index 0879533..2702f3d 100644
      if !should_compact_for_comp_hash_change && previous_model == turn_context.model_info().slug {
          return Ok(());
 diff --git a/codex-rs/core/tests/suite/compact.rs b/codex-rs/core/tests/suite/compact.rs
-index b46bc10..7172f06 100644
+index b46bc10..a83a58b 100644
 --- a/codex-rs/core/tests/suite/compact.rs
 +++ b/codex-rs/core/tests/suite/compact.rs
-@@ -2375,6 +2375,142 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
+@@ -2375,6 +2375,145 @@ async fn pre_sampling_compact_runs_on_switch_to_smaller_context_model() {
      );
  }
  
-+/// Sets the gateway executor marker for one case and restores it after. The gate runs these cases on one thread.
++/// Sets or removes the gateway executor marker for one case and restores it after, so a case without the
++/// marker is unmarked even when the test process inherited one. The gate runs these cases on one thread.
 +struct GatewayExecutorMarker(Option<std::ffi::OsString>);
 +
 +impl GatewayExecutorMarker {
-+    fn set(enabled: bool) -> Option<Self> {
++    fn set(enabled: bool) -> Self {
 +        let key = codex_model_provider_info::GATEWAY_EXECUTOR_ENV_VAR;
-+        enabled.then(|| {
-+            let original = std::env::var_os(key);
-+            unsafe {
++        let original = std::env::var_os(key);
++        unsafe {
++            if enabled {
 +                std::env::set_var(key, "1");
++            } else {
++                std::env::remove_var(key);
 +            }
-+            Self(original)
-+        })
++        }
++        Self(original)
 +    }
 +}
 +
@@ -168,10 +171,10 @@ index b46bc10..7172f06 100644
  async fn pre_sampling_compact_runs_when_comp_hash_changes() {
      skip_if_no_network!();
 diff --git a/codex-rs/model-provider-info/src/lib.rs b/codex-rs/model-provider-info/src/lib.rs
-index f020d34..a562536 100644
+index f020d34..8c1f7f7 100644
 --- a/codex-rs/model-provider-info/src/lib.rs
 +++ b/codex-rs/model-provider-info/src/lib.rs
-@@ -691,6 +691,70 @@ pub fn built_in_model_providers(
+@@ -691,6 +691,73 @@ pub fn built_in_model_providers(
      .collect()
  }
  
@@ -185,12 +188,15 @@ index f020d34..a562536 100644
 +    std::env::var_os(GATEWAY_EXECUTOR_ENV_VAR).is_some_and(|value| value == "1")
 +}
 +
-+/// Harness Gateway: whether a base URL is plain HTTP on this machine's loopback interface.
++/// Harness Gateway: whether a base URL is plain HTTP on this machine's loopback interface, with no
++/// credentials in it. A name that merely resolves to loopback, or an IPv4-mapped IPv6 address, is not.
 +pub fn is_loopback_http_base_url(base_url: Option<&str>) -> bool {
 +    base_url
 +        .and_then(|value| url::Url::parse(value).ok())
 +        .is_some_and(|url| {
 +            url.scheme() == "http"
++                && url.username().is_empty()
++                && url.password().is_none()
 +                && match url.host() {
 +                    Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
 +                    Some(url::Host::Ipv4(address)) => address.is_loopback(),
@@ -242,7 +248,7 @@ index f020d34..a562536 100644
  /// Merge configured providers into the built-in provider catalog.
  ///
  /// Configured providers extend the built-in set. Built-in providers are not
-@@ -729,6 +793,7 @@ pub fn merge_configured_model_providers(
+@@ -729,6 +796,7 @@ pub fn merge_configured_model_providers(
              model_providers.entry(key).or_insert(provider);
          }
      }
@@ -251,10 +257,10 @@ index f020d34..a562536 100644
      Ok(model_providers)
  }
 diff --git a/codex-rs/model-provider-info/src/model_provider_info_tests.rs b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-index 9c15c54..295d61d 100644
+index 9c15c54..37eb457 100644
 --- a/codex-rs/model-provider-info/src/model_provider_info_tests.rs
 +++ b/codex-rs/model-provider-info/src/model_provider_info_tests.rs
-@@ -882,3 +882,93 @@ model_catalog_url = "https://gateway.example/codex/catalog?token=catalog-secret"
+@@ -882,3 +882,97 @@ model_catalog_url = "https://gateway.example/codex/catalog?token=catalog-secret"
          "https://gateway.example/v1"
      );
  }
@@ -286,6 +292,10 @@ index 9c15c54..295d61d 100644
 +        "http://api.openai.com/v1",
 +        "http://localhost.example.com/v1",
 +        "http://10.0.0.1/v1",
++        "http://127.0.0.1.nip.io:4318/v1",
++        "http://[::ffff:127.0.0.1]:4318/v1",
++        "http://user:secret@127.0.0.1:4318/v1",
++        "http://token@localhost:4318/v1",
 +        "not a url",
 +    ] {
 +        assert!(!is_loopback_http_base_url(Some(url)), "{url}");

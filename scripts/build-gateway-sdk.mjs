@@ -66,7 +66,8 @@ const version = values.version || JSON.parse(readFileSync('package.json', 'utf8'
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Invalid gateway SDK release version');
 const manifest = join(sdk, 'codex-rs/Cargo.toml');
 const target = resolve(values['target-dir'] || join(root, 'target'));
-const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' };
+// A build started from inside a gateway chat inherits the executor marker; the SDK's tests set or remove it per case themselves.
+const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' }; delete cargoEnvironment.HARNESS_GATEWAY_EXECUTOR;
 const profile = values.dev ? [] : ['--release'];
 if (values.test) {
   if (cargoEnvironment.CODEX_SANDBOX_NETWORK_DISABLED !== undefined) throw Error('Gateway SDK tests require the local mock server network');
