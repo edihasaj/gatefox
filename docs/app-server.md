@@ -329,8 +329,13 @@ Desktop startup reads organization requirements and native configuration through
 the adapter before opening the main UI. A backend startup failure can therefore
 appear as an organization-settings error.
 
-If the app's native engine is not the verified one (for example after an app
-update), the host starts without native sharing and keeps offering gateway chats;
+This release verifies the app engines `0.163.0-alpha.10.2` and `0.162.0-alpha.17.2`
+for native sharing, the same list the native relay accepts
+([verified app engines](native-remote.md#verified-app-engines)). A native-only host
+holds the app's engine to that list too; a binary that gateway generations will run
+keeps the gateway SDK pin. If the app's native engine is not a verified one (for
+example after an app update), the host starts without native sharing and keeps
+offering gateway chats;
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
 adapter then falls back to its own native engine and records `native_sharing_fallback`

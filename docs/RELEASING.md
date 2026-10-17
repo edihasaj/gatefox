@@ -174,8 +174,12 @@ download credentials or publish automatically.
 
 For a release containing the native connected-machine adapter, build and test
 the matching relay first, then use `node scripts/build-release.mjs --with-native`.
-The relay's source digest, package version, pinned SDK revision, and release
-profile must match the archive. Verify the original machine registration and
+The relay's source digest, package version, pinned SDK revision, archive checksum,
+linked Codex version and release profile must match the archive. The relay pins its
+own SDK (rust-v0.163.0-alpha.10.2 from 0.4.6) and the gateway SDK keeps its own, so
+reusing components checks each against its own pins. Run
+`node scripts/e2e-native-relay.mjs --root /tmp/gwrl-$(date +%s)` with the built relay
+before publishing. Verify the original machine registration and
 model picker before publishing. See [native transport checks](native-remote.md).
 
 Gateway executors can use a separately compiled SDK with selected-model compaction.

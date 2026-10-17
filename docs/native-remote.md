@@ -28,9 +28,33 @@ The relay keeps its own database and preferences in a private home. Native confi
 transcripts, and SQLite files are not migrated or rewritten by registration.
 
 The relay refuses a missing, disabled, or differently owned registration. Its SDK
-build blocks creating replacement enrollments. It verifies the signed CLI matches
-Codex 0.162.0-alpha.17.2 before using that version's transport. Another desktop
-build requires an SDK update and verification.
+build blocks creating replacement enrollments.
+
+## Verified app engines
+
+The relay links the Codex SDK released as rust-v0.163.0-alpha.10.2, the engine
+ChatGPT ships from 16 October 2026. It starts only when the app's signed CLI
+prints one of these versions:
+
+| App engine | Relay | Shared native host |
+| --- | --- | --- |
+| `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Shares the engine |
+| `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
+| Anything else | Exits with status 1 before it connects | Serves gateway chats only, and logs `native_sharing_unavailable` with `reason: sdk_version` |
+
+The two releases ship a byte-identical `app-server-transport` crate, so the
+remote-control protocol, the patched stream-end hooks, the existing-registration
+guard and the `remoteControl/*` methods are the same for both apps. The 0.163 state
+database adds two migrations, and the SDK opens a database that a newer release
+migrated, so a rollback to a 0.162 relay still opens the relay home.
+
+The relay keeps its list in `native-relay/src/cli_version.rs`, and the host keeps
+the same list in `src/native-engine-versions.ts`; a gateway test fails when they
+differ. Gateway chats are a separate pin: they run the release's own gateway SDK
+(0.162.0-alpha.17.2), whatever engine the app ships. A relay that refuses the app's
+engine exits at once, and after three such exits the service sets it aside with
+`component_paused` and reason `failing` instead of restarting it in a loop. A new
+app engine needs a new relay build and this verification again.
 
 ## Activation
 
@@ -54,6 +78,66 @@ for that process. The primary configuration stays unchanged.
 Existing registrations are bound to their native account. Signing out or changing
 that account stops the relay's existing connection. It cannot silently adopt a
 different account or create a new connected computer.
+
+### Moving a Mac to the 0.163 relay
+
+A Mac whose relay was registered before ChatGPT moved to 0.163 has its relay slot
+`paused` with reason `failing`, because the old relay refused the new engine, and
+its host serves gateway chats only. While that lasts, the phone uses ChatGPT's own
+remote control, which lists only `openai` chats and would send gateway model
+aliases to OpenAI. Installing a release with this relay changes the relay binary,
+which is a reason for the five-minute re-check to start the slot again, but only
+while no ChatGPT app is open. Nothing has to be registered again, and the commands
+below only read state, except for quitting and reopening ChatGPT, which the user
+does normally.
+
+1. Before the install, check the app engine and the current state:
+
+   ```sh
+   /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version
+   codesign -dv --verbose=2 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex 2>&1 | grep TeamIdentifier
+   gateway service status
+   gateway native status
+   ```
+
+   Expect `codex-cli 0.163.0-alpha.10.2`, `TeamIdentifier=2DC432GLL2`, the native
+   component `paused` (reason `failing`), and `executionHost.sharedNativeExecutor` true.
+   A slot paused with `not_registered` has no relay registration: it keeps the
+   app's own remote control, and this release does not change that.
+2. Install the release as usual. The installer never quits the app.
+3. When no chat is running, quit ChatGPT normally with Command-Q. Its private
+   fallback engine exits and gives back the native home, the service and host go
+   idle and restart on the new release, and the paused relay may start.
+4. Wait up to five minutes, then check:
+
+   ```sh
+   gateway versions --check
+   gateway service status
+   gateway native status
+   gateway health --json
+   grep -h -E '"event":"(component_resumed|component_paused|native_sharing_unavailable|native_sharing_fallback)"' STATE/telemetry/events-$(date +%F).jsonl
+   ```
+
+   Expect every process on the new release, the native component `running` with
+   no `pausedReason`, `executionHost.sharedNativeExecutor` true and `executionHost.state` `running`, `relay.status`
+   `connected` with the original `environmentId`, one `component_resumed`, and no
+   `native_sharing_unavailable` with `reason: sdk_version` after the host
+   restarted. `STATE` is the gateway state directory.
+5. Open ChatGPT normally. Its adapter checks for a live relay when it starts, so
+   the app's engine now runs with its remote control turned off and
+   `remoteControl/*` reaches the relay.
+6. On the phone, open this Mac's Codex chats. The list comes from the gateway
+   router; gateway chats saved under the legacy provider appear when the router
+   adds that provider to an unfiltered list. Continue one gateway chat and one
+   native chat, and check that both reply.
+7. In the relay log, expect `session_started` and `session_ended` records, an
+   `rc_connected` SDK label, and no `session_rejected`.
+
+If the relay stays paused, `gateway service status` names the reason. `failing`
+after the install means the relay still refuses the engine or cannot start; the
+relay log names the cause, and ChatGPT keeps its own remote control meanwhile. To
+go back, install the previous release: its relay refuses 0.163 and is set aside
+again, and the host keeps serving gateway chats.
 
 `gateway native uninstall` stops this managed transport and keeps its private
 state. A fresh normal app launch restores the original remote transport. Explicit
@@ -247,6 +331,37 @@ node scripts/build-native-relay.mjs --test --dev
 node scripts/build-native-relay.mjs
 node scripts/build-release.mjs --with-native
 ```
+
+The sources, pristine copies and crate manifest are kept per pinned revision
+(`sdk-<revision>`, `build-<revision>` and `sdk-<revision>.tar.gz` in
+`.state/native-relay-build`). The gateway SDK build reads its own pinned archive
+from `sdk.tar.gz` in the same folder, so building the relay never replaces it. The
+relay repairs its own lockfile with `scripts/native-relay-sdk-lock.mjs`: the 0.163
+archive keeps `0.0.0` for 160 source-less workspace packages, and only those are
+set to `0.163.0-alpha.10.2`.
+
+The end-to-end check runs the built relay against the real signed app engine and
+mock upstreams only:
+
+```sh
+node scripts/e2e-native-relay.mjs --root /tmp/gwrl-$(date +%s)
+```
+
+A localhost mock plays the ChatGPT backend and the phone. It hands out the server
+token, accepts the relay's websocket and sends remote-control envelopes. The relay
+starts each stream's `gateway codex-shim` session, and the router runs the real
+engine for a native chat and a gateway executor for a gateway chat, both answering
+from the mock. The run checks that the relay accepts the 0.163 and 0.162 CLIs and
+refuses others, refreshes the server token for the original registration and never
+enrolls, connects with the original server ID, name and installation ID, answers
+`remoteControl/status/read` itself, passes `model/list` and `thread/list` to the
+router, runs both chats, continues the gateway chat with its history on a second
+stream, and stops cleanly without writing a token or the installation ID to its
+log. Every home is a fresh folder with fake ChatGPT tokens, and on macOS the run
+re-executes itself in a sandbox that refuses connections off this machine. It
+records whether an unfiltered `thread/list` shows the gateway chat;
+`--expect-unfiltered-gateway-listing` makes that a requirement once the router adds
+the legacy provider.
 
 `--test` runs the relay tests and then the patched SDK's `remote_control` suite
 with its locked dependencies, in `.state/native-relay-build/sdk-target`. It
