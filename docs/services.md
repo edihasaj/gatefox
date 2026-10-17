@@ -30,7 +30,7 @@ Older plists keep working, and a rollback to 0.4.5 needs no plist change: the ch
 read a plist's arguments (service plans, login consolidation, consolidation collection, uninstall)
 accept both `.../bin/gateway` and `.../bin/harness-gateway`. A running standalone native relay
 whose plist names `bin/gateway` in its `--gateway` argument counts as the same registration as
-one written now, so `gateway native install` no longer asks you to uninstall it first. An existing
+one written now within the same release, so `gateway native install` there no longer asks you to uninstall it first; across releases the relay path differs too and the existing refusal stands. An existing
 `harness-gateway` link to `gateway` is replaced by the launcher file; any other file with that
 name is left alone and the installer refuses to continue. Plists name `harness-gateway` only
 while that file carries the installer's marker line; otherwise they keep `gateway`.

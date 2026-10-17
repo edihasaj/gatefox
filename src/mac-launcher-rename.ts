@@ -27,7 +27,8 @@ export async function renameLauncherInPlist(path: string): Promise<boolean> {
   if (!isManagedLauncher(replacement)) return false;
   const next = text.replace(firstProgram, (_all, open: string, _old, close: string) => `${open}${xml(replacement)}${close}`);
   const temporary = `${path}.${process.pid}.rename`;
-  try { await writeFile(temporary, next, { mode: info.mode & 0o777 }); await rename(temporary, path); }
+  // `wx`: a file or link planted at the temporary name is refused, never written through.
+  try { await writeFile(temporary, next, { mode: info.mode & 0o777, flag: "wx" }); await rename(temporary, path); }
   catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
   return true;
 }
