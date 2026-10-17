@@ -439,6 +439,12 @@ the counts as `daemonSockets`. It records whether an unfiltered `thread/list` sh
 gateway chat; `--expect-unfiltered-gateway-listing` makes that a requirement once the
 router adds the legacy provider.
 
+`--shared-native-plan` writes a plan that shares native chats but runs no host, so
+every adapter (the relay's sessions and the app's) falls back to a private engine
+under the native-home lease, as on a Mac whose host cannot share the app's engine. That
+mode passes only where private engines share the home (0.4.7 and later); on an
+exclusive lease the app's adapter fails to start beside the relay's session.
+
 `--test` runs the relay tests and then the patched SDK's `remote_control` suite
 with its locked dependencies, in `.state/native-relay-build/sdk-target`. It
 requires 0 failures and a named list of gateway and upstream tests. The upstream
