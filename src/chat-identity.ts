@@ -78,9 +78,12 @@ export class ChatIdentity {
    * answer for a sub-agent whose chain was spawned while no desktop was connected, or whose registry entries were lost. It
    * follows the chain as far as the classifier does (8 levels), stops at a registered or legacy ancestor, a repeat, or one
    * it cannot read, and reads each chat at most once per connection. `read` returns a chat's saved thread (metadata only).
-   * Call it after `refresh`, so the registry answers from the file's current state.
+   * A chat that its own provider id, registry entry or gateway alias already makes a gateway chat needs no ancestor, so
+   * nothing is read for it. Call it after `refresh`, so the registry answers from the file's current state.
    */
-  async learnAncestors(thread: ClassifyThread, read: (id: string) => Promise<unknown>): Promise<void> {
+  async learnAncestors(thread: ClassifyThread, catalogs: IdentityCatalogs, read: (id: string) => Promise<unknown>): Promise<void> {
+    if (thread.modelProvider === legacyGatewayProvider || (text(thread.id) && this.registry.hasCached(thread.id))) return;
+    if (text(thread.model) && catalogs.aliases().has(thread.model) && !catalogs.nativeSlugs().has(thread.model)) return;
     const seen = new Set<string>(text(thread.id) ? [thread.id] : []);
     let parent = parentOf(thread);
     for (let depth = 0; parent !== undefined && depth < maxParentDepth && !seen.has(parent); depth++) {

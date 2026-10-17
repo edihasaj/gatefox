@@ -136,7 +136,7 @@ export class AppServerRouter {
   /** Classification after one registry read; the parent rule reads only chats this connection has seen. */
   private async classify(thread: ClassifyThread, method: string): Promise<ChatKind> {
     await this.identity.refresh();
-    await this.identity.learnAncestors(thread, async id => (await this.backend("thread/read", { threadId: id, includeTurns: false })).thread);
+    await this.identity.learnAncestors(thread, this.catalogs, async id => (await this.backend("thread/read", { threadId: id, includeTurns: false })).thread);
     return this.identity.classify(thread, this.catalogs, method).kind;
   }
   private async route(threadId: string, method: string): Promise<ThreadRoute | undefined> {

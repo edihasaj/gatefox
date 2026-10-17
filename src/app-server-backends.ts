@@ -428,7 +428,7 @@ export class AppServerBackends {
     await this.identity.refresh();
     const facts = { ...threadFacts(thread), id: threadId };
     // Ancestors come from the native engine's saved records: every chat's rollout is in the shared home, gateway ones included.
-    await this.identity.learnAncestors(facts, async id => (await this.nativeRequest("thread/read", { threadId: id, includeTurns: false })).thread);
+    await this.identity.learnAncestors(facts, this.catalogs, async id => (await this.nativeRequest("thread/read", { threadId: id, includeTurns: false })).thread);
     return this.identity.classify(facts, this.catalogs, method);
   }
   /**
