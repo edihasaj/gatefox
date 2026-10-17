@@ -56,6 +56,18 @@ When the app pair changes (or `--smoke` forces it), the watchdog runs
 sees only `PATH`, `HOME`, `TMPDIR` and `LANG`, and its output is discarded apart
 from the last JSON line's `failedPhase` name on failure.
 
+The check keeps its own state out of the real home. Every child it starts (the
+gateway, the executor host, the Codex shim and the engine) runs with `HOME` set
+to a private `home` folder (0700) inside its `/tmp/gw-fast-*` run folder, so the
+execution-host homes under `~/.local/state/gw-exec`, the relay and SSH control
+homes (`gw-native`, `gw-ssh`) and the default `~/.codex` all resolve inside the
+run folder and leave with it. The fixture still passes its own `CODEX_HOME` to
+the children that take one. The one path it cannot move is the pinned engine's
+socket folder, `/tmp/codex-daemon-<uid>`, which the engine fixes itself and the
+live gateway shares. When the run ends, the check removes there only the sockets
+and lock files whose names come from socket paths inside its own private home,
+and only when nothing is listening on them.
+
 Stopping it is a sequence, not a signal. The check starts its gateway, executor
 and engine in process groups of their own, so after the 10-minute timeout the
 watchdog sends SIGTERM to the check's group and gives it 15 seconds to take its

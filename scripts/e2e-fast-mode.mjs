@@ -5,8 +5,10 @@ import { createInterface } from 'node:readline';
 import { Duplex } from 'node:stream';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, writeFile, access, rm } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { connect } from 'node:net';
+import { mkdir, mkdtemp, readFile, readdir, readlink, lstat, unlink, realpath, writeFile, access, rm } from 'node:fs/promises';
+import { resolve, join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,12 +21,10 @@ const root = resolve(v.root), gateway = resolve(v.gateway), sdk = resolve(v.code
 assert.ok(root !== resolve(homedir(), '.codex') && !root.startsWith(resolve(homedir(), '.codex') + '/'));
 const transports = v.transports.split(','); assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
-const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
-// The native engine is the app's own signed CLI, whatever version the app ships; gateway chats run the package's pinned SDK.
-assert.match(sdkVersion, /^codex-cli \d+\.\d+\.\d+/);
+let sdkVersion;
 const { WebSocket } = createRequire(join(resolve(v.package), 'package.json'))('ws');
 const owned = new Set(), servers = new Set(), clients = new Set();
-let runFolder, closing = false, stopping;
+let runFolder, isolatedHome, closing = false, stopping;
 const signalGroup = (child, signal) => {
   if (child.pid === undefined) return;
   try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error; }
@@ -44,6 +44,37 @@ async function stop(child) {
 // One teardown for both endings: the finally below and the stopped-by-signal path. The check starts its
 // children in groups of their own, so every one of them must be stopped here or it outlives this script.
 // Once it starts nothing new may be spawned, and it repeats until nothing is left that the main flow added meanwhile.
+/**
+ * The pinned SDK puts the physical socket (and a lock beside it) of every execution host in the fixed folder
+ * `/tmp/codex-daemon-<uid>`, named by the hash of the socket's real path. That folder is shared with the live gateway and cannot be moved,
+ * so this removes only what this run made: the names its private HOME leads to, and only a socket nothing listens on.
+ */
+async function removeRendezvous(home) {
+  const folder = join(await realpath('/tmp'), 'codex-daemon-' + process.getuid());
+  const names = new Set(), sockets = [];
+  const add = async path => {
+    if (typeof path !== 'string') return;
+    const real = await realpath(dirname(path)).catch(() => undefined); if (!real) return;
+    names.add(createHash('sha256').update(join(real, basename(path))).digest('hex'));
+  };
+  const walk = async directory => { for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) await walk(full);
+    else if (entry.isSymbolicLink()) { const target = resolve(dirname(full), await readlink(full).catch(() => '')); if (dirname(target) === folder) names.add(basename(target)); }
+    else if (entry.name === 'owner.json') { const owner = JSON.parse(await readFile(full, 'utf8').catch(() => '{}')); sockets.push(owner.socketPath, owner.native?.socketPath, ...(owner.generations ?? []).map(row => row?.socketPath)); }
+  } };
+  await walk(home); for (const path of sockets) await add(path);
+  for (const name of names) {
+    if (!/^[a-f0-9]{64}$/.test(name)) continue;
+    const target = join(folder, name), info = await lstat(target).catch(() => undefined);
+    if (info && !(info.isSocket() && info.uid === process.getuid())) continue;
+    const busy = info && await new Promise(done => { const socket = connect(target); const timer = setTimeout(() => { socket.destroy(); done(true); }, 1500);
+      socket.once('connect', () => { clearTimeout(timer); socket.destroy(); done(true); }); socket.once('error', () => { clearTimeout(timer); done(false); }); });
+    if (busy) continue;
+    if (info) await unlink(target).catch(() => {});
+    const lock = await lstat(target + '.lock').catch(() => undefined); if (lock?.isFile() && lock.uid === process.getuid()) await unlink(target + '.lock').catch(() => {});
+  }
+}
 const cleanup = async () => {
   if (stopping) return stopping;
   closing = true;
@@ -52,6 +83,8 @@ const cleanup = async () => {
     while (owned.size) await Promise.allSettled([...owned].map(stop));
     for (const server of servers) { server.closeAllConnections?.(); await new Promise(resolve => server.close(resolve)); }
     const run = await runFolder?.catch(() => undefined);
+    // After every child is gone and before the folder is: the sockets this run left in the SDK's fixed folder.
+    if (run) await removeRendezvous(isolatedHome).catch(() => {});
     if (run) await rm(run, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   })();
   return stopping;
@@ -64,8 +97,12 @@ await mkdir(root, { recursive: true, mode: 0o700 });
 // macOS Unix socket names have a small limit; keep the private fixture path short.
 runFolder = mkdtemp('/tmp/gw-fast-');
 const run = await runFolder;
+// Every child (serve, executor-host, codex-shim, the SDK) runs under this private HOME. The gateway derives its execution-host homes
+// (`~/.local/state/gw-exec`), relay and SSH control homes (`gw-native`, `gw-ssh`) and the default codex home (`~/.codex`) from it, so
+// none of them can land in the real one. The fixture still passes its own CODEX_HOME to the children that take one.
+isolatedHome = join(run, 'home'); await mkdir(isolatedHome, { mode: 0o700 });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
-env.GATEWAY_FAST_FIXTURE_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
+env.HOME = isolatedHome; env.GATEWAY_FAST_FIXTURE_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 const results = [], wire = [], returned = [];
 let phase = 'setup', failedPhase, responseTier = 'priority';
 // Every row says where the check had got to; the failure names the phase it stopped in, and the
@@ -135,6 +172,10 @@ async function invoke(client, threadId, name, tier, params = {}, actual = 'prior
   await save({ phase: name, passed: true, requestedServiceTier: tier, actualReturnedServiceTier: actual });
 }
 try {
+  phase = 'setup';
+  // The native engine is the app's own signed CLI, whatever version the app ships; gateway chats run the package's pinned SDK.
+  sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8', env }).trim();
+  assert.match(sdkVersion, /^codex-cli \d+\.\d+\.\d+/);
   phase = 'serve';
   owned.add(command(['serve', '--config', serverConfig]));
   await until(() => fetch('http://127.0.0.1:' + servePort + '/health').then(res => res.ok).catch(() => false), 'Fixture CLI serve');
