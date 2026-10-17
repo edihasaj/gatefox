@@ -16,6 +16,21 @@ const exec = promisify(execFile);
 
 export const nativeRegistrationPath = (stateDirectory: string): string => resolve(stateDirectory, "native-registration.json");
 
+/** The registration an activation is writing right now; it never replaces `native-registration.json` until the relay connected. */
+export const nativePendingPath = (stateDirectory: string): string => resolve(stateDirectory, "native-registration.pending");
+/** A pending record older than this belongs to an activation that died, and counts as none. */
+export const nativePendingMaxMs = 10 * 60_000;
+
+/** The activation in progress, or undefined when none is, the record is unreadable, or it is stale. */
+export async function nativePendingRecord(stateDirectory: string, now = Date.now()): Promise<(Message & { writtenAt: number }) | undefined> {
+  try {
+    const path = nativePendingPath(stateDirectory);
+    const written = (await stat(path)).mtimeMs;
+    if (now - written > nativePendingMaxMs) return;
+    return { ...object(JSON.parse(await readFile(path, "utf8"))), writtenAt: written };
+  } catch { return; }
+}
+
 /** The saved registration, or undefined when this machine never registered a relay or its record is unreadable. */
 export async function nativeRegistrationRecord(stateDirectory: string): Promise<Message | undefined> {
   let value: unknown;

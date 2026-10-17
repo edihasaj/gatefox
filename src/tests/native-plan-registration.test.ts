@@ -35,13 +35,14 @@ const order: string[] = [];
 const deps = (overrides: Partial<PlanRelayDeps> = {}): PlanRelayDeps => ({
   appRunning: async () => { order.push("app"); return false; },
   check: async (binary, args) => { order.push("check"); await relayCheck(binary, args); },
-  enable: async () => { order.push("enable"); }, ...overrides });
+  enable: async () => { order.push("enable"); },
+  clearHolders: async () => { order.push("clear"); return 0; }, ...overrides });
 
 test("install under a unified plan registers the plan's own relay after its check and connection", async () => {
   const f = await fixture(); order.length = 0;
   try {
     const result = await registerPlanRelay(f.state, f.plan, deps({ enable: async (binary, args) => { order.push("enable"); assert.equal(binary, f.relay); assert.deepEqual(args, f.args.filter(arg => arg !== "--daemon")); assert.equal(await f.receipt(), undefined, "nothing is written before the relay connected"); } }));
-    assert.deepEqual(order, ["app", "check", "enable"]);
+    assert.deepEqual(order, ["app", "check", "clear", "enable"]);
     assert.deepEqual(await f.relayCalls(), [[...f.args.filter(arg => arg !== "--daemon"), "--check"]], "the check runs the plan's relay with the plan's own homes and CLI, not as a daemon");
     assert.deepEqual(await f.receipt(), { registered: true, home: f.relayHome, nativeHome: f.nativeHome, codex: f.codex });
     assert.equal(result.registered, true); assert.equal(result.relayHome, f.relayHome); assert.match(String(result.next), /gateway service restart/);

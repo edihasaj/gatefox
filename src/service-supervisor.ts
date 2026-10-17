@@ -38,6 +38,11 @@ export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnable
  * problem never pauses it for good: a broken relay costs at most two starts an hour.
  */
 const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nativeRecheckMs = 300000; const nativeBlindRetryMs = 1800000;
+/**
+ * A paused relay notices a new registration this soon. `gateway native install` registers the relay while ChatGPT is closed;
+ * waiting for the five-minute re-check would leave the machine's one remote-control slot free for any engine that starts meanwhile.
+ */
+const nativeRegistrationPollMs = 2000;
 const execFileAsync = promisify(execFile);
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; quickExits: number; fingerprint?: string; pausedAt: number; resumedOnce: boolean }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
@@ -56,6 +61,9 @@ export class ServiceSupervisor {
   private stopUpgradeWatch?: () => void;
   private lastTick = Date.now();
   private pauseWatch?: NodeJS.Timeout;
+  private registrationWatch?: NodeJS.Timeout;
+  private registrationChecking = false;
+  private registrationSeen?: string;
   private readonly heal: SupervisorHealing;
   /** The shared execution host's start, backoff, kick, probe and host-only restart (src/service-host-keeper.ts). */
   private readonly host: ServiceHostKeeper;
@@ -67,7 +75,7 @@ export class ServiceSupervisor {
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
-    healing: Partial<SupervisorHealing> = {}) {
+    healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs) {
     this.heal = { ...defaultHealing, ...healing };
     this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost, heal: this.heal,
       registered: () => this.probes.registered(this.state),
@@ -106,6 +114,8 @@ export class ServiceSupervisor {
       // A re-check that cannot be answered is handled inside resumePaused; it never stops the service. The same tick
       // retries a host restart a busy host refused (see restartHostWhenIdle).
       this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
+      // A relay set aside as unregistered starts the moment a registration appears, not at the next re-check.
+      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); }, this.registrationPollMs); this.registrationWatch.unref();
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one.
@@ -176,6 +186,19 @@ export class ServiceSupervisor {
    * picked up by the next adapter or listener. Nothing here stops the service: an answer that never
    * arrives leaves the slot paused with reason `failing`, announced once.
    */
+  private async resumeOnRegistration(): Promise<void> {
+    const slot = this.slots.find(candidate => candidate.definition.kind === "native" && candidate.state.state === "paused");
+    if (!slot || this.registrationChecking || this.stopping || this.restarting) return;
+    this.registrationChecking = true;
+    try {
+      // Only a change to what the relay would restart into (its binaries or the registration record) is worth a re-check now;
+      // an unchanged answer is left to the five-minute tick, so an open ChatGPT app is not asked about every two seconds.
+      const seen = await this.probes.fingerprint(slot.definition, this.state);
+      const baseline = this.registrationSeen ?? slot.fingerprint; this.registrationSeen = seen;
+      if (seen !== baseline && await this.probes.registered(this.state)) await this.resumePaused();
+    } catch { /* A poll that fails is retried by the next poll and the five-minute tick. */ }
+    finally { this.registrationChecking = false; }
+  }
   async resumePaused(): Promise<void> {
     if (this.stopping || this.restarting) return;
     for (const slot of this.slots) {
@@ -318,7 +341,7 @@ export class ServiceSupervisor {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); this.stopUpgradeWatch?.();
+    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); clearInterval(this.registrationWatch); this.stopUpgradeWatch?.();
     this.host.stopWatching();
     // Stops the watchdog heartbeat and aborts a compatibility check it is still running.
     this.stopHealth?.();
