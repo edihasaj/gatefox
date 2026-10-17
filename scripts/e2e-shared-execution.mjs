@@ -296,6 +296,32 @@ try{
   assert.ok(text(follow).includes(v.inference?'HOST_RESTART_OK':fixtureText));fixtureTurns=false;
   const after=await status();assert.ok(after.generations.every(value=>!killedPids.includes(value.pid)));
   await record({phase:'host-sigkill-restart',passed:true,killedProcesses:killedPids.length,noOrphanedEngines:true,restartedOnKick,deadReceiptArchived:true,sameChatResumed:true,followUpTurnCompleted:true,fixtureResponses});
+  // The host dies again under a chat the adapter already has loaded; this time the client sends no thread/resume. The adapter's next
+  // request must find the host gone, kick the service, re-attach to the replacement's executor once, and continue the same chat.
+  phase='host-auto-reattach';
+  const reattachEvents=async()=>{const directory=resolve(config.stateDirectory,'telemetry');const found={executor_reattached:[],executor_reattach_failed:[]};
+    for(const name of (await readdir(directory).catch(()=>[])).filter(entry=>/^events-\d{4}-\d{2}-\d{2}\.jsonl$/.test(entry)).sort())
+      for(const line of (await readFile(resolve(directory,name),'utf8').catch(()=>'')).split('\n')){let entry;try{entry=JSON.parse(line);}catch{continue;}if(found[entry?.event])found[entry.event].push(entry);}
+    return found;};
+  const reattachBefore=await reattachEvents();const responsesBefore=fixtureResponses;
+  if(v.inference)throw new Error('host-auto-reattach answers its turn from the local fixture; run it without --inference');
+  fixtureTurns=true;const autoKilled=[host.pid,...(await status()).generations.map(value=>value.pid).filter(pid=>pid>0)];
+  restarted=undefined;restartedOnKick=false;
+  const stopAutoWatch=watchHostKick(hostHome,()=>{if(!restarted)restartedOnKick=true;void startReplacement().catch(()=>{});});
+  control.stop();await control.exited;process.kill(-host.pid,'SIGKILL');await host.exited;assert.ok(await groupGone(host.pid,10000));
+  for(const pid of autoKilled)assert.equal(alive(pid),false);
+  const autoFallback=setTimeout(()=>{void startReplacement().catch(()=>{});},8000);
+  let autoReply;
+  try{autoReply=await completed(third,restartChat,model,'Reply with the fixture text. Do not use tools.');}
+  finally{clearTimeout(autoFallback);stopAutoWatch();}
+  host=await restarted;assert.ok(restartedOnKick,'the replacement started on the adapter kick');assert.notEqual(host.pid,autoKilled[0]);
+  assert.ok(text(autoReply).includes(fixtureText));fixtureTurns=false;
+  assert.equal(fixtureResponses-responsesBefore,1,'the turn reached the provider path exactly once, with no replay');
+  let reattachAfter;for(const deadline=Date.now()+10000;;await delay(100)){reattachAfter=await reattachEvents();if(reattachAfter.executor_reattached.length>reattachBefore.executor_reattached.length||Date.now()>deadline)break;}
+  await delay(300);reattachAfter=await reattachEvents();
+  const reattached=reattachAfter.executor_reattached.slice(reattachBefore.executor_reattached.length);const reattachFailed=reattachAfter.executor_reattach_failed.length-reattachBefore.executor_reattach_failed.length;
+  assert.equal(reattached.length,1);assert.equal(reattached[0].reason,'engine_closed');assert.equal(reattachFailed,0);
+  await record({phase:'host-auto-reattach',passed:true,killedProcesses:autoKilled.length,restartedOnKick,noClientResume:true,sameChatContinued:true,reattachEvents:reattached.length,reattachReason:reattached[0].reason,reattachFailedEvents:reattachFailed,fixtureResponsesForTurn:fixtureResponses-responsesBefore});
   phase='invariants';assert.deepEqual(await readFile(nativeConfig),nativeBefore);if(!v.inference)assert.equal(inferenceRequests,0);
   const receipts=(await status()).generations;
   for(const receipt of receipts)await assert.rejects(lstat(resolve(config.stateDirectory,'desktop-generations','shared-v1-'+receipt.revision,'desktop-engine','auth.json')),{code:'ENOENT'});
