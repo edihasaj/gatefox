@@ -13,6 +13,11 @@ import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { SharedNativeConnection } from "../shared-native-connection.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 const alias = "claude/fixture";
 type FeatureVariant = "legacy" | "canonical";

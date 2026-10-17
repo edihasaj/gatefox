@@ -9,6 +9,11 @@ import { disableSharing, sharingDisableFailureMessage } from "../mac-shared-disa
 import { safeErrorMessage } from "../error-message.js";
 import { executionHostHome } from "../execution-host-storage.js";
 import { standInFixture } from "./launchd-stand-in.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // The stand-in host claims its receipts inside the test process: see src/tests/in-process-host.ts.
 
 test("disabling a sharing mode previews the remaining plan without touching the service", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-disable-"));

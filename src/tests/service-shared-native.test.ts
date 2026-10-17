@@ -14,6 +14,11 @@ import { gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { enableSharedNative, type SharedNativeMigrationDependencies } from "../mac-shared-native.js";
 import { legacyNativeWriters } from "../service-native-writers.js";
 import { writePrivateJson } from "../config.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function until(predicate: () => Promise<boolean>, what: string): Promise<void> {
   for (let attempt = 0; attempt < 600; attempt++) { if (await predicate()) return; await delay(20); }

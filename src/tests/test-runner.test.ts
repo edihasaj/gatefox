@@ -161,7 +161,8 @@ test("stops its leader", () => { writeFileSync(process.env.RUNNER_RECORD + ".par
 
 test("a stopped run removes the stale execution sockets its folder links to, and leaves live ones and everything else alone", { skip: process.platform === "win32", timeout: 90000 }, async () => {
   const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
-  const rendezvous = join(realpathSync("/tmp"), `codex-daemon-${process.getuid!()}`);
+  // The runner is told to clean a private stand-in for the SDK's fixed folder, so this test never touches the real `/tmp/codex-daemon-<uid>`.
+  const sdk = await shortFolder("gws-"); const rendezvous = realpathSync(sdk.directory);
   const name = () => createHash("sha256").update(randomUUID()).digest("hex");
   const stale = join(rendezvous, name()); const live = join(rendezvous, name()); const unlinked = join(rendezvous, name()); const elsewhere = join(w.work, "elsewhere.sock");
   // A stale socket whose name is not a 64-character hash, a plain file whose name is one, and a symbolic link whose name is one, to a
@@ -172,8 +173,6 @@ test("a stopped run removes the stale execution sockets its folder links to, and
   const outside = join(w.work, name());
   let server: Server | undefined;
   try {
-    // The folder the SDK uses is made by it, private; it exists on a machine that ran any execution-host test.
-    await mkdir(rendezvous, { recursive: true, mode: 0o700 });
     server = createServer(socket => socket.end()); await new Promise<void>(resolve => server!.listen(live, resolve));
     // A socket nobody listens on any more: the process that made it is killed.
     await writeFile(plain, "not a socket");
@@ -187,7 +186,7 @@ test("a stopped run removes the stale execution sockets its folder links to, and
     const file = await w.suite("links", `import { renameSync, symlinkSync, writeFileSync } from "node:fs"; import { join } from "node:path"; import { tmpdir } from "node:os";
 test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNER_LINKS).entries()) symlinkSync(target, join(tmpdir(), "link-" + index));
   writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid] })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD); return new Promise(() => {}); });`);
-    const run = await startedRun(w, file, { RUNNER_LINKS: JSON.stringify([stale, live, elsewhere, oddName, plain, linked, outside]) }); child = run.child; started = run.started;
+    const run = await startedRun(w, file, { RUNNER_LINKS: JSON.stringify([stale, live, elsewhere, oddName, plain, linked, outside]), GATEWAY_TEST_SDK_ROOT: rendezvous }); child = run.child; started = run.started;
     child.kill("SIGTERM"); const [code] = await run.exited; assert.equal(code, 128 + 15);
     assert.equal(await exists(stale), false, "the stale socket the run linked to is removed");
     assert.equal(await exists(live), true, "a socket that is listening is kept");
@@ -203,20 +202,22 @@ test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNE
   } finally {
     if (!passed) await cleanUp(child, started);
     server?.close();
-    for (const path of [stale, live, unlinked, oddName, plain, linked]) await rm(path, { force: true });
-    await rm(w.work, { recursive: true, force: true });
+    await sdk.remove(); await rm(w.work, { recursive: true, force: true });
   }
 });
 
 test("a stopped run with a real execution host leaves no socket or folder behind, and nothing of it reaches the real home folder", { skip: process.platform === "win32", timeout: 90000 }, async () => {
-  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false; let physical: string | undefined;
+  const w = await workspace(); let child: ChildProcess | undefined; let started: { tmpdir: string; pids: number[] } | undefined; let passed = false;
+  // A private stand-in for the SDK's fixed folder, outside the run's folder, so only the runner's cleanup can remove what the host makes there.
+  const sdk = await shortFolder("gws-"); const rendezvous = realpathSync(sdk.directory);
   try {
     // The suite starts an execution host the way the gateway does (the pinned SDK's version check is answered by a stand-in), which makes
-    // its folder under the home folder, a control socket in the SDK's fixed folder, and a link to it, and then waits for ever.
+    // its folder under the home folder, a control socket in the SDK's folder, and a link to it, and then waits for ever.
     const host = JSON.stringify(new URL("../execution-host.js", import.meta.url).href);
+    const storage = JSON.stringify(new URL("../execution-host-storage.js", import.meta.url).href);
     const file = await w.suite("host", `import { mkdirSync, readlinkSync, renameSync, writeFileSync } from "node:fs"; import { homedir, tmpdir } from "node:os"; import { join } from "node:path";
-import { executionHostHome, startExecutionHost } from ${host};
-test("holds a host", async () => {
+import { executionHostHome, startExecutionHost } from ${host}; import { setSdkSocketRootForTests } from ${storage};
+test("holds a host", async () => { setSdkSocketRootForTests(process.env.GATEWAY_TEST_SDK_ROOT);
   const directory = join(tmpdir(), "host"); mkdirSync(directory, { mode: 0o700 }); const codex = join(directory, "codex"); const nativeHome = join(directory, "native"); mkdirSync(nativeHome, { mode: 0o700 });
   writeFileSync(codex, "#!/bin/sh\\necho codex-cli 0.162.0-alpha.17.2\\n", { mode: 0o700 }); const configPath = join(directory, "gateway.json");
   await startExecutionHost({ config: { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true }, configPath, nativeHome, codex });
@@ -224,9 +225,9 @@ test("holds a host", async () => {
   writeFileSync(process.env.RUNNER_RECORD + ".part", JSON.stringify({ tmpdir: tmpdir(), pids: [process.pid], home: homedir(), hostHome, link, target: readlinkSync(link) })); renameSync(process.env.RUNNER_RECORD + ".part", process.env.RUNNER_RECORD);
   return new Promise(() => {});
 });`);
-    const run = await startedRun(w, file); child = run.child; started = run.started;
+    const run = await startedRun(w, file, { GATEWAY_TEST_SDK_ROOT: rendezvous }); child = run.child; started = run.started;
     const seen = await w.record() as unknown as { tmpdir: string; home: string; hostHome: string; link: string; target: string };
-    physical = seen.target;
+    assert.equal(dirname(seen.target), rendezvous, "the host's control socket is in the stand-in for the SDK's folder");
     assert.equal(seen.home, join(seen.tmpdir, "home"), "the suite's home folder is inside the run's folder");
     assert.ok(seen.hostHome.startsWith(seen.home + "/"), "so the host's folder is inside it");
     assert.ok(await exists(seen.link) && await exists(seen.target), "the host's control socket exists while the run is going");
@@ -238,9 +239,7 @@ test("holds a host", async () => {
     passed = true;
   } finally {
     if (!passed) await cleanUp(child, started);
-    // What this test's own host made, if the runner did not remove it: only the socket the test itself recorded.
-    if (physical) await rm(physical, { force: true });
-    await rm(w.work, { recursive: true, force: true });
+    await sdk.remove(); await rm(w.work, { recursive: true, force: true });
   }
 });
 
