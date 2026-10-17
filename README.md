@@ -232,8 +232,9 @@ See [architecture](docs/architecture.md), [Responses support](docs/responses.md)
 
 The project was renamed from Subscription Gateway. Names that existing installations
 and saved chats depend on keep the old spelling: the Codex provider ID
-`subscription_gateway` (stored in gateway chats made before 0.4.6, and registered in every
-gateway executor; newer chats are stored as `openai`, see [harness identity](docs/harness-identity.md)), the LaunchAgent labels
+`subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
+a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
+[harness identity](docs/harness-identity.md)), the LaunchAgent labels
 `com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
 the state folder `~/Library/Application Support/Subscription Gateway`, and the
 ownership markers in service and execution-host receipts. Changing any of them

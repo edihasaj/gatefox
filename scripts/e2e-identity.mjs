@@ -1,8 +1,9 @@
-// End-to-end check of the native chat identity (docs/harness-identity.md) with the real pinned gateway SDK and a mock upstream.
-// It proves that a new gateway chat is recorded as `openai` in its rollout and SQLite row, is in the registry when its start
-// returns, routes to the gateway on resume from a new connection, compacts locally on the selected model, makes no request to
-// the ChatGPT backend with the gateway token, and is listed by a default-provider thread/list; and that a legacy chat is listed
-// through the router and keeps `subscription_gateway` when resumed. No paid inference: the only upstream is the mock below.
+// End-to-end check of the chat identity (docs/harness-identity.md) with the real pinned gateway SDK and a mock upstream.
+// By default a new gateway chat is recorded as `subscription_gateway`, is listed through the router, and keeps that id when
+// resumed. With the `openai` opt-in a new gateway chat is recorded as `openai` in its rollout and SQLite row, is in the registry
+// when its start returns, routes to the gateway on resume from a new connection (and again after its registry entry is lost),
+// compacts locally on the selected model, makes no request to the ChatGPT backend with the gateway token, and is listed by a
+// default-provider thread/list. No paid inference: the only upstream is the mock below.
 //
 //   node scripts/e2e-identity.mjs --package <dir with dist/, package.json, node_modules and gateway-sdk/> --root <results dir>
 //
@@ -34,7 +35,7 @@ const proof = 'PROOF_' + randomUUID();
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|HARNESS|ANTHROPIC|CLAUDE)/.test(key)));
 env.HOME = isolatedHome; env.GATEWAY_IDENTITY_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 const results = [], requests = [], sink = [], events = [], children = new Set();
-let phase = 'setup', mode = 'normal', blockedModel = 'mock-large', token;
+let phase = 'setup', mode = 'normal', blockedModel = 'mock-large', token, shellMarker;
 const save = async row => { results.push(row); console.log(JSON.stringify(row));
   await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), fixture: run, results, requests, chatgptBackendRequests: sink, paidInferenceRequests: 0 }, null, 2) + '\n', { mode: 0o600 }); };
 const until = async (check, name, timeout = 20000) => { const end = Date.now() + timeout;
@@ -44,10 +45,23 @@ const until = async (check, name, timeout = 20000) => { const end = Date.now() +
 const upstream = createServer(async (req, res) => {
   const parts = []; for await (const bytes of req) parts.push(bytes);
   const body = JSON.parse(Buffer.concat(parts).toString()); const text = JSON.stringify(body.input);
-  const row = { phase, model: body.model, containsProof: text.includes(proof), compaction: text.includes('CONTEXT CHECKPOINT COMPACTION'), outcome: 'completed' };
+  const row = { phase, model: body.model, containsProof: text.includes(proof), compaction: text.includes('CONTEXT CHECKPOINT COMPACTION'), outcome: 'completed',
+    tools: (body.tools ?? []).map(tool => tool.name ?? tool.type) };
   requests.push(row);
   if (mode === 'blocked-old' && body.model === blockedModel) { row.outcome = 'usage_limit'; res.writeHead(429, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ error: { code: 'usage_limit', message: 'Fixture provider quota exhausted' } })); return; }
+  if (mode === 'shell-env') {
+    // The first request runs `env` through the executor's own command tool; the second carries its output back.
+    const output = body.input.find(item => item?.type === 'function_call_output' && item.call_id === 'call_marker');
+    if (!output) {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: ' + JSON.stringify({ type: 'response.output_item.done', item: { type: 'function_call', id: 'fc_marker', call_id: 'call_marker', name: 'exec_command',
+        arguments: JSON.stringify({ cmd: 'env' }), status: 'completed' } }) + '\n\n');
+      res.end('data: ' + JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 20, output_tokens: 10, total_tokens: 30 } } }) + '\n\n'); return;
+    }
+    const printed = typeof output.output === 'string' ? output.output : JSON.stringify(output.output);
+    shellMarker = /HARNESS_GATEWAY_EXECUTOR=(\S*)/.exec(printed)?.[1] ?? null; row.shellOutput = true;
+  }
   const answer = mode === 'seed-high' || row.containsProof || row.compaction ? proof : 'NO_PRIOR_PROOF';
   const usage = mode === 'seed-high' ? 40000 : 20;
   res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -108,7 +122,7 @@ const environmentOf = pid => execFileSync('ps', ['-E', '-ww', '-o', 'command=', 
 
 let serving, first, second;
 try {
-  await writeConfig({ chatIdentity: 'legacy' });
+  await writeConfig({});
   serving = command(process.execPath, [gateway, 'serve', '--config', configPath]);
   await until(() => fetch('http://127.0.0.1:' + port + '/health').then(r => r.ok).catch(() => false), 'Fixture gateway');
   token = (await readFile(join(state, 'client-token'), 'utf8')).trim();
@@ -123,9 +137,9 @@ try {
   const legacy = await start(first, 'fixture/large'); assert.equal(legacy.modelProvider, 'subscription_gateway');
   assert.ok((await turn(first, legacy.thread.id, 'fixture/large', 'Start the legacy fixture chat.')).text.includes('OK'));
   await first.close(); first = undefined;
-  await save({ phase, passed: true, chatIdentity: 'legacy', recordedProvider: 'subscription_gateway' });
+  await save({ phase, passed: true, chatIdentity: 'default', recordedProvider: 'subscription_gateway' });
 
-  await writeConfig({});
+  await writeConfig({ chatIdentity: 'openai' });
   phase = 'new-chat'; first = await adapter(); mode = 'seed-high';
   const chat = await start(first, 'fixture/large'); const id = chat.thread.id;
   assert.equal(chat.modelProvider, 'openai');
@@ -157,6 +171,14 @@ try {
   const manual = await until(() => events.slice(manualOffset).find(e => e.method === 'turn/completed' && e.params.threadId === id), 'Manual compaction');
   assert.equal(manual.params.turn.status, 'completed'); assert.ok(requests.slice(manualAt).some(row => row.compaction && row.model === 'mock-small'));
   await save({ phase, passed: true, compactedLocally: true });
+
+  // What a chat runs in the executor's shell does not count as an executor: the marker is 0 there.
+  phase = 'shell-marker'; mode = 'shell-env'; shellMarker = undefined;
+  await turn(first, id, 'fixture/large', 'Print the environment.');
+  assert.ok(requests.some(row => row.phase === phase && row.shellOutput), 'The command output came back');
+  assert.equal(shellMarker, '0', 'The executor marker is 0 in its child shells');
+  await save({ phase, passed: true, markerInChildShell: shellMarker });
+  mode = 'normal';
   await first.close(); first = undefined;
 
   phase = 'resume-new-connection'; second = await adapter(); mode = 'normal';
@@ -168,6 +190,17 @@ try {
   assert.equal(await savedProvider(id), 'openai', 'The resume did not rewrite the chat');
   const classified = (await readTelemetry(state, telemetryFrom)).filter(event => event.event === 'gateway_chat_classified' && event.at >= new Date(telemetryFrom).toISOString());
   await save({ phase, passed: true, routedToGateway: true, sqliteProvider: 'openai', rules: classified.map(event => event.rule) });
+  await second.close(); second = undefined;
+
+  // The registry file is lost: the chat is found by its gateway alias, routed to the gateway, and written to the registry again.
+  phase = 'registry-lost'; const folder = join(state, 'gateway-chats');
+  for (const name of await readdir(folder)) await rm(join(folder, name), { force: true });
+  second = await adapter(); const lostAt = requests.length;
+  await second.rpc('thread/resume', { threadId: id, model: 'fixture/small', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' });
+  assert.ok((await turn(second, id, 'fixture/small', 'Continue after the registry was lost.')).text.includes(proof));
+  assert.ok(requests.slice(lostAt).length >= 1 && requests.slice(lostAt).every(row => row.model === 'mock-small'), 'Served by the gateway');
+  assert.ok((await registry()).some(entry => entry.id === id && entry.origin === 'started'), 'Written to the registry again');
+  await save({ phase, passed: true, routedToGateway: true, registryRewritten: true });
 
   phase = 'legacy-resume'; const legacyAt = requests.length;
   const legacyResumed = await second.rpc('thread/resume', { threadId: legacy.thread.id, model: 'fixture/large', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' });

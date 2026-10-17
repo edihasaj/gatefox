@@ -52,8 +52,9 @@ belongs in the release archive.
    rendered desktop controls or the built-in cloud transport.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
-   gateway SDK and a mock upstream it proves that a new gateway chat is recorded as
-   `openai` (thread, rollout and SQLite), is in the registry when its start returns,
+   gateway SDK and a mock upstream it proves that new chats stay
+   `subscription_gateway` by default, and that with the `openai` opt-in a new gateway
+   chat is recorded as `openai` (thread, rollout and SQLite), is in the registry when its start returns,
    compacts locally on the selected model, routes to the gateway when a new connection
    resumes it, sends nothing with the gateway token to the ChatGPT backend, and is
    listed by a default `thread/list`; and that a legacy chat stays

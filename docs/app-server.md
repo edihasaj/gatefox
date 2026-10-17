@@ -11,18 +11,19 @@ The experimental adapter keeps the original Codex executable and native login.
 It adds configured gateway models after the native models and routes every chat by its
 kind, not by its provider id. The adapter classifies a chat with the first rule that
 answers, in this order: the legacy provider id `subscription_gateway`; the registry of
-gateway chats; the parent of a sub-agent; and a model alias that is not a native model
-slug. Any other chat is native and keeps its provider. The registry is the file
+gateway chats; a gateway ancestor of a sub-agent, read from its saved record when this
+connection has not seen it; and a model alias that is not a native model slug. Any other chat is native and keeps its provider. The registry is the file
 `<state directory>/gateway-chats/<scope>.json`, where `<scope>` identifies the native
 Codex home. The adapter writes a gateway chat's start or fork to the registry before it
 returns the reply, a sub-agent that a gateway engine announces before it forwards
-the announcement, and a chat that only its parent or alias identified when it routes it
-to an executor. Since 0.4.6 new gateway chats are recorded with the provider id `openai`,
-so the phone and the native engine list them; existing chats keep the id they were saved
-with, and `"chatIdentity": "legacy"` keeps recording `subscription_gateway`. A chat list
+the announcement, and a chat that only its ancestors or alias identified when it routes
+it to an executor. New gateway chats are recorded as `subscription_gateway` by default; a
+Mac whose native relay is verified can opt in to `"chatIdentity": "openai"` (0.4.7), so a
+stock engine lists them too. Existing chats keep the id they were saved with. A chat list
 that asks only for the native default provider also gets the `subscription_gateway`
-chats. See [harness identity](harness-identity.md) for the executor contract, the phone
-and rollback. A gateway model
+chats, which is how the phone sees them through the relay. See
+[harness identity](harness-identity.md) for when to opt in, the executor contract, the
+phone and rollback. A gateway model
 alias that equals a native model slug is refused when the catalog loads, because the
 native slug would otherwise take over the alias's chats.
 
