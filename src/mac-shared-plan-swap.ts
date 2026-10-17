@@ -4,9 +4,6 @@ import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { readServicePlan, type ServicePlan } from "./service-plan.js";
-import { livePid } from "./execution-host-storage.js";
-import { nativeHomeOwnerPath, readNativeHomeOwner } from "./native-execution-host-storage.js";
-import { withPrivateFileLock } from "./private-file-lock.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { macService } from "./mac-service.js";
 import { safeErrorMessage } from "./error-message.js";
@@ -113,27 +110,6 @@ export async function relaunchOntoPlan(services: PlanSwapServices, configPath: s
 
 /** Whether a service started from this plan starts an execution host that claims the host receipt. */
 export const planSharesExecutors = (plan: ServicePlan): boolean => plan.sharedExecutors === true || plan.sharedNativeExecutor === true;
-
-/**
- * Releases only the native-home receipt of a stopped host, never the host's own owner.json. Used after a relaunch that keeps
- * gateway executors: the new host claimed owner.json already, but it does not claim the native home, so the stopped native
- * receipt would stay behind. It checks that the receipt names this configuration and native home and that its state and pids
- * say stopped (no live pid); it does not check socketPath, the Codex executable, the SDK identity or the revision.
- */
-export async function archiveStoppedNativeHomeReceipt(identity: { configPath: string; nativeHome: string }, backup: string): Promise<string | undefined> {
-  const receipt = nativeHomeOwnerPath(identity.nativeHome);
-  if (!await lstat(receipt).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) return;
-  return withPrivateFileLock(receipt, async () => {
-    const owner = await readNativeHomeOwner(identity.nativeHome); if (!owner) return;
-    if (owner.configPath !== resolve(identity.configPath) || owner.nativeHome !== resolve(identity.nativeHome)) throw new Error("The native execution receipt belongs to another configuration; it was preserved");
-    if (livePid(owner.hostPid) || livePid(owner.pid) || owner.state !== "stopped" || owner.sdkState !== "stopped" || owner.hostPid !== 0 || owner.pid !== 0) {
-      throw new Error("Native execution ownership is not fully stopped; its receipt was preserved");
-    }
-    await mkdir(backup, { recursive: true, mode: 0o700 }); const target = resolve(backup, "native-execution-owner.json");
-    if (await lstat(target).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) throw new Error("Native ownership backup already exists; its receipt was preserved");
-    await rename(receipt, target); return target;
-  });
-}
 
 /** Which plan a service runs while the plan file names another one. */
 export type RunningPlan = "previous" | "replacement" | "down" | "unknown";

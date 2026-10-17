@@ -244,6 +244,10 @@ async function removeUnrecordedLink(path: string, controlSocket: string): Promis
   if (actual && !actual.targetPath && path !== controlSocket) return;
   await removeOwnedSocket(path, undefined, true);
 }
+/** Each link a proven-dead owner's home holds that its receipt did not record, removed as its claim removes them. */
+export async function removeUnrecordedLinks(home: string, recorded: ReadonlySet<string>, controlSocket: string): Promise<void> {
+  for (const path of await homeLinks(home)) if (!recorded.has(path)) await removeUnrecordedLink(path, controlSocket);
+}
 const maxArchiveCopyBytes = 1024 * 1024;
 /**
  * An owner this machine no longer has leaves its receipt behind in `<folder>/stale/`, never deleted; the newest five are kept.
@@ -331,7 +335,7 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
       if (previous.native?.socketPath === resolve(home, "native.sock")) { recorded.add(previous.native.socketPath); await removeOwnedSocket(previous.native.socketPath, previous.native.socket, true); }
       await removeOwnedSocket(identity.socketPath, previous.socket, true); recorded.add(identity.socketPath);
       // A generation the dead owner never got to record still left its link behind: it would block that revision for ever.
-      for (const path of await homeLinks(home)) if (!recorded.has(path)) await removeUnrecordedLink(path, identity.socketPath);
+      await removeUnrecordedLinks(home, recorded, identity.socketPath);
       // A receipt that never claimed a process is an ordinary handover, so it is not worth a reclaim record.
       if (previous.state === "running" || previous.pid > 0 || previous.generations.some(engine => (engine?.pid ?? 0) > 0) || (previous.native?.pid ?? 0) > 0) reclaim = dead;
     } else await removeOwnedSocket(identity.socketPath);

@@ -138,7 +138,13 @@ generation whose record or catalog file is garbled is moved aside to its own `st
 folder and rewritten (an `execution_owner_reclaimed` event with the scope
 `generation`); a record that names another identity still refuses the generation.
 Rollback to legacy writers treats a receipt still marked running as stopped once
-its owner is proven dead by the same rule, so a crash cannot block it for good.
+its owner is proven dead by the same rule, so a crash cannot block it for good. It then
+clears that owner's links the way a claim does, including a link the owner recorded
+without its socket identity and every link it never recorded that nothing answers, and
+when the host and the native-home owner are both proven dead it no longer requires their
+native revisions to agree. A sharing-mode change that releases only the native-home
+receipt uses the same native rule: a running receipt passes once its owner is proven
+gone, with pids judged by their boot and start rather than by the pid alone.
 
 An adapter whose required host is missing, not running, dead, or no longer matches
 its socket asks the service for an immediate retry by writing the private file

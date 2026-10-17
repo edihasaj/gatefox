@@ -5,9 +5,9 @@ import { readServicePlan, serviceExecutionPaths, serviceNativeExecutionPaths, se
 import { requireMaintenanceWindow } from "./mac-consolidate.js";
 import { readOwner, sdkIdentity } from "./execution-host-storage.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
-import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js";
+import { archiveStoppedExecutionReceipt, archiveStoppedNativeHomeReceipt } from "./service-execution-recovery.js";
 import { sharedServiceRegistration } from "./mac-shared-native.js";
-import { archiveStoppedNativeHomeReceipt, defaultPlanSwapServices, planNotWrittenBackMessage, planSharesExecutors, relaunchOntoPlan, writePlanText, type PlanSwapServices, type PlanSwapTiming, type RelaunchOutcome, type RunningPlan } from "./mac-shared-plan-swap.js";
+import { defaultPlanSwapServices, planNotWrittenBackMessage, planSharesExecutors, relaunchOntoPlan, writePlanText, type PlanSwapServices, type PlanSwapTiming, type RelaunchOutcome, type RunningPlan } from "./mac-shared-plan-swap.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 import { executionHostHome } from "./execution-host.js";
 import { safeErrorMessage } from "./error-message.js";

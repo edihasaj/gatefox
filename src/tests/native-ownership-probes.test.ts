@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ExecutionHostClient } from "../execution-host-client.js";
-import { executionHostMarker, privateDirectory, setSdkSocketRootForTests, type HostIdentity } from "../execution-host-storage.js";
+import { executionHostHome, executionHostMarker, privateDirectory, sdkSocketTarget, setSdkSocketRootForTests, type HostIdentity } from "../execution-host-storage.js";
 import { claimNativeHome, nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import { setBootIdentityForTests, setProcessStartReaderForTests } from "../boot-identity.js";
 import { writePrivateJson } from "../config.js";
@@ -68,4 +68,23 @@ test("a live owner of another configuration is never reclaimed through a receipt
     assert.equal(await readFile(path, "utf8"), written, "the receipt still names config B, unchanged");
     assert.ok(server.listening, "and config B's native writer still serves");
   } finally { await new Promise<void>(done => server.listening ? server.close(() => done()) : done()); await host.stop(); setBootIdentityForTests(); }
+});
+
+// X5: a host whose pid check fails (a crash left its receipt, or its pid is unreadable) but whose control socket still answers
+// through its host.sock link is a live owner of the native home: a private native writer must stay out.
+test("a private native writer is refused while a native host answers behind its host.sock link, though its pid is gone", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(folder, "x5-")); const server = createServer(); const gone = await live(); await gone.stop();
+  try {
+    setBootIdentityForTests(current);
+    const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 }); const configPath = join(directory, "gateway.json");
+    const home = executionHostHome(configPath, nativeHome); await privateDirectory(home); const link = join(home, "host.sock");
+    const target = await sdkSocketTarget(link); await mkdir(dirname(target), { recursive: true, mode: 0o700 }); await chmod(dirname(target), 0o700);
+    server.listen(target); await once(server, "listening"); await chmod(target, 0o600); await symlink(target, link);
+    await writePrivateJson(join(home, "owner.json"), { version: 1, managed: executionHostMarker, configPath, nativeHome, codex: join(directory, "codex"), sdkSha256: "a".repeat(64),
+      socketPath: link, pid: gone.child.pid, state: "running", generations: [], capabilities: ["native"], bootId: current.id, startedAtMs: current.bootedAtMs + 5000 });
+    // No native-home receipt names anyone, so only the host's own answering socket can keep the writer out.
+    await assert.rejects(ExecutionHostClient.assertNativeUnowned(configPath, nativeHome), /still owns this native home/);
+    await new Promise<void>(done => server.close(() => done()));
+    await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome); // Nothing answers any more: the home is free.
+  } finally { await new Promise<void>(done => server.listening ? server.close(() => done()) : done()); setBootIdentityForTests(); }
 });

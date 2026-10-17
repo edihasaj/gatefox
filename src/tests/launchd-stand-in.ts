@@ -5,8 +5,8 @@ import { writePrivateJson } from "../config.js";
 import { servicePlanPath, readServicePlan, type ServicePlan } from "../service-plan.js";
 import { claimHost, executionHostHome, executionHostMarker, publishOwner, type HostIdentity, type HostOwner } from "../execution-host-storage.js";
 import { claimNativeHome, type NativeHomeLease } from "../native-execution-host-storage.js";
-import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
-import { archiveStoppedNativeHomeReceipt, type PlanSwapServices, type PlanSwapTiming } from "../mac-shared-plan-swap.js";
+import { archiveStoppedExecutionReceipt, archiveStoppedNativeHomeReceipt } from "../service-execution-recovery.js";
+import { type PlanSwapServices, type PlanSwapTiming } from "../mac-shared-plan-swap.js";
 import type { SharingDisableDependencies } from "../mac-shared-disable.js";
 
 /**
