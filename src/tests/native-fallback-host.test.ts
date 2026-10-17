@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { chmod, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, readdir, readFile, readlink, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -138,6 +138,42 @@ test("a host that never claimed the native home claims it on close, so the recei
     assert.ok(await archiveStoppedExecutionReceipt({ configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), codex: owner.codex, sdkSha256: owner.sdkSha256 }, join(f.directory, "backup")));
     assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
   } finally { await Promise.allSettled([...f.adapters].map(adapter => adapter.stop())); await host?.close(); await f.clean(); }
+});
+
+// close() claims the home last, after its own control socket is gone, so the claim never judges the home while this host's
+// listener still stands in it. A host that never claimed the home (a live owner held it at its start) closes after that owner died.
+test("a host that never claimed the native home closes over a dead owner's receipt and leaves the clean stopped one", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  let host: Awaited<ReturnType<typeof startExecutionHost>> | undefined;
+  try {
+    // A live owner (this process) holds the home when the host starts, so the host leaves it alone.
+    await leftReceipt(f, { hostPid: process.pid, pid: 0, state: "running", sdkState: "idle" }); const live = await readFile(f.receipt, "utf8");
+    host = await startExecutionHost(await hostOptions(f)); assert.equal(await readFile(f.receipt, "utf8"), live);
+    assert.deepEqual((await f.events("native_sharing_unavailable", since)).map(event => event.reason), ["native_owner"]);
+    // Then that owner dies, leaving a receipt that still says running and names a native launch whose processes are gone.
+    await leftReceipt(f, { ...gone, state: "running", sdkState: "running", revision: "b".repeat(64) });
+    await host.close(); host = undefined;
+    const stopped = await readNativeHomeOwner(f.nativeHome);
+    assert.deepEqual([stopped?.state, stopped?.sdkState, stopped?.hostPid, stopped?.pid, stopped?.revision, stopped?.privateOwner], ["stopped", "stopped", 0, 0, undefined, undefined]);
+    assert.deepEqual((await f.events("execution_owner_reclaimed", since)).filter(event => event.scope === "native_home").map(event => event.reason), ["dead_pids"]);
+    assert.equal(JSON.parse(await readFile(join(f.home, "owner.json"), "utf8")).state, "stopped");
+    await assert.rejects(lstat(join(f.home, "host.sock")), { code: "ENOENT" });
+  } finally { await host?.close(); await f.clean(); }
+});
+
+// The claim only comes once the host's own control socket is gone. When that removal is refused (the link was swapped for another
+// one, so it is not provably this host's), close() fails and must not have taken the native home on the way.
+test("a host that cannot remove its control socket on close does not claim the native home first", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fallbackFixture(); let host: Awaited<ReturnType<typeof startExecutionHost>> | undefined;
+  try {
+    await leftReceipt(f, { hostPid: process.pid, pid: 0, state: "running", sdkState: "idle" });
+    host = await startExecutionHost(await hostOptions(f));
+    await leftReceipt(f, { ...gone, state: "running", sdkState: "running", revision: "b".repeat(64) }); const dead = await readFile(f.receipt, "utf8");
+    const link = join(f.home, "host.sock"); const target = await readlink(link); await unlink(link); await symlink(target, link);
+    await assert.rejects(host.close(), /belongs to another listener/);
+    assert.equal(await readFile(f.receipt, "utf8"), dead, "the dead owner's receipt was not touched, so the home was not claimed");
+    host = undefined;
+  } finally { await f.clean(); }
 });
 
 test("a host that finds a native-home receipt left under another spelling of the home serves gateway chats and claims the home once it is free", { timeout: 30000 }, async () => {

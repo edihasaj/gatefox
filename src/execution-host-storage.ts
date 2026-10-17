@@ -3,7 +3,8 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, readdir, readFile, readlink, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
-import { connect } from "node:net";
+import { connect, type Server } from "node:net";
+import { once } from "node:events";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { fromPreviousBoot, ownerAlive, ownerStamp } from "./boot-identity.js";
@@ -55,6 +56,16 @@ export async function socketAnswers(path: string): Promise<boolean> {
   if (info && !info.isSocket()) return false;
   try { return await listening(path); }
   catch (error) { return (error as NodeJS.ErrnoException).code !== "ENOTSOCK"; }
+}
+/**
+ * Binds `server` to a Unix socket path that is private to this user from its first instant. The process umask is narrowed
+ * around the bind only (it happens synchronously inside `listen`, never across an await), so a host that dies before its
+ * chmod leaves a 0600 socket, not one open to others that every later start would refuse as occupied.
+ */
+export async function listenPrivate(server: Server, path: string): Promise<void> {
+  const previous = process.umask(0o077);
+  try { server.listen(path); } finally { process.umask(previous); }
+  await once(server, "listening");
 }
 export async function privateDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
