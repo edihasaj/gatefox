@@ -112,20 +112,18 @@ test("register writes a private agent that names the registered wrapper and load
   });
 });
 
-test("the unified service's desktop component and a pending login plan write the agent as well", mac, async () => {
+test("the unified service's desktop component and a pending login plan write no agent: the daemon presets the variable", mac, async () => {
   for (const mode of ["restore-only", "unified plan", "pending login"] as const) {
     const f = await fixture();
     await inDesktopHome(f, async () => {
-      const plan = { version: 1, config: f.config, components: [{ id: "inference", kind: "inference", command: f.gateway, args: [], log: join(f.state, "inference.log") }] };
-      if (mode === "unified plan") await writePrivateJson(join(f.state, "service-plan.json"), plan);
-      if (mode === "pending login") await writePrivateJson(join(f.state, "service-login-pending.json"), {
-        version: 1, phase: "ready", config: f.config, plan, primaryLabel: "com.edihasaj.subscription-gateway", primaryPlistDigest: "a".repeat(64), removedLabels: [],
-        backup: join(f.state, "service-backups", "bundle"), sources: [{ label: "com.edihasaj.subscription-gateway", digest: "b".repeat(64), mode: 0o600 }] });
+      await seedServicePath(f, mode);
       const result = await macDesktop("register", f.config, f.app, mode === "restore-only", f.exec);
       const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
-      assert.equal(result.envAgent, true, mode);
-      assert.equal(await read(plistOf(f)), envAgentPlist(scriptOf(f)), mode);
-      assert.equal(await read(scriptOf(f)), envAgentScript(wrapper), mode);
+      assert.equal(result.envAgent, false, mode); assert.equal(result.loginEnv, "service", mode);
+      assert.equal(await read(plistOf(f)), undefined, mode + ": no second background item");
+      assert.equal(await read(scriptOf(f)), undefined, mode);
+      assert.equal(f.calls.some(call => call.includes(envAgentLabel)), false, mode + ": launchd is not asked about the agent");
+      assert.equal(f.values.get(PATH_KEY), wrapper, mode + ": the session is still set");
       assert.equal(await read(join(f.home, "Library/LaunchAgents/com.edihasaj.subscription-gateway.desktop.plist")), undefined, mode + ": the standalone desktop login agent is not written on the service path");
     });
   }
@@ -183,8 +181,9 @@ test("a script without the gateway's marker is refused and left alone", mac, asy
     assert.equal(await read(scriptOf(f)), "#!/bin/sh\necho someone else\n");
     assert.equal(await read(plistOf(f)), undefined, "no plist names a script that is not ours");
     const service = await macDesktop("register", f.config, f.app, true, f.exec);
-    assert.equal(service.envAgent, false, "a service path reports it instead of failing");
-    assert.deepEqual((await failureEvents(f)).events.map(event => event.reason), ["unmanaged"]);
+    assert.equal(service.envAgent, false, "the service path writes no agent, so it has nothing to refuse");
+    assert.equal(await read(scriptOf(f)), "#!/bin/sh\necho someone else\n", "and leaves the script alone");
+    assert.deepEqual((await failureEvents(f)).events, []);
   });
 });
 
@@ -396,22 +395,23 @@ async function seedServicePath(f: Fixture, mode: (typeof servicePaths)[number]) 
 /** The telemetry the failure left in the state directory, as text, and its parsed events. */
 async function failureEvents(f: Fixture) {
   const events = (await readTelemetry(f.state, 0)).filter(event => event.event === "desktop_env_agent_failed");
-  const raw = (await Promise.all((await readdir(join(f.state, "telemetry"))).map(name => readFile(join(f.state, "telemetry", name), "utf8")))).join("");
+  const raw = (await Promise.all((await readdir(join(f.state, "telemetry")).catch(() => [] as string[])).map(name => readFile(join(f.state, "telemetry", name), "utf8")))).join("");
   return { events, raw };
 }
 
-test("a failing bootstrap does not fail the service paths; it is reported with a fixed reason", mac, async () => {
+test("a failing removal of a leftover agent does not fail the service paths; it is reported with a fixed reason", mac, async () => {
   for (const mode of servicePaths) {
     const f = await fixture();
     await inDesktopHome(f, async () => {
       await seedServicePath(f, mode);
-      const failing: LaunchctlExec = async (file, args) => { if (args[0] === "bootstrap") { f.calls.push(args.join(" ")); throw new Error(secretText); } return f.exec(file, args); };
-      const result = await macDesktop("register", f.config, f.app, mode === "restore-only", failing);
-      const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
+      const { wrapper } = await prepareDesktop(f.config, f.app); await seedAgent(f, wrapper);
+      // The Trash cannot be created where a file stands, so moving the agent out fails.
+      await writeFile(join(f.home, ".Trash"), secretText);
+      const result = await macDesktop("register", f.config, f.app, mode === "restore-only", f.exec);
       assert.deepEqual([result.registered, result.activeForFutureLaunches, result.envAgent, result.nativeConfigUntouched], [true, true, false, true], mode);
       assert.equal(f.values.get(PATH_KEY), wrapper, mode + ": the session was still set");
       const { events, raw } = await failureEvents(f);
-      assert.equal(events.length, 1, mode); assert.equal(events[0]!.reason, "bootstrap", mode);
+      assert.equal(events.length, 1, mode); assert.equal(events[0]!.reason, "other", mode);
       assert.equal(raw.includes("SECRET_ERROR_TEXT") || raw.includes("someone") || raw.includes(f.root), false, mode + ": no error text or path in telemetry");
     });
   }
@@ -434,17 +434,16 @@ test("an unmanaged agent plist does not fail the service paths either, and is le
   }
 });
 
-test("a write failure is reported as write, and a clean run reports nothing", mac, async () => {
+test("a clean service run writes nothing and reports nothing", mac, async () => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
     const agents = join(f.home, "Library/LaunchAgents");
     await chmod(agents, 0o500);
     try {
-      assert.equal((await macDesktop("register", f.config, f.app, true, f.exec)).envAgent, false);
-      assert.deepEqual((await failureEvents(f)).events.map(event => event.reason), ["write"]);
+      const result = await macDesktop("register", f.config, f.app, true, f.exec);
+      assert.deepEqual([result.registered, result.envAgent], [true, false], "no agent to write, so a read-only LaunchAgents folder cannot fail it");
     } finally { await chmod(agents, 0o700); }
-    assert.equal((await macDesktop("register", f.config, f.app, true, f.exec)).envAgent, true, "and the next start writes it");
-    assert.equal((await failureEvents(f)).events.length, 1, "a success adds no event");
+    assert.equal((await failureEvents(f)).events.length, 0);
   });
 });
 

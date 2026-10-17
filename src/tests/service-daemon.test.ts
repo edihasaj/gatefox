@@ -50,3 +50,19 @@ test("standing by ends on the stop signals only, holds an idle restart's SIGUSR2
     assert.deepEqual(names.map(other => signals.listenerCount(other)), names.map(() => 0));
   }
 });
+
+test("the daemon presets the login environment before it activates, runs or waits for anything", async () => {
+  const f = await configured();
+  try {
+    const order: string[] = [];
+    const preset = async (state: string) => { order.push("preset"); assert.equal(state, f.directory); };
+    await runServiceDaemon(f.config, { preset, activate: async () => { order.push("activate"); return { plan: f.plan, restored: false }; }, run: async () => { order.push("run"); } });
+    assert.deepEqual(order, ["preset", "activate", "run"]);
+    order.length = 0;
+    await runServiceDaemon(f.config, { preset, activate: async () => { order.push("activate"); return { restored: true }; }, standby: async () => { order.push("standby"); }, notice: () => {} });
+    assert.deepEqual(order, ["preset", "activate", "standby"], "the idle path presets too");
+    order.length = 0;
+    await assert.rejects(runServiceDaemon(f.config, { preset, activate: async () => { order.push("activate"); return { restored: false }; } }), /plan is missing/);
+    assert.deepEqual(order, ["preset", "activate"], "and a refusal comes after it");
+  } finally { await f.remove(); }
+});

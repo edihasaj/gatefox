@@ -242,8 +242,11 @@ needs a migration on every Mac. The installed command is `harness-gateway`, and
 `gateway` remains as a second launcher with the same contents, so existing scripts
 and old LaunchAgents keep working. macOS names a background item after the program a
 LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System
-Settings, Login Items shows "harness-gateway" under "Allow in the Background"; the
-login environment agent runs a private script, `harness-gateway-login-env`, for the
-same reason. When a service is rewritten by 0.4.7 macOS posts one "Background Items
+Settings, Login Items shows "harness-gateway" under "Allow in the Background". With
+the unified service that is the gateway's one background item: since 0.4.8 the
+service's daemon sets `CODEX_CLI_PATH` itself at its start, and the separate
+`harness-gateway-login-env` item that 0.4.7 added is removed at the first 0.4.8
+service start. Only a standalone `gateway desktop register`, with no unified
+service, keeps that login environment agent. When a service is rewritten by 0.4.7 macOS posts one "Background Items
 Added" notification for harness-gateway, and the old "gateway" entry disappears from
 the list. See [services](docs/services.md).

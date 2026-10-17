@@ -1,10 +1,13 @@
 import { resolve } from "node:path";
 import { loadConfig } from "./config.js";
 import { configureTelemetry } from "./telemetry.js";
+import { presetDesktopEnv } from "./mac-desktop.js";
 import { activateLoginConsolidation } from "./mac-login-consolidate.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
 
 export interface ServiceDaemonDependencies {
+  /** Sets CODEX_CLI_PATH for the login session; never rejects. It runs before anything else the daemon starts. */
+  preset: (stateDirectory: string) => Promise<unknown>;
   activate: typeof activateLoginConsolidation;
   run: typeof runServiceSupervisor;
   /** Holds the process until launchd stops it; see untilStopped. */
@@ -13,18 +16,21 @@ export interface ServiceDaemonDependencies {
 }
 
 /**
- * `gateway daemon`, the unified LaunchAgent's process. It promotes a staged next-login consolidation and runs the plan.
+ * `gateway daemon`, the unified LaunchAgent's process. Its first step is to preset the login session's CODEX_CLI_PATH (see
+ * presetDesktopEnv), which is why the gateway needs no separate login environment agent. It then promotes a staged next-login consolidation and runs the plan.
  * When activation had to roll an interrupted staging back instead, it put the original login jobs back and loaded all but
  * the primary one, whose label this job holds. This job then has no plan to run, so it stays up and idle, and so does every
  * relaunch of it in the same boot: exiting would only make launchd's KeepAlive start it again every ten seconds, each start
  * failing the same way. The original primary job starts at the next login (see docs/services.md for doing it sooner).
  */
 export async function runServiceDaemon(configPath: string, overrides: Partial<ServiceDaemonDependencies> = {}): Promise<void> {
-  const deps: ServiceDaemonDependencies = { activate: activateLoginConsolidation, run: runServiceSupervisor, standby: untilStopped,
+  const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), activate: activateLoginConsolidation, run: runServiceSupervisor, standby: untilStopped,
     notice: line => { process.stderr.write(line + "\n"); }, ...overrides };
   const path = resolve(configPath); const config = await loadConfig(path);
   // A rollback below records its event before the supervisor configures telemetry for itself.
   configureTelemetry(config.stateDirectory, "service");
+  // First, before consolidation, waits, the network or any child: ChatGPT, a login item, can already be starting.
+  await deps.preset(config.stateDirectory);
   const { plan, restored } = await deps.activate(path);
   if (plan && plan.config === path) { await deps.run(plan, config.stateDirectory); return; }
   if (!restored) throw new Error("Unified service plan is missing or uses another configuration");
