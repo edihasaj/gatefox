@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { shortFolder } from "./short-folder.js";
@@ -35,6 +35,7 @@ for (const mode of ["ignores", "exits"]) test(`a stopped check takes down everyt
       "const { writeFileSync } = require(\"node:fs\");",
       "process.on(\"SIGTERM\", () => { if (process.env.FAKE_MODE === \"exits\") process.exit(0); });",
       "const child = spawn(\"/bin/sh\", [\"-c\", \"trap '' TERM; exec sleep 60\"], { stdio: \"ignore\" });",
+      "writeFileSync(process.env.FAKE_PID_FILE + \".home\", process.env.HOME);",
       "writeFileSync(process.env.FAKE_PID_FILE, process.pid + \" \" + child.pid);",
       "setInterval(() => {}, 1000);",
     ].join("\n"));
@@ -46,6 +47,12 @@ for (const mode of ["ignores", "exits"]) test(`a stopped check takes down everyt
       assert.ok(await until(async () => (await readFile(pidFile, "utf8").catch(() => "")).includes(" "), 10_000), "the check never started its gateway");
       pids = (await readFile(pidFile, "utf8")).split(" ").map(Number);
       assert.ok(pids.every(pid => pid > 0 && alive(pid)));
+      // Every child runs under a private HOME inside the run folder, so the homes it derives from HOME (gw-exec, gw-native, gw-ssh, .codex)
+      // never land in the real one.
+      const home = await readFile(pidFile + ".home", "utf8");
+      assert.notEqual(home, process.env.HOME);
+      assert.match(home, /^\/tmp\/gw-fast-[^/]+\/home$/);
+      assert.equal((await stat(home)).mode & 0o777, 0o700);
       const closed = new Promise<number | null>(resolve => check.once("close", code => resolve(code)));
       check.kill("SIGTERM");
       assert.equal(await closed, 1, "the check ends with a failure, not a crash");
