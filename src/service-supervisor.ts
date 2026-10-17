@@ -25,10 +25,15 @@ export interface NativeProbes {
   appRunning: () => Promise<boolean>;
 }
 export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnabled, fingerprint: relayFingerprint, appRunning: chatGptAppRunning };
-/** A relay that dies within a minute three times in a row cannot run here; it is left paused. */
-const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nativeRecheckMs = 300000;
+/**
+ * A relay that dies within a minute three times in a row cannot run here; it is left paused.
+ * A resumed relay is given a single start, not a fresh three-strike budget, and a relay paused
+ * for failing is tried again every half hour even when nothing changed, so a brief start-up
+ * problem never pauses it for good: a broken relay costs at most two starts an hour.
+ */
+const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nativeRecheckMs = 300000; const nativeBlindRetryMs = 1800000;
 const execFileAsync = promisify(execFile);
-interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; fingerprint?: string }
+interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; fingerprint?: string; pausedAt: number; resumedOnce: boolean }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
 function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown> {
   let timer: NodeJS.Timeout | undefined;
@@ -52,8 +57,8 @@ export class ServiceSupervisor {
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, private readonly startHost: typeof startExecutionHost = startExecutionHost,
-    private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs) {
-    this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0 }));
+    private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs) {
+    this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, pausedAt: 0, resumedOnce: false }));
   }
   private publish(): Promise<void> {
     const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.executionState ? { executionHost: { ...this.executionState } } : {}) };
@@ -82,7 +87,8 @@ export class ServiceSupervisor {
     this.lastTick = Date.now(); this.wakeWatch = setInterval(() => this.checkWake(Date.now()), 5000);
     // The relay is optional, so a paused one is only tried again quietly, every five minutes.
     if (this.slots.some(slot => slot.definition.kind === "native")) {
-      this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => { void this.stop(); }); }, this.recheckMs); this.pauseWatch.unref();
+      // A re-check that cannot be answered is handled inside resumePaused; it never stops the service.
+      this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); }, this.recheckMs); this.pauseWatch.unref();
     }
     // The service itself moves to a newly installed release only when fully idle
     // (no app connected and no chat loaded); until then it keeps the previous one.
@@ -93,7 +99,7 @@ export class ServiceSupervisor {
     if (this.stopping || !this.executionState) return;
     const starting = this.startHost({ config, configPath: this.plan.config, ...paths,
       capabilities: [...(this.plan.sharedNativeExecutor ? ["native" as const] : []), ...(this.plan.sharedExecutors ? ["gateway" as const] : [])],
-      nativeRelayOwnsRegistration: this.plan.sharedNativeExecutor === true });
+      nativeRelayOwnsRegistration: await this.relayOwnsRegistration() });
     this.executionStarting = starting;
     try { await starting; if (this.hostFailures) telemetry("execution_host_recovered", { failures: this.hostFailures }); this.hostFailures = 0; this.executionState.state = "running"; await this.publish(); }
     catch (error) {
@@ -105,6 +111,20 @@ export class ServiceSupervisor {
       const wait = Math.min(300000, this.retryBaseMs * 10 * 2 ** Math.min(this.hostFailures - 1, 5));
       this.hostRetry = setTimeout(() => { this.hostRetry = undefined; void this.startExecutionHost(config, paths); }, wait);
     }
+  }
+  /**
+   * Whether the native relay, not the engine, owns this machine's remote-control registration:
+   * only a registered relay whose slot is not paused counts. A paused or missing relay leaves the
+   * app's own remote control alone. A relay that becomes live later takes effect at the next host
+   * start, which an idle restart is, because the receipt is read once when the host starts.
+   */
+  private async relayOwnsRegistration(): Promise<boolean> {
+    if (this.plan.sharedNativeExecutor !== true) return false;
+    const native = this.slots.find(slot => slot.definition.kind === "native");
+    if (native && native.state.state === "paused") return false;
+    // A question that cannot be answered is not an answer, so the start is left as it would have
+    // been; only a registration that really says otherwise takes ownership away from the relay.
+    return await this.probes.registered(this.state).catch(() => true);
   }
   /**
    * The service never keeps the Mac awake. When a timer tick arrives far later than
@@ -128,10 +148,17 @@ export class ServiceSupervisor {
     if (this.stopping || slot.starting || slot.child) return;
     slot.starting = true;
     try {
-      // An unregistered relay is never started: ChatGPT keeps its own remote control. A failed
-      // question is not an answer, so an unreadable receipt leaves today's start untouched.
+      // An unregistered relay is never started: ChatGPT keeps its own remote control. An unreadable
+      // receipt reads as unregistered, and only a probe that throws is the failed question that
+      // leaves today's start untouched.
       if (slot.definition.kind === "native" && !await this.probes.registered(this.state).catch(() => true)) { await this.pause(slot, "not_registered"); return; }
       await this.spawnSlot(slot);
+    } catch (error) {
+      // A relay whose log cannot even be opened is a relay that cannot run: it is set aside with
+      // the other broken ones. Nothing here may take inference, tunnels or the app down.
+      if (slot.definition.kind !== "native" || this.stopping) throw error;
+      reportException(error, "service_native_spawn");
+      await this.pause(slot, "failing");
     } finally { slot.starting = false; }
   }
   /** Leaves a slot paused, once per reason, with no child, no timer and no further log lines. */
@@ -142,32 +169,44 @@ export class ServiceSupervisor {
     const fingerprint = await this.probes.fingerprint(slot.definition, this.state).catch(() => undefined);
     if (this.stopping || slot.child) return;
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = undefined; }
-    slot.state.state = "paused"; slot.state.pausedReason = reason; slot.fingerprint = fingerprint;
+    slot.state.state = "paused"; slot.state.pausedReason = reason; slot.fingerprint = fingerprint; slot.pausedAt = Date.now(); slot.resumedOnce = false;
     delete slot.state.nextRestartAt;
     telemetry("component_paused", { component: slot.state.id, kind: slot.state.kind, reason });
     await this.publish().catch(() => { void this.stop(); });
   }
   /**
    * Re-checks the relay slots a timer put aside. It starts one again only when the relay is
-   * registered, its binaries or receipt changed since the pause, and no ChatGPT app is open to
-   * compete with it; a relay that connects later is picked up by the next adapter or listener.
+   * registered, either its binaries or receipt changed since the pause or the half-hourly blind
+   * retry is due, and no ChatGPT app is open to compete with it; a relay that connects later is
+   * picked up by the next adapter or listener. Nothing here stops the service: an answer that never
+   * arrives leaves the slot paused with reason `failing`, announced once.
    */
   async resumePaused(): Promise<void> {
-    if (this.stopping) return;
+    if (this.stopping || this.restarting) return;
     for (const slot of this.slots) {
       if (slot.state.state !== "paused" || slot.definition.kind !== "native") continue;
-      let registered = false;
-      try { registered = await this.probes.registered(this.state); } catch { registered = false; }
-      // The pause baseline is kept: an unregistered stretch is not a change to restart into.
-      if (!registered) continue;
-      const fingerprint = await this.probes.fingerprint(slot.definition, this.state);
-      const changed = slot.fingerprint === undefined || slot.fingerprint !== fingerprint;
-      slot.fingerprint = fingerprint;
-      // A relay that was well enough to register but died at once only deserves another try
-      // once the binaries or the receipt it restarts into are different from the ones that failed.
-      if (slot.state.pausedReason === "failing" && !changed) continue;
-      if (await this.probes.appRunning()) continue;
-      slot.failures = 0; slot.quickFailures = 0; delete slot.state.pausedReason; delete slot.state.nextRestartAt;
+      try {
+        let registered = false;
+        try { registered = await this.probes.registered(this.state); } catch { registered = false; }
+        // The pause baseline is kept: an unregistered stretch is not a change to restart into.
+        if (!registered) continue;
+        // Only what was installed when the slot was set aside is the baseline, so a change made
+        // while the app was open is still a reason to restart once the app is closed.
+        const changed = slot.fingerprint === undefined || slot.fingerprint !== await this.probes.fingerprint(slot.definition, this.state);
+        // A relay that was well enough to register but died at once deserves another try once the
+        // binaries or the receipt differ, or once every half hour regardless: a start-up problem
+        // must not set the relay aside for good.
+        if (slot.state.pausedReason === "failing" && !changed && Date.now() - slot.pausedAt < this.blindRetryMs) continue;
+        if (await this.probes.appRunning()) continue;
+      } catch (error) {
+        // The relay's own question went unanswered. Leave it paused and serve everything else.
+        reportException(error, "service_relay_recheck");
+        await this.pause(slot, "failing");
+        continue;
+      }
+      // Stop or a restart may have happened while one of the probes above was in the air.
+      if (this.stopping || this.restarting || slot.state.state !== "paused") return;
+      slot.failures = 0; slot.quickFailures = 0; slot.resumedOnce = true; delete slot.state.pausedReason; delete slot.state.nextRestartAt;
       slot.state.state = "starting";
       telemetry("component_resumed", { component: slot.state.id, kind: slot.state.kind });
       await this.startSlot(slot);
@@ -201,10 +240,13 @@ export class ServiceSupervisor {
         else if (!this.restarting || component.kind !== "inference") {
           slot.failures = Date.now() - slot.startedAt >= 60000 ? 1 : slot.failures + 1;
           if (component.kind === "native") {
-            // A relay the app's new engine rejects exits at once; retrying it every 30 s only fills the log.
-            const quick = code !== null && code !== 0 && Date.now() - slot.startedAt < nativeQuickFailureMs;
+            // A relay the app's new engine rejects exits at once; retrying it every 30 s only fills
+            // the log. A death by signal, or one that never spawned at all (code null), counts too,
+            // so a missing binary is set aside instead of retried once a minute forever.
+            const quick = code !== 0 && Date.now() - slot.startedAt < nativeQuickFailureMs;
             slot.quickFailures = quick ? slot.quickFailures + 1 : 0;
-            if (slot.quickFailures >= nativeQuickFailureLimit) { void this.pause(slot, "failing"); return; }
+            // A resumed relay is out of retries: one more quick failure sets it aside again at once.
+            if (slot.quickFailures >= (slot.resumedOnce ? 1 : nativeQuickFailureLimit)) { void this.pause(slot, "failing"); return; }
           }
           const retry = Math.min(30000, this.retryBaseMs * 2 ** Math.min(slot.failures - 1, 10));
           slot.state.state = "waiting"; slot.state.restarts++; slot.state.nextRestartAt = new Date(Date.now() + retry).toISOString();

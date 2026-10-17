@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { ServiceSupervisor } from "../service-supervisor.js";
 import { serviceExecutionPaths, serviceStatusPath, validateServicePlan, type ServicePlan } from "../service-plan.js";
 import { executionHostHome } from "../execution-host.js";
-import { executionHostReady, enableSharedExecutors } from "../mac-shared-executors.js";
+import { executionHostReady, enableSharedExecutors, sharedServiceReady } from "../mac-shared-executors.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
 import { writePrivateJson } from "../config.js";
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
@@ -121,6 +121,23 @@ test("shared migration preview preserves the existing plan and foreground CLI re
       const exited = once(child, "close"); child.kill("SIGTERM"); await exited;
       assert.equal(JSON.parse(await readFile(join(f.home, "owner.json"), "utf8")).state, "stopped");
     } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+  } finally { await f.cleanup(); }
+});
+
+test("a shared-executors migration never waits for a relay the service set aside", async () => {
+  const f = await setup();
+  try {
+    const checks = { ready: async () => true, registered: async () => true };
+    const snapshot = (state: string) => ({ statusCurrent: true, pid: process.pid, runtime: { executionHost: { state: "running" }, components: [{ id: "native", kind: "native", state }] } });
+    const relayHome = join(f.directory, "relay"); // Nothing has been written into it yet.
+    const plan = { ...f.plan, components: [{ ...f.plan.components[0], args: [...f.plan.components[0].args, "--relay-home", relayHome] }] };
+    assert.equal(await sharedServiceReady(plan, snapshot("paused"), f.state, 3459, Date.now() - 1000, checks), true, "a paused relay is the optional relay being optional");
+    assert.equal(await sharedServiceReady(plan, snapshot("waiting"), f.state, 3459, Date.now() - 1000, checks), false, "a relay that will not start is not a paused one");
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, checks), false, "a running relay still has to report a connection");
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, { ready: async () => true, registered: async () => false }), true, "a machine that never registered a relay is never asked for one");
+    await writePrivateJson(join(relayHome, "status.json"), { status: "connected" });
+    assert.equal(await sharedServiceReady(plan, snapshot("running"), f.state, 3459, Date.now() - 1000, checks), true, "the receipt closes the gap");
+    assert.equal(await sharedServiceReady(plan, snapshot("paused"), f.state, 3459, Date.now() - 1000, checks), true);
   } finally { await f.cleanup(); }
 });
 

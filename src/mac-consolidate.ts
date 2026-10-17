@@ -12,7 +12,7 @@ import { bootoutJob } from "./launchctl.js";
 import { consolidationFailureMessage, rollbackConsolidation } from "./mac-consolidate-rollback.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
-import { nativeRegistrationEnabled } from "./native-pause.js";
+import { componentUp, nativeRegistrationEnabled } from "./native-pause.js";
 
 const exec = promisify(execFile);
 interface Job { path: string; label: string; text: string; loaded: boolean; kind: ServiceComponent["kind"]; component: ServiceComponent }
@@ -79,15 +79,16 @@ export async function readinessGap(config: { stateDirectory: string; port: numbe
   const status = await (deps.status ?? consolidatedStatus)(config.stateDirectory);
   const runtime = status.runtime as { components?: Array<{ state: string; kind?: string }> };
   // The relay is optional, so a paused one is not a readiness gap; everything else must be up.
-  const up = (component: { state: string; kind?: string }) => ["running", "complete"].includes(component.state) || (component.state === "paused" && component.kind === "native");
   if (!status.statusCurrent) return "status_not_current";
-  if (runtime.components?.length !== plan.components.length || !runtime.components.every(up)) return "components_not_running";
+  if (runtime.components?.length !== plan.components.length || !runtime.components.every(componentUp)) return "components_not_running";
   if (plan.components.some(component => component.kind === "inference")) {
     try { const response = await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(1000) }); if (!response.ok || (await response.json() as { status?: string }).status !== "ok") return "inference_unhealthy"; } catch { return "inference_unhealthy"; }
   }
   const native = plan.components.find(component => component.kind === "native");
-  // Only a machine that registered a relay has to have one connected.
-  if (native && await (deps.registered ?? nativeRegistrationEnabled)(config.stateDirectory)) {
+  // Only a machine that registered a relay whose slot is running has to have one connected; a relay
+  // the service paused is optional by design, and its status file is as stale as it is going to get.
+  const relayPaused = runtime.components?.some(component => component.kind === "native" && component.state === "paused") === true;
+  if (native && !relayPaused && await (deps.registered ?? nativeRegistrationEnabled)(config.stateDirectory)) {
     try {
       const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const relayStatus = resolve(relayHome, "status.json");
       if ((await stat(relayStatus)).mtimeMs < began || JSON.parse(await readFile(relayStatus, "utf8")).status !== "connected") return "native_relay_not_connected";

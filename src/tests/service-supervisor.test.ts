@@ -47,9 +47,9 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
-test("a missing child executable waits for its backoff and shutdown stops it", async () => {
+test("a missing child executable is retried with a backoff, and shutdown stops it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-")); await relayRegistered(directory);
-  const child = component(directory, "native", "native", ""); child.command = join(directory, "absent");
+  const child = component(directory, "tunnel", "tunnel", ""); child.command = join(directory, "absent");
   const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [child] }, directory, 100);
   try {
     await supervisor.start();

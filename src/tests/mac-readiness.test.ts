@@ -26,15 +26,28 @@ test("a paused relay is ready when nothing registered one here", async () => {
   } finally { await folder.remove(); }
 });
 
-test("a registered relay still has to connect before consolidation is ready", async () => {
+test("a registered relay that is running still has to connect before consolidation is ready", async () => {
   const folder = await shortFolder("gw-readiness-relay-"); const relayHome = join(folder.directory, "relay");
   try {
     await mkdir(relayHome, { recursive: true, mode: 0o700 });
     await writePrivateJson(join(folder.directory, "native-registration.json"), { registered: true, home: relayHome, nativeHome: folder.directory });
-    const ready = fixture(folder.directory, relayHome, [{ id: "native", kind: "native", state: "paused" }]);
+    const ready = fixture(folder.directory, relayHome, [{ id: "native", kind: "native", state: "running" }]);
     assert.equal(await ready.gap(), "native_relay_not_connected");
     await writeFile(join(relayHome, "status.json"), JSON.stringify({ status: "connected" }));
     assert.equal(await ready.gap(), undefined, "a connected relay closes the gap");
+  } finally { await folder.remove(); }
+});
+
+test("a registered relay the service set aside is not a readiness gap", async () => {
+  // A paused relay is the optional relay being optional: its status file says what the last
+  // attempt left there, and waiting for it would hold a working Mac un-ready forever.
+  const folder = await shortFolder("gw-readiness-paused-"); const relayHome = join(folder.directory, "relay");
+  try {
+    await mkdir(relayHome, { recursive: true, mode: 0o700 });
+    await writePrivateJson(join(folder.directory, "native-registration.json"), { registered: true, home: relayHome, nativeHome: folder.directory });
+    assert.equal(await fixture(folder.directory, relayHome, [{ id: "native", kind: "native", state: "paused" }]).gap(), undefined);
+    // An inference or tunnel slot that is not up is still a gap, paused relay or not.
+    assert.equal(await fixture(folder.directory, relayHome, [{ id: "native", kind: "native", state: "paused" }, { id: "tunnel", kind: "tunnel", state: "waiting" }]).gap(), "components_not_running");
   } finally { await folder.remove(); }
 });
 

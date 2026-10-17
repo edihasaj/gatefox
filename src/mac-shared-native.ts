@@ -18,6 +18,7 @@ import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { inspectNativeWriters, type LegacyNativeWriter } from "./service-native-writers.js";
 import { executionHostReady } from "./mac-shared-executors.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
+import { componentUp } from "./native-pause.js";
 
 const exec = promisify(execFile);
 type Status = Record<string, unknown>;
@@ -104,17 +105,25 @@ async function relayStatus(plan: ServicePlan): Promise<RelayStatus | undefined> 
 async function awaitReady(plan: ServicePlan, state: string, port: number, began: number, original: RelayStatus | undefined, deps: SharedNativeMigrationDependencies): Promise<Status> {
   for (let attempt = 0; attempt < 225; attempt++) {
     const current = await deps.status(state);
-    const runtime = current.runtime as { executionHost?: { state: string }; components?: Array<{ state: string }> } | undefined;
+    const runtime = current.runtime as { executionHost?: { state: string }; components?: Array<{ state: string; kind?: string }> } | undefined;
+    // A relay that the service set aside is up as far as this migration cares; it is optional.
     if (current.statusCurrent && typeof current.pid === "number" && runtime?.executionHost?.state === "running" &&
-      runtime.components?.length === plan.components.length && runtime.components.every(value => ["running", "complete"].includes(value.state))) {
+      runtime.components?.length === plan.components.length && runtime.components.every(componentUp)) {
       try {
         let ready = await deps.ready(plan, current.pid);
         if (ready && plan.components.some(value => value.kind === "inference")) {
           const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
           ready = response.ok && (await response.json() as { status?: string }).status === "ok";
         }
-        const relay = await relayStatus(plan);
-        ready &&= !!relay?.connected && relay.modifiedAt >= began && (!original?.environmentId || relay.environmentId === original.environmentId);
+        // The machine's own relay only has to come back when it was connected before the migration
+        // and the restarted service is actually running it. A relay the service set aside is the
+        // optional relay being optional: waiting for it would hang here for 45 s on a process that
+        // never comes back, and the app keeps its own remote control either way.
+        const relayPaused = runtime?.components?.some(value => value.kind === "native" && value.state === "paused") === true;
+        if (ready && original?.connected && !relayPaused) {
+          const relay = await relayStatus(plan);
+          ready &&= !!relay?.connected && relay.modifiedAt >= began && (!original.environmentId || relay.environmentId === original.environmentId);
+        }
         if (ready) return current;
       } catch { /* The original relay can reconnect after control-host startup. */ }
     }

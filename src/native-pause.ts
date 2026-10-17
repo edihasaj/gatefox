@@ -23,6 +23,13 @@ export async function nativeRegistrationRecord(stateDirectory: string): Promise<
   return object(value);
 }
 
+/**
+ * Whether a supervised component counts as up. A relay is optional, so a paused
+ * one is up; every other component, and a paused one of any other kind, is not.
+ */
+export const componentUp = (component: { state: string; kind?: string }): boolean =>
+  component.state === "running" || component.state === "complete" || (component.state === "paused" && component.kind === "native");
+
 /** Whether the registration says a relay is registered here; the only question readiness and the supervisor ask. */
 export async function nativeRegistrationEnabled(stateDirectory: string): Promise<boolean> {
   return (await nativeRegistrationRecord(stateDirectory))?.registered === true;

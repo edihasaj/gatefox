@@ -21,10 +21,12 @@ function probes(options: { registered?: boolean; fingerprint?: string; appRunnin
   return state;
 }
 
-async function fixture(prefix: string, build: (directory: string) => ServiceComponent, supervisorProbes: NativeProbes, retryBaseMs = 5, recheckMs = 60000) {
+/** The supervisor's own clocks: the five minute re-check and the half-hourly blind retry, in ms. */
+async function fixture(prefix: string, build: (directory: string) => ServiceComponent, supervisorProbes: NativeProbes, retryBaseMs = 5, recheckMs = 60000, blindRetryMs = 1800000) {
   const folder = await shortFolder(prefix);
   configureTelemetry(folder.directory, "test");
-  const supervisor = new ServiceSupervisor({ version: 1, config: `${folder.directory}/gateway.json`, components: [build(folder.directory)] }, folder.directory, retryBaseMs, undefined, supervisorProbes, recheckMs);
+  const supervisor = new ServiceSupervisor({ version: 1, config: `${folder.directory}/gateway.json`, components: [build(folder.directory)] },
+    folder.directory, retryBaseMs, undefined, supervisorProbes, recheckMs, blindRetryMs);
   const read = async () => (JSON.parse(await readFile(serviceStatusPath(folder.directory), "utf8")).components[0]) as { state: string; pausedReason?: string; pid?: number; restarts: number };
   const events = async (name: string) => (await readTelemetry(folder.directory, Date.now() - 60_000)).filter(event => event.event === name);
   const starts = async () => (await readFile(`${folder.directory}/starts`, "utf8").catch(() => "")).length;
@@ -126,6 +128,148 @@ test("only the relay pauses: inference and tunnels keep their backoff", async ()
       assert.ok(value.restarts >= 3, "both kept restarting");
     }
   } finally { await supervisor.stop(); }
+});
+
+test("a change made while the app is open is still a reason to restart after the app quits", async () => {
+  const relay = probes({ registered: true, fingerprint: "old" });
+  const f = await fixture("gw-pause-baseline-", relayComponent(dies), relay);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    assert.equal(await f.starts(), 3);
+    relay.binaries = "new"; relay.appOpen = true;
+    await f.supervisor.resumePaused();
+    assert.equal((await f.read()).state, "paused", "the app being open holds the restart back");
+    assert.equal(await f.starts(), 3, "nothing was started while the app was open");
+    assert.equal((await f.events("component_resumed")).length, 0);
+    relay.appOpen = false;
+    await f.supervisor.resumePaused();
+    await until(async () => (await f.starts()) === 4);
+    assert.equal((await f.events("component_resumed")).length, 1, "the forgotten change was not forgotten");
+  } finally { await f.remove(); }
+});
+
+test("a re-check that answers during shutdown leaves the relay stopped and says nothing", async () => {
+  const relay = probes({ registered: true, fingerprint: "old" });
+  let released = false;
+  relay.appRunning = async () => { while (!released) await delay(5); return false; };
+  const f = await fixture("gw-pause-race-", relayComponent(dies), relay);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    relay.binaries = "new";
+    const checking = f.supervisor.resumePaused();
+    await delay(20); // The re-check is now parked inside the app probe.
+    await f.supervisor.stop();
+    released = true;
+    await checking;
+    assert.equal((await f.read()).state, "stopped", "the shutdown won the race");
+    assert.equal(await f.starts(), 3, "the paused relay was never started again");
+    assert.equal((await f.events("component_resumed")).length, 0, "a relay that never restarted announced nothing");
+  } finally { released = true; await f.supervisor.stop(); await f.remove(); }
+});
+
+test("a relay binary that cannot be found is set aside, not started once a minute forever", async () => {
+  const missing = (directory: string): ServiceComponent => ({ id: "native", kind: "native", command: `${directory}/absent-relay-binary`, args: [], log: `${directory}/native.log` });
+  const f = await fixture("gw-pause-absent-", missing, probes({ registered: true }));
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    const state = await f.read();
+    assert.equal(state.pausedReason, "failing", "a process that never spawned is a failing relay");
+    assert.ok(state.restarts >= 2, "it was tried a few times first");
+    const exits = (await f.events("component_exit")).length;
+    await delay(120);
+    assert.equal((await f.events("component_exit")).length, exits, "a paused relay is never launched again");
+  } finally { await f.remove(); }
+});
+
+test("a relay that cannot even open its log is set aside while the service keeps running", async () => {
+  const directory = (await shortFolder("gw-pause-logdir-")).directory;
+  const relay = probes({ registered: true });
+  // The log path is a folder, so opening it fails: the relay cannot start here at all.
+  const broken: ServiceComponent = { id: "native", kind: "native", command: process.execPath, args: ["-e", alive], log: directory };
+  const tunnel: ServiceComponent = { id: "tunnel", kind: "tunnel", command: process.execPath, args: ["-e", alive], log: `${directory}/tunnel.log` };
+  const supervisor = new ServiceSupervisor({ version: 1, config: `${directory}/gateway.json`, components: [broken, tunnel] }, directory, 5, undefined, relay, 60000, 60000);
+  const read = async () => (JSON.parse(await readFile(serviceStatusPath(directory), "utf8")).components) as Array<{ id: string; state: string; pausedReason?: string; pid?: number }>;
+  try {
+    await supervisor.start();
+    await until(async () => (await read()).some(value => value.id === "native" && value.state === "paused"));
+    const native = (await read()).find(value => value.id === "native")!;
+    assert.equal(native.pausedReason, "failing");
+    const other = (await read()).find(value => value.id === "tunnel")!;
+    assert.equal(other.state, "running", "the service is alive and its other component is up");
+    assert.ok(other.pid && other.pid > 0);
+  } finally { await supervisor.stop(); }
+});
+
+test("an unchanged relay is tried again on the half-hourly blind retry, and a resumed one gets one strike", async () => {
+  const relay = probes({ registered: true, fingerprint: "one" });
+  const f = await fixture("gw-pause-blind-", relayComponent(dies), relay, 5, 60000, 30);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    assert.equal(await f.starts(), 3, "the three strikes were used up first");
+    await delay(60);
+    await f.supervisor.resumePaused();
+    await until(async () => (await f.starts()) === 4);
+    assert.equal((await f.events("component_resumed")).length, 1, "the retry was announced once");
+    await until(async () => (await f.read()).state === "paused" && (await f.read()).pausedReason === "failing");
+    assert.equal(await f.starts(), 4, "a resumed relay that dies at once is set aside again without a fresh budget");
+    assert.equal((await f.events("component_paused")).length, 2, "each pause was announced once");
+  } finally { await f.remove(); }
+});
+
+test("the re-check timer resumes a paused relay by itself", async () => {
+  const relay = probes({ registered: false });
+  const f = await fixture("gw-pause-timer-", relayComponent(alive), relay, 5, 20);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    relay.registeredNow = true;
+    await until(async () => (await f.starts()) === 1);
+    await until(async () => (await f.read()).state === "running");
+    assert.equal((await f.events("component_resumed")).length, 1, "the timer started the relay with no help");
+  } finally { await f.remove(); }
+});
+
+test("a re-check that cannot be answered leaves the relay paused, not the service stopped", async () => {
+  const relay = probes({ registered: true });
+  relay.appRunning = async () => { throw new Error("ps is not answering"); };
+  const f = await fixture("gw-pause-recheck-", relayComponent(dies), relay);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    relay.binaries = "new";
+    await f.supervisor.resumePaused();
+    const state = await f.read();
+    assert.deepEqual([state.state, state.pausedReason], ["paused", "failing"]);
+    assert.equal((await f.events("component_resumed")).length, 0, "a question that was never answered started nothing");
+    assert.equal((await f.events("component_paused")).length, 1, "the pause is still announced once");
+    await f.supervisor.resumePaused();
+    assert.equal((await f.events("component_paused")).length, 1, "an unanswered re-check never repeats the announcement");
+    await delay(30);
+    assert.ok((await readFile(serviceStatusPath(f.directory), "utf8")).includes('"paused"'), "the service kept publishing its own status");
+  } finally { await f.remove(); }
+});
+
+test("a live relay never competes with an open app, however often the re-check runs", async () => {
+  const relay = probes({ registered: false, fingerprint: "old", appRunning: true });
+  const f = await fixture("gw-pause-appopen-", relayComponent(alive), relay, 5, 20);
+  try {
+    await f.supervisor.start();
+    await until(async () => (await f.read()).state === "paused");
+    relay.registeredNow = true; relay.binaries = "new";
+    await delay(80); // Several re-check timers have run with the app open.
+    assert.equal(await f.starts(), 0, "the relay stayed aside while ChatGPT was open");
+    assert.equal((await f.read()).state, "paused");
+    relay.appOpen = false;
+    await until(async () => (await f.starts()) === 1);
+    assert.equal((await f.events("component_resumed")).length, 1, "one resume when the app closes");
+    await delay(80);
+    assert.equal((await f.events("component_resumed")).length, 1, "a running relay is never resumed twice");
+    assert.equal(await f.starts(), 1);
+  } finally { await f.remove(); }
 });
 
 test("stopping a supervisor with a paused relay returns at once", async () => {

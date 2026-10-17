@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { serviceNativeExecutionPaths, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan } from "../service-plan.js";
@@ -13,6 +14,11 @@ import { gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { enableSharedNative, type SharedNativeMigrationDependencies } from "../mac-shared-native.js";
 import { legacyNativeWriters } from "../service-native-writers.js";
 import { writePrivateJson } from "../config.js";
+
+async function until(predicate: () => Promise<boolean>, what: string): Promise<void> {
+  for (let attempt = 0; attempt < 600; attempt++) { if (await predicate()) return; await delay(20); }
+  assert.fail(`the service never reported ${what}`);
+}
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-service-native-")); const state = join(directory, "state");
@@ -28,17 +34,22 @@ async function fixture() {
   }] };
   await writePrivateJson(servicePlanPath(state), plan);
   await writePrivateJson(join(relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine" });
+  // A machine that shares native chats runs the relay it registered; that receipt is what the
+  // service reads before it takes the app's own remote control away from it.
+  await writePrivateJson(join(state, "native-registration.json"), { registered: true, home: relayHome, nativeHome });
   let pid = 101; const calls: string[] = [];
-  const status = async () => ({ installed: true, pid, statusCurrent: true, runtime: { executionHost: { state: "running" }, components: [{ state: "running" }] } });
+  let component = { state: "running", kind: "native" };
+  const status = async () => ({ installed: true, pid, statusCurrent: true, runtime: { executionHost: { state: "running" }, components: [component] } });
   const dependencies: Partial<SharedNativeMigrationDependencies> = {
-    platform: "darwin", pending: async () => false, registration: async () => true, status, writers: async () => [],
+    platform: "darwin", pending: async () => false, registration: async () => true, status: state => status(), writers: async () => [],
     maintenance: async () => { calls.push("maintenance"); }, sdk: async () => ({ codex, sdkSha256: "a".repeat(64) }),
     validateSdk: async () => { calls.push("verified-sdk"); assert.equal(JSON.parse(await readFile(servicePlanPath(state), "utf8")).sharedNativeExecutor, undefined); },
     ready: async current => { assert.equal(current.sharedNativeExecutor, true); assert.equal(current.sharedExecutors, false); return true; },
     restart: async () => { calls.push("restart"); pid = 102; await writePrivateJson(join(relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine" }); },
     stopReplacement: async () => { calls.push("stop-replacement"); }, archive: async () => { calls.push("archive"); }, install: async () => { calls.push("install"); },
   };
-  return { directory, state, nativeHome, relayHome, codex, configPath, plan, calls, dependencies, setPid: (value: number) => { pid = value; },
+  return { directory, state, nativeHome, relayHome, codex, configPath, plan, calls, dependencies,
+    setComponent: (value: { state: string; kind: string }) => { component = value; }, setPid: (value: number) => { pid = value; },
     cleanup: async () => { await rm(directory, { recursive: true, force: true }); await rm(executionHostHome(configPath, nativeHome), { recursive: true, force: true }); await rm(dirname(nativeHomeOwnerPath(nativeHome)), { recursive: true, force: true }); } };
 }
 
@@ -91,6 +102,67 @@ test("explicit combined service flags retain native ownership and expose both in
     assert.equal(await executionHostReady({ ...plan, sharedExecutors: false }, process.pid), false);
     await supervisor.stop(); assert.equal(await readFile(join(f.nativeHome, "auth.json"), "utf8"), '{"fixture":"unchanged"}\n');
   } finally { await supervisor.stop(); await f.cleanup(); }
+});
+
+const idleHost = () => Promise.resolve({ close: async () => undefined, prepareStop: async () => true, resume: () => undefined });
+
+test("a shared-native host takes the app's remote control only for a relay it really runs", { timeout: 20000 }, async () => {
+  // A Mac that never registered a relay shares chats on the app's engine and leaves its remote
+  // control alone; the relay slot is set aside before the host ever starts.
+  const f = await fixture();
+  try {
+    await rm(join(f.state, "native-registration.json"));
+    const owns: boolean[] = [];
+    const supervisor = new ServiceSupervisor({ ...f.plan, sharedNativeExecutor: true }, f.state, 1000, options => {
+      owns.push(options.nativeRelayOwnsRegistration === true); return idleHost();
+    });
+    try { await supervisor.start(); assert.deepEqual(owns, [false]); } finally { await supervisor.stop(); }
+  } finally { await f.cleanup(); }
+});
+
+test("a host that starts again while its relay is set aside leaves remote control to the app", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    // The relay is registered here but exits at once, so the service sets it aside; the execution
+    // host starts again after that and must not claim a relay it is not running. A shell exit is
+    // used so the three strikes are spent long before the host's next start.
+    const dying = { ...f.plan.components[0], command: "/bin/sh", args: ["-c", "exit 1", "--", "--daemon", "--codex", f.codex, "--native-home", f.nativeHome, "--relay-home", f.relayHome] };
+    const owns: boolean[] = []; let attempt = 0;
+    const supervisor = new ServiceSupervisor({ ...f.plan, sharedNativeExecutor: true, components: [dying] }, f.state, 20, options => {
+      owns.push(options.nativeRelayOwnsRegistration === true);
+      return ++attempt === 1 ? Promise.reject(new Error("the host could not start")) : idleHost();
+    });
+    try {
+      await supervisor.start();
+      await until(async () => owns.length === 2, "the failed host start again");
+      assert.deepEqual(owns, [true, false], "the relay was live for the first start and set aside for the second");
+    } finally { await supervisor.stop(); }
+  } finally { await f.cleanup(); }
+});
+
+test("a native migration never waits for a relay the service set aside", { timeout: 20000 }, async () => {
+  // The paused relay is the optional relay being optional. Waiting for its receipt would hold the
+  // migration for 45 s on a process that is never coming back, and then roll it all away.
+  const f = await fixture();
+  try {
+    await writePrivateJson(join(f.relayHome, "status.json"), { status: "connecting" }); // Nothing was connected before the migration.
+    f.setComponent({ state: "paused", kind: "native" });
+    const migrated = await enableSharedNative(f.configPath, true, f.dependencies);
+    assert.equal(migrated.applied, true);
+    assert.deepEqual(f.calls, ["maintenance", "verified-sdk", "restart"]);
+    assert.equal(JSON.parse(await readFile(servicePlanPath(f.state), "utf8")).sharedNativeExecutor, true);
+  } finally { await f.cleanup(); }
+  const g = await fixture();
+  try {
+    // Its relay was connected once, the service set it aside during the migration, and its receipt
+    // has not been rewritten since: still no reason to hold a working Mac un-ready.
+    const before = Date.now();
+    await writePrivateJson(join(g.relayHome, "status.json"), { status: "connected", environmentId: "existing-fixture-machine", stale: true });
+    g.setComponent({ state: "paused", kind: "native" });
+    // The relay never reports again after the restart, because it never runs again.
+    const migrated = await enableSharedNative(g.configPath, true, { ...g.dependencies, restart: async () => { g.calls.push("restart"); g.setPid(102); } });
+    assert.equal(migrated.applied, true); assert.ok(Date.now() - before < 5000, "the migration settled without waiting for a dead relay");
+  } finally { await g.cleanup(); }
 });
 
 test("gateway sharing over native ownership requires a verified release artifact before service mutation", { skip: process.platform !== "darwin" }, async () => {
