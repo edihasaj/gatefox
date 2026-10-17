@@ -33,7 +33,9 @@ belongs in the release archive.
    Every host it starts, including the restart phase's replacement, is stopped at the
    end, and a detached reaper (`scripts/e2e-reaper.mjs`) cleans up after a SIGKILL of
    the check: its process groups, the SDK sockets its links name that nothing serves
-   (with their `.lock` files) and its private home.
+   (with their `.lock` files) and its private home. It kills only groups it saw
+   alive: a group that emptied or answers no probe is never signalled again, so a
+   reused process ID cannot be hit.
    For speed controls, run `scripts/e2e-fast-mode.mjs --gateway INSTALLED_COMMAND
    --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. It uses the
    real signed SDK with a mock upstream through stdio and a private Unix socket.
