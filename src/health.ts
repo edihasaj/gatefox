@@ -1,12 +1,13 @@
-import { access, constants, readFile as readTextFile } from "node:fs/promises";
+import { access, constants, lstat, readFile as readTextFile } from "node:fs/promises";
 import { readServicePlan, serviceStatusPath, type ServicePlan } from "./service-plan.js";
-import { runVersions, type VersionsResult } from "./versions.js";
+import { locateInstall, runVersions, type VersionsResult } from "./versions.js";
 import { loadConfig } from "./config.js";
 import { configPath } from "./paths.js";
+import { resolve } from "node:path";
 import { appFindings, componentFindings, errorFindings, inferenceFindings, nativePaused, serviceFindings, smokeFindings, statusFields, type ServiceStatus } from "./health-checks.js";
 import { appPathFromPlan, detectAppChange, readAppInfo } from "./health-app.js";
-import { healthWindowMs, exitCodeFor, verdictOf, type Exec, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type SmokeOutcome, type Verdict } from "./health-types.js";
-import { readHealthTelemetry, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
+import { healthWindowMs, exitCodeFor, verdictOf, type AppInfo, type Exec, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type SmokeOutcome, type Verdict } from "./health-types.js";
+import { emptySignals, readHealthTelemetry, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
 import { pushFindings, pushVerdict, pushUrlPath, readPushUrl, type PushUrlReader } from "./health-push.js";
 import { runSmoke, type SmokeAnswer, type SmokeRunner } from "./health-smoke.js";
 import { readHealthState, writeHealthState, smokeCovers, type HealthState } from "./health-state.js";
@@ -32,6 +33,8 @@ export interface HealthOptions {
   push?: boolean;
   /** Run the compatibility check even though the app has not changed. */
   smoke?: boolean;
+  /** Stopping the service stops a compatibility run that is still going; see health-smoke. */
+  signal?: AbortSignal;
 }
 
 /** Every side effect the checks have, so a test can hand them fixtures instead of a machine. */
@@ -57,6 +60,8 @@ export interface HealthDeps {
   pushSend?: (url: string, verdict: Verdict, findings: Finding[]) => Promise<PushOutcome>;
   moduleUrl?: string;
   windowMs?: number;
+  /** When the installed `current` link was switched; the clock a lag becomes stale on. */
+  switchedAt?: (moduleUrl?: string) => Promise<number | undefined>;
 }
 
 const owned = (path: string) => access(path, constants.F_OK).then(() => true, () => false);
@@ -81,25 +86,63 @@ async function readServiceStatus(stateDirectory: string, plan: ServicePlan | und
   return { ...status, installed: installed || status.components.length > 0 };
 }
 
+/** A section that could not be read says so once, as a warning, and the run goes on. */
+async function readable<T>(name: string, read: () => Promise<T>, fallback: T): Promise<{ value: T; finding?: Finding }> {
+  try { return { value: await read() }; }
+  catch { return { value: fallback, finding: { level: "warn", reason: `${name} unreadable` } }; }
+}
+
+/**
+ * When the installed release was switched: the mtime of `<root>/current` itself, which a link
+ * replacement rewrites. Process start says how long a daemon has been up, not how long it has
+ * been behind, which is why the stale clock starts here.
+ */
+async function releaseSwitchedAt(moduleUrl?: string): Promise<number | undefined> {
+  for (const root of locateInstall(moduleUrl).roots) {
+    const switched = await lstat(resolve(root, "current")).then(info => info.mtimeMs, () => undefined);
+    if (switched !== undefined) return switched;
+  }
+  return;
+}
+
 /** One pass over this Mac: five sections, one verdict, and the reasons behind it. */
 export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): Promise<HealthReport> {
   const now = deps.now?.() ?? Date.now();
   const at = new Date(now).toISOString();
   const readFile = deps.readFile ?? (path => readTextFile(path, "utf8").catch(() => ""));
-  const state = await (deps.state ?? (directory => readHealthState(directory, readFile)))(options.stateDirectory);
-  const plan = await (deps.readPlan ?? (directory => readServicePlan(directory).catch(() => undefined)))(options.stateDirectory);
-  const app = await readAppInfo(appPathFromPlan(plan), { exec: deps.exec, exists: deps.exists ?? owned });
+  const unreadable: Finding[] = [];
+  const note = async <T,>(name: string, read: () => Promise<T>, fallback: T): Promise<T> => {
+    const part = await readable(name, read, fallback);
+    if (part.finding) unreadable.push(part.finding);
+    return part.value;
+  };
+  const absentApp: AppInfo = { state: "absent", path: "", enginePath: "", bundle: null, engine: null };
+  const state = await note("state", () => (deps.state ?? (directory => readHealthState(directory, readFile)))(options.stateDirectory), undefined);
+  const plan = await note("plan", () => (deps.readPlan ?? (directory => readServicePlan(directory).catch(() => undefined)))(options.stateDirectory), undefined);
+  const app = await note("app", () => readAppInfo(appPathFromPlan(plan), { exec: deps.exec, exists: deps.exists ?? owned }), absentApp);
   const change = detectAppChange(state?.app, app, at);
-  const versions = await (deps.versions ?? (() => runVersions({ moduleUrl: deps.moduleUrl })))();
-  const status = await (deps.readStatus ?? (directory => readServiceStatus(directory, plan, readFile)))(options.stateDirectory);
-  const signals = summarizeHealthEvents(deps.telemetry ? await deps.telemetry(options.stateDirectory) : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs }));
-  const inference: InferenceProbe = options.clientOnly ? { state: "skipped" } : await (deps.probe ?? probeInference)(options.port);
-  const smoke = await decideSmoke(options, app, state, change.changed, deps, now);
-  const components = componentFindings(versions, now);
+  const versions = await note<VersionsResult>("versions", () => (deps.versions ?? (() => runVersions({ moduleUrl: deps.moduleUrl })))(),
+    { installed: null, processes: [], lagging: 0 });
+  const status = await note("service", () => (deps.readStatus ?? (directory => readServiceStatus(directory, plan, readFile)))(options.stateDirectory),
+    { installed: false, components: [], published: false });
+  const switched = await note("release switch", () => (deps.switchedAt ?? releaseSwitchedAt)(deps.moduleUrl), undefined);
+  const signals = await note("telemetry", async () => summarizeHealthEvents(deps.telemetry
+    ? await deps.telemetry(options.stateDirectory)
+    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs })), emptySignals());
+  // A probe that could not run at all says so about itself; one that ran and got no answer says so about inference.
+  const inference: InferenceProbe = options.clientOnly
+    ? { state: "skipped" }
+    : await (deps.probe ?? probeInference)(options.port).catch(() => ({ state: "unreadable" } as InferenceProbe));
+  // The smoke is the section that can run for ten minutes; a crash inside it is the one answer
+  // the watchdog already knows how to say, and it never stops the run or the alert.
+  const smoke = await decideSmoke(options, app, state, change.changed, deps, now)
+    .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
+  const components = componentFindings(versions, now, switched);
   const findings: Finding[] = [
     ...appFindings(app, change.changed), ...components.findings,
     ...serviceFindings(status, signals), ...inferenceFindings(inference, versions.installed),
     ...errorFindings(signals, nativePaused(status)), ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
+    ...unreadable,
   ];
   const report: HealthReport = {
     at, verdict: verdictOf(findings), findings,
@@ -107,11 +150,13 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     components: { installed: versions.installed, lagging: components.lagging, stale: components.stale },
     service: { installed: status.installed, components: status.components, ...(status.executionHost ? { executionHost: status.executionHost } : {}), hostFailures: signals.hostFailures },
     inference,
-    errors: { windowMinutes: Math.round((deps.windowMs ?? healthWindowMs) / 60000), rpcErrors: signals.rpcErrors, configRetries: signals.featureRetries, configRetryRpcErrors: signals.retriedThenRefused, componentExits: signals.exits, nativeSharing: signals.nativeSharing },
+    errors: { windowMinutes: Math.round((deps.windowMs ?? healthWindowMs) / 60000), rpcErrors: signals.rpcErrors, refusals: signals.refusals, configRetries: signals.featureRetries, configRetryRpcErrors: signals.retriedThenRefused, componentExits: signals.exits, nativeSharing: signals.nativeSharing },
     smoke: smoke.outcome,
   };
   await remember(options.stateDirectory, state, change, smoke, deps);
-  if (options.push) report.push = await deliver(report, options.stateDirectory, deps);
+  // A run this Mac was asked to stop says nothing about the Mac, so it says nothing aloud either:
+  // stopping the service must never send a warning born of the stop itself.
+  if (options.push && !options.signal?.aborted) report.push = await deliver(report, options.stateDirectory, deps);
   return report;
 }
 
@@ -126,7 +171,9 @@ async function decideSmoke(
     const seen = state?.smoke;
     return { outcome: { ran: false, result: seen?.result ?? "skipped", ...(seen?.phase ? { phase: seen.phase } : {}), recorded: seen?.result } };
   }
-  const answer: SmokeAnswer = await runSmoke(app, options.stateDirectory, { run: deps.smoke, exists: deps.exists ?? owned, targets: deps.smokeTargets, moduleUrl: deps.moduleUrl, now: () => now });
+  const answer: SmokeAnswer = await runSmoke(app, options.stateDirectory, {
+    run: deps.smoke, exists: deps.exists ?? owned, targets: deps.smokeTargets, moduleUrl: deps.moduleUrl, now: () => now, signal: options.signal,
+  });
   const phase = answer.result === "fail" ? answer.phase : undefined;
   return {
     outcome: { ran: true, result: answer.result, ...(phase ? { phase } : {}) },
@@ -135,7 +182,7 @@ async function decideSmoke(
 }
 
 /** What the run learned, written forward: an idle tick that saw nothing new rewrites nothing. */
-async function remember(stateDirectory: string, before: HealthState | undefined, change: ReturnType<typeof detectAppChange>, smoke: { record?: HealthState["smoke"] }, deps: HealthDeps): Promise<void> {
+async function remember(stateDirectory: string, before: HealthState | undefined, change: ReturnType<typeof detectAppChange>, smoke: { outcome: SmokeOutcome; record?: HealthState["smoke"] }, deps: HealthDeps): Promise<void> {
   // An unchanged pair keeps the instant it was first seen, so a quiet tick rewrites nothing.
   const app = before?.app && !change.changed ? before.app : change.record;
   const smokeRecord = smoke.record ?? before?.smoke;
@@ -148,9 +195,9 @@ async function remember(stateDirectory: string, before: HealthState | undefined,
 /** The alert: read the monitor's URL privately, send one heartbeat, and fold in what it says. */
 async function deliver(report: HealthReport, stateDirectory: string, deps: HealthDeps): Promise<PushOutcome> {
   const file = await (deps.pushUrl ?? readPushUrl)(pushUrlPath(stateDirectory));
-  if (file.error === "insecure") return { state: "insecure" };
-  if (!file.url) return { state: "skipped" };
-  const outcome = await (deps.pushSend ?? ((url, verdict, findings) => pushVerdict(url, verdict, findings)))(file.url, report.verdict, report.findings);
+  const outcome: PushOutcome = file.error === "insecure" ? { state: "insecure" } : !file.url ? { state: "skipped" }
+    : await (deps.pushSend ?? ((url, verdict, findings) => pushVerdict(url, verdict, findings)))(file.url, report.verdict, report.findings);
+  // Every outcome, including a URL this watchdog will not read, says so in its own words.
   report.findings = [...report.findings, ...pushFindings(outcome)];
   report.verdict = verdictOf(report.findings);
   return outcome;
@@ -206,5 +253,8 @@ export async function healthCommand(args: string[], deps: HealthCommandDeps = {}
   catch { err("health: no readable gateway configuration on this Mac\n"); return 2; }
   const report = await runHealth({ stateDirectory: config.stateDirectory, port: config.port, clientOnly: config.clientOnly, push: args.includes("--push"), smoke: args.includes("--smoke") }, deps);
   out(args.includes("--json") ? JSON.stringify(report, null, 2) + "\n" : formatHealth(report));
+  // A monitor URL this watchdog will not read is a broken alert path, so it also says so where
+  // a script looking only at the verdict line will see it. The message is fixed: no path, no URL.
+  if (report.push?.state === "insecure") err("health: the alert push URL is not private; fix its permissions or remove the file\n");
   return exitCodeFor(report.verdict, report.push);
 }

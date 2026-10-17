@@ -13,6 +13,14 @@ export type Verdict = "ok" | "warn" | "fail";
 export const healthWindowMs = 15 * 60_000;
 export const pushTimeoutMs = 10_000;
 export const smokeTimeoutMs = 10 * 60_000;
+/**
+ * How long a stopped smoke gets to take its own children down after SIGTERM. The check
+ * starts its gateway, executor and engine in groups of their own, so killing only the
+ * script would orphan them; the group is signalled first, and SIGKILL follows.
+ */
+export const smokeKillGraceMs = 15_000;
+/** The refusal count in one window that turns a warning into a failure. */
+export const refusalFailThreshold = 3;
 /** A component that has run an older release for this long has stopped being "idle, not yet moved". */
 export const staleLagMs = 48 * 60 * 60_000;
 
@@ -28,8 +36,11 @@ export interface ServiceComponentRow { kind: string; state: string }
 /** What the unified service last published, reduced to kinds, states and a host answer. */
 export interface ServiceSnapshot { installed: boolean; components: ServiceComponentRow[]; executionHost?: string }
 
-/** The loopback inference answer: whether anything served, and with which release. */
-export interface InferenceProbe { state: "answered" | "unreachable" | "skipped"; status?: number; release?: string | null; bodyStatus?: string | null }
+/**
+ * The loopback inference answer: whether anything served, and with which release.
+ * `unreadable` is the probe itself failing, which is a warning about the check, not about the server.
+ */
+export interface InferenceProbe { state: "answered" | "unreachable" | "skipped" | "unreadable"; status?: number; release?: string | null; bodyStatus?: string | null }
 
 /** This run's smoke answer, or the recorded one when nothing needed re-running. */
 export interface SmokeOutcome { ran: boolean; result: "pass" | "fail" | "unavailable" | "skipped"; phase?: string; recorded?: "pass" | "fail" | "unavailable" }
@@ -46,6 +57,8 @@ export interface HealthReport {
   errors: {
     windowMinutes: number;
     rpcErrors: Record<string, number>;
+    /** Every session refusal in the window; 1-2 warn, `refusalFailThreshold` and up fail. */
+    refusals: number;
     configRetries: number;
     configRetryRpcErrors: number;
     componentExits: Record<string, number>;
@@ -57,6 +70,22 @@ export interface HealthReport {
 
 /** Runs one local command and returns its stdout; a failure throws. */
 export type Exec = (command: string, args: string[]) => Promise<string>;
+
+/** A phase name is a slug: the check names where it stopped, and nothing else may ride along. */
+export const phaseName = /^[a-z0-9-]{1,64}$/;
+/** A phase, from the check or from the state file; a name that is not a slug reads as `unknown`. */
+export function safePhase(value: unknown): string | undefined {
+  if (value === undefined || value === null) return;
+  return typeof value === "string" && phaseName.test(value) ? value : "unknown";
+}
+
+/** A version or status token: one short word, never a sentence or a path. */
+export const valueToken = /^[0-9A-Za-z.+-]{1,32}$/;
+/** A release header or a body status, reduced to a token; anything wider reads as `unknown`. */
+export function safeToken(value: unknown): string | undefined {
+  if (value === undefined || value === null) return;
+  return typeof value === "string" && valueToken.test(value) ? value : "unknown";
+}
 
 /** The worst level seen decides the verdict; info never moves one. */
 export function verdictOf(findings: Finding[]): Verdict {

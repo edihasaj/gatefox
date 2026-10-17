@@ -1,5 +1,5 @@
 import type { VersionsResult } from "./versions.js";
-import { staleLagMs, type AppInfo, type Finding, type InferenceProbe } from "./health-types.js";
+import { refusalFailThreshold, safePhase, safeToken, staleLagMs, type AppInfo, type Finding, type InferenceProbe } from "./health-types.js";
 import type { TelemetrySignals } from "./health-telemetry.js";
 
 /**
@@ -15,11 +15,15 @@ function releasePair(release: string): [number, number] | undefined {
   return match ? [Number(match[1]), Number(match[2])] : undefined;
 }
 
-/** How many minor releases one name sits behind another; a major apart counts as many. */
+/**
+ * How many minor releases one name sits behind another. A different major counts as more than
+ * one minor behind whatever its numbers say: minor numbers do not compare across a boundary.
+ */
 export function minorDistance(installed: string, release: string): number | undefined {
   const ahead = releasePair(installed); const behind = releasePair(release);
   if (!ahead || !behind) return;
-  return (ahead[0] - behind[0]) * 100 + (ahead[1] - behind[1]);
+  const distance = (ahead[0] - behind[0]) * 100 + (ahead[1] - behind[1]);
+  return ahead[0] > behind[0] ? Math.max(distance, 2) : distance;
 }
 
 /** Every distinct role and release running something older than what is installed. */
@@ -29,22 +33,26 @@ export function laggingNames(result: VersionsResult): string[] {
 
 /**
  * The lagging pair that is no longer a lag: more than one minor behind the installed
- * release, and started long enough ago that an idle move had every chance to happen.
+ * release, and behind it for long enough that an idle move had every chance to happen.
+ *
+ * The clock starts when `current` was switched (`since`, the link's own mtime), not when the
+ * process started: a daemon that has run for a week was still given the release the moment
+ * the Mac moved. Without that answer the process start is the only clock there is.
  */
-export function staleNames(result: VersionsResult, now: number, lagMs = staleLagMs): string[] {
+export function staleNames(result: VersionsResult, now: number, lagMs = staleLagMs, since?: number): string[] {
   if (!result.installed) return [];
   const names = new Set<string>();
   for (const row of result.processes) {
     if (row.release === result.installed) continue;
     const distance = minorDistance(result.installed, row.release);
-    const started = Date.parse(row.startedAt);
-    if (distance !== undefined && distance > 1 && !Number.isNaN(started) && now - started > lagMs) names.add(`${row.role}@${row.release}`);
+    const sinceRow = since ?? Date.parse(row.startedAt);
+    if (distance !== undefined && distance > 1 && !Number.isNaN(sinceRow) && now - sinceRow > lagMs) names.add(`${row.role}@${row.release}`);
   }
   return [...names].sort();
 }
 
-export function componentFindings(result: VersionsResult, now: number): { findings: Finding[]; lagging: string[]; stale: string[] } {
-  const stale = staleNames(result, now);
+export function componentFindings(result: VersionsResult, now: number, since?: number): { findings: Finding[]; lagging: string[]; stale: string[] } {
+  const stale = staleNames(result, now, staleLagMs, since);
   const lagging = laggingNames(result).filter(name => !stale.includes(name));
   return { lagging, stale, findings: [
     ...lagging.map(name => ({ level: "warn" as const, reason: `lagging ${name}` })),
@@ -101,10 +109,16 @@ export function serviceFindings(status: ServiceStatus, signals: TelemetrySignals
 export const nativePaused = (status: ServiceStatus): boolean =>
   status.components.some(component => component.kind === "native" && component.state === "paused");
 
-/** Everything the window's telemetry says about failures; counts only, never text. */
+/**
+ * Everything the window's telemetry says about failures; counts only, never text.
+ *
+ * A session refusal is judged by how many there were, not by which method carried them: one or
+ * two in fifteen minutes is a hiccup worth reading, three or more is a Mac that stopped working.
+ */
 export function errorFindings(signals: TelemetrySignals, paused = false): Finding[] {
+  const level: Finding["level"] = signals.refusals >= refusalFailThreshold ? "fail" : "warn";
   const findings: Finding[] = Object.entries(signals.rpcErrors).sort()
-    .map(([method, count]) => ({ level: "fail" as const, reason: `refused ${method} ${count}x` }));
+    .map(([method, count]) => ({ level, reason: `refused ${method} ${count}x` }));
   if (signals.retriedThenRefused > 0) findings.push({ level: "fail", reason: `config retry refused ${signals.retriedThenRefused}x` });
   else if (signals.featureRetries > 0) findings.push({ level: "info", reason: `config retried ${signals.featureRetries}x` });
   for (const [kind, count] of Object.entries(signals.exits).sort()) {
@@ -117,17 +131,27 @@ export function errorFindings(signals: TelemetrySignals, paused = false): Findin
 /** The loopback inference answer: it must serve, and it must serve the installed release. */
 export function inferenceFindings(probe: InferenceProbe, installed: string | null): Finding[] {
   if (probe.state === "skipped") return [{ level: "info", reason: "inference remote" }];
+  // A probe that could not run says so about the check; only a probe that asked and got nothing says it about inference.
+  if (probe.state === "unreadable") return [{ level: "warn", reason: "inference unreadable" }];
   if (probe.state === "unreachable") return [{ level: "fail", reason: "inference not serving" }];
   if (probe.status !== 200) return [{ level: "fail", reason: `inference status ${probe.status ?? "unknown"}` }];
-  if (probe.bodyStatus && probe.bodyStatus !== "ok") return [{ level: "fail", reason: `inference ${probe.bodyStatus}` }];
-  if (!probe.release) return [{ level: "warn", reason: "inference release unknown" }];
-  if (installed && probe.release !== installed) return [{ level: "warn", reason: `lagging inference@${probe.release}` }];
+  // The header and the body field come from a process, so neither reaches a report unchecked:
+  // anything that is not a short version token is named `unknown` instead of carried through.
+  const release = safeToken(probe.release);
+  if (probe.bodyStatus !== undefined && safeToken(probe.bodyStatus) !== "ok") {
+    return [{ level: "fail", reason: `inference ${safeToken(probe.bodyStatus) ?? "unknown"}` }];
+  }
+  if (!probe.release || release === "unknown") return [{ level: "warn", reason: "inference release unknown" }];
+  if (installed && release !== installed) return [{ level: "warn", reason: `lagging inference@${release}` }];
   return [];
 }
 
 /** A failing phase is the loudest signal the watchdog has: the app moved and chats broke. */
 export function smokeFindings(result: "pass" | "fail" | "unavailable" | "skipped", phase?: string): Finding[] {
-  if (result === "fail") return [{ level: "fail", reason: phase ? `smoke failed at ${phase}` : "smoke failed" }];
+  if (result === "fail") {
+    const named = safePhase(phase);
+    return [{ level: "fail", reason: named ? `smoke failed at ${named}` : "smoke failed" }];
+  }
   if (result === "unavailable") return [{ level: "warn", reason: "smoke unavailable" }];
   return [];
 }

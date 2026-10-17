@@ -18,24 +18,38 @@ export const summaryLimit = 200;
 
 export interface PushUrlReadResult { url?: string; error?: "missing" | "insecure" }
 export type PushUrlReader = (path: string) => Promise<PushUrlReadResult>
+/** Who may read the file, from its own inode. A test hands in the answer it is describing. */
+export interface PushUrlPermissions { mode: number; uid: number; isFile: boolean }
+export interface PushUrlDeps { stat?: (path: string) => Promise<PushUrlPermissions> }
 
 /**
  * The push URL, and nothing else. The file must be a regular file this user owns with no
  * group or other bits: a monitor URL anyone can read is a monitor URL anyone can flip, so
  * anything wider is refused rather than used.
  */
-export const readPushUrl: PushUrlReader = async path => {
+export async function readPushUrl(path: string, deps: PushUrlDeps = {}): Promise<PushUrlReadResult> {
   let handle;
-  try { handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW || 0)); } catch { return { error: "missing" }; }
+  // O_NONBLOCK so a fifo cannot park the run, O_NOFOLLOW so a planted link is refused, not followed.
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0);
+  try { handle = await open(path, flags); } catch (error) {
+    // Only "there is no file here" is a quiet answer; anything else is a file this run cannot vouch for.
+    return { error: (error as { code?: string })?.code === "ENOENT" ? "missing" : "insecure" };
+  }
   try {
-    const info = await handle.stat();
-    if (!info.isFile() || (info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()) return { error: "insecure" };
+    const info = deps.stat ? await deps.stat(path) : await handle.stat().then(owned => ({ mode: owned.mode, uid: owned.uid, isFile: owned.isFile() }));
+    if (!info.isFile || (info.mode & 0o077) !== 0 || info.uid !== process.getuid?.()) return { error: "insecure" };
     const text = (await handle.readFile("utf8")).trim();
-    if (!text || /[\r\n]/.test(text) || !/^https?:\/\/\S{1,2046}$/.test(text)) return { error: "insecure" };
+    if (!text || /[\r\n]/.test(text) || text.length > 2048) return { error: "insecure" };
+    // A URL is a URL: a written http(s) authority with a host in it, and a URL the parser reads
+    // the same way. `https:///no-host` parses to a host called "no-host", so the shape is checked too.
+    let parsed: URL;
+    try { parsed = new URL(text); } catch { return { error: "insecure" }; }
+    if ((parsed.protocol !== "https:" && parsed.protocol !== "http:") || !parsed.host) return { error: "insecure" };
+    if (!/^https?:\/\/[^\s/?#]+/i.test(text)) return { error: "insecure" };
     return { url: text };
   } catch { return { error: "insecure" }; }
   finally { await handle.close().catch(() => undefined); }
-};
+}
 
 /** The monitor's message: the verdict, then as many findings as the limit allows. */
 export function pushSummary(verdict: Verdict, findings: Finding[], limit = summaryLimit): string {
@@ -50,9 +64,21 @@ export function pushSummary(verdict: Verdict, findings: Finding[], limit = summa
   return text.length > limit ? text.slice(0, limit) : text;
 }
 
-/** One monitor request, with the status and message already in its query. */
+/**
+ * One monitor request, with the status and message already in its query. The three keys are
+ * set, not appended: a URL copied out of Uptime Kuma already ends in `?status=up&msg=OK&ping=`,
+ * and a second copy of each would leave the monitor reading the stale one. Whatever else the
+ * URL carries is kept, and the query is written back with `%20` for a space rather than the
+ * `+` that `URLSearchParams` would put there.
+ */
 export function pushRequest(url: string, status: "up" | "down", msg: string): string {
-  return `${url}${url.includes("?") ? "&" : "?"}status=${status}&msg=${encodeURIComponent(msg)}&ping=`;
+  const target = new URL(url);
+  target.searchParams.set("status", status);
+  target.searchParams.set("msg", msg);
+  target.searchParams.set("ping", "");
+  const query = [...target.searchParams].map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join("&");
+  // The path is the token's own and is carried as it was given, down to its trailing slash.
+  return `${target.origin}${target.pathname}${query ? `?${query}` : ""}`;
 }
 
 export interface PushTransportDeps {

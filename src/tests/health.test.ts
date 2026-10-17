@@ -1,8 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { shortFolder } from "./short-folder.js";
 import { formatHealth, runHealth, type HealthDeps, type HealthOptions } from "../health.js";
 import { exitCodeFor, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type Verdict } from "../health-types.js";
 import type { HealthState } from "../health-state.js";
@@ -57,6 +56,68 @@ test("a quiet Mac says ok, and the summary reads section by section", async () =
   assert.ok(text.includes("quiet (15 min)"));
 });
 
+test("a run the service stopped pushes nothing", async () => {
+  const controller = new AbortController();
+  let sent = 0;
+  const { report } = await check({ push: true, signal: controller.signal }, {
+    pushUrl: async () => ({ url: secretUrl }),
+    pushSend: async () => { sent++; return Promise.resolve({ state: "sent", up: true } as PushOutcome); },
+  });
+  assert.equal(sent, 1);
+  controller.abort();
+  const stopped = await check({ push: true, signal: controller.signal }, {
+    pushUrl: async () => ({ url: secretUrl }),
+    pushSend: async () => { sent++; return Promise.resolve({ state: "sent", up: true } as PushOutcome); },
+  });
+  assert.equal(sent, 1, "an aborted run still alerted");
+  assert.equal(stopped.report.push, undefined);
+  assert.equal(exitCodeFor(stopped.report.verdict, stopped.report.push), 0);
+});
+
+test("a section that cannot be read warns, and the run and its push still finish", async () => {
+  const boom = async () => { throw new Error("ps: Operation not permitted"); };
+  const seen: Array<{ verdict: Verdict }> = [];
+  const { report, code } = await check({ push: true, smoke: true }, {
+    versions: boom,
+    state: boom,
+    readStatus: boom,
+    telemetry: boom,
+    probe: boom,
+    smokeTargets: async () => { throw new Error("install scope unreadable"); },
+    pushUrl: async () => ({ url: secretUrl }),
+    pushSend: async (_url, verdict) => { seen.push({ verdict }); return { state: "sent", up: true }; },
+  });
+  // Every section that failed says so once, in fixed words, and nothing from the error is carried.
+  assert.deepEqual(report.findings.filter(f => f.reason.endsWith("unreadable")).map(f => f.reason).sort(),
+    ["inference unreadable", "service unreadable", "state unreadable", "telemetry unreadable", "versions unreadable"]);
+  assert.equal(JSON.stringify(report.findings).includes("Operation not permitted"), false);
+  assert.equal(report.push?.state, "sent", "a broken section must not skip the alert");
+  assert.equal(seen.length, 1);
+  assert.equal(code, 1, "an unreadable section alone is a warn, never a silent run");
+  assert.equal(report.verdict, "warn");
+  // The other sections answered despite it: the verdict is still the whole Mac's.
+  assert.equal(report.inference.state, "unreadable", "the probe failed, not the server");
+  assert.ok(report.findings.some(f => f.reason === "inference unreadable"));
+  // The smoke's own failure is said in the smoke's own words, once.
+  assert.equal(report.smoke.result, "unavailable");
+  assert.equal(report.findings.filter(f => f.reason.startsWith("smoke")).length, 1);
+  assert.match(formatHealth(report), /warn  versions unreadable/);
+});
+
+test("the stale clock comes from the release switch, not from a process start", async () => {
+  const day = 24 * 60 * 60_000;
+  const behind = { installed: "0.4.4", lagging: 1, processes: [{ role: "service" as const, pid: 1, startedAt: new Date(at - 30 * day).toISOString(), release: "0.2.0" }] };
+  const switched = await check({}, { versions: async () => behind, switchedAt: async () => at - day });
+  assert.deepEqual(switched.report.components.stale, [], "the release only moved a day ago: not stale yet");
+  assert.equal(switched.report.verdict, "warn");
+  const old = await check({}, { versions: async () => behind, switchedAt: async () => at - 3 * day });
+  assert.deepEqual(old.report.components.stale, ["service@0.2.0"]);
+  assert.equal(old.report.verdict, "fail");
+  let asked: unknown;
+  await check({}, { versions: async () => behind, switchedAt: (moduleUrl?: string) => { asked = moduleUrl; return Promise.resolve(undefined); } });
+  assert.equal(asked, undefined, "the switch time is asked for, and its answer is what the run uses");
+});
+
 test("a lagging component warns; a stopped inference or a refusal fails", async () => {
   const lag = await check({}, { versions: async () => versions("0.4.4", [["service", "0.4.3"]]) });
   assert.equal(lag.report.verdict, "warn");
@@ -66,10 +127,18 @@ test("a lagging component warns; a stopped inference or a refusal fails", async 
   assert.equal(down.report.verdict, "fail");
   assert.equal(down.code, 2);
   assert.ok(down.report.findings.some(f => f.reason === "inference not serving"));
-  const refused = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [{ event: "rpc_error", method: "turn/start", code: -32001, at: at }] });
-  assert.equal(refused.report.verdict, "fail");
-  assert.ok(refused.report.findings.some(f => f.reason === "refused turn/start 1x"));
-  assert.deepEqual(refused.report.errors.rpcErrors, { "turn/start": 1 });
+  // One refusal in the window is a hiccup; the third is a Mac that stopped answering.
+  const one = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [{ event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at }] });
+  assert.equal(one.report.verdict, "warn");
+  assert.ok(one.report.findings.some(f => f.level === "warn" && f.reason === "refused turn/start 1x"));
+  assert.deepEqual(one.report.errors.rpcErrors, { "turn/start": 1 });
+  const three = await check({}, { telemetry: async (): Promise<HealthEvent[]> => [
+    { event: "rpc_error", method: "turn/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at },
+    { event: "rpc_error", method: "thread/start", code: -32001, errorClass: "RouteUnavailable", rejection: "route", at },
+    { event: "rpc_error", method: "thread/resume", errorClass: "AdapterRefused", rejection: "other", at },
+  ] });
+  assert.equal(three.report.verdict, "fail");
+  assert.equal(three.code, 2);
 });
 
 test("a remote client skips the loopback probe", async () => {
@@ -81,7 +150,8 @@ test("a remote client skips the loopback probe", async () => {
 });
 
 test("the smoke runs once per app change, and --smoke forces it again", async () => {
-  const stateDirectory = await mkdtemp(join(tmpdir(), "gw-health-smoke-"));
+  const made = await shortFolder("gw-health-smoke-");
+  const stateDirectory = made.directory;
   let stored: HealthState | undefined;
   let bundle = "26.10";
   let runs = 0;
@@ -114,6 +184,7 @@ test("the smoke runs once per app change, and --smoke forces it again", async ()
   const forced = await check({ stateDirectory, smoke: true }, shared);
   assert.equal(forced.report.smoke.ran, true);
   assert.equal(runs, 3);
+  await made.remove();
 });
 
 test("a failing smoke keeps its phase in every later report for the pair", async () => {
@@ -121,14 +192,14 @@ test("a failing smoke keeps its phase in every later report for the pair", async
   const deps = base({
     exists: async () => true,
     exec: async (command, args) => command.endsWith("codex") && args[0] === "--version" ? "0.99.1" : "26.10",
-    smoke: async () => ({ result: "fail" as const, phase: "turn.start" }),
+    smoke: async () => ({ result: "fail" as const, phase: "thread-start" }),
     smokeTargets: async () => ({ gateway: "/g", packageRoot: "/p" }),
     state: async () => stored,
     writeState: async (_directory, next) => { stored = next; },
   });
   const first = await runHealth({ stateDirectory: "/state", port: 3457 }, deps);
   assert.equal(first.verdict, "fail");
-  assert.ok(first.findings.some(f => f.reason === "smoke failed at turn.start"));
+  assert.ok(first.findings.some(f => f.reason === "smoke failed at thread-start"));
   const again = await runHealth({ stateDirectory: "/state", port: 3457 }, deps);
   assert.equal(again.smoke.ran, false);
   assert.equal(again.verdict, "fail", "the recorded failure must keep alarming until the app moves");
@@ -208,7 +279,7 @@ test("the report shape is stable for --json readers", async () => {
   const { report } = await check();
   const expected: Partial<Record<keyof HealthReport, unknown>> = { at: "", verdict: "ok", findings: [], app: {}, components: { installed: "0.4.4", lagging: [], stale: [] },
     service: { installed: true, components: [{ kind: "inference", state: "running" }], hostFailures: 0 }, inference: healthyProbe,
-    errors: { windowMinutes: 15, rpcErrors: {}, configRetries: 0, configRetryRpcErrors: 0, componentExits: {}, nativeSharing: [] }, smoke: { ran: false, result: "skipped" } };
+    errors: { windowMinutes: 15, rpcErrors: {}, refusals: 0, configRetries: 0, configRetryRpcErrors: 0, componentExits: {}, nativeSharing: [] }, smoke: { ran: false, result: "skipped" } };
   assert.deepEqual(Object.keys(report).sort(), Object.keys(expected).sort());
   assert.equal(report.service.hostFailures, 0);
 });

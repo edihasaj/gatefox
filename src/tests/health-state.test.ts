@@ -18,10 +18,10 @@ test("unreadable or foreign state files read as no record", async () => {
 
 test("a recorded pair and smoke answer survive, and stray fields do not", async () => {
   const state = await readHealthState("/s", json({ version: 1, app: { bundle: "26.10", engine: "0.4.4", seenAt: "then", path: "/secret/App.app", token: "hunter2" },
-    smoke: { bundle: "26.10", engine: "0.4.4", result: "fail", phase: "turn.start", at: "later", argv: ["-x"] }, extra: { nested: "value" } }));
+    smoke: { bundle: "26.10", engine: "0.4.4", result: "fail", phase: "thread-start", at: "later", argv: ["-x"] }, extra: { nested: "value" } }));
   assert.deepEqual(state, { version: 1,
     app: { bundle: "26.10", engine: "0.4.4", seenAt: "then" },
-    smoke: { bundle: "26.10", engine: "0.4.4", result: "fail", phase: "turn.start", at: "later" } });
+    smoke: { bundle: "26.10", engine: "0.4.4", result: "fail", phase: "thread-start", at: "later" } });
   const text = JSON.stringify(state);
   assert.equal(text.includes("hunter2") || text.includes("/secret"), false);
 });
@@ -34,10 +34,15 @@ test("malformed values are reduced, and an unusable record is dropped", async ()
   assert.equal(state?.smoke, undefined);
 });
 
-test("a long recorded phase is trimmed, never carried verbatim", async () => {
-  const state = await readHealthState("/s", json({ version: 1, smoke: { bundle: "1", engine: "2", result: "pass", phase: "x".repeat(200), at: 5 } }));
-  assert.equal(state?.smoke?.phase?.length, 64);
-  assert.equal(state?.smoke?.at, "");
+test("a recorded phase is a phase name, never whatever was in the file", async () => {
+  // Too long, and not a slug at all: both say `unknown`, neither is carried through.
+  const long = await readHealthState("/s", json({ version: 1, smoke: { bundle: "1", engine: "2", result: "pass", phase: "x".repeat(200), at: 5 } }));
+  assert.equal(long?.smoke?.phase, "unknown");
+  assert.equal(long?.smoke?.at, "");
+  const pathish = await readHealthState("/s", json({ version: 1, smoke: { bundle: "1", engine: "2", result: "fail", phase: "TypeError: /tmp/gw-fast-x:1 boom", at: "then" } }));
+  assert.equal(pathish?.smoke?.phase, "unknown");
+  assert.equal(JSON.stringify(pathish).includes("/tmp"), false);
+  assert.equal((await readHealthState("/s", json({ version: 1, smoke: { bundle: "1", engine: "2", result: "fail", phase: "turn-start", at: "then" } })))?.smoke?.phase, "turn-start");
 });
 
 test("appPairChanged answers first, same, and moved", () => {

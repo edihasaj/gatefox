@@ -16,7 +16,11 @@ test("a telemetry line keeps only the watched fields", () => {
   assert.deepEqual(parsed, { event: "rpc_error", method: "turn/start", code: unavailableCode, at });
   assert.equal(JSON.stringify(parsed).includes("hunter2"), false);
   assert.equal(JSON.stringify(parsed).includes("upstream said no"), false);
-  assert.ok(watchedFields.includes("reason"));
+  // The judgement reads the fixed `rejection` vocabulary, never a free-text `reason`.
+  assert.ok(watchedFields.includes("rejection"));
+  assert.equal(watchedFields.includes("reason" as never), false);
+  const shaped = parseHealthEvent(JSON.stringify({ at: stamp(0), event: "rpc_error", method: "thread/start", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "other", reason: "a whole sentence about why" }));
+  assert.deepEqual(shaped, { event: "rpc_error", at, method: "thread/start", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "other" });
 });
 
 test("malformed, foreign, and torn lines read as nothing", () => {
@@ -40,10 +44,10 @@ test("counts cover hosts, exits, refusals, retries, and sharing", () => {
   const signals = summarizeHealthEvents([
     row({ event: "execution_host_failed" }), row({ event: "execution_host_failed" }),
     row({ event: "component_exit", kind: "native" }), row({ event: "component_exit", kind: "native" }), row({ event: "component_exit" }),
-    row({ event: "rpc_error", method: "turn/start", code: unavailableCode }),
-    row({ event: "rpc_error", method: "thread/resume", reason: "other" }),
-    row({ event: "rpc_error", method: "other/method", code: unavailableCode }),
-    row({ event: "rpc_error", method: "thread/start", code: -32600 }),
+    row({ event: "rpc_error", method: "turn/start", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "route" }),
+    row({ event: "rpc_error", method: "thread/resume", code: -32603, errorClass: "AdapterRefused", rejection: "other" }),
+    row({ event: "rpc_error", method: "other/method", code: unavailableCode, errorClass: "RouteUnavailable", rejection: "route" }),
+    row({ event: "rpc_error", method: "thread/start", code: -32600, errorClass: "BadRequest", rejection: "input" }),
     row({ event: "gateway_features_trimmed", site: "startup" }),
     row({ event: "gateway_features_trimmed", site: "retry" }),
     row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_unavailable" }), row({ event: "native_sharing_fallback" }),
@@ -52,6 +56,7 @@ test("counts cover hosts, exits, refusals, retries, and sharing", () => {
   assert.deepEqual(signals.exits, { native: 2, unknown: 1 });
   assert.equal(signals.nativeExited, true);
   assert.deepEqual(signals.rpcErrors, { "turn/start": 1, "thread/resume": 1 });
+  assert.equal(signals.refusals, 2);
   assert.equal(signals.featureRetries, 1);
   assert.deepEqual(signals.nativeSharing, ["native_sharing_unavailable", "native_sharing_fallback"]);
 });
@@ -60,9 +65,15 @@ test("only all four session methods count as refusals", () => {
   for (const method of ["thread/start", "thread/resume", "thread/fork", "turn/start"]) {
     assert.equal(summarizeHealthEvents([row({ event: "rpc_error", method, code: unavailableCode })]).rpcErrors[method], 1);
   }
-  assert.equal(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/completed", reason: "other" })]).rpcErrors["turn/completed"], undefined);
-  // A reason outside the fixed vocabulary is not a session-stopping refusal.
-  assert.deepEqual(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/start", reason: "timeout" })]).rpcErrors, {});
+  assert.equal(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/completed", rejection: "other" })]).rpcErrors["turn/completed"], undefined);
+  // A rejection outside the fixed vocabulary is not a session-stopping refusal, and free text never is.
+  assert.deepEqual(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/start", rejection: "timeout" })]).rpcErrors, {});
+  assert.deepEqual(summarizeHealthEvents([row({ event: "rpc_error", method: "turn/start", reason: "other" as never })]).rpcErrors, {});
+  // The two ways a session refusal is recognised, counted together.
+  assert.equal(summarizeHealthEvents([
+    row({ event: "rpc_error", method: "turn/start", code: unavailableCode }),
+    row({ event: "rpc_error", method: "thread/fork", code: -32002, rejection: "other" }),
+  ]).refusals, 2);
 });
 
 test("a retry followed by a refusal is the config failure worth naming", () => {

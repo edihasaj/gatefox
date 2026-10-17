@@ -14,8 +14,12 @@ import { pushUrlPath } from "./health-push.js";
  */
 export interface HealthScheduleOptions {
   stateDirectory: string;
-  /** What a tick runs. Defaults to the health checks and their push, in this process. */
-  run?: () => Promise<void>;
+  /**
+   * What a tick runs. Defaults to the health checks and their push, in this process. The signal
+   * it is handed is aborted by the stop function, so a check that is still running is stopped
+   * rather than left to hold the shutdown.
+   */
+  run?: (signal: AbortSignal) => Promise<void>;
   /** How long between ticks. Defaults to ten minutes, well inside a 15-minute monitor. */
   intervalMs?: number;
   /** Whether this Mac was given a monitor URL at all. */
@@ -31,6 +35,7 @@ export function startHealthSchedule(options: HealthScheduleOptions): () => void 
   const intervalMs = options.intervalMs ?? healthIntervalMs;
   const exists = options.exists ?? (path => stat(path).then(() => true, () => false));
   const urlPath = pushUrlPath(options.stateDirectory);
+  const controller = new AbortController();
   let running: Promise<void> | undefined;
   let stopped = false;
   const tick = () => {
@@ -38,21 +43,26 @@ export function startHealthSchedule(options: HealthScheduleOptions): () => void 
     // An unfinished tick is not a skipped tick: the next one waits for this answer.
     running = (async () => {
       if (!await exists(urlPath).catch(() => false)) return;
-      await (options.run ?? defaultRun(options.stateDirectory))();
+      await (options.run ?? defaultRun(options.stateDirectory))(controller.signal);
     })().catch(() => undefined).then(() => { running = undefined; });
   };
   const cancel = (options.timers ?? { set: repeat }).set(tick, intervalMs);
-  return () => { stopped = true; cancel(); };
+  return () => {
+    stopped = true;
+    cancel();
+    // Stopping is not waiting: whatever the tick started is asked to leave, in its own order.
+    controller.abort();
+  };
 }
 
 /** The default tick: the same checks the command runs, with the push, and no printing. */
-function defaultRun(stateDirectory: string): () => Promise<void> {
-  return async () => {
+function defaultRun(stateDirectory: string): (signal: AbortSignal) => Promise<void> {
+  return async signal => {
     const { loadConfig } = await import("./config.js");
     const { configPath } = await import("./paths.js");
     const { runHealth } = await import("./health.js");
     const config = await loadConfig(await configPath());
-    await runHealth({ stateDirectory: config.stateDirectory, port: config.port, clientOnly: config.clientOnly, push: true });
+    await runHealth({ stateDirectory: config.stateDirectory, port: config.port, clientOnly: config.clientOnly, push: true, signal });
   };
 }
 

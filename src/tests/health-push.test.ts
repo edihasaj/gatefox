@@ -1,15 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { chmod, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { shortFolder } from "./short-folder.js";
 import { pushFindings, pushRequest, pushSummary, pushUrlPath, pushVerdict, readPushUrl, summaryLimit, type PushUrlReadResult } from "../health-push.js";
 import { pushTimeoutMs, type Finding } from "../health-types.js";
 
 /** A monitor URL whose every part is recognizable if it ever leaks into an output. */
 const url = "https://kuma.invalid.example/api/push/aBcDeF-s3cr3t";
 const findings = (...reasons: Array<[Finding["level"], string]>): Finding[] => reasons.map(([level, reason]) => ({ level, reason }));
-const dir = () => mkdtemp(join(tmpdir(), "gw-push-"));
+const folders: Array<() => Promise<void>> = [];
+async function dir() {
+  const folder = await shortFolder("gw-push-");
+  folders.push(folder.remove);
+  return folder.directory;
+}
 
 test("the URL file lives in the state directory, never in the report", () => {
   assert.equal(pushUrlPath("/state"), "/state/alert-push-url");
@@ -42,9 +47,29 @@ test("anything that is not a regular file is refused", async () => {
 // A file owned by another user cannot be made without privileges; that branch of the
 // same check is exercised through the injected reader in health.test.ts.
 
+test("another owner's file is refused, through the stat this run trusts", async () => {
+  // No privileges are needed to describe the case: the reader is handed the inode answer.
+  const path = join(await dir(), "alert-push-url");
+  await writeFile(path, url + "\n", { mode: 0o600 });
+  const foreign = await readPushUrl(path, { stat: async () => ({ mode: 0o600, uid: (process.getuid?.() ?? 0) + 1, isFile: true }) });
+  assert.deepEqual(foreign, { error: "insecure" });
+  assert.equal(JSON.stringify(foreign).includes(url), false);
+  // A file this user owns, described the same way, is the file the run reads.
+  assert.deepEqual(await readPushUrl(path, { stat: async () => ({ mode: 0o600, uid: process.getuid?.() ?? 0, isFile: true }) }), { url });
+});
+
+test("a link at the URL path is refused, not followed", async () => {
+  const folder = await dir();
+  const target = join(folder, "somewhere-else");
+  await writeFile(target, url + "\n", { mode: 0o600 });
+  const link = join(folder, "alert-push-url");
+  await symlink(target, link);
+  assert.deepEqual(await readPushUrl(link), { error: "insecure" });
+});
+
 test("a missing file is missing, and odd contents are refused", async () => {
   assert.deepEqual(await readPushUrl(join(await dir(), "absent")), { error: "missing" });
-  const bad = ["", "   ", url + "\n" + url, "ftp://insecure.example/x", "x".repeat(2050)];
+  const bad = ["", "   ", url + "\n" + url, "ftp://insecure.example/x", "not a url at all", "https:///no-host", "x".repeat(2050)];
   for (const text of bad) {
     const path = join(await dir(), "alert-push-url");
     await writeFile(path, text, { mode: 0o600 });
@@ -63,8 +88,23 @@ test("the summary leads with the verdict, drops info, and fits the limit", () =>
 });
 
 test("one monitor request: status, url-encoded message, and the ping", async () => {
+  assert.equal(new URL(pushRequest(url, "up", "a b&c")).searchParams.get("msg"), "a b&c");
   assert.equal(pushRequest(url, "up", "a b&c"), `${url}?status=up&msg=a%20b%26c&ping=`);
+  // A query the copy-pasted URL already carries is answered, not doubled: the second copy would
+  // be the one Uptime Kuma reads, and it would say OK forever.
+  const kuma = `${url}?status=up&msg=OK&ping=`;
+  const replaced = pushRequest(kuma, "down", "gateway fail: stale service@0.4.1");
+  const params = new URL(replaced).searchParams;
+  assert.equal(params.get("status"), "down");
+  assert.equal(params.get("msg"), "gateway fail: stale service@0.4.1");
+  assert.equal(params.getAll("status").length, 1);
+  assert.equal(params.getAll("msg").length, 1);
+  assert.equal(params.getAll("ping").length, 1);
+  assert.equal(replaced.includes("OK"), false);
   assert.equal(pushRequest(url + "?x=1", "down", "m"), `${url}?x=1&status=down&msg=m&ping=`);
+  // The path belongs to the token and travels as it was given, trailing slash and all.
+  assert.ok(pushRequest(`${url}/`, "up", "m").startsWith(`${url}/?`));
+  assert.ok(pushRequest(url, "up", "m").startsWith(`${url}?`));
   for (const [verdict, status] of [["ok", "up"], ["warn", "up"], ["fail", "down"]] as const) {
     let request = "";
     const outcome = await pushVerdict(url, verdict, findings(["warn", "lagging inference@0.4.3"]), {
@@ -104,4 +144,9 @@ test("push findings carry outcomes, not the URL", () => {
   assert.deepEqual(pushFindings({ state: "insecure" }), [{ level: "fail", reason: "alert push url not private" }]);
   assert.deepEqual(pushFindings({ state: "failed", error: "timeout" }), [{ level: "warn", reason: "alert push failed (timeout)" }]);
   assert.equal(JSON.stringify(pushFindings({ state: "failed", error: "http_500" })).includes(url), false);
+});
+
+test("the push tests leave no folder behind", async () => {
+  // Every folder above is this suite's own, and `npm test` counts what the run left in the temp root.
+  for (const remove of folders) await remove();
 });

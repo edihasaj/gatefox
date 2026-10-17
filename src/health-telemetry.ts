@@ -9,10 +9,15 @@ import { healthWindowMs } from "./health-types.js";
  * in UTC, so the two files that can cover a 15-minute window are today's and
  * yesterday's, named by their UTC date.
  */
-export const watchedFields = ["at", "event", "component", "kind", "method", "code", "site", "reason"] as const;
+export const watchedFields = ["at", "event", "component", "kind", "method", "code", "site", "errorClass", "rejection"] as const;
 export type WatchedField = (typeof watchedFields)[number];
 /** One accepted line: only the watched fields survive, and `at` becomes an instant. */
-export interface HealthEvent { event: string; at: number; component?: string; kind?: string; method?: string; code?: string | number; site?: string; reason?: string }
+export interface HealthEvent {
+  event: string; at: number;
+  component?: string; kind?: string; method?: string; code?: string | number; site?: string;
+  /** The error's class name, and the fixed refusal vocabulary. Only `rejection` is judged. */
+  errorClass?: string; rejection?: string;
+}
 
 /** The methods whose refusals mean a chat could not start or continue at all. */
 export const sessionMethods = new Set(["thread/start", "thread/resume", "thread/fork", "turn/start"]);
@@ -26,6 +31,8 @@ export interface TelemetrySignals {
   exits: Record<string, number>;
   /** `rpc_error` events that stopped a session method, per method. */
   rpcErrors: Record<string, number>;
+  /** Every session refusal in the window, whichever method it stopped. 1-2 warn, `refusalFailThreshold` and up fail. */
+  refusals: number;
   /** `gateway_features_trimmed` events whose site was the one configuration retry. */
   featureRetries: number;
   /** Feature retries in the window that were followed by a refusal of a session method. */
@@ -36,7 +43,8 @@ export interface TelemetrySignals {
   nativeExited: boolean;
 }
 
-export const emptySignals = (): TelemetrySignals => ({ hostFailures: 0, exits: {}, rpcErrors: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
+export const emptySignals = (): TelemetrySignals =>
+  ({ hostFailures: 0, exits: {}, rpcErrors: {}, refusals: 0, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
 
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
@@ -61,13 +69,16 @@ export function parseHealthEvent(line: string): HealthEvent | undefined {
   return { ...kept, event, at } as unknown as HealthEvent;
 }
 
-/** Whether a `rpc_error` line names a session method the gateway could not serve. */
+/**
+ * Whether a `rpc_error` line names a session method the gateway could not serve. The judgement
+ * reads `rejection`, whose values come from a fixed list, never `reason`'s free text: an
+ * unclassified refusal ("other") and a refused execution path (-32001) are what a chat feels.
+ */
 function refusedSessionMethod(row: HealthEvent): boolean {
   if (row.event !== "rpc_error") return false;
   const method = row.method;
   if (typeof method !== "string" || !sessionMethods.has(method)) return false;
-  // -32001 is a refused execution path; `other` is a refusal the gateway cannot classify.
-  return row.code === unavailableCode || row.reason === "other";
+  return row.code === unavailableCode || row.rejection === "other";
 }
 
 /** Reduces the window's lines to counts. `at` is the epoch millisecond the parser kept. */
@@ -87,6 +98,7 @@ export function summarizeHealthEvents(rows: HealthEvent[]): TelemetrySignals {
     if (refusedSessionMethod(row)) {
       const method = String(row.method);
       signals.rpcErrors[method] = (signals.rpcErrors[method] ?? 0) + 1;
+      signals.refusals++;
       refusals.push({ at, method });
     }
     if ((row.event === "native_sharing_unavailable" || row.event === "native_sharing_fallback") && !signals.nativeSharing.includes(row.event)) signals.nativeSharing.push(row.event);

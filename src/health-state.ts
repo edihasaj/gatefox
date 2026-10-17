@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
-import type { AppVersions } from "./health-types.js";
+import { safePhase, type AppVersions } from "./health-types.js";
 
 /**
  * What the watchdog remembers between runs, in `<state>/health-state.json` (0600).
@@ -39,7 +39,7 @@ export async function readHealthState(stateDirectory: string, read: (path: strin
   return { version: 1,
     ...(app ? { app: { ...app, seenAt: typeof state.app?.seenAt === "string" ? state.app.seenAt : "" } } : {}),
     ...(smoke && (state.smoke?.result === "pass" || state.smoke?.result === "fail")
-      ? { smoke: { ...smoke, result: state.smoke.result, ...(state.smoke.phase ? { phase: String(state.smoke.phase).slice(0, 64) } : {}), at: typeof state.smoke.at === "string" ? state.smoke.at : "" } } : {}) };
+      ? { smoke: { ...smoke, result: state.smoke.result, ...(safePhase(state.smoke.phase) ? { phase: safePhase(state.smoke.phase) as string } : {}), at: typeof state.smoke.at === "string" ? state.smoke.at : "" } } : {}) };
 }
 
 export async function writeHealthState(stateDirectory: string, state: HealthState, write: (path: string, value: unknown) => Promise<void> = writePrivateJson): Promise<void> {

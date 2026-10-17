@@ -21,6 +21,8 @@ test("minorDistance counts minor gaps and treats a major as many", () => {
   assert.equal(minorDistance("0.4.4", "0.3.9"), 1);
   assert.equal(minorDistance("0.4.4", "0.2.1"), 2);
   assert.equal(minorDistance("1.4.4", "0.3.9"), 101);
+  // A different major is more than one minor behind even when its minors say otherwise.
+  assert.ok(minorDistance("2.0.0", "1.99.0")! > 1);
   assert.equal(minorDistance("0.4.4", "unknown"), undefined);
   assert.equal(minorDistance("checkout", "0.4.4"), undefined);
 });
@@ -63,6 +65,18 @@ test("lag alone warns and a stale lag fails", () => {
   const bare = componentFindings(versions(null, [["service", "0.4.1", 9999]]), at);
   assert.deepEqual(bare.stale, []);
   assert.deepEqual(bare.findings, [{ level: "warn", reason: "lagging service@0.4.1" }]);
+});
+
+test("the stale clock runs from the release switch, not the process start", () => {
+  const day = 24 * 60 * 60_000;
+  // A daemon that has run for a month is only as behind as the release it is running is old.
+  const behind = versions("0.4.0", [["service", "0.2.0", (40 * day) / 60_000]]);
+  assert.deepEqual(componentFindings(behind, at).stale, ["service@0.2.0"], "with no switch answer, the process start is the clock");
+  assert.deepEqual(componentFindings(behind, at, at - day).stale, [], "this release moved a day ago: not stale yet");
+  assert.deepEqual(componentFindings(behind, at, at - 3 * day).stale, ["service@0.2.0"]);
+  // A different major counts as more than one minor behind, whatever its minor numbers say.
+  assert.ok((minorDistance("2.0.0", "1.99.0") ?? 0) > 1);
+  assert.deepEqual(componentFindings(versions("2.0.0", [["service", "1.99.0", 10]]), at, at - 3 * day).stale, ["service@1.99.0"]);
 });
 
 test("a lagging row with an unreadable start is a lag, not stale", () => {
@@ -110,7 +124,11 @@ test("a paused native relay reads as info from the snapshot", () => {
 });
 
 test("error findings name refusals, retries, and exits by count only", () => {
-  const signals: TelemetrySignals = { ...emptySignals(), rpcErrors: { "turn/start": 2, "thread/resume": 1 } };
+  // One refusal in fifteen minutes is a hiccup; the third one is a Mac that stopped working.
+  const single = errorFindings({ ...emptySignals(), rpcErrors: { "turn/start": 1 }, refusals: 1 });
+  assert.deepEqual(single, [{ level: "warn", reason: "refused turn/start 1x" }]);
+  assert.equal(errorFindings({ ...emptySignals(), rpcErrors: { "thread/resume": 2 }, refusals: 2 })[0]!.level, "warn");
+  const signals: TelemetrySignals = { ...emptySignals(), rpcErrors: { "turn/start": 2, "thread/resume": 1 }, refusals: 3 };
   const out = errorFindings(signals);
   assert.deepEqual(out, [{ level: "fail", reason: "refused thread/resume 1x" }, { level: "fail", reason: "refused turn/start 2x" }]);
   assert.deepEqual(errorFindings({ ...emptySignals(), featureRetries: 3 }), [{ level: "info", reason: "config retried 3x" }]);
@@ -123,9 +141,17 @@ test("error findings name refusals, retries, and exits by count only", () => {
 test("inference verdicts run from unreachable to matching release", () => {
   assert.deepEqual(inferenceFindings({ state: "skipped" }, "0.4.4"), [{ level: "info", reason: "inference remote" }]);
   assert.deepEqual(inferenceFindings({ state: "unreachable" }, "0.4.4"), [{ level: "fail", reason: "inference not serving" }]);
+  // The probe failing is a warning about the check, never a fault claimed against inference.
+  assert.deepEqual(inferenceFindings({ state: "unreadable" }, "0.4.4"), [{ level: "warn", reason: "inference unreadable" }]);
+  // A probe that could not run is a warning about the check, never a fault claimed against inference.
+  assert.deepEqual(inferenceFindings({ state: "unreadable" }, "0.4.4"), [{ level: "warn", reason: "inference unreadable" }]);
   const probe = (extra: Partial<InferenceProbe>): InferenceProbe => ({ state: "answered", status: 200, ...extra });
   assert.deepEqual(inferenceFindings(probe({ status: 503 }), "0.4.4"), [{ level: "fail", reason: "inference status 503" }]);
   assert.deepEqual(inferenceFindings(probe({ bodyStatus: "degraded" }), "0.4.4"), [{ level: "fail", reason: "inference degraded" }]);
+  // A header or a body field that is not a version token is named unknown, never carried through.
+  assert.deepEqual(inferenceFindings(probe({ release: "0.4.4 /home/x/dist/cli.js" }), "0.4.4"), [{ level: "warn", reason: "inference release unknown" }]);
+  assert.deepEqual(inferenceFindings(probe({ release: "0.4.3" }), "0.4.4"), [{ level: "warn", reason: "lagging inference@0.4.3" }]);
+  assert.deepEqual(inferenceFindings(probe({ bodyStatus: "ok: true, uptime 41d" }), "0.4.4"), [{ level: "fail", reason: "inference unknown" }]);
   assert.deepEqual(inferenceFindings(probe({}), "0.4.4"), [{ level: "warn", reason: "inference release unknown" }]);
   assert.deepEqual(inferenceFindings(probe({ release: "0.4.3" }), "0.4.4"), [{ level: "warn", reason: "lagging inference@0.4.3" }]);
   assert.deepEqual(inferenceFindings(probe({ release: "0.4.3" }), null), []);
@@ -138,4 +164,6 @@ test("smoke verdicts: a failing phase is the loudest finding", () => {
   assert.deepEqual(smokeFindings("unavailable"), [{ level: "warn", reason: "smoke unavailable" }]);
   assert.deepEqual(smokeFindings("fail"), [{ level: "fail", reason: "smoke failed" }]);
   assert.deepEqual(smokeFindings("fail", "startup"), [{ level: "fail", reason: "smoke failed at startup" }]);
+  // A recorded phase that is not a phase name is still a failure, but it does not get quoted.
+  assert.deepEqual(smokeFindings("fail", "/tmp/gw-fast-abc:611:7 boom"), [{ level: "fail", reason: "smoke failed at unknown" }]);
 });
