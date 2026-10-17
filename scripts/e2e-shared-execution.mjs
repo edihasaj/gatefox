@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawn, execFile} from 'node:child_process';
 import {randomUUID, timingSafeEqual} from 'node:crypto';
-import {mkdtempSync, rmSync} from 'node:fs';
+import {appendFileSync, mkdtempSync, realpathSync, rmSync} from 'node:fs';
 import {mkdir, readFile, readdir, rm, writeFile, realpath, lstat, readlink, stat} from 'node:fs/promises';
 import {createServer} from 'node:http';
 import {homedir} from 'node:os';
@@ -30,7 +30,8 @@ if(Boolean(v.image)!==Boolean(v.expected)||v.image&&!v.inference)throw new Error
 // engines) and stays listed until that group is empty. No exit path leaves one behind: success and failure stop them in order, a
 // signal or an uncaught error does the same with a deadline, and the exit handler SIGKILLs whatever group is still there.
 const groups=new Set();
-function startGroup(command,args,options){const child=spawn(command,args,{...options,detached:true});if(child.pid){const leader=child.pid;groups.add(leader);child.once('close',()=>{void groupGone(leader,10000).then(gone=>{if(gone)groups.delete(leader);});});}return child;}
+// Each group is also listed in the fake home's `.groups`, for the reaper below.
+function startGroup(command,args,options){const child=spawn(command,args,{...options,detached:true});if(child.pid){const leader=child.pid;groups.add(leader);try{appendFileSync(resolve(fakeHome,'.groups'),leader+'\n',{mode:0o600});}catch{}child.once('close',()=>{void groupGone(leader,10000).then(gone=>{if(gone)groups.delete(leader);});});}return child;}
 const killGroups=signal=>{for(const leader of groups){try{process.kill(-leader,signal);}catch{groups.delete(leader);}}};
 /** After its leader is gone, a group gets a moment to empty on its own; whatever is left of it is SIGKILLed. */
 const reapGroup=async(leader,ms)=>{if(!await groupGone(leader,ms))try{process.kill(-leader,'SIGKILL');}catch{}await groupGone(leader,5000);};
@@ -39,7 +40,12 @@ const reapGroup=async(leader,ms)=>{if(!await groupGone(leader,ms))try{process.ki
 // host's own stop, or by the next host's claim after the restart phase.
 const fakeHome=mkdtempSync(process.platform==='win32'?resolve(homedir(),'gwe-'):'/tmp/gwe-');
 const removeFakeHome=()=>{try{rmSync(fakeHome,{recursive:true,force:true,maxRetries:5,retryDelay:50});}catch{}};
-process.on('exit',()=>{killGroups('SIGKILL');removeFakeHome();});
+// A SIGKILL of this check runs none of its cleanup. A detached reaper in a group of its own watches this process and, once it is
+// gone, kills the listed groups, removes the SDK sockets of this run's links that nothing serves with their .lock files, and the
+// fake home (scripts/e2e-reaper.mjs). A normal end stops the reaper first.
+const sdkRoot=process.platform==='win32'?undefined:resolve(realpathSync('/tmp'),`codex-daemon-${process.getuid()}`);
+const reaper=sdkRoot?spawn(process.execPath,[new URL('./e2e-reaper.mjs',import.meta.url).pathname,String(process.pid),fakeHome,sdkRoot],{detached:true,stdio:'ignore'}):undefined;reaper?.unref();
+process.on('exit',()=>{try{reaper?.kill('SIGTERM');}catch{}killGroups('SIGKILL');removeFakeHome();});
 setExecutionHostRootForTests(resolve(fakeHome,'.local/state/gw-exec'));setNativeOwnerRootForTests(resolve(fakeHome,'.local/state/gw-native'));
 let cleanup=async()=>{};let stopping;
 const stop=code=>stopping??=(async()=>{process.exitCode=code;await Promise.race([cleanup().catch(()=>{}),delay(15000)]);killGroups('SIGKILL');process.exit(code);})();
@@ -102,32 +108,39 @@ await writePrivateJson(configPath,config);await mkdir(config.stateDirectory,{mod
 // The plan a service with shared executors runs from: adapters then require the host, wait for it while it restarts, and kick it.
 await writePrivateJson(servicePlanPath(config.stateDirectory),{version:1,config:configPath,sharedExecutors:true,components:[{id:'native',kind:'native',command:process.execPath,args:['--codex',sdk,'--native-home',nativeHome],log:resolve(run,'native.log')}]});
 const hostHome=executionHostHome(configPath,nativeHome);let host;let control;const clients=new Set();
+// Every host this run started, from its spawn on: the restart phase's replacement belongs here before it is `host`, so a stop in
+// that window still closes it (and its control socket in the SDK's fixed folder) instead of leaving it to the final SIGKILL.
+const hosts=new Set();
 let cleaned;
 cleanup=()=>cleaned??=(async()=>{
   await Promise.allSettled([...clients].map(client=>client.close()));
-  await host?.stop();control?.stop();await removeKilledEngineLocks().catch(()=>{});
+  await Promise.allSettled([...hosts].map(entry=>entry.stop()));control?.stop();await removeKilledEngineLocks().catch(()=>{});
   const closed=new Promise(resolve=>proxy.close(resolve));proxy.closeAllConnections();await closed;
 })();
 const childEnv=()=>{const env={...process.env,HOME:fakeHome,CODEX_HOME:nativeHome,CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED:'1'};for(const key of ['CODEX_API_KEY','OPENAI_API_KEY','OPENAI_BASE_URL'])delete env[key];return env;};
 // The host runs as its own process, as it does inside the service, so the restart phase can SIGKILL it with its engines.
 const hostRunner=`const [hostUrl,configUrl,options]=[process.argv[1],process.argv[2],JSON.parse(process.argv[3])];
 const {startExecutionHost}=await import(hostUrl);const {loadConfig}=await import(configUrl);
-const parent=process.ppid;let host;let closing;
-const close=(code,orphaned=false)=>closing??=(async()=>{try{await host?.close();}catch{code=1;}
+const parent=process.ppid;let starting;let closing;
+// A stop while the host is still starting waits for that start, so it closes a host that got as far as its control socket.
+const close=(code,orphaned=false)=>closing??=(async()=>{try{await (await starting?.catch(()=>undefined))?.close();}catch{code=1;}
   // A check that was SIGKILLed cannot remove its private home: the host it left removes it after stopping its engines.
   if(orphaned){const {rm}=await import('node:fs/promises');await rm(options.home,{recursive:true,force:true}).catch(()=>{});}process.exit(code);})();
 for(const signal of ['SIGTERM','SIGINT','SIGHUP'])process.on(signal,()=>{void close(0);});
 setInterval(()=>{if(process.ppid!==parent)void close(0,true);},1000).unref();
-try{host=await startExecutionHost({config:await loadConfig(options.configPath),configPath:options.configPath,nativeHome:options.nativeHome,codex:options.codex});}
-catch{process.stdout.write('HOST_FAILED\\n');process.exit(1);}
+try{starting=loadConfig(options.configPath).then(config=>startExecutionHost({config,configPath:options.configPath,nativeHome:options.nativeHome,codex:options.codex}));await starting;}
+catch{if(!closing){process.stdout.write('HOST_FAILED\\n');process.exit(1);}}
+if(closing)await closing;
 process.stdout.write('HOST_READY\\n');`;
 async function startHost(){
   const child=startGroup(process.execPath,['--input-type=module','-e',hostRunner,new URL('../dist/execution-host.js',import.meta.url).href,new URL('../dist/config.js',import.meta.url).href,JSON.stringify({configPath,nativeHome,codex:sdk,home:fakeHome})],{env:childEnv(),stdio:['ignore','pipe','ignore']});
-  const exited=new Promise(resolve=>child.once('close',resolve));const lines=createInterface({input:child.stdout});
+  const exited=new Promise(resolve=>child.once('close',resolve));const lines=createInterface({input:child.stdout});let connection;let stopping;
+  const entry={pid:child.pid,exited,stop:()=>stopping??=(async()=>{if(connection&&control===connection){control.stop();await control.exited;}child.kill('SIGTERM');if(!await Promise.race([exited.then(()=>true),delay(10000).then(()=>false)]))try{process.kill(-child.pid,'SIGKILL');}catch{}await reapGroup(child.pid,5000);hosts.delete(entry);})()};
+  hosts.add(entry);
   const ready=await new Promise(resolve=>{const timer=setTimeout(()=>resolve(false),30000);lines.once('line',line=>{clearTimeout(timer);resolve(line==='HOST_READY');});void exited.then(()=>{clearTimeout(timer);resolve(false);});});
-  if(!ready){try{process.kill(-child.pid,'SIGKILL');}catch{}throw new Error('Execution host did not start');}
-  const connection=new SocketAppServerConnection(resolve(hostHome,'host.sock'),async()=>{});await connection.ready;control=connection;
-  return {pid:child.pid,exited,stop:async()=>{if(control===connection){control.stop();await control.exited;}child.kill('SIGTERM');if(!await Promise.race([exited.then(()=>true),delay(10000).then(()=>false)]))try{process.kill(-child.pid,'SIGKILL');}catch{}await reapGroup(child.pid,5000);}};
+  if(!ready){await entry.stop();throw new Error('Execution host did not start');}
+  connection=new SocketAppServerConnection(resolve(hostHome,'host.sock'),async()=>{});await connection.ready;control=connection;
+  return entry;
 }
 function connect(){
   const command=resolve(v.gateway);const args=['codex-shim','--config',configPath,'--codex',sdk,'--','app-server','--listen','stdio://'];

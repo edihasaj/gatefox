@@ -30,6 +30,10 @@ belongs in the release archive.
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.
    The zero-inference run proves process ownership rather than durable chat resume.
+   Every host it starts, including the restart phase's replacement, is stopped at the
+   end, and a detached reaper (`scripts/e2e-reaper.mjs`) cleans up after a SIGKILL of
+   the check: its process groups, the SDK sockets its links name that nothing serves
+   (with their `.lock` files) and its private home.
    For speed controls, run `scripts/e2e-fast-mode.mjs --gateway INSTALLED_COMMAND
    --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. It uses the
    real signed SDK with a mock upstream through stdio and a private Unix socket.
