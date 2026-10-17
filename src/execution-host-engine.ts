@@ -47,13 +47,15 @@ export function executionArgs(input: string[], socket: string, catalog: string, 
   }
   return [...forwarded, "--listen", `unix://${socket}`, "-c", `model_catalog_json=${JSON.stringify(catalog)}`];
 }
-export async function validateExecutionSdk(codex: string): Promise<void> {
+/** The gateway SDK every gateway generation runs. The app engines verified for native sharing are in native-engine-versions.ts. */
+export const gatewayEngineVersions: readonly string[] = ["0.162.0-alpha.17.2"];
+export async function validateExecutionSdk(codex: string, accepted: readonly string[] = gatewayEngineVersions): Promise<void> {
   const child = spawn(codex, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
   let output = ""; child.stdout.on("data", chunk => { output += String(chunk); if (output.length > 4096) child.kill("SIGTERM"); });
   const timer = setTimeout(() => child.kill("SIGKILL"), 5000).unref();
   try {
     await new Promise<void>((resolve, reject) => { child.once("error", () => reject(new Error("Execution host SDK is unavailable"))); child.once("close", code => code === 0 ? resolve() : reject(new Error("Execution host SDK version check failed"))); });
-    if (output.trim() !== "codex-cli 0.162.0-alpha.17.2") throw new Error("Execution host requires the pinned Codex SDK version");
+    if (!accepted.some(version => output.trim() === `codex-cli ${version}`)) throw new Error("Execution host requires the pinned Codex SDK version");
   } finally { clearTimeout(timer); }
 }
 

@@ -12,6 +12,7 @@ import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type Nati
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { verifiedAppEngines } from "./native-engine-versions.js";
 import { telemetry } from "./telemetry.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
@@ -77,7 +78,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!runtime || requested.includes("native")) throw error;
     sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
   }
-  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
+  // A native-only host runs the app's codex only as the native engine, so it is held to the verified app engines; a binary that
+  // gateway generations will run keeps the gateway SDK pin.
+  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex, requested.includes("gateway") ? undefined : verifiedAppEngines));
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
     try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }

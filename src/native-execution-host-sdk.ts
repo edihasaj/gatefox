@@ -4,6 +4,7 @@ import { open, realpath } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { sdkIdentity } from "./execution-host-storage.js";
 import { validateExecutionSdk } from "./execution-host-engine.js";
+import { verifiedAppEngines } from "./native-engine-versions.js";
 
 export interface NativeSdkIdentity { nativeSdkExecutable: string; nativeSdkSha256: string }
 export type NativeSdkVerifier = (codex: string) => Promise<NativeSdkIdentity>;
@@ -15,6 +16,9 @@ async function prefix(path: string): Promise<Buffer> {
   try { const bytes = Buffer.alloc(32768); const read = await file.read(bytes, 0, bytes.length, 0); return bytes.subarray(0, read.bytesRead); }
   finally { await file.close(); }
 }
+
+/** The app's own engine, not the gateway SDK: it is held to the app engines this release verified. */
+export const validateNativeEngine = (codex: string): Promise<void> => validateExecutionSdk(codex, verifiedAppEngines);
 
 /** Verify the loaded binary, rather than trusting an unchanged shell launcher. */
 export async function verifyNativeSdk(codex: string): Promise<NativeSdkIdentity> {
@@ -35,7 +39,7 @@ export async function verifyNativeSdk(codex: string): Promise<NativeSdkIdentity>
     if (!/(?:^|\n)TeamIdentifier=2DC432GLL2(?:\r?\n|$)/.test(metadata.stderr)) throw new Error("Signature team differs");
   } catch { throw new Error("Native execution SDK signature verification failed"); }
   if ((await sdkIdentity(executable)).sdkSha256 !== identity.sdkSha256) throw new Error("Native execution SDK changed during signature verification");
-  await validateExecutionSdk(identity.codex);
+  await validateNativeEngine(identity.codex);
   return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 };
 }
 
