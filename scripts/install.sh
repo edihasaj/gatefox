@@ -40,25 +40,34 @@ if [ -e "$root/current" ] || [ -L "$root/current" ]; then
   test -L "$root/current" || { echo 'Current release path is not a managed link.' >&2; exit 2; }
   readlink "$root/current" > "$root/previous-release"
 fi
-launcher="$prefix/bin/gateway"
-if [ -e "$launcher" ] || [ -L "$launcher" ]; then
-  test -f "$launcher" && grep -q '^# Managed by subscription-gateway installer$' "$launcher" || { echo 'gateway command is occupied by another installation.' >&2; exit 2; }
+# harness-gateway is the managed launcher, because macOS names a background item after the executable a LaunchAgent runs.
+# gateway stays a second managed launcher with the same contents, so the older command and old LaunchAgents keep working.
+launcher="$prefix/bin/harness-gateway"
+compat="$prefix/bin/gateway"
+managed='^# Managed by subscription-gateway installer$'
+if [ -L "$launcher" ]; then
+  # Only the installer's own link to its gateway launcher is replaced.
+  test "$(readlink "$launcher")" = gateway && [ -f "$compat" ] && [ ! -L "$compat" ] && grep -q "$managed" "$compat" || { echo 'harness-gateway command is occupied by another installation.' >&2; exit 2; }
+elif [ -e "$launcher" ]; then
+  test -f "$launcher" && grep -q "$managed" "$launcher" || { echo 'harness-gateway command is occupied by another installation.' >&2; exit 2; }
 fi
-./runtime/bin/node --input-type=module - "$root" "$launcher.new" <<'JS'
+if [ -e "$compat" ] || [ -L "$compat" ]; then
+  test -f "$compat" && grep -q "$managed" "$compat" || { echo 'gateway command is occupied by another installation.' >&2; exit 2; }
+fi
+./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" <<'JS'
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
-const root=process.argv[2];
-writeFileSync(process.argv[3],'#!/bin/sh\n# Managed by subscription-gateway installer\nGATEWAY_COMMAND='+quote(process.argv[3].slice(0,-4))+' GATEWAY_INSTALLED=1 exec '+quote(root+'/current/runtime/bin/node')+' '+quote(root+'/current/package/dist/cli.js')+' "$@"\n');
+const [root,launcher,...files]=process.argv.slice(2);
+const text='#!/bin/sh\n# Managed by subscription-gateway installer\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec '+quote(root+'/current/runtime/bin/node')+' '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
+for(const file of files)writeFileSync(file,text);
 JS
-chmod 700 "$launcher.new"
+chmod 700 "$launcher.new" "$compat.new"
 ln -s "releases/$version" "$root/current.new-$$"
 ./runtime/bin/node -e 'require("fs").renameSync(process.argv[1],process.argv[2])' "$root/current.new-$$" "$root/current"
 mv "$launcher.new" "$launcher"
-# The product name as a second command; existing services keep using gateway.
-alias_command="$prefix/bin/harness-gateway"
-if [ ! -e "$alias_command" ] && [ ! -L "$alias_command" ]; then ln -s gateway "$alias_command"; fi
+mv "$compat.new" "$compat"
 printf 'subscription-gateway\n' > "$root/.gateway-installation"
-if [ "$prefix" = "$HOME/.local" ] && [ -n "$legacy_command" ] && [ "$legacy_command" != "$launcher" ] && [ -L "$legacy_command" ]; then
+if [ "$prefix" = "$HOME/.local" ] && [ -n "$legacy_command" ] && [ "$legacy_command" != "$launcher" ] && [ "$legacy_command" != "$compat" ] && [ -L "$legacy_command" ]; then
   if ./runtime/bin/node - "$legacy_command" <<'JS'
 const fs=require('fs'),path=require('path');
 try { const target=fs.realpathSync(process.argv[2]);const p=JSON.parse(fs.readFileSync(path.resolve(path.dirname(target),'../package.json'),'utf8'));process.exit(path.basename(target)==='cli.js'&&['@edihasaj/harness-gateway','@edihasaj/subscription-gateway'].includes(p.name)?0:1); } catch { process.exit(1); }
@@ -86,4 +95,4 @@ if [ -d "$HOME/.Trash" ]; then
 fi
 [ "$pruned" -eq 0 ] || echo "Moved $pruned older releases to the Trash."
 echo "Installed gateway $version. Run gateway setup, gateway service install, or gateway desktop."
-echo "Command: $launcher"
+echo "Command: $launcher (gateway is the same command)"

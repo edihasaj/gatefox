@@ -12,6 +12,40 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+## The name macOS shows
+
+macOS names a LaunchAgent item after the program in the first `ProgramArguments`
+entry, and shows that name in System Settings, Login Items, under "Allow in the
+Background", and in the "Background Items Added" notification. Since 0.4.6 the
+installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
+`~/.local/bin/gateway` as a second launcher with the same contents (both set
+`GATEWAY_COMMAND` to the `harness-gateway` path), so every plist written from
+either command names `harness-gateway`. The service, desktop login, native
+relay (its `--gateway` argument) and consolidated plans all use it. The
+login environment agent runs `<state>/harness-gateway-login-env`, a private script,
+instead of `launchctl`, so it is not listed as "launchctl" either. The launchd labels
+stay `com.edihasaj.subscription-gateway*`.
+
+Every check that reads a plist's arguments accepts both `.../bin/gateway` and
+`.../bin/harness-gateway`, so older plists keep working and a rollback to 0.4.5
+needs no plist change. An existing `harness-gateway` link to `gateway` is replaced
+by the launcher file; any other file with that name is left alone and the installer
+refuses to continue.
+
+Migration is one-time and happens when a plist is next written by 0.4.6:
+
+- A standalone service: `gateway service install`, which upgrades the running
+  service when it is idle like any other install.
+- Consolidation (`gateway service consolidate --apply`, `--next-login`) writes the
+  unified service with the new name.
+- `gateway desktop register` rewrites the desktop login agent and the login
+  environment agent.
+- An already-unified service keeps its current plist until it is consolidated or
+  reinstalled; it works unchanged under the old `gateway` name until then.
+
+macOS then posts one "Background Items Added" notification for `harness-gateway`,
+and the old "gateway" entry disappears from the list once its plist is replaced.
+
 Preview the existing installation:
 
 ```sh

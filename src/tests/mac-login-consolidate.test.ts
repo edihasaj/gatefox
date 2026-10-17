@@ -13,13 +13,13 @@ import { bootIdentity, setBootIdentityForTests } from "../boot-identity.js";
 import { runServiceDaemon } from "../service-daemon.js";
 
 const xml = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-async function fixture() {
+async function fixture(launcher = "Installed Gateway") {
   const root = await mkdtemp(join(tmpdir(), "gateway login paths ")); const directory = join(root, "Launch Agents");
   const state = join(root, "State Directory"); const trash = join(state, "service-login-retired"); const discarded = join(root, "Simulated OS Trash");
   for (const path of [directory, state, trash, discarded]) await mkdir(path, { mode: 0o700 });
   const config = join(root, "Gateway Config.json");
   await writePrivateJson(config, { version: 1, port: 3457, stateDirectory: state, providers: [{ id: "claude", type: "claude-subscription", models: { claude: "model" } }] });
-  const gateway = join(root, "Installed Gateway"); const native = join(root, "gateway-native-relay");
+  const gateway = join(root, launcher); const native = join(root, "gateway-native-relay");
   for (const command of [gateway, native]) await writeFile(command, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const definitions: Array<{ label: string; kind: ServiceComponent["kind"]; args: string[] }> = [
     { label: serviceLabel, kind: "inference", args: [gateway, "serve", "--config", config] },
@@ -392,7 +392,7 @@ test("the desktop environment agent is neither consolidated, retired, nor mistak
   const f = await fixture(); const envLabel = serviceLabel + ".desktop-env"; const envPath = join(f.directory, envLabel + ".plist");
   const envText = `<?xml version="1.0"?><!-- Managed by subscription-gateway desktop-env --><plist version="1.0"><dict><key>Label</key><string>${envLabel}</string></dict></plist>\n`;
   await writeFile(envPath, envText, { mode: 0o600 });
-  f.registrations.set(envPath, { Label: envLabel, ProgramArguments: ["/bin/launchctl", "setenv", "CODEX_CLI_PATH", join(f.state, "desktop-wrapper-0123456789abcdef")] });
+  f.registrations.set(envPath, { Label: envLabel, ProgramArguments: [join(f.state, "harness-gateway-login-env")] });
   const keepEnvLoaded = () => f.loaded.set(envLabel, { loaded: true });
   keepEnvLoaded();
 
@@ -408,4 +408,18 @@ test("the desktop environment agent is neither consolidated, retired, nor mistak
   assert.equal(await readFile(envPath, "utf8"), envText, "promotion leaves it alone");
   assert.equal((await stageLoginConsolidation(f.config, f.deps)).alreadyConsolidated, true, "and a later stage is not blocked by it");
   assert.equal(f.loaded.get(envLabel)?.loaded, true, "it stays loaded");
+});
+
+test("login jobs naming gateway or harness-gateway are both accepted, and the staged service names harness-gateway", async () => {
+  for (const launcher of ["gateway", "harness-gateway"]) {
+    const f = await fixture(launcher); const harness = join(f.root, "harness-gateway");
+    await writeFile(harness, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    f.deps.command = { command: harness, args: [] };
+    assert.equal((await stageLoginConsolidation(f.config, f.deps)).staged, true, launcher + ": the old jobs are accepted");
+    const primary = await readFile(join(f.directory, serviceLabel + ".plist"), "utf8");
+    assert.ok(primary.includes(`<array><string>${harness}</string><string>daemon</string>`), launcher + ": the unified plist names harness-gateway");
+    assert.equal(primary.includes(`<string>${join(f.root, "gateway")}</string>`), false, launcher + ": and never the older name");
+    f.unloadLegacy();
+    assert.deepEqual(await activatePendingLoginConsolidation(f.config, f.deps), f.plan, launcher + ": promotion verifies the staged registration");
+  }
 });

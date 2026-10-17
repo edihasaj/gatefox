@@ -5,7 +5,7 @@ import { promisify } from "node:util";
 import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { macDesktop, planDesktopUnregister, type LaunchctlExec } from "../mac-desktop.js";
-import { envAgentLabel, envAgentPlist, readGuiDesktopEnv, writeEnvAgent } from "../desktop-env-agent.js";
+import { envAgentLabel, envAgentPlist, envAgentScript, envAgentScriptPath, readGuiDesktopEnv, writeEnvAgent } from "../desktop-env-agent.js";
 import { prepareDesktop } from "../desktop-launch.js";
 import { writePrivateJson } from "../config.js";
 import { uninstallGateway, type UninstallDeps } from "../uninstall.js";
@@ -18,25 +18,42 @@ import { PATH_KEY, FORCE, inDesktopHome, desktopFixture, type DesktopFixture as 
 const mac = { skip: process.platform !== "darwin" };
 const fixture = () => desktopFixture("env-agent");
 const plistOf = (f: Fixture) => join(f.home, "Library/LaunchAgents", envAgentLabel + ".plist");
+const scriptOf = (f: Fixture) => envAgentScriptPath(f.state);
+/** An agent as registration leaves it: the script for `wrapper`, and the plist that runs the script. */
+const seedAgent = async (f: Fixture, wrapper: string) => { await writeFile(scriptOf(f), envAgentScript(wrapper), { mode: 0o700 }); await writeFile(plistOf(f), envAgentPlist(scriptOf(f))); };
 const target = () => `gui/${process.getuid!()}/${envAgentLabel}`;
 const read = (path: string) => readFile(path, "utf8").then(text => text, (error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
 
-test("the agent is exactly one launchctl setenv at login, with no node, no KeepAlive and no other environment", async () => {
-  const wrapper = "/state/desktop-wrapper-0123456789abcdef";
-  const text = envAgentPlist(wrapper);
+test("the agent runs one private script, not launchctl, so macOS lists it as harness-gateway-login-env", () => {
+  const wrapper = "/state/desktop-wrapper-0123456789abcdef"; const script = "/state/harness-gateway-login-env";
+  const text = envAgentPlist(script);
   assert.match(text, /<!-- Managed by subscription-gateway desktop-env -->/);
   assert.ok(text.includes(`<key>Label</key><string>${envAgentLabel}</string>`));
-  assert.ok(text.includes(`<key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${wrapper}</string></array>`));
+  assert.ok(text.includes(`<key>ProgramArguments</key><array><string>${script}</string></array>`), "the script is the only program argument");
+  assert.equal(text.includes("launchctl"), false, "the first argument is never launchctl, which macOS would show instead");
   assert.ok(text.includes("<key>RunAtLoad</key><true/>"));
   assert.ok(text.includes("<key>LimitLoadToSessionType</key><string>Aqua</string>"));
   for (const forbidden of ["KeepAlive", "EnvironmentVariables", "node", "WorkingDirectory", "StandardOutPath"]) assert.equal(text.includes(forbidden), false, forbidden);
   assert.ok(envAgentPlist("/a&b/<x>").includes("<string>/a&amp;b/&lt;x&gt;</string>"), "the path is escaped");
+  assert.equal(envAgentScriptPath("/state"), script);
+  assert.equal(envAgentScript(wrapper), `#!/bin/sh\n# Managed by subscription-gateway desktop-env\nexec /bin/launchctl setenv CODEX_CLI_PATH '${wrapper}'\n`);
+});
+
+test("the script quotes the wrapper path for the shell, whatever it holds", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    for (const wrapper of ["/a b/it's/$HOME/`id`/\"x\"/desktop-wrapper-0123456789abcdef", "/line\nbreak/desktop-wrapper-0123456789abcdef"]) {
+      const file = join(f.root, "login-env"); await writeFile(file, envAgentScript(wrapper).replace("/bin/launchctl setenv CODEX_CLI_PATH", "printf %s"), { mode: 0o700 });
+      const { stdout } = await promisify(execFile)("/bin/sh", [file]);
+      assert.equal(stdout, wrapper, "the shell reads back exactly the wrapper");
+    }
+  });
 });
 
 test("the generated plist is valid", mac, async () => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
-    const file = join(f.root, "agent.plist"); await writeFile(file, envAgentPlist(join(f.state, "desktop-wrapper-0123456789abcdef")));
+    const file = join(f.root, "agent.plist"); await writeFile(file, envAgentPlist(scriptOf(f)));
     const { stdout } = await promisify(execFile)("/usr/bin/plutil", ["-lint", file]);
     assert.match(stdout, /OK/);
   });
@@ -48,9 +65,14 @@ test("register writes a private agent that names the registered wrapper and load
     const result = await macDesktop("register", f.config, f.app, false, f.exec);
     const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
     assert.equal(result.envAgent, true);
-    assert.equal(await read(plistOf(f)), envAgentPlist(wrapper));
+    assert.equal(await read(plistOf(f)), envAgentPlist(scriptOf(f)));
+    assert.equal(await read(scriptOf(f)), envAgentScript(wrapper), "the script sets the registered wrapper");
     assert.ok(wrapper.startsWith(f.state + "/desktop-wrapper-"), "the stable registered wrapper, never a release path");
     assert.equal((await lstat(plistOf(f))).mode & 0o777, 0o600);
+    assert.equal((await lstat(scriptOf(f))).mode & 0o777, 0o700, "the script is private and executable");
+    assert.deepEqual((await readdir(f.state)).filter(name => name.includes(".tmp")), [], "no temporary script is left");
+    const program = JSON.parse((await promisify(execFile)("/usr/bin/plutil", ["-extract", "ProgramArguments", "json", "-o", "-", plistOf(f)])).stdout) as string[];
+    assert.deepEqual(program, [scriptOf(f)], "ProgramArguments is only the script");
     assert.ok(f.calls.indexOf(`setenv ${PATH_KEY} ${wrapper}`) >= 0, "the session is still set directly");
     assert.ok(f.calls.includes(`enable ${target()}`) && f.calls.includes(`bootstrap gui/${process.getuid!()} ${plistOf(f)}`), "and the agent is enabled and bootstrapped");
     assert.deepEqual((await readdir(join(f.home, "Library/LaunchAgents"))).filter(name => name.includes(".tmp")), [], "no temporary file is left");
@@ -69,34 +91,67 @@ test("the unified service's desktop component and a pending login plan write the
       const result = await macDesktop("register", f.config, f.app, mode === "restore-only", f.exec);
       const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
       assert.equal(result.envAgent, true, mode);
-      assert.equal(await read(plistOf(f)), envAgentPlist(wrapper), mode);
+      assert.equal(await read(plistOf(f)), envAgentPlist(scriptOf(f)), mode);
+      assert.equal(await read(scriptOf(f)), envAgentScript(wrapper), mode);
       assert.equal(await read(join(f.home, "Library/LaunchAgents/com.edihasaj.subscription-gateway.desktop.plist")), undefined, mode + ": the standalone desktop login agent is not written on the service path");
     });
   }
 });
 
-test("registering again changes nothing, and a new wrapper replaces the agent after booting the old one out", mac, async () => {
+test("registering again changes nothing, and a new wrapper replaces only the script the agent runs", mac, async () => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
     await macDesktop("register", f.config, f.app, false, f.exec);
-    const first = await lstat(plistOf(f)); const before = f.calls.length;
+    const first = await lstat(plistOf(f)); const firstScript = await lstat(scriptOf(f)); const before = f.calls.length;
     await macDesktop("register", f.config, f.app, false, f.exec);
     const second = await lstat(plistOf(f));
     assert.equal(second.ino, first.ino, "an unchanged agent is not rewritten");
+    assert.equal((await lstat(scriptOf(f))).ino, firstScript.ino, "nor is its script");
     assert.equal(f.calls.slice(before).some(call => call === `bootout ${target()}`), false, "and not booted out");
 
     // The receipt names an older wrapper and the agent names it too, so the current wrapper is a change.
     const older = join(f.state, "desktop-wrapper-89fafe006c5dc3e4");
     await writeFile(older, "#!/bin/sh\nexit 0\n"); await chmod(older, 0o700);
-    await writeFile(plistOf(f), envAgentPlist(older)); f.values.set(PATH_KEY, older);
+    await seedAgent(f, older); f.values.set(PATH_KEY, older);
     await writePrivateJson(f.receipt, { wrapper: older, registeredAt: new Date().toISOString() });
     const mark = f.calls.length;
     await macDesktop("register", f.config, f.app, false, f.exec);
     const { wrapper } = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
     assert.notEqual(wrapper, older);
-    assert.equal(await read(plistOf(f)), envAgentPlist(wrapper), "the agent follows the registration");
+    assert.equal(await read(scriptOf(f)), envAgentScript(wrapper), "the script follows the registration");
+    assert.equal(await read(plistOf(f)), envAgentPlist(scriptOf(f)), "and the plist keeps naming the script");
     const calls = f.calls.slice(mark);
-    assert.ok(calls.indexOf(`bootout ${target()}`) >= 0 && calls.indexOf(`bootout ${target()}`) < calls.findIndex(call => call.startsWith("bootstrap")), "boot out, then bootstrap the new one");
+    assert.equal(calls.includes(`bootout ${target()}`), false, "the plist did not change, so the loaded agent is not booted out");
+    assert.equal((await lstat(scriptOf(f))).mode & 0o777, 0o700);
+    assert.deepEqual((await readdir(f.state)).filter(name => name.includes(".tmp")), [], "the replacement was atomic");
+  });
+});
+
+test("an agent written by 0.4.5 (launchctl as the program) is replaced by the script form", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await prepareDesktop(f.config, f.app);
+    const legacy = `<?xml version="1.0" encoding="UTF-8"?>\n<!-- Managed by subscription-gateway desktop-env -->\n<plist version="1.0"><dict><key>Label</key><string>${envAgentLabel}</string><key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${wrapper}</string></array></dict></plist>\n`;
+    await writeFile(plistOf(f), legacy);
+    await macDesktop("register", f.config, f.app, false, f.exec);
+    const registered = JSON.parse(await readFile(f.receipt, "utf8")) as { wrapper: string };
+    assert.equal(await read(plistOf(f)), envAgentPlist(scriptOf(f)));
+    assert.equal(await read(scriptOf(f)), envAgentScript(registered.wrapper));
+    assert.ok(f.calls.indexOf(`bootout ${target()}`) >= 0, "the old agent is booted out before the new one is bootstrapped");
+    assert.ok(f.calls.indexOf(`bootout ${target()}`) < f.calls.findIndex(call => call.startsWith("bootstrap")));
+  });
+});
+
+test("a script without the gateway's marker is refused and left alone", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    await writeFile(scriptOf(f), "#!/bin/sh\necho someone else\n", { mode: 0o700 });
+    await assert.rejects(macDesktop("register", f.config, f.app, false, f.exec), /unmanaged desktop environment script/);
+    assert.equal(await read(scriptOf(f)), "#!/bin/sh\necho someone else\n");
+    assert.equal(await read(plistOf(f)), undefined, "no plist names a script that is not ours");
+    const service = await macDesktop("register", f.config, f.app, true, f.exec);
+    assert.equal(service.envAgent, false, "a service path reports it instead of failing");
+    assert.deepEqual((await failureEvents(f)).events.map(event => event.reason), ["unmanaged"]);
   });
 });
 
@@ -135,9 +190,22 @@ test("unregister boots the agent out and moves it to the Trash, before it clears
     const calls = f.calls.slice(mark);
     assert.ok(calls.indexOf(`bootout ${target()}`) >= 0 && calls.indexOf(`bootout ${target()}`) < calls.indexOf(`unsetenv ${PATH_KEY}`), "the agent cannot set the path again after it is cleared");
     assert.equal(await read(plistOf(f)), undefined, "out of LaunchAgents");
+    assert.equal(await read(scriptOf(f)), undefined, "and the script is out of the state directory");
     const trashed = (await readdir(join(f.home, ".Trash"))).filter(name => name.startsWith(envAgentLabel + "."));
     assert.equal(trashed.length, 1, "in the Trash");
+    assert.equal((await readdir(join(f.home, ".Trash"))).filter(name => name.startsWith("harness-gateway-login-env.")).length, 1, "with its script");
     assert.equal((await planDesktopUnregister(f.config, f.exec)).envAgent, "absent");
+  });
+});
+
+test("unregister leaves a script that is not the gateway's where it is", mac, async () => {
+  const f = await fixture();
+  await inDesktopHome(f, async () => {
+    await macDesktop("register", f.config, f.app, false, f.exec);
+    await writeFile(scriptOf(f), "#!/bin/sh\necho someone else\n", { mode: 0o700 });
+    await macDesktop("unregister", f.config, f.app, false, f.exec);
+    assert.equal(await read(plistOf(f)), undefined, "the agent plist is removed");
+    assert.equal(await read(scriptOf(f)), "#!/bin/sh\necho someone else\n", "the foreign script is untouched");
   });
 });
 
@@ -166,6 +234,7 @@ test("gateway uninstall removes the agent through the desktop unregister step", 
       planDesktopUnregister: (config, _exec, options) => planDesktopUnregister(config, f.exec, options) };
     try { await uninstallGateway(f.config, deps); } finally { Object.defineProperty(process, "platform", savedPlatform); }
     assert.equal(await read(plistOf(f)), undefined, "the agent is gone from LaunchAgents");
+    assert.equal(await read(scriptOf(f)), undefined, "and so is its script");
     assert.ok(f.calls.includes(`bootout ${target()}`));
     assert.equal((await readdir(join(f.home, ".Trash"))).some(name => name.startsWith(envAgentLabel + ".")), true, "and in the Trash");
   });
@@ -187,7 +256,7 @@ test("status reads CODEX_CLI_PATH from the GUI domain even when getenv, over SSH
   await inDesktopHome(f, async () => {
     const { wrapper } = await prepareDesktop(f.config, f.app);
     await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
-    await writeFile(plistOf(f), envAgentPlist(wrapper));
+    await seedAgent(f, wrapper);
     const secret = "TOKEN_SHOULD_NEVER_APPEAR_7731";
     const status = await macDesktop("status", f.config, f.app, false, sessionExec(f, guiPrint([`OTHER_KEY => ${secret}`, `${PATH_KEY} => ${wrapper}`, "ANOTHER => x"]), ""));
     assert.equal(status.activeForFutureLaunches, true);
@@ -219,10 +288,13 @@ test("status reports envAgent false for a missing agent and for one naming anoth
     const { wrapper } = await prepareDesktop(f.config, f.app);
     await writePrivateJson(f.receipt, { wrapper, registeredAt: new Date().toISOString() });
     assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, false, "no plist");
-    await writeFile(plistOf(f), envAgentPlist(join(f.state, "desktop-wrapper-89fafe006c5dc3e4")));
-    assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, false, "names an older wrapper");
-    await writeFile(plistOf(f), envAgentPlist(wrapper));
+    await seedAgent(f, join(f.state, "desktop-wrapper-89fafe006c5dc3e4"));
+    assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, false, "its script sets an older wrapper");
+    await seedAgent(f, wrapper);
     assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, true);
+    await rm(scriptOf(f));
+    assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, false, "the plist names a script that is gone");
+    await seedAgent(f, wrapper);
     await writePrivateJson(f.receipt, {});
     assert.equal((await macDesktop("status", f.config, f.app, false, f.exec)).envAgent, false, "no registered wrapper");
   });
@@ -355,7 +427,7 @@ test("collecting a service plan skips the environment agent's plist", mac, async
   const f = await fixture();
   await inDesktopHome(f, async () => {
     const directory = join(f.home, "Library/LaunchAgents");
-    await writeFile(join(directory, envAgentLabel + ".plist"), envAgentPlist(join(f.state, "desktop-wrapper-0123456789abcdef")));
+    await writeFile(join(directory, envAgentLabel + ".plist"), envAgentPlist(scriptOf(f)));
     // Alone, it yields no component at all: an agent taken for one would be parsed and fail some other way.
     await assert.rejects(collectServicePlan(f.config, directory), /Invalid gateway service plan/);
   });

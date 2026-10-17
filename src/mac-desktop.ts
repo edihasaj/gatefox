@@ -188,7 +188,7 @@ async function desktopOperation(action: string, configPath: string, app: string,
     // Future launches use the registered wrapper, so an older one we still own is stale, not active. Ownership
     // only decides whether the legacy FORCE_CLI value is ours to clear.
     // Status never refuses: a plist that is not ours simply is not our agent.
-    const envAgent = envAgentNames(await readEnvAgent().catch(() => undefined), registration.wrapper);
+    const envAgent = await envAgentNames(await readEnvAgent().catch(() => undefined), registration.wrapper);
     return { registered: !!registration.wrapper, activeForFutureLaunches: fromReceipt, envAgent, forceCliSet,
       legacyForceCli: owned && !!registration.wrapper && forceCli1,
       ...(owned && !fromReceipt ? { staleWrapper: true } : {}) };

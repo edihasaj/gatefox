@@ -405,16 +405,25 @@ ChatGPT is a login item and can start before the unified service has set
 runs without the gateway until it is restarted; this was seen on a Mac that
 rebooted after a power outage. To close the race, registration also writes a
 small LaunchAgent, `com.edihasaj.subscription-gateway.desktop-env`. It runs one
-command at login and exits:
+command at login and exits. macOS names a background item after the program a
+LaunchAgent runs, so the agent does not run `launchctl` directly (Login Items would
+list "launchctl"). Its only program argument is a private script in the gateway
+state directory, `harness-gateway-login-env`, which Login Items lists by that name:
 
 ```text
-/bin/launchctl setenv CODEX_CLI_PATH <state>/desktop-wrapper-<hash>
+#!/bin/sh
+# Managed by subscription-gateway desktop-env
+exec /bin/launchctl setenv CODEX_CLI_PATH '<state>/desktop-wrapper-<hash>'
 ```
 
 It has `RunAtLoad`, no `KeepAlive`, `LimitLoadToSessionType` `Aqua`, no node and no
-other environment. It names the stable registered wrapper in the gateway state
-directory, never a release path, and registration refuses any other path. The file
-is private, written atomically, and bootstrapped into `gui/<uid>` when written.
+other environment. The script names the stable registered wrapper in the gateway state
+directory, never a release path, and registration refuses any other path; the wrapper
+is single-quoted for the shell. The script (mode 700) and the plist (mode 600) are
+private and written atomically, the script first, and the agent is bootstrapped into
+`gui/<uid>` when written. An agent written by 0.4.5 or earlier ran `launchctl`
+directly; registering again replaces it with the script form. A script at that
+path without the gateway's marker is refused, like an unmanaged plist.
 `gateway desktop register`, and the unified service's desktop component when it
 sets the variable, write or update it, so it follows the registration. The service
 still sets the variable itself as before. A plist with that label that does not
@@ -430,7 +439,8 @@ path. The next start tries again. A hand-run `gateway desktop register` still fa
 loudly.
 
 `gateway desktop unregister` and `gateway uninstall` boot the agent out and move its
-plist to the Trash, before they clear the variable. The agent is not a service
+script and plist to the Trash (the script only when it carries the gateway's marker),
+before they clear the variable. The agent is not a service
 component: consolidation does not collect or retire it.
 
 `gateway desktop status` reads `CODEX_CLI_PATH` from the login (GUI) domain: it
@@ -438,8 +448,8 @@ parses only that key from the `environment` block of `launchctl print gui/<uid>`
 and falls back to `launchctl getenv` only when the print fails. `launchctl getenv`
 over SSH reads a different domain and reported `activeForFutureLaunches: false`
 even when the login session held the right value. Status also reports
-`envAgent: true` when the agent exists, is the gateway's, and names the registered
-wrapper. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
+`envAgent: true` when the agent exists, is the gateway's, and its script sets the
+registered wrapper. `forceCliSet` and `legacyForceCli` come from the same block: status keeps
 only whether `CODEX_APP_SERVER_FORCE_CLI` is present and non-empty (and whether it is
 `1`), never its value, and uses `launchctl getenv` for both variables only when the
 print fails.
