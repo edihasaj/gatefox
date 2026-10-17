@@ -28,7 +28,9 @@ export function translationItemType(value: unknown): TranslationItemType {
  * `tool_search_call` / `tool_search_output` items to the ChatGPT backend unchanged. Every other route
  * rejects them as unsupported.
  */
-export interface TranslationOptions { toolSearch?: boolean }
+export interface TranslationOptions { toolSearch?: boolean;
+  /** Record `tool_declarations_merged` for this translation. The server sets it on its one validation pass, so a request is reported once. */
+  reportMerges?: boolean }
 export class ResponsesTranslationError extends Error {
   constructor(message: string, readonly reason: TranslationReason, readonly itemType?: string) { super(message); }
 }
@@ -184,7 +186,6 @@ export function normalizeResponsesToolChoice(choice: ResponsesRequest["tool_choi
 /** One declared tool, as the merge sees it: the tool itself, the namespace it came from (if any), and how it ranks. */
 interface Declaration { tool: unknown; group?: { source: Data; name: string }; rank: number; text: string }
 const topLevelRank = 2 ** 30;
-const reported = new WeakSet<object>();
 /** Key order must not make two equal definitions look different. */
 function stable(value: unknown): string {
   return JSON.stringify(value, (_key, inner: unknown) => inner !== null && typeof inner === "object" && !Array.isArray(inner)
@@ -239,9 +240,10 @@ function mergeDeclarations(lists: Array<{ tools: unknown[]; top: boolean }>): { 
 /**
  * Tools a request declares, at the top level and in Responses lite `additional_tools` input items, with repeated
  * declarations merged: the current top-level list wins over history, and a later declaration wins over an earlier one.
- * Merging is silent apart from the counts in the `tool_declarations_merged` event, which carries no names or definitions.
+ * Merging is silent apart from the counts in the `tool_declarations_merged` event, which carries no names or definitions
+ * and is recorded only when the caller asks (`reportMerges`), so one request is never reported twice.
  */
-export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool[] {
+export function declaredResponsesTools(request: ResponsesRequest, options: Pick<TranslationOptions, "reportMerges"> = {}): ResponsesTool[] {
   const lifted = Array.isArray(request.input) ? request.input.flatMap(source => {
     const item = record(source);
     if (item.type !== "additional_tools") return [];
@@ -250,16 +252,12 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
   }) : [];
   if (request.tools !== undefined && request.tools !== null && !Array.isArray(request.tools)) reject("tools must be an array", "invalid_shape");
   const result = mergeDeclarations([{ tools: request.tools ?? [], top: true }, { tools: lifted, top: false }]);
-  // The server validates a request and then its provider translates it again; report one request once.
-  if ((result.replaced || result.identical) && !reported.has(request)) {
-    reported.add(request);
-    telemetry("tool_declarations_merged", { replaced: result.replaced, identical: result.identical });
-  }
+  if (options.reportMerges && (result.replaced || result.identical)) telemetry("tool_declarations_merged", { replaced: result.replaced, identical: result.identical });
   return result.tools;
 }
 
 export function responsesToChatRequest(request: ResponsesRequest, options: TranslationOptions = {}): OpenAIChatRequest {
-  const declared = declaredResponsesTools(request);
+  const declared = declaredResponsesTools(request, options);
   const tools = normalizeResponsesTools(declared, options);
   const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
   if (tool_choice === "required" && !tools.length && !(options.toolSearch && declared.some(tool => tool.type === "tool_search"))) reject("Required tool is not in the catalog", "unsupported_tool_choice");

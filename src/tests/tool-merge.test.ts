@@ -27,8 +27,10 @@ test("a history declaration and a top-level one for the same tool merge, and the
   await withTelemetry(t, async directory => {
     const request = make([lite(fn("exec", "from history")), { type: "message", role: "user", content: "go" }], [fn("exec", "current")]);
     assert.deepEqual(described(request), [["exec", "current"]]);
+    assert.equal((await merged(directory)).length, 0, "translating reports nothing unless the caller asks");
+    assert.deepEqual(responsesToChatRequest(request, { reportMerges: true }).tools!.map(tool => tool.function.description), ["current"]);
     const events = await merged(directory);
-    assert.equal(events.length, 1, "the validation pass and the provider pass report one request once");
+    assert.equal(events.length, 1);
     assert.deepEqual([events[0].replaced, events[0].identical], [1, 0]);
   });
 });
@@ -40,7 +42,8 @@ test("when two history items declare a tool, the later item wins", () => {
 test("an identical duplicate is dropped without an error and is counted", async t => {
   await withTelemetry(t, async directory => {
     const same = fn("exec", "same");
-    assert.deepEqual(described(make([lite({ ...same }), lite({ parameters: same.parameters, description: "same", name: "exec", type: "function" })], [same])), [["exec", "same"]]);
+    const request = make([lite({ ...same }), lite({ parameters: same.parameters, description: "same", name: "exec", type: "function" })], [same]);
+    assert.deepEqual(responsesToChatRequest(request, { reportMerges: true }).tools!.map(tool => [tool.function.name, tool.function.description]), [["exec", "same"]]);
     const events = await merged(directory);
     assert.deepEqual([events[0].replaced, events[0].identical], [0, 2], "key order does not make a definition differ");
   });
@@ -48,7 +51,8 @@ test("an identical duplicate is dropped without an error and is counted", async 
 
 test("a repeated name inside one list merges with the last entry winning and is counted", async t => {
   await withTelemetry(t, async directory => {
-    assert.deepEqual(described(make([lite(fn("a", "one"), fn("a", "two"))], [fn("b", "one"), fn("b", "two"), fn("b", "two")])), [["b", "two"], ["a", "two"]]);
+    const request = make([lite(fn("a", "one"), fn("a", "two"))], [fn("b", "one"), fn("b", "two"), fn("b", "two")]);
+    assert.deepEqual(responsesToChatRequest(request, { reportMerges: true }).tools!.map(tool => [tool.function.name, tool.function.description]), [["b", "two"], ["a", "two"]]);
     const events = await merged(directory);
     assert.deepEqual([events[0].replaced, events[0].identical], [2, 1]);
   });
@@ -56,8 +60,8 @@ test("a repeated name inside one list merges with the last entry winning and is 
 
 test("the telemetry event carries counts only and nothing is recorded without a merge", async t => {
   await withTelemetry(t, async directory => {
-    responsesToChatRequest(make([lite(fn("secret_tool_name", "private description"))], [fn("secret_tool_name", "other private text")]));
-    responsesToChatRequest(make([], [fn("alone", "x")]));
+    responsesToChatRequest(make([lite(fn("secret_tool_name", "private description"))], [fn("secret_tool_name", "other private text")]), { reportMerges: true });
+    responsesToChatRequest(make([], [fn("alone", "x")]), { reportMerges: true });
     const events = await merged(directory);
     assert.equal(events.length, 1);
     assert.deepEqual(Object.keys(events[0]).filter(key => !["at", "host", "component", "pid", "event"].includes(key)).sort(), ["identical", "replaced"]);
@@ -115,4 +119,26 @@ test("the Codex route sends a repeated declaration upstream unchanged and does n
   for await (const event of provider.infer({ ...make(history, [fn("exec", "new")]), model: "upstream", stream: true }, new AbortController().signal)) events.push(event);
   assert.equal(events.at(-1)?.type, "done");
   assert.deepEqual(bodies[0].input, history, "history items go up as the client sent them");
+});
+
+test("on the Codex route a call resolves against the list it was declared in when a tool changed type", async t => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-merge-type-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const credentialFile = join(directory, "registration.json");
+  await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
+  let call: Record<string, unknown> = {};
+  t.mock.method(globalThis, "fetch", async () => {
+    const done = { type: "response.completed", response: { id: "r", status: "completed", output: [call], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } };
+    return new Response(`data: ${JSON.stringify({ type: "response.output_item.done", output_index: 0, item: call })}\n\ndata: ${JSON.stringify(done)}\n\n`, { headers: { "Content-Type": "text/event-stream" } });
+  });
+  const provider = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as unknown as ProviderConfig);
+  const request = { ...make([lite(fn("edit", "history function"))], [{ type: "custom", name: "edit", description: "current custom" }]), model: "upstream", stream: true };
+  const identities = async (item: Record<string, unknown>) => {
+    call = item; const found: unknown[] = [];
+    for await (const event of provider.infer(request, new AbortController().signal)) if (event.type === "tool") found.push(event.call.responseTool);
+    return found;
+  };
+  // Top-level tools are sent in the gateway namespace; additional_tools tools are called bare.
+  assert.deepEqual(await identities({ type: "custom_tool_call", call_id: "c1", name: "edit", namespace: "gateway", input: "x" }), [{ type: "custom", name: "edit" }]);
+  assert.deepEqual(await identities({ type: "function_call", call_id: "c2", name: "edit", arguments: "{}" }), [{ type: "function", name: "edit" }]);
 });

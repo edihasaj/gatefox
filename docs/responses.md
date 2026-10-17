@@ -324,8 +324,8 @@ declarations into its own catalog instead of refusing the request (`duplicate_to
 - **Precedence.** The current request's top-level `tools` win over any history
   declaration. Among `additional_tools` items a later item wins over an earlier one, and
   within one list a later entry wins over an earlier one. An exact duplicate is dropped; a
-  differing one is replaced by the winner. A tool keeps the position of its first
-  declaration.
+  differing one is replaced by the winner. A tool or its namespace keeps the position of
+  its first declaration.
 - **Scope.** Only the gateway's own catalog is merged. On the Codex route the original
   input items still go upstream unchanged (apart from the `tool_search` drops below).
 - **Telemetry.** When anything merged, the gateway records `tool_declarations_merged` with
@@ -333,7 +333,8 @@ declarations into its own catalog instead of refusing the request (`duplicate_to
   argument ([diagnostics](diagnostics.md#local-telemetry)).
 
 Malformed declarations still fail with their own reasons (`invalid_shape`,
-`unsupported_tool`); only a repeated name no longer fails a request.
+`unsupported_tool`) unless a valid declaration of the same tool supersedes them; only a
+repeated name no longer fails a request.
 
 ## Tool search on the Codex subscription route
 
