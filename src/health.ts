@@ -5,9 +5,10 @@ import { loadConfig } from "./config.js";
 import { configPath } from "./paths.js";
 import { resolve } from "node:path";
 import { appFindings, componentFindings, errorFindings, inferenceFindings, nativePaused, serviceFindings, smokeFindings, statusFields, type ServiceStatus } from "./health-checks.js";
+import { desktopFindings } from "./health-desktop.js";
 import { appPathFromPlan, detectAppChange, readAppInfo } from "./health-app.js";
 import { healthWindowMs, exitCodeFor, verdictOf, type AppInfo, type Exec, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type SmokeOutcome, type Verdict } from "./health-types.js";
-import { emptySignals, readHealthTelemetry, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
+import { emptySignals, readHealthTelemetry, refusalOngoingMs, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
 import { pushFindings, pushVerdict, pushUrlPath, readPushUrl, type PushUrlReader } from "./health-push.js";
 import { runSmoke, type SmokeAnswer, type SmokeRunner } from "./health-smoke.js";
 import { readHealthState, writeHealthState, smokeCovers, type HealthState } from "./health-state.js";
@@ -126,9 +127,14 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   const status = await note("service", () => (deps.readStatus ?? (directory => readServiceStatus(directory, plan, readFile)))(options.stateDirectory),
     { installed: false, components: [], published: false });
   const switched = await note("release switch", () => (deps.switchedAt ?? releaseSwitchedAt)(deps.moduleUrl), undefined);
+  // The service's own start is a recovery marker: whatever it was refusing as the old release, it no longer is.
+  // Only once it has stayed up that long, so a service that crashes and restarts cannot keep resetting the verdict.
+  const serviceStarts = versions.processes.filter(row => row.role === "service").map(row => Date.parse(row.startedAt))
+    .filter(started => Number.isFinite(started) && now - started >= refusalOngoingMs);
   const signals = await note("telemetry", async () => summarizeHealthEvents(deps.telemetry
     ? await deps.telemetry(options.stateDirectory)
-    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs })), emptySignals());
+    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs, ...(deps.now ? { until: now } : {}) }), { now, markers: serviceStarts }), emptySignals());
+  const desktop = await note<Finding[]>("desktop", () => desktopFindings(options.stateDirectory, app.path, { readFile, exec: deps.exec }), []);
   // A probe that could not run at all says so about itself; one that ran and got no answer says so about inference.
   const inference: InferenceProbe = options.clientOnly
     ? { state: "skipped" }
@@ -141,7 +147,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   const findings: Finding[] = [
     ...appFindings(app, change.changed), ...components.findings,
     ...serviceFindings(status, signals), ...inferenceFindings(inference, versions.installed),
-    ...errorFindings(signals, nativePaused(status)), ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
+    ...errorFindings(signals, nativePaused(status)), ...desktop, ...smokeFindings(smoke.outcome.result, smoke.outcome.phase),
     ...unreadable,
   ];
   const report: HealthReport = {

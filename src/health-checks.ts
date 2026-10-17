@@ -109,16 +109,25 @@ export function serviceFindings(status: ServiceStatus, signals: TelemetrySignals
 export const nativePaused = (status: ServiceStatus): boolean =>
   status.components.some(component => component.kind === "native" && component.state === "paused");
 
+/** The UTC hour and minute of an instant, the way the report names when a refusal stopped. */
+const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 16);
+
 /**
  * Everything the window's telemetry says about failures; counts only, never text.
  *
- * A session refusal is judged by how many there were, not by which method carried them: one or
- * two in fifteen minutes is a hiccup worth reading, three or more is a Mac that stopped working.
+ * A session refusal is judged by whether it is still happening, then by how many there were. It
+ * is ongoing while one happened in the last five minutes after the latest recovery marker (a
+ * self-upgrade, a recovered host that stayed up, the service's own start once it has run for five
+ * minutes); it fails only when three or more are each that recent. A refusal that has stopped is a
+ * warning that says when ("none since 07:25 UTC"), so a Mac that healed itself does not page for the rest of the window.
  */
 export function errorFindings(signals: TelemetrySignals, paused = false): Finding[] {
-  const level: Finding["level"] = signals.refusals >= refusalFailThreshold ? "fail" : "warn";
-  const findings: Finding[] = Object.entries(signals.rpcErrors).sort()
-    .map(([method, count]) => ({ level, reason: `refused ${method} ${count}x` }));
+  const fail = signals.recentRefusals >= refusalFailThreshold;
+  const findings: Finding[] = Object.entries(signals.rpcErrors).sort().map(([method, count]) => {
+    if (signals.ongoingMethods.includes(method)) return { level: fail ? "fail" as const : "warn" as const, reason: `refused ${method} ${count}x` };
+    const last = signals.lastRefusalAt[method];
+    return { level: "warn" as const, reason: `refused ${method} ${count}x${last === undefined ? "" : `, none since ${clock(last)} UTC`}` };
+  });
   if (signals.retriedThenRefused > 0) findings.push({ level: "fail", reason: `config retry refused ${signals.retriedThenRefused}x` });
   else if (signals.featureRetries > 0) findings.push({ level: "info", reason: `config retried ${signals.featureRetries}x` });
   for (const [kind, count] of Object.entries(signals.exits).sort()) {

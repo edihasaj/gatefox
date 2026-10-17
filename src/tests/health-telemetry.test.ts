@@ -78,12 +78,16 @@ test("only all four session methods count as refusals", () => {
 
 test("a retry followed by a refusal is the config failure worth naming", () => {
   const events = [row({ event: "gateway_features_trimmed", site: "retry" }, minutes(2)), row({ event: "rpc_error", method: "turn/start", code: unavailableCode }, minutes(3))];
-  assert.equal(summarizeHealthEvents(events).retriedThenRefused, 1);
+  const now = at + minutes(4);
+  assert.equal(summarizeHealthEvents(events, { now }).retriedThenRefused, 1);
+  // The same refusal after the service came back is no longer ongoing, so it is no longer the config failure either.
+  assert.equal(summarizeHealthEvents(events, { now: at + minutes(20) }).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents(events, { now, markers: [at + minutes(3.5)] }).retriedThenRefused, 0);
   // A refusal that came first is unrelated to the retry, whatever order the file lists them in.
   const before = [row({ event: "gateway_features_trimmed", site: "retry" }, minutes(5)), row({ event: "rpc_error", method: "turn/start", code: unavailableCode }, minutes(3))];
-  assert.equal(summarizeHealthEvents(before).retriedThenRefused, 0);
-  assert.equal(summarizeHealthEvents(before.reverse()).retriedThenRefused, 0);
-  assert.equal(summarizeHealthEvents([row({ event: "gateway_features_trimmed", site: "retry" })]).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents(before, { now }).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents(before.reverse(), { now }).retriedThenRefused, 0);
+  assert.equal(summarizeHealthEvents([row({ event: "gateway_features_trimmed", site: "retry" })], { now }).retriedThenRefused, 0);
 });
 
 test("the window's files are named by UTC day, today and the one before", () => {

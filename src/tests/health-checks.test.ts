@@ -125,12 +125,24 @@ test("a paused native relay reads as info from the snapshot", () => {
 
 test("error findings name refusals, retries, and exits by count only", () => {
   // One refusal in fifteen minutes is a hiccup; the third one is a Mac that stopped working.
-  const single = errorFindings({ ...emptySignals(), rpcErrors: { "turn/start": 1 }, refusals: 1 });
+  const ongoing = (rpcErrors: Record<string, number>): TelemetrySignals => {
+    const refusals = Object.values(rpcErrors).reduce((left, right) => left + right, 0);
+    return { ...emptySignals(), rpcErrors, refusals, activeRefusals: refusals, recentRefusals: refusals, refusalsOngoing: true, ongoingMethods: Object.keys(rpcErrors).sort(),
+      lastRefusalAt: Object.fromEntries(Object.keys(rpcErrors).map(method => [method, at])) };
+  };
+  const single = errorFindings(ongoing({ "turn/start": 1 }));
   assert.deepEqual(single, [{ level: "warn", reason: "refused turn/start 1x" }]);
-  assert.equal(errorFindings({ ...emptySignals(), rpcErrors: { "thread/resume": 2 }, refusals: 2 })[0]!.level, "warn");
-  const signals: TelemetrySignals = { ...emptySignals(), rpcErrors: { "turn/start": 2, "thread/resume": 1 }, refusals: 3 };
+  assert.equal(errorFindings(ongoing({ "thread/resume": 2 }))[0]!.level, "warn");
+  const signals = ongoing({ "turn/start": 2, "thread/resume": 1 });
   const out = errorFindings(signals);
   assert.deepEqual(out, [{ level: "fail", reason: "refused thread/resume 1x" }, { level: "fail", reason: "refused turn/start 2x" }]);
+  // Refusals that have stopped are a warning with the time they stopped, however many there were.
+  const stopped: TelemetrySignals = { ...ongoing({ "thread/resume": 14 }), refusalsOngoing: false, ongoingMethods: [], activeRefusals: 0, recentRefusals: 0,
+    lastRefusalAt: { "thread/resume": Date.parse("2026-10-16T07:25:10.000Z") } };
+  assert.deepEqual(errorFindings(stopped), [{ level: "warn", reason: "refused thread/resume 14x, none since 07:25 UTC" }]);
+  // A method that stopped beside one that is ongoing says so; only the ongoing one can fail.
+  const mixed: TelemetrySignals = { ...ongoing({ "turn/start": 3, "thread/start": 4 }), ongoingMethods: ["turn/start"], lastRefusalAt: { "turn/start": at, "thread/start": at - minutes(9) } };
+  assert.deepEqual(errorFindings(mixed), [{ level: "warn", reason: "refused thread/start 4x, none since 08:51 UTC" }, { level: "fail", reason: "refused turn/start 3x" }]);
   assert.deepEqual(errorFindings({ ...emptySignals(), featureRetries: 3 }), [{ level: "info", reason: "config retried 3x" }]);
   assert.deepEqual(errorFindings({ ...emptySignals(), featureRetries: 3, retriedThenRefused: 1 }), [{ level: "fail", reason: "config retry refused 1x" }]);
   assert.deepEqual(errorFindings({ ...emptySignals(), exits: { native: 1 } }), [{ level: "warn", reason: "native exited 1x" }]);
