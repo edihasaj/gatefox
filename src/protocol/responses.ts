@@ -155,6 +155,13 @@ export class ResponsesWriter {
         const item = outputCall(event.call); const position = this.ledger.length;
         for (const frame of callFrames(item, position)) this.publish(frame); this.ledger.push(item); return;
       }
+      case "native-item": {
+        // Opaque to the gateway: a search item is relayed and kept in the ledger as received.
+        if (this.message?.providerId === undefined) this.closeMessage();
+        const item = structuredClone(event.item) as Item; const position = this.ledger.length;
+        this.publish({ type: "response.output_item.added", output_index: position, item });
+        this.publish({ type: "response.output_item.done", output_index: position, item }); this.ledger.push(item); return;
+      }
       case "done": {
         if (event.interrupted && event.endTurn !== false) throw new Error("Interrupted inference cannot finish the user turn");
         for (const message of this.messages.values()) this.closeMessage(message, event.interrupted ? "incomplete" : "completed");

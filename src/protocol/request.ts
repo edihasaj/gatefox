@@ -22,6 +22,12 @@ export const translationItemTypes: ReadonlySet<string> = new Set<string>([...tra
 export function translationItemType(value: unknown): TranslationItemType {
   return typeof value === "string" && translationItemTypes.has(value) ? value as TranslationItemType : "other";
 }
+/**
+ * `toolSearch` is set only for the Codex subscription route, which forwards the `tool_search` tool and the
+ * `tool_search_call` / `tool_search_output` items to the ChatGPT backend unchanged. Every other route
+ * rejects them as unsupported.
+ */
+export interface TranslationOptions { toolSearch?: boolean }
 export class ResponsesTranslationError extends Error {
   constructor(message: string, readonly reason: TranslationReason, readonly itemType?: string) { super(message); }
 }
@@ -65,7 +71,7 @@ export function agentMessageInput(item: Record<string, unknown>): ResponsesMessa
 }
 
 /** Replay is compiled in order; opaque reasoning is never treated as text. */
-export function responsesInputToMessages(input: ResponsesRequest["input"]): OpenAIChatMessage[] {
+export function responsesInputToMessages(input: ResponsesRequest["input"], options: TranslationOptions = {}): OpenAIChatMessage[] {
   if (typeof input === "string") return [{ content: input, role: "user" }];
   if (!Array.isArray(input)) reject("input must be text or a list of Responses items", "invalid_shape");
   const replay: OpenAIChatMessage[] = [];
@@ -100,6 +106,10 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
       case "additional_tools": break;
+      // Search items replay as the client sent them; the Codex route forwards them without translation.
+      case "tool_search_call": case "tool_search_output":
+        if (!options.toolSearch) reject("Unsupported Responses input item type", "unsupported_input_item", translationItemType(item.type));
+        break;
       // Codex multi-agent replay: an agent's message to another agent. Its text is
       // the whole transcript content; encrypted parts are transport state, never text.
       case "agent_message": {
@@ -119,7 +129,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
 }
 
 /** Compile a flat caller-tool catalog while retaining its original identities. */
-export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool[] {
+export function normalizeResponsesTools(tools: ResponsesTool[] = [], options: TranslationOptions = {}): OpenAITool[] {
   if (!Array.isArray(tools)) reject("tools must be an array", "invalid_shape");
   const catalog = new Map<string, OpenAITool>();
   const declare = (source: unknown, namespace?: string, groupDescription = "") => {
@@ -149,6 +159,7 @@ export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool
   };
   for (const source of tools) {
     const tool = record(source);
+    if (options.toolSearch && tool.type === "tool_search") continue;
     if (tool.type !== "namespace") { declare(tool); continue; }
     const group = name(tool.name);
     if (!Array.isArray(tool.tools)) reject("Namespace tools must be a list", "unsupported_tool", "namespace");
@@ -181,12 +192,13 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
   return [...(request.tools ?? []), ...lifted];
 }
 
-export function responsesToChatRequest(request: ResponsesRequest): OpenAIChatRequest {
-  const tools = normalizeResponsesTools(declaredResponsesTools(request));
+export function responsesToChatRequest(request: ResponsesRequest, options: TranslationOptions = {}): OpenAIChatRequest {
+  const declared = declaredResponsesTools(request);
+  const tools = normalizeResponsesTools(declared, options);
   const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
-  if (tool_choice === "required" && !tools.length) reject("Required tool is not in the catalog", "unsupported_tool_choice");
+  if (tool_choice === "required" && !tools.length && !(options.toolSearch && declared.some(tool => tool.type === "tool_search"))) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
-  const messages = responsesInputToMessages(request.input);
+  const messages = responsesInputToMessages(request.input, options);
   if (request.instructions !== undefined) {
     if (typeof request.instructions !== "string") reject("instructions must be text", "invalid_instructions");
     if (request.instructions) messages.splice(0, 0, { content: request.instructions, role: "system" });

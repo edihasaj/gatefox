@@ -128,23 +128,23 @@ test("combined() gives the native rows the Codex 2 rule: both fields kept where 
   assert.equal(executorNativeRow(lax, rows), lax);
 });
 
-test("a carried native row never turns tool search on, while the native catalog keeps it", () => {
+test("a carried native row keeps the tool search value of the native row", () => {
   const searchable: Row = { ...lax, supports_search_tool: true };
-  const carried = executorNativeRow(searchable, [searchable, reviewer], served);
-  assert.equal(carried.supports_search_tool, false);
-  assert.equal(Object.is(carried, searchable), false, "the row is copied, never mutated");
-  assert.equal(searchable.supports_search_tool, true, "the client's own native row keeps it");
-  for (const key of Object.keys(searchable)) if (key !== "supports_search_tool") assert.deepEqual(carried[key], searchable[key], key);
-  // Identity where nothing changes: search is off or unstated and the node_repl policy already matches.
+  assert.equal(executorNativeRow(searchable, [searchable, reviewer], served), searchable, "the row is carried as it is");
+  // A changed node_repl policy never touches search, in either direction.
+  const strictSearch: Row = { ...strict, supports_search_tool: true };
+  const adjusted = executorNativeRow(strictSearch, [strictSearch], noReviewers);
+  assert.equal(adjusted.node_repl_disabled, true); assert.equal(adjusted.supports_search_tool, true);
   for (const value of [false, undefined, "true", null]) {
     const row = { ...lax, supports_search_tool: value };
-    assert.equal(Object.is(executorNativeRow(row, [row, reviewer], served), row), true, `search ${JSON.stringify(value)}`);
+    assert.equal(Object.is(executorNativeRow(row, [row, reviewer], served), row), true, `search ${JSON.stringify(value)} is left as the row states it`);
   }
   for (const codeMode of modes) {
     const combined = desktop([searchable, strict, reviewer], codeMode, sol).combined().models;
     const nativeRows = combined.filter(row => row.slug === "gpt-6-luna" || row.slug === "gpt-6.1-sol");
     assert.equal(nativeRows.length, 2);
-    assert.equal(nativeRows.every(row => row.supports_search_tool !== true), true, `${codeMode}: no carried native row adds tool_search`);
+    assert.equal(nativeRows.find(row => row.slug === "gpt-6-luna")?.supports_search_tool, true, `${codeMode}: a carried row that says search is on keeps it`);
+    assert.equal(nativeRows.find(row => row.slug === "gpt-6.1-sol")?.supports_search_tool, undefined, `${codeMode}: a carried row that states none stays as it is`);
   }
 });
 

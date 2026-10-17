@@ -75,8 +75,11 @@ export type ResponsesAgentMessageItem = {
   content: string | Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
-export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem;
-export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | OpenAITool;
+/** Native tool search tool and items: only the Codex subscription route accepts them, and it forwards them unchanged. */
+export type ResponsesToolSearchTool = { type: "tool_search"; [key: string]: unknown };
+export type ResponsesToolSearchItem = { type: "tool_search_call" | "tool_search_output"; [key: string]: unknown };
+export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem | ResponsesToolSearchItem;
+export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | ResponsesToolSearchTool | OpenAITool;
 export type ResponsesRequest = {
   model: string;
   input: string | ResponsesInputItem[];
@@ -103,6 +106,8 @@ export type InferenceEvent =
   | { call: OpenAIToolCall; type: "tool" }
   | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting }
   | { item: Record<string, unknown>; type: "reasoning-state" }
+  /** An output item the client executes or reads itself (native tool search): streamed back exactly as the upstream sent it. */
+  | { item: Record<string, unknown>; type: "native-item" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
   /** Response-header data from the upstream; the server consumes it and never forwards it as output. */
   | { type: "transport"; turnState?: string }
