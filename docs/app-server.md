@@ -352,7 +352,7 @@ lock and replaced atomically, so two adapters never lose each other's entries.
 | --- | --- |
 | Private engines of this release (any number) | Yes |
 | A private engine and the host's shared native writer | No: a host that regains native sharing claims the home only after every private engine has exited, and a private engine never starts while the host's writer runs |
-| A private engine of this release and one that release 0.4.4 started | No: the 0.4.4 engine keeps the home to itself, and a new adapter fails closed naming its process, until that connection moves to this release (an idle adapter does after an install) |
+| A private engine of this release and one that release 0.4.5 or earlier started | No: the older engine keeps the home to itself, and a new adapter fails closed naming its process, until that connection moves to this release (an idle adapter does after an install) |
 
 Each private engine keeps a receipt of its own beside the native-home receipt, and
 `owner.json` names them for older releases while any is live; the rules are in
@@ -365,11 +365,16 @@ and nothing answering at the host's native socket. Before it starts the engine, 
 takes a private native-home lease, and it holds that lease until the engine exits. A
 host that comes back meanwhile therefore finds a live owner: it keeps serving gateway
 chats, refuses native ownership, and claims the native home at the first native
-request after every fallback has ended, so the next adapter start returns to sharing. The adapter records `native_sharing_fallback`
-with `reason: host_unavailable`. Chats its engine verifies as native never wait
-for the host; gateway chats still need the host and fail closed until it returns.
-A host that does not match the adapter, a changed host socket, an unreadable host
-receipt, or a live native owner still fails the connection. Several adapters may each
+request after every fallback has ended, so the next adapter start returns to sharing.
+The adapter records `native_sharing_fallback` with `reason: host_unavailable`. An
+adapter that starts while the host refuses native ownership that way, such as an SSH
+session after a reboot where the app's adapter started first, does not fail: it joins
+the private engines with one of its own and records `native_sharing_fallback` with
+`reason: native_owner`. Chats its engine verifies as native never wait for the host;
+gateway chats still need the host and fail closed until it returns. A host that does
+not match the adapter, a changed host socket, an unreadable host receipt, a live host
+writer or a private engine of release 0.4.5 or earlier still fails the connection.
+Several adapters may each
 run such a fallback engine on one native home, by the sharing rule above, and the
 remote-control rules for a private engine apply to each. The lease rules are in
 [architecture](architecture.md#desktop-connections).

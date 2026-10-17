@@ -90,7 +90,15 @@ export class AppServerBackends {
         return await privateNative(fallback).catch(refusal => { throw refusedFallback(fallback, error, refusal); });
       }
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
-      const record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));
+      let record: NativeLaunchRecord;
+      try { record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome)); }
+      catch (error) {
+        // A host that came back while private engines hold the native home refuses native ownership until they have all ended:
+        // this adapter joins them with an engine of its own. A host writer or an older release's engine still keeps it out.
+        const fallback = signal?.aborted ? undefined : nativeFallbackReason(error, plan.sharedExecutors === true); if (!fallback) throw error;
+        client!.close(); client = undefined;
+        return await privateNative(fallback).catch(refusal => { throw refusedFallback(fallback, error, refusal); });
+      }
       backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath,
         (_args, onMessage, onExit) => new SharedNativeConnection(record.socketPath, onMessage, onExit, process.cwd()));
       backend.nativeHost = { client: client!, record }; backend.sharedGateway = plan.sharedExecutors === true;
@@ -492,6 +500,8 @@ export class AppServerBackends {
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
     await Promise.allSettled(this.engines.map(engine => engine.exitPending));
     await this.nativeExitPending; await this.leaseReleased;
+    // A release that failed when the engine exited (a busy lock, say) gets one more try; a finished one returns at once.
+    if (this.leaseReleased) await this.nativeLease?.release().catch(() => {});
     // Dropping control connections releases leases and rejects stuck host RPCs;
     // the SDK retains loaded-chat ownership throughout client shutdown.
     await poolClosing;

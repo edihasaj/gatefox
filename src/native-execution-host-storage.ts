@@ -18,7 +18,7 @@ export interface NativeHomeOwner {
   /**
    * Present only while desktop adapters' private native engines hold the home (see `claimPrivateNativeHome`). `shared` marks
    * the `owner.json` this release keeps for older releases while its private engines share the home; an `owner.json` with a
-   * private owner and no `shared` is an older release's private engine, which holds the home alone.
+   * private owner and no `shared` is the private engine of release 0.4.5 or earlier, which holds the home alone.
    */
   privateOwner?: { instanceId: string; shared?: true; previous?: NativeHomeOwner; previousMtimeMs?: number };
 }
@@ -214,10 +214,11 @@ type EngineFields = Pick<NativeHomeOwner, "codex" | "sdkSha256"> & Partial<Pick<
 const engineFields = (receipt: NativeHomeOwner): EngineFields => Object.fromEntries(identityKeys.filter(key => receipt[key] !== undefined).map(key => [key, receipt[key]])) as EngineFields;
 interface MarkerBase { previous?: NativeHomeOwner; previousMtimeMs?: number; engine: EngineFields }
 /**
- * The `owner.json` this release keeps for older releases while its private engines share the home. Releases 0.4.3 and 0.4.4
- * read only that file and keep out while either process it names lives, so a single holder is named by its adapter and its
- * engine, exactly as their own private receipt is, and two or more by the two longest-running ones, one process each: the
- * engine once it runs, the adapter before. It is rewritten whenever a holder comes, starts its engine or goes.
+ * The `owner.json` this release keeps for older releases while its private engines share the home. Releases 0.4.5 and
+ * earlier read only that file and keep out while either process it names lives, so a single holder is named by its adapter
+ * and its engine, exactly as their own private receipt is, and two or more by the two longest-running ones, one process
+ * each: the engine once it runs, the adapter before. It is rewritten whenever a holder comes, starts its engine or goes, and
+ * each lease looks again every 45 seconds, so holders that crashed are replaced by live ones.
  */
 function markerFor(holders: NativeHomeOwner[], base: MarkerBase): NativeHomeOwner {
   const [first, second] = [...holders].sort((a, b) => (a.startedAtMs ?? 0) - (b.startedAtMs ?? 0) || a.privateOwner!.instanceId.localeCompare(b.privateOwner!.instanceId));
@@ -258,21 +259,27 @@ async function syncPrivateMarker(path: string, hostHome: string): Promise<void> 
     await writePrivateJson(path, markerFor(named, { previous: current, previousMtimeMs: Math.floor(stored.mtimeMs), engine: engineFields(current) })); return;
   }
   const kept = current?.privateOwner?.previous ? { previous: current.privateOwner.previous, previousMtimeMs: current.privateOwner.previousMtimeMs } : {};
-  await writePrivateJson(path, markerFor(named, { ...kept, engine: engineFields(current ?? named[0]) }));
+  const next = markerFor(named, { ...kept, engine: engineFields(current ?? named[0]) });
+  if (!current || JSON.stringify(current) !== JSON.stringify(next)) await writePrivateJson(path, next); // Unchanged, it is left as it is.
 }
 /**
  * Whether a native home has an owner that keeps a private engine out, by the rule a new claim follows: "absent" without a
  * receipt, "live" or "unconfirmed" while nobody else may write it, or why its last owner is gone. Private native writers
  * obey it too. Private engines of this release share the home, so while any of them may still run, the marker they keep in
  * `owner.json` reads as "absent" here: it keeps no other private engine out, and rollback, which waits for a stopped
- * receipt, still waits. The host's own claim checks every private receipt itself.
+ * receipt, still waits. Anything answering at the host's native socket still reads as "live". The host's own claim checks
+ * every private receipt itself.
  */
 export async function nativeHomeOwnership(nativeHome: string, hostHome?: string): Promise<"absent" | NativeLiveness> {
   const path = nativeHomeOwnerPath(nativeHome); const stored = await readNativeHomeOwnerRecord(nativeHome);
   if (stored.invalid) return invalidNativeLiveness(path, stored.mtimeMs, hostHome);
   if (!stored.owner) return "absent";
   const verdict = await nativeOwnerLiveness(stored.owner, stored.mtimeMs);
-  if (stored.owner.privateOwner?.shared && (holds(verdict) || (await privateHolders(path, hostHome)).some(holder => holds(holder.verdict)))) return "absent";
+  if (stored.owner.privateOwner?.shared) {
+    // Something answering at the host's native socket is a writer no private engine may join, whatever the marker says.
+    if (await linkAnswers(stored.owner.socketPath)) return "live";
+    if (holds(verdict) || (await privateHolders(path, hostHome)).some(holder => holds(holder.verdict))) return "absent";
+  }
   return verdict;
 }
 /**
@@ -339,7 +346,7 @@ export class NativeHomeLease {
  * The native-home lease a desktop adapter takes before it runs its own native engine, because the shared host stayed down
  * or runs without native sharing. Private engines share the home with each other, as stock Codex runs one app-server for
  * the app and another for an SSH remote on one home, but never with the host's writer: a live or unconfirmed host receipt,
- * an older release's private engine (which holds the home alone), or anything answering at the host's native socket keeps
+ * a private engine of release 0.4.5 or earlier (which holds the home alone), or anything answering at the host's native socket keeps
  * the lease out, and while any lease may still be live the host's claim is refused. Each lease writes a receipt of its own
  * naming the host's configuration and native socket path, the adapter and (once spawned) the engine, so the host judges it
  * by the usual rules: after a crash it is a dead owner the host or the next lease archives. The receipt `owner.json` held
@@ -369,14 +376,14 @@ export async function claimPrivateNativeHome(identity: { configPath: string; nat
       base = { ...(current.privateOwner!.previous ? { previous: current.privateOwner!.previous, previousMtimeMs: current.privateOwner!.previousMtimeMs } : {}), engine: engineFields(current) };
     } else if (stored.owner) {
       const current = stored.owner; const verdict = await nativeOwnerLiveness(current, stored.mtimeMs);
-      // The host's writer, or an older release's private engine, which holds the home alone.
+      // The host's writer, or the private engine of release 0.4.5 or earlier, which holds the home alone.
       if (verdict === "live") throw new Error("A native execution owner already owns this native home; its chats were preserved");
       if (verdict === "unconfirmed") throw new Error("Native execution launch is unconfirmed; existing ownership was preserved");
       // The same identity rule as the host's own claim: a home another configuration last owned is not this adapter's to take.
       const claimed = current.state === "running" || current.hostPid > 0 || current.pid > 0;
       if (differs(current, claimed ? ["configPath", "nativeHome", "socketPath"] : ["configPath", "socketPath"])) throw new Error("Native execution ownership changed; existing ownership was preserved");
       if (current.privateOwner) {
-        // An older release's fallback that died with its adapter hands on the receipt it had replaced; its own receipt is archived.
+        // A 0.4.5 or earlier fallback that died with its adapter hands on the receipt it had replaced; its own receipt is archived.
         base = { ...(current.privateOwner.previous ? { previous: current.privateOwner.previous, previousMtimeMs: current.privateOwner.previousMtimeMs } : {}), engine: engineFields(current) };
         archiveOwner = verdict;
       } else base = { previous: current, previousMtimeMs: Math.floor(stored.mtimeMs), engine: engineFields(current) };
@@ -392,16 +399,33 @@ export async function claimPrivateNativeHome(identity: { configPath: string; nat
     const holder = { ...engine, version: 1, managed: marker, ...self, hostPid: process.pid, pid: 0, state: "running", sdkState: "starting", ...await ownerStamp(),
       privateOwner: { instanceId } } as NativeHomeOwner;
     const file = resolve(dirname(path), `private-${process.pid}-${instanceId}.json`);
-    // Both are written before the engine is spawned: a crash in between leaves a launch the host treats as unconfirmed.
+    // Both are written before the engine is spawned: a crash in between leaves a launch the host treats as unconfirmed. A
+    // marker that cannot be written takes the receipt with it, so a refused lease never keeps the host out.
     await writePrivateJson(file, holder);
-    await writePrivateJson(path, markerFor([...live.map(other => other.owner!), holder], { ...base, engine }));
+    try { await writePrivateJson(path, markerFor([...live.map(other => other.owner!), holder], { ...base, engine })); }
+    catch (error) { await unlink(file).catch(() => {}); throw error; }
     return { file, holder, holders: live.length + 1 };
   });
   return new PrivateNativeLease(path, claimed.file, claimed.holder, claimed.holders);
 }
 
+const defaultMarkerRefreshMs = 45_000;
+let markerRefreshMs = defaultMarkerRefreshMs;
+/** Tests shorten how often a lease looks at the marker again. Undefined restores the production value. */
+export function setPrivateMarkerRefreshForTests(ms?: number): void { markerRefreshMs = ms ?? defaultMarkerRefreshMs; }
+
 export class PrivateNativeLease {
   private released?: Promise<void>;
+  private refreshing = false;
+  /**
+   * Every lease looks at the marker again on a timer, so when the holders it names have crashed and others still run, an
+   * older release soon sees a live one again. It writes only when something changed, and it never keeps the process alive.
+   */
+  private readonly refresh = setInterval(() => {
+    if (this.refreshing) return; this.refreshing = true;
+    void withPrivateFileLock(this.path, async () => { if (!this.released && await this.own()) await syncPrivateMarker(this.path, this.hostHome); })
+      .catch(() => {}).finally(() => { this.refreshing = false; }); // A busy lock or a full disk is tried again at the next tick.
+  }, markerRefreshMs).unref();
   /** `holders`: how many private engines held the native home once this lease was taken, this one included. */
   constructor(private readonly path: string, private readonly file: string, private readonly owner: NativeHomeOwner, readonly holders: number) {}
   private get hostHome(): string { return dirname(this.owner.socketPath); }
@@ -423,15 +447,16 @@ export class PrivateNativeLease {
    * Called once the engine has exited. Removes this lease's receipt; the last lease to go puts back the receipt the first
    * one replaced, or removes `owner.json` when there was none. An engine that still answers keeps the home: the adapter
    * steps back and the receipt names only the engine, which the dead owner rules release once it has gone. A receipt that
-   * is no longer this lease's is left alone.
+   * is no longer this lease's is left alone. A release that fails (a busy lock, say) is not remembered, so it can be retried.
    */
   release(): Promise<void> {
+    clearInterval(this.refresh);
     return this.released ??= withPrivateFileLock(this.path, async () => {
       if (!await this.own()) return;
       if (this.owner.pid > 0 && await receiptPidAlive({ pid: this.owner.pid, bootId: this.owner.sdkBootId, startedAtMs: this.owner.sdkStartedAtMs }, Date.now())) {
         await writePrivateJson(this.file, { ...this.owner, hostPid: 0 });
       } else await unlink(this.file).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
       await syncPrivateMarker(this.path, this.hostHome);
-    });
+    }).catch(error => { this.released = undefined; throw error; });
   }
 }

@@ -9,7 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { writePrivateJson } from "../config.js";
 import { executionHostHome, executionHostMarker, livePid, receiptPidAlive, sdkIdentity, type HostIdentity } from "../execution-host-storage.js";
-import { claimNativeHome, claimPrivateNativeHome, nativeHomeOwnerPath, nativeHomeOwnership, privateNativeHolders, readNativeHomeOwner } from "../native-execution-host-storage.js";
+import { claimNativeHome, claimPrivateNativeHome, nativeHomeOwnerPath, nativeHomeOwnership, privateNativeHolders, readNativeHomeOwner, type NativeHomeOwner } from "../native-execution-host-storage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { until } from "./native-fallback-fixture.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
@@ -26,7 +26,8 @@ const gone = { hostPid: 2 ** 22 + 7, pid: 2 ** 22 + 9 }; // Pids no process hold
  * native engine, as an adapter does right after its spawn. It can then be killed the way a crash kills it.
  */
 const adapterScript = `const options = JSON.parse(process.argv[2]);
-const { claimPrivateNativeHome } = await import(options.storage);
+const { claimPrivateNativeHome, setPrivateMarkerRefreshForTests } = await import(options.storage);
+if (options.refreshMs) setPrivateMarkerRefreshForTests(options.refreshMs);
 const { spawn } = await import("node:child_process");
 const lease = await claimPrivateNativeHome(options.identity, options.home);
 const engine = spawn("/bin/sleep", ["60"], { stdio: "ignore" });
@@ -47,8 +48,8 @@ async function fixture() {
   const receipt = nativeHomeOwnerPath(nativeHome); const script = join(directory, "adapter.mjs"); await writeFile(script, adapterScript);
   const children: ChildProcess[] = []; const engines: number[] = [];
   /** Starts an adapter process and waits for its lease and engine. */
-  async function adapter() {
-    const isolated = roots.child(); const options = { storage: new URL("../native-execution-host-storage.js", import.meta.url).href, identity, home };
+  async function adapter(refreshMs?: number) {
+    const isolated = roots.child(); const options = { storage: new URL("../native-execution-host-storage.js", import.meta.url).href, identity, home, refreshMs };
     const child = spawn(process.execPath, [...isolated.args, script, JSON.stringify(options)], { env: { ...process.env, ...isolated.env }, stdio: ["ignore", "pipe", "inherit"] });
     children.push(child);
     // A child whose lease is refused exits with the error on stderr; that fails the test at once instead of at its timeout.
@@ -70,8 +71,9 @@ async function fixture() {
 }
 
 /**
- * What releases 0.4.3 and 0.4.4 make of `owner.json`, the only native-home receipt they read: the fields they require of a
- * receipt they accept, then whether a process it names is alive, by pid alone (0.4.3) or with its boot and start (0.4.4).
+ * What releases 0.4.5 and earlier make of `owner.json`, the only native-home receipt they read: the fields they require of
+ * a receipt they accept, then whether a process it names is alive, by pid alone (0.4.3) or with its boot and start (0.4.4
+ * and 0.4.5, whose native-home storage is the same).
  * Either release keeps its host's writer, and its own private engine, out while that holds.
  */
 async function olderRelease(path: string): Promise<{ named: number[]; v043: boolean; v044: boolean }> {
@@ -158,5 +160,88 @@ test("dead private receipts are archived as owner.json is, keeping the newest fi
     assert.equal(archived.length, 5); assert.ok(archived.every(name => /^private-\d+\.json$/.test(name)));
     assert.deepEqual(await f.reclaims(), Array.from({ length: 7 }, () => ["native_home", "dead_pids"]));
     await lease.release(); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined); assert.deepEqual(await f.holderFiles(), []);
+  } finally { await f.clean(); }
+});
+
+/** A private lease's receipt as the lease writes it, for one this test arranges by hand. */
+const holderReceipt = (f: Awaited<ReturnType<typeof fixture>>, instanceId: string, fields: Record<string, unknown>) => ({ version: 1, managed, ...f.identity,
+  sdkSha256: f.host.sdkSha256, socketPath: join(f.home, "native.sock"), pid: 0, state: "running", sdkState: "running", privateOwner: { instanceId }, ...fields });
+
+test("a private receipt this release cannot read keeps the home while anything it may name could still run", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture(); const engine = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+  try {
+    await once(engine, "spawn");
+    // A newer release's receipt: it fails validation, but still names a live process.
+    const newer = join(dirname(f.receipt), `private-${engine.pid}-${randomUUID()}.json`); await mkdir(dirname(f.receipt), { recursive: true, mode: 0o700 });
+    await writePrivateJson(newer, { version: 2, hostPid: engine.pid, pid: 0 });
+    await assert.rejects(claimNativeHome(f.host, f.home), /already owns this native home/);
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home), /already owns this native home/);
+    assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
+    // An unparseable one names nothing: inside its ten-minute grace it is still an unconfirmed owner.
+    await rm(newer); const garbled = join(dirname(f.receipt), `private-${engine.pid}-${randomUUID()}.json`); await writeFile(garbled, "{", { mode: 0o600 });
+    await assert.rejects(claimNativeHome(f.host, f.home), /launch is unconfirmed/);
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home), /already owns this native home/);
+    assert.deepEqual((await f.holderFiles()).length, 1); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+  } finally { engine.kill("SIGKILL"); await f.clean(); }
+});
+
+test("the host's claim judges a shared marker as older releases do, even with no private receipt beside it", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await claimPrivateNativeHome(f.identity, f.home); const marker = await readFile(f.receipt, "utf8");
+    // The lease's own receipt is gone (removed by hand, say), but the marker still names this live process.
+    for (const name of await f.holderFiles()) await rm(join(dirname(f.receipt), name));
+    await assert.rejects(claimNativeHome(f.host, f.home), /already owns this native home/);
+    assert.equal(await readFile(f.receipt, "utf8"), marker);
+  } finally { await f.clean(); }
+});
+
+test("a shared marker another configuration keeps is not joined", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    const other = join(f.directory, "other.json"); const instanceId = randomUUID();
+    const marker = (fields: Record<string, unknown>) => writePrivateJson(f.receipt, { ...holderReceipt(f, instanceId, fields), configPath: other, privateOwner: { instanceId, shared: true } });
+    await mkdir(dirname(f.receipt), { recursive: true, mode: 0o700 });
+    // Its private engines still run (the marker names this live process) though none of their receipts is here.
+    await marker({ hostPid: process.pid }); const live = await readFile(f.receipt, "utf8");
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home), /already owns this native home/);
+    assert.equal(await readFile(f.receipt, "utf8"), live);
+    // Once they are gone it is still another configuration's home, not this one's to take.
+    await marker(gone); const dead = await readFile(f.receipt, "utf8");
+    await assert.rejects(claimPrivateNativeHome(f.identity, f.home), /ownership changed/);
+    assert.equal(await readFile(f.receipt, "utf8"), dead); assert.deepEqual(await f.holderFiles(), []);
+  } finally { await f.clean(); }
+});
+
+test("a release that fails can be retried, and its lease is not left behind", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture(); const holder = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+  try {
+    await once(holder, "spawn");
+    const lease = await claimPrivateNativeHome(f.identity, f.home);
+    // Another process holds the receipt's lock past the five seconds a release waits.
+    const lock = `${f.receipt}.lock`; await writeFile(lock, String(holder.pid), { mode: 0o600 });
+    await assert.rejects(lease.release(), /busy/);
+    assert.equal((await f.holderFiles()).length, 1); assert.equal((await readNativeHomeOwner(f.nativeHome))?.privateOwner?.shared, true);
+    await rm(lock); await lease.release();
+    assert.deepEqual(await f.holderFiles(), []); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+  } finally { holder.kill("SIGKILL"); await f.clean(); }
+});
+
+test("a lease looks again at the marker, so an older release sees a live holder after the named ones crash", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    const holders = [await f.adapter(250), await f.adapter(250), await f.adapter(250)]; assert.equal(holders[2].holders, 3);
+    // Both holders the marker names crash; the third, which it does not name, still runs.
+    const named = (await olderRelease(f.receipt)).named; const crashed = holders.filter(holder => named.includes(holder.engine));
+    const [left] = holders.filter(holder => !named.includes(holder.engine)); assert.equal(crashed.length, 2); assert.ok(left);
+    for (const holder of crashed) await holder.kill();
+    // The lease left archives the dead receipts and names itself alone: its adapter and its engine.
+    const alone = [left.pid, left.engine].sort((x, y) => x - y);
+    // A deadline of its own: each look runs `ps` for every process the receipts name, which a loaded machine slows down.
+    for (const deadline = Date.now() + 20_000; JSON.stringify((await olderRelease(f.receipt)).named) !== JSON.stringify(alone);) {
+      assert.ok(Date.now() < deadline, "the marker never named the live holder alone"); await new Promise(done => setTimeout(done, 50));
+    }
+    const older = await olderRelease(f.receipt); assert.deepEqual([older.v043, older.v044], [true, true]);
+    assert.equal((await readNativeHomeOwner(f.nativeHome) as NativeHomeOwner).privateOwner?.shared, true); assert.equal((await f.holderFiles()).length, 1);
   } finally { await f.clean(); }
 });

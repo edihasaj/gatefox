@@ -221,20 +221,24 @@ kept. Under the receipt's lock, a lease joins live ones of the same configuratio
 native home spelling; a live or unconfirmed host receipt, an unreadable or foreign
 private receipt, or anything answering at the host's native socket refuses it. The
 host's claim is refused while any private receipt may still be live, and archives the
-dead ones first. Releases 0.4.4 and earlier read only `owner.json`, so while any lease
-is live it holds a marker in the 0.4.4 private receipt format (which 0.4.3 reads as a
-plain owner) with `privateOwner.shared` added. The marker keeps the receipt the first
+dead ones first. Releases 0.4.5 and earlier read only `owner.json`, so while any lease
+is live it holds a marker in the private receipt format of 0.4.4 and 0.4.5 (which
+0.4.3 reads as a plain owner) with `privateOwner.shared` added. The marker keeps the receipt the first
 lease replaced and names live processes: the adapter and engine of a single lease, or
 the engines (the adapters before they run) of the two longest-running leases. It is rewritten whenever a lease comes, starts its engine or
-goes, and the last lease to go puts the kept receipt back. An older release therefore
-keeps its host's writer and its own private engine out while any named process runs.
-With three or more leases, an older release could miss the others after both named
-leases crash, until the next lease change rewrites the marker; this release's host
-reads every receipt. The marker reads as `absent` to the private-writer check, so it
-keeps no other private engine out, while rollback still waits for it to stop. A 0.4.4
-private engine's own `owner.json` (no `shared`) still holds the home alone: a new
-adapter fails closed, saying an earlier release started that engine and naming its
-process, until that connection moves to this release.
+goes, and every lease looks at it again every 45 seconds, rewriting it only when
+something changed, and the last lease to go puts the kept receipt back. An older
+release therefore keeps its host's writer and its own private engine out while any
+named process runs. With three or more leases, an older release could miss the others
+for up to 45 seconds after both named leases crash; this release's host reads every
+receipt. The marker reads as `absent` to the private-writer check, so it keeps no other
+private engine out, while rollback still waits for it to stop; it reads as `live` while
+anything answers at the host's native socket. A private engine of release 0.4.5 or
+earlier keeps its own `owner.json` (no `shared`) and holds the home alone: a new adapter
+fails closed, saying such a release started that engine and naming its process, until
+that connection moves to this release. A lease that cannot write the marker removes its
+own receipt again, and a release that fails (a busy lock, say) is tried once more when
+the adapter stops.
 Rollback and `shared-native --disable` treat a live lease like any live native owner:
 they refuse (and the disable restores the previous plan) until every lease's engine
 has exited.
@@ -243,7 +247,12 @@ While any lease is live, a host that
 starts claims everything but the native home: it records `native_sharing_unavailable`
 with `reason: native_owner`, serves gateway chats, and refuses native requests
 (`native_acquire` with `refused_owner`) until one finds the home free and claims it,
-so the next adapter start returns to sharing. A receipt from a dead owner that names
+so the next adapter start returns to sharing. An adapter whose native request the host
+refuses that way joins the private engines instead of failing (`native_sharing_fallback`
+with `reason: native_owner`). It skips the check that keeps a private engine away from a
+live host with native sharing, since its lease is taken under the receipt's lock and is
+refused beside the host's writer, a private engine of 0.4.5 or earlier, or anything
+answering at the host's native socket. A receipt from a dead owner that names
 another configuration or another spelling of the native home is not the host's to take
 either: the host records `native_sharing_unavailable` with `reason: native_identity`, serves gateway chats, and refuses
 each native request (`Native execution ownership changed`, naming the receipt

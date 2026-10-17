@@ -118,11 +118,15 @@ test("only a host that is down falls back: a mismatched host, a changed socket o
   } finally { await f.clean(); }
 });
 
-test("the fallback vocabulary is fixed and only an unavailable host or a gateway-only host qualifies", () => {
+test("the fallback vocabulary is fixed: only an unavailable host, a gateway-only host or a host refused by private engines qualifies", () => {
   const down = Object.assign(new Error("Shared executor host is unavailable; check gateway service status"), { hostUnavailable: true });
   const absent = Object.assign(new Error("Shared native executor is not enabled in the configured host"), { capabilityAbsent: "native" });
   assert.equal(hostUnavailable(down), true); assert.equal(nativeFallbackReason(down, false), "host_unavailable"); assert.equal(nativeFallbackReason(down, true), "host_unavailable");
   assert.equal(nativeFallbackReason(absent, true), "other"); assert.equal(nativeFallbackReason(absent, false), undefined);
+  // The host's refusal to take a home private engines hold: tagged by the client that received it, with or without shared gateway chats.
+  const held = Object.assign(new Error("Native execution ownership is held by a live owner; existing ownership was preserved"), { code: -32000, nativeOwnerHeld: true });
+  assert.equal(nativeFallbackReason(held, true), "native_owner"); assert.equal(nativeFallbackReason(held, false), "native_owner");
+  assert.equal(nativeFallbackReason(Object.assign(new Error(held.message), { code: -32000 }), true), undefined);
   // The same text without the type is not enough: only discovery decides what "unavailable" means.
   for (const error of [new Error("Shared executor host is unavailable; check gateway service status"), new Error("Shared executor ownership does not match this adapter"),
     new Error("Shared executor socket ownership changed; it was preserved"), undefined]) assert.equal(nativeFallbackReason(error, true), undefined);

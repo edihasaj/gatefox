@@ -24,12 +24,15 @@ type HostLook = { client?: ExecutionHostClient; failure?: Error; retry?: boolean
 const unavailable = (message: string): Error => Object.assign(new Error(message), { hostUnavailable: true });
 export function hostUnavailable(error: unknown): boolean { return (error as { hostUnavailable?: unknown } | undefined)?.hostUnavailable === true; }
 /** Why a desktop adapter that shares native chats runs its own native engine instead, from a fixed vocabulary. */
-export type NativeFallbackReason = "host_unavailable" | "other";
+export type NativeFallbackReason = "host_unavailable" | "other" | "native_owner";
 /**
- * The fallback a failed native discovery allows, if any: `host_unavailable` when the host stayed down through the wait, and
- * `other` when a running host offers gateway chats without native sharing. Everything else fails closed.
+ * The fallback a failed native discovery or acquisition allows, if any: `host_unavailable` when the host stayed down through
+ * the wait, `other` when a running host offers gateway chats without native sharing, and `native_owner` when a running
+ * host refused native ownership because a live owner, such as private engines that ran while it was down, holds the home.
+ * Everything else fails closed.
  */
 export function nativeFallbackReason(error: unknown, sharedGateway: boolean): NativeFallbackReason | undefined {
+  if ((error as { nativeOwnerHeld?: unknown } | undefined)?.nativeOwnerHeld === true) return "native_owner";
   if ((error as { capabilityAbsent?: unknown } | undefined)?.capabilityAbsent === "native") return sharedGateway ? "other" : undefined;
   return hostUnavailable(error) ? "host_unavailable" : undefined;
 }
@@ -142,7 +145,11 @@ export class ExecutionHostClient {
   }
   async acquireNative(args: string[], cwd: string): Promise<NativeLaunchRecord> {
     if (!this.capabilities.includes("native")) throw new Error("Shared native execution is not enabled");
-    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd, () => this.codeModeAlreadyEnabled());
+    // The host's fixed refusal while another live owner holds the native home (its own text, passed through unchanged).
+    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd, () => this.codeModeAlreadyEnabled()).catch(error => {
+      const { code, message } = error as { code?: unknown; message?: unknown };
+      throw code === -32000 && typeof message === "string" && message.startsWith("Native execution ownership is held by a live owner;") ? Object.assign(error as Error, { nativeOwnerHeld: true }) : error;
+    });
     if (value.kind !== "native" || typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, "native.sock") || !Number.isSafeInteger(value.pid) || Number(value.pid) < 1
       || typeof value.instanceId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.instanceId)) throw new Error("Shared native executor returned invalid ownership metadata");
     if (!await socketIdentity(value.socketPath as string)) throw new Error("Shared native executor socket is unavailable");

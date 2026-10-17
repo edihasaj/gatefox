@@ -37,7 +37,9 @@ export async function privateNativeOwnership(configPath: string | undefined, nat
   if (fallback) await assertPlanNativeHome(nativeHome, plan);
   let lease: PrivateNativeLease | undefined;
   try {
-    await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
+    // A host that refused native ownership to private engines is itself live with native sharing, so its receipt would keep
+    // this adapter out; the lease below only joins those engines and is refused beside the host's writer, under its lock.
+    if (fallback !== "native_owner") await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
     if (fallback) {
       if (!configPath) throw new Error("A private native fallback requires this adapter's configuration path");
       lease = await claimPrivateNativeHome({ configPath: resolve(configPath), nativeHome, codex }, executionHostHome(configPath, nativeHome));
@@ -45,10 +47,10 @@ export async function privateNativeOwnership(configPath: string | undefined, nat
   } catch (error) {
     // Private engines of this release share the home, so the private owner that keeps one out is an earlier release's engine,
     // which holds the home alone until its connection moves to this release (an idle one does after an install): say so plainly.
-    const owner = fallback === "other" ? await readNativeHomeOwner(nativeHome).catch(() => undefined) : undefined;
+    const owner = fallback && fallback !== "host_unavailable" ? await readNativeHomeOwner(nativeHome).catch(() => undefined) : undefined;
     if (owner?.privateOwner && !owner.privateOwner.shared && ["live", "unconfirmed"].includes(await nativeHomeOwnership(nativeHome, configPath ? executionHostHome(configPath, nativeHome) : undefined).catch(() => "live"))) {
       const holder = owner.hostPid || owner.pid;
-      throw refusal(`Another connection's native engine${holder ? ` (process ${holder})` : ""} was started by an earlier gateway release, which keeps this native home to itself while the gateway host cannot share native chats. That connection moves to this release once it is idle; or close it, then reconnect. Its chats were preserved.`);
+      throw refusal(`Another connection's native engine${holder ? ` (process ${holder})` : ""} was started by gateway release 0.4.5 or earlier, which keeps this native home to itself. That connection moves to this release once it is idle; or close it, then reconnect. Its chats were preserved.`);
     }
     throw error;
   }

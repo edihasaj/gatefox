@@ -378,9 +378,10 @@ test("a gateway-only host makes the adapter fall back to a private native engine
   try {
     // A host without native sharing runs no native engine, so nothing answers at its native socket.
     await sharedPlan(f, ["gateway"]); await f.closeNative();
-    // Like the real engine, this one runs until its adapter closes its pipe; it records whether the lease was there first.
-    const engine = join(f.directory, "engine"); const receipt = nativeHomeOwnerPath(f.nativeHome);
-    await writeFile(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(f.spawnMarker)},JSON.stringify({lease:fs.existsSync(${JSON.stringify(receipt)})}));process.stdin.on('end',()=>process.exit(0));process.stdin.resume();\n`, { mode: 0o700 });
+    // Like the real engine, this one runs until its adapter closes its pipe; it records whether the lease was there first. The
+    // record is renamed into place, so the test never reads it half written.
+    const engine = join(f.directory, "engine"); const receipt = nativeHomeOwnerPath(f.nativeHome); const partial = `${f.spawnMarker}.partial`;
+    await writeFile(engine, `#!${process.execPath}\nconst fs=require('node:fs');fs.writeFileSync(${JSON.stringify(partial)},JSON.stringify({lease:fs.existsSync(${JSON.stringify(receipt)})}));fs.renameSync(${JSON.stringify(partial)},${JSON.stringify(f.spawnMarker)});process.stdin.on('end',()=>process.exit(0));process.stdin.resume();\n`, { mode: 0o700 });
     const adapter = await AppServerBackends.create(engine, ["app-server", "--listen", "stdio://"], f.config, {}, {}, { current: () => f.snapshot, refresh: async () => f.snapshot, combined: (value: typeof f.snapshot) => ({ models: value.models }) } as unknown as DesktopCatalog,
       async () => {}, () => {}, f.configPath);
     try {
