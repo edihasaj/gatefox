@@ -510,12 +510,16 @@ again on the installed release. It waits for one of two moments:
 
 1. **Idle**, tried first at every attempt: the execution host has no adapter lease and
    no loaded chat, then inference accepts its own idle guard.
-2. **Quiet**, once the newer release has been installed for 15 minutes (counted from
-   when the running service first saw it) and the idle restart still refuses: no turn
-   is running in any engine, gateway or native, and none ended in the last 5 minutes.
-   A turn waiting for an approval or for user input counts as running. Leases and
-   loaded chats do not block it. Inference must still accept its idle guard, so a
-   running inference request still refuses, and the next attempt asks again.
+2. **Quiet**, once the newer release has been installed for 15 minutes and the idle
+   restart still refuses: no turn is running in any engine, gateway or native, no chat
+   keeps a background terminal, and no turn ended in the last 5 minutes. A turn waiting
+   for an approval or for user input counts as running. Leases and loaded chats do not
+   block it. Inference must still accept its idle guard, so a running inference request
+   still refuses, and the next attempt asks again.
+
+The 15 minutes count from when the running service first saw the release, on the
+monotonic clock, which stops while the Mac sleeps: they are 15 minutes of awake time,
+so a Mac that sleeps right after an install waits that much longer after it wakes.
 
 The idle rule alone can wait forever: a ChatGPT on another Mac stays connected over
 SSH for days, holds a lease, and its SDK keeps its chats loaded. On 2026-10-17 a Mac
@@ -525,19 +529,38 @@ service.
 The host never sees turn notifications: adapters talk to engine sockets directly, and
 a client the host kept open would be subscribed to new chats by the SDK and keep them
 loaded. So each quiet check opens one short admin connection per engine and asks the
-pinned SDK for every loaded chat's live `thread/read` status and its newest turn
-(`thread/turns/list`, with the running turn merged in and its `completedAt`). Reading
-the newest turn replays the chat's whole saved history, so a saved chat whose
-`updatedAt` is more than the quiet time plus a minute old is judged by its read alone:
-the SDK touches `updatedAt` whenever it appends to that history, at most 5 seconds
-apart. A throwaway chat has no saved history, so its newest turn is always read. A chat it
-cannot read, a status the pinned SDK does not define, or more than 256 loaded chats in
-one engine count as not quiet. A chat that was running at the previous check and is not
-now (its turn ended, the chat was unloaded, or its engine exited) counts as having ended
-at this check. The check runs in the host's control queue like the idle check and closes
-the gate the same way: once it passes, `execution/acquire`, `execution/find` and
-`native/acquire` are refused as quiescing until the service stops or the attempt is
-refused and the gate reopens.
+engine itself (the pinned gateway SDK, or for native chats the app's own signed codex)
+about every loaded chat:
+
+- its live `thread/read` status;
+- its background terminals (`thread/backgroundTerminals/list`). They are on by
+  default, outlive the turn that started them and end only when the engine closes the
+  chat's session, so a dev server an agent left running would die with the restart. A
+  chat that keeps one is never quiet, and the upgrade waits until the terminal ends or
+  is closed;
+- its newest turn (`thread/turns/list`, with the running turn merged in), which ended
+  at its `completedAt`, or, when it has none, at the later of its start and the chat's
+  `updatedAt`. Reading it replays the chat's whole saved history, so a saved chat whose
+  `updatedAt` is more than the quiet time plus a minute old is judged by its read
+  alone: the SDK touches `updatedAt` whenever it appends to that history, at most 5
+  seconds apart. A chat with no turns has nothing that ended.
+
+A throwaway chat, and one that has saved nothing yet, cannot list its turns, and its
+`updatedAt` is the time of the read, so neither tells when a turn ended. The host
+judges such a chat by its own watch instead: it is quiet once the host has seen it
+settled (not running, no terminal) at every check for 5 minutes; a check that sees it
+running, or that cannot read an engine, starts that watch again. A chat or a status the
+check cannot read, or more than 256 loaded chats in one engine, counts as not quiet. A
+chat that was running at the previous check and is not now (its turn ended, the chat was
+unloaded, or its engine exited) counts as having ended at this check. Each reason a
+quiet attempt waited is logged once per pending release as `self_upgrade_waiting`
+([diagnostics](diagnostics.md)).
+
+The check runs in the host's control queue like the idle check and closes the gate the
+same way: once it passes, `execution/acquire`, `execution/find` and `native/acquire`
+are refused as quiescing until the service stops or the attempt is refused and the gate
+reopens, which takes up to 3 seconds when inference refuses its idle guard. An adapter
+asks again every 100 ms for up to 5 seconds before it reports that refusal.
 
 The service then stops as it does for any restart, and connected clients see the host
 go away as they do after a host restart. An adapter's engine connections close: when
@@ -545,13 +568,12 @@ native chats are shared too, the adapter closes the app's connection and the app
 reconnects; otherwise a gateway chat's next request other than a resume reports that
 the executor connection was lost. Either way the app resumes the chat, and the resume
 kicks the service and waits up to 20 seconds for the new host, which then runs the
-chat's follow-up turns. Turns start on
-engine sockets, not through the host, so the check cannot hold one back: a turn started
-in the second or two between the quiet check and the host's close (inference exits
-first) is cut, as at any service restart, and continues from saved history after a
-resume. `gateway service restart` keeps the idle rule and its maintenance window. Each
-move is logged as `self_upgrade` with `mode` `idle` or `quiet`, and for `quiet` the
-number of chats still loaded ([diagnostics](diagnostics.md)).
+chat's follow-up turns. Turns start on engine sockets, not through the host, so the
+check cannot hold one back: a turn started in the second or two between the quiet check
+and the host's close (inference exits first) is cut, as at any service restart, and
+continues from saved history after a resume. `gateway service restart` keeps the idle
+rule and its maintenance window. Each move is logged as `self_upgrade` with `mode`
+`idle` or `quiet`, and for `quiet` the number of chats still loaded.
 
 # Shared native session ownership
 

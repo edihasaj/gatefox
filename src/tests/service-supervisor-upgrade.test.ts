@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { ServiceSupervisor, type NativeProbes, type SupervisorHealing } from "../service-supervisor.js";
 import type { ServicePlan } from "../service-plan.js";
 import type { ReleaseState } from "../self-update.js";
-import type { QuietStop } from "../execution-host.js";
+import type { QuietStop, QuietWait } from "../execution-host.js";
 import { writePrivateJson } from "../config.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { shortFolder } from "./short-folder.js";
@@ -85,6 +85,7 @@ test("inference with requests running still refuses a quiet upgrade, and the hos
     assert.equal(internals.stopping, false, "the service kept running");
     assert.equal(stand.calls.closes, 0);
     assert.deepEqual(await f.events("self_upgrade"), []);
+    assert.deepEqual((await f.events("self_upgrade_waiting")).map(event => [event.reason, event.from, event.to]), [["inference_busy", "0.4.4", "0.4.5"]], "logged once for the pending release");
   } finally { await supervisor.stop(); await f.remove(); }
 });
 
@@ -110,7 +111,8 @@ test("a quiet upgrade never runs twice at once and never while the service stops
   let open: () => void = () => {}; let gate: Promise<void> | undefined = new Promise(resolve => { open = resolve; });
   const stand = host({ gate: () => gate, quiet: () => undefined });
   const supervisor = new ServiceSupervisor(plan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing(release));
-  const upgrade = (supervisor as unknown as { upgrade(pendingMs: number): Promise<unknown> }).upgrade.bind(supervisor);
+  const internal = (supervisor as unknown as { upgrade(pending: { from: string; to: string; pendingMs: number }): Promise<unknown> }).upgrade.bind(supervisor);
+  const upgrade = (pendingMs: number) => internal({ from: "0.4.4", to: "0.4.5", pendingMs });
   try {
     await supervisor.start();
     const first = upgrade(3_600_000);
@@ -125,4 +127,18 @@ test("a quiet upgrade never runs twice at once and never while the service stops
     assert.equal(await upgrade(3_600_000), false, "a stopping service never restarts");
     assert.equal(stand.calls.quiet.length, 1); assert.equal(stand.calls.strict, 2);
   } finally { open(); await supervisor.stop(); await f.remove(); }
+});
+
+test("each reason a quiet upgrade waits is logged once per pending release", { timeout: 30000 }, async () => {
+  const f = await folder("gwu-wait-"); const release = { running: "0.4.4", installed: "0.4.5" };
+  const reasons: QuietWait[] = ["running", "running", "background_terminal", "running", "background_terminal", "ephemeral_settling"]; let asked = 0;
+  const stand = host({ quiet: () => ({ wait: reasons[Math.min(asked++, reasons.length - 1)] }) });
+  const supervisor = new ServiceSupervisor(plan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing(release));
+  try {
+    await supervisor.start();
+    await until(() => asked >= reasons.length + 2, "every reason and a few repeats");
+    await until(async () => (await f.events("self_upgrade_waiting")).length >= 3, "the waiting events");
+    assert.deepEqual((await f.events("self_upgrade_waiting")).map(event => event.reason), ["running", "background_terminal", "ephemeral_settling"]);
+    assert.equal(await signals(f.directory), 0, "inference was never asked while the host was not quiet");
+  } finally { await supervisor.stop(); await f.remove(); }
 });

@@ -7,17 +7,21 @@ import { setTimeout as delay } from "node:timers/promises";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
-import { startExecutionHost } from "./execution-host.js";
+import { startExecutionHost, type QuietWait } from "./execution-host.js";
 import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { reportException, startErrorReports } from "./error-report.js";
-import { watchForUpgrade, type UpgradeOutcome } from "./self-update.js";
+import { watchForUpgrade, type PendingRelease, type UpgradeOutcome } from "./self-update.js";
 import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 import { chatGptAppRunning, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
 import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, upgradeGraceMs, upgradeQuietMs, type SupervisorHealing } from "./service-heal.js";
 import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
+/** Why a quiet upgrade waited: the host's reason, or inference that refused its idle guard. */
+type UpgradeWait = QuietWait | "inference_busy";
+/** A restart that stopped the service (with the host's loaded-chat count), or one that was refused, with why when known. */
+type RestartResult = { loadedChats: number } | { wait?: UpgradeWait };
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason }
 type PauseReason = "not_registered" | "failing";
 /** How a slot decides whether the optional relay is worth starting; tests replace all three. */
@@ -57,6 +61,8 @@ export class ServiceSupervisor {
   private readonly host: ServiceHostKeeper;
   private stopHealth?: () => void;
   private statusFailedAt = Number.NEGATIVE_INFINITY;
+  /** `self_upgrade_waiting` already logged, per pending release and reason. */
+  private readonly upgradeWaits = new Set<string>();
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
@@ -103,7 +109,7 @@ export class ServiceSupervisor {
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one.
-    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending.pendingMs),
+    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
       { state: this.heal.releaseState });
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
@@ -260,31 +266,37 @@ export class ServiceSupervisor {
    * The strict idle restart: `gateway service restart` (SIGUSR2), a failed host close and the first try of every upgrade. The
    * host must have no adapter lease and no loaded chat, then inference must accept its own idle guard.
    */
-  async restartWhenIdle(): Promise<boolean> { return await this.restartAfter(async host => await host.prepareStop() ? 0 : undefined) !== undefined; }
+  async restartWhenIdle(): Promise<boolean> { return "loadedChats" in await this.restartAfter(async (host): Promise<RestartResult> => await host.prepareStop() ? { loadedChats: 0 } : {}); }
   /**
    * The move to a newer release. The strict idle restart is tried first. Once the release has been installed for
-   * `upgradeGraceMs` (15 min) and that still refuses (a remote app that stays connected for days keeps a lease and its chats
-   * loaded), the service restarts when quiet instead: the host's quiet check (no turn running in any engine and none ended in
-   * the last `upgradeQuietMs`, 5 min), then the same inference guard, so inference with requests running still refuses. The
-   * host then closes like a restarted host: adapters kick, wait for the new one and resume their chats.
+   * `upgradeGraceMs` (15 min of awake time) and that still refuses (a remote app that stays connected for days keeps a lease
+   * and its chats loaded), the service restarts when quiet instead: the host's quiet check (no turn running in any engine, no
+   * background terminal, none ended in the last `upgradeQuietMs`, 5 min), then the same inference guard, so inference with
+   * requests running still refuses. The host then closes like a restarted host: adapters kick, wait for the new one and
+   * resume their chats. Each reason a quiet attempt waited is logged once per pending release as `self_upgrade_waiting`.
    */
-  private async upgrade(pendingMs: number): Promise<UpgradeOutcome | false> {
+  private async upgrade(pending: PendingRelease): Promise<UpgradeOutcome | false> {
     if (await this.restartWhenIdle()) return { mode: "idle" };
-    if (this.stopping || pendingMs < upgradeGraceMs()) return false;
+    if (this.stopping || pending.pendingMs < upgradeGraceMs()) return false;
     const quietMs = upgradeQuietMs();
-    const loadedChats = await this.restartAfter(async host => (await host.prepareQuietStop?.(quietMs))?.loadedChats);
-    return loadedChats === undefined ? false : { mode: "quiet", loadedChats };
+    const result = await this.restartAfter(async host => await host.prepareQuietStop?.(quietMs) ?? {});
+    if ("loadedChats" in result) return { mode: "quiet", loadedChats: result.loadedChats };
+    const key = `${pending.to}\0${result.wait}`;
+    if (result.wait && !this.stopping && !this.upgradeWaits.has(key)) {
+      this.upgradeWaits.add(key); telemetry("self_upgrade_waiting", { component: "service", from: pending.from, to: pending.to, reason: result.wait });
+    }
+    return false;
   }
   /**
    * One restart at a time, never while stopping: `hostReady` closes the host's gate (an idle or quiet check, returning the
-   * loaded-chat count or undefined to refuse), then inference must accept SIGUSR2 and exit, and the service stops for launchd
-   * to start it again. Any refusal reopens the host and leaves everything running. Resolves to the count once stopped.
+   * loaded-chat count, or why it refused), then inference must accept SIGUSR2 and exit, and the service stops for launchd to
+   * start it again. Any refusal reopens the host and leaves everything running.
    */
-  private async restartAfter(hostReady: (host: ExecutionHost) => Promise<number | undefined>): Promise<number | undefined> {
+  private async restartAfter(hostReady: (host: ExecutionHost) => Promise<RestartResult>): Promise<RestartResult> {
     // A host-only restart in progress is finished first; the service restart is asked again later.
-    if (this.stopping || this.restarting || this.host.hostRestarting) return;
+    if (this.stopping || this.restarting || this.host.hostRestarting) return {};
     const inference = this.slots.find(slot => slot.definition.kind === "inference");
-    if (inference && !inference.child) return;
+    if (inference && !inference.child) return {};
     this.restarting = true;
     let executionHost: ExecutionHost | undefined; let loadedChats = 0;
     try {
@@ -292,17 +304,17 @@ export class ServiceSupervisor {
       executionHost = this.host.hostCloseFailed ? undefined : await this.host.executionStarting;
       if (executionHost) {
         const ready = await hostReady(executionHost);
-        if (ready === undefined) { this.restarting = false; return; }
-        loadedChats = ready;
+        if (!("loadedChats" in ready)) { this.restarting = false; return ready; }
+        loadedChats = ready.loadedChats;
       }
-    } catch { executionHost?.resume(); this.restarting = false; return; }
-    if (!inference) { await this.stop(); return loadedChats; }
-    if (!inference.child) { executionHost?.resume(); this.restarting = false; return; }
+    } catch { executionHost?.resume(); this.restarting = false; return {}; }
+    if (!inference) { await this.stop(); return { loadedChats }; }
+    if (!inference.child) { executionHost?.resume(); this.restarting = false; return {}; }
     inference.child.kill("SIGUSR2");
     let exited = false;
     await Promise.race([inference.exited!.then(() => { exited = true; }), delay(3000)]);
-    if (exited) { await this.stop(); return loadedChats; }
-    executionHost?.resume(); this.restarting = false; return;
+    if (exited) { await this.stop(); return { loadedChats }; }
+    executionHost?.resume(); this.restarting = false; return { wait: "inference_busy" };
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
   private async stopAll(): Promise<void> {

@@ -21,8 +21,10 @@ export interface ExecutionHostOptions { config: GatewayConfig; configPath: strin
 const maxFrame = 4 * 1024 * 1024;
 /** How long after the last turn ended a host with connected adapters still counts as in use (see prepareQuietStop). */
 export const defaultQuietMs = 5 * 60_000;
-/** A quiet host that closed its gate: how many chats its engines still had loaded (a count only). */
-export interface QuietStop { loadedChats: number }
+/** Why a quiet check refused, from a fixed vocabulary (see `self_upgrade_waiting` in docs/diagnostics.md). */
+export type QuietWait = "running" | "background_terminal" | "too_many" | "unreadable" | "ephemeral_settling" | "recent_turn";
+/** A quiet host that closed its gate (how many chats its engines still had loaded, a count only), or why it is not quiet. */
+export type QuietStop = { loadedChats: number } | { wait: QuietWait };
 
 /** Why a host start failed, from a fixed vocabulary; the error's own text and paths are never part of it. */
 export type HostFailureReason = "live_owner" | "identity_changed" | "socket_occupied" | "sdk_invalid" | "sdk_dir_missing" | "receipt_invalid" | "io_error" | "other";
@@ -253,35 +255,44 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     });
     serial = operation.catch(() => undefined); return operation;
   };
-  // Chats seen running at the last quiet check, and when a turn last ended. A chat that was running then and is not now (its
-  // turn ended, it was unloaded, or its engine exited, which clears its turns) ended at the latest now.
-  let runningSeen = new Set<string>(); let lastTurnEndedAtMs = Number.NEGATIVE_INFINITY;
+  // Chats seen running at the last quiet check, when a turn last ended, and since when each settling chat (one whose turns
+  // cannot be listed) has been seen settled. A chat that was running then and is not now (its turn ended, it was unloaded, or
+  // its engine exited, which clears its turns) ended at the latest now.
+  let runningSeen = new Set<string>(); let lastTurnEndedAtMs = Number.NEGATIVE_INFINITY; let settlingSince = new Map<string, number>();
   /**
-   * The upgrade's second rule, next to prepareStop: leases and loaded chats do not block it, a turn does. True (the loaded-chat
-   * count) only when no engine, gateway or native, has a turn running or waiting for an approval or input, no turn ended within
-   * `quietMs`, and every loaded chat could be read. Like prepareStop it runs in the serial queue and closes the gate itself, so
-   * no acquire or find runs between this check and the close; resume() reopens it. Turns start on engine sockets, not here, so
-   * a turn started in the moment between this check and the close is not held back: the supervisor closes at once.
+   * The upgrade's second rule, next to prepareStop: leases and loaded chats do not block it, a turn does. Quiet (the
+   * loaded-chat count) only when no engine, gateway or native, has a turn running or waiting for an approval or input, no chat
+   * keeps a background terminal, no turn ended within `quietMs`, every chat whose turns cannot be listed has been seen settled
+   * for `quietMs`, and every loaded chat could be read; otherwise the first reason it is not. Like prepareStop it runs in the
+   * serial queue and closes the gate itself, so no acquire or find runs between this check and the close; resume() reopens it.
+   * Turns start on engine sockets, not here, so a turn started in the moment between this check and the close is not held
+   * back: the supervisor closes at once. Undefined while the host is stopping or its gate is already closed.
    */
   const prepareQuietStop = (quietMs = defaultQuietMs): Promise<QuietStop | undefined> => {
     const operation = serial.then(async (): Promise<QuietStop | undefined> => {
       if (stopping || quiescing) return;
       const owned: Array<[string, ExecutionEngine | NativeExecutionEngine]> = [...engines.values()].map(engine => [engine.record.revision, engine]);
       if (native) owned.push(["native", native]);
-      const running = new Set<string>(); let loadedChats = 0; let unknown = 0; let endedAtMs = Number.NEGATIVE_INFINITY;
+      const running = new Set<string>(); const settling = new Set<string>(); let loadedChats = 0; let unknown = 0; let terminals = 0; let tooMany = false;
+      let endedAtMs = Number.NEGATIVE_INFINITY;
       try {
         for (const [key, engine] of owned) {
           if (engine.closed) continue;
           const activity = await engineActivity(engine.record.socketPath, engine.owner.socket, quietMs);
-          loadedChats += activity.loaded.length; unknown += activity.unknown;
+          loadedChats += activity.loaded.length; unknown += activity.unknown; terminals += activity.terminals; tooMany ||= activity.tooMany;
           for (const threadId of activity.running) running.add(`${key}\0${threadId}`);
+          for (const threadId of activity.settling) settling.add(`${key}\0${threadId}`);
           if (activity.lastEndedAtMs !== undefined) endedAtMs = Math.max(endedAtMs, activity.lastEndedAtMs);
         }
-      } catch { return; }
+      } catch { settlingSince = new Map(); return { wait: "unreadable" }; } // An engine it could not read breaks the settled watch too.
       const now = Date.now();
       if ([...runningSeen].some(chat => !running.has(chat))) endedAtMs = Math.max(endedAtMs, now);
       runningSeen = running; lastTurnEndedAtMs = Math.max(lastTurnEndedAtMs, Math.min(endedAtMs, now));
-      if (stopping || running.size || unknown || now - lastTurnEndedAtMs < quietMs) return;
+      settlingSince = new Map([...settling].map(chat => [chat, settlingSince.get(chat) ?? now]));
+      const wait: QuietWait | undefined = running.size ? "running" : terminals ? "background_terminal" : tooMany ? "too_many" : unknown ? "unreadable"
+        : [...settlingSince.values()].some(since => now - since < quietMs) ? "ephemeral_settling" : now - lastTurnEndedAtMs < quietMs ? "recent_turn" : undefined;
+      if (wait) return { wait };
+      if (stopping) return;
       quiescing = true; return { loadedChats };
     });
     serial = operation.catch(() => undefined); return operation;

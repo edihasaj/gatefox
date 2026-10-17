@@ -15,6 +15,13 @@ const defaultHostWaitMs = 20_000; const hostPollMs = 250;
 let hostWaitMs = defaultHostWaitMs;
 /** Tests shorten the wait for a required host instead of sitting it out. Undefined restores the production value. */
 export function setHostWaitForTests(ms?: number): void { hostWaitMs = ms ?? defaultHostWaitMs; }
+/**
+ * A host whose gate is closed for a restart check refuses acquire and find as quiescing. A check that is refused (inference
+ * still busy) reopens the gate within about 3 s, so these requests ask again every 100 ms for up to 5 s before failing; a
+ * host that goes on to restart closes the connection instead, which ends the wait at once.
+ */
+const quiescingWaitMs = 5_000; const quiescingPollMs = 100;
+const quiescing = (error: unknown): boolean => error instanceof Error && /^Execution host is quiescing/.test(error.message);
 /** One look at the host: a client, or the error today's single look would throw and whether waiting could change it. */
 type HostLook = { client?: ExecutionHostClient; failure?: Error; retry?: boolean };
 /**
@@ -99,6 +106,17 @@ export class ExecutionHostClient {
     try { await client.connection.ready; return { client }; }
     catch (error) { client.close(); return fail(error as Error, true); }
   }
+  /** One control request, asked again while the host's gate is closed for a restart check that may still be refused. */
+  private async request(method: string, params: Message): Promise<Message> {
+    const deadline = Date.now() + quiescingWaitMs;
+    for (;;) {
+      try { return await this.connection.request(method, params); }
+      catch (error) {
+        if (!quiescing(error) || this.connection.closed || Date.now() >= deadline) throw error;
+        await delay(quiescingPollMs);
+      }
+    }
+  }
   private record(value: Message): ExecutionRecord {
     if (typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, `e-${value.revision.slice(0, 16)}.sock`) || !Array.isArray(value.aliases) || !value.aliases.length || value.aliases.length > 256 || value.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024)
       || (value.selectedModelCompaction !== undefined && value.selectedModelCompaction !== true)) throw new Error("Shared executor returned invalid generation metadata");
@@ -106,11 +124,11 @@ export class ExecutionHostClient {
   }
   async acquire(descriptor: ExecutionDescriptor): Promise<ExecutionRecord> {
     if (!this.capabilities.includes("gateway")) throw new Error("Shared gateway execution is not enabled");
-    return this.record(await this.connection.request("execution/acquire", { ...descriptor }));
+    return this.record(await this.request("execution/acquire", { ...descriptor }));
   }
   async find(threadId: string): Promise<ExecutionRecord | undefined> {
     if (!this.capabilities.includes("gateway")) return;
-    const result = await this.connection.request("execution/find", { threadId });
+    const result = await this.request("execution/find", { threadId });
     return result.found === false ? undefined : this.record(result);
   }
   async release(revision: string): Promise<void> { await this.connection.request("execution/release", { revision }); }
@@ -142,7 +160,7 @@ export class ExecutionHostClient {
   }
   async acquireNative(args: string[], cwd: string): Promise<NativeLaunchRecord> {
     if (!this.capabilities.includes("native")) throw new Error("Shared native execution is not enabled");
-    const value = await acquireNativeCompatible(params => this.connection.request("native/acquire", params), args, cwd, () => this.codeModeAlreadyEnabled());
+    const value = await acquireNativeCompatible(params => this.request("native/acquire", params), args, cwd, () => this.codeModeAlreadyEnabled());
     if (value.kind !== "native" || typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, "native.sock") || !Number.isSafeInteger(value.pid) || Number(value.pid) < 1
       || typeof value.instanceId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.instanceId)) throw new Error("Shared native executor returned invalid ownership metadata");
     if (!await socketIdentity(value.socketPath as string)) throw new Error("Shared native executor socket is unavailable");

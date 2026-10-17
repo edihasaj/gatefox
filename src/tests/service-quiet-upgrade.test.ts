@@ -48,6 +48,7 @@ if(m.method==='thread/resume'){const thread=metadata()[id];if(!thread){send({id:
 if(m.method==='thread/unsubscribe')loaded.delete(id);
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/read'){const thread=metadata()[id];const turn=turns.get(id);result={executorPid:process.pid,thread:thread?{...thread,status:live&&loaded.has(id)?(turn&&turn.status==='inProgress'?{type:'active',activeFlags:[]}:{type:'idle'}):{type:'notLoaded'}}:{id,modelProvider:'openai'}};}
+if(m.method==='thread/backgroundTerminals/list')result={data:[],nextCursor:null};
 if(m.method==='thread/turns/list'){const turn=turns.get(id);result={data:turn?[turn]:[],nextCursor:null,backwardsCursor:null};}
 if(m.method==='turn/start'){const turn={id:'turn-'+process.pid+'-'+Date.now(),rootTurnId:null,items:[],itemsView:'notLoaded',status:'inProgress',error:null,startedAt:now(),completedAt:null,durationMs:null};turns.set(id,turn);
 send({id:m.id,result:{turn}});send({method:'turn/started',params:{threadId:id,turn}});

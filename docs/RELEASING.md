@@ -135,10 +135,10 @@ release and moves to it at an idle moment:
 | Adapter (one per app connection) | no active turn, no pending request, 30 seconds quiet | exits; the app starts a new adapter on the new release within seconds |
 | SSH listener (remote Mac) | a bootstrap on the installed release finds it running another release, or a newer release is installed and two idle checks in a row (about 1–2 minutes) pass with no active session | on bootstrap replacement the old listener keeps serving its open sessions and the new one binds a fresh alias; on self-retire the listener exits and the next connection's bootstrap starts the new one |
 | Inference server | at its next check, busy or not | the installed release's handler takes over the same socket in the same process: new requests use the new code at once, running requests finish on the old code; no connection is refused. A release whose serve runtime is incompatible falls back to an idle restart |
-| Supervisor, execution host, relay | fully idle: no app connected and no chat loaded | idle restart; launchd starts it on the new release |
+| Supervisor, execution host, relay | fully idle: no app connected and no chat loaded; after 15 minutes (awake time) of waiting, quiet is enough: no turn running, no background terminal and no turn ended in the last 5 minutes, with apps still connected ([services](services.md#moving-to-a-new-release)) | idle or quiet restart; launchd starts it on the new release, and connected apps resume their chats on it |
 
 Every server response carries `X-Gateway-Release` with the release that served it.
-Until the supervisor is idle it keeps the previous release, so adapters and the
+Until the supervisor is idle or quiet it keeps the previous release, so adapters and the
 host must stay protocol-compatible across one release. Each move is logged as
 `self_upgrade`, except an SSH listener replaced by a bootstrap, which is logged
 as `ssh_listener_replaced`. In that event `from` is `unknown` when the old

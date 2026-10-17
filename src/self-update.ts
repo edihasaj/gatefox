@@ -34,14 +34,18 @@ export type UpgradeMode = "idle" | "quiet";
 /** What an accepted upgrade reports for `self_upgrade`; `loadedChats` (a count) only for a quiet one. Plain `true` means idle. */
 export interface UpgradeOutcome { mode: UpgradeMode; loadedChats?: number }
 
+/** A newer release waiting: the running and installed release names, and how long (ms) this watcher has seen it installed. */
+export interface PendingRelease { from: string; to: string; pendingMs: number }
+
 /**
  * Checks once a minute. When a different release is installed and `isIdle` stays true
- * for two checks in a row, it calls `upgrade` with how long (ms) this watcher has seen a
- * newer release installed. An upgrade that reports false (work arrived meanwhile) is
+ * for two checks in a row, it calls `upgrade` with the pending release. The wait is
+ * measured with the monotonic clock, which does not advance while the Mac sleeps, so
+ * it counts awake time only. An upgrade that reports false (work arrived meanwhile) is
  * retried at a later idle moment.
  */
 export function watchForUpgrade(component: string, isIdle: () => boolean | Promise<boolean>,
-  upgrade: (pending: { pendingMs: number }) => boolean | UpgradeOutcome | Promise<boolean | UpgradeOutcome>,
+  upgrade: (pending: PendingRelease) => boolean | UpgradeOutcome | Promise<boolean | UpgradeOutcome>,
   options: { intervalMs?: number; state?: () => ReleaseState | undefined } = {}): () => void {
   const read = options.state ?? (() => releaseState()); let idleChecks = 0; let done = false; let cancelled = false; let pendingSince: number | undefined;
   const timer = setInterval(() => {
@@ -54,7 +58,7 @@ export function watchForUpgrade(component: string, isIdle: () => boolean | Promi
       idleChecks = idle ? idleChecks + 1 : 0;
       if (idleChecks < 2) return;
       done = true;
-      return Promise.resolve(upgrade({ pendingMs: performance.now() - (pendingSince ?? performance.now()) })).then(started => {
+      return Promise.resolve(upgrade({ from: state!.running, to: state!.installed!, pendingMs: performance.now() - (pendingSince ?? performance.now()) })).then(started => {
         if (started) {
           clearInterval(timer);
           const outcome: UpgradeOutcome = started === true ? { mode: "idle" } : started;
