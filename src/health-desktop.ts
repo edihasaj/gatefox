@@ -20,6 +20,7 @@ const psTimeoutMs = 5000;
 export const desktopRegistrationFile = "desktop-registration.json";
 export const stockEngineReason = "ChatGPT started before the gateway (for example right after a reboot); quit and reopen ChatGPT to use gateway chats";
 
+const psCommand = "/bin/ps";
 const psArguments = ["-axo", "pid=,ppid=,command="];
 const gatewayShim = /^\S*\/current\/runtime\/bin\/node\s+\S*\/current\/package\/dist\/cli\.js\s+codex-shim(?:\s|$)/;
 const stockEngine = /^\S*\/CodexCLI\.app\/Contents\/MacOS\/codex(?:\s|$)/;
@@ -57,8 +58,8 @@ export interface DesktopDeps {
  */
 export async function desktopFindings(stateDirectory: string, appPath: string, deps: DesktopDeps): Promise<Finding[]> {
   if (!await registered(stateDirectory, deps.readFile)) return [];
-  const table = parseProcessTable(await (deps.exec ?? localExec)("ps", psArguments));
-  const main = `${appPath}/Contents/MacOS/ChatGPT`;
+  const table = parseProcessTable(await (deps.exec ?? localExec)(psCommand, psArguments));
+  const main = `${appPath.replace(/\/+$/, "")}/Contents/MacOS/ChatGPT`;
   const apps = table.filter(entry => entry.command === main || entry.command.startsWith(`${main} `));
   if (!apps.length) return [{ level: "info", reason: "ChatGPT not running" }];
   const children = (pid: number) => table.filter(entry => entry.ppid === pid);

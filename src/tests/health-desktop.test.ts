@@ -23,7 +23,7 @@ const table = (...lines: string[]) => lines.join("\n") + "\n";
 /** The injected command seam: only `ps` with the three columns is answered, and every call is kept. */
 function seam(out: string) {
   const calls: Array<[string, string[]]> = [];
-  const exec: Exec = async (command, args) => { calls.push([command, args]); if (command !== "ps") throw new Error("only ps is expected"); return out; };
+  const exec: Exec = async (command, args) => { calls.push([command, args]); if (command !== "/bin/ps") throw new Error("only ps is expected"); return out; };
   return { exec, calls };
 }
 const files = (contents: Record<string, string>) => async (path: string) => { if (path in contents) return contents[path]!; throw new Error("ENOENT"); };
@@ -38,7 +38,7 @@ test("a registered ChatGPT on its stock engine warns, and reads only the process
   const ps = seam(table(main(500), ...helpers(500), stock(500)));
   assert.deepEqual(await desktopFindings("/state", app, { readFile: registered, exec: ps.exec }), [{ level: "warn", reason: stockEngineReason }]);
   assert.match(stockEngineReason, /quit and reopen ChatGPT to use gateway chats/);
-  assert.deepEqual(ps.calls, [["ps", ["-axo", "pid=,ppid=,command="]]]);
+  assert.deepEqual(ps.calls, [["/bin/ps", ["-axo", "pid=,ppid=,command="]]]);
   // The exact arguments are the guard: `ps e` would print another process's environment, and these never ask for it.
 });
 
@@ -55,6 +55,15 @@ test("a stock engine under another process, or a lookalike, is not ChatGPT's", a
   assert.deepEqual(await desktopFindings("/state", app, { readFile: registered, exec: seam(table(...other)).exec }), [{ level: "info", reason: "ChatGPT not running" }]);
   // One main process running the gateway's engine is enough, whatever else is on the table.
   assert.deepEqual(await desktopFindings("/state", app, { readFile: registered, exec: seam(table(main(500), stock(500), main(700), gatewayed(700))).exec }), []);
+});
+
+test("a gatewayed ChatGPT beside an unrelated stock engine reports nothing, and a trailing slash on the app path is ignored", async () => {
+  // The stock engine is another process's child (ppid 777 is not ChatGPT), so it says nothing about this app.
+  const rows = table(main(500), ...helpers(500), gatewayed(500), `901 777 ${engine} app-server --listen stdio://`);
+  assert.deepEqual(await desktopFindings("/state", app, { readFile: registered, exec: seam(rows).exec }), []);
+  assert.deepEqual(await desktopFindings("/state", `${app}/`, { readFile: registered, exec: seam(rows).exec }), []);
+  const slashed = seam(table(main(500), ...helpers(500), stock(500)));
+  assert.deepEqual(await desktopFindings("/state", `${app}/`, { readFile: registered, exec: slashed.exec }), [{ level: "warn", reason: stockEngineReason }]);
 });
 
 test("ChatGPT not running is info, and no registration asks for nothing", async () => {

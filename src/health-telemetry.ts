@@ -44,7 +44,9 @@ export interface TelemetrySignals {
   refusals: number;
   /** Refusals after the latest recovery marker: the ones a restart has not already answered. */
   activeRefusals: number;
-  /** Whether one of them is within the last `refusalOngoingMs`. Only an ongoing refusal can fail. */
+  /** The active refusals that are also within the last `refusalOngoingMs`. Only these can fail, from `refusalFailThreshold`. */
+  recentRefusals: number;
+  /** Whether one active refusal is within the last `refusalOngoingMs`. */
   refusalsOngoing: boolean;
   /** The methods that have an ongoing refusal. */
   ongoingMethods: string[];
@@ -61,7 +63,7 @@ export interface TelemetrySignals {
 }
 
 export const emptySignals = (): TelemetrySignals =>
-  ({ hostFailures: 0, exits: {}, explainedExits: {}, rpcErrors: {}, refusals: 0, activeRefusals: 0, refusalsOngoing: false, ongoingMethods: [], lastRefusalAt: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
+  ({ hostFailures: 0, exits: {}, explainedExits: {}, rpcErrors: {}, refusals: 0, activeRefusals: 0, recentRefusals: 0, refusalsOngoing: false, ongoingMethods: [], lastRefusalAt: {}, featureRetries: 0, retriedThenRefused: 0, nativeSharing: [], nativeExited: false });
 
 const text = (value: unknown): string | undefined => typeof value === "string" ? value : undefined;
 
@@ -118,6 +120,13 @@ function explainedByRestart(kind: string, at: number, rows: HealthEvent[]): bool
   });
 }
 
+/**
+ * Whether the host failed or restarted again after this recovery. A recovery that did not hold
+ * heals nothing, so a host that flaps cannot keep resetting the refusals it is causing.
+ */
+const relapsed = (recovered: HealthEvent, rows: HealthEvent[]): boolean =>
+  rows.some(row => row.at > recovered.at && (row.event === "execution_host_failed" || row.event === "execution_host_restarted"));
+
 /** Reduces the window's lines to counts. `at` is the epoch millisecond the parser kept. */
 export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOptions = {}): TelemetrySignals {
   const signals = emptySignals();
@@ -125,7 +134,7 @@ export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOpt
   const retries: number[] = [];
   const refusals: { at: number; method: string }[] = [];
   // The latest recovery marker: an event that says the thing which was refusing has been replaced or has healed.
-  const marker = Math.max(0, ...(options.markers ?? []), ...rows.filter(row => row.event === "execution_host_recovered"
+  const marker = Math.max(0, ...(options.markers ?? []), ...rows.filter(row => (row.event === "execution_host_recovered" && !relapsed(row, rows))
     || (row.event === "self_upgrade" && upgradeMarkers.has(String(row.component)))).map(row => row.at));
   for (const row of rows) {
     const at = typeof row.at === "number" ? row.at : 0;
@@ -149,6 +158,7 @@ export function summarizeHealthEvents(rows: HealthEvent[], options: SummarizeOpt
   const active = refusals.filter(refusal => refusal.at > marker);
   const recent = active.filter(refusal => refusal.at >= now - refusalOngoingMs);
   signals.activeRefusals = active.length;
+  signals.recentRefusals = recent.length;
   signals.refusalsOngoing = recent.length > 0;
   signals.ongoingMethods = [...new Set(recent.map(refusal => refusal.method))].sort();
   // A retry that still ends in a refusal is the one config-load failure worth alerting on, while that refusal is ongoing.
@@ -166,6 +176,8 @@ export interface TelemetryReadDeps {
   readFile?: (path: string) => Promise<string>;
   now?: () => number;
   windowMs?: number;
+  /** Drops rows after this instant, so a replay or a test cannot see events from its own future. Live reads set none. */
+  until?: number;
 }
 
 /** Every watchable line in the window, read from the state directory's own telemetry. */
@@ -178,7 +190,7 @@ export async function readHealthTelemetry(stateDirectory: string, deps: Telemetr
   for (const name of telemetryFileNames(now, windowMs)) {
     for (const line of (await read(join(stateDirectory, "telemetry", name))).split("\n")) {
       const row = parseHealthEvent(line);
-      if (row && typeof row.at === "number" && row.at >= since) rows.push(row);
+      if (row && typeof row.at === "number" && row.at >= since && (deps.until === undefined || row.at <= deps.until)) rows.push(row);
     }
   }
   return rows;

@@ -117,16 +117,16 @@ const clock = (ms: number): string => new Date(ms).toISOString().slice(11, 16);
  *
  * A session refusal is judged by whether it is still happening, then by how many there were. It
  * is ongoing while one happened in the last five minutes after the latest recovery marker (a
- * self-upgrade, a recovered host, the service's own start); only an ongoing refusal can fail, and
- * only from three. A refusal that has stopped is a warning that says when ("none since 07:25",
- * UTC), so a Mac that healed itself does not page for the rest of the window.
+ * self-upgrade, a recovered host that stayed up, the service's own start once it has run for five
+ * minutes); it fails only when three or more are each that recent. A refusal that has stopped is a
+ * warning that says when ("none since 07:25 UTC"), so a Mac that healed itself does not page for the rest of the window.
  */
 export function errorFindings(signals: TelemetrySignals, paused = false): Finding[] {
-  const fail = signals.refusalsOngoing && signals.activeRefusals >= refusalFailThreshold;
+  const fail = signals.recentRefusals >= refusalFailThreshold;
   const findings: Finding[] = Object.entries(signals.rpcErrors).sort().map(([method, count]) => {
     if (signals.ongoingMethods.includes(method)) return { level: fail ? "fail" as const : "warn" as const, reason: `refused ${method} ${count}x` };
     const last = signals.lastRefusalAt[method];
-    return { level: "warn" as const, reason: `refused ${method} ${count}x${last === undefined ? "" : `, none since ${clock(last)}`}` };
+    return { level: "warn" as const, reason: `refused ${method} ${count}x${last === undefined ? "" : `, none since ${clock(last)} UTC`}` };
   });
   if (signals.retriedThenRefused > 0) findings.push({ level: "fail", reason: `config retry refused ${signals.retriedThenRefused}x` });
   else if (signals.featureRetries > 0) findings.push({ level: "info", reason: `config retried ${signals.featureRetries}x` });

@@ -8,7 +8,7 @@ import { appFindings, componentFindings, errorFindings, inferenceFindings, nativ
 import { desktopFindings } from "./health-desktop.js";
 import { appPathFromPlan, detectAppChange, readAppInfo } from "./health-app.js";
 import { healthWindowMs, exitCodeFor, verdictOf, type AppInfo, type Exec, type Finding, type HealthReport, type InferenceProbe, type PushOutcome, type SmokeOutcome, type Verdict } from "./health-types.js";
-import { emptySignals, readHealthTelemetry, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
+import { emptySignals, readHealthTelemetry, refusalOngoingMs, summarizeHealthEvents, type HealthEvent } from "./health-telemetry.js";
 import { pushFindings, pushVerdict, pushUrlPath, readPushUrl, type PushUrlReader } from "./health-push.js";
 import { runSmoke, type SmokeAnswer, type SmokeRunner } from "./health-smoke.js";
 import { readHealthState, writeHealthState, smokeCovers, type HealthState } from "./health-state.js";
@@ -128,10 +128,12 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
     { installed: false, components: [], published: false });
   const switched = await note("release switch", () => (deps.switchedAt ?? releaseSwitchedAt)(deps.moduleUrl), undefined);
   // The service's own start is a recovery marker: whatever it was refusing as the old release, it no longer is.
-  const serviceStarts = versions.processes.filter(row => row.role === "service").map(row => Date.parse(row.startedAt)).filter(Number.isFinite);
+  // Only once it has stayed up that long, so a service that crashes and restarts cannot keep resetting the verdict.
+  const serviceStarts = versions.processes.filter(row => row.role === "service").map(row => Date.parse(row.startedAt))
+    .filter(started => Number.isFinite(started) && now - started >= refusalOngoingMs);
   const signals = await note("telemetry", async () => summarizeHealthEvents(deps.telemetry
     ? await deps.telemetry(options.stateDirectory)
-    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs }), { now, markers: serviceStarts }), emptySignals());
+    : await readHealthTelemetry(options.stateDirectory, { readFile, now: () => now, windowMs: deps.windowMs, ...(deps.now ? { until: now } : {}) }), { now, markers: serviceStarts }), emptySignals());
   const desktop = await note<Finding[]>("desktop", () => desktopFindings(options.stateDirectory, app.path, { readFile, exec: deps.exec }), []);
   // A probe that could not run at all says so about itself; one that ran and got no answer says so about inference.
   const inference: InferenceProbe = options.clientOnly
