@@ -334,30 +334,44 @@ update), the host starts without native sharing and keeps offering gateway chats
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
 adapter then falls back to its own native engine and records `native_sharing_fallback`
-with `reason: other`. Gateway chats keep using the host. While the fallback lasts, the
+with `reason: other` and `holders`, how many private engines hold the native home once
+its lease is taken. Gateway chats keep using the host. While the fallback lasts, the
 native relay cannot share the engine either, so remote control of that Mac is
 unavailable. The fallback lasts until a release verifies the app's engine. It runs under
-the same native-home lease as the host-down fallback below: a host that regains native
-sharing meanwhile finds a live owner and claims the home only after that engine has
-exited, and a second adapter on the same home, such as a connected machine's SSH
-session, fails closed with a message that names the first adapter's process instead of
-becoming a second writer.
+a private native-home lease, like the host-down fallback below.
+
+Private leases share the native home with each other and never with the host's writer.
+The Mac's own ChatGPT app and a connected machine's SSH session therefore each run
+their own engine on the same home, as stock Codex runs one app-server for the app and
+another for an SSH remote. A chat open in both at once carries the same risk it carries
+in stock Codex; the gateway adds no per-chat lock, and its own per-chat records (the
+chat registry and the speed, reasoning and compaction stores) are merged under a file
+lock and replaced atomically, so two adapters never lose each other's entries.
+
+| On one native home | Together? |
+| --- | --- |
+| Private engines of this release (any number) | Yes |
+| A private engine and the host's shared native writer | No: a host that regains native sharing claims the home only after every private engine has exited, and a private engine never starts while the host's writer runs |
+| A private engine of this release and one that release 0.4.4 started | No: the 0.4.4 engine keeps the home to itself, and a new adapter fails closed naming its process, until that connection moves to this release (an idle adapter does after an install) |
+
+Each private engine keeps a receipt of its own beside the native-home receipt, and
+`owner.json` names them for older releases while any is live; the rules are in
+[architecture](architecture.md#desktop-connections).
 
 If the host stays down through the adapter's 20-second wait, the desktop adapter
 also falls back to its own native engine, so native chats keep working. It does so
 only when nothing still owns the native home: no live or starting native engine,
 and nothing answering at the host's native socket. Before it starts the engine, it
-takes the per-native-home lease the host itself claims, and it holds that lease
-until the engine exits. A host that comes back meanwhile therefore finds a live
-owner: it keeps serving gateway chats, refuses native ownership, and claims the
-native home at the first native request after the fallback has ended, so the next
-adapter start returns to sharing. The adapter records `native_sharing_fallback`
+takes a private native-home lease, and it holds that lease until the engine exits. A
+host that comes back meanwhile therefore finds a live owner: it keeps serving gateway
+chats, refuses native ownership, and claims the native home at the first native
+request after every fallback has ended, so the next adapter start returns to sharing. The adapter records `native_sharing_fallback`
 with `reason: host_unavailable`. Chats its engine verifies as native never wait
 for the host; gateway chats still need the host and fail closed until it returns.
 A host that does not match the adapter, a changed host socket, an unreadable host
-receipt, or a live native owner still fails the connection. One native home has at
-most one such fallback engine at a time, and the remote-control rules for a
-private engine apply to it. The lease rules are in
+receipt, or a live native owner still fails the connection. Several adapters may each
+run such a fallback engine on one native home, by the sharing rule above, and the
+remote-control rules for a private engine apply to each. The lease rules are in
 [architecture](architecture.md#desktop-connections).
 
 Natively, the desktop is the only launcher of its app-server. With shared native

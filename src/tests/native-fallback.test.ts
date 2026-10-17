@@ -3,15 +3,15 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { chmod, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { chmod, mkdir, readdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { AppServerBackends } from "../app-server-backends.js";
 import { object, type Message } from "../app-server-connection.js";
 import { writePrivateJson } from "../config.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
-import { livePid, sdkIdentity } from "../execution-host-storage.js";
+import { executionHostMarker, livePid, sdkIdentity, type HostIdentity } from "../execution-host-storage.js";
 import { hostUnavailable, nativeFallbackReason, setHostWaitForTests } from "../execution-host-client.js";
-import { claimPrivateNativeHome, nativeHomeOwnership, readNativeHomeOwner } from "../native-execution-host-storage.js";
+import { claimNativeHome, claimPrivateNativeHome, nativeHomeOwnership, privateNativeHolders, readNativeHomeOwner, type NativeHomeOwner } from "../native-execution-host-storage.js";
 import { configureTelemetry } from "../telemetry.js";
 import { fallbackFixture, until } from "./native-fallback-fixture.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
@@ -24,6 +24,8 @@ type Fixture = Awaited<ReturnType<typeof fallbackFixture>>;
 const nativeReceipt = async (f: Fixture, fields: Message) => writePrivateJson(f.receipt, { version: 1, managed: "subscription-gateway-native-execution-owner",
   configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), ...await sdkIdentity(f.sdk), socketPath: join(f.home, "native.sock"), ...fields });
 const unavailable = (error: Error & { code?: number }) => error.code === -32001 && /host is unavailable/.test(error.message);
+/** The receipts private leases keep beside owner.json, one per lease. */
+const holderFiles = async (f: Fixture) => (await readdir(dirname(f.receipt))).filter(name => /^private-\d+-[a-f0-9-]{36}\.json$/.test(name)).map(name => join(dirname(f.receipt), name));
 
 test("a host that stays down leaves native chats to a private engine that holds the native-home lease from before its spawn until shutdown", { timeout: 20000 }, async () => {
   const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
@@ -37,7 +39,8 @@ test("a host that stays down leaves native chats to a private engine that holds 
     const lease = await readNativeHomeOwner(f.nativeHome);
     assert.equal(lease?.hostPid, process.pid); assert.equal(lease?.pid, launch.pid); assert.equal(lease?.state, "running"); assert.equal(lease?.sdkState, "running");
     assert.equal(lease?.configPath, resolve(f.configPath)); assert.equal(lease?.socketPath, join(f.home, "native.sock")); assert.equal(lease?.privateOwner?.previous, undefined);
-    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "live");
+    // A private engine keeps no other private engine out (they share the home), but it is a live holder the host must wait for.
+    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "absent"); assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
     // Native chats work on the private engine, and never wait for the host: none of them asks the service to restart it again.
     const kick = await stat(join(f.home, "kick"));
     const started = await first.adapter.request("thread/start", { cwd: f.directory }); const id = String(object(started.thread).id);
@@ -49,8 +52,8 @@ test("a host that stays down leaves native chats to a private engine that holds 
     // Gateway chats still need the host, so they fail closed while it is down.
     await assert.rejects(first.adapter.request("thread/start", { model: "claude/fixture" }, { engine: "gateway" }), unavailable);
     const fallbacks = await f.events("native_sharing_fallback", since);
-    assert.equal(fallbacks.length, 1); assert.equal(fallbacks[0].reason, "host_unavailable");
-    assert.deepEqual(Object.keys(fallbacks[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
+    assert.equal(fallbacks.length, 1); assert.equal(fallbacks[0].reason, "host_unavailable"); assert.equal(fallbacks[0].holders, 1);
+    assert.deepEqual(Object.keys(fallbacks[0]).sort(), ["at", "component", "event", "holders", "host", "pid", "reason"]);
     // Shutting the adapter down stops the engine and only then gives the home back: no receipt was there before, so none is.
     await first.adapter.stop();
     assert.equal(livePid(launch.pid), false); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
@@ -130,13 +133,17 @@ test("a lease taken over from a crashed fallback keeps the receipt that fallback
   try {
     await nativeReceipt(f, { hostPid: 0, pid: 0, state: "stopped", sdkState: "stopped" }); const original = JSON.parse(await readFile(f.receipt, "utf8"));
     const crashed = await claimPrivateNativeHome({ configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), codex: f.sdk }, f.home);
-    // The crashed adapter's receipt names processes that are gone: a pid no process holds, from this boot.
-    const left = { ...(await readNativeHomeOwner(f.nativeHome))!, hostPid: 2 ** 22 + 7, pid: 2 ** 22 + 9, sdkState: "running" };
-    await writePrivateJson(f.receipt, left); assert.ok(crashed);
-    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "dead_pids");
+    // The crashed adapter's receipts (its own and the marker in owner.json) name processes that are gone: pids no process
+    // holds, from this boot.
+    const gone = { hostPid: 2 ** 22 + 7, pid: 2 ** 22 + 9, sdkState: "running" };
+    const [own] = await holderFiles(f); const ownReceipt = JSON.parse(await readFile(own, "utf8")) as NativeHomeOwner;
+    await writePrivateJson(own, { ...ownReceipt, ...gone }); await writePrivateJson(f.receipt, { ...(await readNativeHomeOwner(f.nativeHome))!, ...gone }); assert.ok(crashed);
+    assert.equal(await privateNativeHolders(f.nativeHome, f.home), 0); assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "dead_pids");
     const next = await claimPrivateNativeHome({ configPath: resolve(f.configPath), nativeHome: resolve(f.nativeHome), codex: f.sdk }, f.home);
-    assert.deepEqual((await readNativeHomeOwner(f.nativeHome))?.privateOwner?.previous, original);
-    await next.release(); assert.deepEqual(JSON.parse(await readFile(f.receipt, "utf8")), original);
+    assert.equal(next.holders, 1); assert.deepEqual((await readNativeHomeOwner(f.nativeHome))?.privateOwner?.previous, original);
+    // The crashed lease's receipt was archived; only the new one is left.
+    assert.equal((await holderFiles(f)).length, 1); assert.deepEqual(await readdir(join(dirname(f.receipt), "stale")).then(names => names.map(name => name.replace(/-\d+\.json$/, ""))), ["private"]);
+    await next.release(); assert.deepEqual(JSON.parse(await readFile(f.receipt, "utf8")), original); assert.deepEqual(await holderFiles(f), []);
   } finally { await f.clean(); }
 });
 
@@ -154,11 +161,13 @@ test("a lease released while its engine still runs keeps naming that engine, wit
     // The adapter steps back; the receipt still names the engine and keeps the receipt the lease replaced.
     const kept = await readNativeHomeOwner(f.nativeHome);
     assert.deepEqual(kept, { ...named, hostPid: 0 }); assert.deepEqual(kept?.privateOwner?.previous, original);
-    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "live");
-    await assert.rejects(claimPrivateNativeHome(identity, f.home), /already owns this native home/);
+    assert.equal(await privateNativeHolders(f.nativeHome, f.home), 1);
+    // The host's writer still keeps out while that engine runs.
+    const host: HostIdentity = { version: 1, managed: executionHostMarker, ...identity, sdkSha256: (await sdkIdentity(f.sdk)).sdkSha256, socketPath: join(f.home, "host.sock") };
+    await assert.rejects(claimNativeHome(host, f.home), /already owns this native home/);
     // Once the engine is gone, the dead owner rules release the home.
     engine.kill("SIGKILL"); await once(engine, "exit");
-    assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "dead_pids");
+    assert.equal(await privateNativeHolders(f.nativeHome, f.home), 0); assert.equal(await nativeHomeOwnership(f.nativeHome, f.home), "dead_pids");
   } finally { engine?.kill("SIGKILL"); await f.clean(); }
 });
 

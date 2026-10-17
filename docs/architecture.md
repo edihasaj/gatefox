@@ -201,31 +201,45 @@ verdict must also be clear: a live or unconfirmed owner, or anything answering a
 host's native socket, keeps the adapter out. Before it spawns the engine, the adapter
 takes the per-native-home lease under the receipt's own lock. Its receipt names the
 host's configuration and native socket path, the adapter as the owner process and a
-launch marked `starting`, then the engine's pid once it runs. It also keeps the
-engine identity and the whole receipt it replaced. When the engine exits (the adapter
-stopping, or the engine leaving by itself), the adapter puts that receipt back with
-its file time, set before the atomic rename so no reader sees the restored receipt with
-the current time, or removes the file when there was none, so the host and rollback see
-the home as they did before the fallback. An adapter that fails to build after taking
-the lease spawned nothing and gives the lease straight back. An engine that still runs
-when the lease is released keeps the home: the receipt then names only that engine
-(`hostPid` 0) until the dead owner rules release it.
+launch marked `starting`, then the engine's pid once it runs. The marker it keeps in
+`owner.json` holds the engine identity and the whole receipt the first lease replaced.
+When the last lease's engine exits (the adapter stopping, or the engine leaving by
+itself), its adapter puts that receipt back with its file time, set before the atomic
+rename so no reader sees the restored receipt with the current time, or removes the
+file when there was none, so the host and rollback see the home as they did before the
+fallback. An adapter that fails to build after taking the lease spawned nothing and
+gives the lease straight back. An engine that still runs when the lease is released keeps the home: its lease's receipt then names only that
+engine (`hostPid` 0) until the dead owner rules release it.
 
-The lease allows one fallback engine per native home. A second adapter on the same
-home, such as a connected machine's SSH session while the desktop's fallback runs,
-fails closed instead of becoming a second writer. When the host is down it reports the
-host's own failure; when the host only lacks native sharing it says that another
-connection's native engine (naming that adapter's process) already writes the home, and
-that native sharing returns once the gateway supports the app's new engine (see
-`gateway service status`). A host without native sharing
-used to let every adapter run its own engine on the home; correctness wins over that
-convenience, so such a second adapter now fails closed until the first one closes or
-native sharing returns.
+Private leases share the native home with each other and never with the host's
+writer, the rule stock Codex follows when it runs one app-server for the app and
+another for an SSH remote on one home. Each lease keeps a receipt of its own beside
+`owner.json`, `private-<adapter pid>-<lease id>.json`, judged by the same liveness rules
+(boot, pid and start of the adapter and of its engine, the startup grace, the native
+socket); a dead one is moved to `stale/` under one shared name, so the newest five are
+kept. Under the receipt's lock, a lease joins live ones of the same configuration and
+native home spelling; a live or unconfirmed host receipt, an unreadable or foreign
+private receipt, or anything answering at the host's native socket refuses it. The
+host's claim is refused while any private receipt may still be live, and archives the
+dead ones first. Releases 0.4.4 and earlier read only `owner.json`, so while any lease
+is live it holds a marker in the 0.4.4 private receipt format (which 0.4.3 reads as a
+plain owner) with `privateOwner.shared` added. The marker keeps the receipt the first
+lease replaced and names live processes: the adapter and engine of a single lease, or
+the engines (the adapters before they run) of the two longest-running leases. It is rewritten whenever a lease comes, starts its engine or
+goes, and the last lease to go puts the kept receipt back. An older release therefore
+keeps its host's writer and its own private engine out while any named process runs.
+With three or more leases, an older release could miss the others after both named
+leases crash, until the next lease change rewrites the marker; this release's host
+reads every receipt. The marker reads as `absent` to the private-writer check, so it
+keeps no other private engine out, while rollback still waits for it to stop. A 0.4.4
+private engine's own `owner.json` (no `shared`) still holds the home alone: a new
+adapter fails closed, saying an earlier release started that engine and naming its
+process, until that connection moves to this release.
 Rollback and `shared-native --disable` treat a live lease like any live native owner:
-they refuse (and the disable restores the previous plan) until that adapter's engine
+they refuse (and the disable restores the previous plan) until every lease's engine
 has exited.
 
-While the lease is live, a host that
+While any lease is live, a host that
 starts claims everything but the native home: it records `native_sharing_unavailable`
 with `reason: native_owner`, serves gateway chats, and refuses native requests
 (`native_acquire` with `refused_owner`) until one finds the home free and claims it,

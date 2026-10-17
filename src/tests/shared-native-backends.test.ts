@@ -387,8 +387,8 @@ test("a gateway-only host makes the adapter fall back to a private native engine
       assert.notEqual(adapter.native.shared, true); assert.equal((adapter as unknown as { sharedGateway?: boolean }).sharedGateway, true);
       assert.equal(f.calls.some(message => message.method === "native/acquire"), false);
       await until(() => existsSync(f.spawnMarker)); assert.deepEqual(JSON.parse(await readFile(f.spawnMarker, "utf8")), { lease: true });
-      const events = await fallbackEvents(f, since); assert.equal(events.length, 1); assert.equal(events[0].reason, "other");
-      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
+      const events = await fallbackEvents(f, since); assert.equal(events.length, 1); assert.equal(events[0].reason, "other"); assert.equal(events[0].holders, 1);
+      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "holders", "host", "pid", "reason"]);
       // Like a host that is down, a host without native sharing leaves the native home to this adapter's lease alone.
       const lease = JSON.parse(await readFile(receipt, "utf8"));
       assert.equal(lease.hostPid, process.pid); assert.equal(lease.pid, (adapter.native as unknown as { pid?: number }).pid); assert.equal(typeof lease.privateOwner?.instanceId, "string");
