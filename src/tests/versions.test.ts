@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { classifyCommand, formatHuman, formatStart, installedRelease, parseListenPorts, parseLsofTxt, parsePs, runVersions, versionsCommand,
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { classifyCommand, formatHuman, formatStart, installedRelease, installRoots, locateInstall, parseListenPorts, parseLsofTxt, parsePs, runVersions, versionsCommand,
   type InstallScope, type VersionsCommandDeps, type VersionsExecutors } from "../versions.js";
 
 const uid = 501;
@@ -364,6 +364,26 @@ test("a checkout run falls back to the default install root", async () => {
     assert.deepEqual(result.processes.map(row => `${row.role}@${row.release}`), ["executor-host@9.9.9", "service@checkout"]);
     assert.equal(result.lagging, 1);
   } finally { await rm(fallback, { recursive: true, force: true }); }
+});
+
+test("an installed module finds the install folder that holds current and releases", async () => {
+  const base = await mkdtemp(join(tmpdir(), "gateway-versions-installed-"));
+  try {
+    // The installer's layout, with a space and a quote in the path as the release gate uses.
+    const install = join(await realpath(base), "my gate's install");
+    const dist = join(install, "releases/0.4.4/package/dist");
+    await mkdir(dist, { recursive: true });
+    await symlink("releases/0.4.4", join(install, "current"));
+    const moduleUrl = pathToFileURL(join(dist, "versions.js")).href;
+    assert.deepEqual(installRoots(moduleUrl), [install], "the root is the install folder, not its releases folder");
+    const scope = locateInstall(moduleUrl, join(base, "unused-fallback"));
+    assert.equal(scope.installed, "0.4.4", "current is read from the install folder");
+    assert.equal(scope.checkoutCli, undefined);
+    assert.equal(classifyCommand(`${node} ${dist}/cli.js serve`, scope)?.release, "0.4.4");
+    assert.equal(classifyCommand(`${node} ${install}/current/package/dist/cli.js daemon`, scope)?.release, "0.4.4");
+    // Through the `current` link the module still names the same install folder.
+    assert.deepEqual(installRoots(pathToFileURL(join(install, "current/package/dist/versions.js")).href).includes(install), true);
+  } finally { await rm(base, { recursive: true, force: true }); }
 });
 
 test("a run with neither release named reports installed null and fails --check with 2", async () => {

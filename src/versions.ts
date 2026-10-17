@@ -97,11 +97,14 @@ function pathForms(path: string): string[] {
   } catch { return [lexical]; }
 }
 
-/** The install folder this module runs from in every form, or nothing when it runs from a checkout. */
+/**
+ * The install folder this module runs from in every form, or nothing when it runs from a checkout. An installed module sits
+ * at `<install>/releases/<v>/package/dist`, and the install folder is the one that holds `current` and `releases`.
+ */
 export function installRoots(moduleUrl = import.meta.url): string[] {
   const release = resolve(dirname(fileURLToPath(moduleUrl)), "../..");
   const roots = new Set<string>();
-  for (const form of pathForms(release)) if (basename(dirname(form)) === "releases") roots.add(strip(dirname(form)));
+  for (const form of pathForms(release)) if (basename(dirname(form)) === "releases") roots.add(strip(dirname(dirname(form))));
   return [...roots];
 }
 

@@ -36,6 +36,14 @@ belongs in the release archive.
    (with their `.lock` files) and its private home. It kills only groups it saw
    alive: a group that emptied or answers no probe is never signalled again, so a
    reused process ID cannot be hit.
+   The check starts its host from the `dist` beside its own script, so for a package
+   that ships `gateway-sdk` run the four scripts it imports (`e2e-shared-execution`,
+   `e2e-reaper`, `group-gone`, `stale-sockets`) from a folder whose `../dist` is the
+   installed package's `dist`; from a checkout the host refuses with "requires a
+   matching installed gateway SDK". Give the isolated native home a fixture
+   `models.json` named by `model_catalog_json`, as the other end-to-end scripts do,
+   and start the SDK once on it before the check, so the two adapters do not run
+   the first catalog preflight at the same moment.
    For speed controls, run `scripts/e2e-fast-mode.mjs --gateway INSTALLED_COMMAND
    --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. It uses the
    real signed SDK with a mock upstream through stdio and a private Unix socket.
