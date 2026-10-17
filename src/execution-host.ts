@@ -1,14 +1,15 @@
 import { createServer } from "node:http";
-import { chmod, lstat, symlink } from "node:fs/promises";
+import { chmod, lstat, symlink, unlink } from "node:fs/promises";
+import { homedir } from "node:os";
 import { once } from "node:events";
 import { dirname, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
 import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
-import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
+import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
-import { claimNativeHome, type NativeHomeLease } from "./native-execution-host-storage.js";
+import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { telemetry } from "./telemetry.js";
@@ -32,6 +33,15 @@ const failureMessages: Array<[HostFailureReason, RegExp]> = [
   ["sdk_invalid", /^(Execution host (SDK |requires the pinned)|Native execution (requires|SDK signature|SDK changed)|Gateway executor artifact does not match)/],
   ["receipt_invalid", /^(Execution host ownership receipt is (invalid|unreadable)|Native execution ownership receipt is invalid|Execution generation receipt is invalid|Native execution (SDK identity|death metadata) is invalid|Execution host capabilities are invalid|Private preference lock is invalid)/],
 ];
+/**
+ * The refusal for a native-home receipt left under another configuration or spelling of the native home: it keeps the fixed
+ * prefix the control API passes through and names the receipt to move aside, home-relative, so nothing else is shown.
+ */
+function nativeIdentityRefusal(nativeHome: string): Error {
+  const receipt = nativeHomeOwnerPath(nativeHome); const home = homedir();
+  const shown = receipt.startsWith(home + "/") ? "~" + receipt.slice(home.length) : receipt;
+  return new Error(`Native execution ownership changed; existing ownership was preserved. Move ${shown} aside once no other gateway configuration uses this native home, and this host takes it at the next native request`);
+}
 /** The SDK's fixed socket folder: a missing one was the 2026-10-16 reboot incident, reported as overloaded by the turn classifier. */
 const sdkSocketFolder = /(^|\/)codex-daemon-\d+(\/|$)/;
 /**
@@ -119,6 +129,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!nativeLease) {
       try { await claimNative(); }
       catch (error) {
+        if (hostFailureReason(error) === "identity_changed") throw nativeIdentityRefusal(options.nativeHome);
         if (hostFailureReason(error) !== "live_owner") throw error;
         telemetry("native_acquire", { outcome: "refused_owner" });
         throw new Error("Native execution ownership is held by a live owner; existing ownership was preserved");
@@ -247,8 +258,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     // A host that never claimed the native home (a live owner held it) may find it free now, holding the receipt a fallback
     // put back, such as a crashed host's that still says running: it claims it once, so the publish below writes a clean
     // stopped receipt. An owner that still lives, or any other refusal, keeps the receipt as it is.
-    if (capabilities.includes("native") && !nativeLease) await claimNative().catch(() => undefined);
     engines.clear(); await removeOwnedSocket(socketPath, owner.socket);
+    // After its own control socket is gone, so the claim never finds this host's listener at the home it judges.
+    if (capabilities.includes("native") && !nativeLease) await claimNative().catch(() => undefined);
     owner.pid = 0; owner.state = "stopped"; await publish();
   })();
   try {
@@ -259,6 +271,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         // names another configuration or spelling of the native home is not this host's to take either, but it must not take
         // gateway chats down: like a live owner, it leaves native ownership to the next native request.
         const reason = hostFailureReason(error);
+        if (reason === "identity_changed" && !capabilities.includes("gateway")) throw nativeIdentityRefusal(options.nativeHome);
         if (!capabilities.includes("gateway") || reason !== "live_owner" && reason !== "identity_changed") throw error;
         telemetry("native_sharing_unavailable", { reason: reason === "live_owner" ? "native_owner" : "native_identity" });
       }
@@ -268,7 +281,15 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const physicalPath = await sdkSocketTarget(socketPath);
     await privateDirectory(dirname(physicalPath));
     const occupied = await lstat(physicalPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
-    if (occupied) throw new Error("Execution control socket target is occupied; its listener was preserved");
+    if (occupied) {
+      // A host that died between its listen and its link left a socket at this configuration's own hashed path that nothing
+      // recorded: it would block every later start until a reboot cleared the folder. Only a private socket of this user that
+      // refuses a connect, and is still the same file when it goes, is removed; anything else is preserved as before.
+      const orphan = occupied.isSocket() && occupied.uid === process.getuid?.() && !(occupied.mode & 0o077) && !await socketAnswers(physicalPath);
+      const again = orphan ? await lstat(physicalPath).catch(() => undefined) : undefined;
+      if (!again || again.ino !== occupied.ino || again.dev !== occupied.dev) throw new Error("Execution control socket target is occupied; its listener was preserved");
+      await unlink(physicalPath);
+    }
     server.listen(physicalPath); await once(server, "listening"); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();

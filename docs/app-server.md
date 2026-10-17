@@ -333,14 +333,15 @@ If the app's native engine is not the verified one (for example after an app
 update), the host starts without native sharing and keeps offering gateway chats;
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
-adapter then falls back to its own native engine, exactly as without native
-sharing, and records `native_sharing_fallback` with `reason: other`. Gateway chats
-keep using the host. While the fallback lasts, the native relay cannot share the
-engine either, so remote control of that Mac is unavailable. The fallback lasts
-until a release verifies the app's engine. This fallback takes no native-home lease, so
-that release must also handle the return to sharing: it has to release the stale
-native lease the earlier host left and must not start a shared native writer while
-a desktop's private native engine still runs on the same native home.
+adapter then falls back to its own native engine and records `native_sharing_fallback`
+with `reason: other`. Gateway chats keep using the host. While the fallback lasts, the
+native relay cannot share the engine either, so remote control of that Mac is
+unavailable. The fallback lasts until a release verifies the app's engine. It runs under
+the same native-home lease as the host-down fallback below: a host that regains native
+sharing meanwhile finds a live owner and claims the home only after that engine has
+exited, and a second adapter on the same home, such as a connected machine's SSH
+session, fails closed with a message that names the first adapter's process instead of
+becoming a second writer.
 
 If the host stays down through the adapter's 20-second wait, the desktop adapter
 also falls back to its own native engine, so native chats keep working. It does so

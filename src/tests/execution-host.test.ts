@@ -229,6 +229,23 @@ test("execution control preserves an unrecorded occupied protected target", { ti
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
 });
 
+// A host that died between its listen and its link left the socket at its own hashed target, recorded nowhere. Nothing serves
+// it, so it is removed and the next start succeeds instead of failing "occupied" until a reboot clears the folder.
+test("execution control removes an orphan socket at its own target that nothing serves, and starts", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); let host; let orphan;
+  try {
+    await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+    await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+    await once(orphan.stdout!, "data"); await chmod(target, 0o600);
+    const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+    assert.ok((await lstat(target)).isSocket(), "the orphan socket is left behind");
+    host = await startExecutionHost(f);
+    assert.equal(await readlink(join(f.hostHome, "host.sock")), target, "the host listens at its own target again");
+    await host.close(); host = undefined;
+  } finally { orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+});
+
 test("idle restart preserves leased and loaded SDK writers and atomically quiesces new work", { timeout: 20000 }, async () => {
   const f = await fixture(); let host; let client; let engine;
   try {

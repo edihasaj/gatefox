@@ -144,11 +144,13 @@ test("a host that finds a native-home receipt left under another spelling of the
       privateOwner: { instanceId: randomUUID() } });
     const left = await readFile(f.receipt, "utf8");
     // A native-only host has nothing else to offer and still fails its start.
-    await assert.rejects(startExecutionHost({ ...await hostOptions(f), capabilities: ["native" as const] }), /Native execution ownership changed/);
+    // The refusal names the receipt to move aside, so a person can act on it.
+    const named = (error: Error) => /^Native execution ownership changed/.test(error.message) && error.message.includes(`Move ${f.receipt} aside`);
+    await assert.rejects(startExecutionHost({ ...await hostOptions(f), capabilities: ["native" as const] }), named);
     host = await startExecutionHost(await hostOptions(f)); assert.equal(await readFile(f.receipt, "utf8"), left);
     control = new SocketAppServerConnection(join(f.home, "host.sock"), async () => {}); await control.ready;
     assert.equal((await control.request("execution/status", {})).native, null);
-    await assert.rejects(control.request("native/acquire", { args: ["app-server"], cwd: f.directory }), /Native execution ownership changed/);
+    await assert.rejects(control.request("native/acquire", { args: ["app-server"], cwd: f.directory }), named);
     assert.equal(await readFile(f.receipt, "utf8"), left);
     assert.equal((await control.request("execution/acquire", { descriptor: await descriptor(f, "d") })).revision, "d".repeat(64));
     // Once the leftover is moved aside, the next native request claims the home.
@@ -170,7 +172,8 @@ test("an adapter whose host runs without native sharing takes the native-home le
     const [launch] = await f.launches(); assert.equal(launch.kind, "stdio"); assert.equal(launch.lease?.private, true); assert.equal(launch.lease?.hostPid, process.pid);
     const lease = await readNativeHomeOwner(f.nativeHome); assert.equal(lease?.pid, launch.pid); assert.ok(lease?.privateOwner);
     // A second adapter on the same native home would be a second writer: it fails closed, says why, and starts nothing.
-    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /one native home has one writer/.test(error.message));
+    await assert.rejects(f.create(), (error: Error & { code?: number }) => error.code === -32001 && /one native home has one writer/.test(error.message)
+      && error.message.includes(`(process ${lease!.hostPid || lease!.pid})`) && /Native sharing returns once the gateway supports the app's new engine \(see gateway service status\)/.test(error.message));
     assert.equal((await f.launches()).length, 1); assert.deepEqual(await readNativeHomeOwner(f.nativeHome), lease);
     // Once the first adapter is gone, the home is free again for the next one.
     await first.adapter.stop(); assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);

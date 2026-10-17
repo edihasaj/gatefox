@@ -137,6 +137,10 @@ attempt that never finished, so the claim goes on to take the home. A gateway
 generation whose record or catalog file is garbled is moved aside to its own `stale/`
 folder and rewritten (an `execution_owner_reclaimed` event with the scope
 `generation`); a record that names another identity still refuses the generation.
+A host that died between creating its control socket at its SDK target and linking it
+leaves a socket nothing recorded at that configuration's own target; the next start
+removes it when it is a private socket of this user that refuses a connect, and any
+other file there still refuses the start as occupied.
 Rollback to legacy writers treats a receipt still marked running as stopped once
 its owner is proven dead by the same rule, so a crash cannot block it for good. It then
 clears that owner's links the way a claim does, including a link the owner recorded
@@ -211,7 +215,9 @@ The lease allows one fallback engine per native home. A second adapter on the sa
 home, such as a connected machine's SSH session while the desktop's fallback runs,
 fails closed instead of becoming a second writer. When the host is down it reports the
 host's own failure; when the host only lacks native sharing it says that another
-connection's native engine already writes the home. A host without native sharing
+connection's native engine (naming that adapter's process) already writes the home, and
+that native sharing returns once the gateway supports the app's new engine (see
+`gateway service status`). A host without native sharing
 used to let every adapter run its own engine on the home; correctness wins over that
 convenience, so such a second adapter now fails closed until the first one closes or
 native sharing returns.
@@ -226,7 +232,8 @@ with `reason: native_owner`, serves gateway chats, and refuses native requests
 so the next adapter start returns to sharing. A receipt from a dead owner that names
 another configuration or another spelling of the native home is not the host's to take
 either: the host records `native_sharing_unavailable` with `reason: native_identity`, serves gateway chats, and refuses
-each native request (`Native execution ownership changed`) until the receipt is moved
+each native request (`Native execution ownership changed`, naming the receipt
+`~/.local/state/gw-native/<scope>/owner.json` to move aside) until the receipt is moved
 aside. A native-only host still fails its start in both cases, as before. A host that
 never claimed the home claims it once when it stops, if the home is free by then (a
 fallback ended and put back, say, a crashed host's receipt that still says running), so

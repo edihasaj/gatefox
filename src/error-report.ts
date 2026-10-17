@@ -30,6 +30,8 @@ export function scrub(text: string): string {
   return text.slice(0, 600)
     .replace(/(bearer|basic|token|key|secret|password|authorization)([\s:=]+)\S+/gi, "$1$2[redacted]")
     .replace(/\b(sk|pk|rk|ghp|gho|xox[bp])[-_][A-Za-z0-9_-]{8,}/g, "[redacted]")
+    // A home-relative path, as some refusals name a file to move aside, is reduced like a home path, before long runs are redacted.
+    .replace(/(^|[\s'"(])~\/([^\s'"]+)/g, (_match, lead: string, path: string) => lead + ".../" + basename(path))
     .replace(/[A-Za-z0-9+/_=-]{32,}/g, "[redacted]")
     .replace(/\/Users\/[^\s'"]+/g, path => ".../" + basename(path))
     .replace(/https?:\/\/[^\s'"]+/g, url => { try { return new URL(url).origin; } catch { return "[url]"; } })

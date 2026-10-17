@@ -45,7 +45,8 @@ export async function privateNativeOwnership(configPath: string | undefined, nat
     // Without native sharing in the host, the usual owner is another connection's own native engine: say so plainly.
     const owner = fallback === "other" ? await readNativeHomeOwner(nativeHome).catch(() => undefined) : undefined;
     if (owner?.privateOwner && ["live", "unconfirmed"].includes(await nativeHomeOwnership(nativeHome, configPath ? executionHostHome(configPath, nativeHome) : undefined).catch(() => "live"))) {
-      throw refusal("Another connection's native engine already writes this native home while the gateway host cannot share native chats, and one native home has one writer; close that connection or restore native sharing, then reconnect. Its chats were preserved.");
+      const holder = owner.hostPid || owner.pid;
+      throw refusal(`Another connection's native engine${holder ? ` (process ${holder})` : ""} already writes this native home while the gateway host cannot share native chats, and one native home has one writer; close that connection, then reconnect. Native sharing returns once the gateway supports the app's new engine (see gateway service status). Its chats were preserved.`);
     }
     throw error;
   }
