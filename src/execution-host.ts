@@ -109,8 +109,20 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); throw error; }
   };
+  // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
+  // while this host was down, say), at the next native request: until then this host refuses native ownership and keeps
+  // serving gateway chats, so it never becomes a second native writer and never takes gateway chats down with it.
+  const claimNative = async (): Promise<void> => { nativeLease ??= await claimNativeHome(owner, home); };
   const acquireNative = async (params: Message): Promise<NativeExecutionRecord> => {
-    if (!capabilities.includes("native") || !nativeLease) throw new Error("Execution host does not offer native ownership");
+    if (!capabilities.includes("native")) throw new Error("Execution host does not offer native ownership");
+    if (!nativeLease) {
+      try { await claimNative(); }
+      catch (error) {
+        if (hostFailureReason(error) !== "live_owner") throw error;
+        telemetry("native_acquire", { outcome: "refused_owner" });
+        throw new Error("Native execution ownership is held by a live owner; existing ownership was preserved");
+      }
+    }
     const descriptor = nativeDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
     if (native && !native.closed) {
       const relation = compareNativeLaunch(native.descriptor, descriptor);
@@ -197,7 +209,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
           return result;
         });
         serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership is held by a live owner)|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -231,7 +243,14 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     owner.pid = 0; owner.state = "stopped"; await publish();
   })();
   try {
-    if (capabilities.includes("native")) nativeLease = await claimNativeHome(owner, home);
+    if (capabilities.includes("native")) {
+      try { await claimNative(); }
+      catch (error) {
+        // A native-only host has nothing else to offer, so it still fails closed and the service retries it.
+        if (!capabilities.includes("gateway") || hostFailureReason(error) !== "live_owner") throw error;
+        telemetry("native_sharing_unavailable", { reason: "native_owner" });
+      }
+    }
     // Codex sandboxes always hide this SDK-reserved physical directory, including
     // access through links. The generation-control API must share that boundary.
     const physicalPath = await sdkSocketTarget(socketPath);

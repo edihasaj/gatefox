@@ -4,7 +4,9 @@ import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type EngineStopReason, type Id, type Message } from "./app-server-connection.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
-import { ExecutionHostClient, type NativeLaunchRecord } from "./execution-host-client.js";
+import { ExecutionHostClient, nativeFallbackReason, type NativeFallbackReason, type NativeLaunchRecord } from "./execution-host-client.js";
+import type { PrivateNativeLease } from "./native-execution-host-storage.js";
+import { privateNativeOwnership } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
 import { canonicalJson } from "./execution-host-engine.js";
@@ -54,6 +56,7 @@ export class AppServerBackends {
   private readonly ephemeralThreads = new BoundedIdSet(4096);
   private readonly nativeTurns = new NativeTurnTracker();
   private nativeExitPending?: Promise<void>;
+  private leaseReleased?: Promise<void>;
   private finishNativeClosing!: () => void;
   private readonly nativeClosing = new Promise<void>(resolve => { this.finishNativeClosing = resolve; });
   /** This connection's chat classification; the router shares it, so both read one registry and one set of seen chats. */
@@ -63,11 +66,15 @@ export class AppServerBackends {
     catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
     const nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex");
-    // A private native engine, with gateway chats on the shared host only when the plan shares them.
-    const privateNative = async () => {
-      await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
-      const backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath);
-      backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined; return backend;
+    // A private native engine, with gateway chats on the shared host only when the plan shares them. When the host stayed down,
+    // the engine runs only under the native-home lease, taken before it is spawned and held until it exits.
+    const privateNative = async (fallback?: NativeFallbackReason) => {
+      const lease = await privateNativeOwnership(configPath, nativeHome, executable, fallback);
+      const backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath, undefined, lease);
+      backend.sharedGateway = plan ? plan.sharedExecutors === true : undefined;
+      // The lease names the spawned engine; an engine it cannot name is stopped, and its exit releases the lease.
+      if (lease) await lease.engineStarted((backend.native as AppServerConnection).pid ?? 0).catch(async error => { await backend.stop("spawn_error"); throw error; });
+      return backend;
     };
     if (object(plan).sharedNativeExecutor !== true) return privateNative();
     let client: ExecutionHostClient | undefined; let backend: AppServerBackends | undefined;
@@ -75,9 +82,11 @@ export class AppServerBackends {
       if (!configPath || plan?.config !== resolve(configPath)) throw new Error("Shared native executor configuration does not match this adapter");
       try { client = await ExecutionHostClient.discover(configPath, nativeHome, executable, "native", true); }
       catch (error) {
-        // A host that shares gateway chats but runs without native sharing (the app's engine is not the verified one). Only that exact case falls back; every other failure keeps failing closed.
-        if ((error as { capabilityAbsent?: unknown })?.capabilityAbsent !== "native" || plan.sharedExecutors !== true) throw error;
-        telemetry("native_sharing_fallback", {}); return await privateNative();
+        // Only a host that stayed down through the wait, or one that shares gateway chats without native sharing, falls back;
+        // a host that does not match, a changed socket and every other failure keep failing closed. A fallback that a live
+        // native owner refuses reports the host's own failure.
+        const fallback = nativeFallbackReason(error, plan.sharedExecutors === true); if (!fallback) throw error;
+        return await privateNative(fallback).catch(refusal => { throw fallback === "host_unavailable" ? error : refusal; });
       }
       if (plan.sharedExecutors && !client!.capabilities.includes("gateway")) throw new Error("The configured shared gateway executor is unavailable in this native host");
       const record = await client!.acquireNative(nativeArguments(normalizeCodexFeatureArgs(args, settings), overrides), dirname(nativeHome));
@@ -93,7 +102,7 @@ export class AppServerBackends {
   constructor(private readonly executable: string, private readonly args: string[], private readonly config: GatewayConfig,
     private readonly settings: Message, private readonly overrides: Message, private readonly catalog: DesktopCatalog,
     private readonly emit: (message: Message, engine?: ChatKind) => Promise<void>, private readonly onNativeExit: () => void, private readonly configPath?: string,
-    nativeFactory?: NativeConnectionFactory) {
+    nativeFactory?: NativeConnectionFactory, private readonly nativeLease?: PrivateNativeLease) {
     this.identity = new ChatIdentity(config.stateDirectory, resolve(process.env.CODEX_HOME || homedir() + "/.codex"));
     this.args = normalizeCodexFeatureArgs(args, settings);
     this.settings = normalizeCodexFeatureConfig(settings);
@@ -101,6 +110,7 @@ export class AppServerBackends {
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     // The native exit record waits for the drain, because only then is the turn table final.
     const exited = (connection?: RpcConnection) => {
+      this.leaseReleased = this.nativeLease?.release().catch(() => {}); // The engine is gone, so the native home is free again.
       this.nativeExitPending = this.nativeExited(connection).finally(() => { onNativeExit(); });
     };
     const nativeArgs = nativeArguments(this.args, overrides);
@@ -386,6 +396,11 @@ export class AppServerBackends {
     await this.identity.refresh();
     return this.identity.classify({ ...threadFacts(thread), id: threadId }, this.catalogs, method).kind;
   }
+  /** The native engine's read of a chat, when its saved provider is native and the chat's classification agrees. */
+  private async verifiedNative(method: string, params: Message): Promise<Message | undefined> {
+    const result = await this.nativeRequest(method, params).catch(() => undefined);
+    return result && nativeId(object(result.thread).modelProvider) && await this.classify(result.thread, String(params.threadId), method) === "native" ? result : undefined;
+  }
   /** Synchronous, for compaction checks inside a request: the registry as of the connection's latest read. */
   private isGatewayThread(thread: Message): boolean {
     return this.identity.classify({ ...threadFacts(thread) }, this.catalogs, "compaction").kind === "gateway";
@@ -398,15 +413,13 @@ export class AppServerBackends {
     // A live shared SDK is authoritative for active turns. Native disk metadata
     // may label that same gateway chat notLoaded or interrupted.
     if (method === "thread/read" && typeof params.threadId === "string" && !this.bindings.has(params.threadId)) {
+      // While this adapter runs its own native engine because the host is down, a verified native chat never waits for that host.
+      const early = this.nativeLease ? await this.verifiedNative(method, params) : undefined; if (early) return early;
       let owner: Engine | undefined;
+      // An unavailable optional gateway execution host must not block an original
+      // native chat. Only explicit non-gateway metadata permits this fallback.
       try { owner = await this.owner(params.threadId); }
-      catch (error) {
-        // An unavailable optional gateway execution host must not block an original
-        // native chat. Only explicit non-gateway metadata permits this fallback.
-        const result = await this.nativeRequest(method, params).catch(() => undefined);
-        if (result && nativeId(object(result.thread).modelProvider) && await this.classify(result.thread, params.threadId, method) === "native") return result;
-        throw error;
-      }
+      catch (error) { const result = await this.verifiedNative(method, params); if (result) return result; throw error; }
       if (owner) {
         try { const result = await owner.connection.request(method, params); this.identity.learnReply(method, result); return result; }
         finally { owner.requests--; }
@@ -417,6 +430,7 @@ export class AppServerBackends {
     if (method === "thread/start" && hint?.engine === "gateway") { engine = await this.gateway(); reserved = true; }
     else if (typeof params.threadId === "string") {
       engine = this.bindings.get(params.threadId);
+      if (!engine && this.nativeLease && await this.verifiedNative("thread/read", { threadId: params.threadId, includeTurns: false })) return this.nativeRequest(method, params);
       if (!engine) {
         engine = await this.owner(params.threadId); reserved = !!engine;
         if (!engine) {
@@ -476,7 +490,7 @@ export class AppServerBackends {
     await this.creating;
     await Promise.allSettled([this.native.exited, ...this.engines.map(engine => engine.connection.exited)]);
     await Promise.allSettled(this.engines.map(engine => engine.exitPending));
-    await this.nativeExitPending;
+    await this.nativeExitPending; await this.leaseReleased;
     // Dropping control connections releases leases and rejects stuck host RPCs;
     // the SDK retains loaded-chat ownership throughout client shutdown.
     await poolClosing;

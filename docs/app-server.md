@@ -266,13 +266,30 @@ update), the host starts without native sharing and keeps offering gateway chats
 it records `native_sharing_unavailable` with a fixed `reason` (`sdk_version`,
 `sdk_signature` or `other`). When the plan also shares gateway chats, the desktop
 adapter then falls back to its own native engine, exactly as without native
-sharing, and records `native_sharing_fallback`. Gateway chats keep using the
-host. Any other failure to reach the host still fails the connection. While the
-fallback lasts, the native relay cannot share the engine either, so remote control
-of that Mac is unavailable. The fallback lasts until a release verifies the app's
-engine. That release must also handle the return to sharing: it has to release the
-stale native lease the earlier host left and must not start a shared native writer
-while a desktop's private native engine still runs on the same native home.
+sharing, and records `native_sharing_fallback` with `reason: other`. Gateway chats
+keep using the host. While the fallback lasts, the native relay cannot share the
+engine either, so remote control of that Mac is unavailable. The fallback lasts
+until a release verifies the app's engine. This fallback takes no native-home lease, so
+that release must also handle the return to sharing: it has to release the stale
+native lease the earlier host left and must not start a shared native writer while
+a desktop's private native engine still runs on the same native home.
+
+If the host stays down through the adapter's 20-second wait, the desktop adapter
+also falls back to its own native engine, so native chats keep working. It does so
+only when nothing still owns the native home: no live or starting native engine,
+and nothing answering at the host's native socket. Before it starts the engine, it
+takes the per-native-home lease the host itself claims, and it holds that lease
+until the engine exits. A host that comes back meanwhile therefore finds a live
+owner: it keeps serving gateway chats, refuses native ownership, and claims the
+native home at the first native request after the fallback has ended, so the next
+adapter start returns to sharing. The adapter records `native_sharing_fallback`
+with `reason: host_unavailable`. Chats its engine verifies as native never wait
+for the host; gateway chats still need the host and fail closed until it returns.
+A host that does not match the adapter, a changed host socket, an unreadable host
+receipt, or a live native owner still fails the connection. One native home has at
+most one such fallback engine at a time, and the remote-control rules for a
+private engine apply to it. The lease rules are in
+[architecture](architecture.md#desktop-connections).
 
 Natively, the desktop is the only launcher of its app-server. With shared native
 ownership, the relay or an SSH client can start the writer first with fewer

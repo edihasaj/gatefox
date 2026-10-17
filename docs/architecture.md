@@ -171,6 +171,28 @@ the native SDK always listens while it runs, so ten quiet minutes prove its writ
 verdict as a claim: a live host (even with its SDK idle), a launch inside its startup
 grace, or a receipt nothing can prove dead keeps it from starting.
 
+A desktop adapter whose plan shares native chats falls back to its own native engine
+when its host stays down through the wait, so native chats keep working. Discovery
+must have failed because there is no host receipt, or because a valid receipt names
+no running, live host; a host that does not match, a changed host socket, an
+unreadable receipt and every other failure still fail closed. The native-home
+verdict must also be clear: a live or unconfirmed owner, or anything answering at the
+host's native socket, keeps the adapter out. Before it spawns the engine, the adapter
+takes the per-native-home lease under the receipt's own lock. Its receipt names the
+host's configuration and native socket path, the adapter as the owner process and a
+launch marked `starting`, then the engine's pid once it runs. It also keeps the
+engine identity and the whole receipt it replaced. When the engine exits (the adapter
+stopping, or the engine leaving by itself), the adapter puts that receipt back with
+its file time, or removes the file when there was none, so the host and rollback see
+the home as they did before the fallback. While the lease is live, a host that
+starts claims everything but the native home: it records `native_sharing_unavailable`
+with `reason: native_owner`, serves gateway chats, and refuses native requests
+(`native_acquire` with `refused_owner`) until one finds the home free and claims it,
+so the next adapter start returns to sharing. A native-only host still fails its
+start, as before. A fallback adapter that crashes leaves a receipt naming its own
+process and its engine; once both are gone, the host (or the next fallback, which
+keeps the receipt the crashed one had replaced) reclaims it as a dead owner.
+
 The host pins the binary its gateway generations actually run: the release's own
 gateway SDK (`gateway-sdk/gateway-codex`, 0.162.0-alpha.17.2), not the app's
 native engine. An app update therefore neither stops the host from starting nor

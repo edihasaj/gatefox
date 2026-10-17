@@ -1,12 +1,12 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, realpathSync } from "node:fs";
-import { lstat, open, readdir, stat } from "node:fs/promises";
+import { lstat, open, readdir, stat, unlink, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
-import { archiveStaleReceipt, executionHostRoot, lenientRecord, linkAnswers, privateDirectory, readLenientJson, receiptPidAlive, removeOwnedSocket, type EngineOwner, type HostIdentity, type OwnerReclaim, type ReceiptOwner, type SocketIdentity } from "./execution-host-storage.js";
-import { fromPreviousBoot, ownerStamp } from "./boot-identity.js";
+import { archiveStaleReceipt, executionHostRoot, lenientRecord, linkAnswers, privateDirectory, readLenientJson, receiptPidAlive, removeOwnedSocket, sdkIdentity, type EngineOwner, type HostIdentity, type OwnerReclaim, type ReceiptOwner, type SocketIdentity } from "./execution-host-storage.js";
+import { fromPreviousBoot, ownerStamp, spawnStamp } from "./boot-identity.js";
 
 const marker = "subscription-gateway-native-execution-owner";
 export interface NativeHomeOwner {
@@ -14,6 +14,8 @@ export interface NativeHomeOwner {
   hostPid: number; pid: number; socketPath: string; state: "running" | "stopped"; revision?: string; socket?: SocketIdentity;
   sdkState: "idle" | "starting" | "running" | "exited" | "stopped"; nativeSdkExecutable?: string; nativeSdkSha256?: string;
   bootId?: string; startedAtMs?: number; sdkBootId?: string; sdkStartedAtMs?: number;
+  /** Present only while a desktop adapter's private native engine holds the home (see `claimPrivateNativeHome`). */
+  privateOwner?: { instanceId: string; previous?: NativeHomeOwner; previousMtimeMs?: number };
 }
 let nativeOwnerRootOverride: string | undefined;
 /** Tests keep native-home receipts in a folder of their own; production never calls it. Undefined restores the real root. */
@@ -48,18 +50,29 @@ async function readNativeHomeOwnerOnce(path: string): Promise<NativeHomeOwner | 
     while (size < bytes.length) { const part = await file.read(bytes, size, bytes.length - size, null); if (!part.bytesRead) break; size += part.bytesRead; }
     if (size > 16384) throw new Error("Native execution ownership receipt is invalid");
     const owner: NativeHomeOwner = JSON.parse(new TextDecoder("utf8", { fatal: true }).decode(bytes.subarray(0, size)));
-    if (!owner || owner.version !== 1 || owner.managed !== marker || typeof owner.nativeHome !== "string" || nativeHomeOwnerPath(owner.nativeHome) !== path || !["running", "stopped"].includes(owner.state) ||
-      !Number.isSafeInteger(owner.hostPid) || owner.hostPid < 0 || !Number.isSafeInteger(owner.pid) || owner.pid < 0 ||
-      ![owner.configPath, owner.codex, owner.socketPath].every(value => typeof value === "string" && value.startsWith("/") && !value.includes("\0")) ||
-      typeof owner.sdkSha256 !== "string" || !/^[a-f0-9]{64}$/.test(owner.sdkSha256) || owner.revision !== undefined && !/^[a-f0-9]{64}$/.test(owner.revision)) throw new Error("Native execution ownership receipt is invalid");
-    if (!["idle", "starting", "running", "exited", "stopped"].includes(owner.sdkState)) throw new Error("Native execution ownership receipt is invalid");
-    if (owner.bootId !== undefined && typeof owner.bootId !== "string" || owner.sdkBootId !== undefined && typeof owner.sdkBootId !== "string"
-      || [owner.startedAtMs, owner.sdkStartedAtMs].some(value => value !== undefined && (!Number.isSafeInteger(value) || value! < 0))) throw new Error("Native execution ownership receipt is invalid");
-    if ((owner.nativeSdkExecutable === undefined) !== (owner.nativeSdkSha256 === undefined) || owner.nativeSdkExecutable !== undefined &&
-      (typeof owner.nativeSdkExecutable !== "string" || !owner.nativeSdkExecutable.startsWith("/") || !/^[a-f0-9]{64}$/.test(owner.nativeSdkSha256!))) throw new Error("Native execution SDK identity is invalid");
+    validateOwner(owner, path);
+    // A private lease carries the receipt it replaced; it is validated by the same rules, one level deep.
+    if (owner.privateOwner !== undefined) {
+      const mark = owner.privateOwner as unknown;
+      if (!mark || typeof mark !== "object" || typeof owner.privateOwner.instanceId !== "string" || !/^[a-f0-9-]{36}$/.test(owner.privateOwner.instanceId)) throw new Error("Native execution ownership receipt is invalid");
+      if (owner.privateOwner.previous !== undefined) { validateOwner(owner.privateOwner.previous, path); if (owner.privateOwner.previous.privateOwner !== undefined) throw new Error("Native execution ownership receipt is invalid"); }
+      const time = owner.privateOwner.previousMtimeMs;
+      if (time !== undefined && (!Number.isSafeInteger(time) || time < 0 || owner.privateOwner.previous === undefined)) throw new Error("Native execution ownership receipt is invalid");
+    }
     return owner;
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw new Error("Native execution ownership receipt is invalid"); }
   finally { await file?.close(); }
+}
+function validateOwner(owner: NativeHomeOwner, path: string): void {
+  if (!owner || typeof owner !== "object" || owner.version !== 1 || owner.managed !== marker || typeof owner.nativeHome !== "string" || nativeHomeOwnerPath(owner.nativeHome) !== path || !["running", "stopped"].includes(owner.state) ||
+    !Number.isSafeInteger(owner.hostPid) || owner.hostPid < 0 || !Number.isSafeInteger(owner.pid) || owner.pid < 0 ||
+    ![owner.configPath, owner.codex, owner.socketPath].every(value => typeof value === "string" && value.startsWith("/") && !value.includes("\0")) ||
+    typeof owner.sdkSha256 !== "string" || !/^[a-f0-9]{64}$/.test(owner.sdkSha256) || owner.revision !== undefined && !/^[a-f0-9]{64}$/.test(owner.revision)) throw new Error("Native execution ownership receipt is invalid");
+  if (!["idle", "starting", "running", "exited", "stopped"].includes(owner.sdkState)) throw new Error("Native execution ownership receipt is invalid");
+  if (owner.bootId !== undefined && typeof owner.bootId !== "string" || owner.sdkBootId !== undefined && typeof owner.sdkBootId !== "string"
+    || [owner.startedAtMs, owner.sdkStartedAtMs].some(value => value !== undefined && (!Number.isSafeInteger(value) || value! < 0))) throw new Error("Native execution ownership receipt is invalid");
+  if ((owner.nativeSdkExecutable === undefined) !== (owner.nativeSdkSha256 === undefined) || owner.nativeSdkExecutable !== undefined &&
+    (typeof owner.nativeSdkExecutable !== "string" || !owner.nativeSdkExecutable.startsWith("/") || !/^[a-f0-9]{64}$/.test(owner.nativeSdkSha256!))) throw new Error("Native execution SDK identity is invalid");
 }
 
 /** The receipt plus the file time a bootless receipt needs for its previous-boot comparison. */
@@ -182,6 +195,89 @@ export class NativeHomeLease {
       Object.assign(this.owner, { pid: engine?.pid ?? 0, ...(engine?.bootId ? { sdkBootId: engine.bootId } : {}), ...(engine?.startedAtMs !== undefined ? { sdkStartedAtMs: engine.startedAtMs } : {}),
         ...(engine ? { revision: engine.revision, socket: engine.socket } : {}), state: stopped ? "stopped" : "running", sdkState: stopped ? "stopped" : sdkState, hostPid: stopped ? 0 : process.pid });
       await writePrivateJson(this.path, this.owner);
+    });
+  }
+}
+
+/** The receipt fields that say which engine owns a home; a private lease keeps those of the receipt it replaced. */
+const identityKeys = ["codex", "sdkSha256", "nativeSdkExecutable", "nativeSdkSha256", "revision", "socket"] as const;
+/**
+ * The native-home lease a desktop adapter takes before it runs its own native engine because the shared host stayed down.
+ * Its receipt names the host's own configuration and native socket path, the adapter and (once spawned) the engine, so the
+ * host's claim judges it by the usual rules: while the adapter or its engine can still write, a host that comes back finds a
+ * live owner and does not become a second native writer; after a crash it is a dead owner the host reclaims. The receipt
+ * keeps the engine identity and the whole receipt it replaced, and releasing the lease puts that receipt back (or removes
+ * the file when there was none), so the home looks to the host and to rollback exactly as it did before the fallback.
+ */
+export async function claimPrivateNativeHome(identity: { configPath: string; nativeHome: string; codex: string }, hostHome: string): Promise<PrivateNativeLease> {
+  const path = nativeHomeOwnerPath(identity.nativeHome); await privateDirectory(dirname(path));
+  const socketPath = resolve(hostHome, "native.sock"); const instanceId = randomUUID();
+  const owner = await withPrivateFileLock(path, async () => {
+    const stored = await readNativeHomeOwnerRecord(identity.nativeHome);
+    let previous: NativeHomeOwner | undefined; let previousMtimeMs: number | undefined; let fields: NativeHomeOwner | undefined;
+    if (stored.invalid) {
+      const verdict = await invalidNativeLiveness(path, stored.mtimeMs, hostHome);
+      if (verdict === "live" || verdict === "unconfirmed") throw new Error("Native execution ownership receipt is invalid");
+      await archiveStaleReceipt(path, "native_home", "invalid_receipt");
+    } else if (stored.owner) {
+      const current = stored.owner; const verdict = await nativeOwnerLiveness(current, stored.mtimeMs);
+      if (verdict === "live") throw new Error("A native execution owner already owns this native home; its chats were preserved");
+      if (verdict === "unconfirmed") throw new Error("Native execution launch is unconfirmed; existing ownership was preserved");
+      // The same identity rule as the host's own claim: a home another configuration last owned is not this adapter's to take.
+      const claimed = current.state === "running" || current.hostPid > 0 || current.pid > 0;
+      for (const key of claimed ? ["configPath", "nativeHome", "socketPath"] as const : ["configPath", "socketPath"] as const) {
+        if (current[key] !== { configPath: identity.configPath, nativeHome: identity.nativeHome, socketPath }[key]) throw new Error("Native execution ownership changed; existing ownership was preserved");
+      }
+      fields = current;
+      if (current.privateOwner) {
+        // An earlier fallback that died with its adapter hands on the receipt it had replaced; its own receipt is archived.
+        previous = current.privateOwner.previous; previousMtimeMs = current.privateOwner.previousMtimeMs;
+        await archiveStaleReceipt(path, "native_home", verdict);
+      } else { previous = current; previousMtimeMs = Math.floor(stored.mtimeMs); }
+    }
+    // Nothing answers at the host's native socket either: an engine that lost its receipt still keeps the home.
+    if (await linkAnswers(socketPath)) throw new Error("A native execution owner already owns this native home; its chats were preserved");
+    const engine = fields ? Object.fromEntries(identityKeys.filter(key => fields![key] !== undefined).map(key => [key, fields![key]])) : await sdkIdentity(identity.codex);
+    const owner = { ...engine, version: 1, managed: marker, configPath: identity.configPath, nativeHome: identity.nativeHome, hostPid: process.pid, pid: 0, socketPath,
+      state: "running", sdkState: "starting", ...await ownerStamp(), privateOwner: { instanceId, ...(previous ? { previous, ...(previousMtimeMs !== undefined ? { previousMtimeMs } : {}) } : {}) } } as NativeHomeOwner;
+    // Written before the engine is spawned: a crash in between leaves a launch the host treats as unconfirmed, not as absent.
+    await writePrivateJson(path, owner); return owner;
+  });
+  return new PrivateNativeLease(path, owner);
+}
+
+export class PrivateNativeLease {
+  private released?: Promise<void>;
+  constructor(private readonly path: string, private readonly owner: NativeHomeOwner) {}
+  private async own(): Promise<NativeHomeOwner | undefined> {
+    const current = await readNativeHomeOwner(this.owner.nativeHome).catch(() => undefined);
+    return current?.privateOwner?.instanceId === this.owner.privateOwner?.instanceId && current?.hostPid === this.owner.hostPid ? current : undefined;
+  }
+  /** Records the engine the adapter spawned, so the lease stays live for as long as that engine can still write. */
+  async engineStarted(pid: number): Promise<void> {
+    if (!Number.isSafeInteger(pid) || pid < 1) throw new Error("The native Codex engine did not start");
+    const stamp = await spawnStamp(pid);
+    await withPrivateFileLock(this.path, async () => {
+      if (this.released || !await this.own()) throw new Error("Native execution ownership changed; existing ownership was preserved");
+      Object.assign(this.owner, { pid, sdkState: "running", ...(stamp.bootId ? { sdkBootId: stamp.bootId } : {}), sdkStartedAtMs: stamp.startedAtMs });
+      await writePrivateJson(this.path, this.owner);
+    });
+  }
+  /**
+   * Called once the engine has exited. Puts back the receipt the lease replaced, or removes the file when there was none. An
+   * engine that still answers keeps the home: the adapter steps back and the receipt names only the engine, which the dead
+   * owner rules release once it has gone. A receipt that is no longer this lease's is left alone.
+   */
+  release(): Promise<void> {
+    return this.released ??= withPrivateFileLock(this.path, async () => {
+      if (!await this.own()) return;
+      if (this.owner.pid > 0 && await receiptPidAlive({ pid: this.owner.pid, bootId: this.owner.sdkBootId, startedAtMs: this.owner.sdkStartedAtMs }, Date.now())) {
+        await writePrivateJson(this.path, { ...this.owner, hostPid: 0 }); return;
+      }
+      const previous = this.owner.privateOwner?.previous; const time = this.owner.privateOwner?.previousMtimeMs;
+      // Its file time comes back too: a receipt without a boot stamp is judged by it.
+      if (previous) { await writePrivateJson(this.path, previous); if (time !== undefined) await utimes(this.path, new Date(), new Date(time)); }
+      else await unlink(this.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
     });
   }
 }

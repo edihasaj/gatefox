@@ -382,8 +382,10 @@ test("a gateway-only host makes the adapter fall back to a private native engine
       assert.notEqual(adapter.native.shared, true); assert.equal((adapter as unknown as { sharedGateway?: boolean }).sharedGateway, true);
       assert.equal(f.calls.some(message => message.method === "native/acquire"), false);
       await until(() => existsSync(f.spawnMarker));
-      const events = await fallbackEvents(f, since); assert.equal(events.length, 1);
-      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid"]);
+      const events = await fallbackEvents(f, since); assert.equal(events.length, 1); assert.equal(events[0].reason, "other");
+      assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
+      // Only a host that is down leaves the native home to a lease; this fallback takes none, as before.
+      assert.equal(existsSync(nativeHomeOwnerPath(f.nativeHome)), false);
     } finally { await adapter.stop(); }
   } finally { await f.clean(); }
 });
@@ -398,7 +400,8 @@ test("a full host keeps the shared native path and emits no fallback", { timeout
   } finally { await f.clean(); }
 });
 
-test("only a missing native capability falls back; an unavailable host still fails closed", { timeout: 10000 }, async () => {
+// A host that is down may leave native chats to a private engine (see native-fallback.test.ts), but never while its native engine still answers.
+test("an unavailable host whose native engine still answers fails closed", { timeout: 10000 }, async () => {
   const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
   try {
     await sharedPlan(f, ["native", "gateway"]); await rm(join(f.home, "owner.json"));

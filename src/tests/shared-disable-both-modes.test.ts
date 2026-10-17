@@ -10,6 +10,9 @@ import { executionHostHome, readOwner } from "../execution-host-storage.js";
 import { nativeHomeOwnerPath, readNativeHomeOwner } from "../native-execution-host-storage.js";
 import { archiveStoppedExecutionReceipt } from "../service-execution-recovery.js";
 import { standInFixture } from "./launchd-stand-in.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+
+hostRunsInThisProcess(); // The stand-in host claims its receipts from this process, as a separate service process does on a Mac.
 
 // Both sharing modes can be on together. Turning one off leaves the other on, so the relaunched supervisor starts a host at the
 // same home and claims the receipt itself. The stand-in service claims receipts with the real claimHost, and the real

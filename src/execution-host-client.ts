@@ -17,6 +17,22 @@ let hostWaitMs = defaultHostWaitMs;
 export function setHostWaitForTests(ms?: number): void { hostWaitMs = ms ?? defaultHostWaitMs; }
 /** One look at the host: a client, or the error today's single look would throw and whether waiting could change it. */
 type HostLook = { client?: ExecutionHostClient; failure?: Error; retry?: boolean };
+/**
+ * The failures that mean the host is simply down: no receipt, or a valid receipt that names no running, live host. Only these
+ * may let an adapter run a private native engine; a host that does not match, a changed socket or any other failure never does.
+ */
+const unavailable = (message: string): Error => Object.assign(new Error(message), { hostUnavailable: true });
+export function hostUnavailable(error: unknown): boolean { return (error as { hostUnavailable?: unknown } | undefined)?.hostUnavailable === true; }
+/** Why a desktop adapter that shares native chats runs its own native engine instead, from a fixed vocabulary. */
+export type NativeFallbackReason = "host_unavailable" | "other";
+/**
+ * The fallback a failed native discovery allows, if any: `host_unavailable` when the host stayed down through the wait, and
+ * `other` when a running host offers gateway chats without native sharing. Everything else fails closed.
+ */
+export function nativeFallbackReason(error: unknown, sharedGateway: boolean): NativeFallbackReason | undefined {
+  if ((error as { capabilityAbsent?: unknown } | undefined)?.capabilityAbsent === "native") return sharedGateway ? "other" : undefined;
+  return hostUnavailable(error) ? "host_unavailable" : undefined;
+}
 /** A receipt left by an owner that is gone must not look alive: its pid alone is not proof. */
 async function ownerMtime(home: string): Promise<number> { return (await lstat(resolve(home, "owner.json")).catch(() => undefined))?.mtimeMs ?? Number.POSITIVE_INFINITY; }
 async function receiptAlive(record: { pid: number; bootId?: string; startedAtMs?: number; socketPath?: string }, mtimeMs: number): Promise<boolean> {
@@ -60,7 +76,9 @@ export class ExecutionHostClient {
   }
   private static async look(home: string, configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability, required: boolean): Promise<HostLook> {
     const receipt = await readOwnerRecord(resolve(home, "owner.json")); const owner = receipt.owner; const receiptMtime = receipt.mtimeMs;
-    if (!owner) return required ? { failure: new Error(`Shared ${capability} executor host is unavailable; check gateway service status`), retry: true } : {};
+    // A receipt this release cannot read may be a newer host's: it is not proof that the host is down.
+    if (!owner) return required ? { failure: receipt.invalid ? new Error(`Shared ${capability} executor host is unavailable; check gateway service status`)
+      : unavailable(`Shared ${capability} executor host is unavailable; check gateway service status`), retry: true } : {};
     // A receipt that names no running, live host is a host the service can still bring back; one that does decides now.
     const live = owner.state === "running" && await receiptPidAlive(owner, receiptMtime);
     const fail = (failure: Error, retry = !live): HostLook => ({ failure, retry });
@@ -72,7 +90,7 @@ export class ExecutionHostClient {
     // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
     try { if (capabilities.includes("native") && owner.codex !== await realpath(codex)) return fail(new Error("Shared executor ownership does not match this adapter")); }
     catch (error) { return fail(error as Error); }
-    if (!live) return fail(new Error("Shared executor host is unavailable; check gateway service status"));
+    if (!live) return fail(unavailable("Shared executor host is unavailable; check gateway service status"));
     // A live host whose socket is gone or replaced, or that refuses the connection, is the host going away: wait for the next one.
     let socket;
     try { socket = await socketIdentity(socketPath); } catch (error) { return fail(error as Error, true); }
