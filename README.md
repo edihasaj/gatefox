@@ -23,6 +23,11 @@ and inference. The client executes tools and returns their results to the gatewa
 Claude Code can use GPT, Claude, and local model routes through its native Messages
 interface; see [Claude Code setup and Messages compatibility](docs/messages.md).
 
+The optional [Claude Desktop client](docs/claude-desktop.md) shows truthful
+account and model labels for Claude, separately registered GPT accounts, and
+local models. Its isolated compatibility adapter preserves the existing Codex
+client and shared gateway configuration.
+
 Claude runs the unmodified Claude Code binary using its subscription login.
 A private virtual MCP server declares the client's tools. The gateway returns
 Claude's native tool calls to the client, which owns execution and approvals.

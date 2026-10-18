@@ -37,6 +37,7 @@ import { safeErrorMessage } from "./error-message.js";
 import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
 import { daemonConfigStatus } from "./config-rejection.js";
+import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -67,6 +68,7 @@ const help = `gateway — local subscription and API inference
   gateway codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
   gateway claude-config --model ALIAS [--config PATH]
   gateway claude-config --model ALIAS --endpoint URL --token-file PATH
+  gateway claude-desktop configure|serve|install|status [--help]
   gateway codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS
   gateway token [--config PATH]   Credential helper; prints the local client token.
   gateway token --file PATH      Credential helper for a trusted remote gateway.
@@ -82,6 +84,7 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
+  if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
   if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
