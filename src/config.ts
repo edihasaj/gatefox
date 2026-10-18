@@ -11,6 +11,11 @@ export interface ProviderConfig {
   type: ProviderKind;
   models: Record<string, string>;
   baseUrl?: string;
+  /**
+   * chat-completions-api only: allow a plain `http:` base URL when every address its host resolves to is a Tailscale address
+   * (100.64.0.0/10 or fd7a:115c:a1e0::/48). The address is checked on each connection, before any byte is sent.
+   */
+  tailnet?: boolean;
   apiKeyEnv?: string;
   credentialFile?: string;
   agentName?: string;
@@ -124,11 +129,15 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if ((metadata.autoCompactTokenLimit !== undefined && !integerIn(metadata.autoCompactTokenLimit, 1024)) || (metadata.maxContextWindow !== undefined && !integerIn(metadata.maxContextWindow, 1024))) throw new Error("autoCompactTokenLimit and maxContextWindow must be at least 1024 tokens");
       readServiceTierMetadata(metadata);
     }
+    // Only the chat adapter (and its discovery) connects through the address check; another adapter would send its key over plain HTTP unchecked.
+    if (provider.tailnet !== undefined && provider.type !== "chat-completions-api") throw new Error(`${provider.id}: tailnet is only valid for chat-completions-api providers`);
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
       if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);
       const url = new URL(provider.baseUrl);
       if (url.username || url.password || url.search || url.hash) throw new Error("baseUrl must not contain credentials, a query, or a fragment");
-      if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
+      if (provider.tailnet !== undefined && typeof provider.tailnet !== "boolean") throw new Error(`${provider.id}: tailnet must be boolean`);
+      const tailnetHttp = provider.tailnet === true && url.protocol === "http:";
+      if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
     if (provider.type === "codex-subscription" && !provider.credentialFile) throw new Error(`${provider.id}: credentialFile is required`);
     const sessions = provider.claudeSessions;

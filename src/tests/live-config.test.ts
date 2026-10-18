@@ -158,3 +158,15 @@ test("the first load at startup is still fatal when the file is invalid", async 
   await writePrivateJson(path, { version: 1, port: 0, stateDirectory: ".state", providers: [{ id: "one", type: "no-such-provider", label: "One", models: { old: "old-model" } }] });
   await assert.rejects(startServeRuntime(path), /Unsupported provider type/);
 });
+
+test("toggling a provider's tailnet flag is a rebind like a base URL change", async () => {
+  const { directory, path, source, rejections } = await setup();
+  const chat = { id: "qwen", type: "chat-completions-api", baseUrl: "https://dgx.example/v1", credentialFile: "qwen.token", models: { "qwen/flash": "qwen" } };
+  await writePrivateJson(path, { ...source, providers: [chat] });
+  const live = new LiveConfig(path, await loadConfig(path)); const first = await live.current();
+  await writePrivateJson(path, { ...source, providers: [{ ...chat, tailnet: true }] });
+  assert.equal(await live.current(), first); assert.equal(live.rejection, "rebind");
+  await writePrivateJson(path, { ...source, providers: [{ ...chat, label: "Local" }] });
+  assert.equal((await live.current()).providers[0].label, "Local"); assert.equal(live.rejection, undefined);
+  assert.deepEqual((await rejections()).map(event => event.reason), ["rebind"]); assert.ok(directory);
+});
