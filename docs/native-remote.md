@@ -439,6 +439,7 @@ next line reports the rest as `suppressed`.
 | Label | Meaning |
 | --- | --- |
 | `rc_connecting`, `rc_connected`, `rc_cycle_ended`, `rc_status_changed` | Host websocket lifecycle; `connectionEndReason` and `reconnectAttempt` explain reconnects |
+| `rc_connect_failed` | A connect attempt failed. The SDK's error text is never printed: `errorClass` names its kind (`ws_auth`, `ws_http`, `ws_tls`, `ws_io`, `ws_dns`, `ws_protocol`, `refresh_http`, `refresh_transport`, `refresh_parse`, `refresh_mismatch`, `auth_recovery` or `unclassified`) and `httpStatus` the 3-digit status for `ws_auth`, `ws_http` and `refresh_http`. `ws_http` with `httpStatus` 409 means another engine holds this Mac's remote-control connection |
 | `rc_writer_disconnected`, `rc_reader_disconnected` | The host websocket dropped; `errorKind` is `TimedOut` (no websocket pong for 60 seconds), `UnexpectedEof` (stream ended), `ConnectionAborted` (close frame), or `InvalidData` (read error) |
 | `stream_end_notified` | A relay-side stream end: `reason`, replies `drained` and `drainDropped`, and the `pong` outcome |
 | `inbound_hole_stale` | A stale hole: first missing number, size, age, highest number seen, ping counts, reset mode, and the action taken |
