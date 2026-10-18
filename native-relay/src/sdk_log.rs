@@ -1,6 +1,8 @@
 //! Audited SDK remote-control logging. Only the remote-control target and the gateway's own
 //! target are subscribed. SDK message text is matched against fixed labels and never printed;
 //! only allowlisted, sanitized fields are kept, ids are hashed, and each label is rate limited.
+//! The SDK's `error` field is reduced to a fixed `errorClass`, plus an `httpStatus` when the text
+//! names one, so connection failures stay diagnosable without their URLs, headers or ids.
 
 use crate::{diagnostics, sdk_log_labels as labels};
 use codex_app_server_transport::gateway_counters::hash_id;
@@ -24,6 +26,9 @@ pub const GATEWAY_TARGET: &str = "gateway_remote_control";
 const LINES_PER_MINUTE: u32 = 20;
 const MAX_VALUE: usize = 80;
 const MESSAGE_PREFIX: usize = 160;
+/// Error text is read this far looking for a class marker; the kept part is never printed.
+const ERROR_BUFFER: usize = 1024;
+const ERROR_FIELD: &str = "error";
 const RESERVED: &[&str] = &["scope", "timestampMs", "event", "level", "label", "suppressed", "callsite"];
 
 pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
@@ -167,6 +172,56 @@ pub fn sanitize(value: &str) -> String {
     if safe { value.to_owned() } else { "redacted".to_owned() }
 }
 
+/// Turns error text into a fixed class, plus an HTTP status when the text names one.
+/// The first matching marker wins, and the text itself is never kept.
+fn classify_error(text: &str) -> (&'static str, Option<u16>) {
+    let websocket = text.contains("failed to connect app-server remote control websocket");
+    if text.contains("remote control websocket auth failed with HTTP ") {
+        return ("ws_auth", status_after(text, "auth failed with HTTP "));
+    }
+    if websocket && text.contains("HTTP error: ") {
+        return ("ws_http", status_after(text, "HTTP error: "));
+    }
+    if websocket {
+        if text.contains("TLS error") {
+            return ("ws_tls", None);
+        }
+        if text.contains("IO error") {
+            // A failed DNS lookup surfaces as an IO error that names the lookup.
+            return if text.contains("lookup") { ("ws_dns", None) } else { ("ws_io", None) };
+        }
+        if text.contains("WebSocket protocol error") {
+            return ("ws_protocol", None);
+        }
+    }
+    if text.contains("remote control server refresh failed at") && text.contains(": HTTP ") {
+        return ("refresh_http", status_after(text, ": HTTP "));
+    }
+    if text.contains("failed to refresh remote control server at") {
+        return ("refresh_transport", None);
+    }
+    if text.contains("failed to parse remote control server refresh response") {
+        return ("refresh_parse", None);
+    }
+    if text.contains("refresh returned mismatched enrollment") {
+        return ("refresh_mismatch", None);
+    }
+    if text.trim_end_matches('"').ends_with("; retrying after auth recovery") {
+        return ("auth_recovery", None);
+    }
+    ("unclassified", None)
+}
+
+/// The first run of exactly three digits after `marker`, when it is a usable HTTP status.
+fn status_after(text: &str, marker: &str) -> Option<u16> {
+    let digits = text.split_once(marker)?.1;
+    if digits.find(|character: char| !character.is_ascii_digit()).unwrap_or(digits.len()) != 3 {
+        return None;
+    }
+    let status: u16 = digits[..3].parse().ok()?;
+    (100..=599).contains(&status).then_some(status)
+}
+
 fn camel_case(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut upper = false;
@@ -239,6 +294,22 @@ impl Collector {
             && (self.gateway || labels::FIELDS.contains(&name) || labels::HASHED.contains(&name))
     }
 
+    /// True for the SDK's `error` field, which is classified instead of kept.
+    fn is_error(&self, field: &Field) -> bool {
+        !self.gateway && field.name() == ERROR_FIELD
+    }
+
+    /// Keeps only what the error text says about the failure, never the text itself.
+    fn classify(&mut self, text: &str) {
+        let (class, status) = classify_error(text);
+        self.values
+            .push(("error_class".to_owned(), json!(class)));
+        if let Some(status) = status {
+            self.values
+                .push(("http_status".to_owned(), json!(status)));
+        }
+    }
+
     fn text(&mut self, field: &Field, value: &str, overflow: bool) {
         let name = field.name();
         if self.gateway && name == "gateway_event" {
@@ -258,6 +329,12 @@ impl Visit for Collector {
             let _ = write!(self.message, "{value:?}");
             return;
         }
+        if self.is_error(field) {
+            let mut text = Capped::new(ERROR_BUFFER);
+            let _ = write!(text, "{value:?}");
+            self.classify(&text.text);
+            return;
+        }
         if !self.keeps(field.name()) {
             return;
         }
@@ -270,6 +347,10 @@ impl Visit for Collector {
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
             let _ = self.message.write_str(value);
+        } else if self.is_error(field) {
+            let mut text = Capped::new(ERROR_BUFFER);
+            let _ = text.write_str(value);
+            self.classify(&text.text);
         } else if self.keeps(field.name()) {
             self.text(field, value, false);
         }
