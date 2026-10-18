@@ -65,7 +65,7 @@ export class ChatCompletionsAPI implements Provider {
         ...(options.topP === undefined ? {} : { top_p: options.topP }),
         ...(options.parallelToolCalls === undefined ? {} : { parallel_tool_calls: options.parallelToolCalls }),
       }) };
-    const response = this.tailnet ? await this.tailnet(url, init) : await fetch(url, init);
+    const response = this.tailnet ? await this.tailnet(url, { method: init.method, headers: init.headers, body: init.body, signal }) : await fetch(url, init);
     if (!response.ok) {
       const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
       throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);

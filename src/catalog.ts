@@ -1,6 +1,7 @@
 import { accessToken, type AccessTokenOptions } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
+import { tailnetFetch, type TailnetSeams } from "./tailnet.js";
 import { apiCredential, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
@@ -52,14 +53,16 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
 
 export interface DiscoveredModel { model: string; metadata: ModelMetadata }
 /** `options.refresh: false` lets a Codex login serve discovery only while its access token is still valid. */
-export async function discoverModels(provider: ProviderConfig, options: AccessTokenOptions = {}): Promise<DiscoveredModel[]> {
+export async function discoverModels(provider: ProviderConfig, options: AccessTokenOptions & { tailnet?: TailnetSeams } = {}): Promise<DiscoveredModel[]> {
   if (provider.type === "claude-subscription") return discoverClaudeModels(provider);
   if (provider.type === "copilot-subscription") return discoverCopilotModels(provider);
   if (provider.type !== "codex-subscription" && provider.type !== "responses-api" && provider.type !== "chat-completions-api") throw new Error("This provider does not expose a verified model-discovery endpoint; declare its models explicitly");
   const token = provider.type === "codex-subscription" ? await accessToken(provider.credentialFile!, options) : await apiCredential(provider);
   if (!token) throw new Error("Provider requires login or an API credential");
   const base = provider.type === "codex-subscription" ? "https://api.openai.com/v1" : provider.baseUrl!.replace(/\/$/, "");
-  const response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(15000) });
+  const headers = { Authorization: `Bearer ${token}` }; const signal = AbortSignal.timeout(15000);
+  // A tailnet provider's key may only go to a Tailscale address, here as on the inference path.
+  const response = provider.tailnet ? await tailnetFetch(provider.id, options.tailnet)(`${base}/models`, { method: "GET", headers, signal }) : await fetch(`${base}/models`, { headers, redirect: "error", signal });
   if (!response.ok) throw new Error(`Model discovery returned HTTP ${response.status}`);
   const body = await response.json() as { models?: Array<Record<string, unknown>>; data?: Array<Record<string, unknown>> };
   const models = body.models || body.data;

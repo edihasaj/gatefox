@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createServer, type IncomingMessage, type Server } from "node:http";
-import { createServer as createTcpServer } from "node:net";
+import { createServer } from "node:http";
+import { Socket, connect as netConnect } from "node:net";
 import { once } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { closedPort, upstream } from "./tailnet-fixture.js";
 import { isTailnetAddress, tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { ChatCompletionsAPI } from "../providers/chat-completions-api.js";
 import { ProviderError } from "../providers/provider.js";
@@ -13,19 +14,6 @@ import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.
 
 const init = { method: "POST", headers: { Authorization: "Bearer tailnet-secret", "Content-Type": "application/json" }, body: "{}" };
 
-/** A loopback upstream that records every request's bearer and answers 200 (or the given status). */
-async function upstream(status = 200) {
-  const seen: Array<string | undefined> = []; const connections: number[] = [];
-  const server: Server = createServer((req: IncomingMessage, res) => { seen.push(req.headers.authorization); req.resume(); res.writeHead(status, { "Content-Type": "text/plain" }); res.end("ok"); });
-  server.on("connection", () => connections.push(1));
-  server.listen(0, "127.0.0.1"); await once(server, "listening");
-  return { server, seen, connections, port: (server.address() as { port: number }).port, close: () => { server.closeAllConnections(); server.close(); } };
-}
-/** A port nothing listens on: connecting to it is refused at once. */
-async function closedPort(): Promise<number> {
-  const probe = createTcpServer(); probe.listen(0, "127.0.0.1"); await once(probe, "listening");
-  const port = (probe.address() as { port: number }).port; probe.close(); await once(probe, "close"); return port;
-}
 async function telemetryEvents(): Promise<Array<Record<string, unknown>>> {
   await flushTelemetry(); return (await readTelemetry(state, since)).filter(event => event.event === "provider_address_refused");
 }
@@ -44,7 +32,7 @@ test("a public or private address is refused before any connection, so the beare
     for (const address of ["203.0.113.5", "192.168.1.10", "2001:db8::1", "fd7a:115c:a1e1::1"]) {
       // The dial seam would reach a live listener, so a wrongly allowed address would deliver the bearer.
       const send = tailnetFetch("qwen", { resolve: async () => [address], dial: () => ({ host: "127.0.0.1", port: target.port }) });
-      await assert.rejects(send("http://dgx.example:4000/v1/chat/completions", init), (error: unknown) => error instanceof ProviderError && error.code === "provider_unreachable" && error.message === "Provider is unreachable" && !error.message.includes(address));
+      await assert.rejects(send("http://dgx.example:4000/v1/chat/completions", init), (error: unknown) => error instanceof ProviderError && error.code === "provider_unreachable" && error.status === 502 && error.message === "Provider address is not on the tailnet; the request was not sent" && !error.message.includes(address));
     }
     // An IP literal in the base URL is held to the same rule and needs no lookup.
     const literal = tailnetFetch("qwen", { resolve: async () => { throw new Error("must not resolve"); }, dial: () => ({ host: "127.0.0.1", port: target.port }) });
@@ -82,7 +70,7 @@ test("connect attempts walk the resolved addresses in order and a request that r
     assert.equal(response.status, 200); await response.text(); assert.equal(live.seen.length, 1, "served once");
     // Neither address connects: the fixed error, nothing sent.
     const none = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: () => ({ host: "127.0.0.1", port: dead }) });
-    await assert.rejects(none("http://dgx.example:4000/x", init), { code: "provider_unreachable", message: "Provider is unreachable" });
+    await assert.rejects(none("http://dgx.example:4000/x", init), { code: "upstream_unavailable", status: 503 });
     // The first router answers with a server error: that answer is the result, the second router is never asked.
     const failing = await upstream(500); const ports2: Record<string, number> = { "100.108.115.57": failing.port, "100.104.232.124": second.port };
     const replay = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: address => ({ host: "127.0.0.1", port: ports2[address] }) });
@@ -91,15 +79,27 @@ test("connect attempts walk the resolved addresses in order and a request that r
   } finally { live.close(); second.close(); }
 });
 
-test("a silent address times out and the next one answers; a redirect is not followed", async () => {
-  await recordTelemetry(); const live = await upstream();
-  const redirect = createServer((_req, res) => { res.writeHead(302, { Location: "http://203.0.113.5/" }); res.end(); }); redirect.listen(0, "127.0.0.1"); await once(redirect, "listening");
+test("a silent address times out near the connect timeout and the next one answers, with no real network", async () => {
+  await recordTelemetry(); const live = await upstream(); const silent: Socket[] = [];
   try {
-    const slow = tailnetFetch("qwen", { connectTimeoutMs: 50, resolve: async () => ["100.108.115.57", "100.104.232.124"], dial: address => address === "100.108.115.57" ? { host: "192.0.2.1", port: 9 } /* TEST-NET-1: never answers */ : { host: "127.0.0.1", port: live.port } });
-    assert.equal((await slow("http://dgx.example:4000/x", init)).status, 200); assert.equal(live.seen.length, 1);
-    const moved = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], dial: () => ({ host: "127.0.0.1", port: (redirect.address() as { port: number }).port }) });
-    await assert.rejects(moved("http://dgx.example:4000/x", init), /redirect refused/);
-  } finally { live.close(); redirect.closeAllConnections(); redirect.close(); }
+    const slow = tailnetFetch("qwen", { connectTimeoutMs: 80, resolve: async () => ["100.108.115.57", "100.104.232.124"],
+      // The first address gets a socket that never connects; the second reaches the loopback listener.
+      connect: host => { if (host === "100.108.115.57") { const socket = new Socket(); silent.push(socket); return socket; } return netConnect({ host: "127.0.0.1", port: live.port }); } });
+    const started = Date.now(); const response = await slow("http://dgx.example:4000/x", init); const elapsed = Date.now() - started;
+    assert.equal(response.status, 200); await response.text(); assert.equal(live.seen.length, 1);
+    assert.ok(elapsed >= 70 && elapsed < 1500, `waited ${elapsed} ms for an 80 ms timeout`); assert.equal(silent[0].destroyed, true, "the silent socket was closed");
+    // Every address silent: the retryable class after about one timeout per address.
+    const none = tailnetFetch("qwen", { connectTimeoutMs: 60, resolve: async () => ["100.108.115.57", "100.104.232.124"], connect: () => new Socket() });
+    const begun = Date.now(); await assert.rejects(none("http://dgx.example:4000/x", init), { code: "upstream_unavailable", status: 503 }); assert.ok(Date.now() - begun >= 110);
+  } finally { live.close(); }
+});
+
+test("a redirect is refused with a typed error and never followed", async () => {
+  await recordTelemetry(); const target = await upstream(302, { Location: "http://203.0.113.5/" });
+  try {
+    const moved = tailnetFetch("qwen", { resolve: async () => ["100.108.115.57"], dial: () => ({ host: "127.0.0.1", port: target.port }) });
+    await assert.rejects(moved("http://dgx.example:4000/x", init), (error: unknown) => error instanceof ProviderError && error.code === "upstream_error" && error.status === 502 && /redirects are not followed/.test(error.message) && !error.message.includes("203.0.113"));
+  } finally { target.close(); }
 });
 
 test("the chat provider sends its stream through the checked transport", async () => {

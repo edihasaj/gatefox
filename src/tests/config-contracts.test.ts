@@ -66,5 +66,9 @@ test("plain HTTP is accepted only on loopback or for a tailnet chat provider, an
   assert.throws(() => config([chat({ type: "responses-api", tailnet: true })]), /tailnet is only valid for chat-completions-api/);
   assert.throws(() => config([chat({ type: "anthropic-api", tailnet: true })]), /tailnet is only valid for chat-completions-api/);
   assert.throws(() => config([claude({ tailnet: true })]), /tailnet is only valid for chat-completions-api/);
+  // The rule does not depend on the value: the key is refused on every other type, true or false.
+  for (const type of ["responses-api", "anthropic-api", "claude-subscription", "codex-subscription", "copilot-subscription"] as const) {
+    for (const tailnet of [true, false]) assert.throws(() => config([chat({ type, tailnet, credentialFile: "x.token" })]), /tailnet is only valid for chat-completions-api/, `${type} ${tailnet}`);
+  }
   assert.throws(() => config([chat({ type: "responses-api" })]), /API providers require HTTPS except on loopback/);
 });

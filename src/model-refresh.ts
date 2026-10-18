@@ -4,6 +4,7 @@ import { ChatGPTRefreshDeferred } from "./auth/chatgpt.js";
 import { discoverModels, type DiscoveredModel } from "./catalog.js";
 import { loadConfig, validateConfig, writePrivateJson, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
+import type { TailnetSeams } from "./tailnet.js";
 import { telemetry } from "./telemetry.js";
 
 type Windows = Record<string, Record<string, number>>;
@@ -47,7 +48,7 @@ export class ObservedContextWindows {
  * discovery still run their own CLI or SDK, which may refresh its own login; guarding them is
  * left to a later release.
  */
-export async function refreshModelMetadata(path: string, discover: (provider: ProviderConfig, options: { refresh: false }) => Promise<DiscoveredModel[]> = discoverModels): Promise<string[]> {
+export async function refreshModelMetadata(path: string, discover: (provider: ProviderConfig, options: { refresh: false; tailnet?: TailnetSeams }) => Promise<DiscoveredModel[]> = discoverModels, tailnet?: TailnetSeams): Promise<string[]> {
   const config = await loadConfig(path);
   if (config.clientOnly) return [];
   const observed = await readWindows(config.stateDirectory);
@@ -55,7 +56,7 @@ export async function refreshModelMetadata(path: string, discover: (provider: Pr
   for (const provider of config.providers) {
     if (!discoverable.has(provider.type)) continue;
     let discovered: DiscoveredModel[];
-    try { discovered = await discover(provider, { refresh: false }); }
+    try { discovered = await discover(provider, { refresh: false, ...(tailnet ? { tailnet } : {}) }); }
     catch (error) { telemetry("model_metadata_skipped", { provider: provider.id, reason: error instanceof ChatGPTRefreshDeferred ? "refresh_deferred" : "discovery_failed" }); continue; }
     const fresh = new Map(discovered.map(entry => [entry.model, entry.metadata]));
     const metadata = { ...provider.modelMetadata };

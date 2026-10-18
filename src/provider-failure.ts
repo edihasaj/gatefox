@@ -12,7 +12,7 @@ const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
   "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
   "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
-  "upstream_rejected",
+  "upstream_rejected", "provider_unreachable",
 ]);
 const upstreamCodes = new Set([
   "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request",
