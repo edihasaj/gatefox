@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Claude Desktop can use an opt-in model catalog with real account labels for
+Claude, multiple GPT registrations, and local API models. The separate adapter
+preserves native tool and subagent execution, handles optional GPT tool
+arguments, and includes explicit configure, serve, install, and status commands.
+The existing Codex client and its routing are unchanged.
+
+Thank you to Edi Hasaj for testing the Claude Desktop integration across three Macs.
+
 Harness Gateway now has a native macOS app with the fox icon, a setup wizard,
 connection and model management, and a signed background launcher. The app keeps
 the existing gateway running when its window closes and preserves its settings.
