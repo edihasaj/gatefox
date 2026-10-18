@@ -53,11 +53,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.4.7 -R edihasaj/harness-gateway \
+gh release download v0.4.8 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf harness-gateway-0.4.7-macos-arm64.tar.gz
-./harness-gateway-0.4.7-macos-arm64/install
+tar -xzf harness-gateway-0.4.8-macos-arm64.tar.gz
+./harness-gateway-0.4.8-macos-arm64/install
 gateway --version
 ```
 
