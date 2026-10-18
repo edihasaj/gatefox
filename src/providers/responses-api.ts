@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { telemetry } from "../telemetry.js";
 import { reasoningScope } from "../protocol/reasoning-state.js";
 import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
+import { plaintextCollaborationTransport, subscriptionCollaborationTransport } from "../protocol/collaboration-transport.js";
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
@@ -132,8 +133,10 @@ export class ResponsesAPI implements Provider {
     // when it sees the caller's own session and thread identifiers.
     const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}),
       ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
+    const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
+    const outgoing = collaborationTransport.body;
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(body) });
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(outgoing) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
@@ -143,9 +146,13 @@ export class ResponsesAPI implements Provider {
     const unfinished = new Map<string, { identity: string; encryptedArgs: string; length: number; digest: string }>();
     const stream: ProviderStreamDiagnostic = { events: 0, reasoningItems: 0, textDeltas: 0, toolCalls: 0 };
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
-      const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
+      const upstreamNamespace = item.namespace as string | undefined;
+      // `gateway_collaboration` is a subscription-only wire alias. Resolve it
+      // before catalog lookup so the client continues to execute collaboration.
+      const effectiveNamespace = collaborationTransport.alias !== undefined && upstreamNamespace === collaborationTransport.alias ? "collaboration" : upstreamNamespace;
+      const namespace = effectiveNamespace === defaultNamespace ? undefined : effectiveNamespace;
       const name = String(item.name); const alias = namespace ? `${namespace}.${name}` : name;
-      const identity = (item.namespace === defaultNamespace ? current : plan ? history : identities).get(alias) ?? identities.get(alias);
+      const identity = (effectiveNamespace === defaultNamespace ? current : plan ? history : identities).get(alias) ?? identities.get(alias);
       if (!identity) throw new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
       return identity;
     };
@@ -159,11 +166,12 @@ export class ResponsesAPI implements Provider {
       const encrypted = item.encrypted_function_args;
       if (encrypted !== undefined && (!Array.isArray(encrypted) || encrypted.some(value => typeof value !== "string"))) throw invalid();
       const responseTool = identityFor(item);
+      const effectiveNamespace = collaborationTransport.alias !== undefined && item.namespace === collaborationTransport.alias ? "collaboration" : item.namespace as string | undefined;
       const encryptedFunctionArgs = encrypted === undefined ? undefined : [...encrypted] as string[];
       // Missing and explicitly-empty metadata are distinct upstream facts. Preserve
       // that distinction while checking partial items and final snapshots.
       const encryptedArgs = encryptedFunctionArgs === undefined ? "missing" : JSON.stringify(encryptedFunctionArgs);
-      return { id: item.call_id, name: item.name, input: arguments_, responseTool, encryptedFunctionArgs, encryptedArgs,
+      return { id: item.call_id, name: item.name, namespace: effectiveNamespace, input: arguments_, responseTool, encryptedFunctionArgs, encryptedArgs,
         identity: JSON.stringify([item.type, responseTool]) };
     };
     const matchesPending = (value: ReturnType<typeof toolInput>) => {
@@ -186,7 +194,7 @@ export class ResponsesAPI implements Provider {
       if (item.status !== undefined && item.status !== "completed") throw invalid();
       if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
       matchesPending(value);
-      const signature = JSON.stringify([item.type, item.name, item.namespace, arguments_, value.encryptedArgs]);
+      const signature = JSON.stringify([item.type, item.name, value.namespace, arguments_, value.encryptedArgs]);
       const previous = calls.get(value.id);
       if (previous !== undefined) {
         if (snapshot && previous.signature === signature) return [];

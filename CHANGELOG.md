@@ -9,6 +9,12 @@ The signed runtime keeps the app identity stable across installed CLI updates.
 
 Thank you to Edi Hasaj for the native macOS app.
 
+## 0.5.3 — 2026-10-18
+
+Codex subscription providers now receive plaintext collaboration message schemas.
+This prevents the upstream from encrypting delegated tasks that gateway providers
+cannot replay, completing the task-delivery fix for Codex 2.
+
 ## 0.5.2 — 2026-10-18
 
 Delegated tasks and follow-up messages now reach Codex sub-agents as plaintext.

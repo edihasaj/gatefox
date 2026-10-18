@@ -48,6 +48,12 @@ JavaScript. Installing a CLI update preserves the registration. See
    that it executes a real command, and that its history includes that command
    and the resulting answer. `--v2 --expect-payload-loss` reproduces the
    missing-task failure in 0.5.1.
+   Before shipping collaboration transport changes, also run
+   `scripts/e2e-subagent-live.mjs --package INSTALLED_PACKAGE --code CHECKOUT
+   --config PRIVATE_GATEWAY_CONFIG --model CONFIGURED_CODEX_ALIAS --root
+   FRESH_EVIDENCE_DIRECTORY`. This opt-in check uses real subscription inference
+   and isolated chat homes. It requires an actual child command and an answer
+   containing a proof available only in the child's read-only fixture file.
    For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
    INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
    and a second evidence directory. Repeat with `--private` for per-connection
