@@ -7,7 +7,7 @@ import { telemetry } from "./telemetry.js";
 export type { ConfigRejection } from "./config-rejection.js";
 
 function bindings(config: GatewayConfig): Map<string, string> {
-  const identity = (provider: ProviderConfig, model: string) => JSON.stringify([provider.id, provider.type, provider.credentialFile || "", provider.authDirectory || "", provider.baseUrl || "", provider.apiKeyEnv || "", model]);
+  const identity = (provider: ProviderConfig, model: string) => JSON.stringify([provider.id, provider.type, provider.credentialFile || "", provider.authDirectory || "", provider.baseUrl || "", provider.tailnet === true, provider.apiKeyEnv || "", model]);
   return new Map(config.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, identity(provider, model)])));
 }
 

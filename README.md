@@ -198,8 +198,18 @@ focus is Claude, Codex, and Copilot subscriptions.
 
 `chat-completions-api` supports local vLLM servers and compatible APIs through
 their native streaming endpoint. API providers accept either `credentialFile`
-(owner-only) or `apiKeyEnv`. Local HTTP endpoints must use loopback; reach a DGX
-Spark through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
+(owner-only) or `apiKeyEnv`. Plain HTTP endpoints must use loopback, except that a
+`chat-completions-api` provider may set `"tailnet": true` to use `http:` (or `https:`)
+toward a Tailscale host, for example the DGX Spark routers at
+`http://dgx.example:4000/v1`. The gateway resolves the host on every connection and
+dials only addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`; any other answer is
+dropped before a connection is opened, so the key is never sent outside the tailnet. If
+the name resolves to several tailnet addresses (one per router), a connection that cannot be
+made in 3 seconds falls over to the next address; a request that reached a router is
+never replayed on another. When no address is on the tailnet the request fails with
+`provider_unreachable` and the gateway records `provider_address_refused`. Changing
+`tailnet` needs a restart, like changing `baseUrl`. Without `tailnet`, a DGX Spark
+can still be reached through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
 streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
 Its current gateway route supports text only.
 

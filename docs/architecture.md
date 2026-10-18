@@ -35,7 +35,7 @@ refusal is recorded once per file version as `config_rejected` with a fixed
 `reason`, never a path, value or error text (see [diagnostics](diagnostics.md)).
 That covers an invalid or unreadable file (`invalid`, `unreadable`), a changed
 listener port, mode or state directory (`restart_required`), and an existing alias
-that would change account, provider, credential source, base URL or upstream model
+that would change account, provider, credential source, base URL, the `tailnet` setting or upstream model
 (`rebind`). The change takes effect only after the daemon restarts; to apply it
 live, add another alias instead. The next file that is valid and allowed is adopted
 at once and clears the refusal, and so does putting the applied file back.
