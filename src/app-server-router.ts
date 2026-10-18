@@ -17,7 +17,7 @@ import { homedir } from "node:os";
 import { telemetry } from "./telemetry.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import type { ClassifyThread } from "./gateway-chat-classifier.js";
-import { ChatIdentity, legacyGatewayProvider as gatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { ChatIdentity, hasParent, legacyGatewayProvider as gatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { configEffort, enumEffort, object, requestedEffort, requestedModel, savedTier, tierId, tierSelection } from "./app-server-request-fields.js";
 import { gatewayModelList } from "./app-server-model-list.js";
 import { AppServerRoutingError } from "./app-server-routing-error.js";
@@ -28,7 +28,7 @@ type ObjectValue = Record<string, unknown>;
 /** One engine request. `hint` names the engine a thread/start is for; the backends never infer it from the provider id. */
 export type BackendRequest = (method: string, params: ObjectValue, hint?: EngineHint) => Promise<ObjectValue>;
 /** `kind` decides every gateway rule; `provider` is only what the chat was saved with, reported as its identity. */
-type ThreadRoute = { kind: ChatKind; provider?: string; model?: string; serviceTier?: string | null };
+type ThreadRoute = { kind: ChatKind; provider?: string; model?: string; serviceTier?: string | null; nativeChildModel?: string };
 const createsThread = new Set(["thread/start", "thread/resume", "thread/fork"]);
 // Throwaway prediction forks are tracked in this order-bounded set while they may still be routed.
 const maxEphemeralThreads = 256;
@@ -115,8 +115,15 @@ export class AppServerRouter {
     }
     if (typeof result.modelProvider === "string") {
       const tier = Object.hasOwn(result, "serviceTier") ? result.serviceTier : tierSelection(params)?.value;
+      const previous = this.routes.get(thread.id);
+      const model = typeof result.model === "string" ? result.model : typeof thread.model === "string" ? thread.model : undefined;
+      // A sub-agent may use a native catalog row inside its gateway executor. This fact is
+      // authoritative only when the SDK's thread metadata records a parent; later resume
+      // replies can omit source, so retain the already-proven row only when it still matches.
+      const nativeChildModel = this.nativeChildModel(thread, kind, model) ?? (previous?.nativeChildModel === model ? model : undefined);
       const route: ThreadRoute = { kind, provider: result.modelProvider, ...(typeof result.model === "string" ? { model: result.model } : {}),
-        ...(tier === null || (typeof tier === "string" && storableServiceTier(tierId(tier))) ? { serviceTier: tierId(tier) as string | null } : {}) };
+        ...(tier === null || (typeof tier === "string" && storableServiceTier(tierId(tier))) ? { serviceTier: tierId(tier) as string | null } : {}),
+        ...(nativeChildModel ? { nativeChildModel } : {}) };
       this.routes.set(thread.id, route);
       // SDK snapshots are authoritative; requested values alone cannot establish durable settings.
       if (!ephemeral && route.kind === "gateway" && typeof route.model === "string" && (result.serviceTier === null || typeof result.serviceTier === "string")) {
@@ -149,7 +156,9 @@ export class AppServerRouter {
       if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
       this.identity.learnReply("thread/read", probe);
       // The saved record decides, never the request: a native chat resumed with no model stays native.
-      route = { kind: await this.classify({ ...threadFacts(thread), id: threadId }, method), provider: thread.modelProvider, ...(typeof thread.model === "string" ? { model: thread.model } : {}) };
+      const kind = await this.classify({ ...threadFacts(thread), id: threadId }, method);
+      const model = typeof thread.model === "string" ? thread.model : undefined;
+      route = { kind, provider: thread.modelProvider, ...(model ? { model } : {}), ...(this.nativeChildModel(thread, kind, model) ? { nativeChildModel: model } : {}) };
       this.routes.set(threadId, route);
       this.chatSnapshots.set(threadId, { path: thread.path, effort: thread.reasoningEffort });
       // A forgotten throwaway fork can still be loaded in the engine; it must stay memory-only.
@@ -270,6 +279,56 @@ export class AppServerRouter {
     if (tierSelection(params) || this.preferences.model !== model || !Object.hasOwn(this.preferences, "service_tier")) return params;
     return { ...params, serviceTier: this.preferences.service_tier };
   }
+  /** A native row is servable by a gateway executor only for its own saved, parent-spawned child. */
+  private nativeChildModel(thread: ObjectValue, kind: ChatKind, model: string | undefined): string | undefined {
+    return kind === "gateway" && typeof model === "string" && this.source?.isNative(model) === true && hasParent(thread) ? model : undefined;
+  }
+  private allowsSavedNativeChild(route: ThreadRoute, model: unknown): boolean {
+    return typeof model === "string" && route.nativeChildModel === model;
+  }
+  /** Whether the SDK will skip its persisted-session restore for a resume. */
+  private resumeOverride(params: ObjectValue): boolean {
+    const config = object(params.config);
+    return params.model !== undefined && params.model !== null
+      || params.modelProvider !== undefined && params.modelProvider !== null
+      || Object.hasOwn(config, "model") || Object.hasOwn(config, "model_reasoning_effort");
+  }
+  /**
+   * A gateway-owned sub-agent may deliberately run a native catalog row. Its SDK
+   * restore has the same gate as every other chat, but the gateway executor can
+   * have different launch defaults. When the caller opens that gate without
+   * selecting a different model or provider, repeat the child's own saved
+   * identity and only recover reasoning we can actually observe.
+   */
+  private async nativeChildResume(params: ObjectValue, route: ThreadRoute): Promise<ObjectValue> {
+    // As for gateway aliases, the executor must not ask an inference provider to
+    // run native web search after loading saved child history.
+    params = { ...params, config: { ...object(params.config), web_search: "disabled" } };
+    if (!this.resumeOverride(params)) return params;
+    const model = route.nativeChildModel!;
+    if (typeof params.modelProvider === "string" && typeof route.provider === "string" && params.modelProvider !== route.provider) {
+      throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Reset to default selects a model; it does not reload the model list. Your account and existing chat are unchanged.", -32002);
+    }
+    let forwarded: ObjectValue = params;
+    // A null or absent typed model does not select a new child model. The config
+    // remains untouched: the SDK receives the caller's explicit config as well.
+    if (params.model === undefined || params.model === null) forwarded = { ...forwarded, model };
+    // The executor launch provider is not the child's provider. Do not let an
+    // otherwise harmless effort/config override turn this child into that default.
+    if ((params.modelProvider === undefined || params.modelProvider === null) && typeof route.provider === "string") {
+      forwarded = { ...forwarded, modelProvider: route.provider };
+    }
+    const config = object(params.config);
+    if (!Object.hasOwn(config, "model_reasoning_effort") && requestedEffort(params) === undefined) {
+      const restored = await this.reasoning.recover(String(params.threadId), model, () => this.threadSnapshot(String(params.threadId)));
+      if (restored) {
+        const nextConfig: ObjectValue = { ...config, model_reasoning_effort: restored.effort };
+        if (!Object.hasOwn(config, "model_reasoning_summary") && params.summary === undefined && restored.summary) nextConfig.model_reasoning_summary = restored.summary;
+        forwarded = { ...forwarded, config: nextConfig };
+      }
+    }
+    return forwarded;
+  }
   /**
    * `provider` is the provider id the request names: the gateway's own id asks for a new gateway chat, which the backends record
    * with the connection's identity, and a resumed chat names the id it was saved with.
@@ -291,9 +350,9 @@ export class AppServerRouter {
     return { ...selected, model, modelProvider: provider,
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
   }
-  private assertSameProvider(kind: ChatKind, model: unknown): void {
+  private assertSameProvider(route: ThreadRoute, model: unknown): void {
     if (typeof model !== "string") return;
-    if ((kind === "gateway") !== this.aliases.has(model)) {
+    if ((route.kind === "gateway") !== this.aliases.has(model) && !this.allowsSavedNativeChild(route, model)) {
       throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Reset to default selects a model; it does not reload the model list. Your account and existing chat are unchanged.", -32002);
     }
   }
@@ -397,7 +456,7 @@ export class AppServerRouter {
     if (typeof params.threadId !== "string") return forwarded;
     const active = this.activeTurns.get(params.threadId);
     const route = method === "turn/settings/update" && active && active.turnId === params.turnId ? active.route : threadRoute;
-    this.assertSameProvider(route.kind, requestedModel(params));
+    this.assertSameProvider(route, requestedModel(params));
     const sessionStart = method === "thread/resume" || method === "thread/fork";
     // Inside a running chat the SDK keeps the chat's chosen tier and leaves it off an outgoing request only
     // while the model lacks it, so the gateway neither clears nor injects a tier here. The SDK also accepts a
@@ -411,6 +470,12 @@ export class AppServerRouter {
       }
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
+      // The desktop records sub-agents on native catalog rows. Their own saved metadata
+      // proves the executor owns that row, but it is not a gateway alias. A clean resume
+      // stays byte-for-byte; an SDK restore override must repeat only that child's state.
+      if (this.allowsSavedNativeChild(route, model)) {
+        return method === "thread/resume" ? this.nativeChildResume(forwarded, route) : forwarded;
+      }
       if (typeof model !== "string" || !this.aliases.has(model)) throw new AppServerRoutingError("This gateway chat needs a currently configured model alias");
       const inherited = inheritedTier(this.extraModels, dropUnsupportedTier(this.extraModels, params, model, method, drops), route.serviceTier, model, method, drops);
       // A typed model override disables the engine's persisted-settings restore,

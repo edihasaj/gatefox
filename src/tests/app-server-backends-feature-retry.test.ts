@@ -109,7 +109,7 @@ test("a configuration failure with only boolean features is not retried", { time
   const f = await featureFixture();
   try {
     const id = await startGatewayChat(f.backend);
-    const config = { "fail.mode": "always", "features.fast_mode": true, features: { hooks: false }, model: "m" };
+    const config = { "fail.mode": "always", "features.fast_mode": true, features: { hooks: false }, model: "claude/model" };
     await assert.rejects(f.backend.request("thread/resume", { threadId: id, config }), /failed to load configuration: attempt 1/);
     assert.deepEqual((await log(f, id)).map(entry => entry.config), [config]);
     await assert.rejects(f.backend.request("thread/resume", { threadId: id, config: { "fail.mode": "always" } }), /attempt 2/);

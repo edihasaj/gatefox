@@ -641,6 +641,29 @@ configured default whether or not it carried an effort. `scripts/e2e-native-mode
 requires the adapter to give every desktop shape the same model and effort as the SDK
 gives it directly.
 
+### Gateway sub-agents on native rows
+
+A gateway executor can spawn a Codex 2 or Claude sub-agent whose saved model is a
+native catalog slug such as `gpt-6.1-sol`. That child remains a gateway chat: its
+saved provider stays `subscription_gateway` or (on an opted-in Mac) `openai`, and
+the adapter routes reads, history, interrupts, turns and resumes to the executor
+that owns it. A resume with no model or reasoning override lets the SDK restore
+its saved state. Native web search stays disabled, as on gateway aliases, so opening
+saved history cannot enable tools the inference provider would execute.
+If an explicit model/provider or a `config.model` or
+`config.model_reasoning_effort` key opens the SDK's restore gate without selecting a
+different child, the adapter repeats the child's saved native model and provider.
+It recovers an unspecified effort only from the child's saved reasoning record,
+rollout, or thread metadata; it never invents a launch default or replaces a
+caller-supplied effort. A conflicting model or provider is refused.
+
+This is deliberately not a general native-to-gateway model switch. The adapter
+allows it only when the backend's saved child metadata records a parent, returns the
+requested thread id, classifies as a gateway child in this adapter, and its actual
+current model equals the requested native slug. The frozen executor applies this same
+check to `config.model`. Another native model, an unknown alias, a mismatched rollout
+record, or a parent-shaped native child is still refused.
+
 ## Compaction and model changes
 
 Moved to [Compaction and model changes](app-server-compaction.md).

@@ -43,7 +43,7 @@ async function fixture() {
     ["gw", { id: "gw", modelProvider: identity.provider, model: sol }],
     // A gateway chat on a native slug is only known by its registry entry; its sub-agent by that parent.
     ["gw-native-slug", { id: "gw-native-slug", modelProvider: identity.provider, model: nativeSol }],
-    ["gw-sub", { id: "gw-sub", modelProvider: identity.provider, model: nativeSol, source: { subAgent: { thread_spawn: { parent_thread_id: "gw-native-slug", depth: 1 } } } }],
+    ["gw-sub", { id: "gw-sub", modelProvider: identity.provider, model: nativeSol, reasoningEffort: "high", source: { subAgent: { thread_spawn: { parent_thread_id: "gw-native-slug", depth: 1 } } } }],
     ["nat", { id: "nat", modelProvider: "openai", model: native }],
   ]);
   const calls: Call[] = []; let created = 0;
@@ -64,7 +64,8 @@ async function fixture() {
     }
     if (method === "thread/start" || method === "thread/resume" || method === "thread/fork") {
       const parent = saved.get(String(params.threadId)) ?? {};
-      const override = method === "thread/start" || (params.model ?? null) !== null || (params.modelProvider ?? null) !== null || Object.hasOwn(config, "model");
+      const override = method === "thread/start" || (params.model ?? null) !== null || (params.modelProvider ?? null) !== null
+        || Object.hasOwn(config, "model") || Object.hasOwn(config, "model_reasoning_effort");
       const model = override ? params.model ?? config.model ?? native : parent.model;
       const thread = { id: method === "thread/resume" ? params.threadId : `${method === "thread/start" ? "started" : "fork"}-${++created}`,
         modelProvider: override ? params.modelProvider ?? (method === "thread/fork" ? parent.modelProvider : "openai") : parent.modelProvider, model,
@@ -123,6 +124,32 @@ test("the desktop's resume with no model restores a saved gateway chat on the ga
   await f.router.request("thread/resume", structuredClone(nativeResume));
   assert.deepEqual(f.sent("thread/resume"), { method: "thread/resume", params: nativeResume }, "nothing added, not even a hint");
   assert.equal(f.router.describeThread("nat").provider, "native");
+});
+
+test("a gateway-owned native-row child keeps its saved identity when an override gates SDK restore", async () => {
+  const f = await fixture();
+  const untouched = desktopResume("gw-sub");
+  const restored = await f.router.request("thread/resume", structuredClone(untouched));
+  assert.deepEqual(f.sent("thread/resume").params, { ...untouched, config: { web_search: "disabled" } },
+    "the transport restriction does not gate SDK settings restore");
+  assert.deepEqual({ model: restored.model, provider: restored.modelProvider }, { model: nativeSol, provider: identity.provider });
+
+  const configOnly = { threadId: "gw-sub", config: { model: null } };
+  const gated = await f.router.request("thread/resume", structuredClone(configOnly));
+  assert.deepEqual(f.sent("thread/resume").params, {
+    ...configOnly, model: nativeSol, modelProvider: identity.provider,
+    config: { model: null, model_reasoning_effort: "high", web_search: "disabled" },
+  }, "a cold executor cannot replace the child with its own model, provider or reasoning default");
+  assert.deepEqual({ model: gated.model, provider: gated.modelProvider, effort: gated.reasoningEffort },
+    { model: nativeSol, provider: identity.provider, effort: "high" });
+
+  const explicitEffort = { threadId: "gw-sub", config: { model_reasoning_effort: "low" } };
+  await f.router.request("thread/resume", structuredClone(explicitEffort));
+  assert.deepEqual(f.sent("thread/resume").params, { ...explicitEffort, model: nativeSol, modelProvider: identity.provider,
+    config: { model_reasoning_effort: "low", web_search: "disabled" } },
+    "the caller's explicit effort is never replaced");
+  await assert.rejects(f.router.request("thread/resume", { threadId: "gw-sub", config: { model: native } }), /cannot change a loaded chat between native and gateway providers/);
+  await assert.rejects(f.router.request("thread/resume", { threadId: "gw-sub", modelProvider: identity.provider === "openai" ? legacyProvider : "openai" }), /cannot change a loaded chat between native and gateway providers/);
 });
 
 test("a new chat keeps the engine the router sent it to when the reply classifies differently", async () => {

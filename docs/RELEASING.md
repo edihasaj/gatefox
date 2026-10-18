@@ -26,6 +26,13 @@ belongs in the release archive.
 4. Run real model tool loops against the installed command on the test Mac. Use
    isolated native and gateway state directories. Record configuration digests,
    provider registration, client-requested chat names, and resume results.
+   For gateway sub-agent routing, run `scripts/e2e-subagent-sidebar.mjs --package
+   INSTALLED_PACKAGE --code CHECKOUT --root FRESH_EVIDENCE_DIRECTORY`.
+   Repeat with `--private`, `--openai`, `--cold --mixed-identity`, and
+   `--cold --config-override`. The real SDK spawns a child against a local mock
+   provider, opens it using the desktop's resume shapes, and continues it while
+   checking its saved identity and reasoning. These checks use private homes and
+   no paid inference. `--baseline` reproduces the pre-fix alias rejection.
    For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
    INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
    and a second evidence directory. Repeat with `--private` for per-connection

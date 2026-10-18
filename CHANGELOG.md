@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 — 2026-10-18
+
+Codex can open sub-agents spawned from gateway chats when the child uses a native
+model name. Resuming a child preserves its saved provider and reasoning settings.
+
 ## 0.5.0 — 2026-10-18
 
 Connected clients now receive real runtime status from private gateway engines.

@@ -30,6 +30,7 @@ import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } 
 import { AppServerChatList, type ChatListDiscovery, type ChatListSource } from "./app-server-chat-list.js";
 import { NativeRuntimeStatus } from "./native-runtime-status.js";
 import { AdapterRuntimeMetadata, type RuntimeMetadataSource } from "./adapter-runtime-metadata.js";
+import { requestedModel } from "./app-server-request-fields.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -625,6 +626,20 @@ export class AppServerBackends {
   private isGatewayThread(thread: Message): boolean {
     return this.identity.classify({ ...threadFacts(thread) }, this.catalogs, "compaction").kind === "gateway";
   }
+  /**
+   * Gateway executors carry native catalog rows for sub-agents. A typed native model is
+   * therefore valid only when this executor's saved child metadata proves it is that
+   * child's current row; aliases and arbitrary native rows stay fail-closed.
+   */
+  private async ownsSavedNativeChild(engine: Engine, threadId: string, model: string): Promise<boolean> {
+    if (!this.catalog.isNative(model)) return false;
+    const result = await engine.connection.request("thread/read", { threadId, includeTurns: false }).catch(() => undefined);
+    const thread = object(result?.thread);
+    // A shared rollout store can answer another child's row. The returned id and
+    // this adapter's actual gateway classification are both part of ownership;
+    // a parent-shaped native row by itself is never sufficient.
+    return thread.id === threadId && thread.model === model && hasParent(thread) && this.isGatewayThread(thread);
+  }
   private runtimeMetadataSources(): RuntimeMetadataSource[] {
     return this.engines.filter(engine => !engine.shared && !engine.connection.closed).map(engine => {
       const connection = engine.connection;
@@ -742,8 +757,13 @@ export class AppServerBackends {
       }
       // Only gateway engines get here; native requests returned above and are forwarded untouched.
       params = trimmedGatewayFeatures("request", stats => trimGatewayFeatureRequest(method, params, stats));
-      const model = object(object(params.collaborationMode).settings).model ?? params.model;
-      if (typeof model === "string" && !engine.aliases.has(model)) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
+      // The desktop SDK treats config.model as a model override too. Keep this
+      // precedence aligned with the router before deciding whether a frozen
+      // executor may serve a native child row.
+      const model = requestedModel(params);
+      const savedNativeChild = typeof params.threadId === "string" && typeof model === "string" && !engine.aliases.has(model)
+        && await this.ownsSavedNativeChild(engine, params.threadId, model);
+      if (typeof model === "string" && !engine.aliases.has(model) && !savedNativeChild) throw new Error("This loaded gateway chat uses an older catalog. Start a new chat to use a newly added model without interrupting it.");
       const compaction = await engine.compaction?.before(method, params);
       if (compaction?.intercepted) return compaction.result || {};
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
