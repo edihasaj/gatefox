@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.4 — 2026-10-19
 
 Claude Desktop can use an opt-in model catalog with real account labels for
 Claude, multiple GPT registrations, and local API models. The separate adapter
@@ -14,6 +14,14 @@ Harness Gateway now has a native macOS app with the fox icon, a setup wizard,
 connection and model management, and a signed background launcher. The app keeps
 the existing gateway running when its window closes and preserves its settings.
 The signed runtime keeps the app identity stable across installed CLI updates.
+
+Production releases can update the app and gateway together through the existing
+background service. Updates verify the signed app and canonical gateway archive
+before installation, preserve the previous app for recovery, and wait for the
+settings window to close.
+
+GitHub builds require an explicit production-branch dispatch and build opt-in.
+Ordinary pushes, pull requests, and default dispatches do not allocate runners.
 
 Thank you to Edi Hasaj for the native macOS app.
 

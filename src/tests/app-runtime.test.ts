@@ -192,7 +192,9 @@ test("refuses unsafe installers, wrappers, ancestors, and an unrelated registry 
 });
 
 test("the installer inline generator exactly matches the runtime association renderer", async () => {
-  const source = await readFile(join(process.cwd(), "scripts/install.sh"), "utf8"); const script = source.match(/<<'JS'\n([\s\S]*?)\nJS/)?.[1]; assert.ok(script, "installer has its Node launcher generator");
+  const source = await readFile(join(process.cwd(), "scripts/install.sh"), "utf8");
+  const script = [...source.matchAll(/<<'JS'\n([\s\S]*?)\nJS/g)].map(match => match[1]).find(value => value?.includes("const [root,launcher,...files]"));
+  assert.ok(script, "installer has its Node launcher generator");
   const root = "/tmp/root with ' quotes";
   const output = join(tmpdir(), `gateway-launcher-${Date.now()}-${Math.random()}.new`);
   const compatibility = `${output}.compat`; const command = output.slice(0, -4);

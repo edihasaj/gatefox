@@ -5,16 +5,31 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { copyVerifiedBackend, verifiedBackend } from './macos-app-backend.mjs';
+import { productionOptions, removeProductionStage, requireProductionSource, stageProductionBackend } from './macos-app-production.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { values } = parseArgs({ options: {
-  backend: { type: 'string' }, 'install-local': { type: 'boolean' },
+  backend: { type: 'string' }, 'install-local': { type: 'boolean' }, production: { type: 'boolean' },
+  'backend-archive': { type: 'string' }, 'backend-sha256': { type: 'string' },
 } });
 if (process.platform !== 'darwin' || process.arch !== 'arm64') {
   throw new Error('Build the native app on an Apple Silicon Mac');
 }
-const backend = verifiedBackend(resolve(values.backend ??
-  join(homedir(), '.local/share/subscription-gateway/current')));
+const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+const production = productionOptions(values);
+const git = gitArgs => execFileSync('git', gitArgs, { cwd: root, encoding: 'utf8' });
+const source = production ? requireProductionSource({ runGit: git, root }) : git(['rev-parse', 'HEAD']).trim();
+const sourceBranch = production ? 'production' : git(['branch', '--show-current']).trim();
+const sourceModified = production ? false : Boolean(git(['status', '--porcelain']).trim());
+let productionStage = null;
+const backend = production
+  ? (() => {
+    productionStage = stageProductionBackend({ ...production, version, source });
+    return productionStage.backend;
+  })()
+  : verifiedBackend(resolve(values.backend ?? join(homedir(), '.local/share/subscription-gateway/current')));
+if (backend.version !== version) throw new Error('Bundled backend version must match the app version');
+process.on('exit', () => { if (productionStage) removeProductionStage(productionStage.stage); });
 const buildEnvironment = { ...process.env };
 const xcodeDeveloper = '/Applications/Xcode.app/Contents/Developer';
 if (!buildEnvironment.DEVELOPER_DIR && existsSync(xcodeDeveloper)) buildEnvironment.DEVELOPER_DIR = xcodeDeveloper;
@@ -23,7 +38,6 @@ run('npm', ['run', 'build']);
 run('swift', ['build', '--package-path', 'native/macos', '-c', 'release']);
 const binaryDirectory = execFileSync('swift', ['build', '--package-path', 'native/macos',
   '-c', 'release', '--show-bin-path'], { cwd: root, env: buildEnvironment, encoding: 'utf8' }).trim();
-const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
 const output = join(root, '.state/macos-app');
 mkdirSync(output, { recursive: true });
 const stage = mkdtempSync(join(output, 'build-'));
@@ -35,6 +49,8 @@ copyFileSync(join(binaryDirectory, 'GatewayApp'), join(app, 'Contents/MacOS/Gate
 chmodSync(join(app, 'Contents/MacOS/GatewayApp'), 0o755);
 copyFileSync(join(binaryDirectory, 'GatewayService'), join(app, 'Contents/MacOS/GatewayService'));
 chmodSync(join(app, 'Contents/MacOS/GatewayService'), 0o755);
+copyFileSync(join(binaryDirectory, 'GatewayUpdateInstaller'), join(app, 'Contents/MacOS/GatewayUpdateInstaller'));
+chmodSync(join(app, 'Contents/MacOS/GatewayUpdateInstaller'), 0o755);
 copyFileSync(join(root, 'assets/brand/macos/AppIcon.icns'), join(resources, 'AppIcon.icns'));
 copyFileSync(join(root, 'assets/brand/fox-master.png'), join(resources, 'fox.png'));
 copyFileSync(join(root, 'LICENSE'), join(resources, 'LICENSE'));
@@ -129,10 +145,17 @@ writeFileSync(join(app, 'Contents/Info.plist'), `<?xml version="1.0" encoding="U
 `);
 writeFileSync(join(resources, 'app-build.json'), JSON.stringify({
   appVersion: version, backendVersion: backend.version, managementVersion: version,
-  source: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
-  sourceModified: Boolean(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()),
+  source, sourceBranch, sourceModified, production: Boolean(production),
+  ...(production ? { backendSha256: production.sha256 } : {}),
   signedForDistribution: false,
 }, null, 2) + '\n');
+if (production) {
+  writeFileSync(join(resources, 'update-policy.json'), JSON.stringify({
+    schemaVersion: 1, version, source, branch: 'production',
+    backendAsset: `harness-gateway-${version}-macos-arm64.tar.gz`,
+    backendSha256: production.sha256,
+  }, null, 2) + '\n');
+}
 run('/usr/bin/plutil', ['-lint', join(app, 'Contents/Info.plist')]);
 const archive = join(stage, `Harness-Gateway-${version}-macos-arm64.zip`);
 run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', app, archive]);

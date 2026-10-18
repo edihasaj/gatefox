@@ -16,6 +16,7 @@ import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 import { chatGptAppRunning, nativeRegistrationClaimed, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
 import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, upgradeGraceMs, upgradeQuietMs, type SupervisorHealing } from "./service-heal.js";
 import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js";
+import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
 /** Why a quiet upgrade waited: the host's reason, or inference that refused its idle guard. */
@@ -70,6 +71,7 @@ export class ServiceSupervisor {
   /** The shared execution host's start, backoff, kick, probe and host-only restart (src/service-host-keeper.ts). */
   private readonly host: ServiceHostKeeper;
   private stopHealth?: () => void;
+  private appUpdates?: AppUpdateSchedule;
   private statusFailedAt = Number.NEGATIVE_INFINITY;
   /** `self_upgrade_waiting` already logged, per pending release and reason. */
   private readonly upgradeWaits = new Set<string>();
@@ -130,6 +132,9 @@ export class ServiceSupervisor {
       { state: this.heal.releaseState, urgent: to => this.skewWaiting(to), bind: nudge => { this.nudgeUpgrade = nudge; } });
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
+    // Updates share this existing service lifecycle; they never add another
+    // LaunchAgent and the scheduler itself refuses checkout/test modules.
+    this.appUpdates = await startAppUpdateScheduler(this.plan.config);
     await this.publish();
   }
   /** Probes the running host now; the service's own probe tick does the same (see ServiceHostKeeper.checkHost). */
@@ -378,6 +383,7 @@ export class ServiceSupervisor {
     this.host.stopWatching();
     // Stops the watchdog heartbeat and aborts a compatibility check it is still running.
     this.stopHealth?.();
+    this.appUpdates?.stop();
     // Inference lets running streams finish before it exits, so it gets its drain on top
     // of the usual grace. Shared executors are its local clients: the host closes only
     // once inference has exited, or their running streams would end as cancelled. Plans

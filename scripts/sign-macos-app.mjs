@@ -10,6 +10,7 @@ import { digest, verifiedBackend } from './macos-app-backend.mjs';
 
 const BACKEND = 'Contents/Resources/backend';
 const BUILD_RECEIPT = 'Contents/Resources/app-build.json';
+const UPDATE_POLICY = 'Contents/Resources/update-policy.json';
 const TEAM = /^TeamIdentifier=([A-Z0-9]+)$/m;
 const SHA1 = /^[a-fA-F0-9]{40}$/;
 const DEVELOPER_ID_REQUIREMENT = 'anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists';
@@ -108,6 +109,33 @@ function readJson(path, label) {
   catch { throw new Error(`Invalid ${label}`); }
 }
 
+function sourceGit(args) {
+  return command('git', args).stdout;
+}
+
+export function preflightProductionSigning(app, receipt, { runGit = sourceGit } = {}) {
+  if (receipt.production !== true) return;
+  if (receipt.sourceBranch !== 'production' || receipt.sourceModified !== false ||
+      !/^[a-f0-9]{40}$/.test(receipt.source ?? '') ||
+      !/^\d+\.\d+\.\d+$/.test(receipt.appVersion ?? '') ||
+      receipt.backendVersion !== receipt.appVersion ||
+      !/^[a-f0-9]{64}$/.test(receipt.backendSha256 ?? '')) {
+    throw new Error('Invalid production app build receipt');
+  }
+  if (runGit(['branch', '--show-current']).trim() !== 'production' ||
+      runGit(['status', '--porcelain']).trim() ||
+      runGit(['rev-parse', 'HEAD']).trim() !== receipt.source) {
+    throw new Error('Production app signing requires a clean matching production source');
+  }
+  const policy = readJson(appPath(app, UPDATE_POLICY), 'update policy');
+  const expected = {
+    schemaVersion: 1, version: receipt.appVersion, source: receipt.source, branch: 'production',
+    backendAsset: `harness-gateway-${receipt.appVersion}-macos-arm64.tar.gz`,
+    backendSha256: receipt.backendSha256,
+  };
+  if (JSON.stringify(policy) !== JSON.stringify(expected)) throw new Error('Production update policy does not match app build receipt');
+}
+
 function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -127,6 +155,8 @@ function componentTargets(app, backend) {
   const targets = [
     { component: 'service', binary: 'Contents/MacOS/GatewayService', receipt: null,
       identifier: 'com.edihasaj.harness-gateway.service' },
+    { component: 'updater', binary: 'Contents/MacOS/GatewayUpdateInstaller', receipt: null,
+      identifier: 'com.edihasaj.harness-gateway.updater' },
     { component: 'node', binary: `${BACKEND}/runtime/bin/node`, receipt: null,
       identifier: 'com.edihasaj.harness-gateway.node', entitlements: entitlement('Node') },
   ];
@@ -326,7 +356,7 @@ function notarize(run, app, options) {
   }
 }
 
-export function signMacosApp(options, { run = command } = {}) {
+export function signMacosApp(options, { run = command, runGit = sourceGit } = {}) {
   const app = options.app;
   if (!app || !isAbsolute(app) || !app.endsWith('.app')) throw new Error('--app must be an absolute .app path');
   rejectSymlinkedPath(app);
@@ -339,6 +369,7 @@ export function signMacosApp(options, { run = command } = {}) {
   const backend = verifiedBackend(backendRoot);
   const receiptPath = appPath(app, BUILD_RECEIPT);
   const receipt = readJson(receiptPath, 'app build receipt');
+  preflightProductionSigning(app, receipt, { runGit });
   if (receipt.signedForDistribution || receipt.signingDerivative) {
     throw new Error('Refusing to sign an already signed derivative');
   }

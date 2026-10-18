@@ -6,6 +6,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision, gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 
+/** A release receipt: the parent bundle is the legacy origin, each component may name its own. */
+type ComponentReceipt = { bundleVersion: string; bundleSha256: string;
+  components: { gatewaySdk: { buildVersion: string; sourceSha256: string; files: { name: string; size: number; sha256: string }[]; origin?: { bundleVersion: string; bundleSha256: string } } } };
+
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "gateway-sdk-runtime-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -31,8 +35,9 @@ async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
   const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {
     const bytes = await readFile(join(f.directory, name)); return { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
   }));
-  const release = { version: "0.2.24", reusedComponents: { bundleVersion: f.metadata.version, bundleSha256: "b".repeat(64),
-    components: { gatewaySdk: { buildVersion: f.metadata.version, sourceSha256, files } } } };
+  const release: { version: string; reusedComponents: ComponentReceipt } = { version: "0.2.24",
+    reusedComponents: { bundleVersion: f.metadata.version, bundleSha256: "b".repeat(64),
+      components: { gatewaySdk: { buildVersion: f.metadata.version, sourceSha256, files } } } };
   const releasePath = join(f.root, "release.json"); const saveRelease = (value = release) => writeFile(releasePath, JSON.stringify(value), { mode: 0o600 });
   await saveRelease(); return { ...f, release, releasePath, saveRelease };
 }
@@ -129,4 +134,25 @@ test("reuse does not relax SDK revision, patch, platform, profile, capability or
   const receipt = await readFile(f.receipt); const file = release.reusedComponents.components.gatewaySdk.files.find(entry => entry.name === "build.json")!;
   file.size = receipt.length; file.sha256 = createHash("sha256").update(receipt).digest("hex"); await f.saveRelease(release);
   await assert.rejects(gatewaySdkRuntime(f.root), /does not match/);
+});
+
+test("a reused component origin wins over the parent bundle it was staged from", async t => {
+  const f = await reusedFixture(t); const release = structuredClone(f.release);
+  // The relay came from its own newer bundle, so the parent receipt no longer describes this component's origin.
+  release.reusedComponents.bundleVersion = "0.2.19"; release.reusedComponents.bundleSha256 = "c".repeat(64);
+  release.reusedComponents.components.gatewaySdk.origin = { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64) };
+  await f.saveRelease(release);
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  const malformed: unknown[] = [{ bundleVersion: f.metadata.version }, { bundleSha256: "d".repeat(64) }, { bundleVersion: "0.2.19", bundleSha256: "d".repeat(64) },
+    { bundleVersion: f.metadata.version, bundleSha256: "not-a-digest" }, { bundleVersion: null, bundleSha256: "d".repeat(64) },
+    null, "0.2.23", { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64), extra: 1 }];
+  for (const origin of malformed) {
+    const value = structuredClone(f.release);
+    value.reusedComponents.components.gatewaySdk.origin = origin as never; await f.saveRelease(value);
+    await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, `origin ${JSON.stringify(origin)}`);
+  }
+  // No origin at all still resolves the parent receipt, so a release built before per-component origins keeps working.
+  const legacy = structuredClone(f.release); delete legacy.reusedComponents.components.gatewaySdk.origin;
+  await f.saveRelease(legacy);
+  assert.equal((await gatewaySdkRuntime(f.root))?.binarySha256, f.metadata.binarySha256);
 });
