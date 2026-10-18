@@ -22,6 +22,16 @@ mkdir -p "$root/releases" "$prefix/bin"
 if [ -e "$root/.gateway-installation" ]; then
   test "$(cat "$root/.gateway-installation")" = subscription-gateway || { echo 'Installation root is unmanaged.' >&2; exit 2; }
 fi
+installation_lock="$root/.gateway-installation-lock"
+if ! mkdir "$installation_lock" 2>/dev/null; then
+  echo 'Gateway installation is busy; retry.' >&2
+  exit 75
+fi
+release_installation_lock() { rmdir "$installation_lock" 2>/dev/null || true; }
+trap 'status=$?; release_installation_lock; exit "$status"' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 if [ -e "$release" ]; then
   test -f "$release/.gateway-release" || { echo 'Release path is occupied by an unmanaged directory.' >&2; exit 2; }
   (cd "$release" && shasum -a 256 -c checksums.txt >/dev/null)
@@ -62,13 +72,13 @@ fi
 if [ -e "$compat" ] || [ -L "$compat" ]; then
   test -f "$compat" && grep -q "$managed" "$compat" || { echo 'gateway command is occupied by another installation.' >&2; exit 2; }
 fi
-# A leftover staging name (even a link) is removed first, and the write fails if the name exists, so nothing is written through a link.
-rm -f "$launcher.new" "$compat.new"
+# Staging names are exclusive. A leftover file or link is evidence of another publisher and is never removed here.
 ./runtime/bin/node --input-type=module - "$root" "$launcher" "$launcher.new" "$compat.new" <<'JS'
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const [root,launcher,...files]=process.argv.slice(2);
-const text='#!/bin/sh\n# Managed by subscription-gateway installer\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec '+quote(root+'/current/runtime/bin/node')+' '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
+const appRuntime=root+'/app-runtime';
+const text='#!/bin/sh\n# Managed by subscription-gateway installer\n# App runtime is registered by Harness Gateway.\nruntime='+quote(root+'/current/runtime/bin/node')+'\nif [ -L '+quote(appRuntime)+' ] || [ -e '+quote(appRuntime)+' ]; then\n runtime='+quote(appRuntime+'/bin/node')+'\n [ -x "$runtime" ] || { echo \'Harness Gateway app runtime is unavailable.\' >&2; exit 78; }\n PATH='+quote(appRuntime+'/bin')+':"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"\n export PATH\nfi\nGATEWAY_COMMAND='+quote(launcher)+' GATEWAY_INSTALLED=1 exec "$runtime" '+quote(root+'/current/package/dist/cli.js')+' "$@"\n';
 for(const file of files)writeFileSync(file,text,{flag:'wx'});
 JS
 chmod 700 "$launcher.new" "$compat.new"
