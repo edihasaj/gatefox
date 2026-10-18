@@ -26,6 +26,14 @@ belongs in the release archive.
 4. Run real model tool loops against the installed command on the test Mac. Use
    isolated native and gateway state directories. Record configuration digests,
    provider registration, client-requested chat names, and resume results.
+   For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
+   INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
+   and a second evidence directory. Two clients of the real SDK must expose an
+   already-running chat and receive its actual idle event without resuming it or
+   starting another inference. The fixture uses a local mock provider and private
+   state. By default it checks the checkout's compiled adapter with the package's
+   verified SDK; pass `--code INSTALLED_PACKAGE` to check the packaged adapter too.
+   These checks do not prove the phone's unread rendering.
    For shared execution changes, run `scripts/e2e-shared-execution.mjs` with the
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.

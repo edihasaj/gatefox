@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { executionHostHome, executionCapabilities, readOwnerRecord, receiptPidAlive, socketIdentity, socketAnswers, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
-import type { Message } from "./app-server-connection.js";
+import { object, type Message } from "./app-server-connection.js";
 import type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 import type { NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { nativeHomeOwnership } from "./native-execution-host-storage.js";
@@ -76,7 +76,15 @@ export class ExecutionHostClient {
   static async discover(configPath: string, nativeHome: string, codex: string, capability: ExecutionCapability = "gateway", required = false, signal?: AbortSignal): Promise<ExecutionHostClient | undefined> {
     const home = executionHostHome(configPath, nativeHome); const deadline = Date.now() + hostWaitMs; let kicked = false;
     for (;;) {
-      const look = await ExecutionHostClient.look(home, configPath, nativeHome, codex, capability, required);
+      if (signal?.aborted) throw new Error("Shared executor discovery was cancelled");
+      const pending = ExecutionHostClient.look(home, configPath, nativeHome, codex, capability, required);
+      // SocketAppServerConnection has its own connect timeout. A list operation
+      // must not inherit it: abandon the wait immediately and close a client that
+      // finishes connecting after its caller has gone away.
+      const look = signal ? await Promise.race([pending, new Promise<HostLook>((_, reject) => signal.addEventListener("abort", () => reject(new Error("Shared executor discovery was cancelled")), { once: true }))]).catch(error => {
+        void pending.then(value => value.client?.close(), () => {}); throw error;
+      }) : await pending;
+      if (signal?.aborted) { look.client?.close(); throw new Error("Shared executor discovery was cancelled"); }
       if (!look.failure) return look.client;
       if (!required || !look.retry || signal?.aborted || Date.now() >= deadline) throw look.failure;
       if (!kicked) { kicked = true; await requestHostKick(home); }
@@ -133,6 +141,27 @@ export class ExecutionHostClient {
     if (!this.capabilities.includes("gateway")) return;
     const result = await this.request("execution/find", { threadId });
     return result.found === false ? undefined : this.record(result);
+  }
+  /**
+   * Read the currently running gateway generations without acquiring one.  This is
+   * deliberately separate from `find()`/`acquire()`: a chat-list observer must
+   * never wake a host or take a generation lease merely to render runtime state.
+   */
+  async generations(): Promise<ExecutionRecord[]> {
+    if (!this.capabilities.includes("gateway")) return [];
+    const status = await this.request("execution/status", {});
+    if (status.version !== 1 || !Array.isArray(status.generations) || status.generations.length > 4) {
+      throw new Error("Shared executor returned invalid generation status");
+    }
+    const seen = new Set<string>(); const records: ExecutionRecord[] = [];
+    for (const value of status.generations) {
+      const generation = object(value);
+      if (generation.state !== "running") continue;
+      const record = this.record(generation);
+      if (seen.has(record.revision)) throw new Error("Shared executor returned duplicate generation metadata");
+      seen.add(record.revision); records.push(record);
+    }
+    return records;
   }
   async release(revision: string): Promise<void> { await this.connection.request("execution/release", { revision }); }
   private async codeModeAlreadyEnabled(): Promise<boolean> {
