@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,7 +12,7 @@ import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type E
 import { isReleaseSkew, releaseSkewMessages } from "../execution-host-engine.js";
 import { sdkIdentity } from "../execution-host-storage.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
-import { pendingGatewaySdkReader } from "../self-update.js";
+import { pendingGatewaySdkReader, receiptGatewaySdkSha256 } from "../self-update.js";
 import { chmod } from "node:fs/promises";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import type { GatewayConfig } from "../config.js";
@@ -198,4 +198,16 @@ test("a host with no gateway SDK of its own cannot tell the sides apart and keep
     await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), /^Error: Execution operation failed; managed chat ownership was preserved$/);
     assert.deepEqual(await f.events(), []); assert.equal(host.skewRefused?.("0.4.7"), false);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("the receipt's folder and file are held to the runtime's ownership rules: no symlinks, this user, not writable by others", { timeout: 30000 }, async t => {
+  const r = await releases(t); const pack = join(r.root, "releases", "0.4.7", "package"); const folder = join(pack, "gateway-sdk");
+  assert.equal(await receiptGatewaySdkSha256(pack), r.binarySha256, "the plain case reads");
+  assert.equal(await receiptGatewaySdkSha256(pack, (process.getuid?.() ?? 0) + 1), undefined, "another owner: the folder is not this user's");
+  await chmod(folder, 0o770); assert.equal(await receiptGatewaySdkSha256(pack), undefined, "a folder others can write"); await chmod(folder, 0o700);
+  await rename(r.receipt, join(r.root, "elsewhere.json")); await symlink(join(r.root, "elsewhere.json"), r.receipt);
+  assert.equal(await receiptGatewaySdkSha256(pack), undefined, "a receipt that is a symlink");
+  await rm(r.receipt); await r.save();
+  await rename(folder, join(r.root, "real-gateway-sdk")); await symlink(join(r.root, "real-gateway-sdk"), folder);
+  assert.equal(await receiptGatewaySdkSha256(pack), undefined, "a folder that is a symlink");
 });

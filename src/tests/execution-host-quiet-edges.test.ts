@@ -130,3 +130,15 @@ test("with no quiet time (an urgent release-skew move) a turn that just ended do
     f.host.resume();
   } finally { await f.clean(); }
 });
+
+test("a turn that starts after the quiet read but before the gate closes is caught by the last status look", { timeout: 30000 }, async () => {
+  const f = await quietHost();
+  try {
+    const record = await f.control<ExecutionRecord>("execution/acquire", f.descriptor);
+    const chat = await f.chat(record.socketPath, "late-chat");
+    await chat.turn({ status: "completed", completedAt: seconds(2 * 86_400_000) }); await chat.updated(seconds(2 * 86_400_000));
+    await chat.lateActive(1); // Idle for the quiet read; running for the next read of its status.
+    assert.deepEqual(await f.host.prepareQuietStop!(0), { wait: "running" }, "the gate stayed open");
+    await assert.doesNotReject(f.control("execution/find", { threadId: "late-chat" }), "no acquire or find was held back");
+  } finally { await f.clean(); }
+});

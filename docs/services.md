@@ -696,13 +696,25 @@ The host now says what is happening, and the service moves promptly:
    logged as `self_upgrade` with `mode: "skew"`. A refused SDK that is not the pending
    release's marks nothing urgent.
    Agents that run turns back to back may never be caught idle by a look every 10
-   seconds, so while a release is urgent the host also looks at its engines every second
-   (the same short admin reads as a quiet check; nothing is changed and no gate is
-   closed) and tells the supervisor the moment no turn is running, no approval or input
+   seconds, so while a release is urgent the host also looks at its engines, once a
+   second, and tells the supervisor the moment no turn is running, no approval or input
    is pending and no chat keeps a background terminal, once per such gap. The supervisor
-   then tries the move at once, through the same quiet check and inference guard; a turn
-   that started in between simply makes the check refuse. The 10 second tick stays as
-   the backstop.
+   then tries the move at once, through the same quiet check and inference guard. The
+   look is cheap by design: one short admin connection per engine, a `thread/read` status
+   per loaded chat (an `active` status covers a running turn and one waiting for an
+   approval or input) and, only when no chat is active, its background terminals. It never
+   asks for a turn list, so it never replays a chat's saved history, and it ends at the
+   first chat that is busy. A look blocked by a background terminal, an unreadable chat or
+   more than 256 chats backs off (1 s, doubling up to the 10 second tick) and returns to
+   one second when a gap appears. Each look first checks that the release is still the
+   pending one: after a rollback or a newer install the urgency is dropped, and the look
+   stops until another refusal. The 10 second tick stays as the backstop.
+   The host also does not stop a turn: it cannot hold one back, because turns start on
+   engine sockets, not through the host. The quiet check reads every chat, then looks
+   once more at every engine's chat statuses right before it closes the gate, which
+   leaves a window of a few milliseconds. A turn that starts inside it can still be cut
+   when the service stops, as at any service restart, and continues from saved history
+   after a resume.
 4. **The reverse case.** Once the service has moved, an adapter of the older release
    that asks for a generation gets the `adapter_older` message above, recorded as
    `adapter_older`. Nothing else changes: that adapter moves when the app restarts.

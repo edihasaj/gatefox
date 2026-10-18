@@ -36,13 +36,16 @@ export interface PendingGatewaySdk { release: string; gatewaySdkSha256: string }
  * The gateway SDK checksum a release's build receipt (`<package>/gateway-sdk/build.json`) names. Unlike
  * `gatewaySdkRuntime`, it does not hold the receipt to the pins of the release that is running: a newer release changes the
  * SDK exactly when those pins change (patch, capabilities, revision), and its checksum is what an adapter of that release
- * sends. The file is read the way the runtime reads it (a regular file this user owns, not writable by others, at most 16 KiB)
+ * sends. The folder and the file are checked the way the runtime checks them (a real folder and a regular file this user owns, not writable by others, at most 16 KiB)
  * and must be this platform's, but the binary is not hashed here: the service that starts on that release verifies it fully.
  */
-export async function receiptGatewaySdkSha256(packageDirectory: string): Promise<string | undefined> {
+export async function receiptGatewaySdkSha256(packageDirectory: string, uid: number | undefined = process.getuid?.()): Promise<string | undefined> {
   try {
+    // The folder is held to the runtime's rule too (src/gateway-sdk-runtime.ts): a real folder this user owns that others cannot write.
+    const folder = await lstat(resolve(packageDirectory, "gateway-sdk"));
+    if (!folder.isDirectory() || folder.isSymbolicLink() || (uid !== undefined && folder.uid !== uid) || (folder.mode & 0o022)) return;
     const path = resolve(packageDirectory, "gateway-sdk", "build.json"); const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid()) || (info.mode & 0o022) || info.size > 16384) return;
+    if (!info.isFile() || info.isSymbolicLink() || (uid !== undefined && info.uid !== uid) || (info.mode & 0o022) || info.size > 16384) return;
     const receipt = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> | null;
     if (!receipt || typeof receipt !== "object" || receipt.schemaVersion !== 1 || receipt.platform !== process.platform || receipt.arch !== process.arch) return;
     return typeof receipt.binarySha256 === "string" && /^[a-f0-9]{64}$/.test(receipt.binarySha256) ? receipt.binarySha256 : undefined;

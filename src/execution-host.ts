@@ -12,6 +12,7 @@ import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./na
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { engineActivity } from "./execution-host-activity.js";
+import { engineBusy, skewWatch } from "./execution-host-skew.js";
 import { pendingGatewaySdkReader, type PendingGatewaySdk } from "./self-update.js";
 import { telemetry } from "./telemetry.js";
 
@@ -22,7 +23,7 @@ export interface ExecutionHostOptions { config: GatewayConfig; configPath: strin
   pendingRelease?: () => Promise<PendingGatewaySdk | undefined>;
   /**
    * Called with a release made urgent by a refused newer adapter, the moment no turn is running in any engine (and no approval,
-   * input or background terminal waits), so the supervisor can try the move before the next turn starts (see `watchSkew`). */
+   * input or background terminal waits), so the supervisor can try the move before the next turn starts (see execution-host-skew.ts). */
   onSkewIdle?: (release: string) => void }
 const maxFrame = 4 * 1024 * 1024;
 /** How long after the last turn ended a host with connected adapters still counts as in use (see prepareQuietStop). */
@@ -119,40 +120,16 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   // installed (pending) release's, and older otherwise. Each direction is recorded at most once per `skewEventGapMs`, with the
   // refusals since the last record; a newer adapter also marks its release urgent for the supervisor (see `skewRefused`).
   const readPendingRelease = options.pendingRelease ?? pendingGatewaySdkReader();
-  const skewRefusals = new Map<string, { count: number; recordedAt: number }>(); const urgentReleases = new Set<string>();
-  let skewTimer: NodeJS.Timeout | undefined; let skewIdle = false; let skewReading = false;
-  /**
-   * While a release is urgent, looks at the engines every `skewWatchMs` and tells `onSkewIdle` when none has a turn running, a
-   * pending approval or input, or a background terminal, once per time that becomes true. Agents that run turns back to back
-   * leave only short gaps that the supervisor's own 10 second look would miss. The host never sees turn notifications (see
-   * execution-host-activity.ts), so this reads the engines with the same transient admin connections as a quiet check; it
-   * changes nothing and closes no gate: the supervisor's own quiet check (`prepareQuietStop(0)`) decides, and a turn that starts
-   * in between simply makes it refuse.
-   */
-  const watchSkew = () => {
-    if (skewTimer || !options.onSkewIdle) return;
-    skewTimer = setInterval(() => {
-      if (skewReading || stopping || quiescing || !urgentReleases.size) return;
-      skewReading = true;
-      void (async () => {
-        let idle = true;
-        for (const engine of [...engines.values(), ...(native ? [native] : [])]) {
-          if (engine.closed) continue;
-          const activity = await engineActivity(engine.record.socketPath, engine.owner.socket, 0);
-          if (activity.running.length || activity.terminals || activity.unknown || activity.tooMany) { idle = false; break; }
-        }
-        const became = idle && !skewIdle; skewIdle = idle;
-        if (became && !stopping) for (const release of urgentReleases) options.onSkewIdle!(release);
-      })().catch(() => { skewIdle = false; }).finally(() => { skewReading = false; });
-    }, skewWatchMs());
-    skewTimer.unref();
-  };
+  const skewRefusals = new Map<string, { count: number; recordedAt: number }>();
+  // The urgent releases and the look that tells the supervisor when no turn runs (see execution-host-skew.ts). It also drops a
+  // release that is no longer the pending one (a rollback, or a newer install), so `skewRefused` does not outlive its cause.
+  const skew = skewWatch({ pending: readPendingRelease, engines: () => [...engines.values(), ...(native ? [native] : [])], onIdle: options.onSkewIdle,
+    halted: () => stopping || quiescing, baseMs: skewWatchMs });
   const noteSkew = async (adapterSha256: string): Promise<SkewDirection> => {
     const pendingRelease = await readPendingRelease().catch(() => undefined);
     const direction = pendingRelease?.gatewaySdkSha256 === adapterSha256 ? "adapter_newer" : "adapter_older";
-    if (direction === "adapter_newer") urgentReleases.add(pendingRelease!.release);
     const entry = skewRefusals.get(direction) ?? { count: 0, recordedAt: Number.NEGATIVE_INFINITY }; entry.count++; skewRefusals.set(direction, entry);
-    if (direction === "adapter_newer") watchSkew();
+    if (direction === "adapter_newer") skew.mark(pendingRelease!.release);
     if (performance.now() - entry.recordedAt >= skewEventGapMs()) { telemetry("release_skew_refused", { direction, count: entry.count }); entry.count = 0; entry.recordedAt = performance.now(); }
     return direction;
   };
@@ -320,8 +297,11 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
    * keeps a background terminal, no turn ended within `quietMs`, every chat whose turns cannot be listed has been seen settled
    * for `quietMs`, and every loaded chat could be read; otherwise the first reason it is not. Like prepareStop it runs in the
    * serial queue and closes the gate itself, so no acquire or find runs between this check and the close; resume() reopens it.
-   * Turns start on engine sockets, not here, so a turn started in the moment between this check and the close is not held
-   * back: the supervisor closes at once. Undefined while the host is stopping or its gate is already closed.
+   * Turns start on engine sockets, not here, so this host cannot hold one back. A quiet verdict is therefore checked once more,
+   * by a status-only look at every engine, just before the gate closes; a turn that starts after that last look (a few
+   * milliseconds, in which the host asks each engine only for its chats' status) and before the supervisor stops can still be cut,
+   * as at any service restart, and continues from saved history after a resume. Undefined while the host is stopping or its gate
+   * is already closed.
    */
   const prepareQuietStop = (quietMs = defaultQuietMs): Promise<QuietStop | undefined> => {
     const operation = serial.then(async (): Promise<QuietStop | undefined> => {
@@ -347,13 +327,16 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       const wait: QuietWait | undefined = running.size ? "running" : terminals ? "background_terminal" : tooMany ? "too_many" : unknown ? "unreadable"
         : [...settlingSince.values()].some(since => now - since < quietMs) ? "ephemeral_settling" : now - lastTurnEndedAtMs < quietMs ? "recent_turn" : undefined;
       if (wait) return { wait };
+      // The verdict above is as old as the longest read; look at every engine's chats once more, status only, right before the close.
+      try { for (const [, engine] of owned) if (!engine.closed) { const last = await engineBusy(engine.record.socketPath, engine.owner.socket, false); if (last !== "idle") return { wait: last === "running" ? "running" : "unreadable" }; } }
+      catch { return { wait: "unreadable" }; }
       if (stopping) return;
       quiescing = true; return { loadedChats };
     });
     serial = operation.catch(() => undefined); return operation;
   };
   const close = (): Promise<void> => closed ||= (async () => {
-    stopping = true; clearInterval(skewTimer); for (const socket of sockets.clients) socket.terminate();
+    stopping = true; skew.stop(); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
@@ -400,6 +383,6 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     await listenPrivate(server, physicalPath); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();
-    return { close, prepareStop, prepareQuietStop, skewRefused: release => !stopping && urgentReleases.has(release), resume: () => { if (!stopping) quiescing = false; } };
+    return { close, prepareStop, prepareQuietStop, skewRefused: release => !stopping && skew.has(release), resume: () => { if (!stopping) quiescing = false; } };
   } catch (error) { await close(); throw error; }
 }
