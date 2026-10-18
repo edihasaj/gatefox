@@ -21,6 +21,21 @@ Claude, Copilot and other rows, and clients without a native catalog, get no
 model-specific base prompt. Explicit and resumed client instructions remain
 authoritative.
 
+**Collaboration tool transport.** Before forwarding to a translated Responses
+provider, the gateway removes the optional `encrypted` JSON Schema marker only
+from `parameters.properties.message` on the exact `collaboration` namespace
+function tools `spawn_agent`, `send_message`, and `followup_task`. Those caller-
+executed message arguments therefore remain plaintext for a provider that cannot
+decrypt Codex transport ciphertext. On the Codex subscription route only, the
+reserved `collaboration` namespace is also given a collision-free
+`gateway_collaboration` wire alias (with underscores appended when needed) in
+top-level and `additional_tools` declarations, explicit tool choice, and replayed
+function calls/results. Upstream calls are mapped back before caller catalog
+resolution, so the caller still receives and executes `collaboration` tools. This
+is a copy-on-write transport transform: it does not change the caller request,
+tool arguments, other schemas, or encrypted output metadata. Ordinary Responses
+API routes retain the original namespace.
+
 **Response ids.** Every response id is `resp_<32 hex>`. While the usage ledger is on
 ([diagnostics](diagnostics.md#usage-ledger)), responses from Copilot and Claude
 subscription routes use `resp_gl_<request id without dashes>`, the same hex as the
