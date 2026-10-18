@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 const run = promisify(execFile);
 const apple = { skip: process.platform !== "darwin" || process.arch !== "arm64" ? "the installer only runs on an Apple Silicon Mac" : false };
@@ -25,7 +26,7 @@ async function layout() {
     await writeFile(join(source, "checksums.txt"), sums.stdout);
   };
   await publish("9.9.9");
-  const install = () => run("/bin/sh", [join(source, "install"), "--prefix", prefix], { cwd: source, env: { ...process.env, HOME: home } })
+  const install = (args: string[] = []) => run("/bin/sh", [join(source, "install"), "--prefix", prefix, ...args], { cwd: source, env: { ...process.env, HOME: home } })
     .then(result => ({ code: 0, stderr: result.stderr }), (error: { code: number; stderr: string }) => ({ code: error.code, stderr: error.stderr }));
   const bin = (name: string) => join(prefix, "bin", name);
   return { root, source, prefix, home, install, bin, publish, cleanup: () => rm(root, { recursive: true, force: true }) };
@@ -115,6 +116,42 @@ test("installing the same version again keeps the last different release as prev
   } finally { await l.cleanup(); }
 });
 
+test("a previous-release link to a release directory is atomically replaced, never followed", apple, async () => {
+  const l = await layout();
+  try {
+    const root = join(l.prefix, "share/subscription-gateway"), previous = join(root, "previous-release");
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    await symlink("releases/1.0.0", previous);
+    await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
+    const info = await lstat(previous);
+    assert.equal(info.isSymbolicLink(), false);
+    assert.equal((await readFile(previous, "utf8")).trim(), "releases/1.0.0");
+    assert.equal((await readdir(join(root, "releases", "1.0.0"))).some(name => name.startsWith("previous-release.new-")), false);
+  } finally { await l.cleanup(); }
+});
+
+test("a transaction nonce records receipts before each real installer publication", apple, async () => {
+  const l = await layout();
+  try {
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    await l.publish("2.0.0");
+    const root = join(l.prefix, "share/subscription-gateway"), save = async (path: string) => {
+      const info = await lstat(path).catch(() => undefined);
+      if (!info) return { kind: "none" };
+      const bytes = info.isSymbolicLink() ? Buffer.from(await readlink(path)) : await readFile(path);
+      return { kind: info.isSymbolicLink() ? "link" : "file", ...(info.isSymbolicLink() ? { target: await readlink(path) } : { bytes: bytes.toString("base64") }),
+        receipt: { dev: info.dev, ino: info.ino, mode: info.mode & 0o777, size: info.size, digest: createHash("sha256").update(bytes).digest("hex") } };
+    };
+    const nonce = randomUUID(), before = { current: await save(join(root, "current")), previous: await save(join(root, "previous-release")),
+      wrappers: { gateway: await save(l.bin("gateway")), "harness-gateway": await save(l.bin("harness-gateway")), "subscription-gateway": await save(l.bin("subscription-gateway")) } };
+    await writeFile(join(root, "app-update-transaction.json"), JSON.stringify({ schema: 1, root, prefix: l.prefix, app: join(l.root, "Harness Gateway.app"),
+      version: "2.0.0", team: "ABCDE12345", nonce, phase: "installing", before }), { mode: 0o600 });
+    assert.equal((await l.install(["--update-transaction", nonce])).code, 0);
+    const journal = JSON.parse(await readFile(join(root, "app-update-transaction.json"), "utf8"));
+    assert.deepEqual(Object.keys(journal.installer.outputs).sort(), ["current", "gateway", "harness-gateway", "previous"]);
+  } finally { await l.cleanup(); }
+});
+
 test("an active runtime publisher lock refuses an installer update without replacing wrappers", apple, async () => {
   const l = await layout();
   try {
@@ -127,19 +164,26 @@ test("an active runtime publisher lock refuses an installer update without repla
 
 test("TERM exits through cleanup without publishing wrappers after a controlled installer pause", apple, async () => {
   const l = await layout();
+  let child: ReturnType<typeof spawn> | undefined;
   try {
     const sdk = join(l.source, "package/gateway-sdk"); const ready = join(l.home, "paused"); await mkdir(sdk);
     await writeFile(join(sdk, "gateway-codex"), `#!/bin/sh\nprintf ready > "$HOME/paused"\nwhile :; do sleep 1; done\n`, { mode: 0o755 }); await l.publish("9.9.8");
-    const child = spawn("/bin/sh", [join(l.source, "install"), "--prefix", l.prefix], { cwd: l.source, env: { ...process.env, HOME: l.home }, detached: true, stdio: "ignore" });
-    for (let attempt = 0; attempt < 100; attempt++) {
-      if (await readFile(ready, "utf8").then(() => true, () => false)) break;
-      await new Promise(resolve => setTimeout(resolve, 10));
+    const installer = spawn("/bin/sh", [join(l.source, "install"), "--prefix", l.prefix], { cwd: l.source, env: { ...process.env, HOME: l.home }, detached: true, stdio: "ignore" }); child = installer;
+    const deadline = Date.now() + 5000; let handshake = "";
+    while (Date.now() < deadline) {
+      handshake = await readFile(ready, "utf8").catch(() => "");
+      if (handshake === "ready") break;
+      await new Promise(resolve => setTimeout(resolve, 20));
     }
-    assert.equal(await readFile(ready, "utf8"), "ready"); process.kill(-child.pid!, "SIGTERM");
-    const code = await new Promise<number | null>(resolve => child.once("close", resolve)); assert.equal(code, 143);
+    assert.equal(handshake, "ready"); process.kill(-installer.pid!, "SIGTERM");
+    const code = await new Promise<number | null>(resolve => installer.once("close", resolve)); assert.equal(code, 143);
+    child = undefined;
     await assert.rejects(lstat(l.bin("gateway"))); await assert.rejects(lstat(l.bin("harness-gateway")));
     await assert.rejects(lstat(join(l.prefix, "share/subscription-gateway/.gateway-installation-lock")));
-  } finally { await l.cleanup(); }
+  } finally {
+    if (child?.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch {} }
+    await l.cleanup();
+  }
 });
 
 test("the installer runs gateway-codex --version once before current switches, and skips it when the file is missing", apple, async () => {

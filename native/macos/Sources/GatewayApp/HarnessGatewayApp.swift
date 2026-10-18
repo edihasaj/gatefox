@@ -7,6 +7,7 @@ struct HarnessGatewayApp: App {
     @NSApplicationDelegateAdaptor(GatewayLifecycleDelegate.self) private var lifecycle
     @StateObject private var model: GatewayModel
     @StateObject private var connections: GatewayConnectionsModel
+    @StateObject private var updates: GatewayUpdatesModel
     @StateObject private var navigation = GatewayNavigation()
 
     init() {
@@ -25,17 +26,20 @@ struct HarnessGatewayApp: App {
             gateway: gateway,
             bridge: GatewayManagementCommand(homeDirectory: launch.homeDirectory)
         ))
+        _updates = StateObject(wrappedValue: GatewayUpdatesModel())
     }
 
     var body: some Scene {
         Window("Harness Gateway", id: "main") {
             GatewayView(model: model, connections: connections)
                 .environmentObject(navigation)
+                .environmentObject(updates)
                 .frame(minWidth: 800, minHeight: 600)
                 .preferredColorScheme(.light)
                 .onAppear {
                     lifecycle.connections = connections
                     lifecycle.gateway = model
+                    lifecycle.updates = updates
                 }
                 .onDisappear { Task { await connections.endWizardSession() } }
                 .sheet(isPresented: $navigation.showSetup) {
@@ -75,6 +79,11 @@ struct HarnessGatewayApp: App {
             }
 
             CommandGroup(after: .toolbar) {
+                Button("Check for Updates…") {
+                    navigation.openUpdates()
+                }
+                .keyboardShortcut("u", modifiers: [.command, .option])
+
                 Button("Add Connection…") {
                     navigation.showSetup = true
                 }
@@ -104,4 +113,10 @@ final class GatewayNavigation: ObservableObject {
 
     @Published var selection: Section? = .overview
     @Published var showSetup = false
+    @Published private(set) var updateCheckID = 0
+
+    func openUpdates() {
+        selection = .settings
+        updateCheckID &+= 1
+    }
 }

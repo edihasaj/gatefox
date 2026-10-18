@@ -6,21 +6,27 @@ import { parseArgs } from 'node:util';
 import { nativeSourceDigest } from './native-source.mjs';
 import { sdkArchiveSha256 as relaySdkArchiveSha256, sdkCodexVersion as relaySdkCodexVersion, sdkRevision as relaySdkRevision } from './native-relay-sdk.mjs';
 import { releaseVersionProblem } from './release-version.mjs';
-import { releaseComponentPlan, verifyReleaseComponents, copyReleaseComponents } from './release-components.mjs';
+import { releaseComponentPlan, verifyReleaseComponentSources, copyReleaseComponents } from './release-components.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
   'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' },
-  'fresh-native': { type: 'boolean' } } });
+  'reuse-native-from': { type: 'string' }, 'native-sha256': { type: 'string' }, 'fresh-native': { type: 'boolean' } } });
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
 const versionProblem = releaseVersionProblem(version); if (versionProblem) throw new Error(versionProblem);
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !values['allow-dirty']) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
 const plan = releaseComponentPlan({ withNative: values['with-native'], withGatewaySdk: values['with-gateway-sdk'],
-  reuseFrom: values['reuse-components-from'], componentsSha256: values['components-sha256'], freshNative: values['fresh-native'] });
-const reused = plan.reuse ? verifyReleaseComponents(resolve(values['reuse-components-from']),
-  values['components-sha256'], plan.reuse) : undefined;
+  reuseFrom: values['reuse-components-from'], componentsSha256: values['components-sha256'],
+  reuseNativeFrom: values['reuse-native-from'], nativeSha256: values['native-sha256'], freshNative: values['fresh-native'] });
+const sources = {};
+if (plan.reuse) for (const [key, selected] of Object.entries(plan.reuse)) {
+  if (selected) sources[key] = { archivePath: resolve(values['reuse-components-from']), expectedSha256: values['components-sha256'], flag: '--components-sha256' };
+}
+// The relay can come from its own published bundle, authenticated and selected independently of the SDK's.
+if (plan.reuseNative) sources.native = { archivePath: resolve(plan.reuseNative.from), expectedSha256: plan.reuseNative.sha256, flag: '--native-sha256' };
+const reused = plan.reuse || plan.reuseNative ? verifyReleaseComponentSources(sources) : undefined;
 const name = `harness-gateway-${version}-macos-arm64`; const directory = join(root, name);
 if (reused && existsSync(directory)) throw new Error('Component reuse requires a fresh release stage; move the previous stage to Trash first');
 const runtimeArchive = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64.tar.gz');
@@ -67,7 +73,8 @@ const files = [];
 function walk(path, relative = '') { for (const name of readdirSync(path).sort()) { const child = join(path, name); const entry = relative ? `${relative}/${name}` : name; if (statSync(child).isDirectory()) walk(child, entry); else if (entry !== 'checksums.txt') files.push(entry); } }
 walk(directory);
 writeFileSync(join(directory, 'checksums.txt'), files.map(file => `${createHash('sha256').update(readFileSync(join(directory, file))).digest('hex')}  ${file}`).join('\n') + '\n');
-execFileSync('tar', ['-czf', join(root, `${name}.tar.gz`), '-C', root, name]);
+execFileSync('tar', ['--format=ustar', '-czf', join(root, `${name}.tar.gz`), '-C', root, name],
+  { env: { ...process.env, COPYFILE_DISABLE: '1' } });
 const asset = join(root, `${name}.tar.gz`);
 writeFileSync(join(root, 'SHA256SUMS'), `${createHash('sha256').update(readFileSync(asset)).digest('hex')}  ${name}.tar.gz\n`);
 console.log(JSON.stringify({ asset, checksum: join(root, 'SHA256SUMS'), version, bundledRuntime: true }));

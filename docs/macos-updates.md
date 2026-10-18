@@ -1,0 +1,76 @@
+---
+summary: 'Daily signed macOS app updates from the private GitHub release.'
+read_when:
+  - Changing the macOS app updater or app release assets
+  - Investigating an unavailable, deferred, or rolled-back app update
+---
+
+# macOS app updates
+
+The installed app checks the private `app-vVERSION` GitHub releases daily. It
+needs existing GitHub authentication that can read `edihasaj/harness-gateway`;
+the updater never asks for, stores, or prints a token. A release provides one
+notarized app ZIP, its matching gateway backend archive, `app-update.json`, and
+`SHA256SUMS`.
+
+```text
+private GitHub draft → signed ZIP + signed policy → daily check
+                                               ↓
+                                    checksum and receipt validation
+                                               ↓
+                             wait for every app window to close
+                                               ↓
+                           activate retained bundle / preserve CLI service
+```
+
+The updater downloads both the matching canonical CLI archive and signed app ZIP.
+It checks their hashes, app metadata, and signed in-bundle `update-policy.json`
+before activation. The policy binds the app to the exact backend archive version,
+production commit, and SHA-256. It refuses missing, partial, modified, or
+mismatched assets.
+
+Activation waits until every app window has closed. It preserves active chats and
+jobs: processes already loaded from the earlier CLI release continue, then adopt
+the installed CLI release through their normal idle-update protocol. Opening the
+app before an update is ready keeps the current bundle active.
+
+The updater retains the previous app bundle for transaction rollback. A failed
+installation transaction restores that retained bundle; it does not claim to
+detect or roll back a later launch failure. The gateway configuration remains
+unchanged.
+
+Recovery restores only files that still match the transaction's publication
+receipts. It preserves concurrent changes. A forced termination can leave an
+unknown installation lock, which the updater will not break automatically.
+After confirming that no installer or updater remains, move only the stale
+`.gateway-installation-lock` directory in the installation root to Trash before
+retrying.
+
+## Release availability
+
+The updater sees an app release only after its draft assets have all uploaded,
+their GitHub-reported sizes and SHA-256 digests match local files, and the draft
+is published. App releases are private. GitHub authentication is therefore a
+deployment prerequisite, not an app setup flow.
+
+Use the local production release command described in
+[Release](RELEASING.md#macos-app-distribution). It does not dispatch, enable, or
+rerun GitHub Actions. Follow the [CI cost policy](ci-cost-policy.md): hosted
+native work stays off unless Edi explicitly requests its separate paid,
+production-only workflow. Before the release is uploaded, that command runs the
+updater fixture against an existing signed app and installed CLI release in a
+fresh private fixture directory; no live service is changed.
+
+## Desktop verification limits
+
+The October 18 inspection found one gateway startup job on Studio and MacBook.
+MacBook's Login Items panel still displayed two enabled Harness Gateway rows.
+Reading the records behind those rows required administrator authorization, so
+their exact cause remains unverified. No background-item reset or service
+restart was used to clear the display.
+
+Existing services keep their loaded runtime until their normal idle upgrade.
+Matching signing requirements and passing isolated runtime checks do not prove
+that a macOS privacy grant survives an app update. That check still needs an
+existing approved action on an unlocked Mac; no privacy grants were reset or
+automatically accepted during verification.

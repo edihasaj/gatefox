@@ -196,6 +196,24 @@ async function validate(source: Source, configPath: string, helper: string, deco
   if (!emptyAssociated && associated !== appIdentifier && !(Array.isArray(associated) && associated.length === 1 && associated[0] === appIdentifier)) throw new Error("unsafe");
   return { source, plist, needsChange: !plistIsAssociated(plist, helper) };
 }
+/** Read-only proof that the selected configuration is the one the gateway's
+ * primary owned LaunchAgent actually runs. Update code reuses this boundary. */
+export async function managedAppServiceBinding(configPath: string, appPath: string, expectedCommand?: string): Promise<boolean> {
+  try {
+    const home = process.env.HOME;
+    if (!home || !isAbsolute(home) || !isAbsolute(configPath) || !isAbsolute(appPath)) return false;
+    const plist = await readOwnedFile(join(home, "Library", "LaunchAgents", `${serviceLabel}.plist`));
+    if (!plist) return false;
+    const bound = await validate(plist, resolve(configPath), join(appPath, "Contents", "MacOS", "GatewayService"), decodePlist);
+    if (expectedCommand) {
+      const expected = await managedInstallationForCommand(expectedCommand);
+      const command = (bound.plist.ProgramArguments as string[])[0]!;
+      const actual = await managedInstallationForCommand(command);
+      if (actual.root !== expected.root || actual.prefix !== expected.prefix) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 function marked(bytes: Buffer): Buffer {
   const text = bytes.toString("utf8"); const index = text.indexOf("<plist"); if (index < 0 || text.includes(serviceMarker)) throw new Error("plist");
   return Buffer.from(`${text.slice(0, index)}${serviceMarker}\n${text.slice(index)}`);

@@ -4,11 +4,13 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var model: GatewayModel
     @EnvironmentObject private var navigation: GatewayNavigation
+    @EnvironmentObject private var updates: GatewayUpdatesModel
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 header
+                updateSettings
                 settingsPath
                 connection
                 background
@@ -29,6 +31,14 @@ struct SettingsView: View {
             .frame(maxWidth: 760, alignment: .leading)
         }
         .accessibilityLabel("Gateway settings")
+        .task(id: model.configPath) {
+            await updates.configure(configPath: model.configPath)
+        }
+        .task(id: navigation.updateCheckID) {
+            guard navigation.updateCheckID > 0 else { return }
+            await updates.configure(configPath: model.configPath)
+            await updates.requestCheck()
+        }
     }
 
     private var header: some View {
@@ -44,6 +54,78 @@ struct SettingsView: View {
                 .font(GatewayTheme.body(14))
                 .foregroundStyle(GatewayTheme.charcoal.opacity(0.64))
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var updateSettings: some View {
+        GatewayPanel {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Harness updates")
+                            .font(GatewayTheme.display(24))
+                            .foregroundStyle(GatewayTheme.charcoal)
+                        Text("Current version \(updates.currentVersion)")
+                            .font(GatewayTheme.body(13))
+                            .foregroundStyle(GatewayTheme.charcoal.opacity(0.62))
+                    }
+                    Spacer()
+                    if updates.isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel("Checking for updates")
+                    }
+                }
+
+                if let latest = updates.latestVersion {
+                    Text(updates.available ? "Version \(latest) is ready." : "Latest version: \(latest)")
+                        .font(GatewayTheme.body(14, weight: .semibold))
+                        .foregroundStyle(updates.available ? GatewayTheme.moss : GatewayTheme.charcoal.opacity(0.72))
+                }
+
+                Text(updates.message)
+                    .font(GatewayTheme.body(14))
+                    .foregroundStyle(GatewayTheme.charcoal.opacity(0.7))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Toggle("Automatically install updates", isOn: Binding(
+                    get: { updates.automatic },
+                    set: { value in Task { await updates.setAutomatic(value) } }
+                ))
+                .font(GatewayTheme.body(14, weight: .medium))
+                .disabled(updates.isBusy)
+
+                HStack(spacing: 10) {
+                    Button(updates.phase == "unavailable" ? "Try again" : "Check now") {
+                        Task { await updates.check() }
+                    }
+                    .buttonStyle(GatewaySecondaryButtonStyle())
+                    .disabled(updates.isBusy)
+
+                    if updates.available && updates.phase != "waiting_for_app_exit" {
+                        Button("Install update") {
+                            Task { await updates.install() }
+                        }
+                        .buttonStyle(GatewayPrimaryButtonStyle())
+                        .disabled(updates.isBusy)
+                    }
+
+                    if updates.isBusy {
+                        Button(updates.isCancelling ? "Cancelling…" : "Cancel") {
+                            Task { await updates.cancel() }
+                        }
+                        .buttonStyle(GatewaySecondaryButtonStyle())
+                        .disabled(updates.isCancelling)
+                    }
+
+                    Spacer()
+                    if let checked = updates.lastChecked {
+                        Text("Checked \(checked, format: .relative(presentation: .named))")
+                            .font(GatewayTheme.body(12))
+                            .foregroundStyle(GatewayTheme.charcoal.opacity(0.5))
+                    }
+                }
+            }
         }
     }
 

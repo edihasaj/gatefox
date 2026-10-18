@@ -86,6 +86,13 @@ for initial approvals and verification limits. Before distributing downloads,
 notarize and staple the complete app and verify Gatekeeper on another Mac.
 Do not re-sign the Codex desktop app.
 
+## Updates
+
+Signed production builds publish through a private GitHub app release. The app
+checks daily, waits for its GUI to close before activation, preserves the
+existing gateway service and active work, and retains the prior bundle for
+rollback. See [macOS app updates](macos-updates.md).
+
 ## Development checks
 
 `npm run app:test` runs native configuration/status/process checks and the

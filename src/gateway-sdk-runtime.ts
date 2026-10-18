@@ -39,6 +39,14 @@ async function componentHash(path: string, maximumSize: number, executable = fal
   } finally { await file.close(); }
 }
 
+/** A component names the bundle it was actually built in; a partial or malformed one is never replaced by the parent's. */
+function componentOrigin(component: Record<string, unknown>, legacy: Record<string, unknown>): { bundleVersion: unknown; bundleSha256: unknown } {
+  if (component.origin === undefined) return { bundleVersion: legacy.bundleVersion, bundleSha256: legacy.bundleSha256 };
+  const origin = record(component.origin);
+  if (Object.keys(origin).length !== 2 || !Object.hasOwn(origin, "bundleVersion") || !Object.hasOwn(origin, "bundleSha256")) throw invalid();
+  return { bundleVersion: origin.bundleVersion, bundleSha256: origin.bundleSha256 };
+}
+
 /** A different build version needs an explicit, byte-verified reused component receipt. */
 async function reusedBinaryHash(packageDirectory: string, directory: string, version: string, metadata: Record<string, unknown>, receiptBytes: Buffer): Promise<string> {
   const receipt = resolve(packageDirectory, "release.json"); const info = await lstat(receipt);
@@ -46,7 +54,8 @@ async function reusedBinaryHash(packageDirectory: string, directory: string, ver
   let release: Record<string, unknown>;
   try { release = record(JSON.parse(await readFile(receipt, "utf8"))); } catch { throw invalid(); }
   const reuse = record(release.reusedComponents); const component = record(record(reuse.components).gatewaySdk);
-  if (release.version !== version || reuse.bundleVersion !== metadata.version || !digest(reuse.bundleSha256)
+  const origin = componentOrigin(component, reuse);
+  if (release.version !== version || origin.bundleVersion !== metadata.version || !digest(origin.bundleSha256)
     || component.buildVersion !== metadata.version || component.sourceSha256 !== metadata.sourceSha256 || component.sourceSha256 !== sourceSha256
     || !Array.isArray(component.files) || component.files.length !== componentFiles.length
     || JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(componentFiles)) throw invalid();

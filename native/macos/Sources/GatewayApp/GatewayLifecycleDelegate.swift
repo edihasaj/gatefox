@@ -1,11 +1,12 @@
 import AppKit
 
-/// Completes an explicit save or cancels unfinished account setup before quit.
-/// The independently managed gateway service keeps its own lifecycle.
+/// Completes app-owned work before quit. The independently managed gateway
+/// service keeps its own lifecycle.
 @MainActor
 final class GatewayLifecycleDelegate: NSObject, NSApplicationDelegate {
     weak var connections: GatewayConnectionsModel?
     weak var gateway: GatewayModel?
+    weak var updates: GatewayUpdatesModel?
     private var terminationPending = false
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -14,16 +15,38 @@ final class GatewayLifecycleDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         let connectionsNeedCleanup = connections.map { $0.isBusy || $0.draft != nil } ?? false
-        guard connectionsNeedCleanup || gateway?.hasPendingWork == true else {
+        let updatesNeedCleanup = updates?.hasPendingWork == true
+        guard connectionsNeedCleanup || gateway?.hasPendingWork == true || updatesNeedCleanup else {
             return .terminateNow
         }
         guard !terminationPending else { return .terminateLater }
         terminationPending = true
+        let connections = connections
+        let gateway = gateway
+        let updates = updates
         Task {
-            await connections?.endWizardSession()
-            await gateway?.waitForPendingWork()
+            await Self.completeTerminationCleanup(
+                connections: connections,
+                gateway: gateway,
+                updates: updates
+            )
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    func completeTerminationCleanup() async {
+        await Self.completeTerminationCleanup(connections: connections, gateway: gateway, updates: updates)
+    }
+
+    private static func completeTerminationCleanup(
+        connections: GatewayConnectionsModel?,
+        gateway: GatewayModel?,
+        updates: GatewayUpdatesModel?
+    ) async {
+        async let connectionsCleanup = connections?.endWizardSession()
+        async let gatewayCleanup = gateway?.waitForPendingWork()
+        async let updatesCleanup = updates?.cancelAndWait()
+        _ = await (connectionsCleanup, gatewayCleanup, updatesCleanup)
     }
 }

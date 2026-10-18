@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/harness-gateway",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
@@ -24,6 +24,8 @@
     "dist/protocol/*.d.ts",
     "dist/app-management/*.js",
     "dist/app-management/*.d.ts",
+    "dist/app-updates/*.js",
+    "dist/app-updates/*.d.ts",
     "dist/app-background/*.js",
     "dist/app-background/*.d.ts",
     "LICENSE",
@@ -40,6 +42,7 @@
     "app:sign": "node scripts/sign-macos-app.mjs",
     "app:test": "node scripts/test-macos-app.mjs",
     "app:e2e": "node scripts/e2e-app-wizard.mjs",
+    "app:release": "node scripts/release-macos-app.mjs",
     "version:next": "node scripts/release-version.mjs",
     "start": "node dist/cli.js serve"
   },
