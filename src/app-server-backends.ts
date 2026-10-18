@@ -27,6 +27,8 @@ import { NativeTurnTracker, nativeId } from "./native-turns.js";
 import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
 import { executorOverrides, nativeEnvironment, newChatProvider } from "./executor-identity.js";
 import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
+import { AppServerChatList, type ChatListDiscovery, type ChatListSource } from "./app-server-chat-list.js";
+import { NativeRuntimeStatus } from "./native-runtime-status.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -77,6 +79,11 @@ export class AppServerBackends {
   /** How each gateway chat was loaded, and the one re-attach per chat at a time when its executor is gone. */
   private readonly loads = new ChatLoads();
   private readonly reattacher = new Reattacher();
+  /** Read-only status bridge for mobile/native chat lists. It owns no gateway engine or chat binding. */
+  private readonly chatList: AppServerChatList;
+  private nativeStatus?: NativeRuntimeStatus;
+  /** A timed-out list caller must leave the host's single raw control RPC joinable. */
+  private readonly generationFlights = new WeakMap<ExecutionHostClient, Promise<ExecutionRecord[]>>();
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
     catalog: DesktopCatalog, emit: (message: Message, engine?: ChatKind) => Promise<void>, onNativeExit: () => void, configPath?: string, signal?: AbortSignal): Promise<AppServerBackends> {
     const plan = await readServicePlan(config.stateDirectory);
@@ -137,6 +144,10 @@ export class AppServerBackends {
     this.args = normalizeCodexFeatureArgs(args, settings);
     this.settings = normalizeCodexFeatureConfig(settings);
     this.compaction = new GatewayCompaction(config.stateDirectory);
+    this.chatList = new AppServerChatList({
+      sources: signal => this.chatListSources(signal), initialized: () => this.initialized,
+      emit: message => this.emit(message, "gateway"),
+    });
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     // The native exit record waits for the drain, because only then is the turn table final.
     const exited = (connection?: RpcConnection) => {
@@ -210,7 +221,12 @@ export class AppServerBackends {
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
     if (connection === this.native && !this.closing) this.nativeTurns.observe(message);
+    if (connection === this.native && !this.closing) this.nativeStatus?.observe(message);
     const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
+    // A borrowed or regular gateway connection is forwarded below, but does not
+    // pass through the passive socket observer. Record its status first so a
+    // stale in-flight read cannot overwrite the event in a mobile list.
+    if (engine && !this.closing) this.chatList.observeStatus(message, engine.revision);
     if (message.method === "thread/started") this.identity.learn(threadFacts(params.thread));
     if (engine) {
       engine.compaction?.observe(message);
@@ -268,6 +284,105 @@ export class AppServerBackends {
       if (client && !client.closed) this.reattacher.hostAvailable();
       return client;
     } catch (error) { return markHostFailure(error); }
+  }
+  /**
+   * List-only generation discovery. Unlike pool(), this never kicks or waits for
+   * host recovery: a mobile list must remain useful while the host is unavailable.
+   */
+  private async chatListSources(signal?: AbortSignal): Promise<ChatListDiscovery | undefined> {
+    if (this.closing) return [];
+    const normal = new Map<string, ChatListSource>();
+    for (const engine of this.engines) if (!engine.connection.closed) {
+      normal.set(engine.revision, { record: { revision: engine.revision, socketPath: "", aliases: [...engine.aliases] }, connection: engine.connection });
+    }
+    const incomplete = (): ChatListDiscovery | undefined => {
+      const sources = [...normal.values()].slice(0, 4);
+      return sources.length ? { sources, complete: false } : undefined;
+    };
+    if (this.sharedGateway === false || (this.sharedGateway !== true && !this.nativeHost && !this.poolClient)) return [...normal.values()].slice(0, 4);
+    let client = this.nativeHost?.client ?? this.poolClient; let transient = false;
+    if (!client || client.closed) {
+      if (!this.configPath) return this.sharedGateway === true ? incomplete() : [...normal.values()].slice(0, 4);
+      try {
+        // Optional discovery is a single receipt/socket inspection. It never asks
+        // the service to recover a stopped host and its client is not retained.
+        client = await ExecutionHostClient.discover(this.configPath, resolve(process.env.CODEX_HOME || homedir() + "/.codex"), this.executable, "gateway", false, signal);
+        transient = !!client;
+      } catch { return incomplete(); }
+    }
+    if (!client || client.closed) return incomplete();
+    if (signal?.aborted) { if (transient) client.close(); return incomplete(); }
+    let timer: NodeJS.Timeout | undefined; let raw: Promise<ExecutionRecord[]> | undefined;
+    try {
+      const cancelled = new Promise<undefined>(resolve => signal?.addEventListener("abort", () => {
+        resolve(undefined);
+      }, { once: true }));
+      raw = this.generations(client);
+      const records = await Promise.race<ExecutionRecord[] | undefined>([raw, cancelled, new Promise<undefined>(resolve => {
+        timer = setTimeout(() => resolve(undefined), 1500).unref();
+      })]);
+      if (!records) return incomplete();
+      for (const record of records) if (!normal.has(record.revision)) normal.set(record.revision, { record });
+      return [...normal.values()].slice(0, 4);
+    } catch { return incomplete(); }
+    finally {
+      clearTimeout(timer);
+      // Transient clients own no generation leases. Closing one cancels its
+      // pending status read; borrowed host clients keep their coalesced flight.
+      if (transient) client.close();
+    }
+  }
+  private generations(client: ExecutionHostClient): Promise<ExecutionRecord[]> {
+    const current = this.generationFlights.get(client); if (current) return current;
+    const work = client.generations(); this.generationFlights.set(client, work);
+    void work.then(
+      () => { if (this.generationFlights.get(client) === work) this.generationFlights.delete(client); },
+      () => { if (this.generationFlights.get(client) === work) this.generationFlights.delete(client); },
+    );
+    return work;
+  }
+  /** Fetch all native loaded ids only for an exact, complete union; failure uses the native page unchanged. */
+  private nativeLoadedFlight?: Promise<Set<string> | undefined>;
+  private nativeLoadedIds(): Promise<Set<string> | undefined> {
+    if (this.nativeLoadedFlight) return this.nativeLoadedFlight;
+    const work = this.enumerateNativeLoadedIds().finally(() => { if (this.nativeLoadedFlight === work) this.nativeLoadedFlight = undefined; });
+    this.nativeLoadedFlight = work; return work;
+  }
+  private async enumerateNativeLoadedIds(): Promise<Set<string> | undefined> {
+    const ids = new Set<string>(); const cursors = new Set<string>(); let cursor: string | undefined;
+    try {
+      for (let page = 0; page < 4; page++) {
+        const result = await this.nativeRequest("thread/loaded/list", { limit: 500, ...(cursor ? { cursor } : {}) });
+        if (!Array.isArray(result.data) || result.data.some(id => typeof id !== "string")) return;
+        for (const id of result.data) ids.add(id as string);
+        if (result.nextCursor == null) return ids;
+        if (typeof result.nextCursor !== "string" || !result.nextCursor || cursors.has(result.nextCursor)) return;
+        cursor = result.nextCursor; cursors.add(cursor);
+      }
+    } catch { /* A native failure must not replace its already returned page. */ }
+    return;
+  }
+  private async loadedList(native: Message, params: Message): Promise<Message> {
+    // The native request above is intentionally first: it preserves its validation
+    // and error surface. Empty native lists need this small additional cursor check.
+    if (params.cursor !== undefined && params.cursor !== null && !AppServerChatList.validCursor(params.cursor)) throw Object.assign(new Error(`invalid cursor: ${String(params.cursor)}`), { code: -32600 });
+    let timer: NodeJS.Timeout | undefined;
+    const nativeStatus = this.nativeStatus;
+    const union = Promise.all([this.nativeLoadedIds(), this.chatList.loadedIds(), nativeStatus ? nativeStatus.loadedIds() : Promise.resolve([])]);
+    const lists = await Promise.race([union, new Promise<[Set<string> | undefined, Set<string> | undefined, string[] | undefined]>(resolve => { timer = setTimeout(() => resolve([undefined, undefined, undefined]), 1900).unref(); })]);
+    clearTimeout(timer);
+    const [nativeIds, gatewayIds, peerIds] = lists;
+    // No native-status bridge means no extra source. Once it exists, though,
+    // undefined is an incomplete peer enumeration, not an empty successful one.
+    if (!nativeIds || !gatewayIds || (nativeStatus && peerIds === undefined)) return native;
+    const all = [...new Set([...nativeIds, ...gatewayIds, ...(peerIds ?? [])].map(id => AppServerChatList.validCursor(id) ? AppServerChatList.canonicalCursor(id) : id))].sort();
+    const cursor = typeof params.cursor === "string" ? AppServerChatList.canonicalCursor(params.cursor) : undefined;
+    let start = 0;
+    if (cursor) { while (start < all.length && all[start] <= cursor) start++; }
+    const requested = params.limit;
+    const limit = typeof requested === "number" && Number.isFinite(requested) ? Math.max(1, Math.floor(requested)) : all.length;
+    const data = all.slice(start, start + limit); const nextCursor = start + data.length < all.length ? data.at(-1) : null;
+    return { ...native, data, nextCursor };
   }
   private async lookupPool(): Promise<ExecutionHostClient | undefined> {
     if (this.closing || this.sharedGateway === false) return;
@@ -508,7 +623,29 @@ export class AppServerBackends {
   /** `hint` decides a thread/start; every other request follows the chat's binding, owner or classification. */
   async request(method: string, params: Message, hint?: EngineHint): Promise<Message> {
     if (method === "initialize") {
-      const result = await this.native.request(method, params); this.initialized = params; return result;
+      const result = await this.native.request(method, params); this.initialized = params;
+      if (!this.nativeStatus && !this.closing) {
+        try {
+          this.nativeStatus = new NativeRuntimeStatus({
+            nativeHome: resolve(process.env.CODEX_HOME || homedir() + "/.codex"),
+            // Supplemental snapshots must not reconcile the caller's turn table:
+            // metadata-only SDK replies deliberately contain an empty turns list.
+            readOnlyNativeRequest: (read, input) => this.native.request(read, input),
+            emitStatus: message => this.closing ? undefined : this.emit(message, "native"),
+          });
+          await this.nativeStatus.start();
+        } catch { /* Supplemental status cannot stop the native connection. */ }
+      }
+      return result;
+    }
+    if (method === "thread/list") {
+      const native = await this.nativeRequest(method, params);
+      const local = this.nativeStatus ? await this.nativeStatus.hydrate(native) : native;
+      return this.chatList.hydrate(local);
+    }
+    if (method === "thread/loaded/list") {
+      const native = await this.nativeRequest(method, params);
+      return this.loadedList(native, params);
     }
     // A live shared SDK is authoritative for active turns. Native disk metadata
     // may label that same gateway chat notLoaded or interrupted.
@@ -625,6 +762,8 @@ export class AppServerBackends {
   /** Why the session ends travels to every owned engine; a plain call stays "session_end" for the adapter's own shutdown. */
   async stop(reason: EngineStopReason = "session_end"): Promise<void> {
     this.closing = true; this.stopped.abort(); this.finishNativeClosing(); stopConnection(this.native, reason);
+    await this.nativeStatus?.stop();
+    await this.chatList.stop();
     this.nativeHost?.client.close();
     const poolClosing = this.poolPending?.then(client => client?.close()).catch(() => {});
     await Promise.allSettled(this.engines.map(engine => engine.compaction?.close()));

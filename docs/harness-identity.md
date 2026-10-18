@@ -125,6 +125,41 @@ through the adapter, such as the phone through the relay, also sees the gateway'
 provider, or a parent filter is sent unchanged. The native default is read from the
 engine's configuration once per connection, and again after a configuration write.
 
+### Runtime state on mobile lists
+
+The native engine remains the source of list membership, ordering, cursors, titles,
+saved metadata, and turns. After it returns a page, the adapter considers only saved
+(`notLoaded`) row ids, intersects them with a bounded gateway loaded-id read, and may
+replace only those rows' runtime fields: `status`, model, reasoning effort,
+environments, and direct-input capability. A native row already live always wins. One
+1.9-second list budget covers discovery and metadata reads; a host failure, timeout, or
+unavailable gateway SDK leaves the native page unchanged.
+
+For a shared generation that no normal adapter connection already observes, the
+adapter opens a passive SDK connection solely to receive real
+`thread/status/changed` notifications. It never resumes a chat, answers approvals,
+forwards content, or owns a gateway engine. SDK new-thread subscriptions are released
+on that passive connection. Discovery runs about every five seconds after a client has
+listed chats, so it can miss transitions that happened before an observer attached;
+notifications do not replay state or history. The SDK has no unread field: clients own
+their unread bookkeeping.
+
+Native chats on separate desktop and relay engines use a private status broker in
+each adapter. It exposes only loaded chat IDs, runtime status, model, effort, and
+direct-input capability through a user-owned Unix socket. Registrations are scoped
+to the native home and checked against their process and socket identities.
+The list client receives genuine native status events and enriches saved rows
+without resuming chats or taking over an engine. An unavailable owner contributes
+no runtime state. Existing native adapters start publishing after their normal
+upgrade or reconnect; the broker cannot observe an older adapter that lacks it.
+
+The native and gateway loaded IDs are combined before applying loaded-list
+pagination. Ordinary chat-list membership and pagination still come from the
+native engine. The checks in `scripts/e2e-chat-state.mjs`, including `--native`,
+use two clients and the real SDK with a local mock provider. They establish
+running-state hydration and idle-event delivery, without paid inference. They do
+not establish the phone's unread rendering.
+
 ### What the phone does
 
 | | Without the relay | With the relay |
