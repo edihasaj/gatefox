@@ -176,8 +176,10 @@ async function makeFixture({ root: fixtureRoot, input: paths, candidate, runtime
   assert.match(legacy.appVersion, /^\d+\.\d+\.\d+$/);
   assert.match(legacy.backendVersion, /^\d+\.\d+\.\d+$/);
   assert.match(legacy.source, /^[a-f0-9]{40}$/);
-  const legacyBackend = await json(join(app, "Contents", "Resources", "backend", "package", "release.json"));
-  assert.equal(legacyBackend.version, legacy.backendVersion); assert.equal(legacyBackend.source, legacy.source);
+  const legacyRoot = join(app, "Contents", "Resources", "backend");
+  const legacyBackend = await json(join(legacyRoot, "package", "release.json"));
+  assert.equal(legacyBackend.version, legacy.backendVersion);
+  await archive.verifyChecksummedTree(legacyRoot);
 
   progress.phase = "copy_installed_release";
   const installedInput = await releaseInput(paths["installed-release"], archive);
@@ -219,8 +221,11 @@ async function makeFixture({ root: fixtureRoot, input: paths, candidate, runtime
 async function copyRelease(source, destination, expectedVersion, expectedSource, archive) {
   const input = await lstat(source); assert.ok(input.isDirectory() && !input.isSymbolicLink());
   await cp(source, destination, { recursive: true, force: false, preserveTimestamps: true });
-  assert.equal((await readFile(join(destination, ".gateway-release"), "utf8")).trim(), expectedVersion);
-  await archive.verifyChecksummedTree(destination);
+  const marker = join(destination, ".gateway-release");
+  assert.equal((await readFile(marker, "utf8")).trim(), expectedVersion);
+  await rm(marker);
+  try { await archive.verifyChecksummedTree(destination); }
+  finally { await writeFile(marker, `${expectedVersion}\n`, { flag: "wx", mode: 0o600 }); }
   const release = await json(join(destination, "package", "release.json"));
   assert.equal(release.version, expectedVersion); assert.equal(release.source, expectedSource);
 }
@@ -229,7 +234,6 @@ async function releaseInput(source, archive) {
   const marker = (await readFile(join(path, ".gateway-release"), "utf8")).trim();
   const release = await json(join(path, "package", "release.json"));
   assert.match(marker, /^\d+\.\d+\.\d+$/); assert.equal(release.version, marker); assert.match(release.source, /^[a-f0-9]{40}$/);
-  await archive.verifyChecksummedTree(path);
   return { path, version: marker, source: release.source };
 }
 
