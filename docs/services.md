@@ -667,15 +667,27 @@ app showed as "Failed to resume chat".
 The host now says what is happening, and the service moves promptly:
 
 1. **The message.** The host answers a generation request that names another release's
-   gateway SDK with a fixed text it passes through unchanged: "This Mac's gateway service
-   is still moving to a newer release; retry in a moment". The adapter shows it for the
-   request: starting or resuming a chat, and a chat re-attaching after its executor went
-   away. The refusal is the chat's own failure, not a lost host, so it opens no fail-fast window. The host
-   records `release_skew_refused` with a `direction` and a `count`, at most once a minute
-   per direction ([diagnostics](diagnostics.md)).
+   gateway SDK with a fixed text for the direction (item 2), which it passes through
+   unchanged and the adapter shows for the request: starting or resuming a chat, and a
+   chat re-attaching after its executor went away. For `adapter_newer`: "This Mac's
+   gateway service is moving to the newer release; this chat continues as soon as no
+   turn is running". For `adapter_older`, or a direction that could not be told: "This app
+   and this Mac's gateway service run different gateway releases; quit and reopen ChatGPT
+   to load the installed release". The refusal is the chat's own failure, not a lost
+   host, so it opens no fail-fast window. The host records `release_skew_refused` with a
+   `direction` and a `count`, at most once a minute per direction
+   ([diagnostics](diagnostics.md)). A host with no gateway SDK of its own cannot tell the
+   sides apart and keeps the generic refusal.
 2. **The direction.** The adapter is `adapter_newer` when its SDK checksum is the
-   installed (pending) release's, read from that release's own verified build receipt
-   (`gateway-sdk/build.json`, hashed once per release); otherwise `adapter_older`.
+   installed (pending) release's, read from `gateway-sdk/build.json` in that release's
+   package; otherwise `adapter_older`. That receipt is not held to the running release's
+   pins (patch, capabilities, revision, codex version, lockfiles): a release changes its
+   SDK exactly when those change, so holding it to them would never find the new one. The
+   reader checks the file as the runtime does (a regular file this user owns, not
+   writable by others, at most 16 KiB, schema 1, this platform), takes `binarySha256` and
+   does not hash the binary: the service that starts on that release verifies its SDK
+   fully. A positive answer is kept per release; a receipt that cannot be read is read
+   again at the next refusal.
 3. **Urgent move.** A refused `adapter_newer` marks the pending release urgent. The
    supervisor then drops the 15 minute grace, tries the move every 10 seconds, and uses
    the quiet check with a quiet time of zero: no turn running in any engine and no
@@ -683,9 +695,17 @@ The host now says what is happening, and the service moves promptly:
    must still accept its own idle guard. A running turn is never stopped. The move is
    logged as `self_upgrade` with `mode: "skew"`. A refused SDK that is not the pending
    release's marks nothing urgent.
+   Agents that run turns back to back may never be caught idle by a look every 10
+   seconds, so while a release is urgent the host also looks at its engines every second
+   (the same short admin reads as a quiet check; nothing is changed and no gate is
+   closed) and tells the supervisor the moment no turn is running, no approval or input
+   is pending and no chat keeps a background terminal, once per such gap. The supervisor
+   then tries the move at once, through the same quiet check and inference guard; a turn
+   that started in between simply makes the check refuse. The 10 second tick stays as
+   the backstop.
 4. **The reverse case.** Once the service has moved, an adapter of the older release
-   that asks for a generation gets the same message, recorded as `adapter_older`.
-   Nothing else changes: that adapter moves when the app restarts.
+   that asks for a generation gets the `adapter_older` message above, recorded as
+   `adapter_older`. Nothing else changes: that adapter moves when the app restarts.
 
 # Shared native session ownership
 

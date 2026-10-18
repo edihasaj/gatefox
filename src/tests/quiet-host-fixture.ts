@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
-import { startExecutionHost, executionHostHome, type ExecutionDescriptor } from "../execution-host.js";
+import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionHostOptions } from "../execution-host.js";
 import { sdkIdentity } from "../execution-host-storage.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
@@ -51,7 +51,7 @@ process.on('SIGTERM',()=>{for(const c of wss.clients)c.terminate();server.close(
 export const seconds = (msAgo = 0) => (Date.now() - msAgo) / 1000;
 
 /** A host in this process, with one stand-in SDK for its engines, a control connection and engine clients. */
-export async function quietHost(capabilities?: Array<"gateway" | "native">) {
+export async function quietHost(capabilities?: Array<"gateway" | "native">, hostOptions?: (codex: string) => Partial<ExecutionHostOptions>) {
   const directory = await mkdtemp(join(tmpdir(), "gw-quiet-")); const configPath = join(directory, "gateway.json");
   const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   await writeFile(join(nativeHome, "config.toml"), 'model = "native-original"\n', { mode: 0o600 });
@@ -61,7 +61,7 @@ export async function quietHost(capabilities?: Array<"gateway" | "native">) {
   const hostHome = executionHostHome(configPath, nativeHome);
   const descriptor: ExecutionDescriptor = { revision: "a".repeat(64), args: ["app-server", "--listen", "stdio://"], settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"] };
   const nativeSdkVerifier = async (path: string) => { const identity = await sdkIdentity(path); return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 }; };
-  const host = await startExecutionHost({ config, configPath, nativeHome, codex, ...(capabilities ? { capabilities, nativeSdkVerifier } : {}) });
+  const host = await startExecutionHost({ config, configPath, nativeHome, codex, ...(capabilities ? { capabilities, nativeSdkVerifier } : {}), ...hostOptions?.(codex) });
   const socket = new WebSocket(`ws+unix://${join(hostHome, "host.sock")}:/`); await once(socket, "open"); let sequence = 0;
   const control = <T = Record<string, unknown>>(method: string, params: object = {}): Promise<T> => {
     const id = ++sequence;

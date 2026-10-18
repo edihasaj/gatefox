@@ -73,13 +73,17 @@ export class ServiceSupervisor {
   private statusFailedAt = Number.NEGATIVE_INFINITY;
   /** `self_upgrade_waiting` already logged, per pending release and reason. */
   private readonly upgradeWaits = new Set<string>();
+  /** Makes the upgrade watcher look now (an urgent move, when the host says one is waiting); set while the watcher runs. */
+  private nudgeUpgrade?: () => void;
   private stoppedResolve: () => void = () => {};
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs) {
     this.heal = { ...defaultHealing, ...healing };
-    this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost, heal: this.heal,
+    // A host that refused a newer adapter says when no turn runs, so the urgent move is tried in that gap (see skewIdle).
+    const signalling: typeof startExecutionHost = options => startHost({ ...options, onSkewIdle: () => this.nudgeUpgrade?.() });
+    this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost: signalling, heal: this.heal,
       registered: () => (this.probes.claimed ?? this.probes.registered)(this.state),
       stopping: () => this.stopping, restarting: () => this.restarting, publish: () => this.publish(),
       restartWhenIdle: () => this.restartWhenIdle() });
@@ -123,7 +127,7 @@ export class ServiceSupervisor {
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one. A newer adapter that this
     // host has refused (release skew) makes the move urgent: no grace, and only a running turn or terminal holds it back.
     this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
-      { state: this.heal.releaseState, urgent: to => this.skewWaiting(to) });
+      { state: this.heal.releaseState, urgent: to => this.skewWaiting(to), bind: nudge => { this.nudgeUpgrade = nudge; } });
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
     await this.publish();

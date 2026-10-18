@@ -15,18 +15,24 @@ import { spawnStamp } from "./boot-identity.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
+/** Which side of a refused gateway SDK mismatch runs the newer release: the adapter (the service has not moved yet) or the service. */
+export type SkewDirection = "adapter_newer" | "adapter_older";
 /**
- * The fixed text of a refused gateway SDK mismatch between an adapter and this host (two releases running side by side). The
- * host passes it through unchanged and the adapter shows it, so a user reads what is happening instead of a masked failure.
+ * The fixed texts of a refused gateway SDK mismatch between an adapter and this host (two releases running side by side). The
+ * host passes the one for the direction through unchanged and the adapter shows it, so a user reads what is happening and what
+ * to do instead of a masked failure. A direction that could not be told reads as `adapter_older`.
  */
-export const releaseSkewMessage = "This Mac's gateway service is still moving to a newer release; retry in a moment";
+export const releaseSkewMessages: Record<SkewDirection, string> = {
+  adapter_newer: "This Mac's gateway service is moving to the newer release; this chat continues as soon as no turn is running",
+  adapter_older: "This app and this Mac's gateway service run different gateway releases; quit and reopen ChatGPT to load the installed release",
+};
 /** A generation request whose gateway SDK is not the one this host runs; `adapterSha256` is the SDK the adapter named. */
 export class ReleaseSkewError extends Error {
-  constructor(readonly adapterSha256: string) { super(releaseSkewMessage); }
+  constructor(readonly adapterSha256: string, readonly direction: SkewDirection = "adapter_older") { super(releaseSkewMessages[direction]); }
 }
 /** Whether an error is the host's release-skew refusal, as the adapter receives it over the control connection. */
 export function isReleaseSkew(error: unknown): boolean {
-  return error instanceof Error && error.message === releaseSkewMessage;
+  return error instanceof Error && Object.values(releaseSkewMessages).includes(error.message);
 }
 export function executionDescriptor(value: unknown): ExecutionDescriptor {
   const input = object(value); const catalog = object(input.catalog);

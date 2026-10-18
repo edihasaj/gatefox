@@ -9,10 +9,11 @@ import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
-import { releaseSkewMessage } from "../execution-host-engine.js";
+import { isReleaseSkew, releaseSkewMessages } from "../execution-host-engine.js";
 import { sdkIdentity } from "../execution-host-storage.js";
-import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision, type GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
+import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { pendingGatewaySdkReader } from "../self-update.js";
+import { chmod } from "node:fs/promises";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
 import type { GatewayConfig } from "../config.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
@@ -71,8 +72,9 @@ test("an adapter of another gateway SDK is told the service is moving, not given
   const f = await fixture(); let host; let client;
   try {
     host = await startExecutionHost(f.options); client = await control(join(f.hostHome, "host.sock"));
-    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessage);
-    assert.equal(releaseSkewMessage, "This Mac's gateway service is still moving to a newer release; retry in a moment");
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessages.adapter_older);
+    assert.equal(releaseSkewMessages.adapter_older, "This app and this Mac's gateway service run different gateway releases; quit and reopen ChatGPT to load the installed release");
+    assert.equal(releaseSkewMessages.adapter_newer, "This Mac's gateway service is moving to the newer release; this chat continues as soon as no turn is running");
     await assert.rejects(readFile(join(f.directory, "engine-a.state"), "utf8"), { code: "ENOENT" }, "no generation was started for it");
     const [event] = await f.events();
     assert.deepEqual({ direction: event.direction, count: event.count }, { direction: "adapter_older", count: 1 }, "no newer release is installed: the adapter is the older one");
@@ -89,7 +91,7 @@ test("an adapter whose gateway SDK is the installed release's is a newer adapter
     host = await startExecutionHost({ ...f.options, pendingRelease: async () => ({ release: "0.4.7", gatewaySdkSha256: otherSha }) });
     client = await control(join(f.hostHome, "host.sock"));
     assert.equal(host.skewRefused?.("0.4.7"), false, "nothing was refused yet");
-    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessage);
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessages.adapter_newer, "a newer adapter is told the service is moving");
     const [event] = await f.events();
     assert.deepEqual({ direction: event.direction, count: event.count }, { direction: "adapter_newer", count: 1 });
     assert.equal(host.skewRefused?.("0.4.7"), true);
@@ -102,7 +104,7 @@ test("an SDK that is not the installed release's does not make the move urgent",
   try {
     host = await startExecutionHost({ ...f.options, pendingRelease: async () => ({ release: "0.4.7", gatewaySdkSha256: otherSha }) });
     client = await control(join(f.hostHome, "host.sock"));
-    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(thirdSha) }), error => (error as Error).message === releaseSkewMessage);
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(thirdSha) }), error => (error as Error).message === releaseSkewMessages.adapter_older);
     assert.equal((await f.events())[0].direction, "adapter_older");
     assert.equal(host.skewRefused?.("0.4.7"), false);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
@@ -113,7 +115,7 @@ test("a pending release that cannot be read leaves the refusal recorded as an ol
   try {
     host = await startExecutionHost({ ...f.options, pendingRelease: async () => { throw new Error("unreadable"); } });
     client = await control(join(f.hostHome, "host.sock"));
-    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessage);
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), error => (error as Error).message === releaseSkewMessages.adapter_older);
     assert.equal((await f.events())[0].direction, "adapter_older"); assert.equal(host.skewRefused?.("0.4.7"), false);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
@@ -123,7 +125,7 @@ test("release_skew_refused is recorded once per interval per direction, with the
   try {
     host = await startExecutionHost({ ...f.options, pendingRelease: async () => ({ release: "0.4.7", gatewaySdkSha256: otherSha }) });
     client = await control(join(f.hostHome, "host.sock"));
-    const refuse = (sha: string) => assert.rejects(client!.request("execution/acquire", { descriptor: f.descriptor(sha) }), error => (error as Error).message === releaseSkewMessage);
+    const refuse = (sha: string) => assert.rejects(client!.request("execution/acquire", { descriptor: f.descriptor(sha) }), error => isReleaseSkew(error));
     await refuse(otherSha); await refuse(otherSha); await refuse(otherSha); await refuse(thirdSha);
     assert.deepEqual((await f.events()).map(event => [event.direction, event.count]), [["adapter_newer", 1], ["adapter_older", 1]], "the repeats inside the interval are held back");
     await delay(450); await refuse(otherSha);
@@ -134,27 +136,66 @@ test("release_skew_refused is recorded once per interval per direction, with the
   }
 });
 
-test("the installed release's gateway SDK checksum comes from that release's own verified receipt, and only while it is newer", { timeout: 30000 }, async t => {
+/** Releases on disk: 0.4.6 runs, 0.4.7 is installed with a receipt whose pins differ from anything the running release holds. */
+async function releases(t: { after(fn: () => Promise<void>): void }, pins: Record<string, unknown> = {}) {
   const root = await mkdtemp(join(tmpdir(), "gw-skew-releases-")); t.after(() => rm(root, { recursive: true, force: true }));
-  const bytes = "installed release gateway SDK"; const binarySha256 = createHash("sha256").update(bytes).digest("hex");
+  const binarySha256 = createHash("sha256").update("installed release gateway SDK").digest("hex");
   const release = async (version: string) => { await mkdir(join(root, "releases", version, "package", "dist"), { recursive: true }); await writeFile(join(root, "releases", version, "package", "dist", "self-update.js"), ""); };
   await release("0.4.6"); await release("0.4.7");
   const sdk = join(root, "releases", "0.4.7", "package", "gateway-sdk"); await mkdir(sdk, { mode: 0o700 });
-  await writeFile(join(root, "releases", "0.4.7", "package", "package.json"), JSON.stringify({ version: "0.4.7" }));
-  await writeFile(join(sdk, "gateway-codex"), bytes, { mode: 0o700 });
-  await writeFile(join(sdk, "build.json"), JSON.stringify({ schemaVersion: 1, version: "0.4.7", codexVersion: "0.162.0-alpha.17.2", revision: gatewaySdkRevision,
-    archiveSha256: "25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83", patchSha256: gatewaySdkPatchSha256,
-    lockfileSha256: "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb", lockfileRepairSha256: "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8",
-    sourceSha256: "a".repeat(64), binarySha256, profile: "release", platform: process.platform, arch: process.arch, capabilities: [gatewaySdkCapability] }), { mode: 0o600 });
+  // None of the running release's pins: another patch, capability set, revision, codex version and lockfile. The binary is not even present.
+  const receipt = join(sdk, "build.json");
+  const save = (change: Record<string, unknown> = {}) => writeFile(receipt, JSON.stringify({ schemaVersion: 1, version: "0.4.7", codexVersion: "0.163.0", revision: "f".repeat(40), archiveSha256: "1".repeat(64), patchSha256: "2".repeat(64),
+    lockfileSha256: "3".repeat(64), lockfileRepairSha256: "4".repeat(64), sourceSha256: "5".repeat(64), binarySha256, profile: "release", platform: process.platform, arch: process.arch,
+    capabilities: ["gateway-executor-v3"], ...pins, ...change }), { mode: 0o600 });
+  await save();
   const module = pathToFileURL(join(root, "releases", "0.4.6", "package", "dist", "self-update.js")).href;
   await symlink("releases/0.4.7", join(root, "current"));
-  const moduleOfInstalled = pathToFileURL(join(root, "releases", "0.4.7", "package", "dist", "self-update.js")).href;
+  return { root, receipt, save, binarySha256, module, release };
+}
+
+test("a newer adapter is detected even when the new release changed the SDK: its receipt is not held to the running release's pins", { timeout: 30000 }, async t => {
+  const r = await releases(t); const f = await fixture(); let host; let client;
+  try {
+    host = await startExecutionHost({ ...f.options, pendingRelease: pendingGatewaySdkReader(r.module) });
+    client = await control(join(f.hostHome, "host.sock"));
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(r.binarySha256) }), error => (error as Error).message === releaseSkewMessages.adapter_newer);
+    assert.equal((await f.events())[0].direction, "adapter_newer");
+    assert.equal(host.skewRefused?.("0.4.7"), true, "the installed release is urgent");
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("the installed release's gateway SDK checksum comes from its build receipt, and only while it is newer", { timeout: 30000 }, async t => {
+  const r = await releases(t);
+  const moduleOfInstalled = pathToFileURL(join(r.root, "releases", "0.4.7", "package", "dist", "self-update.js")).href;
   assert.equal(await pendingGatewaySdkReader(moduleOfInstalled)(), undefined, "the installed release is the running one, SDK or not: nothing is pending");
-  const read = pendingGatewaySdkReader(module);
-  assert.deepEqual(await read(), { release: "0.4.7", gatewaySdkSha256: binarySha256 });
-  await writeFile(join(sdk, "gateway-codex"), "changed after install");
-  assert.deepEqual(await read(), { release: "0.4.7", gatewaySdkSha256: binarySha256 }, "a release's answer is kept: its files are not hashed again");
-  assert.equal(await pendingGatewaySdkReader(module)(), undefined, "a binary that does not match its receipt is no checksum to trust");
-  await release("0.4.8"); await rm(join(root, "current")); await symlink("releases/0.4.8", join(root, "current"));
-  assert.equal(await pendingGatewaySdkReader(module)(), undefined, "an installed release without a gateway SDK has none to compare");
+  const read = pendingGatewaySdkReader(r.module);
+  assert.deepEqual(await read(), { release: "0.4.7", gatewaySdkSha256: r.binarySha256 }, "the binary is not hashed or even present");
+  await r.save({ binarySha256: "9".repeat(64) });
+  assert.equal((await read())?.gatewaySdkSha256, r.binarySha256, "a release's positive answer is kept");
+  await r.release("0.4.8"); await rm(join(r.root, "current")); await symlink("releases/0.4.8", join(r.root, "current"));
+  assert.equal(await pendingGatewaySdkReader(r.module)(), undefined, "an installed release without a gateway SDK receipt has none to compare");
+});
+
+test("a receipt that cannot be read is read again later, and a foreign or unsafe one is no checksum", { timeout: 30000 }, async t => {
+  const r = await releases(t); const read = pendingGatewaySdkReader(r.module);
+  await rm(r.receipt);
+  assert.equal(await read(), undefined, "missing for now (still being installed, say)");
+  await r.save();
+  assert.equal((await read())?.gatewaySdkSha256, r.binarySha256, "the failure was not kept");
+  for (const [what, change] of [["another schema", { schemaVersion: 2 }], ["another platform", { platform: "plan9" }], ["another architecture", { arch: "mips" }], ["a short checksum", { binarySha256: "abc" }]] as const) {
+    await r.save(change); assert.equal(await pendingGatewaySdkReader(r.module)(), undefined, what);
+  }
+  await r.save(); await chmod(r.receipt, 0o666); assert.equal(await pendingGatewaySdkReader(r.module)(), undefined, "writable by others");
+  await chmod(r.receipt, 0o600); await writeFile(r.receipt, " ".repeat(20000)); assert.equal(await pendingGatewaySdkReader(r.module)(), undefined, "larger than 16 KiB");
+});
+
+test("a host with no gateway SDK of its own cannot tell the sides apart and keeps the masked refusal", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    host = await startExecutionHost({ ...f.options, gatewayRuntime: async () => undefined, pendingRelease: async () => ({ release: "0.4.7", gatewaySdkSha256: otherSha }) });
+    client = await control(join(f.hostHome, "host.sock"));
+    await assert.rejects(client.request("execution/acquire", { descriptor: f.descriptor(otherSha) }), /^Error: Execution operation failed; managed chat ownership was preserved$/);
+    assert.deepEqual(await f.events(), []); assert.equal(host.skewRefused?.("0.4.7"), false);
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
 });

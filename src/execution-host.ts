@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
-import { ExecutionEngine, ReleaseSkewError, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
+import { ExecutionEngine, ReleaseSkewError, type SkewDirection, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
 import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, listenPrivate, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
@@ -19,7 +19,11 @@ export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined>;
   /** The installed release that is newer than this process, with its gateway SDK checksum; defaults to reading the installed release. A stand-in for tests. */
-  pendingRelease?: () => Promise<PendingGatewaySdk | undefined> }
+  pendingRelease?: () => Promise<PendingGatewaySdk | undefined>;
+  /**
+   * Called with a release made urgent by a refused newer adapter, the moment no turn is running in any engine (and no approval,
+   * input or background terminal waits), so the supervisor can try the move before the next turn starts (see `watchSkew`). */
+  onSkewIdle?: (release: string) => void }
 const maxFrame = 4 * 1024 * 1024;
 /** How long after the last turn ended a host with connected adapters still counts as in use (see prepareQuietStop). */
 export const defaultQuietMs = 5 * 60_000;
@@ -71,6 +75,8 @@ export function hostFailureReason(error: unknown): HostFailureReason {
 
 /** How long `release_skew_refused` is held back after one was recorded (ms); `GATEWAY_RELEASE_SKEW_EVENT_MS` shortens it for tests. */
 const skewEventGapMs = (): number => Number(process.env.GATEWAY_RELEASE_SKEW_EVENT_MS) || 60_000;
+/** How often an urgent host looks for the moment no turn runs (ms); `GATEWAY_SKEW_WATCH_MS` shortens it for tests. */
+const skewWatchMs = (): number => Number(process.env.GATEWAY_SKEW_WATCH_MS) || 1000;
 
 /**
  * One owned SDK writer per gateway generation, independent of adapter clients. A host without `prepareQuietStop` (a stand-in) never stops quietly.
@@ -114,13 +120,41 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   // refusals since the last record; a newer adapter also marks its release urgent for the supervisor (see `skewRefused`).
   const readPendingRelease = options.pendingRelease ?? pendingGatewaySdkReader();
   const skewRefusals = new Map<string, { count: number; recordedAt: number }>(); const urgentReleases = new Set<string>();
-  const noteSkew = async (adapterSha256: string): Promise<void> => {
+  let skewTimer: NodeJS.Timeout | undefined; let skewIdle = false; let skewReading = false;
+  /**
+   * While a release is urgent, looks at the engines every `skewWatchMs` and tells `onSkewIdle` when none has a turn running, a
+   * pending approval or input, or a background terminal, once per time that becomes true. Agents that run turns back to back
+   * leave only short gaps that the supervisor's own 10 second look would miss. The host never sees turn notifications (see
+   * execution-host-activity.ts), so this reads the engines with the same transient admin connections as a quiet check; it
+   * changes nothing and closes no gate: the supervisor's own quiet check (`prepareQuietStop(0)`) decides, and a turn that starts
+   * in between simply makes it refuse.
+   */
+  const watchSkew = () => {
+    if (skewTimer || !options.onSkewIdle) return;
+    skewTimer = setInterval(() => {
+      if (skewReading || stopping || quiescing || !urgentReleases.size) return;
+      skewReading = true;
+      void (async () => {
+        let idle = true;
+        for (const engine of [...engines.values(), ...(native ? [native] : [])]) {
+          if (engine.closed) continue;
+          const activity = await engineActivity(engine.record.socketPath, engine.owner.socket, 0);
+          if (activity.running.length || activity.terminals || activity.unknown || activity.tooMany) { idle = false; break; }
+        }
+        const became = idle && !skewIdle; skewIdle = idle;
+        if (became && !stopping) for (const release of urgentReleases) options.onSkewIdle!(release);
+      })().catch(() => { skewIdle = false; }).finally(() => { skewReading = false; });
+    }, skewWatchMs());
+    skewTimer.unref();
+  };
+  const noteSkew = async (adapterSha256: string): Promise<SkewDirection> => {
     const pendingRelease = await readPendingRelease().catch(() => undefined);
     const direction = pendingRelease?.gatewaySdkSha256 === adapterSha256 ? "adapter_newer" : "adapter_older";
     if (direction === "adapter_newer") urgentReleases.add(pendingRelease!.release);
     const entry = skewRefusals.get(direction) ?? { count: 0, recordedAt: Number.NEGATIVE_INFINITY }; entry.count++; skewRefusals.set(direction, entry);
-    if (performance.now() - entry.recordedAt < skewEventGapMs()) return;
-    telemetry("release_skew_refused", { direction, count: entry.count }); entry.count = 0; entry.recordedAt = performance.now();
+    if (direction === "adapter_newer") watchSkew();
+    if (performance.now() - entry.recordedAt >= skewEventGapMs()) { telemetry("release_skew_refused", { direction, count: entry.count }); entry.count = 0; entry.recordedAt = performance.now(); }
+    return direction;
   };
   const publish = () => {
     if (native?.death && !owner.nativeDeaths?.some(death => death.instanceId === native!.death!.instanceId)) owner.nativeDeaths = [...(owner.nativeDeaths || []), native.death].slice(-32);
@@ -145,7 +179,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (engines.size >= 4) throw new Error("Four gateway generations have loaded chats. Close an older chat before loading another catalog");
     const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
-    catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) await noteSkew(error.adapterSha256).catch(() => undefined); throw error; }
+    catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) throw new ReleaseSkewError(error.adapterSha256, await noteSkew(error.adapterSha256).catch(() => "adapter_older" as const)); throw error; }
   };
   // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
   // while this host was down, say), at the next native request: until then this host refuses native ownership and keeps
@@ -253,7 +287,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         const status = message.method === "execution/status";
         const operation = status ? Promise.resolve().then(run) : serial.then(run);
         if (!status) serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This Mac's gateway service is still moving to a newer release|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -319,7 +353,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     serial = operation.catch(() => undefined); return operation;
   };
   const close = (): Promise<void> => closed ||= (async () => {
-    stopping = true; for (const socket of sockets.clients) socket.terminate();
+    stopping = true; clearInterval(skewTimer); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));

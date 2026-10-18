@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
+import { lstat, readFile } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { telemetry } from "./telemetry.js";
 
 /**
@@ -33,22 +33,38 @@ export function newerReleaseInstalled(state = releaseState()): boolean {
 /** The gateway SDK of an installed release that this process is not running yet, and the release it belongs to. */
 export interface PendingGatewaySdk { release: string; gatewaySdkSha256: string }
 /**
- * The installed (newer) release's gateway SDK checksum, from that release's own verified build receipt, or undefined when no
- * newer release is installed, this is a checkout, or that release carries no readable SDK. Never throws. A release's answer is
- * kept: its files do not change, and hashing the SDK binary is not free.
+ * The gateway SDK checksum a release's build receipt (`<package>/gateway-sdk/build.json`) names. Unlike
+ * `gatewaySdkRuntime`, it does not hold the receipt to the pins of the release that is running: a newer release changes the
+ * SDK exactly when those pins change (patch, capabilities, revision), and its checksum is what an adapter of that release
+ * sends. The file is read the way the runtime reads it (a regular file this user owns, not writable by others, at most 16 KiB)
+ * and must be this platform's, but the binary is not hashed here: the service that starts on that release verifies it fully.
+ */
+export async function receiptGatewaySdkSha256(packageDirectory: string): Promise<string | undefined> {
+  try {
+    const path = resolve(packageDirectory, "gateway-sdk", "build.json"); const info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid()) || (info.mode & 0o022) || info.size > 16384) return;
+    const receipt = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown> | null;
+    if (!receipt || typeof receipt !== "object" || receipt.schemaVersion !== 1 || receipt.platform !== process.platform || receipt.arch !== process.arch) return;
+    return typeof receipt.binarySha256 === "string" && /^[a-f0-9]{64}$/.test(receipt.binarySha256) ? receipt.binarySha256 : undefined;
+  } catch { return; }
+}
+/**
+ * The installed (newer) release's gateway SDK checksum, from that release's own build receipt, or undefined when no newer
+ * release is installed, this is a checkout, or that release carries no readable SDK receipt. Never throws. A positive answer
+ * is kept per release (its files do not change); a failure is not, so a receipt that could not be read is read again.
  */
 export function pendingGatewaySdkReader(moduleUrl = import.meta.url, state: () => ReleaseState | undefined = () => releaseState(moduleUrl)): () => Promise<PendingGatewaySdk | undefined> {
-  const known = new Map<string, Promise<string | undefined>>();
+  const known = new Map<string, string>();
   return async () => {
     try {
       const current = state();
       if (!current?.installed || current.installed === current.running) return;
-      const release = realpathSync(resolve(dirname(fileURLToPath(moduleUrl)), "../.."));
-      const directory = resolve(dirname(release), current.installed, "package");
-      let sha = known.get(current.installed);
-      if (!sha) { sha = gatewaySdkRuntime(directory).then(runtime => runtime?.binarySha256, () => undefined); known.set(current.installed, sha); }
-      const gatewaySdkSha256 = await sha;
-      if (!gatewaySdkSha256) known.delete(current.installed); // Unreadable now (still being written, say): ask again next time.
+      let gatewaySdkSha256 = known.get(current.installed);
+      if (!gatewaySdkSha256) {
+        const release = realpathSync(resolve(dirname(fileURLToPath(moduleUrl)), "../.."));
+        gatewaySdkSha256 = await receiptGatewaySdkSha256(resolve(dirname(release), current.installed, "package"));
+        if (gatewaySdkSha256) known.set(current.installed, gatewaySdkSha256);
+      }
       return gatewaySdkSha256 ? { release: current.installed, gatewaySdkSha256 } : undefined;
     } catch { return; }
   };
@@ -73,6 +89,8 @@ export interface WatchOptions {
    * is, the upgrade is attempted without the two idle checks every `urgentUpgradeIntervalMs()`, and receives `urgent: true`.
    */
   urgent?: (to: string) => boolean | Promise<boolean>;
+  /** Receives a function that makes the watcher look right now, as an urgent tick would (when `urgent` says so). */
+  bind?: (nudge: () => void) => void;
 }
 
 /**
@@ -111,6 +129,7 @@ export function watchForUpgrade(component: string, isIdle: () => boolean | Promi
     }).catch(() => { if (claimed) { done = false; idleChecks = 0; } });
   };
   const timer = setInterval(() => check(false), options.intervalMs ?? (Number(process.env.GATEWAY_UPGRADE_CHECK_MS) || 60000));
+  options.bind?.(() => check(true));
   const urgentTimer = options.urgent ? setInterval(() => check(true), urgentUpgradeIntervalMs()) : undefined;
   timer.unref(); urgentTimer?.unref();
   return () => { cancelled = true; clearInterval(timer); clearInterval(urgentTimer); };

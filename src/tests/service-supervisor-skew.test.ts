@@ -43,8 +43,10 @@ const signals = async (directory: string) => (await readFile(join(directory, "si
  * time ago waits, and anything else is quiet. `skewed` names the releases whose newer adapter the host has refused.
  */
 function host(state: { running: () => boolean; endedAgoMs: () => number; skewed: () => string[] }) {
-  const calls = { strict: 0, quiet: [] as number[], resumes: 0, closes: 0, asked: [] as string[] };
-  const start = async () => ({
+  const calls = { strict: 0, quiet: [] as number[], resumes: 0, closes: 0, asked: [] as string[], onSkewIdle: undefined as ((release: string) => void) | undefined };
+  const start = async (options?: { onSkewIdle?: (release: string) => void }) => {
+    calls.onSkewIdle = options?.onSkewIdle;
+    return {
     close: async () => { calls.closes++; },
     prepareStop: async () => { calls.strict++; return false; },
     prepareQuietStop: async (quietMs?: number): Promise<QuietStop> => {
@@ -55,7 +57,8 @@ function host(state: { running: () => boolean; endedAgoMs: () => number; skewed:
     },
     skewRefused: (release: string) => { calls.asked.push(release); return state.skewed().includes(release); },
     resume: () => { calls.resumes++; },
-  });
+    };
+  };
   return { calls, start: start as never };
 }
 const unregistered: NativeProbes = { registered: async () => false, fingerprint: async () => "same", appRunning: async () => false };
@@ -144,6 +147,49 @@ test("an urgent move still goes through inference's own idle guard", { timeout: 
     await until(() => !internals.restarting, "the refused attempt let go");
     assert.equal(internals.stopping, false, "the service kept running"); assert.equal(stand.calls.closes, 0);
     assert.deepEqual((await f.events("self_upgrade_waiting")).map(event => event.reason), ["inference_busy"]);
+    assert.deepEqual(await f.events("self_upgrade"), []);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("the host's no-turn-running signal tries an urgent move at once, between the slow ticks, and never stops a running turn", { timeout: 30000 }, async () => {
+  clocks(60_000, 60_000); // Neither tick can act inside this test: only the host's signal can.
+  const f = await folder("gws-signal-"); const release = { running: "0.4.4", installed: "0.4.5" }; let running = true;
+  const stand = host({ running: () => running, endedAgoMs: () => 0, skewed: () => ["0.4.5"] });
+  const supervisor = new ServiceSupervisor(plan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing(release));
+  const internals = supervisor as unknown as { stopping: boolean };
+  try {
+    await supervisor.start();
+    assert.equal(typeof stand.calls.onSkewIdle, "function", "the supervisor asks its host for the signal");
+    await delay(150); assert.deepEqual(stand.calls.quiet, [], "no tick has acted");
+    stand.calls.onSkewIdle!("0.4.5"); await until(() => stand.calls.quiet.length === 1, "an attempt on the signal");
+    assert.equal(internals.stopping, false, "the turn that started since the signal is not stopped"); assert.equal(await signals(f.directory), 0);
+    running = false; stand.calls.onSkewIdle!("0.4.5");
+    await Promise.race([supervisor.stopped, delay(3000).then(() => assert.fail("the signal did not move the service"))]);
+    assert.deepEqual(stand.calls.quiet, [0, 0], "through the quiet check with no quiet time, like every urgent attempt");
+    await until(async () => (await f.events("self_upgrade")).length === 1, "the upgrade event");
+    assert.equal((await f.events("self_upgrade"))[0].mode, "skew");
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("a signal about a release the host has not refused an adapter of tries nothing", { timeout: 30000 }, async () => {
+  clocks(60_000, 60_000);
+  const f = await folder("gws-signal-no-"); const release = { running: "0.4.4", installed: "0.4.5" };
+  const stand = host({ running: () => false, endedAgoMs: () => 3000, skewed: () => [] });
+  const supervisor = new ServiceSupervisor(plan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing(release));
+  try {
+    await supervisor.start(); stand.calls.onSkewIdle!("0.4.5"); await delay(300);
+    assert.deepEqual(stand.calls.quiet, []); assert.equal(stand.calls.strict, 0); assert.deepEqual(await f.events("self_upgrade"), []);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("without urgency the urgent tick does nothing: no early idle move and no quiet attempts", { timeout: 30000 }, async () => {
+  clocks(60_000, 30); // Only the urgent tick runs inside this test.
+  const f = await folder("gws-tick-"); const release = { running: "0.4.4", installed: "0.4.5" };
+  const stand = host({ running: () => false, endedAgoMs: () => 3000, skewed: () => [] });
+  const supervisor = new ServiceSupervisor(plan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing(release));
+  try {
+    await supervisor.start(); await until(() => stand.calls.asked.length >= 5, "several urgent ticks that asked");
+    assert.equal(stand.calls.strict, 0, "no idle attempt on a tick that is not urgent"); assert.deepEqual(stand.calls.quiet, []);
     assert.deepEqual(await f.events("self_upgrade"), []);
   } finally { await supervisor.stop(); await f.remove(); }
 });

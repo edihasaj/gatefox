@@ -596,10 +596,13 @@ alone; the replayed `config` drops the keys that would block that restore.
 - Native chats are unchanged: when the native engine goes away, the app reconnects.
 - A host that runs another release's gateway SDK (an app and a service that moved to a
   new release at different times) refuses the generation with a fixed message that the
-  adapter shows for the request, in place of the generic failure above: "This Mac's
-  gateway service is still moving to a newer release; retry in a moment". The request
-  that triggered a re-attach gets it too, and it is the chat's own failure, not a lost host,
-  so it opens no fail-fast window. The service moves promptly when the adapter is the newer one, see
+  adapter shows for the request, in place of the generic failure above. When this app is
+  the newer one: "This Mac's gateway service is moving to the newer release; this chat
+  continues as soon as no turn is running". Otherwise: "This app and this Mac's gateway
+  service run different gateway releases; quit and reopen ChatGPT to load the installed
+  release". The request that triggered a re-attach gets it too, and it is the chat's own
+  failure, not a lost host, so it opens no fail-fast window. The service moves promptly
+  when the adapter is the newer one, see
   [release skew](services.md#release-skew-a-newer-adapter-beside-an-older-host).
 
 Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`

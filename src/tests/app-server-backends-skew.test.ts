@@ -8,7 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { AppServerBackends } from "../app-server-backends.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
-import { releaseSkewMessage } from "../execution-host-engine.js";
+import { releaseSkewMessages } from "../execution-host-engine.js";
 import { setHostDownWindowForTests } from "../executor-reattach.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
@@ -82,7 +82,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
     },
   };
 }
-const skew = (error: Error & { code?: number }) => error.message === releaseSkewMessage;
+const skew = (error: Error & { code?: number }) => error.message === releaseSkewMessages.adapter_older;
 
 test("an adapter beside a host of another release shows the host's release-skew message when it starts a chat", { timeout: 30000 }, async () => {
   const f = await fixture();
