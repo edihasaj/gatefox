@@ -29,6 +29,7 @@ import { executorOverrides, nativeEnvironment, newChatProvider } from "./executo
 import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
 import { AppServerChatList, type ChatListDiscovery, type ChatListSource } from "./app-server-chat-list.js";
 import { NativeRuntimeStatus } from "./native-runtime-status.js";
+import { AdapterRuntimeMetadata, type RuntimeMetadataSource } from "./adapter-runtime-metadata.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -82,6 +83,7 @@ export class AppServerBackends {
   /** Read-only status bridge for mobile/native chat lists. It owns no gateway engine or chat binding. */
   private readonly chatList: AppServerChatList;
   private nativeStatus?: NativeRuntimeStatus;
+  private runtimeMetadata?: AdapterRuntimeMetadata;
   /** A timed-out list caller must leave the host's single raw control RPC joinable. */
   private readonly generationFlights = new WeakMap<ExecutionHostClient, Promise<ExecutionRecord[]>>();
   static async create(executable: string, args: string[], config: GatewayConfig, settings: Message, overrides: Message,
@@ -220,9 +222,12 @@ export class AppServerBackends {
     this.reverse.delete(connection);
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
+    const engine = this.engines.find(value => value.connection === connection);
     if (connection === this.native && !this.closing) this.nativeTurns.observe(message);
-    if (connection === this.native && !this.closing) this.nativeStatus?.observe(message);
-    const params = object(message.params); const engine = this.engines.find(value => value.connection === connection);
+    // Private gateway SDKs belong to this adapter and publish the same read-only
+    // runtime state as native. Host-owned shared SDKs use passive observers.
+    if ((connection === this.native || engine && !engine.shared) && !this.closing) this.nativeStatus?.observe(message);
+    const params = object(message.params);
     // A borrowed or regular gateway connection is forwarded below, but does not
     // pass through the passive socket observer. Record its status first so a
     // stale in-flight read cannot overwrite the event in a mobile list.
@@ -620,17 +625,29 @@ export class AppServerBackends {
   private isGatewayThread(thread: Message): boolean {
     return this.identity.classify({ ...threadFacts(thread) }, this.catalogs, "compaction").kind === "gateway";
   }
+  private runtimeMetadataSources(): RuntimeMetadataSource[] {
+    return this.engines.filter(engine => !engine.shared && !engine.connection.closed).map(engine => {
+      const connection = engine.connection;
+      return { connection, current: () => !this.closing && this.engines.includes(engine) && engine.connection === connection && !engine.shared && !connection.closed };
+    });
+  }
   /** `hint` decides a thread/start; every other request follows the chat's binding, owner or classification. */
   async request(method: string, params: Message, hint?: EngineHint): Promise<Message> {
     if (method === "initialize") {
       const result = await this.native.request(method, params); this.initialized = params;
       if (!this.nativeStatus && !this.closing) {
         try {
+          this.runtimeMetadata = new AdapterRuntimeMetadata(
+            () => ({ connection: this.native, current: () => !this.closing && !this.native.closed }),
+            () => this.runtimeMetadataSources(),
+          );
           this.nativeStatus = new NativeRuntimeStatus({
             nativeHome: resolve(process.env.CODEX_HOME || homedir() + "/.codex"),
             // Supplemental snapshots must not reconcile the caller's turn table:
             // metadata-only SDK replies deliberately contain an empty turns list.
-            readOnlyNativeRequest: (read, input) => this.native.request(read, input),
+            // This deliberately bypasses nativeRequest(), which reconciles an
+            // empty includeTurns:false reply with NativeTurnTracker.active.
+            readOnlyNativeRequest: (read, input) => this.runtimeMetadata!.request(read, input),
             emitStatus: message => this.closing ? undefined : this.emit(message, "native"),
           });
           await this.nativeStatus.start();

@@ -28,7 +28,8 @@ belongs in the release archive.
    provider registration, client-requested chat names, and resume results.
    For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
    INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
-   and a second evidence directory. Two clients of the real SDK must expose an
+   and a second evidence directory. Repeat with `--private` for per-connection
+   gateway executors. Two clients of the real SDK must expose an
    already-running chat and receive its actual idle event without resuming it or
    starting another inference. The fixture uses a local mock provider and private
    state. By default it checks the checkout's compiled adapter with the package's
