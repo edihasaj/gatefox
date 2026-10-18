@@ -187,6 +187,7 @@ async function fixtureMain(): Promise<void> {
     }
   });
   lines.on("close", () => { if (live) { log({ exit: "stdin" }); mcp?.kill(); process.exit(0); } });
+  process.send?.({ type: "gateway-fixture-ready" }, () => {});
 }
 
 export interface ClaudeFixture {
