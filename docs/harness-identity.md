@@ -144,8 +144,9 @@ listed chats, so it can miss transitions that happened before an observer attach
 notifications do not replay state or history. The SDK has no unread field: clients own
 their unread bookkeeping.
 
-Native chats on separate desktop and relay engines use a private status broker in
-each adapter. It exposes only loaded chat IDs, runtime status, model, effort, and
+Native chats and per-connection gateway chats on separate desktop and relay engines
+use a private status broker in each adapter. It exposes only loaded chat IDs,
+runtime status, model, effort, and
 direct-input capability through a user-owned Unix socket. Registrations are scoped
 to the native home and checked against their process and socket identities.
 The list client receives genuine native status events and enriches saved rows
@@ -155,7 +156,8 @@ upgrade or reconnect; the broker cannot observe an older adapter that lacks it.
 
 The native and gateway loaded IDs are combined before applying loaded-list
 pagination. Ordinary chat-list membership and pagination still come from the
-native engine. The checks in `scripts/e2e-chat-state.mjs`, including `--native`,
+native engine. The checks in `scripts/e2e-chat-state.mjs`, including `--native` and
+`--private`,
 use two clients and the real SDK with a local mock provider. They establish
 running-state hydration and idle-event delivery, without paid inference. They do
 not establish the phone's unread rendering.

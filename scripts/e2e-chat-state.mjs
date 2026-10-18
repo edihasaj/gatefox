@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
-  native: { type: 'boolean', default: false }, code: { type: 'string' } } });
+  native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' } } });
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
 const root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-chat-state-');
@@ -60,7 +60,7 @@ const deferred = () => { let resolve; const promise = new Promise(done => { reso
 let gate, calls = 0, host, gateway;
 let phase = 'server';
 const clients = [];
-const evidence = { fixture, engine: values.native ? 'native' : 'gateway',
+const evidence = { fixture, engine: values.native ? 'native' : values.private ? 'private-gateway' : 'shared-gateway',
   realGatewaySdk: true, paidInferenceRequests: 0, passed: false };
 try {
   gateway = await startGateway(config, () => ({
@@ -75,7 +75,7 @@ try {
   }), undefined, { copilotTempBase: join(fixture, 'provider-tmp') });
   config.port = gateway.address().port;
   await writePrivateJson(configPath, config);
-  await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: true,
+  await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: !values.private,
     components: [{ id: 'native', kind: 'native', command: sdk,
       args: ['--codex', sdk, '--native-home', native], log: join(state, 'native.log') }] });
   const rows = modelCatalog(config).models;
@@ -93,7 +93,7 @@ try {
   const catalog = { current: () => snapshot, refresh: async () => snapshot,
     combined: value => ({ models: value.models }), nativeSlugs: new Set(['native-fixture']) };
   phase = 'host';
-  host = await startExecutionHost({ config, configPath, nativeHome: native, codex: sdk, gatewayRuntime: async () => runtime });
+  if (!values.private) host = await startExecutionHost({ config, configPath, nativeHome: native, codex: sdk, gatewayRuntime: async () => runtime });
   const overrides = { name: 'Fixture', base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: 'responses',
     requires_openai_auth: false, supports_websockets: false, request_max_retries: 0, stream_idle_timeout_ms: 30_000,
     'auth.command': process.execPath, 'auth.args': [join(source, 'dist/cli.js'), 'token', '--config', configPath] };

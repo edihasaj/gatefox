@@ -32,7 +32,7 @@ async function eventually(predicate: () => boolean): Promise<void> {
 
 type BackendInternals = {
   chatList: AppServerChatList;
-  engines: Array<{ connection: unknown; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number }>;
+  engines: Array<{ connection: unknown; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; shared?: boolean }>;
   poolClient?: ExecutionHostClient;
   sharedGateway?: boolean;
   chatListSources(signal?: AbortSignal): Promise<unknown[]>;
@@ -93,6 +93,23 @@ test("backend forwarding records a regular engine status before its old read ret
     reading.resolve({ thread: { id: gateway, status: { type: "active", activeFlags: ["awaitingApproval"] } } });
     assert.deepEqual((await hydrated).data, [{ id: gateway, status: { type: "idle" } }]);
     assert.deepEqual(f.events, [{ method: "thread/status/changed", params: { threadId: gateway, status: { type: "idle" } } }]);
+  } finally { await f.clean(); }
+});
+
+test("private gateway status is published, while a shared gateway remains passive", async () => {
+  const f = await fixture(); const observed: Message[] = [];
+  const privateConnection = { closed: false, request: async () => ({}), stop() {} };
+  const sharedConnection = { closed: false, request: async () => ({}), stop() {} };
+  f.backend.engines.push(
+    { connection: privateConnection, revision, aliases: new Set(), threads: new Set(), active: new Map(), requests: 0 },
+    { connection: sharedConnection, revision: "b".repeat(64), aliases: new Set(), threads: new Set(), active: new Map(), requests: 0, shared: true },
+  );
+  f.backend.nativeStatus = { observe: (message: Message) => { observed.push(message); }, stop: async () => {} } as unknown as NativeRuntimeStatus;
+  try {
+    const message = { method: "thread/status/changed", params: { threadId: gateway, status: { type: "active", activeFlags: ["waitingOnApproval"] } } };
+    await f.backend.forward(privateConnection, message);
+    await f.backend.forward(sharedConnection, message);
+    assert.deepEqual(observed, [message]);
   } finally { await f.clean(); }
 });
 
