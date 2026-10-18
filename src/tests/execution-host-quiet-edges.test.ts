@@ -113,3 +113,32 @@ test("an adapter's acquire, find and native acquire wait out a quiet check that 
     await assert.rejects(client!.acquire({ ...f.descriptor, settings: { model: "changed" } }), /cannot change/, "other refusals still fail at once");
   } finally { client?.close(); await f.clean(); }
 });
+
+test("with no quiet time (an urgent release-skew move) a turn that just ended does not block, but a running turn and a background terminal still do", { timeout: 30000 }, async () => {
+  const f = await quietHost();
+  try {
+    const record = await f.control<ExecutionRecord>("execution/acquire", f.descriptor);
+    const chat = await f.chat(record.socketPath, "skew-chat");
+    await chat.turn({ status: "inProgress" });
+    assert.deepEqual(await f.host.prepareQuietStop!(0), { wait: "running" }, "never while a turn runs");
+    await chat.turn({ status: "completed", completedAt: seconds() }); // Ended this very second.
+    await chat.terminal(true);
+    assert.deepEqual(await f.host.prepareQuietStop!(0), { wait: "background_terminal" }, "an agent's background terminal would be killed with the engine");
+    await chat.terminal(false);
+    assert.deepEqual(await f.host.prepareQuietStop!(300), { wait: "recent_turn" }, "the usual quiet time still waits for a turn that just ended");
+    assert.deepEqual(await f.host.prepareQuietStop!(0), { loadedChats: 1 }, "the urgent check does not");
+    f.host.resume();
+  } finally { await f.clean(); }
+});
+
+test("a turn that starts after the quiet read but before the gate closes is caught by the last status look", { timeout: 30000 }, async () => {
+  const f = await quietHost();
+  try {
+    const record = await f.control<ExecutionRecord>("execution/acquire", f.descriptor);
+    const chat = await f.chat(record.socketPath, "late-chat");
+    await chat.turn({ status: "completed", completedAt: seconds(2 * 86_400_000) }); await chat.updated(seconds(2 * 86_400_000));
+    await chat.lateActive(1); // Idle for the quiet read; running for the next read of its status.
+    assert.deepEqual(await f.host.prepareQuietStop!(0), { wait: "running" }, "the gate stayed open");
+    await assert.doesNotReject(f.control("execution/find", { threadId: "late-chat" }), "no acquire or find was held back");
+  } finally { await f.clean(); }
+});

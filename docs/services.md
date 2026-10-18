@@ -577,7 +577,7 @@ its owned host and workers. Use the unified service for normal desktop work.
 
 Installing a release only switches the `current` link. The supervisor checks once a
 minute and, when `current` names another release, restarts itself; launchd starts it
-again on the installed release. It waits for one of two moments:
+again on the installed release. It waits for one of three moments:
 
 1. **Idle**, tried first at every attempt: the execution host has no adapter lease and
    no loaded chat, then inference accepts its own idle guard.
@@ -587,6 +587,10 @@ again on the installed release. It waits for one of two moments:
    for an approval or for user input counts as running. Leases and loaded chats do not
    block it. Inference must still accept its idle guard, so a running inference request
    still refuses, and the next attempt asks again.
+3. **Urgent**, when a newer adapter is waiting beside this older host (see
+   [release skew](#release-skew-a-newer-adapter-beside-an-older-host)): no 15 minute
+   grace, and the quiet check ignores recently ended turns. Only a running turn, a
+   background terminal or busy inference holds it back.
 
 The 15 minutes count from when the running service first saw the release, on the
 monotonic clock, which stops while the Mac sleeps: they are 15 minutes of awake time,
@@ -648,7 +652,72 @@ check cannot hold one back: a turn started in the second or two between the quie
 and the host's close (inference exits first) is cut, as at any service restart, and
 continues from saved history after a resume. `gateway service restart` keeps the idle
 rule and its maintenance window. Each move is logged as `self_upgrade` with `mode`
-`idle` or `quiet`, and for `quiet` the number of chats still loaded.
+`idle`, `quiet` or `skew`, and for `quiet` and `skew` the number of chats still loaded.
+
+## Release skew: a newer adapter beside an older host
+
+On 2026-10-18 an operator installed 0.4.7 while Studio's service ran 0.4.6. Agents kept
+turns running, so neither the idle rule nor the quiet rule (no turn ended in the last 5
+minutes) ever fired. Studio's ChatGPT restarted and its adapter came up on 0.4.7, the
+installed release. Every request from it failed for hours: the 0.4.6 host refuses a
+generation whose `gatewaySdkSha256` is not its own gateway SDK, and the host masked that
+refusal as "Execution operation failed; managed chat ownership was preserved", which the
+app showed as "Failed to resume chat".
+
+The host now says what is happening, and the service moves promptly:
+
+1. **The message.** The host answers a generation request that names another release's
+   gateway SDK with a fixed text for the direction (item 2), which it passes through
+   unchanged and the adapter shows for the request: starting or resuming a chat, and a
+   chat re-attaching after its executor went away. For `adapter_newer`: "This Mac's
+   gateway service is moving to the newer release; this chat continues as soon as no
+   turn is running". For `adapter_older`, or a direction that could not be told: "This app
+   and this Mac's gateway service run different gateway releases; quit and reopen ChatGPT
+   to load the installed release". The refusal is the chat's own failure, not a lost
+   host, so it opens no fail-fast window. The host records `release_skew_refused` with a
+   `direction` and a `count`, at most once a minute per direction
+   ([diagnostics](diagnostics.md)). A host with no gateway SDK of its own cannot tell the
+   sides apart and keeps the generic refusal.
+2. **The direction.** The adapter is `adapter_newer` when its SDK checksum is the
+   installed (pending) release's, read from `gateway-sdk/build.json` in that release's
+   package; otherwise `adapter_older`. That receipt is not held to the running release's
+   pins (patch, capabilities, revision, codex version, lockfiles): a release changes its
+   SDK exactly when those change, so holding it to them would never find the new one. The
+   reader checks the file as the runtime does (a regular file this user owns, not
+   writable by others, at most 16 KiB, schema 1, this platform), takes `binarySha256` and
+   does not hash the binary: the service that starts on that release verifies its SDK
+   fully. A positive answer is kept per release; a receipt that cannot be read is read
+   again at the next refusal.
+3. **Urgent move.** A refused `adapter_newer` marks the pending release urgent. The
+   supervisor then drops the 15 minute grace, tries the move every 10 seconds, and uses
+   the quiet check with a quiet time of zero: no turn running in any engine and no
+   background terminal, while a turn that ended seconds ago does not block it. Inference
+   must still accept its own idle guard. A running turn is never stopped. The move is
+   logged as `self_upgrade` with `mode: "skew"`. A refused SDK that is not the pending
+   release's marks nothing urgent.
+   Agents that run turns back to back may never be caught idle by a look every 10
+   seconds, so while a release is urgent the host also looks at its engines, once a
+   second, and tells the supervisor the moment no turn is running, no approval or input
+   is pending and no chat keeps a background terminal, once per such gap. The supervisor
+   then tries the move at once, through the same quiet check and inference guard. The
+   look is cheap by design: one short admin connection per engine, a `thread/read` status
+   per loaded chat (an `active` status covers a running turn and one waiting for an
+   approval or input) and, only when no chat is active, its background terminals. It never
+   asks for a turn list, so it never replays a chat's saved history, and it ends at the
+   first chat that is busy. A look blocked by a background terminal, an unreadable chat or
+   more than 256 chats backs off (1 s, doubling up to the 10 second tick) and returns to
+   one second when a gap appears. Each look first checks that the release is still the
+   pending one: after a rollback or a newer install the urgency is dropped, and the look
+   stops until another refusal. The 10 second tick stays as the backstop.
+   The host also does not stop a turn: it cannot hold one back, because turns start on
+   engine sockets, not through the host. The quiet check reads every chat, then looks
+   once more at every engine's chat statuses right before it closes the gate, which
+   leaves a window of a few milliseconds. A turn that starts inside it can still be cut
+   when the service stops, as at any service restart, and continues from saved history
+   after a resume.
+4. **The reverse case.** Once the service has moved, an adapter of the older release
+   that asks for a generation gets the `adapter_older` message above, recorded as
+   `adapter_older`. Nothing else changes: that adapter moves when the app restarts.
 
 # Shared native session ownership
 
