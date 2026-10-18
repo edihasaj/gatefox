@@ -30,18 +30,21 @@
     "scripts/codex-desktop-shim",
     "scripts/e2e-fast-mode.mjs",
     "README.md",
-    "docs"
+    "docs",
+    "scripts/claude-desktop-adapter.mjs",
+    "scripts/claude-desktop-optional-tools.mjs"
   ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "node scripts/run-tests.mjs",
+    "test": "node scripts/run-tests.mjs && npm run test:claude-desktop",
     "app:build": "node scripts/build-macos-app.mjs",
     "app:sign": "node scripts/sign-macos-app.mjs",
     "app:test": "node scripts/test-macos-app.mjs",
     "app:e2e": "node scripts/e2e-app-wizard.mjs",
     "version:next": "node scripts/release-version.mjs",
-    "start": "node dist/cli.js serve"
+    "start": "node dist/cli.js serve",
+    "test:claude-desktop": "node --test scripts/claude-desktop-tests/*.test.mjs"
   },
   "engines": {
     "node": ">=22"
