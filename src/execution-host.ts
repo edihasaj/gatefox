@@ -5,18 +5,21 @@ import { dirname, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
-import { ExecutionEngine, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
+import { ExecutionEngine, ReleaseSkewError, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
 import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, listenPrivate, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
 import { nativeUnavailableReason, verifyNativeSdk, type NativeSdkVerifier } from "./native-execution-host-sdk.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { engineActivity } from "./execution-host-activity.js";
+import { pendingGatewaySdkReader, type PendingGatewaySdk } from "./self-update.js";
 import { telemetry } from "./telemetry.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
-export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined> }
+export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined>;
+  /** The installed release that is newer than this process, with its gateway SDK checksum; defaults to reading the installed release. A stand-in for tests. */
+  pendingRelease?: () => Promise<PendingGatewaySdk | undefined> }
 const maxFrame = 4 * 1024 * 1024;
 /** How long after the last turn ended a host with connected adapters still counts as in use (see prepareQuietStop). */
 export const defaultQuietMs = 5 * 60_000;
@@ -66,8 +69,14 @@ export function hostFailureReason(error: unknown): HostFailureReason {
   return "other";
 }
 
-/** One owned SDK writer per gateway generation, independent of adapter clients. A host without `prepareQuietStop` (a stand-in) never stops quietly. */
-export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; prepareQuietStop?(quietMs?: number): Promise<QuietStop | undefined>; resume(): void }> {
+/** How long `release_skew_refused` is held back after one was recorded (ms); `GATEWAY_RELEASE_SKEW_EVENT_MS` shortens it for tests. */
+const skewEventGapMs = (): number => Number(process.env.GATEWAY_RELEASE_SKEW_EVENT_MS) || 60_000;
+
+/**
+ * One owned SDK writer per gateway generation, independent of adapter clients. A host without `prepareQuietStop` (a stand-in) never stops quietly.
+ * `skewRefused(release)`: this host refused an adapter that runs the gateway SDK of the installed `release`, so that newer release is waiting urgently.
+ */
+export async function startExecutionHost(options: ExecutionHostOptions): Promise<{ close(): Promise<void>; prepareStop(): Promise<boolean>; prepareQuietStop?(quietMs?: number): Promise<QuietStop | undefined>; skewRefused?(release: string): boolean; resume(): void }> {
   const home = executionHostHome(options.configPath, options.nativeHome); const socketPath = resolve(home, "host.sock");
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
@@ -100,6 +109,19 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   let native: NativeExecutionEngine | undefined; let richestNative: NativeExecutionDescriptor | undefined; let nativeLease: NativeHomeLease | undefined;
   const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
   let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let pending = 0;
+  // Release skew: a generation request that names another release's gateway SDK. The adapter is newer when its SDK is the
+  // installed (pending) release's, and older otherwise. Each direction is recorded at most once per `skewEventGapMs`, with the
+  // refusals since the last record; a newer adapter also marks its release urgent for the supervisor (see `skewRefused`).
+  const readPendingRelease = options.pendingRelease ?? pendingGatewaySdkReader();
+  const skewRefusals = new Map<string, { count: number; recordedAt: number }>(); const urgentReleases = new Set<string>();
+  const noteSkew = async (adapterSha256: string): Promise<void> => {
+    const pendingRelease = await readPendingRelease().catch(() => undefined);
+    const direction = pendingRelease?.gatewaySdkSha256 === adapterSha256 ? "adapter_newer" : "adapter_older";
+    if (direction === "adapter_newer") urgentReleases.add(pendingRelease!.release);
+    const entry = skewRefusals.get(direction) ?? { count: 0, recordedAt: Number.NEGATIVE_INFINITY }; entry.count++; skewRefusals.set(direction, entry);
+    if (performance.now() - entry.recordedAt < skewEventGapMs()) return;
+    telemetry("release_skew_refused", { direction, count: entry.count }); entry.count = 0; entry.recordedAt = performance.now();
+  };
   const publish = () => {
     if (native?.death && !owner.nativeDeaths?.some(death => death.instanceId === native!.death!.instanceId)) owner.nativeDeaths = [...(owner.nativeDeaths || []), native.death].slice(-32);
     const snapshot: HostOwner = { ...owner, generations: [...engines.values()].map(engine => ({ ...engine.owner })), ...(native ? { native: { ...native.owner } } : {}) };
@@ -123,7 +145,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (engines.size >= 4) throw new Error("Four gateway generations have loaded chats. Close an older chat before loading another catalog");
     const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
-    catch (error) { await remove(engine); throw error; }
+    catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) await noteSkew(error.adapterSha256).catch(() => undefined); throw error; }
   };
   // The native home is claimed at start, or, while another live owner holds it (a desktop's private native engine that ran
   // while this host was down, say), at the next native request: until then this host refuses native ownership and keeps
@@ -231,7 +253,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         const status = message.method === "execution/status";
         const operation = status ? Promise.resolve().then(run) : serial.then(run);
         if (!status) serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This Mac's gateway service is still moving to a newer release|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -344,6 +366,6 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     await listenPrivate(server, physicalPath); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();
-    return { close, prepareStop, prepareQuietStop, resume: () => { if (!stopping) quiescing = false; } };
+    return { close, prepareStop, prepareQuietStop, skewRefused: release => !stopping && urgentReleases.has(release), resume: () => { if (!stopping) quiescing = false; } };
   } catch (error) { await close(); throw error; }
 }

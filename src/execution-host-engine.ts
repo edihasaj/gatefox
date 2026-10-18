@@ -15,6 +15,19 @@ import { spawnStamp } from "./boot-identity.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
+/**
+ * The fixed text of a refused gateway SDK mismatch between an adapter and this host (two releases running side by side). The
+ * host passes it through unchanged and the adapter shows it, so a user reads what is happening instead of a masked failure.
+ */
+export const releaseSkewMessage = "This Mac's gateway service is still moving to a newer release; retry in a moment";
+/** A generation request whose gateway SDK is not the one this host runs; `adapterSha256` is the SDK the adapter named. */
+export class ReleaseSkewError extends Error {
+  constructor(readonly adapterSha256: string) { super(releaseSkewMessage); }
+}
+/** Whether an error is the host's release-skew refusal, as the adapter receives it over the control connection. */
+export function isReleaseSkew(error: unknown): boolean {
+  return error instanceof Error && error.message === releaseSkewMessage;
+}
 export function executionDescriptor(value: unknown): ExecutionDescriptor {
   const input = object(value); const catalog = object(input.catalog);
   if (typeof input.revision !== "string" || !/^[a-f0-9]{64}$/.test(input.revision) || !Array.isArray(input.args) || input.args.length > 256 || !input.args.every(arg => typeof arg === "string" && !arg.includes("\0") && Buffer.byteLength(arg) < 65536)
@@ -97,7 +110,12 @@ export class ExecutionEngine {
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
     const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
     const runtime = descriptor.gatewaySdkSha256 ? await this.resolveRuntime() : undefined;
-    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) {
+      // Another release's SDK is the release skew of a service and an adapter that moved at different times (see docs/services.md).
+      // A host with no runtime of its own cannot tell which side is older, so that case keeps its masked refusal.
+      if (runtime) throw new ReleaseSkewError(descriptor.gatewaySdkSha256);
+      throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    }
     if (runtime) this.record.selectedModelCompaction = true;
     await privateDirectory(directory);
     const metadata = resolve(directory, "execution-generation.json");

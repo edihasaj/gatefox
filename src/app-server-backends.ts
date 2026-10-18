@@ -9,7 +9,7 @@ import { nothingToJoin, type PrivateNativeLease } from "./native-execution-host-
 import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
-import { canonicalJson } from "./execution-host-engine.js";
+import { canonicalJson, isReleaseSkew } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
 import { sendWithStrictFeatureRetry } from "./gateway-feature-retry.js";
@@ -465,7 +465,7 @@ export class AppServerBackends {
       // Only a failed host lookup (finding the host, or asking it) is "host_unavailable" and arms the fail-fast window; a
       // gateway() that refused for its own reasons (catalog, generation limit, a changed provider) is the chat's own failure.
       try { const target = await this.owner(threadId).catch(markHostFailure) ?? await this.gateway(); target.requests--; }
-      catch (error) { throw new ReattachError(isHostFailure(error) ? "host_unavailable" : "resume_failed"); }
+      catch (error) { throw isReleaseSkew(error) ? error : new ReattachError(isHostFailure(error) ? "host_unavailable" : "resume_failed"); }
       try { await this.request("thread/resume", this.loads.resumeParams(threadId)); }
       catch { throw new ReattachError("resume_failed"); }
     });
@@ -567,7 +567,8 @@ export class AppServerBackends {
         // request there, as the user would by resuming. A throwaway chat lived only in the engine that is gone.
         const lost = Object.assign(new Error(engine.shared ? "The gateway executor connection was lost; resume this chat to reconnect to its saved or running session." : "The gateway executor exited; resume this chat before continuing. Ephemeral chats must be started again."), { code: -32001 });
         if (this.closing || this.ephemeralThreads.has(threadId)) throw lost;
-        try { await this.reattach(threadId, engine); } catch { throw lost; }
+        // The host's release-skew message is the reason to show: the service runs another release than this app.
+        try { await this.reattach(threadId, engine); } catch (error) { throw isReleaseSkew(error) ? error : lost; }
         engine = this.bindings.get(threadId);
         if (!engine) throw lost;
         reserved = false;

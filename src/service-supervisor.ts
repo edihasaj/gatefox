@@ -120,9 +120,10 @@ export class ServiceSupervisor {
       this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); void this.host.restartForRegistration().catch(() => undefined); void this.observeRelay(); }, this.registrationPollMs); this.registrationWatch.unref();
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
-    // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one.
+    // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one. A newer adapter that this
+    // host has refused (release skew) makes the move urgent: no grace, and only a running turn or terminal holds it back.
     this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
-      { state: this.heal.releaseState });
+      { state: this.heal.releaseState, urgent: to => this.skewWaiting(to) });
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
     await this.publish();
@@ -313,18 +314,30 @@ export class ServiceSupervisor {
    * background terminal, none ended in the last `upgradeQuietMs`, 5 min), then the same inference guard, so inference with
    * requests running still refuses. The host then closes like a restarted host: adapters kick, wait for the new one and
    * resume their chats. Each reason a quiet attempt waited is logged once per pending release as `self_upgrade_waiting`.
+   * When the host has refused an adapter of the pending release (release skew), the move is urgent: no grace, and the quiet
+   * check ignores recently ended turns (quiet time 0), so only a running turn, a background terminal or busy inference holds
+   * it back; it is logged as `self_upgrade` with `mode: "skew"`.
    */
   private async upgrade(pending: PendingRelease): Promise<UpgradeOutcome | false> {
-    if (await this.restartWhenIdle()) return { mode: "idle" };
-    if (this.stopping || pending.pendingMs < upgradeGraceMs()) return false;
-    const quietMs = upgradeQuietMs();
+    // An urgent move (a newer adapter is refused by this host) is the quiet check without its waits: no grace, and a turn that
+    // ended moments ago does not hold it back, because that adapter cannot run anything until the service has moved. The strict
+    // idle check is a subset of it, so it is not tried first.
+    if (!pending.urgent && await this.restartWhenIdle()) return { mode: "idle" };
+    if (this.stopping || !pending.urgent && pending.pendingMs < upgradeGraceMs()) return false;
+    const quietMs = pending.urgent ? 0 : upgradeQuietMs();
     const result = await this.restartAfter(async host => await host.prepareQuietStop?.(quietMs) ?? {});
-    if ("loadedChats" in result) return { mode: "quiet", loadedChats: result.loadedChats };
+    if ("loadedChats" in result) return { mode: pending.urgent ? "skew" : "quiet", loadedChats: result.loadedChats };
     const key = `${pending.to}\0${result.wait}`;
     if (result.wait && !this.stopping && !this.upgradeWaits.has(key)) {
       this.upgradeWaits.add(key); telemetry("self_upgrade_waiting", { component: "service", from: pending.from, to: pending.to, reason: result.wait });
     }
     return false;
+  }
+  /** Whether the running host has refused an adapter of the installed release `to` (release skew), which makes moving to it urgent. */
+  private async skewWaiting(to: string): Promise<boolean> {
+    if (this.stopping || this.host.hostCloseFailed) return false;
+    const host: ExecutionHost | undefined = await this.host.executionStarting?.catch(() => undefined);
+    return host?.skewRefused?.(to) === true;
   }
   /**
    * One restart at a time, never while stopping: `hostReady` closes the host's gate (an idle or quiet check, returning the
