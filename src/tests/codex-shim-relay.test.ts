@@ -72,24 +72,39 @@ test("without a live relay the app engine keeps its own remote control", { skip:
   } finally { files.close(); await rm(files.directory, { recursive: true, force: true }); }
 });
 
-// The real relay-optional regression: everything the adapter reads claims a relay, but nothing
-// answers on its socket. The engine must keep its own remote control, and remoteControl/* must
-// still reach it. No socket is bound here, so this runs anywhere the suite runs.
-test("a registered relay that is not reachable leaves the engine's remote control alone", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+// Registration, not the live status, decides who owns remote control: OpenAI allows one remote-control connection per
+// machine, so an engine that took it while the registered relay was down would lock the relay out (HTTP 409) until it
+// exited. Everything the adapter reads claims a relay but nothing answers on its socket: the engine stands down, and
+// remoteControl/* is not routed to the relay (it reaches the engine, which has switched its own remote control off).
+async function registeredButDown(prepare: (home: string, stateDirectory: string, nativeHome: string) => Promise<void>) {
   const files = await shimFiles({ serve: false }); const own = await privateHome();
-  // A registration and a receipt that both claim a relay, and nothing listening behind them.
   const home = join(own.relayRoot, "su");
   await mkdir(join(home, "app-server-control"), { recursive: true, mode: 0o700 });
-  await writeFile(join(home, "status.json"), '{"status":"connected"}');
-  await writePrivateJson(join(files.value.stateDirectory, "native-registration.json"), { registered: true, home, nativeHome: files.nativeHome });
+  await prepare(home, files.value.stateDirectory, files.nativeHome);
   try {
     const adapter_ = await adapter({ ...files.env, HOME: own.home }, files.backend, files.cli, files.config);
     try {
       await adapter_.rpc("initialize", { clientInfo: { name: "Codex Desktop", version: "1" }, capabilities: {} });
-      assert.notEqual((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "an unreachable relay never switched the engine off");
-      assert.equal((await adapter_.rpc("remoteControl/status/read")).transport, "engine", "the method reached the engine untouched");
+      assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "a registered relay that is down still owns remote control");
+      assert.equal((await adapter_.rpc("remoteControl/status/read")).transport, "engine", "nothing was routed to the relay");
     } finally { await adapter_.close(); }
   } finally { files.close(); await rm(files.directory, { recursive: true, force: true }); await own.remove(); }
+}
+const registered = (home: string, state: string, nativeHome: string) => writePrivateJson(join(state, "native-registration.json"), { registered: true, home, nativeHome });
+
+test("a registered relay that is not reachable still owns remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  await registeredButDown(async (home, state, nativeHome) => {
+    await writeFile(join(home, "status.json"), '{"status":"connected"}');
+    await registered(home, state, nativeHome);
+  });
+});
+
+test("a registered relay that never connected still owns remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  await registeredButDown(registered);
+});
+
+test("an activation in progress already owns remote control for adapters that start during it", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  await registeredButDown((home, state, nativeHome) => writePrivateJson(join(state, "native-registration.pending"), { registered: true, home, nativeHome }));
 });
 
 // A relay lives under the state home of the test's own HOME, which its adapter shares.

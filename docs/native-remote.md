@@ -121,12 +121,88 @@ gateway native install
 
 Under a unified plan this installs no LaunchAgent. It takes the relay binary, relay
 home, native home and app CLI from the plan's native component, refuses while ChatGPT
-is open, and runs the relay's `--check` and then `--enable` against this account's
-existing, enabled Codex Desktop registration. A missing or disabled registration is
-refused, and the relay never enrolls a new machine. Only then does it write
-`<state>/native-registration.json`. The service starts the relay at its next
-five-minute check while ChatGPT stays closed. Running it again with the same plan
-changes nothing.
+is open, and runs the relay's `--check` against this account's existing, enabled Codex
+Desktop registration. A missing or disabled registration is refused, and the relay
+never enrolls a new machine. Running it again with the same plan changes nothing.
+
+**A registered relay owns remote control.** OpenAI allows one remote-control
+connection per Mac, so an engine that connects first leaves the relay with
+`HTTP error: 409 Conflict` on every retry until that engine exits. Once the relay is
+registered, every adapter, SSH listener and shared host starts its stock engine with
+remote control switched off, whether or not the relay is connected at that moment. A
+registered relay that is down for a while means the phone loses this Mac until the
+relay is back; no other engine takes its place. Only a live relay also receives
+`remoteControl/*`. A `409 Conflict` in the relay log therefore means another engine
+holds the slot (a process that started before the relay was registered).
+
+The install avoids that race in this order:
+
+1. It writes `<state>/native-registration.pending`. Adapters and listeners that start
+   from now on already count the relay as registered. The previous
+   `native-registration.json` is not touched, so it is the rollback. A pending record
+   older than ten minutes (a dead install) counts as none.
+2. It looks for stock engines under this gateway's adapters, SSH listeners and shared
+   host that started before the pending record (it reads the process list in the C
+   locale and refuses if any line cannot be read). A first registration only; a Mac
+   that already registered a relay has none to clear.
+   - An SSH listener is never killed from outside. The install sends it SIGUSR2, a
+     request to retire. The listener decides itself, in one step, whether it is
+     truly idle: no request in flight, no turn running, no approval waiting, and 30
+     seconds without traffic. If so it stops the way a TERM would and the remote app
+     reconnects through a fresh listener, which stands down. Otherwise it ignores the
+     request and says so in its record, and the install refuses with "an SSH session
+     from another Mac is using this Mac; retry when it is idle".
+   - The signal is sent only to a listener whose record
+     (`listener-activity-<pid>.json` beside its socket) names the same start time as
+     the process list. A listener from a release before 0.4.8 keeps no record and
+     would die of that signal, so the install refuses with "a listener from an older
+     release is running; quit ChatGPT on the other Mac, wait about 2 minutes, then
+     retry".
+   - Another Codex session on this Mac that runs its own engine also refuses the
+     install. The shared host's engine is not signalled: the service restarts the
+     host, once idle, because the pending record already counts as a registration; the
+     install waits for it and refuses if the host stays busy.
+   The steps run in this order so that a refusal changes as little as possible: the
+   checks that need no action come first, then the shared host (waited for up to about
+   30 seconds, while the service restarts it when idle), and only then are the
+   listeners asked, one by one. Any refusal removes the pending record and registers
+   nothing. If a listener declines after an earlier one already retired, the earlier
+   one stays retired; that is harmless, because its remote app reconnects through a
+   fresh listener that stands down.
+3. It runs the relay's `--enable` and waits up to 45 seconds. On success it writes
+   `<state>/native-registration.json` and removes the pending record. On a timeout or
+   an early exit it keeps the previous registration exactly as it was, removes the
+   pending record and reports the fixed reason.
+
+The service notices the registration within about two seconds (not at the five-minute
+check) and starts the relay while ChatGPT stays closed, so the slot is not left free.
+Each SSH listener keeps `listener-activity-<pid>.json` beside its socket (pid, start
+time, whether any turn or approval is in flight, when it last declined a retire
+request); it is removed when the listener exits. A shared host that started before the
+registration restarts when idle so its engine stands down too. Nothing hands remote
+control back to an engine while the relay is registered, so a relay that stays broken
+leaves the phone without this Mac.
+
+**Giving remote control back.** `gateway native uninstall` under the unified service
+now writes `{"registered":false}` to `<state>/native-registration.json`, keeps the
+previous record as `native-registration.json.pre-relay-off-<time>` and removes a pending
+record. Only engines that start afterwards keep their own remote control; running ones
+keep standing down until they restart, and a service restart does not make the desktop
+app or SSH listeners release it:
+
+- the desktop app: quit ChatGPT, and open it again once the rest has let go;
+- SSH listeners: they let go the next time they start, that is when the remote app next
+  connects after its listener exits;
+- the relay and the shared host: restart the service while idle
+  (`gateway service restart`).
+
+`gateway health` warns when a registered relay has been paused for more than five
+minutes, or runs but has not been connected for that long. The "not connected" time is
+measured from the last moment the service saw the relay connected (`lastConnectedAt` in
+its status file), or from the relay's start if it never was, because the relay rewrites
+its own status file on every change and a refused connection (HTTP 409) changes it
+constantly. The warning names the cause class (the relay keeps failing, or the service
+has not started it since the registration) and this command.
 
 ### Moving a Mac to the 0.163 relay
 
@@ -139,10 +215,15 @@ OpenAI. What to expect depends on the Mac:
 | Studio, macbook-server | `sharedNativeExecutor: false` (set on 17 October) | `paused`: `failing` where a relay is registered, `not_registered` on macbook-server | Relay sessions run private native engines; the host never shares a native engine there |
 | A Mac with `sharedNativeExecutor: true` | Host shares native chats | `paused`, `failing` | The host stays gateway-only on 0.163 (`native_sharing_unavailable`, `sdk_version`), and relay sessions fall back to private engines |
 
-A relay that the five-minute check starts again does not restart the host
+A relay that the service starts again does not restart the host
 (`resumePaused` in `src/service-supervisor.ts`), and the host and each adapter decide
-once, at start, whether a live relay owns remote control. So the order is: the relay
-connects first, then the service restarts while idle, then ChatGPT opens. Except for
+once, at start, whether the registered relay owns remote control (the registration, not
+the relay's live status, decides; see [Registering a relay under the unified
+service](#registering-a-relay-under-the-unified-service)). So the order is: the relay
+connects first, then the service restarts while idle, then ChatGPT opens. An engine
+that started before the relay was registered keeps its remote control until it exits; a
+`409 Conflict` in the relay log means exactly that, and `gateway native install`
+retires idle SSH listeners for that reason. Except for
 quitting and reopening ChatGPT, which the user does normally, the steps below only read
 state or use the gateway's own commands.
 
@@ -161,9 +242,9 @@ state or use the gateway's own commands.
 2. Install the release as usual. The installer never quits the app.
 3. When no chat is running, quit ChatGPT normally with Command-Q.
 4. Only where the slot was `not_registered` (macbook-server): run
-   `gateway native install`. A slot paused as `failing` needs nothing; the new relay
+   `gateway native install`. It retires idle SSH listeners and refuses while one is busy. A slot paused as `failing` needs nothing; the new relay
    binary is the change the five-minute check waits for.
-5. Wait up to five minutes with ChatGPT still closed, then check
+5. Wait a few seconds (up to five minutes if the install was not the trigger) with ChatGPT still closed, then check
    `gateway native status`: `relay.status` `connected` with the original
    `environmentId`, and `gateway service status`: the native component `running` with
    no `pausedReason`.

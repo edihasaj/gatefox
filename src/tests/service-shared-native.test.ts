@@ -128,13 +128,12 @@ test("a shared-native host takes the app's remote control only for a relay it re
   } finally { await f.cleanup(); }
 });
 
-test("a host that starts again while its relay is set aside leaves remote control to the app", { timeout: 20000 }, async () => {
+test("a host that starts again while its registered relay is set aside still leaves remote control to the relay", { timeout: 20000 }, async () => {
   const f = await fixture();
   try {
-    // The relay is registered here but exits at once, so the service sets it aside; the execution
-    // host starts again after that and must not claim a relay it is not running. Whether the retry
-    // of the failed start comes before the relay's three strikes or after them, the host that runs
-    // once the relay is set aside starts without it: a retry that came first is restarted (idle).
+    // The relay is registered here but exits at once, so the service sets it aside. Registration, not the relay's liveness,
+    // decides who owns remote control: every host start, before and after the pause, stands down, and none is restarted to
+    // hand the slot back to the app, so no other engine can take it while the relay is down.
     const dying = { ...f.plan.components[0], command: "/bin/sh", args: ["-c", "exit 1", "--", "--daemon", "--codex", f.codex, "--native-home", f.nativeHome, "--relay-home", f.relayHome] };
     const owns: boolean[] = []; let attempt = 0;
     const supervisor = new ServiceSupervisor({ ...f.plan, sharedNativeExecutor: true, components: [dying] }, f.state, 20, options => {
@@ -143,9 +142,9 @@ test("a host that starts again while its relay is set aside leaves remote contro
     }, undefined, undefined, undefined, { kickGapMs: 0, hostProbeMs: 3_600_000, watchKick: () => () => {}, healthSchedule: () => () => {} });
     try {
       await supervisor.start();
-      await until(async () => owns.at(-1) === false, "a host start without the relay");
-      assert.equal(owns[0], true, "the relay was live for the first start");
-      assert.ok(owns.length <= 3, `one retry and at most one idle restart (${owns.length} starts)`);
+      await until(async () => owns.length >= 2, "the host's retry");
+      await new Promise(done => setTimeout(done, 400));
+      assert.deepEqual(owns, [true, true], "both starts stand down for the registered relay, and nothing restarts the host to give the slot back");
     } finally { await supervisor.stop(); }
   } finally { await f.cleanup(); }
 });

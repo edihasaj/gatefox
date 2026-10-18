@@ -16,6 +16,21 @@ const exec = promisify(execFile);
 
 export const nativeRegistrationPath = (stateDirectory: string): string => resolve(stateDirectory, "native-registration.json");
 
+/** The registration an activation is writing right now; it never replaces `native-registration.json` until the relay connected. */
+export const nativePendingPath = (stateDirectory: string): string => resolve(stateDirectory, "native-registration.pending");
+/** A pending record older than this belongs to an activation that died, and counts as none. */
+export const nativePendingMaxMs = 10 * 60_000;
+
+/** The activation in progress, or undefined when none is, the record is unreadable, or it is stale. */
+export async function nativePendingRecord(stateDirectory: string, now = Date.now()): Promise<(Message & { writtenAt: number }) | undefined> {
+  try {
+    const path = nativePendingPath(stateDirectory);
+    const written = (await stat(path)).mtimeMs;
+    if (now - written > nativePendingMaxMs) return;
+    return { ...object(JSON.parse(await readFile(path, "utf8"))), writtenAt: written };
+  } catch { return; }
+}
+
 /** The saved registration, or undefined when this machine never registered a relay or its record is unreadable. */
 export async function nativeRegistrationRecord(stateDirectory: string): Promise<Message | undefined> {
   let value: unknown;
@@ -33,6 +48,15 @@ export const componentUp = (component: { state: string; kind?: string }): boolea
 /** Whether the registration says a relay is registered here; the only question readiness and the supervisor ask. */
 export async function nativeRegistrationEnabled(stateDirectory: string): Promise<boolean> {
   return (await nativeRegistrationRecord(stateDirectory))?.registered === true;
+}
+
+/**
+ * Whether the relay owns this Mac's remote control: registered, or an activation is pending. This is the question every stock
+ * engine (adapter, SSH listener, shared host) asks when it starts; the supervisor's own start of the relay asks the stricter
+ * `nativeRegistrationEnabled`, because it must not start a second relay while `--enable` runs.
+ */
+export async function nativeRegistrationClaimed(stateDirectory: string): Promise<boolean> {
+  return await nativeRegistrationEnabled(stateDirectory) || await nativePendingRecord(stateDirectory) !== undefined;
 }
 
 /** The `--codex` executable of a native component, the file a relay restart is waiting for. */

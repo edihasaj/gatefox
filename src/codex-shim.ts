@@ -14,8 +14,10 @@ import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { watchForUpgrade } from "./self-update.js";
 import { sshControlHome, reuseSshSocket, type SshSocketReuse, type SshSocketReplacement } from "./ssh-socket.js";
-import { activeNativeRelay } from "./native-control.js";
+import { liveNativeRelay, registeredNativeRelay } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
+import { ListenerActivity } from "./ssh-listener-activity.js";
+import { runtimeBusy } from "./runtime-activity.js";
 
 export function appServerIndex(args: string[]): number {
   const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
@@ -88,9 +90,13 @@ export async function codexShim(argv: string[]): Promise<void> {
   const path = resolve(values.config); const config = await loadConfig(path);
   configureTelemetry(config.stateDirectory, "adapter"); startErrorReports(config.stateDirectory, "adapter");
   // One relay decision per process: this adapter or SSH listener never re-checks it while running,
-  // so a relay that connects later is used from the next app or listener start.
-  const relay = await activeNativeRelay(config);
-  if (relay) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
+  // so a relay that connects later is used from the next app or listener start. Registration decides
+  // who owns remote control: a registered relay that is down for a moment must not leave its slot to
+  // this process's engine, so the engine is told to stand down whether or not the relay is live. Only
+  // a live relay also receives `remoteControl/*`.
+  const registered = await registeredNativeRelay(config);
+  if (registered) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
+  const relay = registered && await liveNativeRelay(registered);
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();
   const overrides = {
@@ -102,9 +108,24 @@ export async function codexShim(argv: string[]): Promise<void> {
   const nativeArgs = normalizeCodexFeatureArgs(preflightArgs, prepared.settings);
   const controller = new AbortController(); const stop = () => controller.abort();
   process.once("SIGINT", stop); process.once("SIGTERM", stop);
+  // An SSH listener records whether a turn runs in any of its sessions, so activating the relay can retire it only while idle.
+  const activity = controlHome && socketPath ? new ListenerActivity(controlHome) : undefined;
+  // `gateway native install` asks an SSH listener to retire with SIGUSR2. The listener decides itself, in one step, whether it is
+  // truly idle (see shimSession); if so it stops the way a TERM would, otherwise it ignores the request and records that it did.
+  // Until the listener is public there is nothing to retire, and the record that authorizes the signal does not exist yet.
+  let listening = false;
+  const onRetire = () => {
+    if (!listening) return;
+    if (runtimeBusy()) { telemetry("ssh_listener_retire_request", { outcome: "declined" }); activity?.decline(); return; }
+    telemetry("ssh_listener_retire_request", { outcome: "retired" }); stop();
+  };
+  if (activity) process.on("SIGUSR2", onRetire);
   try {
-    const session = (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) =>
-      shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, emit, signal, path, preflightArgs, relay);
+    const session = async (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) => {
+      const tracked = activity?.open(emit);
+      try { return await shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, tracked?.emit ?? emit, signal, path, preflightArgs, relay); }
+      finally { tracked?.close(); }
+    };
     if (socketPath) {
       // One listener serves every reconnect for as long as it lives. An SSH listener follows
       // installs itself, because the next connection's bootstrap binds the installed release;
@@ -119,6 +140,7 @@ export async function codexShim(argv: string[]): Promise<void> {
         try {
           await serveUnix(socketPath, controller.signal, session, undefined, (listener, replaced) => {
             if (replaced && pending) { telemetry("ssh_listener_replaced", { from: pending.from, to: pending.to }); replacement = undefined; }
+            listening = true; activity?.publish();
             if (controlHome) stopWatching = watchForUpgrade("ssh_listener", () => listener.sessions() === 0, () => listener.retire());
           }, pending);
         } finally { stopWatching?.(); }
@@ -129,5 +151,10 @@ export async function codexShim(argv: string[]): Promise<void> {
   finally {
     controller.abort();
     process.off("SIGINT", stop); process.off("SIGTERM", stop);
+    // The handler outlives the cleanup: a request to retire that arrives while the record is being removed does nothing
+    // (the listener is stopping, and a stopped record is never written again), instead of killing the process mid-cleanup.
+    listening = false;
+    await activity?.stop();
+    process.off("SIGUSR2", onRetire);
   }
 }

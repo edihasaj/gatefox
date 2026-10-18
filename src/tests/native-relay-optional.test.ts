@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { activeNativeRelay, relaySocketPath } from "../native-control.js";
+import { activeNativeRelay, liveNativeRelay, registeredNativeRelay, relaySocketPath } from "../native-control.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { shortFolder } from "./short-folder.js";
@@ -85,4 +85,41 @@ test("a connected relay on a live control socket is the relay that is used", { s
     assert.equal((await activeNativeRelay(f.config))?.home, f.home);
     assert.deepEqual(await f.reasons(), [], "a live relay is never a skipped one");
   } finally { await new Promise(done => server.close(done)); await f.close(); }
+});
+
+test("registration alone says the relay owns remote control; liveness only decides routing", async () => {
+  const f = await relayFixture(true);
+  try {
+    // No status file: registered, not live.
+    assert.equal((await registeredNativeRelay(f.config))?.home, f.home);
+    assert.equal(await liveNativeRelay({ home: f.home, nativeHome: process.env.CODEX_HOME! }, async () => true), undefined);
+    // Connected but unreachable: still registered, still not live.
+    await writeFile(join(f.home, "status.json"), '{"status":"connected"}');
+    assert.equal((await registeredNativeRelay(f.config))?.home, f.home);
+    assert.equal(await liveNativeRelay({ home: f.home, nativeHome: process.env.CODEX_HOME! }, async () => false), undefined);
+    // Connected and reachable: both.
+    assert.equal((await activeNativeRelay(f.config, async () => true))?.home, f.home);
+    assert.deepEqual(await f.reasons(), ["not_connected", "unreachable"]);
+  } finally { await f.close(); }
+});
+
+test("a machine that never registered, or removed its relay, is not registered", async () => {
+  const never = await relayFixture(undefined);
+  try { assert.equal(await registeredNativeRelay(never.config), undefined); assert.deepEqual(await never.reasons(), []); } finally { await never.close(); }
+  const removed = await relayFixture(false);
+  try { assert.equal(await registeredNativeRelay(removed.config), undefined); assert.deepEqual(await removed.reasons(), ["not_registered"]); } finally { await removed.close(); }
+});
+
+test("a pending activation counts as registered until it goes stale, for the machine it names", async () => {
+  const f = await relayFixture(undefined);
+  try {
+    const pending = join(f.config.stateDirectory, "native-registration.pending");
+    await writePrivateJson(pending, { registered: true, home: f.home, nativeHome: process.env.CODEX_HOME });
+    assert.equal((await registeredNativeRelay(f.config))?.home, f.home, "an adapter that starts during activation stands down");
+    await writePrivateJson(pending, { registered: true, home: f.home, nativeHome: join(f.config.stateDirectory, "another-codex") });
+    assert.equal(await registeredNativeRelay(f.config), undefined, "another native home is not this machine's activation");
+    const old = (Date.now() - 11 * 60_000) / 1000;
+    await writePrivateJson(pending, { registered: true, home: f.home, nativeHome: process.env.CODEX_HOME }, { mtimeMs: old * 1000 });
+    assert.equal(await registeredNativeRelay(f.config), undefined, "an activation that died stops counting after ten minutes");
+  } finally { await f.close(); }
 });

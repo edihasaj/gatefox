@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
+import { copyFile, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
-import { nativeRegistrationPath, nativeRegistrationRecord } from "./native-pause.js";
+import { nativePendingPath, nativeRegistrationPath, nativeRegistrationRecord } from "./native-pause.js";
 import { serviceLabel, type ServicePlan } from "./service-plan.js";
+import { telemetry } from "./telemetry.js";
 
 /** What registering a relay under the unified service may do; each step is replaceable in tests. */
 export interface PlanRelayDeps {
@@ -13,6 +15,17 @@ export interface PlanRelayDeps {
   check(binary: string, args: string[]): Promise<void>;
   /** The relay's `--enable`: it connects with that registration and stops once connected. */
   enable(binary: string, args: string[]): Promise<void>;
+  /**
+   * Retires the idle SSH listeners that may hold this machine's remote-control slot, or throws a refusal that changes nothing.
+   * `pendingAtMs` is when the pending registration was written; only engines started before it can hold the slot.
+   */
+  clearHolders(pendingAtMs: number): Promise<number>;
+}
+
+/** A fixed reason for a relay `--enable` that failed; the relay's own messages are fixed text, so this never reads output. */
+function enableFailure(error: unknown): "timeout" | "exit" | "start" | "other" {
+  const message = error instanceof Error ? error.message : "";
+  return /within 45 seconds/.test(message) ? "timeout" : /stopped before connecting/.test(message) ? "exit" : /could not start/.test(message) ? "start" : "other";
 }
 
 /** The relay component's own paths, exactly as the service runs it. */
@@ -45,12 +58,24 @@ export async function registerPlanRelay(stateDirectory: string, plan: ServicePla
   const receipt = { registered: true, home: relay.home, nativeHome: relay.nativeHome, codex: relay.codex };
   const result = { service: serviceLabel, mode: "supervised", component: relay.id, relayHome: relay.home, nativeConfigUntouched: true };
   if (saved && JSON.stringify(saved) === JSON.stringify(receipt)) return { ...result, registered: true, unchanged: true };
-  if (await deps.appRunning()) throw new Error("Quit ChatGPT normally on this Mac before registering the native relay; it must replace the original remote transport without two hosts competing");
+  if (await deps.appRunning()) { telemetry("native_activation_refused", { reason: "app_running" }); throw new Error("Quit ChatGPT normally on this Mac before registering the native relay; it must replace the original remote transport without two hosts competing"); }
   await deps.check(relay.binary, relay.args);
-  process.stderr.write("Connecting the native Codex relay…\n");
-  await deps.enable(relay.binary, relay.args);
-  await writePrivateJson(nativeRegistrationPath(stateDirectory), receipt);
-  return { ...result, registered: true, next: "The service starts the relay within five minutes while ChatGPT stays closed. Once gateway native status says connected, restart the service while idle (gateway service restart), then open ChatGPT" };
+  // Written before anything else changes: an adapter or SSH listener that starts while the relay connects already stands down.
+  // `native-registration.json` is not touched until the relay connected, so the previous registration is its own rollback.
+  const pending = nativePendingPath(stateDirectory);
+  await writePrivateJson(pending, receipt);
+  try {
+    // Engines that started under an earlier registration already stand down; only a first registration has holders to clear.
+    if (saved?.registered !== true) await deps.clearHolders((await stat(pending)).mtimeMs);
+    process.stderr.write("Connecting the native Codex relay…\n");
+    try { await deps.enable(relay.binary, relay.args); }
+    catch (error) {
+      telemetry("native_activation_failed", { reason: enableFailure(error) });
+      throw new Error(`${error instanceof Error ? error.message : "Native relay could not connect"}; the previous registration was kept`);
+    }
+    await writePrivateJson(nativeRegistrationPath(stateDirectory), receipt);
+  } finally { await unlink(pending).catch(() => {}); }
+  return { ...result, registered: true, next: "The service starts the relay within seconds while ChatGPT stays closed. Once gateway native status says connected, restart the service while idle (gateway service restart), then open ChatGPT" };
 }
 
 /** The relay's `--check`, which resolves everything up to the websocket and prints whether the existing machine is ready. */
@@ -68,4 +93,24 @@ export function relayCheck(binary: string, args: string[], timeoutMs = 60000): P
       if (code === 0 && ready?.ready === true && ready.existingMachine === true) done(); else fail(refused());
     });
   });
+}
+
+/**
+ * The way out of a registered relay under the unified service: `gateway native uninstall` marks it unregistered, so every
+ * adapter, SSH listener and shared host that starts afterwards leaves remote control to ChatGPT again. The previous record is
+ * kept beside it (`native-registration.json.pre-relay-off-<time>`), and a pending activation is removed. The relay the service
+ * is running and the shared host let go at the next service restart; the desktop app and SSH listeners let go when they next start
+ * (a service restart does not make them release it). Nothing in the
+ * native configuration is touched. The caller holds the login registration lock.
+ */
+export async function unregisterPlanRelay(stateDirectory: string, now = new Date()): Promise<Record<string, unknown>> {
+  const path = nativeRegistrationPath(stateDirectory);
+  const saved = await nativeRegistrationRecord(stateDirectory);
+  await unlink(nativePendingPath(stateDirectory)).catch(() => {});
+  if (saved?.registered !== true) return { service: serviceLabel, mode: "supervised", registered: false, unchanged: true, nativeConfigUntouched: true };
+  const backup = `${path}.pre-relay-off-${now.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  await copyFile(path, backup);
+  await writePrivateJson(path, { registered: false });
+  return { service: serviceLabel, mode: "supervised", registered: false, nativeConfigUntouched: true, previousRegistration: backup,
+    next: "Remote control goes back to ChatGPT for every engine that starts from now on; engines already running keep standing down until they restart. Quit ChatGPT, and open it again once the rest has let go. SSH listeners let go the next time they start (when the remote app next connects after its listener exits). Restart the service while idle (gateway service restart) so the running relay and the shared host let go" };
 }

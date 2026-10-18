@@ -155,24 +155,25 @@ test("a probe that is out holds an idle restart back, and its verdict restarts n
   let idle = false; let gated = false; let release: (reason: HostProbeReason | undefined) => void = () => {};
   const host = hosts({ idle: () => idle });
   const probeHost = async () => gated ? new Promise<HostProbeReason | undefined>(resolve => { release = resolve; }) : undefined;
-  const registered: NativeProbes = { registered: async () => true, fingerprint: async () => "same", appRunning: async () => false };
+  // The host starts before the relay is registered; the registration then asks for an idle restart.
+  const probes = { registeredNow: false, registered: async () => probes.registeredNow, fingerprint: async () => "same", appRunning: async () => true };
   const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "process.exit(1)")] };
-  // The relay re-check, which asks again for a refused host restart, runs every 150 ms; the probe tick never does.
-  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, registered, 150, 3_600_000, { ...quiet, kickGapMs: 0, probeHost });
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, probes, 150, 3_600_000, { ...quiet, kickGapMs: 0, probeHost }, 50);
   const internals = (supervisor as unknown as { host: { hostGeneration: number } }).host;
   try {
     await supervisor.start();
     await until(async () => (await f.status()).components[0].state === "paused", "the relay set aside");
-    assert.deepEqual(host.record.owns, [true], "the first host took the relay's registration, so it is due a restart once idle");
-    // A probe of the first host is out when that host turns idle.
+    assert.deepEqual(host.record.owns, [false], "the first host started before the registration");
+    // A probe of the first host is out when the relay is registered and the host turns idle.
     gated = true; const probing = supervisor.checkHost();
-    idle = true; await delay(500);
+    probes.registeredNow = true; idle = true; await delay(500);
     assert.equal(host.record.starts, 1, "no restart while a probe is out");
     release("status_failed"); await probing;
     await until(() => host.record.starts === 2, "the restart once the probe ended");
     await delay(500);
     assert.equal(host.record.starts, 2, "the probe's verdict did not restart the new host"); assert.equal(host.record.closes, 1);
-    assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["relay_paused"]);
+    assert.deepEqual(host.record.owns, [false, true]);
+    assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["relay_registered"]);
     // Two failed verdicts in a row, each about a host that another start replaced while it was out: both are dropped.
     for (let round = 0; round < 2; round++) { const stale = supervisor.checkHost(); internals.hostGeneration++; release("status_failed"); await stale; }
     await delay(300);
@@ -225,30 +226,81 @@ test("a stop while the host start waits on the relay question starts no host", a
   } finally { release(); await supervisor.stop(); await f.remove(); }
 });
 
-test("a relay set aside after the host took its registration gets only the host restarted, and a busy host waits for the re-check", async () => {
+test("a host that started before the registration restarts once idle with its engine standing down, and a busy host waits for the next tick", async () => {
   for (const busyFirst of [false, true]) {
     const f = await folder("gwh-d2-");
     let idle = !busyFirst;
     const host = hosts({ idle: () => idle });
-    const registered: NativeProbes = { registered: async () => true, fingerprint: async () => "same", appRunning: async () => false };
-    const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "process.exit(1)")] };
+    const probes = { registeredNow: false, registered: async () => probes.registeredNow, fingerprint: async () => "same", appRunning: async () => true };
+    const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "setInterval(()=>{},1000)")] };
     // The re-check runs every 200 ms here; the probe never does, so only the re-check can retry a refused restart.
-    const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, registered, 200, 3_600_000, { ...quiet, kickGapMs: 0 });
+    const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, probes, 200, 3_600_000, { ...quiet, kickGapMs: 0 }, 50);
     try {
       await supervisor.start();
-      await until(async () => (await f.status()).components[0].state === "paused", "the relay set aside");
+      await delay(150); assert.deepEqual(host.record.owns, [false]); assert.equal(host.record.starts, 1, "nothing is registered, nothing restarts");
+      probes.registeredNow = true;
       if (busyFirst) {
-        await delay(100); assert.equal(host.record.starts, 1, "a busy host keeps running");
+        await delay(300); assert.equal(host.record.starts, 1, "a busy host keeps running");
         idle = true;
       }
       await until(() => host.record.starts === 2, "the host started again");
-      assert.deepEqual(host.record.owns, [true, false], "the relay was live for the first start and set aside for the second");
+      assert.deepEqual(host.record.owns, [false, true], "the second host's engine stands down");
       assert.equal(host.record.closes, 1);
-      assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["relay_paused"]);
-      assert.equal(await starts(f.directory), 3, "the relay itself was not started again");
+      assert.deepEqual((await f.events("execution_host_restarted")).map(event => event.reason), ["relay_registered"]);
       await delay(450); assert.equal(host.record.starts, 2, "the restart does not repeat");
     } finally { await supervisor.stop(); await f.remove(); }
   }
+});
+
+test("a restart asked for by a registration that was withdrawn since is dropped, and asked again when it returns", async () => {
+  const f = await folder("gwh-d5-");
+  let idle = false;
+  const host = hosts({ idle: () => idle });
+  const probes = { registeredNow: false, registered: async () => probes.registeredNow, fingerprint: async () => "same", appRunning: async () => true };
+  const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "setInterval(()=>{},1000)")] };
+  // The re-check tick (which retries a refused host restart) runs every 100 ms.
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, probes, 100, 3_600_000, { ...quiet, kickGapMs: 0 }, 40);
+  try {
+    await supervisor.start();
+    probes.registeredNow = true; await delay(250);
+    assert.equal(host.record.starts, 1, "a busy host waits");
+    // The activation is refused: its pending record goes. The host turns idle, but there is nothing left to restart for.
+    probes.registeredNow = false; idle = true; await delay(500);
+    assert.equal(host.record.starts, 1, "no restart for a registration that no longer exists");
+    probes.registeredNow = true;
+    await until(() => host.record.starts === 2, "the restart once registered again");
+    assert.deepEqual(host.record.owns, [false, true]);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("a registered relay that is paused or down never hands remote control back: the host starts standing down and is not restarted", async () => {
+  const f = await folder("gwh-d3-");
+  const host = hosts();
+  const probes: NativeProbes = { registered: async () => true, fingerprint: async () => "same", appRunning: async () => true };
+  // The relay dies at once and is set aside as failing; an open ChatGPT app keeps it from being tried again.
+  const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "process.exit(1)")] };
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, probes, 100, 3_600_000, { ...quiet, kickGapMs: 0 }, 50);
+  try {
+    await supervisor.start();
+    await until(async () => (await f.status()).components[0].state === "paused", "the relay set aside");
+    await delay(500);
+    assert.deepEqual(host.record.owns, [true], "the host stood down although the relay is paused");
+    assert.equal(host.record.starts, 1); assert.equal(host.record.closes, 0, "nothing gives the slot back");
+    assert.deepEqual(await f.events("execution_host_restarted"), []);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("a pending activation already makes the shared host's engine stand down", async () => {
+  const f = await folder("gwh-d4-");
+  const host = hosts();
+  await writePrivateJson(join(f.directory, "native-registration.pending"), { registered: true });
+  const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "setInterval(()=>{},1000)")] };
+  // The real probes, reading the isolated state folder: the final record is absent, the pending one is not.
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, undefined, undefined, undefined, quiet);
+  try {
+    await supervisor.start();
+    assert.deepEqual(host.record.owns, [true]);
+  } finally { await supervisor.stop(); await f.remove(); }
 });
 
 test("inference and tunnels that keep exiting fast are reported once per streak and keep their backoff", async () => {

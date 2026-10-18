@@ -12,8 +12,11 @@ import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
-import { registerPlanRelay, relayCheck } from "./native-plan-registration.js";
+import { registerPlanRelay, relayCheck, unregisterPlanRelay, type PlanRelayDeps } from "./native-plan-registration.js";
 import { chatGptAppRunning } from "./native-pause.js";
+import { clearSlotHolders, type HolderDeps } from "./native-slot-holders.js";
+import { sshControlHome } from "./ssh-socket.js";
+import { configureTelemetry } from "./telemetry.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway.native";
@@ -59,12 +62,14 @@ export function sameNativeRegistration(existing: string | undefined, contents: s
   const older = `<string>${xml(resolve(dirname(command), legacyLauncherName))}</string>`; const current = `<string>${xml(command)}</string>`;
   return existing === contents.replace(current, older);
 }
-export async function macNative(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string } = {}): Promise<Record<string, unknown>> {
+/** The side effects of a unified-plan install; a test replaces all of them so it can never reach a process, ChatGPT or launchd. */
+export type NativeOptions = { codex?: string; nativeHome?: string; planDeps?: Partial<PlanRelayDeps>; holderDeps?: HolderDeps };
+export async function macNative(action: string | undefined, configPath: string, options: NativeOptions = {}): Promise<Record<string, unknown>> {
   if (action === "status") return nativeOperation(action, configPath, options);
   const config = await loadConfig(configPath);
   return withLoginRegistrationLock(config.stateDirectory, () => nativeOperation(action, configPath, options));
 }
-async function nativeOperation(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string }): Promise<Record<string, unknown>> {
+async function nativeOperation(action: string | undefined, configPath: string, options: NativeOptions): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose gateway native install, status, or uninstall on macOS");
   const config = await loadConfig(configPath);
   const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || resolve(homedir(), ".codex"));
@@ -77,10 +82,17 @@ async function nativeOperation(action: string | undefined, configPath: string, o
     let relay = {}; try { relay = JSON.parse(await readFile(resolve(home, "status.json"), "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     return plan ? { service: "com.edihasaj.subscription-gateway", mode: "supervised", component: "native", ...await consolidatedStatus(config.stateDirectory), relay } : { service: label, ...await status(target), relay };
   }
+  // Under the unified plan, uninstall is the way out of a registered relay that cannot run: it only unregisters (see native-plan-registration.ts).
+  if (plan && action === "uninstall") return unregisterPlanRelay(config.stateDirectory);
   if (plan && action !== "install") throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
   if (await readPendingLoginConsolidation(config.stateDirectory)) throw new Error("Native transport startup is staged under the unified service at next login; its separate registration was not changed");
   // Under the unified service, install only registers the relay the service already runs (see native-plan-registration.ts).
-  if (plan) return registerPlanRelay(config.stateDirectory, plan, { appRunning: () => chatGptAppRunning(), check: (binary, args) => relayCheck(binary, args), enable });
+  if (plan) {
+    configureTelemetry(config.stateDirectory, "native-install");
+    // The SSH listeners of this native home keep their activity records under the SSH control home the adapter derives from the same config.
+    return registerPlanRelay(config.stateDirectory, plan, { appRunning: () => chatGptAppRunning(), check: (binary, args) => relayCheck(binary, args), enable,
+      clearHolders: pendingAtMs => clearSlotHolders({ configPath, sshHome: sshControlHome(configPath, nativeHome), pendingAtMs }, options.holderDeps), ...options.planDeps });
+  }
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to replace an unmanaged native relay service");
   if (action === "uninstall") {

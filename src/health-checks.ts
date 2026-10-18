@@ -69,7 +69,7 @@ export function appFindings(info: AppInfo, changed: boolean): Finding[] {
 /** What the unified service last published, reduced to kinds, states and counts. */
 export interface ServiceStatus {
   installed: boolean;
-  components: Array<{ kind: string; state: string }>;
+  components: Array<{ kind: string; state: string; pausedReason?: string; pausedAt?: string; startedAt?: string; lastConnectedAt?: string }>;
   executionHost?: string;
   stopping?: boolean;
   published: boolean;
@@ -81,7 +81,12 @@ export function statusFields(value: unknown): ServiceStatus {
   const row = value as Record<string, unknown>;
   const components = Array.isArray(row.components) ? row.components.flatMap(entry => {
     const component = entry as Record<string, unknown>;
-    return typeof component.kind === "string" && typeof component.state === "string" ? [{ kind: component.kind, state: component.state }] : [];
+    return typeof component.kind === "string" && typeof component.state === "string"
+      ? [{ kind: component.kind, state: component.state,
+        ...(typeof component.pausedReason === "string" && /^[a-z_]{1,32}$/.test(component.pausedReason) ? { pausedReason: component.pausedReason } : {}),
+        ...(typeof component.pausedAt === "string" && Number.isFinite(Date.parse(component.pausedAt)) ? { pausedAt: component.pausedAt } : {}),
+        ...(typeof component.startedAt === "string" && Number.isFinite(Date.parse(component.startedAt)) ? { startedAt: component.startedAt } : {}),
+        ...(typeof component.lastConnectedAt === "string" && Number.isFinite(Date.parse(component.lastConnectedAt)) ? { lastConnectedAt: component.lastConnectedAt } : {}) }] : [];
   }) : [];
   const host = row.executionHost as Record<string, unknown> | undefined;
   return { installed: true, published: true, components, ...(typeof host?.state === "string" ? { executionHost: host.state } : {}), ...(row.stopping === true ? { stopping: true } : {}) };
@@ -103,6 +108,35 @@ export function serviceFindings(status: ServiceStatus, signals: TelemetrySignals
   if (signals.hostFailures > 0) findings.push({ level: "warn", reason: `execution host restarted ${signals.hostFailures}x` });
   for (const event of signals.nativeSharing) findings.push({ level: "info", reason: event });
   return findings;
+}
+
+/** What the watchdog may know about the relay's registration and connection: counts and ages, never a path. */
+export interface RelayHealth { registered: boolean; connected?: boolean }
+/** A registered relay that is not running this long leaves the phone without this Mac; it is worth a warning. */
+export const relayDownWarnMs = 5 * 60_000;
+
+/**
+ * A registered relay owns the machine's remote control: every engine stands down for it, so one that is paused or not connected
+ * leaves the phone without this Mac until it is back. The warning names the cause class when it is known and the way out.
+ */
+export function relayFindings(status: ServiceStatus, relay: RelayHealth, now: number): Finding[] {
+  if (!relay.registered) return [];
+  const way = "gateway native uninstall gives remote control back to ChatGPT";
+  const component = status.components.find(entry => entry.kind === "native");
+  if (component?.state === "paused" && component.pausedAt) {
+    const minutes = Math.floor((now - Date.parse(component.pausedAt)) / 60_000);
+    if (minutes * 60_000 < relayDownWarnMs) return [];
+    const cause = component.pausedReason === "failing" ? "the relay keeps failing" : component.pausedReason === "not_registered" ? "the service has not started it since the registration" : "cause unknown";
+    return [{ level: "warn", reason: `native relay registered but paused for ${minutes} min (${cause}); the phone cannot reach this Mac; ${way}` }];
+  }
+  if (component?.state === "running" && relay.connected === false) {
+    // Measured from the last time the relay was connected, or from its start if it never was in this run. The age of its status
+    // file would not do: the relay rewrites that on every change, and a refused connection (HTTP 409) changes it all the time.
+    const since = Math.max(Date.parse(component.lastConnectedAt ?? "") || 0, Date.parse(component.startedAt ?? "") || 0);
+    if (since > 0 && now - since >= relayDownWarnMs)
+      return [{ level: "warn", reason: `native relay registered but not connected for ${Math.floor((now - since) / 60_000)} min; the phone cannot reach this Mac; ${way}` }];
+  }
+  return [];
 }
 
 /** Whether the parked native relay is a choice the service made, read from its snapshot. */
