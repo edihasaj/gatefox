@@ -8,6 +8,10 @@ Formerly Subscription Gateway.
 
 A local gateway for subscription and API providers. The project name is provisional.
 
+The [native macOS app](docs/macos-app.md) puts your existing gateway settings in a
+small control panel, with the fox in the Dock. Configure it once, then let the
+managed gateway keep running in the background.
+
 Start with the [illustrated setup and usage guide](docs/index.html). It covers
 installation, separate account registration, desktop models, shared Macs,
 and service recovery. Open `docs/index.html` in a browser, or

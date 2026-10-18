@@ -14,7 +14,7 @@ outside this service.
 
 ## The name macOS shows
 
-macOS names a LaunchAgent item after the program in the first `ProgramArguments`
+For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`
 entry, and shows that name in System Settings, Login Items, under "Allow in the
 Background", and in the "Background Items Added" notification. Since 0.4.7 the
 installer writes `~/.local/bin/harness-gateway` as the managed launcher, plus
@@ -60,6 +60,10 @@ Migration is one-time and happens when a plist is next written by 0.4.7:
 At the first load of a renamed plist macOS posts one "Background Items Added" notification
 for `harness-gateway`, and the old "gateway" entry disappears from the list once the old
 definition is no longer loaded, which is the next login for a unified service.
+The signed native app can attribute the existing gateway job to its fox identity
+without registering another job or restarting the service. See
+[macOS background identity](macos-background-item.md). This association does not
+change service ownership or replace consolidation.
 
 Preview the existing installation:
 

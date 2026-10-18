@@ -111,6 +111,9 @@ function respond(text: string): void {
   if (!marker("noidle")) idle();
 }
 
+// A parent-death test must wait until the watcher is armed, rather than killing
+// this process's parent during Node startup and making it observe the init PID.
+process.send?.({ type: "gateway-fixture-ready" }, () => {});
 for await (const frame of copilotFrames(process.stdin)) {
   const params = record(frame.params); const id = frame.id; const ok = (result: Record<string, unknown> = {}) => send({ jsonrpc: "2.0", id, result });
   if (frame.method === "connect") ok({ protocolVersion: 3 });

@@ -7,10 +7,21 @@ read_when:
 
 # Release
 
+The native macOS control panel has a separate local bundle command,
+`npm run app:build`. See [macOS app packaging](macos-app.md) for its verified
+backend input, local installation, native tests, and distribution signing
+requirements. The CLI archive workflow below does not publish the app.
+Use the [background identity and signing workflow](macos-background-item.md) when
+shipping a Developer ID signed app and its startup launcher.
+
 The installer contains the compiled package and official Node 24.21.0 runtime.
 The runtime archive is pinned to its published SHA-256 digest. Node's license
 travels with it. No provider credentials, test output, or local configuration
 belongs in the release archive.
+When a signed native app registered the installation's `app-runtime`, the command
+wrapper uses that app-owned Node while continuing to load the selected installed
+JavaScript. Installing a CLI update preserves the registration. See
+[Node and tool permissions](macos-background-item.md#node-and-tool-permissions).
 
 1. Choose the next version with `npm run version:next`. The patch tops out at 9: after
    `x.y.9` the next release is `x.(y+1).0`, and the minor keeps counting, so `0.9.9`

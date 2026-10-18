@@ -1,6 +1,7 @@
 // The rules that decide which files the test runner (scripts/run-tests.mjs) may remove from the SDK's fixed socket folder when a
 // run was stopped. They are kept apart so that a test can try each one with any file status, including one owned by another user.
 import { connect } from "node:net";
+import { lstat } from "node:fs/promises";
 
 /** Whether a name can be one of the pinned SDK's socket names: the SHA-256 of a path, in hexadecimal. */
 export const sdkSocketName = name => /^[0-9a-f]{64}$/.test(name);
@@ -23,6 +24,10 @@ const probe = path => new Promise(settle => {
  * A socket that cannot be asked, or that still listens at the end, is not stale.
  */
 export async function isStale(path, ms = 3000) {
+  // Linux also returns ECONNREFUSED for a regular file. That is never a socket
+  // the runner may remove, even if its name resembles an SDK rendezvous.
+  try { if (!(await lstat(path)).isSocket()) return false; }
+  catch { return false; }
   const end = Date.now() + ms;
   for (;;) {
     const state = await probe(path);

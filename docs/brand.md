@@ -22,9 +22,12 @@ uses a 256 px transparent logo and 32 px and 16 px favicons. The generation reco
 contains the prompt, hashes, and derivative commands. Alpha edges were inspected
 on magenta; small marks were checked on light and dark backgrounds.
 
-This is the identity for the gateway's README and usage guide. The gateway ships
-a CLI, so it has no native app icon. Do not modify the signed ChatGPT bundle to
-add gateway branding.
+This is the identity for the gateway's README, usage guide, and native macOS
+control panel. The app uses the original transparent fox in its chrome and a
+parchment rounded tile in its Dock icon. `scripts/build-macos-icon.sh` derives
+the 1024 px tile and multi-resolution ICNS from the existing master without new
+image generation. Its derivative record is in `assets/brand/generation/`.
+Do not modify the signed ChatGPT bundle to add gateway branding.
 
 Open `docs/index.html` directly, or serve `docs/` with a static web server.
 Clipboard buttons use the browser clipboard when permitted; otherwise they

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Harness Gateway now has a native macOS app with the fox icon, a setup wizard,
+connection and model management, and a signed background launcher. The app keeps
+the existing gateway running when its window closes and preserves its settings.
+The signed runtime keeps the app identity stable across installed CLI updates.
+
+Thank you to Edi Hasaj for the native macOS app.
+
 ## 0.5.3 — 2026-10-18
 
 Codex subscription providers now receive plaintext collaboration message schemas.

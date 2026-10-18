@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,7 +58,7 @@ test("an older install's harness-gateway link to gateway is replaced by the laun
     await writeFile(l.bin("gateway"), managedFile, { mode: 0o700 }); await symlink("gateway", l.bin("harness-gateway"));
     assert.equal((await l.install()).code, 0);
     assert.equal((await lstat(l.bin("harness-gateway"))).isSymbolicLink(), false, "no longer a link");
-    assert.ok((await readFile(l.bin("harness-gateway"), "utf8")).includes("exec '"), "and the new launcher");
+    assert.ok((await readFile(l.bin("harness-gateway"), "utf8")).includes("# App runtime is registered by Harness Gateway."), "and the canonical managed launcher");
     assert.equal(await readFile(l.bin("gateway"), "utf8"), await readFile(l.bin("harness-gateway"), "utf8"));
   } finally { await l.cleanup(); }
 });
@@ -85,16 +85,16 @@ test("a foreign harness-gateway or gateway is never touched, and the installer s
   }
 });
 
-test("a stale staging name, even a link to another file, is replaced and never written through", apple, async () => {
+test("an occupied staging name, including a link, refuses without writing through it", apple, async () => {
   const l = await layout();
   try {
     const victim = join(l.root, "victim"); await writeFile(victim, "keep me\n", { mode: 0o644 });
     await symlink(victim, l.bin("harness-gateway.new")); await symlink(victim, l.bin("gateway.new"));
-    assert.equal((await l.install()).code, 0);
+    assert.equal((await l.install()).code, 1);
     assert.equal(await readFile(victim, "utf8"), "keep me\n", "the file behind the link is untouched");
     assert.equal((await lstat(victim)).mode & 0o777, 0o644, "and not made executable");
-    for (const name of ["harness-gateway", "gateway"]) assert.ok((await readFile(l.bin(name), "utf8")).includes(marker));
-    assert.equal(await lstat(l.bin("gateway.new")).then(() => true, () => false), false, "no staging file is left");
+    assert.equal(await lstat(l.bin("gateway")).then(() => true, () => false), false, "no wrapper is published");
+    assert.equal(await lstat(l.bin("gateway.new")).then(() => true, () => false), true, "the occupied staging name is left alone");
   } finally { await l.cleanup(); }
 });
 
@@ -107,10 +107,38 @@ test("installing the same version again keeps the last different release as prev
     assert.equal(await none(), true, "a first install has no previous release");
     await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
     assert.equal((await readFile(previous, "utf8")).trim(), "releases/1.0.0");
+    assert.deepEqual(await readFile(l.bin("gateway")), await readFile(l.bin("harness-gateway")), "both regular aliases remain canonical after an update");
     assert.equal((await l.install()).code, 0, "the same version again");
     assert.equal((await readFile(previous, "utf8")).trim(), "releases/1.0.0", "still the last different release");
     await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
     assert.equal((await readFile(previous, "utf8")).trim(), "releases/2.0.0", "switching back records the release it left");
+  } finally { await l.cleanup(); }
+});
+
+test("an active runtime publisher lock refuses an installer update without replacing wrappers", apple, async () => {
+  const l = await layout();
+  try {
+    assert.equal((await l.install()).code, 0); const before = await readFile(l.bin("gateway"));
+    await mkdir(join(l.prefix, "share/subscription-gateway/.gateway-installation-lock"), { mode: 0o700 });
+    const result = await l.install(); assert.equal(result.code, 75); assert.match(result.stderr, /installation is busy/i);
+    assert.deepEqual(await readFile(l.bin("gateway")), before);
+  } finally { await l.cleanup(); }
+});
+
+test("TERM exits through cleanup without publishing wrappers after a controlled installer pause", apple, async () => {
+  const l = await layout();
+  try {
+    const sdk = join(l.source, "package/gateway-sdk"); const ready = join(l.home, "paused"); await mkdir(sdk);
+    await writeFile(join(sdk, "gateway-codex"), `#!/bin/sh\nprintf ready > "$HOME/paused"\nwhile :; do sleep 1; done\n`, { mode: 0o755 }); await l.publish("9.9.8");
+    const child = spawn("/bin/sh", [join(l.source, "install"), "--prefix", l.prefix], { cwd: l.source, env: { ...process.env, HOME: l.home }, detached: true, stdio: "ignore" });
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (await readFile(ready, "utf8").then(() => true, () => false)) break;
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.equal(await readFile(ready, "utf8"), "ready"); process.kill(-child.pid!, "SIGTERM");
+    const code = await new Promise<number | null>(resolve => child.once("close", resolve)); assert.equal(code, 143);
+    await assert.rejects(lstat(l.bin("gateway"))); await assert.rejects(lstat(l.bin("harness-gateway")));
+    await assert.rejects(lstat(join(l.prefix, "share/subscription-gateway/.gateway-installation-lock")));
   } finally { await l.cleanup(); }
 });
 

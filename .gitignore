@@ -3,3 +3,5 @@ dist/
 .state/
 *.log
 gateway.local.json
+native/macos/.build/
+native/macos/.swiftpm/

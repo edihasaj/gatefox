@@ -19,9 +19,12 @@ const gone = async (pid: number) => { while (alive(pid)) await new Promise(resol
  */
 async function orphan(command: string, args: string[], env: NodeJS.ProcessEnv, input?: string): Promise<number> {
   const script = `const { spawn } = require("node:child_process");
-const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(args)}, { stdio: ["pipe", "ignore", "ignore"], env: ${JSON.stringify(env)} });
+const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(args)}, { stdio: ["pipe", "ignore", "ignore", "ipc"], env: ${JSON.stringify(env)} });
 ${input ? `child.stdin.write(${JSON.stringify(input)});` : ""}
-child.once("spawn", () => { console.log(child.pid); }); setInterval(() => {}, 1000);`;
+child.once("message", message => {
+  if (message?.type !== "gateway-fixture-ready") process.exit(2);
+  console.log(child.pid);
+}); setInterval(() => {}, 1000);`;
   const parent = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "ignore"] });
   const [chunk] = await once(parent.stdout!, "data") as [Buffer]; const pid = Number(String(chunk).trim());
   assert.ok(alive(pid), "the CLI is running while its parent is");
