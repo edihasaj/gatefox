@@ -482,4 +482,3 @@ struct SetupWizardView: View {
         }
     }
 }
-

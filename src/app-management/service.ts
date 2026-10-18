@@ -152,4 +152,3 @@ function rawProvider(snapshot: ConfigSnapshot, id: string): Record<string, unkno
 function markChecked(provider: { authState: string; authDetail: string }): void {
   provider.authState = "ready"; provider.authDetail = "Model catalog was checked.";
 }
-
