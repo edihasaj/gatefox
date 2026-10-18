@@ -139,8 +139,8 @@ export class ResponsesAPI implements Provider {
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
     if (plan) { const returned = wrapTurnState(response.headers.get("x-codex-turn-state"), this.scope); yield { type: "transport", ...(returned ? { turnState: returned } : {}) }; }
     let done = false; const output = new ResponsesOutput();
-    const calls = new Map<string, { signature: string; identity: string; input: string }>();
-    const unfinished = new Map<string, { identity: string; length: number; digest: string }>();
+    const calls = new Map<string, { signature: string; identity: string; input: string; encryptedArgs: string }>();
+    const unfinished = new Map<string, { identity: string; encryptedArgs: string; length: number; digest: string }>();
     const stream: ProviderStreamDiagnostic = { events: 0, reasoningItems: 0, textDeltas: 0, toolCalls: 0 };
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
       const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
@@ -156,22 +156,29 @@ export class ResponsesAPI implements Provider {
         (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 1024 || item.id.includes("\0")))) throw invalid();
       const arguments_ = item.type === "custom_tool_call" ? item.input : item.arguments;
       if (typeof arguments_ !== "string") throw invalid();
+      const encrypted = item.encrypted_function_args;
+      if (encrypted !== undefined && (!Array.isArray(encrypted) || encrypted.some(value => typeof value !== "string"))) throw invalid();
       const responseTool = identityFor(item);
-      return { id: item.call_id, name: item.name, input: arguments_, responseTool, identity: JSON.stringify([item.type, responseTool]) };
+      const encryptedFunctionArgs = encrypted === undefined ? undefined : [...encrypted] as string[];
+      // Missing and explicitly-empty metadata are distinct upstream facts. Preserve
+      // that distinction while checking partial items and final snapshots.
+      const encryptedArgs = encryptedFunctionArgs === undefined ? "missing" : JSON.stringify(encryptedFunctionArgs);
+      return { id: item.call_id, name: item.name, input: arguments_, responseTool, encryptedFunctionArgs, encryptedArgs,
+        identity: JSON.stringify([item.type, responseTool]) };
     };
     const matchesPending = (value: ReturnType<typeof toolInput>) => {
       const pending = unfinished.get(value.id);
-      if (pending && (pending.identity !== value.identity || createHash("sha256").update(value.input.slice(0, pending.length)).digest("hex") !== pending.digest)) throw new ProviderError("invalid_tool_call", "Provider changed an unfinished tool call");
+      if (pending && (pending.identity !== value.identity || pending.encryptedArgs !== value.encryptedArgs || createHash("sha256").update(value.input.slice(0, pending.length)).digest("hex") !== pending.digest)) throw new ProviderError("invalid_tool_call", "Provider changed an unfinished tool call");
     };
     const partialTool = (item: Record<string, unknown>): void => {
       const value = toolInput(item); matchesPending(value);
       const completed = calls.get(value.id);
       if (completed) {
-        if (completed.identity !== value.identity || !completed.input.startsWith(value.input)) throw new ProviderError("invalid_tool_call", "Provider changed a completed tool call");
+        if (completed.identity !== value.identity || completed.encryptedArgs !== value.encryptedArgs || !completed.input.startsWith(value.input)) throw new ProviderError("invalid_tool_call", "Provider changed a completed tool call");
         return;
       }
       if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw new ProviderError("invalid_tool_call", "Provider returned too many tool calls");
-      unfinished.set(value.id, { identity: value.identity, length: value.input.length, digest: createHash("sha256").update(value.input).digest("hex") });
+      unfinished.set(value.id, { identity: value.identity, encryptedArgs: value.encryptedArgs, length: value.input.length, digest: createHash("sha256").update(value.input).digest("hex") });
     };
     const tool = (item: Record<string, unknown>, snapshot: boolean): InferenceEvent[] => {
       const invalid = () => new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call");
@@ -179,18 +186,19 @@ export class ResponsesAPI implements Provider {
       if (item.status !== undefined && item.status !== "completed") throw invalid();
       if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
       matchesPending(value);
-      const signature = JSON.stringify([item.type, item.name, item.namespace, arguments_]);
+      const signature = JSON.stringify([item.type, item.name, item.namespace, arguments_, value.encryptedArgs]);
       const previous = calls.get(value.id);
       if (previous !== undefined) {
         if (snapshot && previous.signature === signature) return [];
         throw invalid();
       }
       if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw invalid();
-      unfinished.delete(value.id); calls.set(value.id, { signature, identity: value.identity, input: arguments_ }); stream.toolCalls = calls.size;
+      unfinished.delete(value.id); calls.set(value.id, { signature, identity: value.identity, input: arguments_, encryptedArgs: value.encryptedArgs }); stream.toolCalls = calls.size;
       output.toolBoundary();
-      return [{ type: "tool", call: { id: value.id, type: "function", responseTool: value.responseTool, function: {
-        name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
-      } } }];
+      return [{ type: "tool", call: { id: value.id, type: "function", responseTool: value.responseTool,
+        ...(value.encryptedFunctionArgs === undefined ? {} : { encryptedFunctionArgs: value.encryptedFunctionArgs }), function: {
+          name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
+        } } }];
     };
     // Search items the ChatGPT backend produced (client or server executed) reach the client as sent, once each.
     const searchItems = new Set<string>();
@@ -228,6 +236,12 @@ export class ResponsesAPI implements Provider {
         const item = event.item as Record<string, unknown>;
         if (item?.type === "message") output.added(item);
         if (item?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item };
+        // Encryption metadata is an explicit transport fact. Record it at the
+        // first output boundary so a later done item or final snapshot cannot
+        // replace it with plaintext (or different opaque state). Ordinary early
+        // calls omit enough fields on some upstreams that they must stay lax
+        // until their completed boundary.
+        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args")) partialTool(item);
       }
       if (event.type === "response.output_text.delta") yield* output.delta(event);
       if (event.type === "response.output_item.done") {

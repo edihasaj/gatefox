@@ -4,6 +4,10 @@ import { publicServiceTier, type AssistantMessagePhase, type PublicServiceTier, 
 
 type Item = Record<string, unknown> & { type: string; id: string };
 const identifier = (kind: string) => `${kind}_${randomUUID().replaceAll("-", "")}`;
+const collaborationTools = new Set(["spawn_agent", "send_message", "followup_task"]);
+function plaintextCollaborationCall(call: OpenAIToolCall): boolean {
+  return call.responseTool?.namespace === "collaboration" && collaborationTools.has(call.responseTool.name);
+}
 function outputCall(call: OpenAIToolCall): Item {
   const custom = call.responseTool?.type === "custom";
   const item: Item = {
@@ -11,7 +15,14 @@ function outputCall(call: OpenAIToolCall): Item {
     call_id: call.id, name: call.responseTool?.name || call.function.name, status: "completed",
   };
   if (call.responseTool?.namespace) item.namespace = call.responseTool.namespace;
-  if (!custom) { item.arguments = call.function.arguments; return item; }
+  if (!custom) {
+    item.arguments = call.function.arguments;
+    // Codex's router uses an explicit empty array as the protocol fact that these
+    // collaboration arguments are plaintext. Never infer plaintext for another tool.
+    if (call.encryptedFunctionArgs !== undefined) item.encrypted_function_args = [...call.encryptedFunctionArgs];
+    else if (plaintextCollaborationCall(call)) item.encrypted_function_args = [];
+    return item;
+  }
   let input: unknown;
   try { input = (JSON.parse(call.function.arguments) as { input?: unknown }).input; }
   catch { throw new ResponsesTranslationError("Provider returned invalid custom tool arguments", "invalid_provider_output"); }
@@ -21,10 +32,11 @@ function outputCall(call: OpenAIToolCall): Item {
 export function responseToolItems(calls: OpenAIToolCall[]): Item[] { return calls.map(outputCall); }
 function callFrames(item: Item, position: number): WireEvent[] {
   const custom = item.type === "custom_tool_call";
+  const encrypted = !custom && Object.hasOwn(item, "encrypted_function_args") ? { encrypted_function_args: item.encrypted_function_args } : {};
   return [
     { type: "response.output_item.added", output_index: position, item: { ...item, status: "in_progress" } },
     { type: custom ? "response.custom_tool_call_input.done" : "response.function_call_arguments.done",
-      output_index: position, item_id: item.id, name: item.name, ...(custom ? { input: item.input } : { arguments: item.arguments }) },
+      output_index: position, item_id: item.id, name: item.name, ...(custom ? { input: item.input } : { arguments: item.arguments }), ...encrypted },
     { type: "response.output_item.done", output_index: position, item },
   ];
 }

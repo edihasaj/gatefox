@@ -33,6 +33,10 @@ belongs in the release archive.
    provider, opens it using the desktop's resume shapes, and continues it while
    checking its saved identity and reasoning. These checks use private homes and
    no paid inference. `--baseline` reproduces the pre-fix alias rejection.
+   Add `--v2` to verify that the delegated task and a follow-up reach the child,
+   that it executes a real command, and that its history includes that command
+   and the resulting answer. `--v2 --expect-payload-loss` reproduces the
+   missing-task failure in 0.5.1.
    For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
    INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
    and a second evidence directory. Repeat with `--private` for per-connection

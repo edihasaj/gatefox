@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2 — 2026-10-18
+
+Delegated tasks and follow-up messages now reach Codex sub-agents as plaintext.
+The gateway preserves the protocol marker that prevents Codex from treating
+these messages as encrypted payloads and dropping their contents.
+
 ## 0.5.1 — 2026-10-18
 
 Codex can open sub-agents spawned from gateway chats when the child uses a native

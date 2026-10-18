@@ -238,6 +238,18 @@ The current adapters support text, inline images, and caller-dispatched tools. A
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
 
+**Collaboration tool arguments.** The three caller tools
+`collaboration.spawn_agent`, `collaboration.send_message`, and
+`collaboration.followup_task` are emitted with
+`encrypted_function_args: []` when their provider-neutral arguments are plaintext.
+This is an explicit Codex transport marker, not a content heuristic, and appears on
+the added, arguments-done, final item, and final response snapshot. Other tools are
+unchanged. When a Responses upstream supplies an `encrypted_function_args` string
+array, the gateway preserves it opaquely instead; it never decrypts it or relabels it
+as plaintext. Metadata supplied at an added boundary is validated there and must
+match the later completed item or final snapshot; an early call that omits the field
+may still supply it at completion. Malformed upstream metadata fails the provider output.
+
 Codex sends a `prompt_cache_key` in the body and `session-id` and `thread-id`
 headers. The body key passes through unchanged. For the ChatGPT subscription
 provider, the gateway also forwards those two headers. Without them, that

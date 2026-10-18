@@ -6,9 +6,11 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
-  cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' } } });
+  cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
+  v2: { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
 const pkg = resolve(values.package), root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-child-');
@@ -32,6 +34,7 @@ const { gatewaySdkRuntime } = await load('gateway-sdk-runtime');
 const { modelCatalog } = await load('catalog');
 const { startGateway } = await load('server');
 const { writePrivateJson } = await load('config');
+const { responsesInputToMessages } = await load('protocol/request');
 setExecutionHostRootForTests(join(fixture, 'x'));
 setNativeOwnerRootForTests(join(fixture, 'n'));
 setNativeRuntimeRootForTests(join(fixture, 'r'));
@@ -46,7 +49,7 @@ const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
   providers: [{ id: 'fixture', type: 'responses-api', apiKeyEnv: 'FIXTURE_ONLY_KEY',
     baseUrl: 'http://127.0.0.1:1', models: { [alias]: 'mock-parent' },
     modelMetadata: { [alias]: { contextWindow: 100_000, reasoningEfforts: ['low', 'ultra'],
-      multiAgentVersion: 'v1', multiAgentReasoningEffort: 'low' } } }] };
+      multiAgentVersion: values.v2 ? 'v2' : 'v1', multiAgentReasoningEffort: 'low' } } }] };
 const serverConfig = structuredClone(config);
 serverConfig.providers[0].models[childModel] = 'mock-child';
 const until = async (check, label, ms = 30_000) => {
@@ -54,28 +57,61 @@ const until = async (check, label, ms = 30_000) => {
   while (Date.now() < end) { const result = await check(); if (result) return result; await delay(25); }
   throw Error(label + ' timed out');
 };
-let calls = 0, spawned = false, gateway, host, phase = 'setup';
+let calls = 0, childCalls = 0, spawned = false, gateway, host, phase = 'setup', parentOperation;
 const clients = [];
 const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'subscription_gateway',
-  realGatewaySdk: true, paidInferenceRequests: 0, passed: false };
+  realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1', passed: false };
+const taskProof = 'TASK_' + randomUUID(), fileProof = 'FILE_' + randomUUID();
+let requiredProof = taskProof, childCallId = 'fixture_child_read', queuedProof;
+const taskFile = join(work, 'delegation-proof.txt');
+await writeFile(taskFile, fileProof, { mode: 0o600 });
+const toolsFor = request => {
+  const declared = [...(request.tools ?? []), ...(request.input ?? []).filter(item => item.type === 'additional_tools').flatMap(item => item.tools ?? [])];
+  return declared.flatMap(tool => tool.type === 'namespace'
+    ? tool.tools.map(child => ({ name: child.name, namespace: tool.name === 'functions' ? undefined : tool.name }))
+    : [{ name: tool.name ?? tool.function?.name }]);
+};
+const callFor = (tool, id, args) => ({ type: 'tool', call: { type: 'function', id,
+  responseTool: { type: 'function', name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}) },
+  function: { name: tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name, arguments: JSON.stringify(args) } } });
 try {
   gateway = await startGateway(serverConfig, () => ({
     async *infer(request) {
       calls++;
       const childRequest = request.model === 'mock-child';
-      if (request.model === 'mock-parent' && !spawned) {
+      if (childRequest) childCalls++;
+      if (request.model === 'mock-parent' && parentOperation) {
+        const operation = parentOperation; parentOperation = undefined;
+        const tool = toolsFor(request).find(tool => tool.name === operation.name);
+        assert.ok(tool, 'The parent must expose ' + operation.name);
+        yield callFor(tool, 'fixture_' + operation.name, operation.args);
+      } else if (request.model === 'mock-parent' && !spawned) {
         spawned = true;
-        const declared = [...(request.tools ?? []), ...(request.input ?? []).filter(item => item.type === 'additional_tools').flatMap(item => item.tools ?? [])];
-        const tools = declared.flatMap(tool => tool.type === 'namespace'
-          ? tool.tools.map(child => ({ name: child.name, namespace: tool.name === 'functions' ? undefined : tool.name }))
-          : [{ name: tool.name ?? tool.function?.name }]);
+        const tools = toolsFor(request);
         const tool = tools.find(tool => tool.name === 'spawn_agent');
         evidence.delegationExposed = !!tool;
         assert.ok(tool, 'The real SDK exposes its delegation tool');
-        yield { type: 'tool', call: { type: 'function', id: 'fixture_spawn',
-          responseTool: { type: 'function', name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}) },
-          function: { name: tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name, arguments: JSON.stringify({ task_name: 'sidebar_fixture',
-            message: 'Return the fixture marker.', model: childModel, reasoning_effort: 'high', fork_turns: 'none' }) } } };
+        yield callFor(tool, 'fixture_spawn', { task_name: 'sidebar_fixture',
+          message: values.v2 ? `Read ${taskFile} using exec_command. Return its value and ${taskProof}.` : 'Return the fixture marker.',
+          model: childModel, reasoning_effort: 'high', fork_turns: 'none' });
+      } else if (childRequest && values.v2) {
+        const messages = responsesInputToMessages(request.input);
+        const delivered = messages.some(message => typeof message.content === 'string' && message.content.includes(requiredProof));
+        evidence[requiredProof === taskProof ? 'taskPayloadDelivered' : 'followupPayloadDelivered'] = delivered;
+        if (queuedProof) evidence.queuedMessagePayloadDelivered = messages.some(message => typeof message.content === 'string' && message.content.includes(queuedProof));
+        if (!delivered) yield { type: 'text', text: 'EMPTY_TASK_PAYLOAD' };
+        else {
+          const output = messages.find(message => message.role === 'tool' && message.tool_call_id === childCallId);
+          if (!output) {
+            const tool = toolsFor(request).find(tool => tool.name === 'exec_command');
+            assert.ok(tool, 'The child must have an executable command tool');
+            yield callFor(tool, childCallId, { cmd: `cat ${taskFile}` });
+          } else {
+            assert.ok(output.content.includes(fileProof), 'The real child command must return the file proof');
+            evidence.childToolExecuted = true;
+            yield { type: 'text', text: 'SIDEBAR_FIXTURE_COMPLETE ' + requiredProof + ' ' + fileProof };
+          }
+        }
       } else yield { type: 'text', text: 'SIDEBAR_FIXTURE_COMPLETE' };
       yield { type: 'done', usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } };
       if (childRequest) evidence.childInferenceFinished = true;
@@ -137,8 +173,23 @@ try {
   const id = child.id;
   await until(async () => {
     const { thread } = await writer.router.request('thread/read', { threadId: id, includeTurns: false });
-    return evidence.childInferenceFinished && thread.status.type !== 'active';
+    const workFinished = values.v2 && !values['expect-payload-loss'] ? evidence.childToolExecuted : evidence.childInferenceFinished;
+    return workFinished && thread.status.type !== 'active';
   }, 'Child completion');
+  if (values.v2) {
+    assert.equal(evidence.taskPayloadDelivered, !values['expect-payload-loss'], 'The child must receive the plaintext task');
+    assert.equal(evidence.childToolExecuted === true, !values['expect-payload-loss'], 'The child must do actual tool work');
+    const history = await writer.router.request('thread/read', { threadId: id, includeTurns: true });
+    const items = history.thread.turns.flatMap(turn => turn.items);
+    const commands = items.filter(item => item.type === 'commandExecution');
+    evidence.childHistoryItems = items.length;
+    evidence.childCommandItems = commands.length;
+    if (!values['expect-payload-loss']) {
+      assert.ok(commands.length > 0, 'The opened child history must contain its command execution');
+      assert.ok(items.some(item => item.type === 'agentMessage' && item.text?.includes(fileProof)));
+      evidence.fullChildHistoryReadable = true;
+    }
+  }
   if (values.cold) {
     phase = 'cold-restart';
     await writer.backend.stop();
@@ -149,6 +200,11 @@ try {
   }
   phase = 'read';
   const reader = values.private && !values.cold ? writer : await client('subagent_sidebar_reader');
+  if (values.v2 && values.cold) {
+    // Codex v2 restores the agent tree through its parent; clients may inspect
+    // a saved child with thread/read without starting that child themselves.
+    await reader.router.request('thread/resume', { threadId: parent.thread.id });
+  }
   const read = await reader.router.request('thread/read', { threadId: id, includeTurns: false });
   assert.equal(read.thread.model, childModel);
   assert.equal(read.thread.modelProvider, evidence.identity);
@@ -178,11 +234,34 @@ try {
     assert.equal(calls, before, 'Reading and opening the child must not start inference');
     evidence.implicitAndExplicitResume = true;
     phase = 'continue';
-    const turn = await reader.router.request('turn/start', { threadId: id, model: childModel,
-      input: [{ type: 'text', text: 'Continue the fixture.' }] });
-    const done = await until(() => reader.events.find(event => event.method === 'turn/completed' && event.params.turn.id === turn.turn.id), 'Child continuation');
-    assert.equal(done.params.turn.status, 'completed');
-    evidence.childContinued = true;
+    if (values.v2) {
+      const controller = values.cold ? reader : writer;
+      if (values.cold) await controller.router.request('thread/resume', { threadId: parent.thread.id });
+      queuedProof = 'QUEUED_' + randomUUID();
+      const beforeMessage = childCalls;
+      parentOperation = { name: 'send_message', args: { target: 'sidebar_fixture', message: 'Keep this queued proof for the next task: ' + queuedProof } };
+      const queued = await controller.router.request('turn/start', { threadId: parent.thread.id,
+        input: [{ type: 'text', text: 'Queue a child message.' }] });
+      await until(() => controller.events.find(event => event.method === 'turn/completed' && event.params.turn.id === queued.turn.id), 'Queued message');
+      assert.equal(childCalls, beforeMessage, 'A queued message must not wake an idle child');
+      evidence.queuedMessageDidNotWakeChild = true;
+      const previous = calls;
+      requiredProof = 'FOLLOWUP_' + randomUUID(); childCallId = 'fixture_child_followup_read';
+      evidence.childInferenceFinished = false;
+      parentOperation = { name: 'followup_task', args: { target: 'sidebar_fixture', message: 'Read the proof file again and return ' + requiredProof } };
+      await controller.router.request('turn/start', { threadId: parent.thread.id,
+        input: [{ type: 'text', text: 'Send the next child task.' }] });
+      await until(() => calls > previous && evidence.childInferenceFinished, 'Child followup');
+      assert.equal(evidence.followupPayloadDelivered, !values['expect-payload-loss'], 'The parent followup must reach its child');
+      assert.equal(evidence.queuedMessagePayloadDelivered, !values['expect-payload-loss'], 'The queued message must accompany the followup');
+      evidence.childContinued = !values['expect-payload-loss'];
+    } else {
+      const turn = await reader.router.request('turn/start', { threadId: id, model: childModel,
+        input: [{ type: 'text', text: 'Continue the fixture.' }] });
+      const done = await until(() => reader.events.find(event => event.method === 'turn/completed' && event.params.turn.id === turn.turn.id), 'Child continuation');
+      assert.equal(done.params.turn.status, 'completed');
+      evidence.childContinued = true;
+    }
     const persisted = await reader.backend.native.request('thread/read', { threadId: id, includeTurns: false });
     assert.equal(persisted.thread.modelProvider, evidence.identity, 'The child keeps its saved provider on disk');
     evidence.savedIdentityPreserved = true;

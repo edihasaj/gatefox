@@ -12,6 +12,8 @@ export type OpenAIToolCall = {
   type: "function";
   id: string;
   responseTool?: ResponseToolIdentity;
+  /** Opaque Responses transport metadata. An explicit empty list proves plaintext arguments. */
+  encryptedFunctionArgs?: string[];
   function: { arguments: string; name: string };
 };
 export type OpenAIChatMessage = {
