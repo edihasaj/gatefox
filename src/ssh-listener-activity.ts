@@ -45,7 +45,9 @@ export class ListenerActivity {
 
   private busy(): boolean { for (const work of this.sessions) if (work.turns.active.size || work.requests.size) return true; return false; }
 
+  private stopped = false;
   private write(busy: boolean): void {
+    if (this.stopped) return;
     this.writes = this.writes.then(() => writePrivateJson(listenerActivityPath(this.home, this.pid),
       { pid: this.pid, startedAt: this.startedAt, busy, ...(this.declinedAt === undefined ? {} : { declinedAt: this.declinedAt }), sessions: this.sessions.size, at: new Date().toISOString() })).catch(() => {});
   }
@@ -81,5 +83,5 @@ export class ListenerActivity {
   }
 
   /** Removes the record; the listener is going away, and no record reads as `unknown`, which is never idle. */
-  async stop(): Promise<void> { await this.writes; await unlink(listenerActivityPath(this.home, this.pid)).catch(() => {}); }
+  async stop(): Promise<void> { this.stopped = true; await this.writes; await unlink(listenerActivityPath(this.home, this.pid)).catch(() => {}); }
 }

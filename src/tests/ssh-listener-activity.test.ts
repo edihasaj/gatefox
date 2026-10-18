@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { Readable } from "node:stream";
+import { promisify } from "node:util";
+import { open } from "node:fs/promises";
 import { once } from "node:events";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +12,10 @@ import { setTimeout as delay } from "node:timers/promises";
 import { WebSocket } from "ws";
 import { ListenerActivity, listenerActivityPath, readListenerActivity } from "../ssh-listener-activity.js";
 import { shimFiles } from "./shim-fixture.js";
+import { shimSession } from "../shim-session.js";
+import { sessionIdleMs } from "../shim-session.js";
+import { busyActivities } from "../runtime-activity.js";
+import { loadConfig } from "../config.js";
 import { shortFolder } from "./short-folder.js";
 
 test("an SSH listener records whether any of its sessions runs a turn or waits on the client, and no record reads as unknown", async () => {
@@ -80,6 +87,7 @@ test("a running SSH listener reports idle, busy during a pending approval, idle 
     void l.rpc("turn/start", { threadId: start.thread.id, model: "claude/model", input: [] });
     for (let i = 0; i < 400 && !l.approval(); i++) await delay(25);
     assert.ok(l.approval(), "the turn is waiting for the client's approval");
+    for (let i = 0; i < 400 && (await l.record())?.busy !== true; i++) await delay(25);
     assert.equal((await l.record())?.busy, true, "a pending approval keeps the listener");
     l.answer();
     for (let i = 0; i < 400 && (await l.record())?.busy; i++) await delay(25);
@@ -128,4 +136,44 @@ test("a session silent past the idle window lets the listener retire on request;
     const [code] = await l.exited;
     assert.equal(code, 0, "an idle session no longer holds the listener");
   } finally { await l.close(); }
+});
+
+test("a stopped record is never written again: a late decline cannot bring it back after the listener removed it", async () => {
+  const folder = await mkdtemp(join(tmpdir(), "gw-listener-stop-"));
+  try {
+    const activity = new ListenerActivity(folder, process.pid);
+    activity.publish();
+    for (let i = 0; i < 100 && !await readListenerActivity(folder, process.pid); i++) await delay(20);
+    await activity.stop();
+    activity.decline(); activity.publish(); activity.open(async () => {}).close();
+    await delay(100);
+    assert.equal(await readListenerActivity(folder, process.pid), undefined);
+  } finally { await rm(folder, { recursive: true, force: true }); }
+});
+
+test("the idle window can only be shortened by the test hook: finite, 0 to 30000, anything else is 30 s", () => {
+  assert.equal(sessionIdleMs(undefined), 30000);
+  assert.equal(sessionIdleMs("300"), 300);
+  assert.equal(sessionIdleMs("0"), 0);
+  assert.equal(sessionIdleMs("30000"), 30000);
+  for (const bad of ["", "  ", "abc", "NaN", "Infinity", "-1", "30001", "1e9", "99999999999"]) assert.equal(sessionIdleMs(bad), 30000, `"${bad}"`);
+});
+
+test("a session that is still initializing is busy, never idle", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await shimFiles({ serve: false });
+  try {
+    const config = await loadConfig(f.config);
+    // Initializing reads the client token; a FIFO there holds the read until something opens it for writing.
+    const token = join(f.value.stateDirectory, "client-token");
+    await rm(token, { force: true }); await promisify(execFile)("/usr/bin/mkfifo", [token]);
+    const session = shimSession("/nonexistent/codex", ["app-server"], config, { path: join(f.directory, "catalog.json"), settings: {}, native: [] }, {}, new Readable({ read() {} }), async () => {}, new AbortController().signal);
+    const failed = session.then(() => undefined, () => undefined);
+    await delay(300);
+    // Whatever the assertion finds, the FIFO is opened afterwards so the session can end and nothing hangs.
+    const during = busyActivities();
+    const release = await open(token, "w"); await release.close();
+    await failed;
+    assert.deepEqual(during, ["adapter_session"], "a session that has not finished initializing counts as work");
+    assert.deepEqual(busyActivities(), [], "a session that failed to start leaves no probe behind");
+  } finally { f.close(); }
 });

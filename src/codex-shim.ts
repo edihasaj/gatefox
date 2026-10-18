@@ -150,7 +150,11 @@ export async function codexShim(argv: string[]): Promise<void> {
   }
   finally {
     controller.abort();
-    process.off("SIGINT", stop); process.off("SIGTERM", stop); process.off("SIGUSR2", onRetire);
+    process.off("SIGINT", stop); process.off("SIGTERM", stop);
+    // The handler outlives the cleanup: a request to retire that arrives while the record is being removed does nothing
+    // (the listener is stopping, and a stopped record is never written again), instead of killing the process mid-cleanup.
+    listening = false;
     await activity?.stop();
+    process.off("SIGUSR2", onRetire);
   }
 }

@@ -76,7 +76,7 @@ function holderDeps(snapshot: string, records: Record<number, ListenerRecord | u
   const state: Fixture = { alive: new Set([100, 101, 200, 201]), signalled: [], asked: [] };
   const deps: HolderDeps = {
     snapshot: async () => snapshot, activity: async (home, pid) => { state.asked.push([home, pid]); return records[pid]; },
-    signal: pid => { state.signalled.push(pid); setTimeout(() => { state.alive.delete(pid); state.alive.delete(pid + 1); }, 20); }, alive: pid => state.alive.has(pid), stopWaitMs: 2000, pollMs: 10, ...overrides };
+    signal: pid => { state.signalled.push(pid); setTimeout(() => { state.alive.delete(pid); state.alive.delete(pid + 1); }, 20); }, alive: pid => state.alive.has(pid), stopWaitMs: 2000, hostWaitMs: 2000, pollMs: 10, ...overrides };
   return { deps, ...state, state };
 }
 const record = (startedAt = before, busy = false, declinedAt?: number): ListenerRecord => ({ pid: 0, startedAt, busy, ...(declinedAt === undefined ? {} : { declinedAt }) });
@@ -137,15 +137,39 @@ test("a signal that fails is a refusal with a fixed reason, never a raw throw; a
   } finally { await t.remove(); }
 });
 
-test("another adapter refuses, and a shared host's engine is waited for until the service restarts it or the wait ends", async () => {
+test("another adapter refuses and nothing is signalled", async () => {
   const adapter = holderDeps([row(140, 1, before, `/usr/bin/node /g/cli.js codex-shim --config ${config} --codex /c -- app-server`), engine(141, 140)].join("\n"), {});
   await assert.rejects(run(adapter.deps), /Codex session on this Mac/);
   assert.deepEqual(adapter.state.signalled, []);
-  // The host's old engine disappears (the service restarted the host) after two rescans.
-  let scans = 0;
-  const restarting = holderDeps("", {}, { snapshot: async () => ++scans < 3 ? [daemon(160), hostEngine(161, 160)].join("\n") : daemon(160), pollMs: 400 });
-  assert.equal(await run(restarting.deps), 0);
-  assert.ok(scans >= 3);
-  const stuck = holderDeps([daemon(160), hostEngine(161, 160)].join("\n"), {}, { stopWaitMs: 600, pollMs: 100 });
+});
+
+test("the shared host settles before any listener is asked: a host that restarts lets the install go on, one that stays refuses and retires no one", async () => {
+  const listeners = [listener(100), engine(101, 100)].join("\n");
+  // The host's old engine is gone after two rescans; only then is the listener asked.
+  let scans = 0; const order: string[] = [];
+  const restarting = holderDeps("", { 100: record(before) }, { snapshot: async () => { scans++; order.push("scan"); return scans < 3 ? [listeners, daemon(160), hostEngine(161, 160)].join("\n") : [listeners, daemon(160)].join("\n"); },
+    signal: pid => { order.push("signal"); restarting.state.alive.delete(pid); restarting.state.alive.delete(pid + 1); } });
+  assert.equal(await run(restarting.deps), 1);
+  assert.ok(scans >= 3); assert.equal(order.filter(step => step === "signal").length, 1);
+  assert.equal(order.indexOf("signal"), order.length - 1, "the listener was asked after the last rescan, never while the host still held the slot");
+  const stuck = holderDeps([listeners, daemon(160), hostEngine(161, 160)].join("\n"), { 100: record(before) }, { hostWaitMs: 300, pollMs: 10 });
   await assert.rejects(run(stuck.deps), /shared execution host is busy/);
+  assert.deepEqual(stuck.state.signalled, [], "a host_busy refusal retires no listener");
+});
+
+test("the host gets about 30 s to restart, longer than a listener's 10 s", async () => {
+  const { realHolderDeps } = await import("../native-slot-holders.js");
+  assert.ok(realHolderDeps.hostWaitMs >= 30_000);
+  assert.ok(realHolderDeps.hostWaitMs > realHolderDeps.stopWaitMs);
+});
+
+test("when a second listener declines after a first one retired, the first stays retired and the activation is refused", async () => {
+  const snapshot = [listener(100), engine(101, 100), listener(200), engine(201, 200)].join("\n");
+  const f = holderDeps(snapshot, { 100: record(before), 200: record(before) }, {
+    signal: pid => { f.state.signalled.push(pid); if (pid === 100) { f.state.alive.delete(100); f.state.alive.delete(101); } else declinedAt = Date.now() + 1; },
+    activity: async (_home, pid) => ({ pid, startedAt: before, busy: false, ...(pid === 200 && declinedAt ? { declinedAt } : {}) }) });
+  let declinedAt = 0;
+  await assert.rejects(run(f.deps), /retry when it is idle/);
+  assert.deepEqual(f.state.signalled, [100, 200]);
+  assert.equal(f.state.alive.has(100), false, "the retired listener is not brought back; its remote app reconnects through a fresh one");
 });

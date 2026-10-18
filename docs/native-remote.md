@@ -162,7 +162,13 @@ The install avoids that race in this order:
      install. The shared host's engine is not signalled: the service restarts the
      host, once idle, because the pending record already counts as a registration; the
      install waits for it and refuses if the host stays busy.
-   Any refusal removes the pending record and changes nothing else.
+   The steps run in this order so that a refusal changes as little as possible: the
+   checks that need no action come first, then the shared host (waited for up to about
+   30 seconds, while the service restarts it when idle), and only then are the
+   listeners asked, one by one. Any refusal removes the pending record and registers
+   nothing. If a listener declines after an earlier one already retired, the earlier
+   one stays retired; that is harmless, because its remote app reconnects through a
+   fresh listener that stands down.
 3. It runs the relay's `--enable` and waits up to 45 seconds. On success it writes
    `<state>/native-registration.json` and removes the pending record. On a timeout or
    an early exit it keeps the previous registration exactly as it was, removes the
@@ -180,12 +186,23 @@ leaves the phone without this Mac.
 **Giving remote control back.** `gateway native uninstall` under the unified service
 now writes `{"registered":false}` to `<state>/native-registration.json`, keeps the
 previous record as `native-registration.json.pre-relay-off-<time>` and removes a pending
-record. Engines that start afterwards keep their own remote control. Restart the
-service while idle (`gateway service restart`) so the relay, the shared host and the
-open adapters let go of it, then open ChatGPT. `gateway health` warns when a
-registered relay has been paused or not connected for more than five minutes, names the
-cause class (the relay keeps failing, or the service has not started it since the
-registration) and this command.
+record. Only engines that start afterwards keep their own remote control; running ones
+keep standing down until they restart, and a service restart does not make the desktop
+app or SSH listeners release it:
+
+- the desktop app: quit ChatGPT, and open it again once the rest has let go;
+- SSH listeners: they let go the next time they start, that is when the remote app next
+  connects after its listener exits;
+- the relay and the shared host: restart the service while idle
+  (`gateway service restart`).
+
+`gateway health` warns when a registered relay has been paused for more than five
+minutes, or runs but has not been connected for that long. The "not connected" time is
+measured from the last moment the service saw the relay connected (`lastConnectedAt` in
+its status file), or from the relay's start if it never was, because the relay rewrites
+its own status file on every change and a refused connection (HTTP 409) changes it
+constantly. The warning names the cause class (the relay keeps failing, or the service
+has not started it since the registration) and this command.
 
 ### Moving a Mac to the 0.163 relay
 

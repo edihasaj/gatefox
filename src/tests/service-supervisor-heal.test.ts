@@ -252,6 +252,27 @@ test("a host that started before the registration restarts once idle with its en
   }
 });
 
+test("a restart asked for by a registration that was withdrawn since is dropped, and asked again when it returns", async () => {
+  const f = await folder("gwh-d5-");
+  let idle = false;
+  const host = hosts({ idle: () => idle });
+  const probes = { registeredNow: false, registered: async () => probes.registeredNow, fingerprint: async () => "same", appRunning: async () => true };
+  const plan: ServicePlan = { version: 1, config: f.config, sharedNativeExecutor: true, components: [relay(f.directory, "setInterval(()=>{},1000)")] };
+  // The re-check tick (which retries a refused host restart) runs every 100 ms.
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, host.start, probes, 100, 3_600_000, { ...quiet, kickGapMs: 0 }, 40);
+  try {
+    await supervisor.start();
+    probes.registeredNow = true; await delay(250);
+    assert.equal(host.record.starts, 1, "a busy host waits");
+    // The activation is refused: its pending record goes. The host turns idle, but there is nothing left to restart for.
+    probes.registeredNow = false; idle = true; await delay(500);
+    assert.equal(host.record.starts, 1, "no restart for a registration that no longer exists");
+    probes.registeredNow = true;
+    await until(() => host.record.starts === 2, "the restart once registered again");
+    assert.deepEqual(host.record.owns, [false, true]);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
 test("a registered relay that is paused or down never hands remote control back: the host starts standing down and is not restarted", async () => {
   const f = await folder("gwh-d3-");
   const host = hosts();

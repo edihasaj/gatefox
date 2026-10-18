@@ -21,15 +21,25 @@ export function operationalStartFailure(error: unknown): boolean {
   return /unavailable|ownership|quiescing|startup settings differ|retry after|is closing|ENOENT|ECONNREFUSED|ECONNRESET/i.test(message);
 }
 
-/** How long a session must be silent to count as idle: 30 s. GATEWAY_SESSION_IDLE_MS is a test hook nothing the gateway installs sets. */
-const sessionIdleMs = (): number => Number(process.env.GATEWAY_SESSION_IDLE_MS) || 30000;
+/**
+ * How long a session must be silent to count as idle: 30 s. GATEWAY_SESSION_IDLE_MS is a test hook nothing the gateway installs
+ * sets; it may only shorten the window (0 to 30000), and anything else, a longer value or text, leaves 30 s.
+ */
+export function sessionIdleMs(raw = process.env.GATEWAY_SESSION_IDLE_MS): number {
+  const value = raw?.trim() ? Number(raw) : NaN;
+  return Number.isFinite(value) && value >= 0 && value <= 30000 ? value : 30000;
+}
 
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args,
   relay?: { home: string; nativeHome: string }): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
-  await source.initialize();
+  // Busy from the first moment: a session that is still initializing (or whose engines still start) must never read as idle.
+  let started = false;
+  let idle = () => false;
+  const unregisterActivity = registerActivityProbe("adapter_session", () => !started || !idle());
+  try { await source.initialize(); } catch (error) { unregisterActivity(); throw error; }
   let closing = false;
   // The caller decided once whether a live relay exists; without one the app engine keeps its own remote control.
   const control = relay ? new NativeControl(relay.home, emit) : undefined;
@@ -42,8 +52,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const tasks = new Set<Promise<void>>();
   // Idle means no turn, no request in flight and no traffic for 30 s. The SSH listener asks this process-wide question (see
   // runtimeBusy) when it is asked to retire, and a session is busy from its first moment, while its engines still start.
-  const idle = () => turns.active === 0 && tasks.size === 0 && Date.now() - lastActivity > sessionIdleMs();
-  const unregisterActivity = registerActivityProbe("adapter_session", () => !idle());
+  idle = () => turns.active === 0 && tasks.size === 0 && Date.now() - lastActivity > sessionIdleMs();
+  started = true;
   try {
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async (message, engine) => {
       await router?.observeNotification(message, engine);

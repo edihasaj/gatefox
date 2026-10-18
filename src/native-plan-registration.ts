@@ -99,7 +99,8 @@ export function relayCheck(binary: string, args: string[], timeoutMs = 60000): P
  * The way out of a registered relay under the unified service: `gateway native uninstall` marks it unregistered, so every
  * adapter, SSH listener and shared host that starts afterwards leaves remote control to ChatGPT again. The previous record is
  * kept beside it (`native-registration.json.pre-relay-off-<time>`), and a pending activation is removed. The relay the service
- * is running stops at the next service restart, which a running relay needs before ChatGPT can take the slot. Nothing in the
+ * is running and the shared host let go at the next service restart; the desktop app and SSH listeners let go when they next start
+ * (a service restart does not make them release it). Nothing in the
  * native configuration is touched. The caller holds the login registration lock.
  */
 export async function unregisterPlanRelay(stateDirectory: string, now = new Date()): Promise<Record<string, unknown>> {
@@ -111,5 +112,5 @@ export async function unregisterPlanRelay(stateDirectory: string, now = new Date
   await copyFile(path, backup);
   await writePrivateJson(path, { registered: false });
   return { service: serviceLabel, mode: "supervised", registered: false, nativeConfigUntouched: true, previousRegistration: backup,
-    next: "Remote control goes back to ChatGPT for every engine that starts from now on. Restart the service while idle (gateway service restart) so the running relay, the shared host and the open adapters let go of it, then open ChatGPT" };
+    next: "Remote control goes back to ChatGPT for every engine that starts from now on; engines already running keep standing down until they restart. Quit ChatGPT, and open it again once the rest has let go. SSH listeners let go the next time they start (when the remote app next connects after its listener exits). Restart the service while idle (gateway service restart) so the running relay and the shared host let go" };
 }

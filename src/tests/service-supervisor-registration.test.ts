@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { ServiceSupervisor, type NativeProbes } from "../service-supervisor.js";
 import { serviceStatusPath } from "../service-plan.js";
@@ -56,4 +56,32 @@ test("an open ChatGPT app is asked about once per registration change, not on ev
     assert.equal(await f.starts(), 0, "the relay never competes with the open app");
     assert.equal((await f.state()).state, "paused");
   } finally { await f.remove(); }
+});
+
+test("the service records the last time the relay was connected, ignoring a status left by an earlier run and a status that only changes", async () => {
+  const folder = await shortFolder("gw-reg-seen-"); const home = `${folder.directory}/relay-home`; await mkdir(home);
+  const status = (value: string) => writeFile(`${home}/status.json`, JSON.stringify({ status: value }));
+  // A `connected` from an earlier run of the relay: older than this start, so it is not this run's connection.
+  await status("connected"); const old = new Date(Date.now() - 3_600_000); await utimes(`${home}/status.json`, old, old);
+  const component = fixtureComponent(folder.directory, "native", "native", "setInterval(()=>{},1000)");
+  component.args.push("--", "--relay-home", home);
+  const probes = { registered: async () => true, fingerprint: async () => "same", appRunning: async () => false };
+  const supervisor = new ServiceSupervisor({ version: 1, config: `${folder.directory}/gateway.json`, components: [component] }, folder.directory, 5, undefined, probes, 600_000, 1_800_000, {}, 20);
+  // The snapshot is published every five seconds; a test asks for it now.
+  const read = async () => { await (supervisor as unknown as { publish(): Promise<void> }).publish(); return (JSON.parse(await readFile(serviceStatusPath(folder.directory), "utf8")).components[0]) as { state: string; startedAt?: string; lastConnectedAt?: string }; };
+  try {
+    await supervisor.start();
+    await until(async () => (await read()).state === "running");
+    await delay(200);
+    const running = await read();
+    assert.ok(running.startedAt, "the snapshot says when the relay started");
+    assert.equal(running.lastConnectedAt, undefined, "an old status says nothing about this run");
+    await status("connecting"); await delay(150);
+    assert.equal((await read()).lastConnectedAt, undefined, "a changing status is not a connection");
+    await status("connected");
+    await until(async () => (await read()).lastConnectedAt !== undefined);
+    const connected = (await read()).lastConnectedAt!;
+    await status("errored"); await delay(200); await status("connecting"); await delay(200);
+    assert.equal(Date.parse((await read()).lastConnectedAt!) - Date.parse(connected) < 1000, true, "it stopped moving once the relay stopped being connected");
+  } finally { await supervisor.stop(); await folder.remove(); }
 });

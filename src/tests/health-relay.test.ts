@@ -29,12 +29,16 @@ test("a relay paused for less than five minutes, an unregistered one, or a snaps
   assert.deepEqual(relayFindings({ installed: true, published: true, components: [{ kind: "inference", state: "running" }] }, registered, at), []);
 });
 
-test("a registered relay that runs but is not connected for five minutes warns; a connected or fresh one does not", () => {
-  const running = status({ state: "running" });
-  assert.match(relayFindings(running, { registered: true, connected: false, statusAgeMs: 9 * 60_000 }, at)[0].reason, /^native relay registered but not connected for 9 min;.*gateway native uninstall/);
-  assert.deepEqual(relayFindings(running, { registered: true, connected: false, statusAgeMs: 60_000 }, at), []);
-  assert.deepEqual(relayFindings(running, { registered: true, connected: true, statusAgeMs: 99 * 60_000 }, at), []);
-  assert.deepEqual(relayFindings(running, { registered: true, connected: false }, at), [], "an unknown age says nothing");
+test("a registered relay that runs but has not been connected for five minutes warns, measured from the last time it was connected", () => {
+  const down: RelayHealth = { registered: true, connected: false };
+  const since = (state: Record<string, unknown>) => relayFindings(status({ state: "running", ...state }), down, at);
+  assert.match(since({ startedAt: ago(60), lastConnectedAt: ago(9) })[0].reason, /^native relay registered but not connected for 9 min;.*gateway native uninstall/);
+  assert.deepEqual(since({ startedAt: ago(60), lastConnectedAt: ago(2) }), [], "a flicker is not an outage");
+  assert.match(since({ startedAt: ago(30) })[0].reason, /not connected for 30 min/, "never connected in this run: measured from the start");
+  assert.match(since({ startedAt: ago(10), lastConnectedAt: ago(500) })[0].reason, /not connected for 10 min/, "a connection from an earlier run does not hide a fresh outage");
+  assert.deepEqual(since({ startedAt: ago(2) }), [], "a relay that just started has had no time");
+  assert.deepEqual(since({}), [], "without a start time there is nothing to measure from");
+  assert.deepEqual(relayFindings(status({ state: "running", startedAt: ago(60) }), { registered: true, connected: true }, at), []);
 });
 
 test("the snapshot reader keeps only a fixed pause reason and a real time", () => {
@@ -48,16 +52,20 @@ function deps(extra: Partial<HealthDeps>): HealthDeps {
   return { now: () => at, exists: async () => false, state: async () => undefined, writeState: async () => {}, readPlan: async () => undefined, versions: async () => versions, telemetry: async () => [], probe: async () => probe, ...extra };
 }
 
-test("health reports the warning from the snapshot and the registration it reads", async () => {
-  const files: Record<string, string> = {
-    "/state/native-registration.json": JSON.stringify({ registered: true, home: "/relay" }),
-    "/relay/status.json": JSON.stringify({ status: "connecting" }),
-  };
-  const report = await runHealth({ stateDirectory: "/state", port: 3457 }, deps({
-    readFile: async path => files[path] ?? "", mtime: async path => path === "/relay/status.json" ? at - 20 * 60_000 : undefined,
-    readStatus: async () => status({ state: "running" }) }));
-  assert.equal(report.verdict, "warn");
-  assert.match(report.findings.find(finding => finding.level === "warn")!.reason, /native relay registered but not connected for 20 min/);
+test("health warns during a refusal loop: the relay's status file keeps changing, its connection never comes", async () => {
+  // A second engine holds the one slot (HTTP 409), so the relay flips connecting <-> errored for as long as it likes. Every flip
+  // rewrites status.json, so its age is always fresh; only the last time it was connected shows the outage.
+  const statuses = ["connecting", "errored"];
+  let flip = 0;
+  const loop = () => ({ "/state/native-registration.json": JSON.stringify({ registered: true, home: "/relay" }), "/relay/status.json": JSON.stringify({ status: statuses[flip++ % 2] }) }) as Record<string, string>;
+  const down = await runHealth({ stateDirectory: "/state", port: 3457 }, deps({ readFile: async path => loop()[path] ?? "", readStatus: async () => status({ state: "running", startedAt: ago(45), lastConnectedAt: ago(40) }) }));
+  assert.equal(down.verdict, "warn");
+  assert.match(down.findings.find(finding => finding.level === "warn")!.reason, /native relay registered but not connected for 40 min/);
+  const brief = await runHealth({ stateDirectory: "/state", port: 3457 }, deps({ readFile: async path => loop()[path] ?? "", readStatus: async () => status({ state: "running", startedAt: ago(45), lastConnectedAt: ago(1) }) }));
+  assert.equal(brief.verdict, "ok");
+  const connected = await runHealth({ stateDirectory: "/state", port: 3457 }, deps({ readFile: async path => ({ "/state/native-registration.json": JSON.stringify({ registered: true, home: "/relay" }), "/relay/status.json": JSON.stringify({ status: "connected" }) })[path] ?? "", readStatus: async () => status({ state: "running", startedAt: ago(45), lastConnectedAt: ago(40) }) }));
+  assert.equal(connected.verdict, "ok", "a relay that is connected now has nothing to warn about");
+  const files: Record<string, string> = { "/state/native-registration.json": JSON.stringify({ registered: true, home: "/relay" }) };
   const paused = await runHealth({ stateDirectory: "/state", port: 3457 }, deps({ readFile: async path => files[path] ?? "", readStatus: async () => status({ state: "paused", pausedReason: "failing", pausedAt: ago(30) }) }));
   assert.equal(paused.verdict, "warn");
   assert.ok(paused.findings.some(finding => finding.level === "info" && finding.reason === "native paused"), "the plain note stays");

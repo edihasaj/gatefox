@@ -109,7 +109,7 @@ test("macNative hands the SSH control home and the config path to the holder che
       `   101    100 ${lstart(started)} ${f.codex} app-server --listen stdio://`].join("\n");
     const result = await macNative("install", f.configPath, { nativeHome: f.nativeHome, planDeps: noProcesses(), holderDeps: {
       snapshot: async () => snapshot, activity: async (home, pid) => { asked.push([home, pid]); return { pid, startedAt: started + 300, busy: false }; },
-      signal: pid => { signalled.push(pid); alive.clear(); }, alive: pid => alive.has(pid), stopWaitMs: 1000, pollMs: 10 } });
+      signal: pid => { signalled.push(pid); alive.clear(); }, alive: pid => alive.has(pid), stopWaitMs: 1000, hostWaitMs: 1000, pollMs: 10 } });
     assert.deepEqual(asked, [[sshHome, 100]], "the activity record is read from the SSH control home of this config and native home");
     assert.deepEqual(signalled, [100]);
     assert.equal(result.registered, true);
@@ -124,7 +124,7 @@ test("macNative refuses while a listener is busy: nothing is signalled, register
     const started = Math.floor((Date.now() - 3_600_000) / 1000) * 1000; const signalled: number[] = [];
     const snapshot = [`   100      1 ${lstart(started)} /usr/bin/node /g/cli.js codex-shim --config ${f.configPath} --codex ${f.codex} --ssh -- app-server --listen unix://`, `   101    100 ${lstart(started)} ${f.codex} app-server --listen stdio://`].join("\n");
     await assert.rejects(macNative("install", f.configPath, { nativeHome: f.nativeHome, planDeps: noProcesses(), holderDeps: {
-      snapshot: async () => snapshot, activity: async pid => ({ pid: 100, startedAt: started, busy: true }), signal: pid => { signalled.push(pid); }, alive: () => true, stopWaitMs: 100, pollMs: 10 } }), /retry when it is idle/);
+      snapshot: async () => snapshot, activity: async pid => ({ pid: 100, startedAt: started, busy: true }), signal: pid => { signalled.push(pid); }, alive: () => true, stopWaitMs: 100, hostWaitMs: 100, pollMs: 10 } }), /retry when it is idle/);
     assert.deepEqual(signalled, []); assert.equal(await f.receipt(), undefined);
     assert.equal(await readFile(join(f.state, "native-registration.pending"), "utf8").catch(() => undefined), undefined);
   } finally { await f.clean(); }

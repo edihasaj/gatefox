@@ -1,8 +1,8 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { constants } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, open, readFile, stat } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
@@ -22,7 +22,7 @@ export type { SupervisorHealing } from "./service-heal.js";
 type UpgradeWait = QuietWait | "inference_busy";
 /** A restart that stopped the service (with the host's loaded-chat count), or one that was refused, with why when known. */
 type RestartResult = { loadedChats: number } | { wait?: UpgradeWait };
-interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason; pausedAt?: string }
+interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason; pausedAt?: string; startedAt?: string; lastConnectedAt?: string }
 type PauseReason = "not_registered" | "failing";
 /** How a slot decides whether the optional relay is worth starting; tests replace all three. */
 export interface NativeProbes {
@@ -117,7 +117,7 @@ export class ServiceSupervisor {
       this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
       // A relay set aside as unregistered starts the moment a registration appears, not at the next re-check, and a shared host
       // that started before the registration is asked to restart (when idle) so its native engine stands down too.
-      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); void this.host.restartForRegistration().catch(() => undefined); }, this.registrationPollMs); this.registrationWatch.unref();
+      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); void this.host.restartForRegistration().catch(() => undefined); void this.observeRelay(); }, this.registrationPollMs); this.registrationWatch.unref();
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one.
@@ -185,6 +185,23 @@ export class ServiceSupervisor {
    * picked up by the next adapter or listener. Nothing here stops the service: an answer that never
    * arrives leaves the slot paused with reason `failing`, announced once.
    */
+  /**
+   * Notes the last time the running relay was connected, from its own status file, so a health check can tell a relay that has
+   * been down for minutes from one that only flickered. The relay rewrites that file on every status change, so its age says
+   * nothing about the connection; and a `connected` left by an earlier run does not count (the file must be newer than this start).
+   */
+  private async observeRelay(): Promise<void> {
+    for (const slot of this.slots) {
+      if (slot.definition.kind !== "native" || slot.state.state !== "running") continue;
+      const flag = slot.definition.args.indexOf("--relay-home"); const home = flag >= 0 ? slot.definition.args[flag + 1] : undefined;
+      if (typeof home !== "string") continue;
+      try {
+        const file = resolve(home, "status.json");
+        if ((await stat(file)).mtimeMs < slot.startedAt - 1000) continue;
+        if ((JSON.parse(await readFile(file, "utf8")) as { status?: unknown }).status === "connected") slot.state.lastConnectedAt = new Date().toISOString();
+      } catch { /* No readable status is not connected. */ }
+    }
+  }
   private async resumeOnRegistration(): Promise<void> {
     const slot = this.slots.find(candidate => candidate.definition.kind === "native" && candidate.state.state === "paused");
     if (!slot || this.registrationChecking || this.stopping || this.restarting) return;
@@ -281,7 +298,7 @@ export class ServiceSupervisor {
         void this.publish();
       };
       child.once("error", () => ended(null)); child.once("close", (code, signal) => ended(code, signal));
-      child.once("spawn", () => { slot.state.state = "running"; slot.state.pid = child.pid; void this.publish(); });
+      child.once("spawn", () => { slot.state.state = "running"; slot.state.pid = child.pid; slot.state.startedAt = new Date().toISOString(); void this.publish(); });
     } finally { await log.close(); }
   }
   /**

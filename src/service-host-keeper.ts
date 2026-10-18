@@ -206,7 +206,8 @@ export class ServiceHostKeeper {
     const reason = this.hostRestartReason; const execution = this.executionState;
     if (!reason || !execution || this.context.stopping() || this.context.restarting() || this.hostRestarting || this.hostAttempt || this.hostChecking || execution.state !== "running") return;
     // A host that already stands down needs no restart for the registration.
-    if (reason === "relay_registered" && this.hostOwnsRelay) { this.hostRestartReason = undefined; return; }
+    // A registration that was withdrawn since (a refused activation removes its pending record) needs none either.
+    if (reason === "relay_registered" && (this.hostOwnsRelay || !await this.context.registered().catch(() => false))) { this.hostRestartReason = undefined; return; }
     const wait = this.hostLastStart + this.context.heal.kickGapMs - performance.now();
     if (wait > 0) {
       if (!this.hostRestartTimer) { this.hostRestartTimer = setTimeout(() => { this.hostRestartTimer = undefined; void this.restartHostWhenIdle(); }, wait); this.hostRestartTimer.unref(); }

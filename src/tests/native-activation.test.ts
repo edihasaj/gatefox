@@ -122,6 +122,8 @@ test("uninstall under a unified plan unregisters, keeps a backup of the old reco
     assert.equal(await readFile(join(f.state, backups[0]), "utf8"), previous, "the backup is the old record, byte for byte");
     assert.equal(await f.exists(nativePendingPath(f.state)), false);
     assert.match(String(result.next), /gateway service restart/);
+    assert.match(String(result.next), /Quit ChatGPT/);
+    assert.match(String(result.next), /SSH listeners let go the next time they start/);
     // Nothing registered means nothing to undo, and no backup either.
     const again = await unregisterPlanRelay(f.state, new Date("2026-10-18T01:02:04Z"));
     assert.equal(again.unchanged, true); assert.equal((await readdir(f.state)).filter(name => name.includes("pre-relay-off")).length, 1);

@@ -81,8 +81,10 @@ export interface HolderDeps {
   /** Asks one listener to retire when idle (SIGUSR2). It may throw the signal's errno. */
   signal(pid: number): void;
   alive(pid: number): boolean;
-  /** How long the retired listeners, their engines and a restarting host have to go, and how often that is checked. */
+  /** How long the retired listeners and their engines have to go, and how often that is checked. */
   stopWaitMs: number;
+  /** How long the shared host has to restart: the service polls every 2 s, waits out a 5 s gap after the last start, then stops it. */
+  hostWaitMs: number;
   pollMs: number;
 }
 /** The environment `ps` runs in: the C locale, so `lstart` is always `Sat Oct 17 23:27:35 2026`. */
@@ -93,7 +95,7 @@ export const realHolderDeps: HolderDeps = {
   snapshot: realSnapshot, activity: readListenerActivity,
   signal: pid => { process.kill(pid, "SIGUSR2"); },
   alive: pid => { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; } },
-  stopWaitMs: 10_000, pollMs: 100,
+  stopWaitMs: 10_000, hostWaitMs: 30_000, pollMs: 100,
 };
 
 const busyMessage = "An SSH session from another Mac is using this Mac; retry when it is idle. The native relay was not registered";
@@ -104,24 +106,50 @@ const refuse = (reason: string, message: string): Error => { telemetry("native_a
 const startSlackMs = 3000;
 
 /**
- * Asks every idle SSH listener that may hold the remote-control slot to retire, and refuses (retiring none) when any listener
- * is busy, runs a release that cannot be asked, or another adapter holds an engine. A listener that declines after the ask
- * refuses the activation too. Returns how many listeners retired.
+ * Clears what may hold the remote-control slot, in this order, so that a refusal changes as little as possible:
+ * 1. Another adapter, a listener that is busy, or a listener that cannot be asked refuses at once; nothing has been done.
+ * 2. The shared host's engine is waited for (the service restarts an idle host by itself once the activation is pending). A host
+ *    that stays busy refuses with no listener asked.
+ * 3. Only then is each idle SSH listener asked to retire, and waited for. A listener that declines refuses the activation; one
+ *    that already retired before it stays retired, which is harmless: its remote app reconnects through a fresh listener that
+ *    stands down.
+ * Returns how many listeners retired.
  */
 export async function clearSlotHolders(options: { configPath: string; sshHome: string; pendingAtMs: number }, deps: HolderDeps = realHolderDeps): Promise<number> {
   const scan = async (): Promise<SlotHolder[]> => {
     try { return slotHolders(await deps.snapshot(), options.configPath, options.pendingAtMs); }
     catch { throw refuse("process_list", "Cannot verify the engines running on this Mac; the native relay was not registered"); }
   };
-  const holders = await scan();
+  const listenersOf = (holders: SlotHolder[]): Map<number, number> => {
+    const found = new Map<number, number>();
+    for (const holder of holders) if (holder.kind === "ssh-listener") found.set(holder.owner, holder.ownerStartedAt);
+    return found;
+  };
+  /** Every listener must name itself in a record that matches the process list, and none may be busy. */
+  const vouch = async (listeners: Map<number, number>): Promise<void> => {
+    for (const [pid, startedAt] of listeners) {
+      const record = await deps.activity(options.sshHome, pid);
+      if (!record || Math.abs(record.startedAt - startedAt) > startSlackMs) throw refuse("listener_unknown", unknownMessage);
+      if (record.busy) throw refuse("listener_busy", busyMessage);
+    }
+  };
+  // The process list is read about once a second while the host restarts (ten polls).
+  const hostCheckMs = deps.pollMs * 10;
+  let holders = await scan();
   if (holders.some(holder => holder.kind === "adapter")) throw refuse("adapter_running", "A Codex session on this Mac is running its own engine; close it and retry. The native relay was not registered");
-  const listeners = new Map<number, number>();
-  for (const holder of holders) if (holder.kind === "ssh-listener") listeners.set(holder.owner, holder.ownerStartedAt);
-  for (const [pid, startedAt] of listeners) {
-    const record = await deps.activity(options.sshHome, pid);
-    if (!record || Math.abs(record.startedAt - startedAt) > startSlackMs) throw refuse("listener_unknown", unknownMessage);
-    if (record.busy) throw refuse("listener_busy", busyMessage);
+  await vouch(listenersOf(holders));
+  // The host first. Its restart takes a while (the service's poll, the gap after the last start, the stop), so it has its own wait.
+  if (holders.some(holder => holder.kind === "host")) {
+    for (let waited = 0; ; waited += hostCheckMs) {
+      holders = await scan();
+      if (!holders.some(holder => holder.kind === "host")) break;
+      if (waited >= deps.hostWaitMs) throw refuse("host_busy", hostMessage);
+      await delay(hostCheckMs);
+    }
+    // The wait was long: what the listeners are doing now is what counts.
+    await vouch(listenersOf(holders));
   }
+  const listeners = listenersOf(holders);
   const signalledAt = Date.now();
   const declined = (record: ListenerRecord | undefined) => record?.declinedAt !== undefined && record.declinedAt >= signalledAt;
   for (const pid of listeners.keys()) {
@@ -133,11 +161,9 @@ export async function clearSlotHolders(options: { configPath: string; sshHome: s
   }
   const engines = holders.filter(holder => holder.kind === "ssh-listener").map(holder => holder.pid);
   const goneListeners = () => ![...listeners.keys(), ...engines].some(pid => deps.alive(pid));
-  let hostHolders = holders.some(holder => holder.kind === "host");
-  const hostEvery = Math.max(1, Math.round(1000 / deps.pollMs));
-  for (let waited = 0, polls = 0; !goneListeners() || hostHolders; waited += deps.pollMs, polls++) {
+  const every = Math.max(1, Math.round(1000 / deps.pollMs));
+  for (let waited = 0, polls = 0; !goneListeners(); waited += deps.pollMs, polls++) {
     if (waited >= deps.stopWaitMs) {
-      if (hostHolders) throw refuse("host_busy", hostMessage);
       for (const pid of listeners.keys()) {
         if (!deps.alive(pid)) continue;
         const record = await deps.activity(options.sshHome, pid);
@@ -147,9 +173,7 @@ export async function clearSlotHolders(options: { configPath: string; sshHome: s
     }
     await delay(deps.pollMs);
     // A listener that declined says so in its record; waiting out the rest of the time would only delay the refusal.
-    if (polls % hostEvery === 0) for (const pid of listeners.keys()) if (deps.alive(pid) && declined(await deps.activity(options.sshHome, pid))) throw refuse("listener_busy", busyMessage);
-    // The service restarts an idle host on its own once the activation is pending; the host is checked about once a second.
-    if (hostHolders && polls % hostEvery === 0) hostHolders = (await scan()).some(holder => holder.kind === "host");
+    if (polls % every === 0) for (const pid of listeners.keys()) if (deps.alive(pid) && declined(await deps.activity(options.sshHome, pid))) throw refuse("listener_busy", busyMessage);
   }
   if (listeners.size) telemetry("native_listener_retired", { count: listeners.size });
   return listeners.size;
