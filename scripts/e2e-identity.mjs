@@ -26,7 +26,8 @@ const pkg = resolve(v.package), root = resolve(v.root), gateway = join(pkg, 'dis
 const { gatewaySdkRuntime } = await import(pathToFileURL(join(pkg, 'dist/gateway-sdk-runtime.js')));
 const runtime = await gatewaySdkRuntime(pkg);
 assert.equal(runtime?.executorIdentity, true, 'The package must ship a gateway SDK built with patch v2');
-assert.equal(execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(), 'codex-cli 0.162.0-alpha.17.2');
+const pin = JSON.parse(await readFile(join(pkg, 'dist/gateway-sdk-pin.json'), 'utf8'));
+assert.equal(execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(), `codex-cli ${pin.version}`);
 const { readTelemetry } = await import(pathToFileURL(join(pkg, 'dist/telemetry.js')));
 await mkdir(root, { recursive: true, mode: 0o700 }); const run = await mkdtemp('/tmp/gw-identity-');
 const home = join(run, 'native'), work = join(run, 'work'), isolatedHome = join(run, 'home'), state = join(run, 'state');

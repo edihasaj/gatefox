@@ -12,6 +12,7 @@ import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { spawnStamp } from "./boot-identity.js";
+import gatewaySdkPin from "./gateway-sdk-pin.json" with { type: "json" };
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
@@ -74,7 +75,7 @@ export function executionArgs(input: string[], socket: string, catalog: string, 
  */
 export const sdkVersionTimeoutMs = 15_000;
 /** The gateway SDK every gateway generation runs. The app engines verified for native sharing are in native-engine-versions.ts. */
-export const gatewayEngineVersions: readonly string[] = ["0.162.0-alpha.17.2"];
+export const gatewayEngineVersions: readonly string[] = [...new Set([gatewaySdkPin.version, "0.162.0-alpha.17.2"])];
 export async function validateExecutionSdk(codex: string, accepted: readonly string[] = gatewayEngineVersions): Promise<void> {
   const child = spawn(codex, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
   let output = ""; child.stdout.on("data", chunk => { output += String(chunk); if (output.length > 4096) child.kill("SIGTERM"); });

@@ -332,3 +332,8 @@ Without shared execution, disconnect stops that connection's executors. With
 shared execution enabled, disconnect closes only the SDK client connection.
 Other clients keep their sessions in both modes.
 The transport uses the MIT-licensed `ws` package, bundled in the installer.
+
+Provider version maintenance runs on the build host, outside inference and
+session ownership. [Stable update validation](provider-updates.md) prepares
+isolated candidates and advances generated source pins only after compatibility
+checks pass. Installed engines continue through the normal gateway release path.

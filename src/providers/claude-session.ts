@@ -15,6 +15,7 @@ import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 import { claudeToolName } from "./claude-tool-names.js";
 import { ClaudeRelay, type RelayContent } from "./claude-relay.js";
 import { echoDigests, partialDigest, type LedgerState } from "./claude-ledger.js";
+import { providerCommand } from "../provider-tool-runtime.js";
 
 export type SessionState = "starting" | "generating" | "interrupting" | "awaiting_outputs" | "turn_done" | "closed";
 export type SessionEnd = "reaped" | "evicted" | "crashed" | "closed";
@@ -154,7 +155,8 @@ export class ClaudeSession {
     const mcpPath = join(directory, "mcp.json"), systemPath = join(directory, "system.md");
     await writeFile(mcpPath, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
     await writeFile(systemPath, this.options.systemPrompt, { mode: 0o600 });
-    const child = this.child = spawn("claude", this.options.args(mcpPath, systemPath), { cwd: work, env: this.options.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const command = await providerCommand("claude");
+    const child = this.child = spawn(command, this.options.args(mcpPath, systemPath), { cwd: work, env: this.options.env, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.exit = new Promise(resolve => child.once("close", () => resolve()));
     let failed = false;
     child.on("error", () => { failed = true; for (const done of [...this.controls.values()]) done(false); });

@@ -14,7 +14,7 @@ const { values } = parseArgs({ options: { archive: { type: 'string' }, 'target-d
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Gateway SDK release requires an Apple Silicon Mac');
 const root = resolve('.state/gateway-sdk-build');
 mkdirSync(root, { recursive: true, mode: 0o700 });
-const archive = resolve(values.archive || '.state/native-relay-build/sdk.tar.gz');
+const archive = resolve(values.archive || join(root, `source-${gatewaySdkRevision}.tar.gz`));
 if (!existsSync(archive)) {
   const response = await fetch(`https://api.github.com/repos/openai/codex/tarball/${gatewaySdkRevision}`);
   if (!response.ok) throw Error(`SDK download failed: HTTP ${response.status}`);

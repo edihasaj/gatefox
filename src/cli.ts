@@ -38,6 +38,7 @@ import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
 import { daemonConfigStatus } from "./config-rejection.js";
 import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
+import { providerCommand } from "./provider-tool-runtime.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -211,7 +212,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       }
       if (provider.type === "claude-subscription") {
         try {
-          const { stdout } = await exec("claude", ["auth", "status", "--json"], { timeout: 10000, env: { ...process.env, ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
+          const command = await providerCommand("claude");
+          const { stdout } = await exec(command, ["auth", "status", "--json"], { timeout: 10000, env: { ...process.env, ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined, CLAUDE_CODE_OAUTH_TOKEN: undefined, DISABLE_AUTOUPDATER: "1", ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
           const status = JSON.parse(stdout) as { loggedIn?: boolean; authMethod?: string };
           return { id: provider.id, ready: status.loggedIn === true && status.authMethod === "claude.ai", detail: "Claude subscription login" };
         } catch { return { id: provider.id, ready: false, detail: "Claude CLI or subscription login unavailable" }; }
@@ -239,7 +241,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (values["account-email"] !== undefined && provider.type !== "codex-subscription") throw new Error("--account-email is only valid for Codex subscription login");
     if (provider.type === "claude-subscription" || provider.type === "copilot-subscription") {
       const copilot = provider.type === "copilot-subscription";
-      const child = spawn(copilot ? "copilot" : "claude", copilot ? ["login"] : ["auth", "login"], { stdio: "inherit", env: copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
+      const command = await providerCommand(copilot ? "copilot" : "claude");
+      const child = spawn(command, copilot ? ["login", "--no-auto-update"] : ["auth", "login"], { stdio: "inherit", env: copilot ? copilotEnvironment(provider.authDirectory) : { ...process.env, DISABLE_AUTOUPDATER: "1", ...(provider.authDirectory ? { CLAUDE_CONFIG_DIR: provider.authDirectory } : {}) } });
       await new Promise<void>((resolve, reject) => { child.once("error", reject); child.once("exit", code => code === 0 ? resolve() : reject(new Error(`${copilot ? "Copilot" : "Claude"} login failed`))); });
     } else if (provider.type === "codex-subscription") {
       const control = new AbortController(); const interrupt = () => control.abort(); process.once("SIGINT", interrupt);

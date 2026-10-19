@@ -16,6 +16,8 @@
   "files": [
     "dist/*.js",
     "dist/*.d.ts",
+    "dist/gateway-sdk-pin.json",
+    "dist/gateway-feature-schema-data.json",
     "dist/auth/*.js",
     "dist/auth/*.d.ts",
     "dist/providers/*.js",
@@ -38,8 +40,13 @@
     "scripts/claude-desktop-native-messages.mjs"
   ],
   "scripts": {
-    "build": "tsc",
-    "check": "tsc --noEmit",
+    "build": "node scripts/sync-provider-tool-contract.mjs && tsc",
+    "sdk:pins": "node scripts/sync-gateway-sdk-pins.mjs",
+    "providers:update": "node scripts/provider-maintenance.mjs --apply",
+    "providers:check": "node scripts/provider-maintenance.mjs",
+    "providers:test": "node --test scripts/tests/provider-*.test.mjs",
+    "providers:schedule": "node scripts/schedule-provider-maintenance.mjs",
+    "check": "node scripts/sync-provider-tool-contract.mjs --check && node scripts/sync-gateway-sdk-pins.mjs --check && tsc --noEmit",
     "test": "node scripts/run-tests.mjs && npm run test:claude-desktop",
     "app:build": "node scripts/build-macos-app.mjs",
     "app:sign": "node scripts/sign-macos-app.mjs",

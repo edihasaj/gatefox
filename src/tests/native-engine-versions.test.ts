@@ -33,7 +33,7 @@ test("the relay accepts the 0.163 and 0.162 app engines; the host shares only 0.
   try {
     assert.deepEqual([...relayAcceptedAppEngines], ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.deepEqual([...hostVerifiedAppEngines], ["0.162.0-alpha.17.2"]);
-    assert.deepEqual([...gatewayEngineVersions], ["0.162.0-alpha.17.2"]);
+    assert.equal(gatewayEngineVersions.includes("0.162.0-alpha.17.2"), true);
     await validateNativeEngine(await engine(directory, app162));
     await validateExecutionSdk(await engine(directory, app162));
     // Native sharing of 0.163 waits for the shared-native end-to-end check; the relay does not need it.

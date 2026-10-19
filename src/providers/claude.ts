@@ -20,6 +20,7 @@ import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, 
 import { retireScope } from "./claude-session-registry.js";
 import { sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
+import { providerCommand } from "../provider-tool-runtime.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
   const effort = (request.reasoning as { effort?: string } | undefined)?.effort;
@@ -157,7 +158,8 @@ export class ClaudeSubscription implements Provider {
     const catalog = claudeMcpCatalog(run.tools);
     await writeFile(catalogPath, JSON.stringify(catalog), { mode: 0o600 }); await writeFile(systemPath, run.systemPrompt, { mode: 0o600 });
     await writeFile(mcpPath, JSON.stringify({ mcpServers: run.tools.length ? { gateway: { command: process.execPath, args: [fileURLToPath(new URL("./claude-tools.js", import.meta.url)), catalogPath], alwaysLoad: true } } : {} }), { mode: 0o600 });
-    const child = spawn("claude", claudeCliArgs({ mcpPath, systemPath, model: run.model, effort: run.effort, fast: run.fast, thinkingDisplay: run.summaryVisible }),
+    const command = await providerCommand("claude");
+    const child = spawn(command, claudeCliArgs({ mcpPath, systemPath, model: run.model, effort: run.effort, fast: run.fast, thinkingDisplay: run.summaryVisible }),
       { cwd: directory, stdio: ["pipe", "pipe", "pipe"], env: claudeEnv(this.config?.authDirectory, false, run.requestedEffort, catalog) });
     // Fast waits for the result: only it reports the tier served, since a refused or throttled fast request
     // drops to standard speed without a stream line. The result follows end_turn within milliseconds.

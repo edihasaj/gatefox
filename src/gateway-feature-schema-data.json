@@ -1,0 +1,202 @@
+{
+  "apps_mcp_path_override": {
+    "fields": [
+      "enabled",
+      "path"
+    ],
+    "nested": {}
+  },
+  "code_mode": {
+    "fields": [
+      "default_exec_yield_time_ms",
+      "direct_only_tool_namespaces",
+      "enabled",
+      "excluded_tool_namespaces",
+      "experimental_show_cell_overhead",
+      "tool_input_schema_max_bytes"
+    ],
+    "nested": {}
+  },
+  "code_mode_host": {
+    "fields": [
+      "disable_in_process_fallback",
+      "enabled"
+    ],
+    "nested": {}
+  },
+  "context_management": {
+    "fields": [
+      "experimental_mode"
+    ],
+    "nested": {}
+  },
+  "current_time_reminder": {
+    "fields": [
+      "clock_source",
+      "delivery_mode",
+      "enabled",
+      "reminder_interval_seconds",
+      "sleep_tool"
+    ],
+    "nested": {}
+  },
+  "guardianv2": {
+    "fields": [
+      "async_classifier_conversation_token_limit",
+      "async_classifier_mode",
+      "classifier_instructions",
+      "enabled",
+      "free_guardian",
+      "max_action_tokens",
+      "max_classifier_instruction_tokens",
+      "max_parent_compaction_tokens",
+      "max_tool_call_lag",
+      "persist_scores",
+      "reasoning_effort",
+      "reuse_parent_compaction",
+      "review_scope",
+      "review_threshold",
+      "thread_context",
+      "transcript"
+    ],
+    "nested": {
+      "review_scope": {
+        "fields": [
+          "computer_use_only",
+          "sandboxed_exec_commands"
+        ],
+        "nested": {}
+      },
+      "transcript": {
+        "fields": [
+          "include_images",
+          "max_message_entry_tokens",
+          "max_message_transcript_tokens",
+          "max_recent_non_user_entries",
+          "max_tool_entry_tokens",
+          "max_tool_transcript_tokens",
+          "sources"
+        ],
+        "nested": {}
+      }
+    }
+  },
+  "multi_agent_v2": {
+    "fields": [
+      "default_wait_timeout_ms",
+      "disable_direct_message",
+      "enabled",
+      "expose_spawn_agent_model_overrides",
+      "hide_spawn_agent_metadata",
+      "max_concurrent_threads_per_session",
+      "max_wait_timeout_ms",
+      "message_board_in_memory",
+      "message_board_remote",
+      "min_wait_timeout_ms",
+      "multi_agent_mode_hint_text",
+      "non_code_mode_only",
+      "root_agent_usage_hint_text",
+      "subagent_developer_instructions",
+      "subagent_usage_hint_text",
+      "tool_namespace",
+      "usage_hint_enabled",
+      "usage_hint_text",
+      "wait_agent_enabled"
+    ],
+    "nested": {
+      "message_board_remote": {
+        "fields": [
+          "bearer_token",
+          "bearer_token_env_var",
+          "url"
+        ],
+        "nested": {}
+      }
+    }
+  },
+  "network_proxy": {
+    "fields": [
+      "allow_local_binding",
+      "allow_upstream_proxy",
+      "credential_broker",
+      "credentials",
+      "dangerously_allow_all_unix_sockets",
+      "dangerously_allow_non_loopback_proxy",
+      "domains",
+      "enable_socks5",
+      "enable_socks5_udp",
+      "enabled",
+      "mode",
+      "proxy_url",
+      "socks_url",
+      "unix_sockets"
+    ],
+    "nested": {
+      "credentials": {
+        "nested": {},
+        "values": {
+          "fields": [
+            "auth",
+            "env",
+            "header",
+            "patterns",
+            "prefix",
+            "url_prefix_from_env",
+            "url_prefixes"
+          ],
+          "nested": {}
+        }
+      },
+      "domains": {
+        "nested": {}
+      },
+      "unix_sockets": {
+        "nested": {}
+      }
+    }
+  },
+  "non_prefixed_mcp_tool_names": {
+    "fields": [
+      "enabled",
+      "server_names"
+    ],
+    "nested": {}
+  },
+  "rollout_budget": {
+    "fields": [
+      "enabled",
+      "limit_tokens",
+      "prefill_token_weight",
+      "reminder_at_remaining_tokens",
+      "sampling_token_weight"
+    ],
+    "nested": {}
+  },
+  "sleep_tool": {
+    "fields": [
+      "enabled",
+      "mode"
+    ],
+    "nested": {}
+  },
+  "token_budget": {
+    "fields": [
+      "auto_compact_fallback_buffer_tokens",
+      "auto_compact_fallback_prompt",
+      "enabled",
+      "guidance_message",
+      "reminder_message_template",
+      "reminder_threshold_tokens",
+      "use_history_notes_extension"
+    ],
+    "nested": {}
+  },
+  "tool_registry": {
+    "fields": [
+      "error_on_tool_collisions",
+      "turn_metadata_includes_tool_info"
+    ],
+    "nested": {},
+    "tableOnly": true
+  }
+}

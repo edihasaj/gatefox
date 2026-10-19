@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import type { ProviderConfig } from "../config.js";
 import type { DiscoveredModel } from "../catalog.js";
 import { claudeEnvironment } from "./claude-environment.js";
+import { providerCommand } from "../provider-tool-runtime.js";
 
 // Context windows the Claude CLI reports (result modelUsage.contextWindow) on a
 // subscription, measured 2026-10-13. These run with 1M under their plain IDs.
@@ -113,7 +114,8 @@ export async function readClaudeModels(child: ChildProcessWithoutNullStreams, ti
 export async function discoverClaudeModels(provider: ProviderConfig): Promise<DiscoveredModel[]> {
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-models-"));
   try {
-    const child = spawn("claude", ["--restricted", "--setting-sources", "", "--disable-slash-commands", "--print", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    const command = await providerCommand("claude");
+    const child = spawn(command, ["--restricted", "--setting-sources", "", "--disable-slash-commands", "--print", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
       "--no-session-persistence", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
     { cwd: directory, env: claudeEnvironment(provider.authDirectory), stdio: ["pipe", "pipe", "pipe"] });
     return await readClaudeModels(child);

@@ -3,13 +3,15 @@ import { constants } from "node:fs";
 import { lstat, open, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import pin from "./gateway-sdk-pin.json" with { type: "json" };
+import { gatewaySdkPatchSha256, gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "./gateway-sdk-build-pins.js";
 
-export const gatewaySdkRevision = "740e5af33c71225640e0c1c1555c514c2c93ab74";
-export const gatewaySdkPatchSha256 = "1a7979f6bdec06b02817f20b571ae52ea841a81c007411cabaced8a2ecd5378f";
-const archiveSha256 = "25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83";
-const lockfileSha256 = "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb";
-const lockfileRepairSha256 = "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8";
-const sourceSha256 = "aa7c3146f2ca075477dddeaa7088dc10089177b6659a953b1364f04cfd24b972";
+export const gatewaySdkRevision = pin.revision;
+export { gatewaySdkPatchSha256 };
+const archiveSha256 = pin.archiveSha256;
+const lockfileSha256 = pin.lockSha256;
+const lockfileRepairSha256 = gatewaySdkLockRepairSha256;
+const sourceSha256 = gatewaySdkSourceSha256;
 const componentFiles = ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"];
 const invalid = () => new Error("Gateway executor artifact does not match this release. Reinstall the gateway before loading another gateway chat.");
 /**
@@ -18,7 +20,7 @@ const invalid = () => new Error("Gateway executor artifact does not match this r
  * loopback provider, so new gateway chats can be recorded as `openai` (see docs/harness-identity.md).
  */
 export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true; executorIdentity: true }
-/** The one capability this release's gateway SDK declares: patch v2, keyed on the executor marker. */
+/** The gateway patch capability, independent of the upstream Codex version. */
 export const gatewaySdkCapability = "gateway-executor-v3";
 
 function record(value: unknown): Record<string, unknown> {
@@ -89,7 +91,7 @@ export async function gatewaySdkRuntime(packageDirectory = fileURLToPath(new URL
     receiptBytes = await readFile(receipt); metadata = JSON.parse(receiptBytes.toString("utf8"));
     version = JSON.parse(await readFile(resolve(packageDirectory, "package.json"), "utf8")).version;
   } catch { throw invalid(); }
-  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || !metadata || metadata.schemaVersion !== 1 || typeof metadata.version !== "string" || !/^\d+\.\d+\.\d+$/.test(metadata.version) || metadata.codexVersion !== "0.162.0-alpha.17.2" ||
+  if (typeof version !== "string" || !/^\d+\.\d+\.\d+$/.test(version) || !metadata || metadata.schemaVersion !== 1 || typeof metadata.version !== "string" || !/^\d+\.\d+\.\d+$/.test(metadata.version) || metadata.codexVersion !== pin.version ||
     metadata.revision !== gatewaySdkRevision || metadata.archiveSha256 !== archiveSha256 || metadata.patchSha256 !== gatewaySdkPatchSha256 ||
     metadata.lockfileSha256 !== lockfileSha256 || metadata.lockfileRepairSha256 !== lockfileRepairSha256 ||
     metadata.profile !== "release" || metadata.platform !== process.platform || metadata.arch !== process.arch ||

@@ -7,6 +7,11 @@ read_when:
 
 # Release
 
+Provider source pins can advance through the local stable-update gate before
+cutting a release. See [provider maintenance](provider-updates.md) for the daily
+schedule, generated inputs and blocked-update behavior. It never publishes or
+activates a release on its own.
+
 The native macOS control panel has a separate local bundle command,
 `npm run app:build`. See [macOS app packaging](macos-app.md) for its verified
 backend input, local installation, native tests, and distribution signing

@@ -6,6 +6,7 @@ import { hasPlanLogin } from "../auth/chatgpt.js";
 import type { ProviderConfig, ProviderKind } from "../config.js";
 import type { CatalogEntry, ManagementDependencies, ManagedModel, ManagedProvider, Prerequisite } from "./types.js";
 import { ManagementError } from "./errors.js";
+import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js";
 
 const apiKinds = new Set<ProviderKind>(["responses-api", "anthropic-api", "chat-completions-api"]);
 const cliFor: Partial<Record<ProviderKind, string>> = { "claude-subscription": "claude", "copilot-subscription": "copilot" };
@@ -60,7 +61,12 @@ async function codexDesktopAvailable(): Promise<boolean> {
   return false;
 }
 export async function cliAvailable(command: string): Promise<boolean> {
-  for (const directory of (process.env.PATH || "").split(delimiter).filter(Boolean)) try { await access(`${directory}/${command}`, constants.X_OK); return true; } catch { /* next */ }
+  let executable = command;
+  if (command === "claude" || command === "copilot") {
+    try { executable = await providerCommand(command as ProviderTool); } catch { return false; }
+  }
+  if (executable.includes("/")) return access(executable, constants.X_OK).then(() => true, () => false);
+  for (const directory of (process.env.PATH || "").split(delimiter).filter(Boolean)) try { await access(`${directory}/${executable}`, constants.X_OK); return true; } catch { /* next */ }
   return false;
 }
 
@@ -92,6 +98,7 @@ export async function managedProvider(provider: ProviderConfig, lookup: Manageme
 function loginEnvironment(type: ProviderKind, authDirectory?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
   scrubAuthOverrides(env);
+  if (type === "claude-subscription") env.DISABLE_AUTOUPDATER = "1";
   if (authDirectory) {
     if (type === "claude-subscription") env.CLAUDE_CONFIG_DIR = authDirectory;
     if (type === "copilot-subscription") env.COPILOT_HOME = authDirectory;
@@ -113,8 +120,9 @@ export async function runSubscriptionLogin(provider: ProviderConfig, deps: Manag
   const env = loginEnvironment(provider.type, provider.authDirectory);
   const args = provider.type === "claude-subscription"
     ? ["auth", "login", "--claudeai", ...(expectedEmail ? ["--email", expectedEmail] : [])]
-    : ["login", "--web-flow"];
-  await (deps.runLogin || childLogin)(command, args, env, deps.signal);
+    : ["login", "--web-flow", "--no-auto-update"];
+  const executable = await providerCommand(command as ProviderTool);
+  await (deps.runLogin || childLogin)(executable, args, env, deps.signal);
 }
 async function openBrowser(url: string): Promise<void> { await childLogin("/usr/bin/open", [url], process.env); }
 export async function childLogin(command: string, args: string[], env: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {

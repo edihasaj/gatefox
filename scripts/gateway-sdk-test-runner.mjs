@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import pin from '../src/gateway-sdk-pin.json' with { type: 'json' };
 
-export const gatewaySdkCompactionTestAggregatorSha256 = '6295182fbcad8d71b7816f6ef05ad0b27502272b7ae05975f0de686c4725d8d5';
-const originalSha256 = '93e18a32e8fe3516b741e8a079a17afabafcd494e2a2882a52056750c00f41d8';
+export const gatewaySdkCompactionTestAggregatorSha256 = pin.compactionAggregatorSha256;
+const originalSha256 = pin.originalAggregatorSha256;
 const digest = value => createHash('sha256').update(value).digest('hex');
 
 /** Run a synchronous test command with only the original compaction modules.

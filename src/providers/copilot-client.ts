@@ -5,6 +5,7 @@ import type { ProviderConfig } from "../config.js";
 import { CopilotRPC } from "./copilot-rpc.js";
 import { directoryPrefix, ensureCopilotParent, type DirectoryKind } from "./copilot-directories.js";
 import { ProviderError } from "./provider.js";
+import { providerCommand } from "../provider-tool-runtime.js";
 
 export function copilotEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -72,7 +73,8 @@ export async function openCopilot(config: ProviderConfig, signal?: AbortSignal, 
     await chmod(directory, 0o700);
     const env = copilotEnvironment(config.authDirectory);
     const tmp = join(directory, "tmp"); await mkdir(tmp, { mode: 0o700 }); env.TMPDIR = tmp;
-    rpc = entry.rpc = new CopilotRPC(env, directory);
+    const executable = await providerCommand("copilot");
+    rpc = entry.rpc = new CopilotRPC(env, directory, undefined, executable);
     if (signal?.aborted) rpc.stop();
     const connected = await rpc.request("connect");
     if (connected.protocolVersion !== 3) throw new ProviderError("unsupported_protocol", "Copilot requires verified SDK protocol version 3");

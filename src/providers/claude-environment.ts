@@ -9,6 +9,9 @@ export function claudeEnvironment(authDirectory?: string): NodeJS.ProcessEnv {
   for (const name of Object.keys(env)) {
     if (name.startsWith("ANTHROPIC_") || name === "CLAUDECODE" || name.startsWith("CLAUDE_CODE_") || name.startsWith("CLAUDE_AGENT_SDK_")) delete env[name];
   }
+  // Gateway-managed installations are promoted only after their compatibility
+  // gate passes. Do not let a CLI replace that verified tree mid-session.
+  env.DISABLE_AUTOUPDATER = "1";
   if (authDirectory) env.CLAUDE_CONFIG_DIR = authDirectory;
   return env;
 }

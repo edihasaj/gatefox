@@ -48,8 +48,8 @@ export class CopilotRPC {
   /** Whether the CLI's output is still being read: its event stream ends only once everything it wrote was read. */
   private reading = true;
   readonly exited: Promise<void>;
-  constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams) {
-    this.child = child || spawn("copilot", ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  constructor(env: NodeJS.ProcessEnv, cwd: string, child?: ChildProcessWithoutNullStreams, executable = "copilot") {
+    this.child = child || spawn(executable, ["--headless", "--stdio", "--no-auto-update", "--disable-builtin-mcps", "--no-custom-instructions", "--no-remote", "--no-remote-export", "--log-dir", cwd], { env, cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.child.stderr.resume(); this.events.on("error", () => {});
     this.exited = new Promise(resolve => this.child.once("close", () => { this.fail(new ProviderError("cli_failed", "Copilot CLI closed before completion")); resolve(); }));
     // Node reports `close` only once every stdio pipe has closed. A process outside the CLI's group can hold the CLI's output open

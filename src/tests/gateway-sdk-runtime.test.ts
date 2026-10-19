@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision, gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
+import pin from "../gateway-sdk-pin.json" with { type: "json" };
+import { gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "../gateway-sdk-build-pins.js";
 
 /** A release receipt: the parent bundle is the legacy origin, each component may name its own. */
 type ComponentReceipt = { bundleVersion: string; bundleSha256: string;
@@ -18,10 +20,10 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const executable = join(directory, "gateway-codex"); const bytes = "isolated gateway SDK fixture";
   await writeFile(executable, bytes, { mode: 0o700 });
   const receipt = join(directory, "build.json");
-  const metadata = { schemaVersion: 1, version: "0.2.21", codexVersion: "0.162.0-alpha.17.2", revision: gatewaySdkRevision,
-    archiveSha256: "25747823ea4ec852a146cbbe75d805b8df19190ca5b3fb21052d8e1cb75f2f83", patchSha256: gatewaySdkPatchSha256,
-    lockfileSha256: "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb",
-    lockfileRepairSha256: "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8",
+  const metadata = { schemaVersion: 1, version: "0.2.21", codexVersion: pin.version, revision: gatewaySdkRevision,
+    archiveSha256: pin.archiveSha256, patchSha256: gatewaySdkPatchSha256,
+    lockfileSha256: pin.lockSha256,
+    lockfileRepairSha256: gatewaySdkLockRepairSha256,
     sourceSha256: "a".repeat(64), binarySha256: createHash("sha256").update(bytes).digest("hex"), profile: "release",
     platform: process.platform, arch: process.arch, capabilities: [gatewaySdkCapability] };
   const save = (change: Record<string, unknown> = {}) => writeFile(receipt, JSON.stringify({ ...metadata, ...change }), { mode: 0o600 });
@@ -29,7 +31,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 }
 
 async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
-  const f = await fixture(t); const sourceSha256 = "aa7c3146f2ca075477dddeaa7088dc10089177b6659a953b1364f04cfd24b972";
+  const f = await fixture(t); const sourceSha256 = gatewaySdkSourceSha256;
   await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" })); await f.save({ sourceSha256 });
   for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) await writeFile(join(f.directory, name), `fixture ${name}`, { mode: 0o600 });
   const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {

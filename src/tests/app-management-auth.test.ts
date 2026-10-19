@@ -61,6 +61,7 @@ test("subscription logins isolate new provider homes, preserve Claude email hint
   });
   assert.equal(authenticated.ok, true); assert.deepEqual(draftCalls[0]?.args, ["auth", "login", "--claudeai", "--email", "person@example.test"]);
   assert.equal(draftCalls[0]?.env.CLAUDE_CONFIG_DIR, privateHome);
+  assert.equal(draftCalls[0]?.env.DISABLE_AUTOUPDATER, "1");
   for (const type of ["claude-subscription", "copilot-subscription"] as const) {
     const path = join(root, `${type}.json`); await writeFile(path, JSON.stringify({ version: 1, port: 3457, stateDirectory: state, providers: [{ id: "provider", type, models: { alias: "model" } }] }), { mode: 0o600 });
     const inspected = await handleManagement({ operation: "inspect", configPath: path }, { lookupCli: async () => true }); assert.equal(inspected.ok, true); if (!inspected.ok) continue;
@@ -69,9 +70,9 @@ test("subscription logins isolate new provider homes, preserve Claude email hint
       lookupCli: async () => true, runLogin: async (command, args, env) => { calls.push({ command, args, env }); },
     });
     assert.equal(result.ok, true); assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0]!.args, type === "claude-subscription" ? ["auth", "login", "--claudeai"] : ["login", "--web-flow"]);
+    assert.deepEqual(calls[0]!.args, type === "claude-subscription" ? ["auth", "login", "--claudeai"] : ["login", "--web-flow", "--no-auto-update"]);
     assert.equal(calls[0]!.env.ANTHROPIC_AUTH_TOKEN, undefined); assert.equal(calls[0]!.env.COPILOT_GITHUB_TOKEN, undefined);
-    if (type === "claude-subscription") assert.equal(calls[0]!.env.CLAUDE_CONFIG_DIR, undefined);
+    if (type === "claude-subscription") { assert.equal(calls[0]!.env.CLAUDE_CONFIG_DIR, undefined); assert.equal(calls[0]!.env.DISABLE_AUTOUPDATER, "1"); }
     if (type === "copilot-subscription") assert.equal(calls[0]!.env.COPILOT_HOME, undefined);
   }
 });
