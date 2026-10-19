@@ -7,78 +7,118 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
+import { assertFreeSpace, freeBytes, releaseDiskSpaceRequirements } from "./disk-space.mjs";
 
 const usage = `Usage: node scripts/e2e-app-updates.mjs --app-archive ABS --backend-archive ABS --legacy-app ABS --installed-release ABS --root ABS [--keep]`;
-const { values } = parseArgs({
-  options: {
-    "app-archive": { type: "string" }, "backend-archive": { type: "string" },
-    "legacy-app": { type: "string" }, "installed-release": { type: "string" },
-    root: { type: "string" }, keep: { type: "boolean", default: false }, help: { type: "boolean", short: "h" },
-  }, strict: true,
-});
-if (values.help) { process.stdout.write(`${usage}\n`); process.exit(0); }
-
-const required = ["app-archive", "backend-archive", "legacy-app", "installed-release", "root"];
-for (const name of required) {
-  if (!values[name] || !isAbsolute(values[name])) throw new Error(usage);
-}
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const dist = join(repo, "dist");
-const requested = Object.fromEntries(required.map(name => [name, resolve(values[name])]));
-let root = requested.root;
+let root;
 let input;
 let passed = false;
-const priorHome = process.env.HOME;
+let priorHome;
 const progress = { phase: "prepare" };
 
-try {
-  progress.phase = "validate_inputs";
-  input = await canonicalInputs(requested);
-  root = await evidenceRoot(requested.root, input);
-  progress.phase = "create_root";
-  await assertFreshPrivateRoot(root);
-  const api = await import(pathToFileURL(join(dist, "app-updates.js")).href);
-  const runtime = await import(pathToFileURL(join(dist, "app-runtime.js")).href);
-  const archive = await import(pathToFileURL(join(dist, "app-updates/archive.js")).href);
-  const github = await import(pathToFileURL(join(dist, "app-updates/github.js")).href);
-  assert.equal(typeof api.handleAppUpdate, "function");
-  assert.equal(typeof api.processPendingAppUpdate, "function");
-  assert.equal(typeof runtime.renderInstalledLauncher, "function");
-
-  progress.phase = "inspect_candidate";
-  const candidate = await inspectCandidate(input, root, archive, github.runCommand);
-  progress.phase = "copy_fixture";
-  const main = await makeFixture({ root, input, candidate, runtime, archive, command: github.runCommand, progress });
-  progress.phase = "version_order";
-  assert.ok(compareVersion(candidate.version, main.baseline.appVersion) > 0, "candidate app version is not newer");
-  assert.ok(compareVersion(candidate.version, main.baseline.installedVersion) >= 0, "candidate would downgrade CLI");
-  process.env.HOME = main.home;
-  const first = await exercise(main, api, candidate, progress);
-
-  const tamperRoot = join(root, "tamper");
-  progress.phase = "copy_tamper_fixture";
-  const tamper = await makeFixture({ root: tamperRoot, input, candidate, runtime, archive, command: github.runCommand, progress });
-  process.env.HOME = tamper.home;
-  const tampered = await exerciseTamper(tamper, api, candidate, progress);
-  process.env.HOME = main.home;
-
-  passed = true;
-  process.stdout.write(`${JSON.stringify({
-    status: "passed", version: candidate.version, source: candidate.source,
-    previousAppVersion: main.baseline.appVersion, previousBackendVersion: main.baseline.backendVersion,
-    installedReleaseVersion: main.baseline.installedVersion, installedReleaseSource: main.baseline.installedSource,
-    stagedWhileRunning: first.stagedWhileRunning, installed: first.installed,
-    retainedLegacyApp: first.retainedLegacyApp, sameVersionRejected: first.sameVersionRejected,
-    tamperRejected: tampered.tamperRejected, evidence: values.keep ? "kept" : "cleaned",
-  })}\n`);
-} catch {
-  process.exitCode = 1;
-  process.stdout.write(`${JSON.stringify({ status: "failed", phase: progress.phase, evidence: "retained", check: "app_update_fixture_failed" })}\n`);
-} finally {
-  if (priorHome === undefined) delete process.env.HOME;
-  else process.env.HOME = priorHome;
-  if (passed && !values.keep) await rm(root, { recursive: true, force: true });
+export function classifyFixtureError(error) {
+  const values = [error?.code, error?.name].filter(value => typeof value === "string");
+  if (values.includes("ENOSPC")) return "ENOSPC";
+  if (values.includes("EACCES")) return "EACCES";
+  if (values.includes("ERR_ASSERTION") || values.includes("AssertionError")) return "assertion";
+  if (values.includes("COMMAND_FAILED") || values.includes("command_failed") || values.includes("CommandFailedError")) return "command_failed";
+  return "other";
 }
+
+export function fixtureCommand(command) {
+  return async (...arguments_) => {
+    try {
+      const result = await command(...arguments_);
+      if (result?.code === 0) return result;
+    } catch (error) {
+      if (error?.code === "ENOSPC") throw error;
+    }
+    throw Object.assign(new Error("Fixture command failed"), { code: "COMMAND_FAILED" });
+  };
+}
+
+function fixtureDiskIsLow(path, error) {
+  if (classifyFixtureError(error) === "ENOSPC") return true;
+  try { return freeBytes(path) < 512 * 1024 ** 2; }
+  catch { return false; }
+}
+
+async function main(argv = process.argv.slice(2)) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      "app-archive": { type: "string" }, "backend-archive": { type: "string" },
+      "legacy-app": { type: "string" }, "installed-release": { type: "string" },
+      root: { type: "string" }, keep: { type: "boolean", default: false }, help: { type: "boolean", short: "h" },
+    }, strict: true,
+  });
+  if (values.help) { process.stdout.write(`${usage}\n`); return; }
+
+  const required = ["app-archive", "backend-archive", "legacy-app", "installed-release", "root"];
+  for (const name of required) {
+    if (!values[name] || !isAbsolute(values[name])) throw new Error(usage);
+  }
+  const requested = Object.fromEntries(required.map(name => [name, resolve(values[name])]));
+  root = requested.root;
+  priorHome = process.env.HOME;
+  try {
+    progress.phase = "validate_inputs";
+    input = await canonicalInputs(requested);
+    root = await evidenceRoot(requested.root, input);
+    progress.phase = "create_root";
+    await assertFreshPrivateRoot(root);
+    const api = await import(pathToFileURL(join(dist, "app-updates.js")).href);
+    const runtime = await import(pathToFileURL(join(dist, "app-runtime.js")).href);
+    const archive = await import(pathToFileURL(join(dist, "app-updates/archive.js")).href);
+    const github = await import(pathToFileURL(join(dist, "app-updates/github.js")).href);
+    assert.equal(typeof api.handleAppUpdate, "function");
+    assert.equal(typeof api.processPendingAppUpdate, "function");
+    assert.equal(typeof runtime.renderInstalledLauncher, "function");
+    const command = fixtureCommand(github.runCommand);
+
+    progress.phase = "inspect_candidate";
+    assertFreeSpace(root, releaseDiskSpaceRequirements.appUpdateFixture, "App update fixture");
+    const candidate = await inspectCandidate(input, root, archive, command);
+    progress.phase = "copy_fixture";
+    const main = await makeFixture({ root, input, candidate, runtime, archive, command, progress });
+    progress.phase = "version_order";
+    assert.ok(compareVersion(candidate.version, main.baseline.appVersion) > 0, "candidate app version is not newer");
+    assert.ok(compareVersion(candidate.version, main.baseline.installedVersion) >= 0, "candidate would downgrade CLI");
+    process.env.HOME = main.home;
+    const first = await exercise(main, api, candidate, progress);
+
+    const tamperRoot = join(root, "tamper");
+    progress.phase = "copy_tamper_fixture";
+    const tamper = await makeFixture({ root: tamperRoot, input, candidate, runtime, archive, command, progress });
+    process.env.HOME = tamper.home;
+    const tampered = await exerciseTamper(tamper, api, candidate, progress);
+    process.env.HOME = main.home;
+
+    passed = true;
+    process.stdout.write(`${JSON.stringify({
+      status: "passed", version: candidate.version, source: candidate.source,
+      previousAppVersion: main.baseline.appVersion, previousBackendVersion: main.baseline.backendVersion,
+      installedReleaseVersion: main.baseline.installedVersion, installedReleaseSource: main.baseline.installedSource,
+      stagedWhileRunning: first.stagedWhileRunning, installed: first.installed,
+      retainedLegacyApp: first.retainedLegacyApp, sameVersionRejected: first.sameVersionRejected,
+      tamperRejected: tampered.tamperRejected, evidence: values.keep ? "kept" : "cleaned",
+    })}\n`);
+  } catch (error) {
+    process.exitCode = 1;
+    const failure = { status: "failed", phase: progress.phase, evidence: "retained", check: "app_update_fixture_failed",
+      errorClass: classifyFixtureError(error) };
+    if (fixtureDiskIsLow(root, error)) failure.disk = "low";
+    process.stdout.write(`${JSON.stringify(failure)}\n`);
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    if (passed && !values.keep) await rm(root, { recursive: true, force: true });
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) await main();
 
 async function assertFreshPrivateRoot(path) {
   await lstat(path).then(() => { throw new Error("root exists"); }, error => {
