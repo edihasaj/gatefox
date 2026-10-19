@@ -6,7 +6,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayToken, type GatewayConfig } from "../config.js";
-import { startClaudeDesktopInference, type NativeMessagesRunner } from "../claude-desktop-inference.js";
+import { startClaudeDesktopInference, type NativeClassifierRequest, type NativeMessagesRunner } from "../claude-desktop-inference.js";
 import type { ClaudeContextProxy } from "../claude-desktop-context-proxy.js";
 import type { GatewayServer } from "../server.js";
 
@@ -39,6 +39,8 @@ function stageOne(overrides: Record<string, unknown> = {}): Record<string, unkno
 
 async function fixture(runner: NativeMessagesRunner, options: {
   native?: Record<string, unknown>;
+  nativeClassifierRequest?: NativeClassifierRequest;
+  backendResponse?: (request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, bytes: Buffer) => Promise<void> | void;
   contextProxyFactory?: (provider: import("../config.js").ProviderConfig) => Promise<ClaudeContextProxy>;
   port?: number;
   tokenReader?: (stateDirectory: string) => Promise<string>;
@@ -61,6 +63,10 @@ async function fixture(runner: NativeMessagesRunner, options: {
     const backend = createServer(async (request, response) => {
       const bytes = await body(request);
       backendRequests.push({ url: request.url || "", headers: request.headers, body: bytes });
+      if (options.backendResponse) {
+        await options.backendResponse(request, response, bytes);
+        return;
+      }
       if (request.url?.startsWith("/health")) {
         response.setHeader("content-type", "application/json"); response.end(JSON.stringify({ status: "ok", active: 0 }));
       } else {
@@ -73,7 +79,8 @@ async function fixture(runner: NativeMessagesRunner, options: {
   };
   const token = await gatewayToken(state);
   const running = await startClaudeDesktopInference(gatewayConfig, nativeConfig, {
-    backendFactory, nativeRunner: runner, contextProxyFactory: options.contextProxyFactory, tokenReader: options.tokenReader,
+    backendFactory, nativeRunner: runner, nativeClassifierRequest: options.nativeClassifierRequest,
+    contextProxyFactory: options.contextProxyFactory, tokenReader: options.tokenReader,
   });
   return {
     root, state, authDirectory, gatewayConfig, nativeConfig, token, backendRequests, backendConfig: backendConfig!, running,
@@ -85,6 +92,14 @@ async function fixture(runner: NativeMessagesRunner, options: {
 const headers = (token: string) => ({
   authorization: `Bearer ${token}`, "content-type": "application/json", "x-claude-code-request-class": "auxiliary",
 });
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  const deadline = Date.now() + 500;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise<void>(resolve => setTimeout(resolve, 5));
+  }
+}
 
 test("selects only an owned native Claude alias after frontend authentication and maps its returned model", async () => {
   const calls: Array<{ payload: Record<string, unknown>; model: string; options: Parameters<NativeMessagesRunner>[2] }> = [];
@@ -250,6 +265,68 @@ test("cancels native work and returns only fixed native failure messages", async
     assert.doesNotMatch(reply, /private native details/);
     assert.equal(failed.backendRequests.length, 0);
   } finally { await failed.stop(); }
+});
+
+test("does not proxy a disconnected request after delayed classifier rejection while the frontend remains available", async () => {
+  let classifierEntered!: () => void; const classifierStarted = new Promise<void>(resolve => { classifierEntered = resolve; });
+  let releaseClassifier!: () => void; const classifierWaiting = new Promise<void>(resolve => { releaseClassifier = resolve; });
+  let backendEntered!: () => void; const backendStarted = new Promise<void>(resolve => { backendEntered = resolve; });
+  let releaseBackend!: () => void; const backendWaiting = new Promise<void>(resolve => { releaseBackend = resolve; });
+  const cancelledPayload = JSON.stringify(stageOne());
+  const f = await fixture(async (_payload, model) => nativeMessage(model), {
+    nativeClassifierRequest: async () => {
+      classifierEntered();
+      await classifierWaiting;
+      return false;
+    },
+    backendResponse: async (request, response, bytes) => {
+      if (request.url === "/v1/messages" && bytes.toString() === cancelledPayload) {
+        backendEntered();
+        await backendWaiting;
+      }
+      if (request.url?.startsWith("/health")) {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ status: "ok", active: 0 }));
+      } else {
+        response.writeHead(201, { "content-type": "application/octet-stream" });
+        response.end(bytes);
+      }
+    },
+  });
+  try {
+    const controller = new AbortController();
+    const frontResponseClosed = new Promise<void>(resolve => {
+      f.running.server.once("request", (_request, response) => response.once("close", resolve));
+    });
+    const request = fetch(`${f.url}/v1/messages`, {
+      method: "POST", headers: headers(f.token), signal: controller.signal, body: cancelledPayload,
+    });
+    await classifierStarted;
+    controller.abort();
+    await assert.rejects(request, /abort/i);
+    await frontResponseClosed;
+    releaseClassifier();
+    const outcome = await Promise.race([
+      waitFor(() => f.running.isIdle(), "frontend did not become idle").then(() => "idle"),
+      backendStarted.then(() => "backend"),
+    ]);
+    assert.equal(outcome, "idle");
+    assert.equal(f.backendRequests.length, 0);
+    assert.equal(f.running.server.listening, true);
+    assert.equal(f.running.isIdle(), true);
+    const health = await fetch(`${f.url}/health`, { headers: { authorization: `Bearer ${f.token}` } });
+    assert.equal(health.status, 200);
+    assert.deepEqual(await health.json(), { status: "ok", active: 0, nativeActive: 0 });
+    const ordinary = JSON.stringify({ model: "claude/sonnet", stream: true, messages: [], tools: [{ name: "tool" }] });
+    const proxied = await fetch(`${f.url}/v1/messages`, { method: "POST", headers: headers(f.token), body: ordinary });
+    assert.equal(proxied.status, 201);
+    assert.equal(await proxied.text(), ordinary);
+    assert.equal(f.backendRequests.length, 2);
+    assert.equal(f.backendRequests[1]!.body.toString(), ordinary);
+  } finally {
+    releaseBackend();
+    await f.stop();
+  }
 });
 
 test("close waits for an aborted native runner to settle before reporting completion", async () => {
