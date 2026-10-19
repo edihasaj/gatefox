@@ -48,7 +48,9 @@ fi
 import {writeFileSync} from 'node:fs';
 const quote=value=>"'"+value.replaceAll("'","'\\''")+"'";
 const root=process.argv[2];
-writeFileSync(process.argv[3],'#!/bin/sh\n# Managed by subscription-gateway installer\nGATEWAY_COMMAND='+quote(process.argv[3].slice(0,-4))+' GATEWAY_INSTALLED=1 exec '+quote(root+'/current/runtime/bin/node')+' '+quote(root+'/current/package/dist/cli.js')+' "$@"\n');
+const command=process.argv[3].slice(0,-4);
+const appRuntime=root+'/app-runtime';
+writeFileSync(process.argv[3],'#!/bin/sh\n# Managed by subscription-gateway installer\n# App runtime is registered by Harness Gateway.\nruntime='+quote(root+'/current/runtime/bin/node')+'\nif [ -L '+quote(appRuntime)+' ] || [ -e '+quote(appRuntime)+' ]; then\n runtime='+quote(appRuntime+'/bin/node')+'\n [ -x "$runtime" ] || { echo \'Harness Gateway app runtime is unavailable.\' >&2; exit 78; }\n PATH='+quote(appRuntime+'/bin')+':"${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"\n export PATH\nfi\nGATEWAY_COMMAND='+quote(command)+' GATEWAY_INSTALLED=1 exec "$runtime" '+quote(root+'/current/package/dist/cli.js')+' "$@"\n');
 JS
 chmod 700 "$launcher.new"
 ln -s "releases/$version" "$root/current.new-$$"

@@ -12,6 +12,11 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+The signed native app can attribute the existing gateway job to its fox identity
+without registering another job or restarting the service. See
+[macOS background identity](macos-background-item.md). This association does not
+change service ownership or replace consolidation.
+
 Preview the existing installation:
 
 ```sh

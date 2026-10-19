@@ -1,0 +1,25 @@
+{
+  "generatedAt": "2026-10-18",
+  "generator": "Deterministic ImageMagick composition; no image generation",
+  "reference": {
+    "path": "assets/brand/fox-master.png",
+    "sha256": "296846fb0ae02a1a5c7fd5f0cbdb2511a15b52f3fcfbec8af886250038b2429f"
+  },
+  "command": "sh scripts/build-macos-icon.sh",
+  "composition": "1024 px transparent canvas, parchment #F6F3EB rounded tile from (88,88) to (936,936), radius190; original fox resized776x776 centered with vertical offset -5; iconutil multi-resolution ICNS",
+  "verification": "Original master preserved. Tile inspected at1024px. ICNS includes16,32,128,256,512px at1x and2x.",
+  "derivatives": [
+    {
+      "path": "assets/brand/macos/app-icon.png",
+      "sha256": "7252a450e3d85c320a1170ccc9267e9ec953332d63a88441907834efb10c6173"
+    },
+    {
+      "path": "assets/brand/macos/AppIcon.icns",
+      "sha256": "796b0ee4b9df24a30ce43ff20d16420f666399cab777f2c814f28a84f45a63a2"
+    }
+  ],
+  "surfaces": [
+    "Harness Gateway.app Dock/Finder icon",
+    "Native app fox logo"
+  ]
+}

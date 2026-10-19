@@ -7,10 +7,51 @@ read_when:
 
 # Release
 
+The native macOS control panel has a separate local bundle command,
+`npm run app:build`. See [macOS app packaging](macos-app.md) for its verified
+backend input, local installation, native tests, and distribution signing
+requirements. The CLI archive workflow below does not publish the app.
+Use the [background identity and signing workflow](macos-background-item.md) when
+shipping a Developer ID signed app and its startup launcher.
+
+## macOS app distribution
+
+Build the matching canonical CLI archive first. From a clean, committed local
+`production` checkout whose `package.json` and lockfile have the exact release
+version, run the local release orchestrator:
+
+```sh
+node scripts/release-macos-app.mjs \
+  --backend-archive /absolute/harness-gateway-VERSION-macos-arm64.tar.gz \
+  --backend-sha256 LOWERCASE_SHA256 \
+  --identity DEVELOPER_ID_SHA1 \
+  --keychain /absolute/signing.keychain-db \
+  --profile asc-notary
+```
+
+It verifies the canonical backend archive and production source, builds, signs,
+notarizes, assesses Gatekeeper, extracts the final signed ZIP for the runtime
+check, and writes immutable release assets under
+`.state/app-release/VERSION`. It does not publish by default.
+
+After reviewing that stage, repeat the same command with `--publish`. Publishing
+requires `origin/production` to resolve exactly to the current HEAD, creates
+`app-vVERSION` as a draft, uploads the ZIP, backend archive, `app-update.json`,
+and `SHA256SUMS`, verifies every GitHub-reported digest and size, then publishes
+the draft. An existing release or any failed draft verification is left
+untouched. This command never enables or dispatches GitHub Actions; follow the
+[CI cost policy](ci-cost-policy.md) for the separate paid native workflow.
+See [macOS app updates](macos-updates.md) for daily client activation and
+rollback behavior.
+
 The installer contains the compiled package and official Node 24.21.0 runtime.
 The runtime archive is pinned to its published SHA-256 digest. Node's license
 travels with it. No provider credentials, test output, or local configuration
 belongs in the release archive.
+When a signed native app registered the installation's `app-runtime`, the command
+wrapper uses that app-owned Node while continuing to load the selected installed
+JavaScript. Installing a CLI update preserves the registration. See
+[Node and tool permissions](macos-background-item.md#node-and-tool-permissions).
 
 1. Choose the next version with `npm run version:next`. The patch tops out at 9: after
    `x.y.9` the next release is `x.(y+1).0`, and the minor keeps counting, so `0.9.9`
