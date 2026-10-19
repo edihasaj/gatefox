@@ -268,7 +268,7 @@ reply, not an automatic-compaction failure. An unchanged repeat then passed at
 recall before and after restart, after trimming surrounding whitespace. The repeat does not qualify
 first-attempt reliability. An isolated content-path probe also confirmed that
 all visible upstream answer text reached the native client unchanged; its
-strict comparison failed only because the correct marker had trailing whitespace.
+strict comparison failed only because the correct marker had surrounding whitespace.
 
 An isolated native-engine cancellation proof uses the deployed adapter,
 inference frontend, gateway, provider, and context proxy with a controlled HTTP
