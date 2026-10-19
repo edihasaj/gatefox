@@ -63,7 +63,7 @@ export function inferenceContext(headers: Headers, body?: unknown): InferenceCon
     const header = turnMetadata(headers["x-codex-turn-metadata"], 16 * 1024);
     const fromBody = header.turnId && header.requestKind ? {} : turnMetadata(metadata["x-codex-turn-metadata"], 1024 * 1024);
     const context: InferenceContext = {
-      sessionId: routingId(headers["session-id"]) ?? routingId(headers["session_id"]) ?? routingId(metadata.session_id),
+      sessionId: routingId(headers["session-id"]) ?? routingId(headers["session_id"]) ?? routingId(headers["x-opencode-session"]) ?? routingId(metadata.session_id),
       threadId: routingId(headers["thread-id"]) ?? routingId(headers["thread_id"]) ?? routingId(metadata.thread_id),
       turnId: header.turnId ?? routingId(metadata.turn_id) ?? fromBody.turnId,
       windowId: windowId(headers["x-codex-window-id"]) ?? windowId(metadata["x-codex-window-id"]),

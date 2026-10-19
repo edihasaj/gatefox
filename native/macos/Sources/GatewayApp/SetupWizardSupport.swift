@@ -17,6 +17,28 @@ enum WizardStep: Int {
     var progress: String { self == .welcome ? "START" : self == .finish ? "DONE" : "STEP \(rawValue) OF 4" }
 }
 
+enum APIFormat: String, CaseIterable, Identifiable {
+    case responses
+    case chatCompletions
+    case anthropic
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .responses: "Responses"
+        case .chatCompletions: "Chat Completions"
+        case .anthropic: "Anthropic"
+        }
+    }
+    var backendType: String {
+        switch self {
+        case .responses: "responses-api"
+        case .chatCompletions: "chat-completions-api"
+        case .anthropic: "anthropic-api"
+        }
+    }
+}
+
 enum ProviderChoice: String, CaseIterable, Identifiable {
     case claude = "claude-subscription"
     case codex = "codex-subscription"
@@ -24,6 +46,10 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
     case responsesAPI = "responses-api"
     case anthropicAPI = "anthropic-api"
     case localOpenAI = "chat-completions-api"
+    case grokAPI = "grok-api"
+    case openCodeConsole = "opencode-console"
+    case openCodeGo = "opencode-go"
+    case openRouter = "openrouter"
 
     var id: String { rawValue }
     var title: String {
@@ -34,10 +60,25 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         case .responsesAPI: "Responses API"
         case .anthropicAPI: "Anthropic API"
         case .localOpenAI: "Local OpenAI-compatible"
+        case .grokAPI: "Grok API"
+        case .openCodeConsole: "OpenCode Console"
+        case .openCodeGo: "OpenCode Go"
+        case .openRouter: "OpenRouter"
         }
     }
     var detail: String { isSubscription ? "Use your subscription" : "Connect with an API or local server" }
-    var connectingCopy: String { isSubscription ? "Connect your subscription in browser, or use an available sign-in on this Mac." : "Enter your server address. We’ll find its available models before you save." }
+    var connectingCopy: String {
+        switch self {
+        case .grokAPI:
+            "Use an xAI API key from console.x.ai. Grok Build plan usage and its signed-in login are separate and are not used here."
+        case .openCodeConsole, .openCodeGo:
+            "Choose the API format for this connection, then enter your OpenCode API key. Add model IDs manually when its catalog is unavailable."
+        case .openRouter:
+            "Enter your OpenRouter API key. We’ll find available models before you save, or you can add model IDs manually."
+        default:
+            isSubscription ? "Connect your subscription in browser, or use an available sign-in on this Mac." : "Enter your server address. We’ll find its available models before you save."
+        }
+    }
     var symbol: String { isSubscription ? "person.crop.circle.badge.checkmark" : "server.rack" }
     var isSubscription: Bool { self == .claude || self == .codex || self == .copilot }
     var requiresEndpoint: Bool { !isSubscription }
@@ -52,14 +93,40 @@ enum ProviderChoice: String, CaseIterable, Identifiable {
         default: []
         }
     }
-    var defaultEndpoint: String {
+    var supportsAPIFormat: Bool { self == .openCodeConsole || self == .openCodeGo }
+    func effectiveBackendType(for apiFormat: APIFormat = .responses) -> String {
+        switch self {
+        case .grokAPI:
+            "responses-api"
+        case .openRouter:
+            "chat-completions-api"
+        case .openCodeConsole, .openCodeGo:
+            apiFormat.backendType
+        default:
+            id
+        }
+    }
+    func defaultEndpoint(for apiFormat: APIFormat = .responses) -> String {
         switch self {
         case .responsesAPI: "https://api.openai.com/v1"
-        case .anthropicAPI: "https://api.anthropic.com"
+        case .anthropicAPI: "https://api.anthropic.com/v1"
         case .localOpenAI: "http://127.0.0.1:11434/v1"
+        case .grokAPI: "https://api.x.ai/v1"
+        case .openRouter: "https://openrouter.ai/api/v1"
+        case .openCodeConsole:
+            switch apiFormat {
+            case .anthropic: "https://opencode.ai/inference/anthropic/v1"
+            case .responses, .chatCompletions: "https://opencode.ai/inference/openai/v1"
+            }
+        case .openCodeGo:
+            switch apiFormat {
+            case .anthropic: "https://opencode.ai/inference/go/anthropic/v1"
+            case .responses, .chatCompletions: "https://opencode.ai/inference/go/openai/v1"
+            }
         default: ""
         }
     }
+    var defaultEndpoint: String { defaultEndpoint() }
 }
 
 struct WizardNotice: View {

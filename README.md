@@ -205,6 +205,10 @@ guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci
 Adapters also exist for ordinary APIs; the current delivery
 focus is Claude, Codex, and Copilot subscriptions.
 
+Grok/xAI, OpenCode Console and Go, OpenRouter, and custom compatible APIs can
+serve models behind the same gateway. See [API provider connections](docs/api-providers.md)
+for the appropriate transport, endpoint and credentials.
+
 `chat-completions-api` supports local vLLM servers and compatible APIs through
 their native streaming endpoint. API providers accept either `credentialFile`
 (owner-only) or `apiKeyEnv`. Plain HTTP endpoints must use loopback, except that a

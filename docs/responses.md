@@ -6,6 +6,11 @@ read_when:
 
 # Responses support
 
+Grok/xAI API connections use a function-only tool bridge for caller custom and
+namespaced tools, with original identities restored on the client side and
+encrypted reasoning preserved. See [API providers](api-providers.md) for this
+compatibility route and named connection presets.
+
 This document describes the OpenAI Responses ingress. The same provider catalog
 also serves [native Anthropic Messages clients](messages.md), including Claude
 Code. Selecting an inbound protocol does not select an upstream provider.
@@ -277,8 +282,10 @@ headers. The body key passes through unchanged. For the ChatGPT subscription
 provider, the gateway also forwards those two headers. Without them, that
 endpoint did not reuse its prompt cache: identical 27k-token requests stayed at
 0 cached tokens. With them, repeats were 99.5% cached. Only well-formed
-identifiers of at most 128 characters are forwarded. Other Responses endpoints
-receive only the body key.
+identifiers of at most 128 characters are forwarded. Official OpenCode API
+routes also receive the caller's thread or session ID as `x-opencode-session`,
+along with the gateway's user agent, across all three API transports. Other
+Responses endpoints receive only the body key. See [API providers](api-providers.md).
 
 The subscription endpoint also returns `x-codex-turn-state` on a new turn (about
 780 characters, verified live), which Codex echoes on the following requests of

@@ -3,6 +3,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 
 function historicalArguments(text: string): unknown {
@@ -94,7 +95,7 @@ export class AnthropicAPI implements Provider {
     };
     attachEphemeralCacheControl(body);
     const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/messages`, {
-      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01" },
+      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01", ...apiRoutingHeaders(this.config, context) },
       body: JSON.stringify(body),
     });
     if (!response.ok) {

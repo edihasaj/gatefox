@@ -38,6 +38,12 @@ the key empty; the app stores an unused local credential to satisfy the existing
 gateway configuration contract. HTTPS servers require a supplied key.
 Servers that do not expose a model catalog support explicit model IDs.
 
+Named API presets cover Grok/xAI, OpenCode Console, OpenCode Go and OpenRouter.
+They use the existing API transports and credential storage. OpenCode connections
+select the model's native API format. See [API providers](api-providers.md) for
+endpoints, model selection and the distinction between API credits and Grok
+subscription usage.
+
 New configurations prefer loopback port 3457 and select an available loopback
 port when it is already occupied. Existing configurations retain their port.
 Creating a connection does not restart an existing service.

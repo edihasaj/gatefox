@@ -11,9 +11,11 @@ struct SetupWizardView: View {
     @State private var label = ""
     @State private var accountEmail = ""
     @State private var endpoint = ProviderChoice.responsesAPI.defaultEndpoint
+    @State private var apiFormat = APIFormat.responses
     @State private var apiKey = ""
     @State private var useExistingLogin = false
     @State private var didCommit = false
+    @State private var selectionGeneration = 0
     private let isInitialSetup: Bool
 
     init(gateway: GatewayModel, connections: GatewayConnectionsModel, isPresented: Binding<Bool>) {
@@ -46,6 +48,11 @@ struct SetupWizardView: View {
         .background(GatewayTheme.parchment)
         .interactiveDismissDisabled(true)
         .onChange(of: endpoint) { _, _ in apiKey = "" }
+        .onChange(of: apiFormat) { _, newFormat in
+            guard choice.supportsAPIFormat else { return }
+            selectionGeneration += 1
+            endpoint = choice.defaultEndpoint(for: newFormat)
+        }
         .onDisappear { apiKey = "" }
         .onExitCommand { cancel() }
     }
@@ -116,8 +123,10 @@ struct SetupWizardView: View {
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
                 ForEach(ProviderChoice.allCases) { provider in
                     Button {
+                        selectionGeneration += 1
                         choice = provider
                         endpoint = provider.defaultEndpoint
+                        apiFormat = .responses
                         useExistingLogin = false
                         apiKey = ""
                         accountEmail = ""
@@ -186,6 +195,18 @@ struct SetupWizardView: View {
 
     private var endpointFields: some View {
         VStack(alignment: .leading, spacing: 9) {
+            if choice.supportsAPIFormat {
+                Picker("Model API format", selection: $apiFormat) {
+                    ForEach(APIFormat.allCases) { format in
+                        Text(format.title).tag(format)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("wizard.api-format")
+                Text("Choose the API documented for each model. A mixed OpenCode catalog does not mean every model works through this format.")
+                    .font(GatewayTheme.body(12))
+                    .foregroundStyle(GatewayTheme.charcoal.opacity(0.58))
+            }
             TextField("Server address", text: $endpoint)
                 .gatewayInputFieldStyle()
                 .accessibilityLabel("Server address")
@@ -401,7 +422,10 @@ struct SetupWizardView: View {
 
     private func prepareConnection() {
         let selectedChoice = choice
-        var input = ProviderInput(label: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? choice.title : label.trimmingCharacters(in: .whitespacesAndNewlines), type: choice.id)
+        let selectedAPIFormat = apiFormat
+        let selectedGeneration = selectionGeneration
+        let expectedBackendType = selectedChoice.effectiveBackendType(for: selectedAPIFormat)
+        var input = ProviderInput(label: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? choice.title : label.trimmingCharacters(in: .whitespacesAndNewlines), type: expectedBackendType)
         input.baseUrl = choice.requiresEndpoint ? endpoint.trimmingCharacters(in: .whitespacesAndNewlines) : nil
         input.apiKey = choice.requiresEndpoint && !apiKey.isEmpty ? apiKey : nil
         input.useExistingLogin = choice.canReuseLogin ? useExistingLogin : nil
@@ -409,16 +433,22 @@ struct SetupWizardView: View {
         Task {
             guard await connections.prepare(input),
                   choice == selectedChoice,
-                  connections.draft?.provider.type == selectedChoice.id else { return }
+                  apiFormat == selectedAPIFormat,
+                  selectionGeneration == selectedGeneration,
+                  connections.draft?.provider.type == expectedBackendType else { return }
             if selectedChoice.isSubscription && !(selectedChoice.canReuseLogin && useExistingLogin) {
                 guard await connections.authenticate(),
                       choice == selectedChoice,
-                      connections.draft?.provider.type == selectedChoice.id else { return }
+                      apiFormat == selectedAPIFormat,
+                      selectionGeneration == selectedGeneration,
+                      connections.draft?.provider.type == expectedBackendType else { return }
             }
             let discovered = await connections.discover()
             guard discovered || selectedChoice.supportsManualModels,
                   choice == selectedChoice,
-                  connections.draft?.provider.type == selectedChoice.id else { return }
+                  apiFormat == selectedAPIFormat,
+                  selectionGeneration == selectedGeneration,
+                  connections.draft?.provider.type == expectedBackendType else { return }
             step = .models
         }
     }

@@ -13,6 +13,8 @@ import { telemetry } from "../telemetry.js";
 import { reasoningScope } from "../protocol/reasoning-state.js";
 import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
 import { plaintextCollaborationTransport, subscriptionCollaborationTransport } from "../protocol/collaboration-transport.js";
+import { apiRoutingHeaders } from "./api-routing.js";
+import { grokToolBridge } from "./grok-tools.js";
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
@@ -135,9 +137,10 @@ export class ResponsesAPI implements Provider {
     const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}),
       ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
     const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
-    const outgoing = collaborationTransport.body;
+    const grokTools = !plan ? grokToolBridge(this.config, request, collaborationTransport.body) : undefined;
+    const outgoing = grokTools?.body || collaborationTransport.body;
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(outgoing) });
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context) : {}), ...routing }, body: JSON.stringify(outgoing) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
@@ -194,6 +197,7 @@ export class ResponsesAPI implements Provider {
       const value = toolInput(item), arguments_ = value.input;
       if (item.status !== undefined && item.status !== "completed") throw invalid();
       if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
+      if (grokTools && !grokTools.validCustomEnvelope(value.responseTool, arguments_)) throw invalid();
       matchesPending(value);
       const signature = JSON.stringify([item.type, item.name, value.namespace, arguments_, value.encryptedArgs]);
       const previous = calls.get(value.id);
@@ -219,6 +223,7 @@ export class ResponsesAPI implements Provider {
       return [{ type: "native-item", item }];
     };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
+      item = grokTools?.restoreItem(item) || item;
       if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
         // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
         if (interrupted && item.status !== "completed") return [];
@@ -242,7 +247,7 @@ export class ResponsesAPI implements Provider {
       observeResponsesStream(stream, event);
       if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
       if (event.type === "response.output_item.added") {
-        const item = event.item as Record<string, unknown>;
+        const item = grokTools?.restoreItem(event.item as Record<string, unknown>) || event.item as Record<string, unknown>;
         if (item?.type === "message") output.added(item);
         if (item?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item };
         // Encryption metadata is an explicit transport fact. Record it at the

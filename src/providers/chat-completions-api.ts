@@ -3,6 +3,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
@@ -162,8 +163,9 @@ export class ChatCompletionsAPI implements Provider {
       caller.throwIfAborted();
       let response: Response;
       try {
-        response = this.tailnet ? await this.tailnet(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body, signal })
-          : await fetch(url, { method: "POST", redirect: "error", headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body, signal });
+        const headers = { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiRoutingHeaders(this.config, context) };
+        response = this.tailnet ? await this.tailnet(url, { method: "POST", headers, body, signal })
+          : await fetch(url, { method: "POST", redirect: "error", headers, body, signal });
       } catch (error) {
         if (deadline?.aborted && !caller.aborted) throw timeoutError();
         throw error;
