@@ -4,7 +4,11 @@ import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { gatewaySdkPatchSha256, gatewaySdkRevision, gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
+import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision, gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
+
+/** A release receipt: the parent bundle is the legacy origin, each component may name its own. */
+type ComponentReceipt = { bundleVersion: string; bundleSha256: string;
+  components: { gatewaySdk: { buildVersion: string; sourceSha256: string; files: { name: string; size: number; sha256: string }[]; origin?: { bundleVersion: string; bundleSha256: string } } } };
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const root = await mkdtemp(join(tmpdir(), "gateway-sdk-runtime-"));
@@ -19,20 +23,21 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
     lockfileSha256: "49575eeb44a747925fd1acef51bff88316f728b77d7f63d989835c8623c344cb",
     lockfileRepairSha256: "a810a345d59038b785e4be8cb3fc979ce3e49e28f3888aaebb8b689dce3ca2b8",
     sourceSha256: "a".repeat(64), binarySha256: createHash("sha256").update(bytes).digest("hex"), profile: "release",
-    platform: process.platform, arch: process.arch, capabilities: ["selected-model-compaction-v1"] };
+    platform: process.platform, arch: process.arch, capabilities: [gatewaySdkCapability] };
   const save = (change: Record<string, unknown> = {}) => writeFile(receipt, JSON.stringify({ ...metadata, ...change }), { mode: 0o600 });
   await save(); return { root, directory, executable, receipt, metadata, save };
 }
 
 async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
-  const f = await fixture(t); const sourceSha256 = "66c1dec57d10efb9f18bd480786b88f4fba0f9922263b1bc34c341f5a6c720a9";
+  const f = await fixture(t); const sourceSha256 = "ebab4827d4410db13581634f192ecec034a6741253b6ef4c90cfcb935b01bb99";
   await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" })); await f.save({ sourceSha256 });
   for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) await writeFile(join(f.directory, name), `fixture ${name}`, { mode: 0o600 });
   const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {
     const bytes = await readFile(join(f.directory, name)); return { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
   }));
-  const release = { version: "0.2.24", reusedComponents: { bundleVersion: f.metadata.version, bundleSha256: "b".repeat(64),
-    components: { gatewaySdk: { buildVersion: f.metadata.version, sourceSha256, files } } } };
+  const release: { version: string; reusedComponents: ComponentReceipt } = { version: "0.2.24",
+    reusedComponents: { bundleVersion: f.metadata.version, bundleSha256: "b".repeat(64),
+      components: { gatewaySdk: { buildVersion: f.metadata.version, sourceSha256, files } } } };
   const releasePath = join(f.root, "release.json"); const saveRelease = (value = release) => writeFile(releasePath, JSON.stringify(value), { mode: 0o600 });
   await saveRelease(); return { ...f, release, releasePath, saveRelease };
 }
@@ -42,9 +47,10 @@ test("legacy packages omit the separately built gateway SDK", async t => {
   assert.equal(await gatewaySdkRuntime(root), undefined);
 });
 
-test("matching release receipt proves gateway compaction capability", async t => {
+test("matching release receipt proves the gateway executor capability: selected-model compaction and the openai alias", async t => {
   const f = await fixture(t);
-  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true });
+  assert.equal(gatewaySdkCapability, "gateway-executor-v2");
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
 });
 
 test("present but incomplete or changed binaries fail closed", async t => {
@@ -60,7 +66,9 @@ test("foreign revision, patch, release, platform and capabilities are refused", 
   for (const change of [{ revision: "b".repeat(40) }, { patchSha256: "b".repeat(64) }, { version: "0.2.19" },
     { lockfileSha256: "b".repeat(64) }, { lockfileRepairSha256: "b".repeat(64) },
     { platform: "foreign" }, { arch: "foreign" }, { profile: "dev" }, { capabilities: [] },
-    { capabilities: ["selected-model-compaction-v1", "other"] }, { sourceSha256: "invalid" }]) {
+    { capabilities: [gatewaySdkCapability, "other"] }, { sourceSha256: "invalid" },
+    // An SDK built with patch v1 compacts on the selected model but cannot serve openai as the gateway.
+    { capabilities: ["selected-model-compaction-v1"] }]) {
     await f.save(change); await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/);
   }
 });
@@ -76,7 +84,7 @@ test("writable receipts or executables and executable symlinks are refused", asy
 
 test("an explicitly verified reused SDK accepts an unchanged foreign-version component", async t => {
   const f = await reusedFixture(t);
-  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true });
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
   assert.equal(JSON.parse(await readFile(f.receipt, "utf8")).version, f.metadata.version);
 });
 
@@ -126,4 +134,25 @@ test("reuse does not relax SDK revision, patch, platform, profile, capability or
   const receipt = await readFile(f.receipt); const file = release.reusedComponents.components.gatewaySdk.files.find(entry => entry.name === "build.json")!;
   file.size = receipt.length; file.sha256 = createHash("sha256").update(receipt).digest("hex"); await f.saveRelease(release);
   await assert.rejects(gatewaySdkRuntime(f.root), /does not match/);
+});
+
+test("a reused component origin wins over the parent bundle it was staged from", async t => {
+  const f = await reusedFixture(t); const release = structuredClone(f.release);
+  // The relay came from its own newer bundle, so the parent receipt no longer describes this component's origin.
+  release.reusedComponents.bundleVersion = "0.2.19"; release.reusedComponents.bundleSha256 = "c".repeat(64);
+  release.reusedComponents.components.gatewaySdk.origin = { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64) };
+  await f.saveRelease(release);
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  const malformed: unknown[] = [{ bundleVersion: f.metadata.version }, { bundleSha256: "d".repeat(64) }, { bundleVersion: "0.2.19", bundleSha256: "d".repeat(64) },
+    { bundleVersion: f.metadata.version, bundleSha256: "not-a-digest" }, { bundleVersion: null, bundleSha256: "d".repeat(64) },
+    null, "0.2.23", { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64), extra: 1 }];
+  for (const origin of malformed) {
+    const value = structuredClone(f.release);
+    value.reusedComponents.components.gatewaySdk.origin = origin as never; await f.saveRelease(value);
+    await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, `origin ${JSON.stringify(origin)}`);
+  }
+  // No origin at all still resolves the parent receipt, so a release built before per-component origins keeps working.
+  const legacy = structuredClone(f.release); delete legacy.reusedComponents.components.gatewaySdk.origin;
+  await f.saveRelease(legacy);
+  assert.equal((await gatewaySdkRuntime(f.root))?.binarySha256, f.metadata.binarySha256);
 });

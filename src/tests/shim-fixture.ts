@@ -6,7 +6,10 @@ import { createServer } from "node:http";
 import { modelCatalog } from "../catalog.js";
 import type { GatewayConfig } from "../config.js";
 
-export async function shimFiles() {
+export interface ShimFiles { backend: string; config: string; catalog: string; directory: string; value: GatewayConfig; nativeHome: string; env: Record<string, string | undefined>;
+  cli: string; close: () => unknown; setCatalog: (next: ReturnType<typeof modelCatalog>) => void }
+
+export async function shimFiles(options: { serve?: boolean } = {}): Promise<ShimFiles> {
   const directory = await mkdtemp(join(tmpdir(), "gateway-shim-"));
   const backend = join(directory, "codex"); const catalog = join(directory, "models.json");
   const nativeHome = join(directory, "native"); const stateDirectory = join(directory, ".state");
@@ -17,12 +20,13 @@ export async function shimFiles() {
   await writeFile(catalog, JSON.stringify({ identity: "excluded-native-cache-identity", models: [{ slug: "native", priority: 1, context_window: 800000, apply_patch_tool_type: "freeform", model_messages: { instructions_template: "original native instructions" } }] }));
   const value: GatewayConfig = { version: 1, port: 0, stateDirectory, providers: [{ id: "claude", type: "claude-subscription", models: { "claude/model": "model" } }] };
   let publicCatalog = modelCatalog(value);
-  const server = createServer((req, res) => {
+  // A test that never serves the catalog keeps a fixed port and binds nothing.
+  const server = options.serve === false ? undefined : createServer((req, res) => {
     if (req.headers.authorization !== "Bearer test-gateway-token-" + "x".repeat(32)) { res.writeHead(401); res.end(); return; }
     res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(publicCatalog));
   });
-  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); server.unref();
-  value.port = (server.address() as { port: number }).port;
+  if (server) { await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); server.unref(); value.port = (server.address() as { port: number }).port; }
+  else value.port = 3457;
   await writeFile(backend, `#!/usr/bin/env node
 const {createInterface}=require('node:readline');
 const fs=require('node:fs');const path=require('node:path');
@@ -44,10 +48,14 @@ createInterface({input:process.stdin}).on('line',line=>{
    if(thread.modelProvider==='subscription_gateway')fs.appendFileSync(path.join(home,'config.toml'),'# automatic gateway trust entry\\n');
    send({id:m.id,result:{serviceTier:null,thread,modelProvider:thread.modelProvider,model:thread.model}});
  }
- else if(m.method==='thread/read'||m.method==='thread/resume'){try{const thread=readThread(m.params.threadId);threads.set(thread.id,thread);send({id:m.id,result:{...(m.method==='thread/resume'?{serviceTier:null}:{}),thread,modelProvider:thread.modelProvider,model:thread.model}});}catch{send({id:m.id,error:{code:-32000,message:'Thread not found'}});}}
+ else if(m.method==='thread/read'||m.method==='thread/resume'){try{const saved=readThread(m.params.threadId);threads.set(saved.id,saved);
+   // A resume that names a provider or model runs with it, as the SDK applies a resume override; the saved file keeps its own.
+   const thread=m.method==='thread/resume'?{...saved,modelProvider:m.params.modelProvider||saved.modelProvider,model:m.params.model||saved.model}:saved;
+   send({id:m.id,result:{...(m.method==='thread/resume'?{serviceTier:null}:{}),thread,modelProvider:thread.modelProvider,model:thread.model}});}catch{send({id:m.id,error:{code:-32000,message:'Thread not found'}});}}
+ else if(m.method==='remoteControl/status/read')send({id:m.id,result:{transport:'engine'}});
  else if(m.method==='thread/unsubscribe'){threads.delete(m.params.threadId);send({id:m.id,result:{status:'unsubscribed'}});send({method:'thread/closed',params:{threadId:m.params.threadId}});}
  else if(m.method==='turn/start'){pending=m;send({id:m.id,method:'item/commandExecution/requestApproval',params:{threadId:m.params.threadId,turnId:'turn',itemId:'command'}});}
- else if(m.method==='engine/info')send({id:m.id,result:{pid:process.pid,home,stepModelSwitching:overrides['features.step_model_switching']===true,catalog:overrides.model_catalog_json?JSON.parse(fs.readFileSync(overrides.model_catalog_json,'utf8')).models.map(model=>({slug:model.slug,context:model.context_window})):[],primaryAuthPresent:fs.existsSync(path.join(home,'auth.json'))}});
+ else if(m.method==='engine/info')send({id:m.id,result:{pid:process.pid,home,remoteControlDisabled:process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED==='1',stepModelSwitching:overrides['features.step_model_switching']===true,catalog:overrides.model_catalog_json?JSON.parse(fs.readFileSync(overrides.model_catalog_json,'utf8')).models.map(model=>({slug:model.slug,context:model.context_window})):[],primaryAuthPresent:fs.existsSync(path.join(home,'auth.json'))}});
  else if(m.method==='crash')process.exit(7);
  else send({id:m.id,result:{}});
 });
@@ -55,5 +63,5 @@ createInterface({input:process.stdin}).on('line',line=>{
   const config = join(directory, "gateway.json"); await writeFile(config, JSON.stringify(value), { mode: 0o600 });
   return { backend, config, catalog, directory, value, nativeHome, env: { ...process.env, CODEX_HOME: nativeHome },
     cli: fileURLToPath(new URL("../cli.js", import.meta.url)),
-    close: () => server.close(), setCatalog: (next: ReturnType<typeof modelCatalog>) => { publicCatalog = next; } };
+    close: () => server?.close() ?? Promise.resolve(), setCatalog: (next: ReturnType<typeof modelCatalog>) => { publicCatalog = next; } };
 }

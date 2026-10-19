@@ -128,6 +128,44 @@ test("combined() gives the native rows the Codex 2 rule: both fields kept where 
   assert.equal(executorNativeRow(lax, rows), lax);
 });
 
+test("a carried native row has tool search off whatever the native row says", () => {
+  const searchable: Row = { ...lax, supports_search_tool: true };
+  assert.deepEqual(executorNativeRow(searchable, [searchable, reviewer], served), { ...searchable, supports_search_tool: false }, "only the search flag changes");
+  assert.equal(searchable.supports_search_tool, true, "the native row is never modified");
+  // A changed node_repl policy and the search flag apply together.
+  const strictSearch: Row = { ...strict, supports_search_tool: true };
+  const adjusted = executorNativeRow(strictSearch, [strictSearch], noReviewers);
+  assert.equal(adjusted.node_repl_disabled, true); assert.equal(adjusted.supports_search_tool, false);
+  for (const value of [false, undefined, "true", null]) {
+    const row = { ...lax, supports_search_tool: value };
+    assert.equal(Object.is(executorNativeRow(row, [row, reviewer], served), row), true, `search ${JSON.stringify(value)} is left as the row states it`);
+  }
+  for (const codeMode of modes) {
+    const combined = desktop([searchable, strict, reviewer], codeMode, sol).combined().models;
+    const nativeRows = combined.filter(row => row.slug === "gpt-6-luna" || row.slug === "gpt-6.1-sol");
+    assert.equal(nativeRows.length, 2);
+    assert.equal(nativeRows.find(row => row.slug === "gpt-6-luna")?.supports_search_tool, false, `${codeMode}: a carried row that says search is on is carried with it off`);
+    assert.equal(nativeRows.find(row => row.slug === "gpt-6.1-sol")?.supports_search_tool, undefined, `${codeMode}: a carried row that states none stays as it is`);
+  }
+});
+
+test("an alias spelled like a native slug is refused when the catalog loads, so a carried row cannot be taken over by an alias", () => {
+  const searchable: Row = { ...lax, supports_search_tool: true };
+  const other: Row = { ...strict, supports_search_tool: true };
+  const aliasOf = (type: ProviderConfig["type"], alias: string): ProviderConfig => ({ id: `p-${type}`, type, baseUrl: "https://example.invalid/v1", apiKeyEnv: "FIXTURE_KEY", models: { [alias]: "upstream" } });
+  // No route, the Codex subscription included, may own a native slug's name: it would take a sub-agent's bare model name first.
+  for (const type of ["codex-subscription", "responses-api", "chat-completions-api", "anthropic-api", "claude-subscription", "copilot-subscription"] as const) {
+    for (const codeMode of modes) {
+      assert.throws(() => desktop([searchable, other, reviewer], codeMode, sol, aliasOf(type, "gpt-6-luna")), /A gateway model alias collides with a native model ID/, `${type}, ${codeMode}`);
+    }
+  }
+  // An alias that only resembles a slug is not refused, and the carried rows still have search off.
+  const searchOf = (rows: Row[], ...providers: ProviderConfig[]) =>
+    Object.fromEntries(desktop(rows, true, ...providers).combined().models.slice(0, rows.length).map(row => [row.slug, row.supports_search_tool]));
+  assert.deepEqual(searchOf([searchable, other], sol, aliasOf("responses-api", "api/gpt-6-luna")), { "gpt-6-luna": false, "gpt-6.1-sol": false });
+  assert.equal(searchable.supports_search_tool, true, "the native row is never modified");
+});
+
 test("guardian shapes decide review the same way through withNativeRow, executorNativeRow and nodeReplFallback, whether code mode is on or off", () => {
   // [guardian, node_repl_disabled, node_repl_auto_review_required] -> [Codex 2 row, native row in the executor catalog, fallback row]
   type Case = [unknown, boolean, boolean, object, object, object, string];

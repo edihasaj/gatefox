@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/harness-gateway",
-  "version": "0.4.1",
+  "version": "0.5.4",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
@@ -24,27 +24,39 @@
     "dist/protocol/*.d.ts",
     "dist/app-management/*.js",
     "dist/app-management/*.d.ts",
+    "dist/app-updates/*.js",
+    "dist/app-updates/*.d.ts",
     "dist/app-background/*.js",
     "dist/app-background/*.d.ts",
     "LICENSE",
     "scripts/codex-desktop-shim",
+    "scripts/e2e-fast-mode.mjs",
     "README.md",
-    "docs"
+    "docs",
+    "scripts/claude-desktop-adapter.mjs",
+    "scripts/claude-desktop-optional-tools.mjs",
+    "scripts/claude-desktop-native-messages.mjs"
   ],
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
-    "test": "node --test dist/tests/*.test.js",
+    "test": "node scripts/run-tests.mjs && npm run test:claude-desktop",
     "app:build": "node scripts/build-macos-app.mjs",
     "app:sign": "node scripts/sign-macos-app.mjs",
     "app:test": "node scripts/test-macos-app.mjs",
     "app:e2e": "node scripts/e2e-app-wizard.mjs",
+    "app:release": "node scripts/release-macos-app.mjs",
     "version:next": "node scripts/release-version.mjs",
-    "start": "node dist/cli.js serve"
+    "start": "node dist/cli.js serve",
+    "test:claude-desktop": "node --test scripts/claude-desktop-tests/*.test.mjs"
   },
   "engines": {
     "node": ">=22"
   },
+  "os": [
+    "darwin",
+    "linux"
+  ],
   "devDependencies": {
     "@types/node": "^22.10.7",
     "@types/ws": "8.18.2",

@@ -1,8 +1,28 @@
 use codex_app_server_transport::RemoteControlHandle;
 use serde_json::{Value, json};
 
+/// The only methods the relay answers itself, from the SDK's remote-control handle. Every other client
+/// request, `thread/list` and `model/list` included, goes to the gateway's app-server router in the
+/// session's child, so the phone sees the router's chat list and its routing.
+pub const RELAY_METHODS: [&str; 7] = [
+    "remoteControl/status/read",
+    "remoteControl/enable",
+    "remoteControl/disable",
+    "remoteControl/pairing/start",
+    "remoteControl/pairing/status",
+    "remoteControl/clients/list",
+    "remoteControl/clients/revoke",
+];
+
+pub fn answers(method: &str) -> bool {
+    RELAY_METHODS.contains(&method)
+}
+
 pub async fn response(handle: &RemoteControlHandle, request: &Value) -> Option<Value> {
     let method = request.get("method")?.as_str()?;
+    if !answers(method) {
+        return None;
+    }
     let id = request.get("id")?;
     let params = request.get("params").cloned().unwrap_or(json!({}));
     let result: Result<Value, String> = match method {

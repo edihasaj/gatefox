@@ -3,11 +3,12 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { modelCatalog } from "./catalog.js";
-import { readClientToken, writePrivateJson, type GatewayConfig } from "./config.js";
+import { readClientToken, unscopedAliasCount, validateAliasesAgainstNative, writePrivateJson, type GatewayConfig } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata } from "./model-service-tiers.js";
 import { executorNativeRow, executorRunsCodeMode, noReviewers, nodeReplFallback, upstreamSlugField, withFallback, withNativeRow } from "./codex-native-rows.js";
 import { readAutoReviewAdvertisement } from "./auto-review.js";
+import { telemetry } from "./telemetry.js";
 
 export interface DesktopCatalogSnapshot { models: Message[]; revision: string; path: string }
 const maxCatalogBytes = 1024 * 1024;
@@ -57,6 +58,15 @@ function publicModels(value: unknown, native: Message[]): Message[] {
   });
 }
 
+/** The alias warning is written once per process, not once per desktop connection. */
+let unscopedWarned = false;
+function warnUnscopedAliases(config: GatewayConfig): void {
+  const count = unscopedAliasCount(config);
+  if (!count || unscopedWarned) return;
+  unscopedWarned = true; telemetry("gateway_alias_unscoped", { count });
+  process.stderr.write(`gateway: ${count} model alias${count === 1 ? " has" : "es have"} no "/" (such as claude/sonnet); a native model added later with the same name would take its place\n`);
+}
+
 function sourceIdentity(port: number, token: string): string {
   const credential = createHash("sha256").update(token).digest("hex");
   return createHash("sha256").update(`catalog-v1\0http://127.0.0.1:${port}\0${credential}`).digest("hex");
@@ -73,7 +83,12 @@ export class DesktopCatalog {
   private written = false;
   // The reviewer slugs the inference host advertised when each snapshot was built; combined() applies the same set to the native rows.
   private readonly reviewers = new WeakMap<DesktopCatalogSnapshot, ReadonlySet<string>>();
+  /** The native catalog's slugs. A chat on one of these is native even when an alias of the same name existed. */
+  readonly nativeSlugs: ReadonlySet<string>;
   constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private readonly codeMode = executorRunsCodeMode()) {
+    this.nativeSlugs = new Set(native.map(model => model.slug).filter((slug): slug is string => typeof slug === "string"));
+    validateAliasesAgainstNative(config, this.nativeSlugs);
+    warnUnscopedAliases(config);
     this.value = this.snapshot(modelCatalog(config).models);
   }
   initialize(): Promise<void> { return this.initialized ||= this.restore(); }
@@ -119,8 +134,12 @@ export class DesktopCatalog {
    * The native rows as gateway executors load them. Sub-agents that name a native model directly use
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
-   * does not run here or no policy is stated. The reviewer row is carried unchanged, like every other
-   * row, and its review text stays the SDK's own. The native engine keeps its own catalog unchanged.
+   * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
+   * and its review text stays the SDK's own. A carried row has the tool search flag off, as a Codex 2 row does: a bare
+   * model name resolves to the Codex subscription route, which drops `tool_search` because the ChatGPT backend refuses
+   * it; an alias spelled like a native slug, which could take that name first, is refused at every gateway catalog load,
+   * checked against the native slugs read at launch.
+   * The native engine keeps its own catalog unchanged.
    */
   private executorNative(reviewers: ReadonlySet<string>): Message[] {
     return this.native.map(model => {

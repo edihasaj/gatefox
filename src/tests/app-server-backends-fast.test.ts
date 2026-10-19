@@ -31,7 +31,7 @@ test("per-connection priority executors enable fast mode without changing native
   const f = await fixture(true);
   try {
     assert.deepEqual(await f.backend.native.request("factory/info", {}), { fastMode: false, stepModelSwitching: false });
-    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" });
+    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" }, { engine: "gateway" });
     const id = (started.thread as { id: string }).id;
     assert.equal(started.serviceTier, null);
     assert.deepEqual(await f.backend.request("factory/info", { threadId: id }), { fastMode: true, stepModelSwitching: true });
@@ -46,7 +46,7 @@ test("per-connection priority executors enable fast mode without changing native
 test("per-connection executors without declared priority preserve fast-mode disabling", { timeout: 10000 }, async () => {
   const f = await fixture(false);
   try {
-    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" });
+    const started = await f.backend.request("thread/start", { model: "claude/model", modelProvider: "subscription_gateway" }, { engine: "gateway" });
     const id = (started.thread as { id: string }).id;
     assert.equal(started.serviceTier, null);
     assert.deepEqual(await f.backend.request("factory/info", { threadId: id }), { fastMode: false, stepModelSwitching: true });

@@ -53,6 +53,7 @@ function fixture() {
   const manifestFiles = [...files.map(([path]) => path), 'package/native/build.json', 'package/gateway-sdk/build.json'];
   checksums(backend, manifestFiles);
   write(join(app, 'Contents/MacOS/GatewayService'), 'service');
+  write(join(app, 'Contents/MacOS/GatewayUpdateInstaller'), 'updater');
   write(join(app, 'Contents/MacOS/GatewayApp'), 'main');
   write(join(app, 'Contents/Resources/app-build.json'), JSON.stringify({ signedForDistribution: false, build: 'fixture' }));
   return { app, backend, nativeBuild, sdkBuild };
@@ -112,9 +113,12 @@ test('uses stable identifiers and explicit Automation and Node entitlements on e
       return runner()(binary, args);
     } });
     const node = calls.find(args => args.at(-1).endsWith('/runtime/bin/node'));
+    const updater = calls.find(args => args.at(-1).endsWith('/GatewayUpdateInstaller'));
     assert.ok(node);
+    assert.ok(updater);
     const identifier = node[node.indexOf('--identifier') + 1];
     assert.equal(identifier, 'com.edihasaj.harness-gateway.node');
+    assert.equal(updater[updater.indexOf('--identifier') + 1], 'com.edihasaj.harness-gateway.updater');
     const nodeEntitlements = readFileSync(node[node.indexOf('--entitlements') + 1], 'utf8');
     assert.match(nodeEntitlements, /com\.apple\.security\.automation\.apple-events/);
     assert.match(nodeEntitlements, /com\.apple\.security\.cs\.allow-jit/);
@@ -127,6 +131,34 @@ test('uses stable identifiers and explicit Automation and Node entitlements on e
     signatures.push(calls.map(args => args[args.indexOf('--identifier') + 1]));
   }
   assert.deepEqual(signatures[0], signatures[1]);
+});
+
+test('refuses dirty production sources and mismatched update policy before signing', () => {
+  const source = 'a'.repeat(40);
+  const { app } = fixture();
+  const receiptPath = join(app, 'Contents/Resources/app-build.json');
+  writeFileSync(receiptPath, JSON.stringify({
+    appVersion: '1.2.3', backendVersion: '1.2.3', source, sourceBranch: 'production',
+    sourceModified: false, production: true, backendSha256: 'b'.repeat(64), signedForDistribution: false,
+  }));
+  write(join(app, 'Contents/Resources/update-policy.json'), JSON.stringify({
+    schemaVersion: 1, version: '1.2.3', source, branch: 'production',
+    backendAsset: 'harness-gateway-1.2.3-macos-arm64.tar.gz', backendSha256: 'b'.repeat(64),
+  }));
+  const calls = [];
+  assert.throws(() => signMacosApp(options(app), {
+    run: (binary, args) => { calls.push([binary, args]); return runner()(binary, args); },
+    runGit: args => args[0] === 'branch' ? 'production\n' : args[0] === 'status' ? ' M file\n' : `${source}\n`,
+  }), /clean matching production/);
+  assert.equal(calls.length, 0);
+  write(join(app, 'Contents/Resources/update-policy.json'), JSON.stringify({
+    schemaVersion: 1, version: '1.2.3', source, branch: 'production',
+    backendAsset: 'harness-gateway-1.2.3-macos-arm64.tar.gz', backendSha256: 'c'.repeat(64),
+  }));
+  assert.throws(() => signMacosApp(options(app), {
+    run: runner(),
+    runGit: args => args[0] === 'branch' ? 'production\n' : args[0] === 'status' ? '' : `${source}\n`,
+  }), /does not match/);
 });
 
 test('does not falsely claim signing when the final app signing or verification fails', () => {

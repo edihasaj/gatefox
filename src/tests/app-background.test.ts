@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { appResourceAncestorAllowed, canonicalPath, handleAppBackground, parseAppBackgroundArgs, runBoundedCommand, verifySignature, type AppBackgroundDependencies } from "../app-background.js";
+import { renderInstalledLauncher } from "../app-runtime.js";
+import { InstallationAborted } from "../app-runtime-lock.js";
 import type { ConfigSnapshot } from "../app-management/storage.js";
 import { serviceLabel, serviceMarker } from "../service-plan.js";
 
@@ -16,14 +18,18 @@ const encode = async (value: Record<string, unknown>) => Buffer.from(`<?xml vers
 const directory = (mode: number, uid = 0, link = false) => ({ mode, uid, isDirectory: () => true, isSymbolicLink: () => link });
 
 class Fixture {
-  root = ""; home = ""; app = ""; helper = ""; config = ""; state = ""; launcher = ""; plist = "";
+  root = ""; home = ""; app = ""; helper = ""; config = ""; state = ""; launcher = ""; plist = ""; install = "";
   async create(): Promise<this> {
     this.root = await mkdtemp(join(tmpdir(), "gateway-app-background-")); this.home = join(this.root, "home"); this.app = join(this.root, "Harness Gateway.app");
     this.helper = join(this.app, "Contents/MacOS/GatewayService"); this.config = join(this.root, "gateway.json"); this.state = join(this.root, "state");
-    this.launcher = join(this.home, ".local/bin/gateway"); this.plist = join(this.home, `Library/LaunchAgents/${serviceLabel}.plist`);
+    this.launcher = join(this.home, ".local/bin/gateway"); this.plist = join(this.home, `Library/LaunchAgents/${serviceLabel}.plist`); this.install = join(this.home, ".local/share/subscription-gateway");
     await mkdir(join(this.home, ".local/bin"), { recursive: true, mode: 0o700 }); await mkdir(join(this.home, "Library/LaunchAgents"), { recursive: true, mode: 0o700 });
-    await mkdir(join(this.app, "Contents/MacOS"), { recursive: true, mode: 0o700 }); await mkdir(join(this.app, "Contents/Resources"), { recursive: true, mode: 0o700 });
-    await writeFile(this.launcher, `#!/bin/sh\n${"# Managed by subscription-gateway installer"}\n`, { mode: 0o700 }); await chmod(this.launcher, 0o700);
+    await mkdir(join(this.app, "Contents/MacOS"), { recursive: true, mode: 0o700 }); await mkdir(join(this.app, "Contents/Resources/backend/runtime/bin"), { recursive: true, mode: 0o700 });
+    await mkdir(join(this.install, "releases/one/runtime/bin"), { recursive: true, mode: 0o700 }); await mkdir(join(this.install, "releases/one/package/dist"), { recursive: true, mode: 0o700 });
+    await writeFile(join(this.install, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 }); await writeFile(join(this.install, "releases/one/package/dist/cli.js"), "fixture", { mode: 0o600 });
+    await writeFile(join(this.install, "releases/one/runtime/bin/node"), "#!/bin/sh\nexit 0\n", { mode: 0o700 }); await writeFile(join(this.app, "Contents/Resources/backend/runtime/bin/node"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+    await symlink("releases/one", join(this.install, "current"));
+    const harness = join(this.home, ".local/bin/harness-gateway"); await writeFile(this.launcher, renderInstalledLauncher(this.install, harness), { mode: 0o700 }); await writeFile(harness, renderInstalledLauncher(this.install, harness), { mode: 0o700 }); await chmod(this.launcher, 0o700); await chmod(harness, 0o700);
     await writeFile(this.helper, "fixture", { mode: 0o700 }); await writeFile(join(this.app, "Contents/Info.plist"), JSON.stringify({ CFBundleIdentifier: "com.edihasaj.harness-gateway.app" }), { mode: 0o600 });
     return this;
   }
@@ -161,6 +167,55 @@ test("publishes only completed private backups when later serialization fails", 
   await fixture.writePlist(); const original = await readFile(fixture.plist);
   const response = await run(fixture, true, { encodePlist: async () => { throw new Error("fixture"); } }); assert.equal(response.ok, false);
   const backups = join(fixture.state, "service-backups"); const names = await readdir(backups); assert.equal(names.length, 1); assert.deepEqual(await readFile(join(backups, names[0]!)), original);
+}));
+
+test("a real runtime association rolls back when plist serialization fails", () => withFixture(async fixture => {
+  await fixture.writePlist(); const gateway = await readFile(fixture.launcher); const harness = await readFile(join(fixture.home, ".local/bin/harness-gateway"));
+  const response = await run(fixture, true, { associateRuntime: undefined, encodePlist: async () => { throw new Error("fixture"); } });
+  assert.equal(response.ok, false); await assert.rejects(lstat(join(fixture.install, "app-runtime")));
+  assert.deepEqual(await readFile(fixture.launcher), gateway); assert.deepEqual(await readFile(join(fixture.home, ".local/bin/harness-gateway")), harness);
+}));
+
+test("a post-rename plist validation failure restores the original plist and runtime publications", () => withFixture(async fixture => {
+  await fixture.writePlist(); const plist = await readFile(fixture.plist); const gateway = await readFile(fixture.launcher); const harness = await readFile(join(fixture.home, ".local/bin/harness-gateway")); let renamed = false;
+  const response = await run(fixture, true, { associateRuntime: undefined, beforeReplace: async () => { renamed = true; }, decodePlist: async bytes => {
+    if (renamed) throw new Error("post-rename decode"); return decode(bytes);
+  } });
+  assert.equal(response.ok, false); assert.deepEqual(await readFile(fixture.plist), plist); assert.deepEqual(await readFile(fixture.launcher), gateway); assert.deepEqual(await readFile(join(fixture.home, ".local/bin/harness-gateway")), harness);
+  await assert.rejects(lstat(join(fixture.install, "app-runtime")));
+}));
+
+test("SIGTERM immediately after an owned plist receipt restores the plist and runtime publications", () => withFixture(async fixture => {
+  await fixture.writePlist(); const plist = await readFile(fixture.plist); const gateway = await readFile(fixture.launcher); const harness = await readFile(join(fixture.home, ".local/bin/harness-gateway"));
+  await assert.rejects(run(fixture, true, { associateRuntime: undefined, afterReplace: async () => {
+    throw new InstallationAborted("SIGTERM");
+  } }), (error: unknown) => (error as { signal?: string }).signal === "SIGTERM");
+  assert.deepEqual(await readFile(fixture.plist), plist); assert.deepEqual(await readFile(fixture.launcher), gateway); assert.deepEqual(await readFile(join(fixture.home, ".local/bin/harness-gateway")), harness);
+  await assert.rejects(lstat(join(fixture.install, "app-runtime")));
+}));
+
+test("a concurrent plist replacement is preserved with the runtime dependencies it may reference", () => withFixture(async fixture => {
+  await fixture.writePlist(); let renamed = false; let replaced = false; const external = `${serviceMarker}\n${JSON.stringify(fixture.plistValue({ KeepAlive: false, Program: fixture.helper, AssociatedBundleIdentifiers: "com.edihasaj.harness-gateway.app" }))}`;
+  const response = await run(fixture, true, { associateRuntime: undefined, beforeReplace: async () => { renamed = true; }, decodePlist: async bytes => {
+    if (renamed && !replaced) { replaced = true; await writeFile(fixture.plist, external, { mode: 0o600 }); throw new Error("concurrent plist"); }
+    return decode(bytes);
+  } });
+  assert.equal(response.ok, false); assert.equal(await readFile(fixture.plist, "utf8"), external);
+  assert.equal((await lstat(join(fixture.install, "app-runtime"))).isSymbolicLink(), true);
+  assert.match(await readFile(fixture.launcher, "utf8"), /app-runtime/);
+}));
+
+test("previews, applies, and repeats a signed-runtime association under a quoted custom prefix", () => withFixture(async fixture => {
+  const prefix = join(fixture.root, "custom prefix ' quote"); const install = join(prefix, "share/subscription-gateway"); const launcher = join(prefix, "bin/gateway"); const harness = join(prefix, "bin/harness-gateway");
+  await mkdir(join(install, "releases/one/runtime/bin"), { recursive: true, mode: 0o700 }); await mkdir(join(install, "releases/one/package/dist"), { recursive: true, mode: 0o700 }); await mkdir(join(prefix, "bin"), { recursive: true, mode: 0o700 });
+  await writeFile(join(install, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 }); await writeFile(join(install, "releases/one/package/dist/cli.js"), "fixture", { mode: 0o600 }); await writeFile(join(install, "releases/one/runtime/bin/node"), "#!/bin/sh\nexit 0\n", { mode: 0o700 }); await symlink("releases/one", join(install, "current"));
+  await writeFile(launcher, renderInstalledLauncher(install, harness), { mode: 0o700 }); await writeFile(harness, renderInstalledLauncher(install, harness), { mode: 0o700 });
+  fixture.install = install; fixture.launcher = launcher;
+  await fixture.writePlist();
+  assert.deepEqual(await run(fixture, false, { associateRuntime: undefined }), { ok: true, result: { status: "preview", changed: false, appliesAt: "next_service_start", wouldChange: true } });
+  const applied = await run(fixture, true, { associateRuntime: undefined }); assert.equal(applied.ok, true); if (applied.ok) assert.equal(applied.result.status, "associated");
+  const repeated = await run(fixture, true, { associateRuntime: undefined }); assert.equal(repeated.ok, true); if (repeated.ok) assert.equal(repeated.result.status, "already_associated");
+  assert.deepEqual(await readFile(launcher), await readFile(harness)); assert.match(await readFile(launcher, "utf8"), /GATEWAY_COMMAND=/);
 }));
 
 test("requires matching stable Developer ID identities for app, launcher, and Node", { skip: process.platform !== "darwin" }, async () => {

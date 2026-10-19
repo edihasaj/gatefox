@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,11 +6,17 @@ import { AppServerRouter } from "../app-server-router.js";
 import type { GatewayConfig } from "../config.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { identityTest } from "./identity-cases.js";
+
+// A saved gateway chat and its engine's notifications carry the identity under test. A new chat's request names the gateway's own
+// provider (the backends record it with the connection's identity); a resume names the provider the chat was saved with.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 let notificationTimestamp = Date.now();
 const appliedSettings = (router: AppServerRouter, threadId: string, model: string, serviceTier: string | null) => router.observeNotification({
-  method: "thread/settings/updated", emittedAtMs: notificationTimestamp = Math.max(notificationTimestamp + 1, Date.now()), params: { threadId, threadSettings: { modelProvider: "subscription_gateway", model, serviceTier } },
+  method: "thread/settings/updated", emittedAtMs: notificationTimestamp = Math.max(notificationTimestamp + 1, Date.now()), params: { threadId, threadSettings: { modelProvider: gateway, model, serviceTier } },
 });
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-app-server-"));
@@ -27,7 +32,7 @@ async function fixture() {
     if (method === "model/list") return { data: [{ id: "native", model: "native", displayName: "Native", hidden: false }], nextCursor: null };
     if (method === "config/read") return { config: { model: "native", model_provider: "openai" }, origins: {}, layers: null };
     if (method === "thread/start") return { thread: { id: "test" }, modelProvider: params.modelProvider || "openai", model: params.model || "native", serviceTier: params.serviceTier ?? null };
-    if (method === "thread/read") return { thread: { id: "persisted", modelProvider: "subscription_gateway", model: "codex/model" } };
+    if (method === "thread/read") return { thread: { id: "persisted", modelProvider: gateway, model: "codex/model" } };
     if (method === "thread/resume" || method === "thread/fork") return { thread: { id: "persisted" }, modelProvider: params.modelProvider, model: params.model, serviceTier: params.serviceTier ?? null };
     if (method === "turn/start") return { turn: { id: "active" } };
     if (method === "turn/settings/update") return { status: "applied" };
@@ -71,7 +76,7 @@ test("native chat never receives a gateway alias and persisted gateway chats ret
   await assert.rejects(router.request("turn/start", { threadId: "test", model: "native", collaborationMode: { settings: { model: "claude/model" } } }), /Start a new chat/);
   assert.equal(calls.length, count);
   await router.request("thread/resume", { threadId: "persisted" });
-  assert.equal(calls.at(-1)!.params.modelProvider, "subscription_gateway");
+  assert.equal(calls.at(-1)!.params.modelProvider, gateway, "a resume names the provider the chat was saved with, so its record is never rewritten");
   assert.equal(calls.at(-1)!.params.model, "codex/model");
 });
 
@@ -85,8 +90,9 @@ test("live settings keep provider boundaries and forward thread controls unchang
   assert.equal(calls.length, count);
   await router.request("thread/start", { model: "claude/model" });
   const params = { threadId: "test", model: "codex/model", approvalPolicy: "never", sandboxPolicy: { type: "dangerFullAccess" }, effort: "high" };
+  const sent = structuredClone(params);
   await router.request("thread/settings/update", params);
-  assert.deepEqual(calls.at(-1)!.params, params);
+  assert.deepEqual(calls.at(-1)!.params, sent);
   await appliedSettings(router, "test", "codex/model", null);
   await router.request("thread/resume", { threadId: "test" });
   assert.equal(calls.at(-1)!.params.model, "codex/model");
@@ -97,9 +103,11 @@ test("steering and goal operations retain their active-turn and authorization fi
   const { router, calls } = await fixture();
   await router.request("thread/start", { model: "claude/model" });
   const steer = { threadId: "test", expectedTurnId: "active", input: [{ type: "text", text: "changed direction" }], clientUserMessageId: "client-message" };
-  await router.request("turn/steer", steer); assert.deepEqual(calls.at(-1)!.params, steer);
+  const sentSteer = structuredClone(steer);
+  await router.request("turn/steer", steer); assert.deepEqual(calls.at(-1)!.params, sentSteer);
   const goal = { threadId: "test", objective: "fixture objective", status: "paused", origin: "user", tokenBudget: 10000 };
-  await router.request("thread/goal/set", goal); assert.deepEqual(calls.at(-1)!.params, goal);
+  const sentGoal = structuredClone(goal);
+  await router.request("thread/goal/set", goal); assert.deepEqual(calls.at(-1)!.params, sentGoal);
 });
 
 test("desktop config overrides select the gateway before its first turn", async () => {
@@ -138,7 +146,7 @@ test("combined native catalogs do not duplicate gateway rows", async () => {
 });
 
 
-test("native model choices are saved separately and all other native config writes are blocked", async () => {
+test("gateway defaults stay private and every other config write reaches the native engine", async () => {
   const { router, calls, directory } = await fixture();
   await router.request("config/batchWrite", { edits: [{ keyPath: "model", value: "native", mergeStrategy: "upsert" }, { keyPath: "model_reasoning_effort", value: "high", mergeStrategy: "upsert" }] });
   assert.equal(calls.length, 0);
@@ -147,8 +155,11 @@ test("native model choices are saved separately and all other native config writ
   assert.equal(calls.at(-1)!.params.model, "native");
   assert.equal((calls.at(-1)!.params.config as ObjectValue).model_reasoning_effort, "high");
   const count = calls.length;
-  await assert.rejects(router.request("config/value/write", { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" }), /managed separately/);
-  assert.equal(calls.length, count);
+  const params = { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" };
+  const sent = structuredClone(params);
+  await router.request("config/value/write", params);
+  assert.deepEqual(calls.slice(count), [{ method: "config/value/write", params: sent }], "the native write is forwarded exactly as the caller sent it");
+  assert.equal(JSON.parse(await readFile(join(directory, "desktop-preferences.json"), "utf8")).model, "native", "a native write saves no gateway default");
 });
 
 test("independent desktop connections refresh reasoning preferences and preserve unrelated writes", async () => {
@@ -210,7 +221,7 @@ test("desktop reasoning display writes persist without selecting a gateway model
   assert.deepEqual(read.desktop, { nativeOnly: true, "enabled-reasoning-efforts": efforts, "show-ultra-in-model-picker-slider": true });
 });
 
-test("desktop preference writes merge across connections and reject mixed native changes atomically", async () => {
+test("desktop preference writes merge across connections and a mixed batch saves only after its native part is allowed", async () => {
   const { router, config, directory, backend } = await fixture();
   const other = new AppServerRouter(config, backend); await other.initialize();
   await Promise.all([
@@ -221,13 +232,18 @@ test("desktop preference writes merge across connections and reject mixed native
   const before = await readFile(path, "utf8");
   const saved = JSON.parse(before);
   assert.deepEqual(saved.desktop, { "enabled-reasoning-efforts": ["high", "max"], "show-ultra-in-model-picker-slider": true });
-  await assert.rejects(router.request("config/batchWrite", { edits: [
+  await router.request("config/batchWrite", { edits: [
     { keyPath: "desktop.enabled-reasoning-efforts", value: ["low"], mergeStrategy: "replace" },
     { keyPath: "sandbox_mode", value: "danger-full-access", mergeStrategy: "upsert" },
-  ] }), /native configuration/);
-  assert.equal(await readFile(path, "utf8"), before);
+  ] });
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true });
+  await assert.rejects(router.request("config/batchWrite", { edits: [
+    { keyPath: "desktop.enabled-reasoning-efforts", value: ["medium"], mergeStrategy: "replace" },
+    { keyPath: "model_providers.subscription_gateway.base_url", value: "http://127.0.0.1:3457/v1", mergeStrategy: "upsert" },
+  ] }), /cannot be saved into native Codex configuration/);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true }, "a refused mixed batch saves nothing");
   await assert.rejects(router.request("config/value/write", { keyPath: "desktop.enabled-reasoning-efforts", value: ["bogus"], mergeStrategy: "replace" }), /unsupported value/);
-  assert.equal(await readFile(path, "utf8"), before);
+  assert.deepEqual(JSON.parse(await readFile(path, "utf8")).desktop, { "enabled-reasoning-efforts": ["low"], "show-ultra-in-model-picker-slider": true });
 });
 
 test("model list defaults follow valid private choices while native defaults remain intact otherwise", async () => {

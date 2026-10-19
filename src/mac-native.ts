@@ -3,15 +3,20 @@ import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { readFile, mkdir, writeFile, rename, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { nativeRelayHome } from "./native-control.js";
-import { gatewayCommand } from "./command.js";
+import { gatewayCommand, launcherName, legacyLauncherName } from "./command.js";
 import { readServicePlan } from "./service-plan.js";
 import { consolidatedStatus } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
+import { registerPlanRelay, relayCheck, unregisterPlanRelay, type PlanRelayDeps } from "./native-plan-registration.js";
+import { chatGptAppRunning } from "./native-pause.js";
+import { clearSlotHolders, type HolderDeps } from "./native-slot-holders.js";
+import { sshControlHome } from "./ssh-socket.js";
+import { configureTelemetry } from "./telemetry.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway.native";
@@ -46,12 +51,25 @@ async function enable(binary: string, args: string[]): Promise<void> {
   }
 }
 
-export async function macNative(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string } = {}): Promise<Record<string, unknown>> {
+/**
+ * Whether the installed plist is this registration. A relay started by 0.4.5 names `.../bin/gateway` in its `--gateway`
+ * argument and the same plist written now names `.../bin/harness-gateway`; both launchers run the same command, so
+ * that difference alone is not "another registration" and does not force an uninstall.
+ */
+export function sameNativeRegistration(existing: string | undefined, contents: string, command: string): boolean {
+  if (existing === contents) return true;
+  if (existing === undefined || basename(command) !== launcherName) return false;
+  const older = `<string>${xml(resolve(dirname(command), legacyLauncherName))}</string>`; const current = `<string>${xml(command)}</string>`;
+  return existing === contents.replace(current, older);
+}
+/** The side effects of a unified-plan install; a test replaces all of them so it can never reach a process, ChatGPT or launchd. */
+export type NativeOptions = { codex?: string; nativeHome?: string; planDeps?: Partial<PlanRelayDeps>; holderDeps?: HolderDeps };
+export async function macNative(action: string | undefined, configPath: string, options: NativeOptions = {}): Promise<Record<string, unknown>> {
   if (action === "status") return nativeOperation(action, configPath, options);
   const config = await loadConfig(configPath);
   return withLoginRegistrationLock(config.stateDirectory, () => nativeOperation(action, configPath, options));
 }
-async function nativeOperation(action: string | undefined, configPath: string, options: { codex?: string; nativeHome?: string }): Promise<Record<string, unknown>> {
+async function nativeOperation(action: string | undefined, configPath: string, options: NativeOptions): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["install", "status", "uninstall"].includes(action || "")) throw new Error("Choose gateway native install, status, or uninstall on macOS");
   const config = await loadConfig(configPath);
   const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || resolve(homedir(), ".codex"));
@@ -64,8 +82,17 @@ async function nativeOperation(action: string | undefined, configPath: string, o
     let relay = {}; try { relay = JSON.parse(await readFile(resolve(home, "status.json"), "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     return plan ? { service: "com.edihasaj.subscription-gateway", mode: "supervised", component: "native", ...await consolidatedStatus(config.stateDirectory), relay } : { service: label, ...await status(target), relay };
   }
-  if (plan) throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
+  // Under the unified plan, uninstall is the way out of a registered relay that cannot run: it only unregisters (see native-plan-registration.ts).
+  if (plan && action === "uninstall") return unregisterPlanRelay(config.stateDirectory);
+  if (plan && action !== "install") throw new Error("Native transport is owned by the unified service. Finish chats and uninstall that service before changing its transport registration");
   if (await readPendingLoginConsolidation(config.stateDirectory)) throw new Error("Native transport startup is staged under the unified service at next login; its separate registration was not changed");
+  // Under the unified service, install only registers the relay the service already runs (see native-plan-registration.ts).
+  if (plan) {
+    configureTelemetry(config.stateDirectory, "native-install");
+    // The SSH listeners of this native home keep their activity records under the SSH control home the adapter derives from the same config.
+    return registerPlanRelay(config.stateDirectory, plan, { appRunning: () => chatGptAppRunning(), check: (binary, args) => relayCheck(binary, args), enable,
+      clearHolders: pendingAtMs => clearSlotHolders({ configPath, sshHome: sshControlHome(configPath, nativeHome), pendingAtMs }, options.holderDeps), ...options.planDeps });
+  }
   let existing: string | undefined; try { existing = await readFile(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (existing && !existing.includes(marker)) throw new Error("Refusing to replace an unmanaged native relay service");
   if (action === "uninstall") {
@@ -83,7 +110,7 @@ async function nativeOperation(action: string | undefined, configPath: string, o
   const log = resolve(home, "service.log");
   const contents = `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${[binary, ...args, "--daemon"].map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>EnvironmentVariables</key><dict><key>PATH</key><string>${xml(paths)}</string></dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>10</integer><key>StandardOutPath</key><string>${xml(log)}</string><key>StandardErrorPath</key><string>${xml(log)}</string></dict></plist>\n`;
   const current = await status(target);
-  if (current.installed && existing !== contents) throw new Error("The native relay is running with another registration; keep it until active chats finish, then uninstall and install the new registration");
+  if (current.installed && !sameNativeRegistration(existing, contents, command.command)) throw new Error("The native relay is running with another registration; keep it until active chats finish, then uninstall and install the new registration");
   if (!current.installed) {
     const { stdout } = await exec("/bin/ps", ["-axo", "comm="]);
     if (stdout.split("\n").some(command => command.trim() === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT")) throw new Error("Quit ChatGPT normally on this test machine before activating the native adapter; it must replace the original remote transport without two hosts competing");

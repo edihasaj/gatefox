@@ -5,37 +5,50 @@ import { createInterface } from 'node:readline';
 import { Duplex } from 'node:stream';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, writeFile, access, rm, readdir, readlink, lstat, unlink, realpath } from 'node:fs/promises';
+import { join, resolve, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { connect } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
-import { selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compaction-selected-turn.mjs';
+import { resolveExpectation, selectedTurnScenarios, verifySelectedTurnRuntime } from './e2e-compaction-selected-turn.mjs';
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, root: { type: 'string' },
-  package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string', default: 'automatic' },
-  shared: { type: 'boolean', default: false },
-  codex: { type: 'string', default: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' } } });
+  package: { type: 'string' }, transports: { type: 'string', default: 'stdio,unix' }, expect: { type: 'string' },
+  shared: { type: 'boolean', default: false }, codex: { type: 'string' }, 'keep-fixture': { type: 'boolean', default: false } } });
 for (const key of ['gateway', 'root']) assert.ok(v[key], 'Missing --' + key);
-const gateway = resolve(v.gateway), root = resolve(v.root), sdk = resolve(v.codex);
-assert.ok(['automatic', 'baseline', 'selected-turn'].includes(v.expect));
+const gateway = resolve(v.gateway), root = resolve(v.root);
+const packageDirectory = resolve(v.package || join(gateway, '../..'));
+// A package that ships gateway-sdk (0.4.3 and later) compacts inside the user turn, so the only expectation it can pass is
+// `selected-turn`, which is also the default for it. `automatic` and `baseline` are for legacy packages without gateway-sdk and are
+// refused for any other. `--codex` does not change the gateway executor's SDK: the adapter runs the package's own gateway SDK.
+// The version check below needs the pinned SDK, so the signed gateway SDK the package ships is the default, not the machine's app.
+if (v.expect !== undefined && !['automatic', 'baseline', 'selected-turn'].includes(v.expect)) { console.error('--expect must be selected-turn, automatic or baseline'); process.exit(2); }
+const resolved = await resolveExpectation(packageDirectory, v.expect);
+if (resolved.error) { console.error(resolved.error); process.exit(2); }
+v.expect = resolved.expect;
+const sdk = resolve(v.codex || join(packageDirectory, 'gateway-sdk/gateway-codex'));
+assert.ok(await access(sdk).then(() => true, () => false), v.codex ? '--codex does not exist: ' + sdk : 'The package has no gateway-sdk/gateway-codex at ' + sdk + '; pass --package with an installed release or --codex with a pinned SDK');
 const transports = v.expect === 'baseline' ? ['stdio'] : v.transports.split(',');
 assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
-const packageDirectory = resolve(v.package || join(gateway, '../..'));
 const { WebSocket } = createRequire(join(packageDirectory, 'package.json'))('ws');
 assert.ok(!root.startsWith(resolve(homedir(), '.codex')));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
 assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
 await mkdir(root, { recursive: true, mode: 0o700 }); const run = await mkdtemp('/tmp/gw-compact-switch-');
-const home = join(run, 'native'), work = join(run, 'work');
-await mkdir(home, { mode: 0o700 }); await mkdir(work, { mode: 0o700 });
+const home = join(run, 'native'), work = join(run, 'work'), isolatedHome = join(run, 'home');
+await mkdir(home, { mode: 0o700 }); await mkdir(work, { mode: 0o700 }); await mkdir(isolatedHome, { mode: 0o700 });
 const proof = 'PROOF_' + randomUUID(), steerProof = 'STEER_' + randomUUID();
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
+// Every child runs under a private HOME, so the execution-host homes and receipts it makes (`$HOME/.local/state/gw-exec`, `gw-native`)
+// are inside the run folder and never in the real one. The only path that stays outside is the pinned SDK's fixed socket folder,
+// `/tmp/codex-daemon-<uid>`: the SDK hard-codes it, and a stopped host removes its own socket there (see removeRendezvousSockets).
+env.HOME = isolatedHome;
 env.GATEWAY_COMPACTION_SWITCH_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
 const results = [], requests = [], events = [], children = new Set(), timers = new Set(), clients = new Set();
-const pausedResponses = new Set(); let gatewaySdkReceipt;
+const pausedResponses = new Set(); let gatewaySdkReceipt, invalidBodies = 0;
 let phase = 'setup', mode = 'normal', blockedModel = 'mock-large';
 const save = async row => {
   results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway,
@@ -46,9 +59,33 @@ const save = async row => {
       settings: e.method === 'thread/settings/updated' ? e.params.threadSettings : undefined })) }, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(row));
 };
+/** Removes the sockets this run's execution hosts left in the SDK's fixed folder: only those its private HOME links to, and only when nothing listens. */
+async function removeRendezvousSockets() {
+  const rendezvous = join(await realpath('/tmp'), 'codex-daemon-' + process.getuid());
+  const targets = new Set();
+  const walk = async path => { for (const entry of await readdir(path, { withFileTypes: true }).catch(() => [])) {
+    const full = join(path, entry.name);
+    if (entry.isDirectory()) await walk(full);
+    else if (entry.isSymbolicLink()) { const target = resolve(dirname(full), await readlink(full).catch(() => '')); if (dirname(target) === rendezvous) targets.add(target); }
+  } };
+  await walk(isolatedHome);
+  for (const target of targets) {
+    const info = await lstat(target).catch(() => undefined); if (!info?.isSocket() || info.uid !== process.getuid()) continue;
+    const listening = await new Promise(done => { const socket = connect(target); const timer = setTimeout(() => { socket.destroy(); done(true); }, 1500);
+      socket.once('connect', () => { clearTimeout(timer); socket.destroy(); done(true); }); socket.once('error', () => { clearTimeout(timer); done(false); }); });
+    if (!listening) await unlink(target).catch(() => {});
+  }
+}
 const upstream = createServer(async (req, res) => {
-  const parts = []; for await (const bytes of req) parts.push(bytes);
-  const body = JSON.parse(Buffer.concat(parts).toString()); parts.length = 0;
+  // A client that aborts the connection mid-request (a stopped turn, a retry) leaves a short or empty body: ignore only that
+  // case instead of letting an unhandled rejection stop the fixture. A complete request with an unreadable body is a real
+  // failure: record it so the phase fails instead of passing on a request the fixture never understood.
+  let body; const parts = [];
+  try { for await (const bytes of req) parts.push(bytes); body = JSON.parse(Buffer.concat(parts).toString()); } catch {
+    if (!req.complete) { res.destroy(); return; }
+    invalidBodies += 1; requests.push({ phase, model: null, outcome: 'invalid_body' }); res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'invalid_body', message: 'Fixture could not read the request body' } })); return;
+  }
   const request = { phase, model: body.model, inputItems: body.input.length, inputBytes: Buffer.byteLength(JSON.stringify(body.input)),
     containsProof: JSON.stringify(body.input).includes(proof),
     ...(v.expect === 'selected-turn' ? { containsSteer: JSON.stringify(body.input).includes(steerProof) } : {}),
@@ -173,6 +210,9 @@ async function transcriptHasProof(id) { const read = await rpc('thread/read', { 
 const start = model => rpc('thread/start', { model, cwd: work, approvalPolicy: 'never', sandbox: 'read-only' });
 function compactItems(offset, threadId) { return events.slice(offset).filter(e => e.params?.threadId === threadId && e.params?.item?.type === 'contextCompaction'); }
 function selectedRequests(offset, model, count) { const rows = requests.slice(offset); assert.equal(rows.length, count); assert.ok(rows.every(row => row.model === model)); return rows; }
+// A failed provider response is retried by the SDK itself (one try plus five retries), so the number of attempts is the SDK's
+// choice: assert that it is within that bound and that every attempt went to the selected model.
+function selectedAttempts(offset, model) { const rows = requests.slice(offset); assert.ok(rows.length >= 1 && rows.length <= 6, 'Expected 1 to 6 attempts, saw ' + rows.length); assert.ok(rows.every(row => row.model === model)); return rows; }
 async function seedLarge(name) { phase = name; mode = 'seed-high'; const thread = await start('fixture/large');
   assert.ok((await turn(thread.thread.id, 'fixture/large', 'Seed the fixture history.')).text.includes(proof)); return thread.thread.id; }
 async function recoveredTurn(id, name, model = 'fixture/small', wireModel = 'mock-small', effort = 'low', oldModel = 'mock-large', wireEffort = effort) {
@@ -236,7 +276,7 @@ async function automatic(transport) {
   const unavailable = await seedLarge(transport + '-target-failure-seed'); phase = transport + '-selected-target-failure'; mode = 'failed-manual'; const at = requests.length;
   const failure = await rpc('turn/start', { threadId: unavailable, model: 'fixture/small', effort: 'low', input: [{ type: 'text', text: 'Unsubmitted fixture message.' }] })
     .then(value => ({ value }), error => ({ error }));
-  assert.equal(failure.error?.code, -32001); selectedRequests(at, 'mock-small', 1);
+  assert.equal(failure.error?.code, -32001); selectedAttempts(at, 'mock-small');
   const retained = await transcriptHasProof(unavailable); assert.ok(!JSON.stringify(retained.turns).includes('Unsubmitted fixture message.'));
   await save({ phase, passed: true, selectedModelFailureReturned: true, noOldProviderCalls: true, userMessageNotSubmitted: true, proofPreserved: true });
   await closeAdapter(); await open(transport); await rpc('thread/resume', { threadId: unavailable, model: 'fixture/small', cwd: work });
@@ -339,6 +379,7 @@ try {
     for (const transport of transports) await automatic(transport);
     if (v.shared) await sharedCheck();
   }
+  assert.equal(invalidBodies, 0, 'The fixture received a complete request whose body it could not read');
   assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), originalConfig);
   assert.equal(await access(join(home, 'auth.json')).then(() => true, () => false), false);
   await save({ phase: 'verification', passed: true, expectation: v.expect, transports, actualSignedSdk: true, primaryConfigRead: false, nativeConfigIsolated: true,
@@ -350,8 +391,12 @@ try {
   await Promise.allSettled([...clients].map(client => client.close()));
   const cleanup = await Promise.allSettled([...children].map(stop)); for (const timer of timers) clearTimeout(timer); timers.clear();
   upstream.closeAllConnections(); await new Promise(resolve => upstream.close(resolve));
+  await removeRendezvousSockets().catch(() => {});
   const clean = cleanup.every(row => row.status === 'fulfilled') && children.size === 0 && pausedResponses.size === 0;
   await save({ phase: 'fixture-cleanup', passed: clean, ownedProcessGroups: children.size, providerTimers: timers.size,
     ...(v.expect === 'selected-turn' ? { pausedProviderResponses: pausedResponses.size } : {}) });
   if (!clean) process.exitCode = 1;
+  // A passing run leaves nothing behind: the fixture folder holds only copies of fixture state. A failed run keeps it for diagnosis,
+  // and --keep-fixture keeps it on request.
+  else if (!process.exitCode && !results.some(row => row.passed === false) && !v['keep-fixture']) await rm(run, { recursive: true, force: true });
 }

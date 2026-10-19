@@ -21,6 +21,27 @@ Claude, Copilot and other rows, and clients without a native catalog, get no
 model-specific base prompt. Explicit and resumed client instructions remain
 authoritative.
 
+**Collaboration tool transport.** Before forwarding to a translated Responses
+provider, the gateway removes the optional `encrypted` JSON Schema marker only
+from `parameters.properties.message` on the exact `collaboration` namespace
+function tools `spawn_agent`, `send_message`, and `followup_task`. Those caller-
+executed message arguments therefore remain plaintext for a provider that cannot
+decrypt Codex transport ciphertext. On the Codex subscription route only, the
+reserved `collaboration` namespace is also given a collision-free
+`gateway_collaboration` wire alias (with underscores appended when needed) in
+top-level and `additional_tools` declarations, explicit tool choice, and replayed
+function calls/results. Upstream calls are mapped back before caller catalog
+resolution, so the caller still receives and executes `collaboration` tools. This
+is a copy-on-write transport transform: it does not change the caller request,
+tool arguments, other schemas, or encrypted output metadata. Ordinary Responses
+API routes retain the original namespace.
+
+**Response ids.** Every response id is `resp_<32 hex>`. While the usage ledger is on
+([diagnostics](diagnostics.md#usage-ledger)), responses from Copilot and Claude
+subscription routes use `resp_gl_<request id without dashes>`, the same hex as the
+`X-Request-Id` header. Usage and billing detail (cache writes, reasoning tokens,
+Copilot credits) stay in the local ledger and never appear in the response.
+
 The Claude adapter accepts text and inline-image messages, function calls and outputs, custom tool
 calls and outputs, and function/custom tools grouped in namespaces. It also accepts
 the older nested function definition format for existing Chat Completions clients.
@@ -238,6 +259,18 @@ The current adapters support text, inline images, and caller-dispatched tools. A
 hosted tools, previous-response-ID state, and every provider's full option surface
 are not supported. This is not a claim of complete Responses API compatibility.
 
+**Collaboration tool arguments.** The three caller tools
+`collaboration.spawn_agent`, `collaboration.send_message`, and
+`collaboration.followup_task` are emitted with
+`encrypted_function_args: []` when their provider-neutral arguments are plaintext.
+This is an explicit Codex transport marker, not a content heuristic, and appears on
+the added, arguments-done, final item, and final response snapshot. Other tools are
+unchanged. When a Responses upstream supplies an `encrypted_function_args` string
+array, the gateway preserves it opaquely instead; it never decrypts it or relabels it
+as plaintext. Metadata supplied at an added boundary is validated there and must
+match the later completed item or final snapshot; an early call that omits the field
+may still supply it at completion. Malformed upstream metadata fails the provider output.
+
 Codex sends a `prompt_cache_key` in the body and `session-id` and `thread-id`
 headers. The body key passes through unchanged. For the ChatGPT subscription
 provider, the gateway also forwards those two headers. Without them, that
@@ -279,7 +312,8 @@ Chat Completions providers ignore every service tier.
 Claude subscription requests map `priority` (or `fast`) to the CLI's fast mode
 setting (`--settings {"fastMode":true}`) when the model's catalog row offers Fast;
 `flex` has no Claude equivalent, so it runs the turn as Standard with no fast mode
-setting; other tiers are rejected before the CLI starts. The CLI reports its fast mode
+setting; any other tier the model does not offer (`scale`, an unknown name) is
+rejected before the CLI starts. The CLI reports its fast mode
 state. When fast mode stays on, the completion reports `priority`. When Claude
 refuses it (for example, no usage credits) and falls back to standard speed, the
 turn still completes and reports `default`.
@@ -289,12 +323,147 @@ SDK custom tools and returns their real calls before any execution. SDK reasonin
 summaries stream separately; `auto` requests a concise summary. The adapter rejects
 BYOK usage, unexpected model/provider changes, host permission requests, foreign
 tools, inconsistent final text, unsupported SDK versions, and incomplete turns.
-Cancellation stops the request's CLI process and waits for it to exit. The next
-request starts a separate session and replays caller-supplied history.
+By default the thread keeps one live CLI session, and a request sends only the
+items that are new; see [live Copilot sessions](copilot-sessions.md). Cancelling a
+live request aborts its session and kills its CLI process (about 2 seconds: the abort is bounded to
+2 seconds, then the CLI is killed and its folder removed); the
+request hands over the usage the CLI reports meanwhile and then ends. The next request
+starts a new session and sends the caller-supplied history once. Cancelling a one-shot request stops
+its CLI process and waits for it to exit; a process outside the CLI's group that keeps its output open
+delays that by half a second of silence on the CLI's output, or by at most about 5 seconds (100 ticks) when output keeps arriving, after which the gateway closes its pipes. Either way, usage the CLI reported before the
+cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry. A request a live session
+cannot serve gets its own session, with the same system message, the caller's whole tool
+catalog and one user message per history item. That happens, for example, for a request
+without a thread id; a compaction, prewarm or memory request; a second request while the
+thread's first still runs; no free slot; a session that fails to start, does not accept a
+tool result or dies before its first event; or `copilotSessions.mode: "oneshot"`. The
+[full list](copilot-sessions.md#how-a-request-is-served) names each case.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
 `flex` also runs as Standard: the request is accepted and no tier is sent to the CLI.
 Normal requests retain the selected model, reasoning, and subscription route.
+
+## Repeated tool declarations
+
+A long chat can declare the same tool more than once: in several Responses lite
+`additional_tools` input items, or in an `additional_tools` item and again in the current
+top-level `tools` list. The ChatGPT backend accepts this, so the gateway merges the
+declarations into its own catalog instead of refusing the request (`duplicate_tool`).
+
+- **Identity.** A function or custom tool is identified by its name, qualified by its
+  namespace for a namespace tool (the default `functions` namespace is unqualified, like a
+  top-level tool). Any other typed tool, such as `tool_search`, is identified by its
+  `type`. The same local name in two different namespaces stays two tools.
+- **Precedence.** The current request's top-level `tools` win over any history
+  declaration. Among `additional_tools` items a later item wins over an earlier one, and
+  within one list a later entry wins over an earlier one. An exact duplicate is dropped; a
+  differing one is replaced by the winner. A tool or its namespace keeps the position of
+  its first declaration.
+- **Scope.** Only the gateway's own catalog is merged. On the Codex route the original
+  input items still go upstream unchanged (apart from the `tool_search` drops below).
+- **Telemetry.** When anything merged, the gateway records `tool_declarations_merged` with
+  the counts `replaced` and `identical`, once per request, never a name, definition or
+  argument ([diagnostics](diagnostics.md#local-telemetry)).
+
+Malformed declarations still fail with their own reasons (`invalid_shape`,
+`unsupported_tool`) unless a valid declaration of the same tool supersedes them; only a
+repeated name no longer fails a request.
+
+## Tool search on the Codex subscription route
+
+Native Codex rows can enable `supports_search_tool`, so the client sends a `tool_search`
+tool, declares it either at the top level or inside a Responses lite `additional_tools`
+input item, and later replays `tool_search_call` and `tool_search_output` items.
+**Search is off on every gateway row.** The ChatGPT backend answers HTTP 400 when the
+gateway forwards a `tool_search` tool (seen in production on 0.4.4, where every Codex 2
+turn failed with "Provider returned HTTP 400"), so the gateway does not forward it.
+Support returns once forwarding is verified against the real backend.
+
+- **Codex subscription route.** Before sending upstream, the gateway drops any
+  `tool_search` tool, at the top level or inside an `additional_tools` item (an item left
+  with no tool is dropped too), and any `tool_search_call` or `tool_search_output` input
+  item. This covers an engine that still holds an older catalog with search on. The rest
+  of the request is unchanged and keeps its order, including `tool_choice`, so the turn
+  runs as it would without search. When anything was dropped, the gateway records
+  `tool_search_dropped` with the count of tools and items
+  ([diagnostics](diagnostics.md#local-telemetry)). If the
+  upstream ever produces a `tool_search_call` or `tool_search_output`, it still streams
+  back to the client as sent, once each; an interrupted final snapshot withholds a search
+  item whose status is not `completed`, as it does an unfinished function call.
+- **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic
+  Responses routes keep rejecting them before any provider runs: a `tool_search` tool
+  fails with `unsupported_tool`, and the two item types fail with
+  `unsupported_input_item`, both as a 400 `invalid_request`. The gateway does not
+  translate search for them. Anthropic Messages requests carry only function tools.
+- **Catalog.** `supports_search_tool` is off on every row: Codex 2 rows and the native
+  rows carried for sub-agents have it forced off, whatever the native row says, so Codex
+  does not add the tool
+  ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
+- **Ownership.** The client executes search and owns the deferred tool list. The
+  gateway never runs a search and never adds or removes deferred tools. Tool names,
+  queries and outputs are never logged; failures record only the fixed reason and the
+  allowlisted item type.
+
+## WebSocket refusals, internal fields, and control items
+
+The gateway serves `/v1/responses` over plain HTTP only. A WebSocket (or any other) upgrade
+attempt to `/v1/responses` with a valid bearer gets `HTTP/1.1 426 Upgrade Required` with no body
+and `Connection: close`. The checks run in this order: a request target that cannot be parsed
+(`GET http://[ HTTP/1.1`) gets `400`; a request with an `Origin` header gets `403`; a missing or
+wrong bearer gets `401`; an upgrade to any other path gets `404`. The refusal runs in the server's
+`upgrade` listener. On Node builds that pass upgrades to the request handler instead, that handler
+gives an upgrade to `/v1/responses` the same checks and the same 426, and serves an upgrade to any
+other path as an ordinary request; there a request counts as an upgrade only when `Connection`
+names the `upgrade` token beside an `Upgrade` header, as Node's own parser requires, so a `POST`
+with `Upgrade: h2c` is served normally. It never admits a request, changes the health admission
+counters, or invokes a provider.
+
+The upgrade listener closes the socket as soon as the refusal is flushed, and after two seconds
+at the latest if the client never reads it. A server accepts half-open sockets and applies no
+timeout once a request has asked for an upgrade, so a client that keeps its side open would
+otherwise hold the socket, and the server's `close()` with it, until the process ends.
+
+An unreadable request target on an ordinary request also gets `400` (`invalid_request`). If the
+request handler fails in a way nothing else caught, the client gets `500` (`internal_error`) while
+the response head is unsent, or the connection is cut once it is not. The failure is reported as a
+scrubbed exception and never ends the process.
+
+Recent Codex builds carry internal transport state beside the conversation. Before translation or
+any provider sees a request, the gateway removes it once in the request handler:
+`internal_chat_message_metadata_passthrough` from every input item, `encrypted_function_args` from
+`function_call` items (their plaintext `arguments` stay), and `mcp_attribution` from
+`client_metadata`; every other `client_metadata` key passes through untouched. When nothing is
+removed the parsed body is forwarded as the same object, so Responses upstreams receive
+byte-identical requests to before the strip existed. The strip covers every route, including a
+Messages request after it has been translated. Shapes that are not objects (`client_metadata`
+that is `null`, an array or a string, an input item that is `null`, a number or an array) are not
+read as maps and are left for translation to accept or reject.
+
+Two input items are executor control, not model input. A `configuration_update` item is removed
+before translation and counted in the request's telemetry record as `droppedControlItems` (a count
+only, never item content). A `compaction_trigger` item fails the request as final: streams get a
+`response.failed` with Codex's non-retryable `invalid_prompt` code and the fixed message "This
+gateway serves compaction inside the gateway executor; this Codex build sent remote compaction,
+which the gateway does not support yet."; nonstream requests get HTTP 400 `invalid_request` with
+that message. `request_failed` records `translation_reason: unsupported_compaction`, and the
+stderr `provider_failure` line and `gateway diagnostics` carry it too
+([diagnostics](diagnostics.md#local-telemetry)). Neither invokes a
+provider nor takes an admission slot, and the refusal is final. A gateway at capacity (`maxConcurrent`
+plus 32 requests in flight) answers every inference request (`/v1/responses` and `/v1/messages`)
+with a retryable `429` before reading its body,
+so an overload never buffers bodies; a compaction refused that way is retried and gets this final
+refusal once a slot is free.
+
+`/health` adds `features`: `["responses-ws-426", "openai-internal-strip", "native-identity-v1"]`,
+the behaviors this release guarantees (the exported `gatewayFeatures`), so an operator can tell an
+updated daemon from an old one without reading its code. `responses-ws-426` is the WebSocket
+refusal above. `openai-internal-strip` is the removal of internal fields and control items.
+`native-identity-v1` means this inference server accepts requests from a gateway executor that runs
+under the native `openai` provider identity: the two behaviors above, which such an executor needs,
+are both present. It describes the server only; whether executors run under that identity is a
+separate setting of the desktop adapter (`chatIdentity`, `subscription_gateway` by default). Since 0.4.7
+executors reach this server through the gateway's own provider definition even for chats recorded as
+`openai`, so they do not depend on these two behaviors; see [harness identity](harness-identity.md).
 
 ## Ordinary Anthropic API
 
@@ -414,7 +583,12 @@ update. Live sessions reseed once after an inference restart anyway, so they pay
 that same single write.
 
 Claude receives native image blocks through the official CLI's streamed input.
-Copilot receives private SDK image attachments, deleted with the request session.
+Copilot receives a history item's images as file attachments on the message that owns
+them: the gateway writes each image (mode 0600) into the CLI's private folder, which is
+removed with the session, because one RPC message to the CLI is limited to 16 MiB.
+Tool-output images travel inline as binary results of the waiting tool call while the
+result stays within 12 MiB; a larger one starts the thread's session over, which sends
+those images as files too.
 Their text conversation contains labels for image ownership and order, never the
 image bytes. Each native harness controls its own image preprocessing. Codex and
 ordinary Responses upstreams retain the original image parts and detail setting.

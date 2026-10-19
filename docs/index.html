@@ -14,7 +14,7 @@
   <a class="skip" href="#guide">Skip to guide</a>
   <aside class="sidebar" aria-label="Guide navigation">
     <a class="brand" href="#overview"><img src="assets/logo.png" width="56" height="56" alt="Harness Gateway fox"><span>Subscription<br>Gateway</span></a>
-    <div class="edition">FIELD GUIDE <span>v0.4.1</span></div>
+    <div class="edition">FIELD GUIDE <span>v0.4.8</span></div>
     <label class="search-label" for="search">Find in this guide</label>
     <input id="search" type="search" placeholder="Models, streaming, recovery…" autocomplete="off">
     <nav>
@@ -55,11 +55,11 @@
       <p>Already have a configured gateway? The <a href="macos-app.md">Harness Gateway macOS app</a> gives those settings a native control panel, with the fox in your Dock. It keeps the existing service running when you close its window.</p>
       <p>The Apple Silicon installer includes its Node runtime. It needs no repository checkout or administrator access. You need GitHub access to the private release and the signed Codex desktop app.</p>
       <p>Run these commands inside a new, empty download folder:</p>
-      <pre><code>gh release download v0.4.1 -R edihasaj/harness-gateway \
+      <pre><code>gh release download v0.4.8 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf harness-gateway-0.4.1-macos-arm64.tar.gz
-./harness-gateway-0.4.1-macos-arm64/install
+tar -xzf harness-gateway-0.4.8-macos-arm64.tar.gz
+./harness-gateway-0.4.8-macos-arm64/install
 gateway --version</code></pre>
       <p>The installer keeps versioned releases under your user installation prefix. Upgrades preserve gateway registrations. They refuse an unrelated command named <code>gateway</code>.</p>
       <details><summary>Already using a development checkout?</summary><p>Import its gateway-owned registrations into the installed data directory:</p><pre><code>gateway setup --from-config /absolute/path/gateway.local.json</code></pre><p>This refuses to overwrite an existing destination. Native Codex authentication and settings are not copied. Retire an obsolete local configuration after a successful migration; it can otherwise take precedence over the installed configuration.</p></details>
@@ -168,6 +168,7 @@ gateway uninstall</code></pre>
       <div class="table-wrap"><table><thead><tr><th>Symptom</th><th>Next step</th></tr></thead><tbody>
         <tr><td>Model not supported with a ChatGPT account</td><td>Start a new chat with the gateway model selected. A model name alone cannot switch a loaded native provider.</td></tr>
         <tr><td>Model provider <code>subscription_gateway</code> not found</td><td>Register the adapter on the computer that owns the chat's workspace, then reopen that chat.</td></tr>
+        <tr><td>A gateway chat on the phone fails with an unknown model</td><td>The Mac opted in to <code>"chatIdentity": "openai"</code> and the phone continued the chat without the native relay, on the app's own engine, which uploaded its history to OpenAI. Continue it on the Mac or through the relay, and opt in only where the relay is verified; see <a href="harness-identity.md">harness identity</a>.</td></tr>
         <tr><td>Added models missing</td><td>Run <code>gateway doctor</code> on that execution machine. Check the host, tunnel, desktop registration, and current catalog.</td></tr>
         <tr><td>Streaming closes before completion</td><td>Check daemon and connection status. Keep the failed chat and logs for diagnosis; do not silently retry on another account.</td></tr>
         <tr><td>Max or Ultra disappears</td><td>Check the model's advertised efforts and the app's enabled effort controls. Verify the active adapter version.</td></tr>
@@ -185,11 +186,12 @@ gateway service status</code></pre>
       <div class="section-number">09 / OPTIONAL</div>
       <h2>Use a separate Codex CLI home.</h2>
       <p><code>gateway codex-config</code> generates a complete configuration, not a named profile. Save it in a separate home to preserve your primary settings:</p>
-      <pre><code>gateway_cli_home="$HOME/.local/state/subscription-gateway-cli"
-mkdir -p "$gateway_cli_home"
+      <pre><code>gateway_client_root="$HOME/.config/harness-gateway/clients"
+gateway_codex_home="$gateway_client_root/codex"
+mkdir -p "$gateway_codex_home"
 gateway codex-config --model codex/gpt-6.1-sol \
-  &gt; "$gateway_cli_home/config.toml"
-CODEX_HOME="$gateway_cli_home" codex</code></pre>
+  &gt; "$gateway_codex_home/config.toml"
+CODEX_HOME="$gateway_codex_home" codex</code></pre>
       <p>This CLI home has its own history and settings. It does not inherit all native customizations. Regenerate the snapshot after changing the gateway's model selection.</p>
     </section>
     <footer><img src="assets/favicon.png" width="24" height="24" alt=""><span>Harness Gateway · Field guide<br><small>Own your setup. Keep the work moving.</small></span><a href="#overview">Back to top ↑</a></footer>

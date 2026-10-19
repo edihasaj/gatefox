@@ -12,12 +12,17 @@ import { bootoutJob } from "./launchctl.js";
 import { consolidationFailureMessage, rollbackConsolidation } from "./mac-consolidate-rollback.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { readServicePlan, serviceLabel, servicePlanPath, serviceStatusPath, validateServicePlan, type ServicePlan, type ServiceComponent } from "./service-plan.js";
+import { componentUp, nativeRegistrationEnabled } from "./native-pause.js";
 
 const exec = promisify(execFile);
 interface Job { path: string; label: string; text: string; loaded: boolean; kind: ServiceComponent["kind"]; component: ServiceComponent }
 const domain = () => `gui/${process.getuid!()}`;
 async function loaded(label: string): Promise<boolean> { try { await exec("/bin/launchctl", ["print", `${domain()}/${label}`], { timeout: 5000 }); return true; } catch { return false; } }
-const kindFor = (label: string): ServiceComponent["kind"] | undefined => label === serviceLabel ? "inference" : label === serviceLabel + ".desktop" ? "desktop" : label === serviceLabel + ".native" ? "native" : /^com\.edihasaj\.subscription-gateway\.tunnel\.[a-z][a-z0-9-]{0,63}$/.test(label) || label === serviceLabel + ".macbook-pro-2" ? "tunnel" : undefined;
+/**
+ * Which service component a LaunchAgent label is, by exact match. The login-time environment agent
+ * (`<service>.desktop-env`) is deliberately not one: it is no daemon, so it is neither collected into a plan nor retired.
+ */
+export const kindFor = (label: string): ServiceComponent["kind"] | undefined => label === serviceLabel ? "inference" : label === serviceLabel + ".desktop" ? "desktop" : label === serviceLabel + ".native" ? "native" : /^com\.edihasaj\.subscription-gateway\.tunnel\.[a-z][a-z0-9-]{0,63}$/.test(label) || label === serviceLabel + ".macbook-pro-2" ? "tunnel" : undefined;
 
 export async function collectServicePlan(configPath: string, directory = resolve(homedir(), "Library/LaunchAgents")): Promise<{ plan: ServicePlan; jobs: Job[] }> {
   const config = await loadConfig(configPath); const command = gatewayCommand();
@@ -72,16 +77,22 @@ export async function requireMaintenanceWindow(configPath: string, listProcesses
 
 /** Fixed classes naming the readiness condition that failed; they carry no paths or values. */
 export type ReadinessGap = "status_not_current" | "components_not_running" | "inference_unhealthy" | "native_relay_not_connected";
-async function readinessGap(config: { stateDirectory: string; port: number }, plan: ServicePlan, began: number): Promise<ReadinessGap | undefined> {
-  const status = await consolidatedStatus(config.stateDirectory);
-  const runtime = status.runtime as { components?: Array<{ state: string }> };
+/** The runtime snapshot and the registration receipt are injectable, so readiness can be checked without a live service. */
+export async function readinessGap(config: { stateDirectory: string; port: number }, plan: ServicePlan, began: number,
+  deps: { status?: (state: string) => Promise<Record<string, unknown>>; registered?: (state: string) => Promise<boolean> } = {}): Promise<ReadinessGap | undefined> {
+  const status = await (deps.status ?? consolidatedStatus)(config.stateDirectory);
+  const runtime = status.runtime as { components?: Array<{ state: string; kind?: string }> };
+  // The relay is optional, so a paused one is not a readiness gap; everything else must be up.
   if (!status.statusCurrent) return "status_not_current";
-  if (runtime.components?.length !== plan.components.length || !runtime.components.every(component => ["running", "complete"].includes(component.state))) return "components_not_running";
+  if (runtime.components?.length !== plan.components.length || !runtime.components.every(componentUp)) return "components_not_running";
   if (plan.components.some(component => component.kind === "inference")) {
     try { const response = await fetch(`http://127.0.0.1:${config.port}/health`, { signal: AbortSignal.timeout(1000) }); if (!response.ok || (await response.json() as { status?: string }).status !== "ok") return "inference_unhealthy"; } catch { return "inference_unhealthy"; }
   }
   const native = plan.components.find(component => component.kind === "native");
-  if (native) {
+  // Only a machine that registered a relay whose slot is running has to have one connected; a relay
+  // the service paused is optional by design, and its status file is as stale as it is going to get.
+  const relayPaused = runtime.components?.some(component => component.kind === "native" && component.state === "paused") === true;
+  if (native && !relayPaused && await (deps.registered ?? nativeRegistrationEnabled)(config.stateDirectory)) {
     try {
       const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const relayStatus = resolve(relayHome, "status.json");
       if ((await stat(relayStatus)).mtimeMs < began || JSON.parse(await readFile(relayStatus, "utf8")).status !== "connected") return "native_relay_not_connected";

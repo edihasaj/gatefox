@@ -28,9 +28,64 @@ The relay keeps its own database and preferences in a private home. Native confi
 transcripts, and SQLite files are not migrated or rewritten by registration.
 
 The relay refuses a missing, disabled, or differently owned registration. Its SDK
-build blocks creating replacement enrollments. It verifies the signed CLI matches
-Codex 0.162.0-alpha.17.2 before using that version's transport. Another desktop
-build requires an SDK update and verification.
+build blocks creating replacement enrollments.
+
+## Verified app engines
+
+The relay links the Codex SDK released as rust-v0.163.0-alpha.10.2, the engine
+ChatGPT ships from 16 October 2026. The relay and the shared native host keep
+separate lists in `src/native-engine-versions.ts`:
+
+| App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
+| --- | --- | --- |
+| `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Not shared: the host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version`; native chats run on private engines |
+| `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
+| Anything else | Exits with status 1 before it connects | As for 0.163 |
+
+The two SDK releases ship a byte-identical `app-server-transport` crate, so the
+remote-control protocol, the patched stream-end hooks, the existing-registration
+guard and the `remoteControl/*` methods are the same for both apps. The 0.163 state
+database adds two migrations, and the SDK opens a database that a newer release
+migrated, so a rollback to a 0.162 relay still opens the relay home.
+
+The host waits because a shared engine depends on more than the protocol. 0.163
+changed behaviour the host relies on: pending unloads became a map with a wake-up
+signal, listener removal now checks the thread's generation, finished v2 sub-agent
+threads unload automatically, and startup configuration resolves against the
+working directory. An engine joins `hostVerifiedAppEngines` only after
+`scripts/e2e-shared-native.mjs` passes against it. The relay needs none of that,
+because it never uses the host's engine (see the next section).
+
+The relay's own list is `native-relay/src/cli_version.rs`; a gateway test fails when
+it differs from `relayAcceptedAppEngines`. The relay compares the text that the app
+CLI prints for `--version`; it does not check the code signature itself. Its `--codex`
+path is the app's own launcher, taken from the service plan or the registration, and a
+host that shares an engine verifies OpenAI's signature (TeamIdentifier `2DC432GLL2`)
+before it runs it. Gateway chats are a separate pin: they run the release's own
+gateway SDK (0.162.0-alpha.17.2), whatever engine the app ships. A relay that refuses
+the app's engine exits at once, and after three such exits the service sets it aside
+with `component_paused` and reason `failing` instead of restarting it in a loop. A new
+app engine needs a new relay build and this verification again.
+
+## Relay sessions and native chats
+
+Each phone stream starts its own `gateway codex-shim` session, so the model list, the
+chat list and the routing the phone sees are the gateway router's. The relay answers
+only `remoteControl/*` itself; `thread/list`, `model/list` and turns go to the router.
+
+Native chats run where any adapter runs them. When the host shares the native engine,
+the session attaches to it. Otherwise the session's adapter runs a private native engine
+on the native home: always on a plan with `sharedNativeExecutor: false`, and as a
+fallback when the host cannot share the app's engine. From 0.4.7, private engines share
+the native home with each other, so the app's adapter and the relay's sessions each run
+one. The ChatGPT app opened after the relay connected leaves remote control to the relay.
+
+One chat still has one writer. The SDK keeps a per-chat writer lock in
+`<native home>/thread-writer-locks`: while the app's engine holds a native chat, the
+phone's `thread/resume` is refused with `already has an active writer`, and once the
+app lets the chat go (it closes the chat's engine, for example by quitting), the phone
+continues it. Gateway chats use the host when the plan shares gateway executors, and
+otherwise private gateway engines under the same lock.
 
 ## Activation
 
@@ -54,6 +109,180 @@ for that process. The primary configuration stays unchanged.
 Existing registrations are bound to their native account. Signing out or changing
 that account stops the relay's existing connection. It cannot silently adopt a
 different account or create a new connected computer.
+
+### Registering a relay under the unified service
+
+A consolidated Mac whose relay slot waits as `not_registered` registers the relay the
+service already runs, with ChatGPT quit normally:
+
+```sh
+gateway native install
+```
+
+Under a unified plan this installs no LaunchAgent. It takes the relay binary, relay
+home, native home and app CLI from the plan's native component, refuses while ChatGPT
+is open, and runs the relay's `--check` against this account's existing, enabled Codex
+Desktop registration. A missing or disabled registration is refused, and the relay
+never enrolls a new machine. Running it again with the same plan changes nothing.
+
+**A registered relay owns remote control.** OpenAI allows one remote-control
+connection per Mac, so an engine that connects first leaves the relay with
+`HTTP error: 409 Conflict` on every retry until that engine exits. Once the relay is
+registered, every adapter, SSH listener and shared host starts its stock engine with
+remote control switched off, whether or not the relay is connected at that moment. A
+registered relay that is down for a while means the phone loses this Mac until the
+relay is back; no other engine takes its place. Only a live relay also receives
+`remoteControl/*`. A `409 Conflict` in the relay log therefore means another engine
+holds the slot (a process that started before the relay was registered).
+
+The install avoids that race in this order:
+
+1. It writes `<state>/native-registration.pending`. Adapters and listeners that start
+   from now on already count the relay as registered. The previous
+   `native-registration.json` is not touched, so it is the rollback. A pending record
+   older than ten minutes (a dead install) counts as none.
+2. It looks for stock engines under this gateway's adapters, SSH listeners and shared
+   host that started before the pending record (it reads the process list in the C
+   locale and refuses if any line cannot be read). A first registration only; a Mac
+   that already registered a relay has none to clear.
+   - An SSH listener is never killed from outside. The install sends it SIGUSR2, a
+     request to retire. The listener decides itself, in one step, whether it is
+     truly idle: no request in flight, no turn running, no approval waiting, and 30
+     seconds without traffic. If so it stops the way a TERM would and the remote app
+     reconnects through a fresh listener, which stands down. Otherwise it ignores the
+     request and says so in its record, and the install refuses with "an SSH session
+     from another Mac is using this Mac; retry when it is idle".
+   - The signal is sent only to a listener whose record
+     (`listener-activity-<pid>.json` beside its socket) names the same start time as
+     the process list. A listener from a release before 0.4.8 keeps no record and
+     would die of that signal, so the install refuses with "a listener from an older
+     release is running; quit ChatGPT on the other Mac, wait about 2 minutes, then
+     retry".
+   - Another Codex session on this Mac that runs its own engine also refuses the
+     install. The shared host's engine is not signalled: the service restarts the
+     host, once idle, because the pending record already counts as a registration; the
+     install waits for it and refuses if the host stays busy.
+   The steps run in this order so that a refusal changes as little as possible: the
+   checks that need no action come first, then the shared host (waited for up to about
+   30 seconds, while the service restarts it when idle), and only then are the
+   listeners asked, one by one. Any refusal removes the pending record and registers
+   nothing. If a listener declines after an earlier one already retired, the earlier
+   one stays retired; that is harmless, because its remote app reconnects through a
+   fresh listener that stands down.
+3. It runs the relay's `--enable` and waits up to 45 seconds. On success it writes
+   `<state>/native-registration.json` and removes the pending record. On a timeout or
+   an early exit it keeps the previous registration exactly as it was, removes the
+   pending record and reports the fixed reason.
+
+The service notices the registration within about two seconds (not at the five-minute
+check) and starts the relay while ChatGPT stays closed, so the slot is not left free.
+Each SSH listener keeps `listener-activity-<pid>.json` beside its socket (pid, start
+time, whether any turn or approval is in flight, when it last declined a retire
+request); it is removed when the listener exits. A shared host that started before the
+registration restarts when idle so its engine stands down too. Nothing hands remote
+control back to an engine while the relay is registered, so a relay that stays broken
+leaves the phone without this Mac.
+
+**Giving remote control back.** `gateway native uninstall` under the unified service
+now writes `{"registered":false}` to `<state>/native-registration.json`, keeps the
+previous record as `native-registration.json.pre-relay-off-<time>` and removes a pending
+record. Only engines that start afterwards keep their own remote control; running ones
+keep standing down until they restart, and a service restart does not make the desktop
+app or SSH listeners release it:
+
+- the desktop app: quit ChatGPT, and open it again once the rest has let go;
+- SSH listeners: they let go the next time they start, that is when the remote app next
+  connects after its listener exits;
+- the relay and the shared host: restart the service while idle
+  (`gateway service restart`).
+
+`gateway health` warns when a registered relay has been paused for more than five
+minutes, or runs but has not been connected for that long. The "not connected" time is
+measured from the last moment the service saw the relay connected (`lastConnectedAt` in
+its status file), or from the relay's start if it never was, because the relay rewrites
+its own status file on every change and a refused connection (HTTP 409) changes it
+constantly. The warning names the cause class (the relay keeps failing, or the service
+has not started it since the registration) and this command.
+
+### Moving a Mac to the 0.163 relay
+
+Before this release the relay refused the 0.163 engine, so the phone used ChatGPT's own
+remote control, which lists only `openai` chats and would send gateway model aliases to
+OpenAI. What to expect depends on the Mac:
+
+| Mac | Plan | Relay slot before | After this release |
+| --- | --- | --- | --- |
+| Studio, macbook-server | `sharedNativeExecutor: false` (set on 17 October) | `paused`: `failing` where a relay is registered, `not_registered` on macbook-server | Relay sessions run private native engines; the host never shares a native engine there |
+| A Mac with `sharedNativeExecutor: true` | Host shares native chats | `paused`, `failing` | The host stays gateway-only on 0.163 (`native_sharing_unavailable`, `sdk_version`), and relay sessions fall back to private engines |
+
+A relay that the service starts again does not restart the host
+(`resumePaused` in `src/service-supervisor.ts`), and the host and each adapter decide
+once, at start, whether the registered relay owns remote control (the registration, not
+the relay's live status, decides; see [Registering a relay under the unified
+service](#registering-a-relay-under-the-unified-service)). So the order is: the relay
+connects first, then the service restarts while idle, then ChatGPT opens. An engine
+that started before the relay was registered keeps its remote control until it exits; a
+`409 Conflict` in the relay log means exactly that, and `gateway native install`
+retires idle SSH listeners for that reason. Except for
+quitting and reopening ChatGPT, which the user does normally, the steps below only read
+state or use the gateway's own commands.
+
+1. Before the install, check the app engine and the current state:
+
+   ```sh
+   /Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex --version
+   codesign -dv --verbose=2 /Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex 2>&1 | grep TeamIdentifier
+   gateway service status
+   gateway native status
+   ```
+
+   Expect `codex-cli 0.163.0-alpha.10.2`, `TeamIdentifier=2DC432GLL2`, the native
+   component `paused` with its reason, and `executionHost.sharedNativeExecutor`
+   (`false` on Studio and macbook-server).
+2. Install the release as usual. The installer never quits the app.
+3. When no chat is running, quit ChatGPT normally with Command-Q.
+4. Only where the slot was `not_registered` (macbook-server): run
+   `gateway native install`. It retires idle SSH listeners and refuses while one is busy. A slot paused as `failing` needs nothing; the new relay
+   binary is the change the five-minute check waits for.
+5. Wait a few seconds (up to five minutes if the install was not the trigger) with ChatGPT still closed, then check
+   `gateway native status`: `relay.status` `connected` with the original
+   `environmentId`, and `gateway service status`: the native component `running` with
+   no `pausedReason`.
+6. Still with ChatGPT closed and no chat running, restart the service so the host and
+   the adapters start beside the live relay:
+
+   ```sh
+   gateway service restart
+   gateway versions --check
+   gateway service status
+   gateway health --json
+   grep -h -E '"event":"(component_resumed|component_paused|native_sharing_unavailable|native_sharing_fallback)"' STATE/telemetry/events-$(date +%F).jsonl
+   ```
+
+   Expect every process on the new release, `executionHost.state` `running`, the
+   relay still connected, and one `component_resumed`. On a Mac whose plan shares
+   native chats, `native_sharing_unavailable` with `reason: sdk_version` is expected.
+   `STATE` is the gateway state directory.
+7. Open ChatGPT normally. Its adapter finds the live relay, so the app's engine runs
+   with its own remote control turned off and `remoteControl/*` reaches the relay.
+8. On the phone, open this Mac's Codex chats. The list comes from the gateway router;
+   gateway chats saved under the legacy provider appear when the router adds that
+   provider to an unfiltered list. Continue one gateway chat and one native chat. A
+   native chat that is open in the Mac's app is refused with `already has an active
+   writer` until the app lets it go.
+9. In the relay log, expect `session_started` and `session_ended` records, an
+   `rc_connected` SDK label, and no `session_rejected`.
+
+Do not turn native sharing back on (`gateway service shared-native --apply`) on Studio
+or macbook-server in this release: the host does not share 0.163 until
+`scripts/e2e-shared-native.mjs` passes against it.
+
+If the relay stays paused, `gateway service status` names the reason. `failing` after
+the install means the relay still refuses the engine or cannot start; the relay log
+names the cause, and ChatGPT keeps its own remote control meanwhile. To go back,
+install the previous release: its relay refuses 0.163 and is set aside again, and the
+registration written by `gateway native install` stays, so the newer release picks the
+relay up again.
 
 `gateway native uninstall` stops this managed transport and keeps its private
 state. A fresh normal app launch restores the original remote transport. Explicit
@@ -210,6 +439,7 @@ next line reports the rest as `suppressed`.
 | Label | Meaning |
 | --- | --- |
 | `rc_connecting`, `rc_connected`, `rc_cycle_ended`, `rc_status_changed` | Host websocket lifecycle; `connectionEndReason` and `reconnectAttempt` explain reconnects |
+| `rc_connect_failed` | A connect attempt failed. The SDK's error text is never printed: `errorClass` names its kind (`ws_auth`, `ws_http`, `ws_tls`, `ws_io`, `ws_dns`, `ws_protocol`, `refresh_http`, `refresh_transport`, `refresh_parse`, `refresh_mismatch`, `auth_recovery` or `unclassified`) and `httpStatus` the 3-digit status for `ws_auth`, `ws_http` and `refresh_http`. `ws_http` with `httpStatus` 409 means another engine holds this Mac's remote-control connection |
 | `rc_writer_disconnected`, `rc_reader_disconnected` | The host websocket dropped; `errorKind` is `TimedOut` (no websocket pong for 60 seconds), `UnexpectedEof` (stream ended), `ConnectionAborted` (close frame), or `InvalidData` (read error) |
 | `stream_end_notified` | A relay-side stream end: `reason`, replies `drained` and `drainDropped`, and the `pong` outcome |
 | `inbound_hole_stale` | A stale hole: first missing number, size, age, highest number seen, ping counts, reset mode, and the action taken |
@@ -247,6 +477,55 @@ node scripts/build-native-relay.mjs --test --dev
 node scripts/build-native-relay.mjs
 node scripts/build-release.mjs --with-native
 ```
+
+The sources, pristine copies and crate manifest are kept per pinned revision
+(`sdk-<revision>`, `build-<revision>` and `sdk-<revision>.tar.gz` in
+`.state/native-relay-build`). The gateway SDK build reads its own pinned archive
+from `sdk.tar.gz` in the same folder, so building the relay never replaces it. The
+relay repairs its own lockfile with `scripts/native-relay-sdk-lock.mjs`: the 0.163
+archive keeps `0.0.0` for 160 source-less workspace packages, and only those are
+set to `0.163.0-alpha.10.2`.
+
+The end-to-end check runs the built relay against the real signed app engine and
+mock upstreams only:
+
+```sh
+node scripts/e2e-native-relay.mjs --root /tmp/gwrl-$(date +%s)
+```
+
+A localhost mock plays the ChatGPT backend and the phone. It hands out the server
+token, accepts the relay's websocket and sends remote-control envelopes. The state is a
+Mac like Studio or macbook-server: a unified plan with `sharedNativeExecutor: false`
+and a registered relay. The relay starts each stream's `gateway codex-shim` session,
+and the router runs the real engine privately for a native chat and a gateway executor
+for a gateway chat, both answering from the mock. The run checks that the relay:
+
+- accepts the 0.163 and 0.162 CLIs and refuses others;
+- refreshes the server token for the original registration and never enrolls;
+- connects with the original server ID, name and installation ID;
+- answers `remoteControl/status/read` itself and passes `model/list` and
+  `thread/list` to the router;
+- runs both chats, and continues the gateway chat with its history on a second stream;
+- lets the Mac's own app adapter, opened after the relay connected, read remote control
+  from the relay and run its own private engine on the same home, where the SDK refuses
+  the phone a chat the app holds (`already has an active writer`) until the app lets it
+  go;
+- stops cleanly without writing a token or the installation ID to its log.
+
+Every home is a fresh folder with fake ChatGPT tokens, and on macOS the run re-executes
+itself in a sandbox that refuses connections off this machine. The real engines put
+their sockets in the SDK's fixed folder `/tmp/codex-daemon-<uid>` and remove them when
+they exit; at the end the run removes any of its own that outlived their engine (new
+since it started, this user's, named like an SDK socket and not listening) and reports
+the counts as `daemonSockets`. It records whether an unfiltered `thread/list` shows the
+gateway chat; `--expect-unfiltered-gateway-listing` makes that a requirement once the
+router adds the legacy provider.
+
+`--shared-native-plan` writes a plan that shares native chats but runs no host, so
+every adapter (the relay's sessions and the app's) falls back to a private engine
+under the native-home lease, as on a Mac whose host cannot share the app's engine. That
+mode passes only where private engines share the home (0.4.7 and later); on an
+exclusive lease the app's adapter fails to start beside the relay's session.
 
 `--test` runs the relay tests and then the patched SDK's `remote_control` suite
 with its locked dependencies, in `.state/native-relay-build/sdk-target`. It

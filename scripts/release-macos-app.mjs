@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifiedBackend } from './macos-app-backend.mjs';
+import { inflateRawSync } from 'node:zlib';
+import { extractProductionBackend } from './macos-app-production.mjs';
 import { rejectSymlinkedPath, rejectSymlinks } from './sign-macos-app.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -19,11 +20,17 @@ Build, sign, notarize, validate, and optionally publish a production macOS app.
 Options:
   --keychain /absolute/signing.keychain-db  Signing keychain
   --profile asc-notary                      Notary keychain profile (default: asc-notary)
+  --previous-app /absolute/Harness Gateway.app  Signed app to upgrade (publish only)
+  --installed-release /absolute/gateway-release Existing CLI release (publish only)
   --publish                                 Create and publish the GitHub draft release
 `;
 
 export function parseArgs(argv) {
-  const values = { profile: 'asc-notary', publish: false };
+  const values = {
+    profile: 'asc-notary', publish: false,
+    previousApp: join(homedir(), 'Applications/Harness Gateway.app'),
+    installedRelease: join(homedir(), '.local/share/subscription-gateway/current'),
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     const value = () => {
@@ -36,12 +43,14 @@ export function parseArgs(argv) {
     else if (option === '--identity') values.identity = value();
     else if (option === '--keychain') values.keychain = value();
     else if (option === '--profile') values.profile = value();
+    else if (option === '--previous-app') values.previousApp = value();
+    else if (option === '--installed-release') values.installedRelease = value();
     else if (option === '--publish') values.publish = true;
     else if (option === '--help') values.help = true;
     else throw new Error(`Unknown option: ${option}`);
   }
   if (values.help) return values;
-  for (const name of ['backendArchive', 'keychain']) {
+  for (const name of ['backendArchive', 'keychain', 'previousApp', 'installedRelease']) {
     if (values[name] && !isAbsolute(values[name])) throw new Error(`--${name.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`)} must be an absolute path`);
   }
   if (!values.backendArchive || !values.backendSha256 || !values.identity) {
@@ -56,7 +65,7 @@ export function parseArgs(argv) {
 function defaultRun(command, args, { cwd = root, allowFailure = false } = {}) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 20 * 60_000 });
   if (result.error || (!allowFailure && result.status !== 0)) {
-    throw new Error(`${command} failed${result.stderr?.trim() ? `: ${result.stderr.trim()}` : ''}`);
+    throw new Error(`${command} failed`);
   }
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
@@ -93,39 +102,15 @@ export function assertVersionLockfile({ cwd = root } = {}) {
   return version;
 }
 
-function safeArchiveEntries(text) {
-  const entries = text.split('\n').map(entry => entry.trim()).filter(Boolean);
-  if (!entries.length) throw new Error('Backend archive is empty');
-  const roots = new Set();
-  for (const rawEntry of entries) {
-    const entry = rawEntry.endsWith('/') ? rawEntry.slice(0, -1) : rawEntry;
-    if (!entry || entry.includes('\\') || entry.startsWith('/') ||
-        entry.split('/').some(part => !part || part === '.' || part === '..')) {
-      throw new Error('Backend archive has an unsafe entry');
-    }
-    roots.add(entry.split('/')[0]);
-  }
-  if (roots.size !== 1) throw new Error('Backend archive must have one top-level directory');
-  return { entries, directory: [...roots][0] };
-}
-
-export function validateBackendArchive({ archive, sha256, version, source, directory, run = defaultRun }) {
+export function validateBackendArchive({ archive, sha256, version, source, directory }) {
   if (!isAbsolute(archive) || !sha256Pattern.test(sha256)) throw new Error('Invalid canonical backend archive');
-  if (!existsSync(archive) || digestFile(archive) !== sha256) throw new Error('Backend archive SHA-256 does not match');
-  const { directory: payload } = safeArchiveEntries(output(run, 'tar', ['-tzf', archive]));
+  if (!existsSync(archive)) throw new Error('Backend archive is missing');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   rejectSymlinkedPath(directory);
   const extraction = mkdtempSync(join(directory, '.backend-'));
   try {
-    run('tar', ['-xzf', archive, '-C', extraction]);
-    const root = lstatSync(join(extraction, payload));
-    if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('Backend archive root must be a real directory');
-    const backend = verifiedBackend(join(extraction, payload));
-    const release = json(join(backend.root, 'package/release.json'), 'backend release receipt');
-    if (backend.version !== version || release.version !== version || release.source !== source) {
-      throw new Error('Backend archive version or source does not match production HEAD');
-    }
-    return { backend, release };
+    const backend = extractProductionBackend({ archive, sha256, version, source, destination: join(extraction, 'backend') });
+    return { version: backend.version };
   } finally {
     // This private scratch directory holds only checked release payload bytes.
     rmSync(extraction, { recursive: true, force: true });
@@ -168,19 +153,104 @@ function verifySignedApp(run, app) {
   run('xcrun', ['stapler', 'validate', app]);
 }
 
-function safeZipEntries(text) {
-  const entries = text.split('\n').map(value => value.trim()).filter(Boolean);
-  if (!entries.length) throw new Error('Signed ZIP is empty');
-  for (const entry of entries) {
-    if (entry.includes('\\') || entry.startsWith('/') || entry.split('/').some(part => part === '.' || part === '..')) {
-      throw new Error('Signed ZIP has an unsafe entry');
-    }
-    if (!entry.startsWith('Harness Gateway.app/')) throw new Error('Signed ZIP has an unexpected top-level entry');
+const ZIP_EOCD = 0x06054b50;
+const ZIP_CENTRAL = 0x02014b50;
+const ZIP_LOCAL = 0x04034b50;
+const ZIP_UNIX = new Set([3, 19]);
+const ZIP_FILE = 0o100000;
+const ZIP_DIRECTORY = 0o040000;
+
+function safeZipPath(name) {
+  const normalized = name.endsWith('/') ? name.slice(0, -1) : name;
+  if (!normalized || normalized.includes('\\') || normalized.startsWith('/') || /[\0-\x1f\x7f]/.test(normalized) ||
+      normalized.split('/').some(part => !part || part === '.' || part === '..')) {
+    throw new Error('Signed ZIP has an unsafe entry');
   }
+  return normalized;
+}
+
+function appleDoublePath(name, directory) {
+  if ((name === '__MACOSX' || name === '__MACOSX/Harness Gateway.app') && directory) return true;
+  if (name === '__MACOSX/._Harness Gateway.app' && !directory) return true;
+  if (!name.startsWith('__MACOSX/Harness Gateway.app/')) return false;
+  if (directory) return true;
+  return basename(name).startsWith('._');
+}
+
+function appleDouble(bytes, local, compressed, uncompressed, method, nameLength, extraLength) {
+  const start = local + 30 + nameLength + extraLength;
+  const payload = bytes.subarray(start, start + compressed);
+  let data;
+  try { data = method === 0 ? payload : inflateRawSync(payload, { maxOutputLength: 16 * 1024 * 1024 }); }
+  catch { throw new Error('Invalid AppleDouble ZIP metadata'); }
+  if (data.length !== uncompressed || data.length < 26 || data.readUInt32BE(0) !== 0x00051607 ||
+      data.readUInt32BE(4) !== 0x00020000) throw new Error('Invalid AppleDouble ZIP metadata');
+}
+
+export function inspectFinalZip(archive) {
+  const info = statSync(archive);
+  if (!info.isFile() || info.size < 22 || info.size > 2 * 1024 * 1024 * 1024) throw new Error('Invalid signed ZIP size');
+  const bytes = readFileSync(archive);
+  let eocd = -1;
+  for (let index = bytes.length - 22; index >= Math.max(0, bytes.length - 65_557); index -= 1) {
+    if (bytes.readUInt32LE(index) === ZIP_EOCD) { eocd = index; break; }
+  }
+  if (eocd < 0 || bytes.readUInt16LE(eocd + 4) || bytes.readUInt16LE(eocd + 6)) throw new Error('Signed ZIP has multiple disks');
+  const entries = bytes.readUInt16LE(eocd + 10);
+  const size = bytes.readUInt32LE(eocd + 12);
+  const offset = bytes.readUInt32LE(eocd + 16);
+  if (entries === 0xffff || size === 0xffffffff || offset === 0xffffffff || offset + size > eocd) {
+    throw new Error('Signed ZIP must not use ZIP64 or overlapping metadata');
+  }
+  if (entries > 100_000) throw new Error('Signed ZIP has too many entries');
+  const names = new Map(); let cursor = offset; let appEntries = 0; let total = 0;
+  for (let index = 0; index < entries; index += 1) {
+    if (cursor + 46 > offset + size || bytes.readUInt32LE(cursor) !== ZIP_CENTRAL) throw new Error('Invalid signed ZIP directory');
+    const flags = bytes.readUInt16LE(cursor + 8);
+    const compressed = bytes.readUInt32LE(cursor + 20);
+    const uncompressed = bytes.readUInt32LE(cursor + 24);
+    const method = bytes.readUInt16LE(cursor + 10);
+    const nameLength = bytes.readUInt16LE(cursor + 28);
+    const extraLength = bytes.readUInt16LE(cursor + 30);
+    const commentLength = bytes.readUInt16LE(cursor + 32);
+    const disk = bytes.readUInt16LE(cursor + 34);
+    const madeBy = bytes.readUInt16LE(cursor + 4);
+    const attributes = bytes.readUInt32LE(cursor + 38);
+    const local = bytes.readUInt32LE(cursor + 42);
+    const end = cursor + 46 + nameLength + extraLength + commentLength;
+    if (end > offset + size || flags & 1 || disk || local + 30 > offset || bytes.readUInt32LE(local) !== ZIP_LOCAL ||
+        ![0, 8].includes(method) || compressed > 1024 * 1024 * 1024 || uncompressed > 1024 * 1024 * 1024 ||
+        (total += uncompressed) > 2 * 1024 * 1024 * 1024) throw new Error('Unsafe signed ZIP entry');
+    const name = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString('utf8');
+    const normalized = safeZipPath(name);
+    const localNameLength = bytes.readUInt16LE(local + 26);
+    const localExtraLength = bytes.readUInt16LE(local + 28);
+    const localName = bytes.subarray(local + 30, local + 30 + localNameLength).toString('utf8');
+    if (local + 30 + localNameLength + localExtraLength + compressed > offset || localName !== name ||
+        bytes.readUInt16LE(local + 6) !== flags || bytes.readUInt16LE(local + 8) !== method) throw new Error('Unsafe signed ZIP entry');
+    const directory = name.endsWith('/');
+    if (names.has(normalized) || (normalized === 'Harness Gateway.app' && !directory)) throw new Error('Signed ZIP has duplicate entries');
+    names.set(normalized, directory);
+    const creator = madeBy >>> 8;
+    const type = (attributes >>> 16) & 0o170000;
+    if (ZIP_UNIX.has(creator) && type !== (directory ? ZIP_DIRECTORY : ZIP_FILE)) throw new Error('Signed ZIP contains a link or special file');
+    if ((normalized === 'Harness Gateway.app' && directory) || name.startsWith('Harness Gateway.app/')) appEntries++;
+    else if (!appleDoublePath(normalized, directory)) throw new Error('Signed ZIP has an unexpected top-level entry');
+    if (appleDoublePath(normalized, directory) && !directory) {
+      appleDouble(bytes, local, compressed, uncompressed, method, localNameLength, localExtraLength);
+    }
+    cursor = end;
+  }
+  for (const [name] of names) {
+    for (let slash = name.indexOf('/'); slash >= 0; slash = name.indexOf('/', slash + 1)) {
+      if (names.get(name.slice(0, slash)) === false) throw new Error('Signed ZIP has a file-directory collision');
+    }
+  }
+  if (!appEntries || cursor !== offset + size) throw new Error('Signed ZIP is incomplete');
 }
 
 export function validateFinalZip({ archive, directory, run = defaultRun }) {
-  safeZipEntries(output(run, 'unzip', ['-Z1', archive]));
+  inspectFinalZip(archive);
   const extraction = mkdtempSync(join(directory, '.signed-app-'));
   try {
     run('ditto', ['-x', '-k', archive, extraction]);
@@ -239,6 +309,17 @@ export function assertRemoteProduction(run, cwd, head) {
   }
 }
 
+export function assertRemoteTag(run, cwd, tag, head) {
+  const result = run('git', ['ls-remote', '--tags', 'origin', `refs/tags/${tag}`, `refs/tags/${tag}^{}`],
+    { cwd, allowFailure: true });
+  if (result.status !== 0) throw new Error(`Unable to verify remote tag ${tag}`);
+  const refs = new Map(result.stdout.trim().split('\n').filter(Boolean).map(line => line.split(/\s+/, 2)).map(([hash, ref]) => [ref, hash]));
+  const direct = refs.get(`refs/tags/${tag}`);
+  if (!direct) return;
+  const target = refs.get(`refs/tags/${tag}^{}`) ?? direct;
+  if (target !== head) throw new Error(`Remote tag ${tag} does not resolve to release HEAD`);
+}
+
 export function releaseAssets(run, tag, cwd) {
   const probe = run('gh', ['release', 'view', tag, '--json', 'isDraft,assets'], { cwd, allowFailure: true });
   if (probe.status === 0) throw new Error(`GitHub release ${tag} already exists; refusing to overwrite its assets`);
@@ -260,7 +341,7 @@ export function verifyUploadedAssets(run, tag, stage, cwd) {
   }
 }
 
-export function publishRelease({ version, head, stage, cwd = root, run = defaultRun }) {
+export function publishRelease({ version, head, stage, cwd = root, run = defaultRun, beforePublish = () => {} }) {
   const tag = `app-v${version}`;
   releaseAssets(run, tag, cwd);
   const notes = join(mkdtempSync(join(tmpdir(), 'harness-gateway-release-')), 'notes.md');
@@ -269,17 +350,36 @@ export function publishRelease({ version, head, stage, cwd = root, run = default
     run('gh', ['release', 'create', tag, '--draft', '--target', head, '--notes-file', notes,
       stage.backend, stage.app, stage.metadata, stage.sums], { cwd });
     verifyUploadedAssets(run, tag, stage, cwd);
+    beforePublish();
     run('gh', ['release', 'edit', tag, '--draft=false'], { cwd });
   } finally {
     rmSync(dirname(notes), { recursive: true, force: true });
   }
 }
 
-export function releaseMacosApp(options, { cwd = root, run = defaultRun } = {}) {
+export function runUpdateFixture({ appArchive, backendArchive, previousApp, installedRelease, cwd = root, run = defaultRun }) {
+  const fixtureRoot = join(cwd, '.state', `app-update-e2e-${createHash('sha256').update(`${process.pid}:${Date.now()}:${Math.random()}`).digest('hex').slice(0, 16)}`);
+  if (existsSync(fixtureRoot)) throw new Error('Update fixture root already exists');
+  run(process.execPath, ['scripts/e2e-app-updates.mjs', '--app-archive', appArchive, '--backend-archive', backendArchive,
+    '--legacy-app', previousApp, '--installed-release', installedRelease, '--root', fixtureRoot], { cwd });
+  return fixtureRoot;
+}
+
+export function validatePublishFixtureInputs({ previousApp, installedRelease, run = defaultRun }) {
+  if (!isAbsolute(previousApp) || !previousApp.endsWith('.app') || !existsSync(previousApp) || !statSync(previousApp).isDirectory()) {
+    throw new Error('Publishing requires an existing signed --previous-app bundle');
+  }
+  if (!isAbsolute(installedRelease) || !existsSync(installedRelease) || !statSync(installedRelease).isDirectory()) {
+    throw new Error('Publishing requires an existing --installed-release directory');
+  }
+  verifySignedApp(run, previousApp);
+}
+
+export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = runUpdateFixture } = {}) {
   const head = assertReleaseContext({ cwd, run });
   const version = assertVersionLockfile({ cwd });
-  const canonicalBackend = validateBackendArchive({ archive: options.backendArchive, sha256: options.backendSha256,
-    version, source: head, directory: join(cwd, '.state'), run });
+  validateBackendArchive({ archive: options.backendArchive, sha256: options.backendSha256,
+    version, source: head, directory: join(cwd, '.state') });
   const stageDirectory = join(cwd, '.state/app-release', version);
   if (existsSync(stageDirectory)) throw new Error(`Release stage already exists: ${stageDirectory}`);
   mkdirSync(stageDirectory, { recursive: true, mode: 0o700 });
@@ -299,6 +399,8 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun } = {}) 
   verifySignedApp(run, build.app);
   const extracted = validateFinalZip({ archive, directory: join(cwd, '.state'), run });
   try {
+    validateSignedApp({ app: extracted.app, version, source: head, backendSha256: options.backendSha256 });
+    verifySignedApp(run, extracted.app);
     run(process.execPath, ['scripts/e2e-macos-runtime.mjs', extracted.app], { cwd });
   } finally {
     rmSync(extracted.extraction, { recursive: true, force: true });
@@ -311,11 +413,21 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun } = {}) 
     const freshHead = assertReleaseContext({ cwd, run });
     if (freshHead !== head) throw new Error('Release HEAD changed before publishing');
     assertRemoteProduction(run, cwd, head);
+    assertRemoteTag(run, cwd, `app-v${version}`, head);
     validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
     verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
-    publishRelease({ version, head, stage, cwd, run });
+    validatePublishFixtureInputs({ previousApp: options.previousApp, installedRelease: options.installedRelease, run });
+    e2e({ appArchive: stage.app, backendArchive: options.backendArchive, previousApp: options.previousApp,
+      installedRelease: options.installedRelease, cwd, run });
+    publishRelease({ version, head, stage, cwd, run, beforePublish: () => {
+      if (assertReleaseContext({ cwd, run }) !== head) throw new Error('Release HEAD changed before final publication');
+      assertRemoteProduction(run, cwd, head);
+      assertRemoteTag(run, cwd, `app-v${version}`, head);
+      validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
+      verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
+    } });
   }
-  return { version, source: head, directory: stageDirectory, published: options.publish, backend: canonicalBackend.backend.root };
+  return { version, source: head, directory: stageDirectory, published: options.publish };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

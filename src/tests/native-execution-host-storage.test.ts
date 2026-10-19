@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { writePrivateJson } from "../config.js";
 import { nativeHomeOwnerPath, readNativeHomeOwner, type NativeHomeOwner } from "../native-execution-host-storage.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 
 async function fixture(): Promise<{ nativeHome: string; path: string; owner: NativeHomeOwner; restore: () => void }> {
   const root = await mkdtemp(join(tmpdir(), "gw-native-owner-read-")); const nativeHome = join(root, "native"); await mkdir(nativeHome, { mode: 0o700 });

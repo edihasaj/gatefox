@@ -19,6 +19,8 @@ test("scrubbing removes credentials, long secrets, home paths and URL paths", ()
   const text = scrub("Bearer abcdef123 failed for sk-ant-api03-xyzxyzxyzxyz at /Users/edi/Projects/private/x.ts calling https://api.example.com/v1/responses?key=1 with " + "A".repeat(40));
   for (const leaked of ["abcdef123", "xyzxyz", "/Users/edi", "/v1/responses", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"]) assert.ok(!text.includes(leaked), leaked);
   assert.match(text, /\.\.\.\/x\.ts/); assert.match(text, /https:\/\/api\.example\.com/);
+  const moved = scrub("Native execution ownership changed. Move ~/.local/state/gw-native/0123456789abcdef/owner.json aside");
+  assert.ok(!moved.includes("gw-native") && !moved.includes("0123456789abcdef"), moved); assert.match(moved, /Move \.\.\.\/owner\.json aside/);
 });
 
 test("events carry only type, scrubbed message, frames and anonymous metadata", () => {

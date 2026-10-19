@@ -4,6 +4,7 @@ import { readEvents } from "../protocol/sse.js";
 import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
 import { generationOptions } from "./generation-options.js";
+import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
 
 function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string) {
@@ -25,7 +26,9 @@ function compactAssistantReplay(messages: ReturnType<typeof responsesToChatReque
 
 /** Chat Completions transport for local vLLM and compatible API servers. */
 export class ChatCompletionsAPI implements Provider {
-  constructor(private readonly config: ProviderConfig) {}
+  private readonly tailnet?: ReturnType<typeof tailnetFetch>;
+  /** `seams` exist for tests of a `tailnet: true` provider; production never passes them. */
+  constructor(private readonly config: ProviderConfig, seams?: TailnetSeams) { if (config.tailnet) this.tailnet = tailnetFetch(config.id, seams); }
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
@@ -50,7 +53,8 @@ export class ChatCompletionsAPI implements Provider {
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
     const messages = compactAssistantReplay(normalized.messages, nativeName);
     if (system) messages.unshift({ role: "system", content: system });
-    const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`, { method: "POST", redirect: "error", signal,
+    const url = `${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`;
+    const init = { method: "POST", redirect: "error" as const, signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}` }, body: JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
         ...(tools.length ? { tools: tools.map(({ function: fn }, index) => ({ type: "function", function: { name: `tool_${index}`, description: fn.description, parameters: fn.parameters || { type: "object", properties: {} } } })) } : {}),
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "function", function: { name: nativeName(choice.function.name) } } : choice } : {}),
@@ -60,7 +64,8 @@ export class ChatCompletionsAPI implements Provider {
         ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
         ...(options.topP === undefined ? {} : { top_p: options.topP }),
         ...(options.parallelToolCalls === undefined ? {} : { parallel_tool_calls: options.parallelToolCalls }),
-      }) });
+      }) };
+    const response = this.tailnet ? await this.tailnet(url, { method: init.method, headers: init.headers, body: init.body, signal }) : await fetch(url, init);
     if (!response.ok) {
       const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
       throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);

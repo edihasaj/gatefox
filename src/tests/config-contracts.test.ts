@@ -52,3 +52,23 @@ test("accountEngines validates IDs, labels, workspaces and provider collisions, 
   ]) assert.throws(() => config([codex()], { accountEngines: invalid }), Error, JSON.stringify(invalid));
   assert.equal(config([codex()], { accountEngines: [{ id: "a".repeat(32), label: "é".repeat(64) }] }).accountEngines?.length, 1);
 });
+
+test("plain HTTP is accepted only on loopback or for a tailnet chat provider, and the other URL rules still apply", () => {
+  const chat = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "qwen", type: "chat-completions-api", baseUrl: "http://dgx.example:4000/v1", credentialFile: "qwen.token", models: { "qwen/flash": "qwen" }, ...extra });
+  assert.throws(() => config([chat()]), /API providers require HTTPS except on loopback/);
+  assert.throws(() => config([chat({ tailnet: false })]), /API providers require HTTPS except on loopback/);
+  assert.equal(config([chat({ tailnet: true })]).providers[0].tailnet, true);
+  assert.equal(config([chat({ tailnet: true, baseUrl: "https://dgx.example/v1" })]).providers[0].baseUrl, "https://dgx.example/v1");
+  assert.equal(config([chat({ baseUrl: "http://127.0.0.1:4400/v1" })]).providers[0].tailnet, undefined, "loopback is unchanged");
+  for (const baseUrl of ["http://user:pass@dgx.example/v1", "http://dgx.example/v1?key=1", "http://dgx.example/v1#frag"]) assert.throws(() => config([chat({ tailnet: true, baseUrl })]), /must not contain credentials/, baseUrl);
+  assert.throws(() => config([chat({ tailnet: "yes" as unknown as boolean })]), /tailnet must be boolean/);
+  // Only the chat adapter connects through the address check, so no other provider may opt in.
+  assert.throws(() => config([chat({ type: "responses-api", tailnet: true })]), /tailnet is only valid for chat-completions-api/);
+  assert.throws(() => config([chat({ type: "anthropic-api", tailnet: true })]), /tailnet is only valid for chat-completions-api/);
+  assert.throws(() => config([claude({ tailnet: true })]), /tailnet is only valid for chat-completions-api/);
+  // The rule does not depend on the value: the key is refused on every other type, true or false.
+  for (const type of ["responses-api", "anthropic-api", "claude-subscription", "codex-subscription", "copilot-subscription"] as const) {
+    for (const tailnet of [true, false]) assert.throws(() => config([chat({ type, tailnet, credentialFile: "x.token" })]), /tailnet is only valid for chat-completions-api/, `${type} ${tailnet}`);
+  }
+  assert.throws(() => config([chat({ type: "responses-api" })]), /API providers require HTTPS except on loopback/);
+});

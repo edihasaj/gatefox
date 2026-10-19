@@ -66,19 +66,24 @@ const version = values.version || JSON.parse(readFileSync('package.json', 'utf8'
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Invalid gateway SDK release version');
 const manifest = join(sdk, 'codex-rs/Cargo.toml');
 const target = resolve(values['target-dir'] || join(root, 'target'));
-const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' };
+// A build started from inside a gateway chat inherits the executor marker; the SDK's tests set or remove it per case themselves.
+const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' }; delete cargoEnvironment.HARNESS_GATEWAY_EXECUTOR;
 const profile = values.dev ? [] : ['--release'];
 if (values.test) {
   if (cargoEnvironment.CODEX_SANDBOX_NETWORK_DISABLED !== undefined) throw Error('Gateway SDK tests require the local mock server network');
-  const output = withGatewaySdkCompactionTests(sdk, () => execFileSync('cargo', ['test', '--locked', ...profile, '--manifest-path', manifest,
-    '--target-dir', target, '-p', 'codex-core', '--test', 'all',
-    'gateway_pre_sampling_compaction_stays_in_selected_user_turn', '--', '--nocapture'],
-    { cwd: join(sdk, 'codex-rs'), env: cargoEnvironment, encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024 }));
-  const result = /test result: ok\. (\d+) passed; 0 failed;/.exec(output);
-  if (!result || Number(result[1]) !== 4 || output.includes('Skipping test')) throw Error('Gateway SDK regression gate did not execute all four cases');
+  // The compaction cases set the executor marker in the process environment, so every case runs on one thread.
+  const run = args => execFileSync('cargo', ['test', '--locked', ...profile, '--manifest-path', manifest, '--target-dir', target, ...args,
+    '--', '--nocapture', '--test-threads=1'], { cwd: join(sdk, 'codex-rs'), env: cargoEnvironment, encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'inherit'], maxBuffer: 64 * 1024 * 1024 });
+  const passed = (output, count, name) => {
+    const result = /test result: ok\. (\d+) passed; 0 failed;/.exec(output);
+    if (!result || Number(result[1]) !== count || output.includes('Skipping test')) throw Error(`Gateway SDK regression gate did not execute all ${name} cases`);
+  };
+  passed(run(['-p', 'codex-model-provider-info', '--lib', 'gateway_executor']), 3, 'executor identity');
+  passed(withGatewaySdkCompactionTests(sdk, () => run(['-p', 'codex-core', '--test', 'all',
+    'gateway_pre_sampling_compaction_stays_in_selected_user_turn'])), 6, 'compaction');
   if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
-  console.log(JSON.stringify({ tests: 4, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+  console.log(JSON.stringify({ tests: 9, revision: gatewaySdkRevision, patchSha256, sourceSha256,
     testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],
@@ -110,8 +115,9 @@ if (values.test) {
   }
   cpSync(join(sdk, 'LICENSE'), join(artifact, 'CODEX-LICENSE'));
   cpSync(join(sdk, 'NOTICE'), join(artifact, 'CODEX-NOTICE'));
-  writeFileSync(join(artifact, 'NOTICE'), 'Subscription Gateway uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
-    'The selected-model compaction patch is limited to subscription_gateway. The native signed Codex executable is unchanged.\n', { mode: 0o600 });
+  writeFileSync(join(artifact, 'NOTICE'), 'Harness Gateway uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
+    'Its patch applies only inside a gateway executor: selected-model compaction for the gateway provider, and the openai id\n' +
+    'naming that loopback gateway provider when HARNESS_GATEWAY_EXECUTOR=1. The native signed Codex executable is unchanged.\n', { mode: 0o600 });
   writeFileSync(join(artifact, 'dependencies.json'), JSON.stringify(metadata.packages.map(({ name, version, license, repository }) =>
     ({ name, version, license, repository })), null, 2), { mode: 0o600 });
   writeFileSync(join(artifact, 'build.json'), JSON.stringify({ schemaVersion: 1, version,

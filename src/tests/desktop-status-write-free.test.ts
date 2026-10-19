@@ -51,7 +51,7 @@ const bytes = async (path: string) => readFile(path).catch(error => {
 const stamp = async (path: string) => lstat(path).then(info => ({ ino: info.ino, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs }),
   error => { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; });
 
-test("status answers every receipt and session shape with two getenvs and no write at all", mac, async () => {
+test("status answers every receipt and session shape with read-only launchctl calls and no write at all", mac, async () => {
   for (const receipt of ["none", "empty", "current wrapper", "older wrapper"] as const) {
     for (const session of ["own wrapper", "stale own wrapper", "foreign path", "unset"] as const) {
       const name = `receipt=${receipt} CODEX_CLI_PATH=${session}`;
@@ -61,7 +61,7 @@ test("status answers every receipt and session shape with two getenvs and no wri
         const [beforeReceipt, beforeStamp, beforeState, beforeAgents] = [await bytes(f.receipt), await stamp(f.receipt), await listing(f.state), await listing(launchAgents(f))];
         const status = await macDesktop("status", f.config, f.app, false, f.exec);
 
-        assert.deepEqual(f.calls, [`getenv ${PATH_KEY}`, `getenv ${FORCE}`], name + ": the two reads, in that order, and nothing else");
+        assert.deepEqual(f.calls, [`print gui/${process.getuid!()}`, `getenv ${PATH_KEY}`, `getenv ${FORCE}`], name + ": the GUI domain read, its getenv fallback (this fixture's print fails), then FORCE_CLI, and nothing else");
         assert.deepStrictEqual(await bytes(f.receipt), beforeReceipt, name + ": the receipt bytes are untouched, absent still if it was absent");
         if (beforeStamp) assert.deepStrictEqual(await stamp(f.receipt), beforeStamp, name + ": and the same bytes were not rewritten in place or swapped in under us");
         assert.deepEqual(await listing(f.state), beforeState, name + ": nothing appeared in or left the state directory");

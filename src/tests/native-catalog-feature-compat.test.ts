@@ -64,7 +64,7 @@ test("every metadata SDK spawn receives clean arguments and preserves the native
   } finally { f.close(); }
 });
 
-test("the actual shim applies aliases after preflight and respects native and current CLI hooks", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+test("the actual shim applies aliases after preflight and respects native and current CLI hooks", { skip: process.platform === "win32", timeout: 60000 }, async () => {
   const cases = [
     { base: undefined, legacy: true, current: undefined, expected: ["features.hooks=true", "features.code_mode.enabled=true"] },
     { base: false, legacy: true, current: undefined, expected: ["features.code_mode.enabled=true"] },
@@ -92,5 +92,22 @@ test("the actual shim applies aliases after preflight and respects native and cu
       assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), original);
       child.stdin.end(); await exited; assert.equal(child.exitCode, 0);
     } finally { if (child.exitCode === null) { child.kill("SIGKILL"); await exited; } lines.close(); f.close(); }
+  }
+});
+
+test("the metadata preflight is a native engine and never inherits the gateway executor marker", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await shimFiles(); const capture = join(f.directory, "sdk-marker.jsonl");
+  const source = await readFile(f.backend, "utf8");
+  await writeFile(f.backend, source.replace("const fs=require('node:fs');const path=require('node:path');",
+    `const fs=require('node:fs');const path=require('node:path');fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify(process.env.HARNESS_GATEWAY_EXECUTOR??null)+'\\n');`)
+    .replace(`const home=process.env.CODEX_HOME||${JSON.stringify(f.nativeHome)};`, `const home=${JSON.stringify(f.nativeHome)};`), { mode: 0o700 });
+  // As when the adapter itself was started from inside a gateway chat.
+  const prior = process.env.HARNESS_GATEWAY_EXECUTOR; process.env.HARNESS_GATEWAY_EXECUTOR = "1";
+  try {
+    await prepareNativeCatalog(f.backend, ["app-server"], f.value);
+    assert.deepEqual((await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line)), [null]);
+  } finally {
+    if (prior === undefined) delete process.env.HARNESS_GATEWAY_EXECUTOR; else process.env.HARNESS_GATEWAY_EXECUTOR = prior;
+    f.close();
   }
 });

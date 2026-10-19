@@ -6,13 +6,15 @@ import { resolve } from "node:path";
 import { modelCatalog } from "./catalog.js";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { preflightCodexFeatureArgs } from "./codex-feature-compat.js";
+import { nativeEnvironment } from "./executor-identity.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
 
 /** The native engine refreshes its own public metadata with its own authentication. */
 async function nativeMetadata(executable: string, args: string[]): Promise<{ models: string[]; config: ObjectValue; catalogPath?: string }> {
-  const child = spawn(executable, preflightCodexFeatureArgs(args), { stdio: ["pipe", "pipe", "pipe"] });
+  // A native engine, so it never inherits the gateway executor marker (docs/harness-identity.md).
+  const child = spawn(executable, preflightCodexFeatureArgs(args), { stdio: ["pipe", "pipe", "pipe"], env: nativeEnvironment() });
   const exited = new Promise<void>(resolve => child.once("close", () => resolve())); child.stderr.resume();
   const pending = new Map<number, { resolve: (value: ObjectValue) => void; reject: (error: Error) => void }>();
   let sequence = 0; let timedOut = false; let hardStop: NodeJS.Timeout | undefined;

@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCatalog } from "../catalog.js";
-import { executorRunsCodeMode, withNativeRow } from "../codex-native-rows.js";
+import { executorNativeRow, executorRunsCodeMode, withNativeRow } from "../codex-native-rows.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson, type GatewayConfig, type ProviderConfig } from "../config.js";
 import { shimFiles } from "./shim-fixture.js";
@@ -39,8 +39,10 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.deepEqual(row.model_messages, messages); assert.notEqual(row.model_messages, messages);
   for (const key of ["tool_mode", "shell_type", "apply_patch_tool_type", "default_reasoning_level", "default_verbosity", "default_reasoning_summary", "support_verbosity", "effective_context_window_percent", "truncation_policy", ...usageFlags] as const) assert.deepEqual(row[key], nativeSol[key], key);
   assert.equal(row.context_window, 800000, "the native window is within the upstream's 872K maximum");
-  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "supports_search_tool", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
-  assert.equal(row.supports_search_tool, false);
+  for (const key of ["slug", "display_name", "description", "priority", "supported_reasoning_levels", "service_tiers", "additional_speed_tiers", "default_service_tier", "multi_agent_version", "multi_agent_reasoning_effort", "max_context_window", "auto_compact_token_limit", "experimental_supported_tools", "input_modalities"]) assert.deepEqual(row[key], published[key], key);
+  assert.equal(published.supports_search_tool, false, "the gateway publishes search off");
+  assert.equal(row.supports_search_tool, false, "a Codex 2 row keeps search off even though the native row has it on: the ChatGPT backend refuses a forwarded tool_search");
+  for (const value of [false, undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);
   for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
@@ -109,7 +111,8 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.equal(sol.default_reasoning_level, "low"); assert.equal(sol.supports_search_tool, false); assert.deepEqual(sol.service_tiers, [tier]);
     for (const key of usageFlags) { assert.equal(sol[key], false, key); assert.equal(next[key], true, key); }
     for (const row of [next, odd]) { assert.deepEqual(row.model_messages, { instructions_template: "" }); assert.equal(row.tool_mode, "direct"); assert.equal(row.context_window, 500000); }
-    assert.deepEqual(combined.models[0], nativeSol);
+    assert.deepEqual(combined.models[0], { ...nativeSol, supports_search_tool: false }, "the carried native row has tool search off, as the Codex 2 row for it does");
+    assert.equal(next.supports_search_tool, false, "a Codex 2 row with no native row stays off");
     assert.equal(JSON.stringify(combined).includes("upstream_slug"), false);
     const cache = await readFile(join(f.value.stateDirectory, "desktop-public-models.json"), "utf8");
     assert.equal(cache.includes("native base prompt"), false); assert.equal(JSON.parse(cache).models[0].upstream_slug, "gpt-6.1-sol");
@@ -120,6 +123,19 @@ test("the desktop adapter publishes native copies in the combined catalog but ca
     assert.equal(hostless.current().models[0].tool_mode, "direct"); assert.notEqual(hostless.current().revision, snapshot.revision);
     assert.deepEqual(native, [before]);
   } finally { f.close(); }
+});
+
+test("a native row is carried with tool search off", () => {
+  const carried = executorNativeRow(nativeSol, [nativeSol]);
+  assert.equal(carried.supports_search_tool, false, "the ChatGPT backend refuses a forwarded tool_search, so Codex must not add one");
+  assert.deepEqual(carried, { ...nativeSol, supports_search_tool: false }, "only the search flag changes when the node_repl policy already matches");
+  assert.equal(nativeSol.supports_search_tool, true, "the native row is never modified");
+  const off = { ...nativeSol, supports_search_tool: false };
+  assert.equal(executorNativeRow(off, [off]), off, "a row that already has search off is returned as it is");
+  const stated = { ...nativeSol, node_repl_disabled: undefined, supports_search_tool: true };
+  const changed = executorNativeRow(stated, [stated]);
+  assert.equal(changed.supports_search_tool, false, "a changed node_repl policy and search off apply together");
+  assert.equal(changed.node_repl_disabled, true);
 });
 
 test("the first host read replaces the plain startup catalog even when the host rows match the local config", async () => {

@@ -109,7 +109,8 @@ try {
   const started = await request('thread/start', { model: values.model, modelProvider: values.shim ? 'openai' : 'subscription_gateway', cwd: workspace,
     developerInstructions: `Work only with the fixture file ${sample}. Do not modify other files, run network actions, delegate or create goals.`,
     approvalPolicy: 'never', sandbox: 'workspace-write', ephemeral: true });
-  assert.equal(started.modelProvider, 'subscription_gateway');
+  // 0.4.6 records new gateway chats as openai by default (docs/harness-identity.md).
+  assert.ok(['openai', 'subscription_gateway'].includes(started.modelProvider));
   const id = started.thread.id;
   const streamed = await turn(id, 'Count from one to twenty, one number per line. Do not use tools.', 'streaming');
   assert.equal(streamed.final.status, 'completed'); assert.ok(streamed.deltas.length >= 2);

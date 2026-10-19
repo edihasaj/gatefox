@@ -49,8 +49,20 @@ export async function runShutdownHooks(timeoutMs: number): Promise<void> {
  * which closes after inference exits: 10 s, the timeout `launchctl bootout` callers use today.
  */
 export const maxShutdownDrainMs = 5000;
+/**
+ * A stopping inference process waits this long after its drain for the requests it stopped, then records those still
+ * running as they stand (usage so far) and exits. Shorter than `inferenceStopMarginMs`, so the supervisor's SIGKILL
+ * never comes before the records are written.
+ */
+export const serveExitMarginMs = 1500;
+/** The supervisor lets inference exit this long after its drain before SIGKILL: the exit margin, then the time to write the records and exit. */
+export const inferenceStopMarginMs = 2500;
+/** The supervisor lets every other component, and the shared execution host once inference has exited, this long before SIGKILL. */
+export const componentStopMs = 2500;
+/** The longest a service stop takes: the longest drain, the inference grace, then the shared execution host. */
+export const worstServiceStopMs = maxShutdownDrainMs + inferenceStopMarginMs + componentStopMs;
 /** A bootout timeout with margin over the worst service stop, for callers that adopt it. */
-export const serviceStopTimeoutMs = maxShutdownDrainMs + 8000;
+export const serviceStopTimeoutMs = worstServiceStopMs + 3000;
 
 /** How long a stopping server lets running requests finish: GATEWAY_SHUTDOWN_DRAIN_MS, 0 to 5000, default 4000. */
 export function shutdownDrainMs(): number {
@@ -58,3 +70,8 @@ export function shutdownDrainMs(): number {
   const value = raw ? Number(raw) : NaN;
   return Number.isFinite(value) ? Math.min(maxShutdownDrainMs, Math.max(0, Math.round(value))) : 4000;
 }
+
+/** When a stopping server process gives up on the requests it stopped and exits: the drain, then the exit margin. */
+export const serveExitDeadlineMs = (): number => shutdownDrainMs() + serveExitMarginMs;
+/** How long the supervisor waits for inference to exit before SIGKILL: the drain, then the stop margin. */
+export const inferenceStopGraceMs = (): number => shutdownDrainMs() + inferenceStopMarginMs;

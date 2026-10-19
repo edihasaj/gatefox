@@ -12,6 +12,8 @@ export type OpenAIToolCall = {
   type: "function";
   id: string;
   responseTool?: ResponseToolIdentity;
+  /** Opaque Responses transport metadata. An explicit empty list proves plaintext arguments. */
+  encryptedFunctionArgs?: string[];
   function: { arguments: string; name: string };
 };
 export type OpenAIChatMessage = {
@@ -75,8 +77,11 @@ export type ResponsesAgentMessageItem = {
   content: string | Array<Record<string, unknown>>;
   [key: string]: unknown;
 };
-export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem;
-export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | OpenAITool;
+/** Native tool search tool and items: only the Codex subscription route accepts them, and it forwards them unchanged. */
+export type ResponsesToolSearchTool = { type: "tool_search"; [key: string]: unknown };
+export type ResponsesToolSearchItem = { type: "tool_search_call" | "tool_search_output"; [key: string]: unknown };
+export type ResponsesInputItem = ResponsesInputCall | ResponsesInputCallOutput | ResponsesReasoningItem | ResponsesMessageItem | ResponsesAgentMessageItem | ResponsesToolSearchItem;
+export type ResponsesTool = ResponsesNamespaceTool | ResponsesFunctionTool | ResponsesCustomTool | ResponsesToolSearchTool | OpenAITool;
 export type ResponsesRequest = {
   model: string;
   input: string | ResponsesInputItem[];
@@ -86,7 +91,15 @@ export type ResponsesRequest = {
   tools?: ResponsesTool[];
   [option: string]: unknown;
 };
+/**
+ * Token counts a provider reports. `cache_creation_tokens` (cache writes) is internal: Messages clients see it as
+ * `cache_creation_input_tokens`, while the Responses writer leaves it out, since cache writes there stay in the local ledger.
+ */
 export type Usage = { total_tokens: number; input_tokens: number; output_tokens: number; input_tokens_details?: { cached_tokens: number; cache_creation_tokens?: number } };
+/** Billing detail the gateway records locally; never sent to clients. */
+export type UsageAccounting = { cacheWriteTokens?: number; reasoningTokens?: number; nanoAiu?: number; nanoAiuStatus?: "complete" | "partial" | "unavailable";
+  /** Who started the request's model calls (Copilot): `user` for a new message, `agent` for a follow-up inside a live session, `mixed` for both. */
+  initiator?: "user" | "agent" | "mixed" };
 export type AssistantMessagePhase = "commentary" | "partial_answer" | "final_answer";
 export type PublicServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | "fast" | "ultrafast";
 const publicServiceTiers = new Set<string>(["auto", "default", "flex", "scale", "priority", "fast", "ultrafast"]);
@@ -97,9 +110,13 @@ export type InferenceEvent =
   | { text: string; type: "text"; messageId?: string; phase?: AssistantMessagePhase }
   | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase; status?: "completed" | "incomplete" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string }
   | { item: Record<string, unknown>; type: "reasoning-state" }
+  /** An output item the client executes or reads itself (native tool search): streamed back exactly as the upstream sent it. */
+  | { item: Record<string, unknown>; type: "native-item" }
   | { text: string; type: "reasoning"; summaryIndex?: number; estimatedTokens?: number; id?: string }
   /** Response-header data from the upstream; the server consumes it and never forwards it as output. */
-  | { type: "transport"; turnState?: string };
+  | { type: "transport"; turnState?: string }
+  /** Running usage reported before the response ends; the server records it and never forwards it. */
+  | { type: "usage"; usage: Usage; accounting?: UsageAccounting };
 export type WireEvent = { type: string; [field: string]: unknown };

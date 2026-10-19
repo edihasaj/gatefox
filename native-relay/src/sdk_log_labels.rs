@@ -1,4 +1,5 @@
-//! Fixed labels for the pinned SDK's remote-control log messages (Codex 740e5af).
+//! Fixed labels for the pinned SDK's remote-control log messages (Codex 740e5af; the transport crate
+//! of 4ebc485, rust-v0.163.0-alpha.10.2, is byte-identical, so every label still matches).
 //! The message text is matched by prefix and never printed. After an SDK bump, unmatched
 //! warnings print as `unlisted` with their callsite only: readability is lost, safety is not.
 
@@ -93,7 +94,9 @@ pub const LIFECYCLE: &[&str] = &[
 ];
 
 /// Structured SDK fields that may be printed (after sanitizing). Everything else, including
-/// `error`, URLs, headers, bodies and account, server, environment or installation ids, is dropped.
+/// URLs, headers, bodies and account, server, environment or installation ids, is dropped.
+/// `error` is never kept as text: the collector classifies it and pushes the two names below,
+/// which reach the record as `errorClass` and `httpStatus`.
 pub const FIELDS: &[&str] = &[
     "reconnect_attempt",
     "reconnect_delay",
@@ -114,6 +117,8 @@ pub const FIELDS: &[&str] = &[
     "refresh_delay",
     "response_status",
     "connection_id",
+    "error_class",
+    "http_status",
 ];
 
 /// Identifier fields that are printed only as per-process hashes.

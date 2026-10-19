@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { newerReleaseInstalled, releaseState, watchForUpgrade } from "../self-update.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 test("an installed process knows its own release and the one current points to", async () => {
   const root = await mkdtemp(join(tmpdir(), "gateway-release-"));
@@ -29,4 +30,19 @@ test("the watcher upgrades after two idle checks, retries a refused upgrade, and
   accept = true; await wait(80); const count = attempts.length; assert.equal(attempts.at(-1), true);
   await wait(60); assert.equal(attempts.length, count, "one accepted upgrade ends the watch");
   stop();
+});
+
+test("the watcher tells the upgrade how long a newer release has waited, and logs how it moved", async () => {
+  const home = await mkdtemp(join(tmpdir(), "gateway-upgrade-events-")); configureTelemetry(home, "test");
+  const state = { running: "0.4.4", installed: "0.4.5" }; const waited: number[] = []; let accept = false;
+  const stop = watchForUpgrade("service", () => true, ({ pendingMs }) => { waited.push(pendingMs); return accept ? { mode: "quiet" as const, loadedChats: 3 } : false; }, { intervalMs: 10, state: () => state });
+  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+  try {
+    await wait(120); assert.ok(waited.length >= 2 && waited.at(-1)! > waited[0], "the wait grows while the release stays installed");
+    state.installed = "0.4.4"; await wait(40); state.installed = "0.4.5"; const restarted = waited.length;
+    await wait(60); assert.ok(waited[restarted] < waited[restarted - 1], "a release that was taken back starts the wait again");
+    accept = true; await wait(60); await flushTelemetry();
+    const events = (await readTelemetry(home, Date.now() - 60_000)).filter(event => event.event === "self_upgrade");
+    assert.deepEqual(events.map(event => [event.component, event.from, event.to, event.mode, event.loadedChats]), [["service", "0.4.4", "0.4.5", "quiet", 3]]);
+  } finally { stop(); await rm(home, { recursive: true, force: true }); }
 });

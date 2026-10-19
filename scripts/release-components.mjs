@@ -3,6 +3,7 @@ import { readFileSync, mkdirSync, writeFileSync, lstatSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { nativeSourceDigest } from './native-source.mjs';
+import { sdkArchiveSha256 as relaySdkArchiveSha256, sdkCodexVersion as relaySdkCodexVersion, sdkRevision as relaySdkRevision } from './native-relay-sdk.mjs';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkPatchDigest,
   gatewaySdkRevision, gatewaySdkSourceDigest, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
@@ -72,25 +73,42 @@ function json(entries, name) {
   try { return JSON.parse(entry.data.toString('utf8')); } catch { throw invalid('invalid release metadata'); }
 }
 
+/** The components a release can carry, with the subdirectory and binary each one owns. */
+const componentKinds = {
+  native: { subdirectory: 'native', binary: 'gateway-native-relay' },
+  gatewaySdk: { subdirectory: 'gateway-sdk', binary: 'gateway-codex' },
+};
+const componentOrder = ['native', 'gatewaySdk'];
+
 /** Decide which components come from a previous published bundle and which are built here.
  * `freshNative` keeps reusing the gateway SDK while the relay comes from the local build.
+ * `reuseNativeFrom` takes the relay from its own separately authenticated original archive
+ * instead, and always arrives with the SDK reuse pair so the gateway SDK also comes from an
+ * original archive rather than a fresh build.
  */
-export function releaseComponentPlan({ withNative, withGatewaySdk, reuseFrom, componentsSha256, freshNative }) {
+export function releaseComponentPlan({ withNative, withGatewaySdk, reuseFrom, componentsSha256, reuseNativeFrom, nativeSha256, freshNative }) {
   if (Boolean(reuseFrom) !== Boolean(componentsSha256)) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
+  if (Boolean(reuseNativeFrom) !== Boolean(nativeSha256)) throw new Error('Native component reuse requires both --reuse-native-from and --native-sha256');
+  if (reuseNativeFrom && freshNative) throw new Error('--reuse-native-from and --fresh-native cannot be combined; pick one origin for the relay');
+  if (reuseNativeFrom && !(withNative && withGatewaySdk)) throw new Error('--reuse-native-from requires --with-native and --with-gateway-sdk');
+  if (reuseNativeFrom && !(reuseFrom && componentsSha256)) {
+    throw new Error('--reuse-native-from requires --reuse-components-from and --components-sha256; the relay override never pairs with a freshly built gateway SDK');
+  }
   if (freshNative && !(reuseFrom && withNative && withGatewaySdk)) {
     throw new Error('--fresh-native requires --with-native, --with-gateway-sdk and component reuse');
   }
   return {
-    reuse: reuseFrom ? { native: Boolean(withNative && !freshNative), gatewaySdk: Boolean(withGatewaySdk) } : undefined,
-    freshNative: Boolean(withNative && (!reuseFrom || freshNative)),
+    // With a separate relay archive, the bundle named by --reuse-components-from only supplies the gateway SDK.
+    reuse: reuseFrom ? { native: Boolean(withNative && !freshNative && !reuseNativeFrom), gatewaySdk: Boolean(withGatewaySdk) } : undefined,
+    reuseNative: reuseNativeFrom ? { from: reuseNativeFrom, sha256: nativeSha256 } : undefined,
+    freshNative: Boolean(withNative && (!reuseFrom || freshNative) && !reuseNativeFrom),
     freshGatewaySdk: Boolean(withGatewaySdk && !reuseFrom),
   };
 }
 
-/** Verify the entire published archive before writing any selected component. */
-export function verifyReleaseComponents(archivePath, expectedSha256, selected) {
-  if (!/^[a-f0-9]{64}$/.test(expectedSha256 || '')) throw invalid('--components-sha256 must be an exact SHA-256 digest');
-  if (!selected.native && !selected.gatewaySdk) throw invalid('select --with-native or --with-gateway-sdk');
+/** Verify one entire published archive before any of its components are written. */
+function authenticateArchive(archivePath, expectedSha256, flag) {
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256 || '')) throw invalid(`${flag} must be an exact SHA-256 digest`);
   const archive = readFileSync(archivePath);
   if (digest(archive) !== expectedSha256) throw invalid('archive SHA-256 mismatch');
   const entries = tarEntries(gunzipSync(archive, { maxOutputLength: 768 * 1024 * 1024 }));
@@ -123,26 +141,74 @@ export function verifyReleaseComponents(archivePath, expectedSha256, selected) {
     listed.add(name);
   }
   if (payload.size !== listed.size + 1) throw invalid('archive contains unmanifested payload files');
-  const components = {};
-  for (const [key, binary] of [['native', 'gateway-native-relay'], ['gatewaySdk', 'gateway-codex']]) {
-    if (!selected[key]) continue;
-    const subdirectory = key === 'native' ? 'native' : 'gateway-sdk'; const prefix = `package/${subdirectory}/`;
-    const names = [...payload.keys()].filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).sort();
-    if (JSON.stringify(names) !== JSON.stringify(filesFor(binary))) throw invalid(`unexpected ${key} component files`);
-    const metadata = json(entries, `${root}/${prefix}build.json`);
-    if (metadata.version !== version || metadata.profile !== 'release' || metadata.codexVersion !== gatewaySdkCodexVersion ||
-        metadata.revision !== gatewaySdkRevision || metadata.archiveSha256 !== gatewaySdkArchiveSha256 ||
-        metadata.sourceSha256 !== (key === 'native' ? nativeSourceDigest() : gatewaySdkSourceDigest())) throw invalid(`${key} source or build receipt changed`);
-    if (key === 'gatewaySdk' && (metadata.schemaVersion !== 1 || metadata.platform !== 'darwin' || metadata.arch !== 'arm64' ||
-        metadata.patchSha256 !== gatewaySdkPatchDigest() || metadata.lockfileRepairSha256 !== gatewaySdkLockRepairDigest() ||
-        metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.testRunnerSha256 !== gatewaySdkTestRunnerDigest() ||
-        !/^[a-f0-9]{64}$/.test(metadata.patchedSdkSha256 || '') ||
-        metadata.capabilities?.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability ||
-        metadata.binarySha256 !== digest(payload.get(prefix + binary)))) throw invalid('gateway SDK pins or capability changed');
-    const files = names.map(name => { const bytes = payload.get(prefix + name); return { name, size: bytes.length, sha256: digest(bytes) }; });
-    components[key] = { buildVersion: metadata.version, sourceSha256: metadata.sourceSha256, files };
+  return { entries, root, version, release, payload };
+}
+
+/** Verify one selected component of an authenticated bundle against its own pins. */
+function verifyComponent(bundle, key) {
+  const { subdirectory, binary } = componentKinds[key]; const prefix = `package/${subdirectory}/`;
+  if (bundle.release.reusedComponents?.components?.[key]) throw invalid(`${key} component was itself reused in that bundle; reuse the archive that built it`);
+  const names = [...bundle.payload.keys()].filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).sort();
+  if (JSON.stringify(names) !== JSON.stringify(filesFor(binary))) throw invalid(`unexpected ${key} component files`);
+  const metadata = json(bundle.entries, `${bundle.root}/${prefix}build.json`);
+  // The relay links its own pinned SDK (the app's newest verified engine); the gateway SDK keeps the gateway pin.
+  const pins = key === 'native' ? { codexVersion: relaySdkCodexVersion, revision: relaySdkRevision, archiveSha256: relaySdkArchiveSha256, sourceSha256: nativeSourceDigest() }
+    : { codexVersion: gatewaySdkCodexVersion, revision: gatewaySdkRevision, archiveSha256: gatewaySdkArchiveSha256, sourceSha256: gatewaySdkSourceDigest() };
+  if (metadata.version !== bundle.version || metadata.profile !== 'release' || metadata.codexVersion !== pins.codexVersion ||
+      metadata.revision !== pins.revision || metadata.archiveSha256 !== pins.archiveSha256 ||
+      metadata.sourceSha256 !== pins.sourceSha256) throw invalid(`${key} source or build receipt changed`);
+  if (key === 'gatewaySdk' && (metadata.schemaVersion !== 1 || metadata.platform !== 'darwin' || metadata.arch !== 'arm64' ||
+      metadata.patchSha256 !== gatewaySdkPatchDigest() || metadata.lockfileRepairSha256 !== gatewaySdkLockRepairDigest() ||
+      metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.testRunnerSha256 !== gatewaySdkTestRunnerDigest() ||
+      !/^[a-f0-9]{64}$/.test(metadata.patchedSdkSha256 || '') ||
+      metadata.capabilities?.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability ||
+      metadata.binarySha256 !== digest(bundle.payload.get(prefix + binary)))) throw invalid('gateway SDK pins or capability changed');
+  const files = names.map(name => { const bytes = bundle.payload.get(prefix + name); return { name, size: bytes.length, sha256: digest(bytes) }; });
+  return { buildVersion: metadata.version, sourceSha256: metadata.sourceSha256, origin: { bundleVersion: bundle.version, bundleSha256: bundle.sha256 }, files };
+}
+
+/** Verify one published archive and reuse the selected components from it. */
+export function verifyReleaseComponents(archivePath, expectedSha256, selected) {
+  const sources = {};
+  for (const key of componentOrder) if (selected?.[key]) sources[key] = { archivePath, expectedSha256, flag: '--components-sha256' };
+  return verifyReleaseComponentSources(sources);
+}
+
+/** Authenticate each original archive for exactly the components it supplies, then combine those paths.
+ * `sources` maps a component key to `{ archivePath, expectedSha256, flag }`; two archives never overlap.
+ */
+export function verifyReleaseComponentSources(sources) {
+  const keys = componentOrder.filter(key => sources?.[key]);
+  if (Object.keys(sources || {}).some(key => !keys.includes(key) && sources[key])) throw invalid('unknown component selection');
+  if (!keys.length) throw invalid('select --with-native or --with-gateway-sdk');
+  const bundles = new Map();
+  for (const key of keys) {
+    const { archivePath, expectedSha256, flag } = sources[key];
+    const existing = bundles.get(archivePath);
+    if (existing) {
+      if (existing.sha256 !== expectedSha256) throw invalid('one archive was named with two digests');
+      existing.keys.push(key);
+    } else bundles.set(archivePath, { archivePath, sha256: expectedSha256, keys: [key], info: undefined, flag });
   }
-  return { provenance: { bundleVersion: version, bundleSha256: expectedSha256, components }, payload };
+  for (const bundle of bundles.values()) {
+    bundle.info = authenticateArchive(bundle.archivePath, bundle.sha256, bundle.flag);
+    bundle.info.sha256 = bundle.sha256;
+  }
+  const components = {}; const payload = new Map();
+  for (const bundle of bundles.values()) {
+    for (const key of bundle.keys) {
+      const component = verifyComponent(bundle.info, key);
+      for (const file of component.files) {
+        const path = `package/${componentKinds[key].subdirectory}/${file.name}`;
+        if (payload.has(path)) throw invalid('component paths overlap between archives');
+        payload.set(path, bundle.info.payload.get(path));
+      }
+      components[key] = component;
+    }
+  }
+  // Parent provenance stays the SDK bundle's for compatibility; each component also names its own origin.
+  const origin = (components.gatewaySdk || components.native).origin;
+  return { provenance: { bundleVersion: origin.bundleVersion, bundleSha256: origin.bundleSha256, components }, payload };
 }
 
 export function copyReleaseComponents(verified, packageDirectory) {

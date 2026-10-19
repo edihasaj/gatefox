@@ -12,6 +12,7 @@ import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { bootoutJob } from "./launchctl.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
+import { renameLaunchers } from "./mac-launcher-rename.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway";
@@ -32,6 +33,28 @@ export async function macService(action: string | undefined, configPath: string)
   if (action === "status") return serviceOperation(action, configPath);
   const config = await loadConfig(configPath);
   return withLoginRegistrationLock(config.stateDirectory, () => serviceOperation(action, configPath));
+}
+/** What installing the unified service needs from launchd; a test supplies fakes, so none of it reaches the real session. */
+export interface UnifiedInstallTools {
+  status(target: string): Promise<{ installed: boolean; pid?: number }>;
+  launchctl(args: string[]): Promise<unknown>;
+  finish(): Promise<Record<string, unknown>>;
+}
+/**
+ * `gateway service install` on a unified Mac. It never restarts or replaces a running service and swaps no plan: it starts
+ * the service only when it is not loaded or has no process, as it always did. New in 0.4.7, it first renames the launcher in
+ * the service plist file (and the desktop login plist, if one exists) from the managed `gateway` to `harness-gateway`, so
+ * macOS lists the background item under that name. launchd reads the file at its next load, so a loaded service keeps its
+ * current definition and shows the new name from the next login (or at once when this call loads it).
+ */
+export async function installUnifiedService(paths: { service: string; desktop: string; target: string; domain: string }, tools: UnifiedInstallTools): Promise<Record<string, unknown>> {
+  const renamed = await renameLaunchers(paths.service, paths.desktop);
+  const current = await tools.status(paths.target);
+  if (!current.installed) { await tools.launchctl(["enable", paths.target]); await tools.launchctl(["bootstrap", paths.domain, paths.service]); }
+  else if (!current.pid) await tools.launchctl(["kickstart", paths.target]);
+  const changed = renamed.programRewritten || renamed.desktopRewritten;
+  return { ...await tools.finish(), programRewritten: renamed.programRewritten, desktopRewritten: renamed.desktopRewritten,
+    ...(changed ? { appliesAt: renamed.programRewritten && !current.installed ? "now" : "next login" } : {}), ...(renamed.failed ? { launcherRenameFailed: true } : {}) };
 }
 async function serviceOperation(action: string | undefined, configPath: string): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin") throw new Error("User service setup currently supports macOS; use gateway serve on other systems");
@@ -57,6 +80,8 @@ async function serviceOperation(action: string | undefined, configPath: string):
   }
   if (plan) {
     if (!existing || !existing.includes("<string>daemon</string>")) throw new Error("Unified service registration is incomplete; restore its saved LaunchAgent before starting it");
+    if (action === "install") return installUnifiedService({ service: path, desktop: resolve(dirname(path), `${label}.desktop.plist`), target, domain }, {
+      status, launchctl: args => exec("/bin/launchctl", args), finish: () => consolidatedStatus(configured.stateDirectory) });
     const current = await status(target);
     if (action === "restart" && current.pid) {
       await requireMaintenanceWindow(configPath);

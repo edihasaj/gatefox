@@ -14,13 +14,15 @@ import { archiveStoppedExecutionReceipt } from "./service-execution-recovery.js"
 import { inspectLegacyWriters } from "./service-legacy-writers.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
-import { sharedServiceRegistration, stopSharedServiceReplacement } from "./mac-shared-native.js";
+import { componentUp, nativeRegistrationEnabled } from "./native-pause.js";
+import { sharedServiceRegistration } from "./mac-shared-native.js";
+import { defaultPlanSwapServices, enableRollbackMessage, rollBackEnable } from "./mac-shared-plan-swap.js";
 
 export async function executionHostReady(plan: ServicePlan, pid: number): Promise<boolean> {
   if (!plan.sharedExecutors && !plan.sharedNativeExecutor) return true;
   const paths = serviceExecutionPaths(plan); const home = executionHostHome(plan.config, paths.nativeHome);
   const owner = await readOwner(resolve(home, "owner.json"));
-  if (!owner || owner.state !== "running" || owner.pid !== pid || owner.configPath !== resolve(plan.config) || owner.nativeHome !== paths.nativeHome || owner.codex !== await realpath(paths.codex) || owner.socketPath !== resolve(home, "host.sock")) return false;
+  if (!owner || owner.state !== "running" || owner.pid !== pid || owner.configPath !== resolve(plan.config) || owner.nativeHome !== paths.nativeHome || (owner.capabilities?.includes("native") && owner.codex !== await realpath(paths.codex)) || owner.socketPath !== resolve(home, "host.sock")) return false;
   const socket = await socketIdentity(owner.socketPath);
   if (!socket || !owner.socket || !sameSocketIdentity(socket, owner.socket)) return false;
   const connection = new SocketAppServerConnection(owner.socketPath, async () => {});
@@ -34,24 +36,40 @@ export async function executionHostReady(plan: ServicePlan, pid: number): Promis
   } finally { connection.stop(); }
 }
 
+/** The two questions one service snapshot cannot answer about itself; tests replace both. */
+export interface SharedReadyChecks { ready(plan: ServicePlan, pid: number): Promise<boolean>; registered(state: string): Promise<boolean> }
+const sharedReadyChecks = (): SharedReadyChecks => ({ ready: executionHostReady, registered: nativeRegistrationEnabled });
+
+/**
+ * Whether one snapshot of the running service is a ready shared service. A paused relay counts as
+ * up and is never waited for: the relay is optional, so a Mac that had to set it aside still finishes
+ * its migration instead of hanging 45 s on a process that is never coming back. Only a machine whose
+ * registration is live and whose relay slot is running has to see one connect.
+ */
+export async function sharedServiceReady(plan: ServicePlan, status: Record<string, unknown>, state: string, port: number, began: number, checks = sharedReadyChecks()): Promise<boolean> {
+  const runtime = status.runtime as { executionHost?: { state: string }; components?: Array<{ state: string; kind?: string }> };
+  if (!status.statusCurrent || typeof status.pid !== "number" || runtime.executionHost?.state !== "running" || runtime.components?.length !== plan.components.length) return false;
+  const components = runtime.components;
+  if (!components.every(componentUp)) return false;
+  if (!await checks.ready(plan, status.pid)) return false;
+  if (plan.components.some(component => component.kind === "inference")) {
+    const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
+    if (!response.ok || (await response.json() as { status?: string }).status !== "ok") return false;
+  }
+  const native = plan.components.find(component => component.kind === "native");
+  if (!native || components.some(component => component.kind === "native" && component.state === "paused") || !await checks.registered(state)) return true;
+  // A live relay that has not written its receipt yet is simply not ready yet, not a failed migration.
+  try {
+    const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const path = resolve(relayHome, "status.json");
+    return (await stat(path)).mtimeMs >= began && JSON.parse(await readFile(path, "utf8")).status === "connected";
+  } catch { return false; }
+}
+
 async function awaitSharedReady(plan: ServicePlan, state: string, port: number, began: number): Promise<Record<string, unknown>> {
   for (let attempt = 0; attempt < 225; attempt++) {
-    const status = await consolidatedStatus(state); const runtime = status.runtime as { executionHost?: { state: string }; components?: Array<{ state: string }> };
-    if (status.statusCurrent && typeof status.pid === "number" && runtime.executionHost?.state === "running" && runtime.components?.length === plan.components.length && runtime.components.every(component => ["running", "complete"].includes(component.state))) {
-      try {
-        let ready = await executionHostReady(plan, status.pid);
-        if (ready && plan.components.some(component => component.kind === "inference")) {
-          const response = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
-          ready = response.ok && (await response.json() as { status?: string }).status === "ok";
-        }
-        const native = plan.components.find(component => component.kind === "native");
-        if (ready && native) {
-          const relayHome = native.args[native.args.indexOf("--relay-home") + 1]; const path = resolve(relayHome, "status.json");
-          ready = (await stat(path)).mtimeMs >= began && JSON.parse(await readFile(path, "utf8")).status === "connected";
-        }
-        if (ready) return status;
-      } catch { /* Startup can race the first readiness receipt. */ }
-    }
+    const status = await consolidatedStatus(state);
+    // Startup can race the first readiness receipt, so an unreadable answer is simply not ready yet.
+    try { if (await sharedServiceReady(plan, status, state, port, began)) return status; } catch { /* Look again in a moment. */ }
     await delay(200);
   }
   throw new Error("Shared execution host did not become ready; restoring the previous service plan");
@@ -71,7 +89,7 @@ export async function enableSharedExecutors(configPath: string, apply = false): 
   if (plan.sharedNativeExecutor && !(await gatewaySdkRuntime())?.selectedModelCompaction) throw new Error("Native and gateway sharing requires this release's verified selected-model compaction SDK; the service was preserved");
   if (!await sharedServiceRegistration(configPath)) throw new Error("The unified LaunchAgent belongs to another configuration or is unavailable; no service was changed");
   await requireMaintenanceWindow(configPath);
-  const sdk = await sdkIdentity(paths.codex); await validateExecutionSdk(sdk.codex);
+  const sdk = await sdkIdentity(paths.codex); const runtime = await gatewaySdkRuntime(); await validateExecutionSdk(runtime ? runtime.executable : sdk.codex);
   const latestService = await consolidatedStatus(config.stateDirectory);
   if ((await inspectLegacyWriters(configPath, config.stateDirectory, latestService.statusCurrent ? Number(latestService.pid) : undefined)).length) throw new Error("Legacy gateway writers run outside the unified service. Close their SSH or desktop connections normally before migration; no process was stopped");
   const path = servicePlanPath(config.stateDirectory);
@@ -92,19 +110,11 @@ export async function enableSharedExecutors(configPath: string, apply = false): 
     } catch (error) {
       const latest = await readServicePlan(config.stateDirectory);
       if (JSON.stringify(latest) !== JSON.stringify(next)) throw new Error(`Shared migration failed and the service plan changed; review the saved plan in ${backup}`);
-      const currentStatus = await consolidatedStatus(config.stateDirectory);
-      // A refused idle restart leaves the original process already running the
-      // restored plan. Do not send another stop request to that working service.
-      if (before.pid && currentStatus.pid === before.pid) { await writePrivateJson(path, plan); throw error; }
-      let restored = false;
-      try {
-        if (typeof currentStatus.pid === "number") await stopSharedServiceReplacement(configPath, config.stateDirectory, currentStatus.pid);
-        await archiveStoppedExecutionReceipt({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup);
-        await writePrivateJson(path, plan); restored = true;
-        await macService("install", configPath);
-      }
-      catch { throw new Error(restored ? `Shared migration failed; the previous plan is restored in ${backup}, but its service needs recovery`
-        : `Shared migration could not roll back safely; its ownership plan and active writers were preserved. Review ${backup}`); }
+      // The plan swap: the previous plan goes back first and the replacement restarts onto it through its own idle guard, so launchd's
+      // KeepAlive cannot relaunch the plan being undone. Stopping the job and waiting for it to stay down loses that race.
+      const result = await rollBackEnable({ configPath, state: config.stateDirectory, path, original, previous: plan, next, services: defaultPlanSwapServices,
+        beforePid: typeof before.pid === "number" ? before.pid : undefined, archive: () => archiveStoppedExecutionReceipt({ configPath: resolve(configPath), nativeHome: paths.nativeHome, ...sdk }, backup) });
+      const message = enableRollbackMessage("shared-executors", error, backup, path, result); if (message) throw new Error(message);
       throw error;
     }
   });

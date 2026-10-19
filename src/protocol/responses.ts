@@ -4,6 +4,10 @@ import { publicServiceTier, type AssistantMessagePhase, type PublicServiceTier, 
 
 type Item = Record<string, unknown> & { type: string; id: string };
 const identifier = (kind: string) => `${kind}_${randomUUID().replaceAll("-", "")}`;
+const collaborationTools = new Set(["spawn_agent", "send_message", "followup_task"]);
+function plaintextCollaborationCall(call: OpenAIToolCall): boolean {
+  return call.responseTool?.namespace === "collaboration" && collaborationTools.has(call.responseTool.name);
+}
 function outputCall(call: OpenAIToolCall): Item {
   const custom = call.responseTool?.type === "custom";
   const item: Item = {
@@ -11,7 +15,14 @@ function outputCall(call: OpenAIToolCall): Item {
     call_id: call.id, name: call.responseTool?.name || call.function.name, status: "completed",
   };
   if (call.responseTool?.namespace) item.namespace = call.responseTool.namespace;
-  if (!custom) { item.arguments = call.function.arguments; return item; }
+  if (!custom) {
+    item.arguments = call.function.arguments;
+    // Codex's router uses an explicit empty array as the protocol fact that these
+    // collaboration arguments are plaintext. Never infer plaintext for another tool.
+    if (call.encryptedFunctionArgs !== undefined) item.encrypted_function_args = [...call.encryptedFunctionArgs];
+    else if (plaintextCollaborationCall(call)) item.encrypted_function_args = [];
+    return item;
+  }
   let input: unknown;
   try { input = (JSON.parse(call.function.arguments) as { input?: unknown }).input; }
   catch { throw new ResponsesTranslationError("Provider returned invalid custom tool arguments", "invalid_provider_output"); }
@@ -21,10 +32,11 @@ function outputCall(call: OpenAIToolCall): Item {
 export function responseToolItems(calls: OpenAIToolCall[]): Item[] { return calls.map(outputCall); }
 function callFrames(item: Item, position: number): WireEvent[] {
   const custom = item.type === "custom_tool_call";
+  const encrypted = !custom && Object.hasOwn(item, "encrypted_function_args") ? { encrypted_function_args: item.encrypted_function_args } : {};
   return [
     { type: "response.output_item.added", output_index: position, item: { ...item, status: "in_progress" } },
     { type: custom ? "response.custom_tool_call_input.done" : "response.function_call_arguments.done",
-      output_index: position, item_id: item.id, name: item.name, ...(custom ? { input: item.input } : { arguments: item.arguments }) },
+      output_index: position, item_id: item.id, name: item.name, ...(custom ? { input: item.input } : { arguments: item.arguments }), ...encrypted },
     { type: "response.output_item.done", output_index: position, item },
   ];
 }
@@ -34,12 +46,18 @@ export function responseToolFrames(calls: OpenAIToolCall[], offset: number): str
   return frames;
 }
 
+/** Cache writes are billing detail that stays in the local ledger: a Responses client sees its cached reads only. */
+function clientUsage(usage: Usage): Usage {
+  const { input_tokens_details: details, ...counts } = usage;
+  return details ? { ...counts, input_tokens_details: { cached_tokens: details.cached_tokens } } : counts;
+}
+
 type Thought = { item: Item; position: number; parts: Map<number, string> };
 type Message = { id: string; position: number; value: string; providerId?: string; phase?: AssistantMessagePhase; closed?: boolean };
 
 /** A single response ledger drives both streamed events and the final JSON body. */
 export class ResponsesWriter {
-  private readonly responseId = identifier("resp");
+  private readonly responseId: string;
   private readonly created = Math.floor(Date.now() / 1000);
   private readonly ledger: Item[] = [];
   private readonly thoughts = new Map<string, Thought>();
@@ -52,7 +70,7 @@ export class ResponsesWriter {
   private tokens: Usage = { total_tokens: 0, input_tokens: 0, output_tokens: 0 };
   private serviceTier?: PublicServiceTier;
   private endTurn?: boolean;
-  constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void) {}
+  constructor(private readonly model: string, private readonly emit: (event: WireEvent) => void, options: { id?: string } = {}) { this.responseId = options.id ?? identifier("resp"); }
   /** The inference has a real terminal event; the user turn may still continue. */
   get completed(): boolean { return this.status === "completed" || this.status === "incomplete"; }
   private publish(frame: WireEvent): void { this.emit({ ...frame, sequence_number: this.serial++ }); }
@@ -155,10 +173,17 @@ export class ResponsesWriter {
         const item = outputCall(event.call); const position = this.ledger.length;
         for (const frame of callFrames(item, position)) this.publish(frame); this.ledger.push(item); return;
       }
+      case "native-item": {
+        // Opaque to the gateway: a search item is relayed and kept in the ledger as received.
+        if (this.message?.providerId === undefined) this.closeMessage();
+        const item = structuredClone(event.item) as Item; const position = this.ledger.length;
+        this.publish({ type: "response.output_item.added", output_index: position, item });
+        this.publish({ type: "response.output_item.done", output_index: position, item }); this.ledger.push(item); return;
+      }
       case "done": {
         if (event.interrupted && event.endTurn !== false) throw new Error("Interrupted inference cannot finish the user turn");
         for (const message of this.messages.values()) this.closeMessage(message, event.interrupted ? "incomplete" : "completed");
-        this.closeThoughts(); this.tokens = event.usage;
+        this.closeThoughts(); this.tokens = clientUsage(event.usage);
         this.serviceTier = publicServiceTier(event.serviceTier); this.status = event.interrupted ? "incomplete" : "completed";
         this.endTurn = typeof event.endTurn === "boolean" ? event.endTurn : undefined;
         this.publish({ type: event.interrupted ? "response.incomplete" : "response.completed", response: this.snapshot(this.status) }); return;

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, readlink, access } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { gatewayEngineHome } from "../gateway-engine-home.js";
+import { gatewayEngineHome, gatewayEnvironment } from "../gateway-engine-home.js";
 
 test("private executor follows global AGENTS created later and never links native config or auth", async () => {
   const root = await mkdtemp(join(tmpdir(), "gateway-instructions-")); const native = join(root, "native"); await mkdir(native);
@@ -29,4 +29,17 @@ test("gateway chats share the native hooks and saved prompts, so client hooks fi
     assert.equal(await readlink(join(home, "hooks.json")), join(native, "hooks.json"));
     assert.equal(await readFile(join(home, "prompts", "review.md"), "utf8"), "Review prompt");
   } finally { if (previous === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous; }
+});
+
+test("a gateway engine runs headless, without a platform credential or a remote control to pair with", () => {
+  const previous = { CODEX_API_KEY: process.env.CODEX_API_KEY, OPENAI_API_KEY: process.env.OPENAI_API_KEY, OPENAI_BASE_URL: process.env.OPENAI_BASE_URL };
+  process.env.CODEX_API_KEY = "must-not-reach-the-engine"; process.env.OPENAI_API_KEY = "must-not-reach-the-engine"; process.env.OPENAI_BASE_URL = "https://example.invalid/v1";
+  try {
+    const env = gatewayEnvironment("/gateway/engine/home");
+    assert.equal(env.CODEX_HOME, "/gateway/engine/home");
+    assert.equal(env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED, "1");
+    for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) assert.equal(env[key], undefined, key);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
 });

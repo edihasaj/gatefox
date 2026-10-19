@@ -29,8 +29,8 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
  * The client's own native row supplies a Codex 2 row's harness behaviour: its instructions and
  * messages with their usage flags, tool mode (a code mode only where the executor runs it),
  * defaults, window share and truncation. Account capabilities keep the upstream values: service
- * tiers, multi-agent fields, the window maximum and auto-compaction limit, and search, which stays
- * off until tool_search passes through. comp_hash is never copied. The node_repl policy (both
+ * tiers, multi-agent fields, the window maximum and auto-compaction limit. Search stays off whatever the native
+ * row says: the ChatGPT backend refuses a forwarded `tool_search`, so a Codex 2 row must not make Codex add one. comp_hash is never copied. The node_repl policy (both
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
  * requires_sandboxed_review, model_specialty) follow the native row too; requires_sandboxed_review
  * is data only, because neither the pinned SDK nor ChatGPT 26.1007's codex reads it. Without a marker or a native
@@ -56,6 +56,9 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
   if (typeof source.support_verbosity === "boolean") copy.support_verbosity = source.support_verbosity;
+  // Search stays off: the ChatGPT backend refuses `tool_search` when the gateway forwards it (HTTP 400, seen in
+  // production on 0.4.4), so a Codex 2 row must never make Codex add that tool.
+  copy.supports_search_tool = false;
   // The default must be a level this route offers; Codex would otherwise start chats at an unsupported effort.
   const levels = Array.isArray(row.supported_reasoning_levels) ? row.supported_reasoning_levels.map(level => plain(level)?.effort) : [];
   if (typeof source.default_reasoning_level === "string" && levels.includes(source.default_reasoning_level)) copy.default_reasoning_level = source.default_reasoning_level;
@@ -187,11 +190,15 @@ export function withFallback(model: Row, fallback: NodeReplFallback): Row {
 
 /**
  * A native row carried into the executor catalog keeps its own values apart from the two node_repl
- * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. A row with a plain
- * policy and a reviewer that runs keeps both; one that states no policy gets node_repl off here,
- * never the SDK default. The native engine's own catalog is unchanged.
+ * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. Its
+ * `supports_search_tool` is carried off, as a Codex 2 row has it: Codex would add its `tool_search` tool on a row
+ * that says search is on, and the ChatGPT backend refuses that tool when the gateway forwards it (HTTP 400). A row
+ * whose policy matches and that does not turn search on is returned unchanged. The native engine's own catalog is
+ * unchanged.
  */
 export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): Row {
   const policy = nodeReplPolicy(model, native, reviewers);
-  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required ? model : { ...model, ...policy };
+  const search: Row | undefined = model.supports_search_tool === true ? { supports_search_tool: false } : undefined;
+  return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required && !search
+    ? model : { ...model, ...policy, ...search };
 }

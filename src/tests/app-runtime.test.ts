@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { appendFile, chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { associateAppRuntime, renderInstalledLauncher } from "../app-runtime.js";
+import { associateAppRuntime, associateAppRuntimeTransaction, renderInstalledLauncher } from "../app-runtime.js";
+import { InstallationAborted, withInstallationLock } from "../app-runtime-lock.js";
 
 const marker = "# Managed by subscription-gateway installer";
 
@@ -55,6 +56,104 @@ test("preview validates the same inputs without creating a registry link, state,
   await assert.rejects(lstat(join(f.install, "app-runtime"))); await assert.rejects(lstat(f.state));
 }));
 
+test("both current managed launchers keep the shared harness command identity", () => fixture(async f => {
+  const harness = join(f.home, ".local/bin/harness-gateway");
+  await f.legacy(harness);
+  assert.equal(await associateAppRuntime(f.options()), true);
+  assert.deepEqual(await readFile(f.gateway), await readFile(harness));
+  assert.equal(run(f.gateway, "literal").split("|")[1], await realpath(harness));
+  assert.equal(run(harness, "literal").split("|")[1], await realpath(harness));
+}));
+
+test("refuses a marked sibling from a foreign installation before changing this installation", () => fixture(async f => {
+  const foreign = join(f.root, "foreign/share/subscription-gateway");
+  const originalGateway = await readFile(f.gateway); const originalSibling = await readFile(f.subscription);
+  await writeFile(f.subscription, renderInstalledLauncher(foreign, f.subscription), { mode: 0o700 });
+  const foreignSibling = await readFile(f.subscription);
+  await assert.rejects(associateAppRuntime(f.options()), /unsafe/);
+  assert.deepEqual(await readFile(f.gateway), originalGateway);
+  assert.deepEqual(await readFile(f.subscription), foreignSibling);
+  assert.notDeepEqual(foreignSibling, originalSibling);
+  await assert.rejects(lstat(join(f.install, "app-runtime")));
+}));
+
+test("rolls back each runtime publication without overwriting a competing wrapper", async () => {
+  for (const failure of ["app-runtime", "gateway", "subscription-gateway"] as const) await fixture(async f => {
+    const originals = new Map([[f.gateway, await readFile(f.gateway)], [f.subscription, await readFile(f.subscription)]]);
+    const option = { ...f.options(), beforePublish: async (path: string) => {
+      if (path.endsWith(failure)) {
+        if (failure === "subscription-gateway") await writeFile(f.subscription, `#!/bin/sh\n${marker}\necho external\n`, { mode: 0o700 });
+        throw new Error("fixture publication failure");
+      }
+    } };
+    await assert.rejects(associateAppRuntime(option), /fixture publication failure/);
+    await assert.rejects(lstat(join(f.install, "app-runtime")));
+    assert.deepEqual(await readFile(f.gateway), originals.get(f.gateway));
+    if (failure === "subscription-gateway") assert.match(await readFile(f.subscription, "utf8"), /echo external/);
+    else assert.deepEqual(await readFile(f.subscription), originals.get(f.subscription));
+  });
+});
+
+test("uses the validated custom-prefix installation, including spaces and quotes", () => fixture(async f => {
+  const prefix = join(f.root, "prefix with ' quote"); const install = join(prefix, "share/subscription-gateway"); const gateway = join(prefix, "bin/gateway"); const harness = join(prefix, "bin/harness-gateway");
+  await mkdir(join(install, "releases/one/runtime/bin"), { recursive: true, mode: 0o700 }); await mkdir(join(install, "releases/one/package/dist"), { recursive: true, mode: 0o700 });
+  await writeFile(join(install, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 }); await writeFile(join(install, "releases/one/package/dist/cli.js"), "fixture", { mode: 0o600 }); await f.node(join(install, "releases/one/runtime/bin/node"), "release"); await symlink("releases/one", join(install, "current"));
+  await mkdir(join(prefix, "bin"), { recursive: true, mode: 0o700 }); await writeFile(gateway, renderInstalledLauncher(install, harness), { mode: 0o700 }); await writeFile(harness, renderInstalledLauncher(install, harness), { mode: 0o700 });
+  const options = { ...f.options(), commandPath: gateway };
+  assert.equal(await associateAppRuntime({ ...options, apply: false }), true);
+  await assert.rejects(lstat(join(install, "app-runtime")));
+  assert.equal(await associateAppRuntime(options), true); assert.equal(await associateAppRuntime(options), false);
+  assert.deepEqual(await readFile(gateway), await readFile(harness)); assert.equal(run(gateway, "quoted prefix").split("|")[1], await realpath(harness));
+}));
+
+test("keeps every runtime dependency when a newer published wrapper refuses rollback", () => fixture(async f => {
+  const originalGateway = await readFile(f.gateway); const external = `#!/bin/sh\n${marker}\necho newer\n`;
+  await assert.rejects(associateAppRuntimeTransaction(f.options(), async () => {
+    await writeFile(f.subscription, external, { mode: 0o700 }); throw new Error("post-publication failure");
+  }), (error: unknown) => (error as { code?: string }).code === "EROLLBACK");
+  assert.deepEqual(await readFile(f.subscription, "utf8"), external);
+  assert.notDeepEqual(await readFile(f.gateway), originalGateway, "the sibling dependency remains published too");
+  assert.equal((await lstat(join(f.install, "app-runtime"))).isSymbolicLink(), true);
+}));
+
+test("SIGTERM aborts a live association, restores publications, and releases its lock", () => fixture(async f => {
+  const originalGateway = await readFile(f.gateway); const originalSubscription = await readFile(f.subscription); const ready = join(f.root, "publisher-ready");
+  const script = `
+    import { associateAppRuntime } from ${JSON.stringify(pathToFileURL(join(process.cwd(), "dist/app-runtime.js")).href)};
+    import { writeFile } from "node:fs/promises";
+    const options=${JSON.stringify(f.options())}; const pause=${JSON.stringify(ready)};
+    try {
+      await associateAppRuntime({ ...options, afterPublish: async (path, guard) => {
+        if (!path.endsWith("/gateway")) return;
+        await writeFile(pause, "ready");
+        for (;;) { await new Promise(resolve => setTimeout(resolve, 10)); guard.check(); }
+      }});
+    } catch (error) { process.exitCode = error && error.signal === "SIGTERM" ? 143 : 1; }
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "--eval", script], { detached: true, stdio: "ignore" });
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (await readFile(ready, "utf8").then(() => true, () => false)) break;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  assert.equal(await readFile(ready, "utf8"), "ready"); process.kill(-child.pid!, "SIGTERM");
+  const code = await new Promise<number | null>(resolve => child.once("close", resolve)); assert.equal(code, 143);
+  assert.deepEqual(await readFile(f.gateway), originalGateway); assert.deepEqual(await readFile(f.subscription), originalSubscription);
+  await assert.rejects(lstat(join(f.install, "app-runtime"))); await assert.rejects(lstat(join(f.install, ".gateway-installation-lock")));
+}));
+
+test("SIGTERM immediately after lock acquisition cleans up only the owned lock", () => fixture(async f => {
+  await assert.rejects(withInstallationLock(f.install, async guard => {
+    void guard; throw new InstallationAborted("SIGTERM");
+  }), (error: unknown) => (error as { signal?: string }).signal === "SIGTERM");
+  await assert.rejects(lstat(join(f.install, ".gateway-installation-lock")));
+}));
+
+test("refuses an active installer lock without replacing a launcher", () => fixture(async f => {
+  const before = await readFile(f.gateway); await mkdir(join(f.install, ".gateway-installation-lock"), { mode: 0o700 });
+  await assert.rejects(associateAppRuntime(f.options()), (error: unknown) => (error as { code?: string }).code === "ELOCKBUSY");
+  assert.deepEqual(await readFile(f.gateway), before);
+}));
+
 test("a registered but later missing app runtime fails closed instead of selecting release Node", () => fixture(async f => {
   await associateAppRuntime(f.options()); await unlink(join(f.app, "Contents/Resources/backend/runtime/bin/node"));
   const result = (() => { try { run(f.gateway, "x"); return "ran"; } catch (error) { return (error as { status?: number }).status; } })(); assert.equal(result, 78);
@@ -93,8 +192,16 @@ test("refuses unsafe installers, wrappers, ancestors, and an unrelated registry 
 });
 
 test("the installer inline generator exactly matches the runtime association renderer", async () => {
-  const source = await readFile(join(process.cwd(), "scripts/install.sh"), "utf8"); const script = source.match(/<<'JS'\n([\s\S]*?)\nJS/)?.[1]; assert.ok(script, "installer has its Node launcher generator");
-  const root = "/tmp/root with ' quotes"; const output = join(tmpdir(), `gateway-launcher-${Date.now()}-${Math.random()}.new`); const command = output.slice(0, -4);
-  try { execFileSync(process.execPath, ["--input-type=module", "-", root, output], { input: script }); assert.equal(await readFile(output, "utf8"), renderInstalledLauncher(root, command)); }
-  finally { await rm(output, { force: true }); }
+  const source = await readFile(join(process.cwd(), "scripts/install.sh"), "utf8");
+  const script = [...source.matchAll(/<<'JS'\n([\s\S]*?)\nJS/g)].map(match => match[1]).find(value => value?.includes("const [root,launcher,...files]"));
+  assert.ok(script, "installer has its Node launcher generator");
+  const root = "/tmp/root with ' quotes";
+  const output = join(tmpdir(), `gateway-launcher-${Date.now()}-${Math.random()}.new`);
+  const compatibility = `${output}.compat`; const command = output.slice(0, -4);
+  try {
+    execFileSync(process.execPath, ["--input-type=module", "-", root, command, output, compatibility], { input: script });
+    assert.equal(await readFile(output, "utf8"), renderInstalledLauncher(root, command));
+    assert.deepEqual(await readFile(output), await readFile(compatibility));
+  }
+  finally { await rm(output, { force: true }); await rm(compatibility, { force: true }); }
 });

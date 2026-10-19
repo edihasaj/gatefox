@@ -34,7 +34,7 @@ test("Fast maps to Claude fast mode only for models that offer it", () => {
   assert.equal(claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "fast" }), true);
   assert.throws(() => claudeFastMode(config, { model: "claude-haiku-5-5", input: "x", service_tier: "priority" }), /does not offer Fast/);
   // Claude has no flex processing, so Flex is served as Standard rather than rejected.
-  for (const model of ["claude-opus-5-5", "claude-haiku-5-5"]) assert.equal(claudeFastMode(config, { model, input: "x", service_tier: "flex" }), false);
+  for (const model of ["claude-opus-5-5", "claude-haiku-5-5"]) assert.equal(claudeFastMode(config, { model, input: "x", service_tier: "flex" }), false, model);
   assert.throws(() => claudeFastMode(config, { model: "claude-opus-5-5", input: "x", service_tier: "scale" }), /service tier/);
 });
 
@@ -44,10 +44,10 @@ test("A Flex request runs Claude as Standard: the CLI gets no fast mode setting"
   // The fixture answers one stream-json turn and records the argv each CLI was started with.
   const script = `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';for await(const _ of process.stdin){}appendFileSync(${JSON.stringify(capture)},JSON.stringify(process.argv.slice(2))+'\\n');
 const out=value=>console.log(JSON.stringify(value));const event=value=>out({type:'stream_event',event:value});
-out({type:'system',subtype:'init',fast_mode_state:'off'});event({type:'message_start',message:{id:'msg_1',usage:{input_tokens:1,output_tokens:1}}});
+out({type:'system',subtype:'init',fast_mode_state:'on'});event({type:'message_start',message:{id:'msg_1',usage:{input_tokens:1,output_tokens:1}}});
 event({type:'content_block_start',index:0,content_block:{type:'text',text:''}});event({type:'content_block_delta',index:0,delta:{type:'text_delta',text:'ok'}});
 event({type:'content_block_stop',index:0});event({type:'message_delta',delta:{stop_reason:'end_turn'},usage:{output_tokens:1}});event({type:'message_stop'});
-out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:'off',usage:{input_tokens:1,output_tokens:1}});\n`;
+out({type:'result',is_error:false,subtype:'success',result:'ok',fast_mode_state:'on',usage:{input_tokens:1,output_tokens:1}});\n`;
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
   try {

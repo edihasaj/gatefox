@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { readFile, mkdir, open, rename, chmod, link, unlink } from "node:fs/promises";
+import { readFile, mkdir, open, rename, chmod, link, unlink, utimes } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
@@ -11,6 +11,11 @@ export interface ProviderConfig {
   type: ProviderKind;
   models: Record<string, string>;
   baseUrl?: string;
+  /**
+   * chat-completions-api only: allow a plain `http:` base URL when every address its host resolves to is a Tailscale address
+   * (100.64.0.0/10 or fd7a:115c:a1e0::/48). The address is checked on each connection, before any byte is sent.
+   */
+  tailnet?: boolean;
   apiKeyEnv?: string;
   credentialFile?: string;
   agentName?: string;
@@ -19,6 +24,8 @@ export interface ProviderConfig {
   modelMetadata?: Record<string, ModelMetadata>;
   /** Claude subscription only: one-shot replay or a live CLI session per Codex thread. */
   claudeSessions?: ClaudeSessionConfig;
+  /** Copilot subscription only: one-shot requests or a live CLI session per Codex thread. */
+  copilotSessions?: CopilotSessionConfig;
 }
 export interface ClaudeSessionConfig { mode?: "replay" | "live"; max?: number; parkMinutes?: number; replayFormat?: "text" | "json" }
 export type ClaudeSessionSettings = Required<ClaudeSessionConfig>;
@@ -34,6 +41,13 @@ export function claudeSessionMax(memoryBytes = totalmem()): number {
 export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">, memoryBytes = totalmem()): ClaudeSessionSettings {
   const value = provider.claudeSessions || {};
   return { mode: value.mode ?? "replay", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, replayFormat: value.replayFormat ?? "text" };
+}
+/** `live` is the default; `replay` is accepted as another name for `oneshot`, matching claudeSessions. */
+export interface CopilotSessionConfig { mode?: "oneshot" | "replay" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }
+export interface CopilotSessionSettings { mode: "oneshot" | "live"; max: number; parkMinutes: number; toolWaitMinutes: number }
+export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSessions">): CopilotSessionSettings {
+  const value = provider.copilotSessions || {};
+  return { mode: value.mode === "oneshot" || value.mode === "replay" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
@@ -66,6 +80,12 @@ export interface GatewayConfig {
   timeoutMs?: number;
   clientOnly?: boolean;
   accountEngines?: AccountEngineConfig[];
+  /**
+   * The provider id new gateway chats are recorded with: `legacy` (the default) for `subscription_gateway`, or `openai`, an
+   * opt-in for a Mac whose native relay is verified, so a stock engine lists them too. Existing chats keep the id they were
+   * saved with either way. See docs/harness-identity.md.
+   */
+  chatIdentity?: "openai" | "legacy";
 }
 
 const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
@@ -80,6 +100,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.clientOnly && (config.providers.length || !config.port)) throw new Error("Remote clients require a fixed forwarded port and no local providers");
   if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
+  if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const ids = new Set<string>(); const aliases = new Set<string>();
   const providers = config.providers.map(provider => {
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
@@ -108,11 +129,15 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if ((metadata.autoCompactTokenLimit !== undefined && !integerIn(metadata.autoCompactTokenLimit, 1024)) || (metadata.maxContextWindow !== undefined && !integerIn(metadata.maxContextWindow, 1024))) throw new Error("autoCompactTokenLimit and maxContextWindow must be at least 1024 tokens");
       readServiceTierMetadata(metadata);
     }
+    // Only the chat adapter (and its discovery) connects through the address check; another adapter would send its key over plain HTTP unchecked.
+    if (provider.tailnet !== undefined && provider.type !== "chat-completions-api") throw new Error(`${provider.id}: tailnet is only valid for chat-completions-api providers`);
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
       if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);
       const url = new URL(provider.baseUrl);
       if (url.username || url.password || url.search || url.hash) throw new Error("baseUrl must not contain credentials, a query, or a fragment");
-      if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
+      if (provider.tailnet !== undefined && typeof provider.tailnet !== "boolean") throw new Error(`${provider.id}: tailnet must be boolean`);
+      const tailnetHttp = provider.tailnet === true && url.protocol === "http:";
+      if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
     if (provider.type === "codex-subscription" && !provider.credentialFile) throw new Error(`${provider.id}: credentialFile is required`);
     const sessions = provider.claudeSessions;
@@ -123,11 +148,22 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (sessions.max !== undefined && !integerIn(sessions.max, 1, 32)) throw new Error(`${provider.id}: claudeSessions max must be 1 through 32`);
       if (sessions.parkMinutes !== undefined && !integerIn(sessions.parkMinutes, 5, 240)) throw new Error(`${provider.id}: claudeSessions parkMinutes must be 5 through 240`);
     }
-    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
+    const copilot = provider.copilotSessions;
+    if (copilot !== undefined) {
+      if (provider.type !== "copilot-subscription") throw new Error(`${provider.id}: copilotSessions is only valid for copilot-subscription providers`);
+      if (!copilot || typeof copilot !== "object" || Array.isArray(copilot)) throw new Error(`${provider.id}: copilotSessions must be an object`);
+      if (copilot.mode !== undefined && !["oneshot", "replay", "live"].includes(copilot.mode)) throw new Error(`${provider.id}: copilotSessions mode must be oneshot, replay or live`);
+      if (copilot.max !== undefined && !integerIn(copilot.max, 1, 16)) throw new Error(`${provider.id}: copilotSessions max must be 1 through 16`);
+      if (copilot.parkMinutes !== undefined && !integerIn(copilot.parkMinutes, 5, 240)) throw new Error(`${provider.id}: copilotSessions parkMinutes must be 5 through 240`);
+      // Copilot fails a pending tool call after 30 minutes and then calls the model on its own; the gateway closes the session first.
+      if (copilot.toolWaitMinutes !== undefined && !integerIn(copilot.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: copilotSessions toolWaitMinutes must be 1 through 25`);
+    }
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
   return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
-    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}) };
+    maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
+    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}) };
 }
 
 function validateAccountEngines(value: unknown, providers: ProviderConfig[]): AccountEngineConfig[] {
@@ -145,6 +181,22 @@ function validateAccountEngines(value: unknown, providers: ProviderConfig[]): Ac
   });
 }
 
+/** Every alias the configuration routes, across providers. */
+const configuredAliases = (config: Pick<GatewayConfig, "providers">): string[] => config.providers.flatMap(provider => Object.keys(provider.models));
+
+/**
+ * Once the native catalog is known, an alias that equals one of its slugs is refused: chat classification lets the native
+ * slug win such a tie, so the alias could never start a gateway chat, and its chats would run on the native engine.
+ */
+export function validateAliasesAgainstNative(config: Pick<GatewayConfig, "providers">, nativeSlugs: ReadonlySet<string>): void {
+  if (configuredAliases(config).some(alias => nativeSlugs.has(alias))) throw new Error("A gateway model alias collides with a native model ID; rename that alias");
+}
+
+/** Aliases without a `/` are valid but could collide with a native model added later; the adapter warns about them at load. */
+export function unscopedAliasCount(config: Pick<GatewayConfig, "providers">): number {
+  return configuredAliases(config).filter(alias => !alias.includes("/")).length;
+}
+
 export async function loadConfig(path: string): Promise<GatewayConfig> {
   let parsed: unknown;
   try { parsed = JSON.parse(await readFile(path, "utf8")); }
@@ -152,13 +204,18 @@ export async function loadConfig(path: string): Promise<GatewayConfig> {
   return validateConfig(parsed, dirname(resolve(path)));
 }
 
-export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+/** `mtimeMs` gives the file that modification time before the rename, so no reader ever sees the new contents with another one. */
+export async function writePrivateJson(path: string, value: unknown, options: { mtimeMs?: number } = {}): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${randomBytes(8).toString("hex")}.tmp`;
   const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
-  finally { await file.close(); }
-  await rename(temporary, path); await chmod(path, 0o600);
+  try {
+    try { await file.writeFile(JSON.stringify(value, null, 2) + "\n"); await file.sync(); }
+    finally { await file.close(); }
+    if (options.mtimeMs !== undefined) await utimes(temporary, new Date(), new Date(options.mtimeMs));
+    await rename(temporary, path);
+  } catch (error) { await unlink(temporary).catch(() => {}); throw error; } // A failed write or rename leaves no temp file behind.
+  await chmod(path, 0o600);
 }
 
 export async function readClientToken(path: string): Promise<string> {

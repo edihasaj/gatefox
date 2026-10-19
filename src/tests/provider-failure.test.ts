@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields } from "../provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "../provider-failure.js";
 import { ProviderError, type ProviderStreamDiagnostic } from "../providers/provider.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "../protocol/request.js";
 
@@ -197,4 +197,18 @@ test("translation fields are read without invoking getters or coercing hostile v
   assert.equal(reads, 0);
   const inherited = Object.create(new ResponsesTranslationError("private", "duplicate_tool"));
   assert.deepEqual(translationFailureFields(inherited), {}, "an inherited reason is not this failure's metadata");
+});
+
+test("the stderr failure line carries translation_reason for a refused compaction and drops any other value", () => {
+  const failure = unsupportedCompactionFailure();
+  const fields = translationFailureFields(failure);
+  assert.deepEqual(fields, { translation_reason: "unsupported_compaction" });
+  const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: classifyProviderFailure(failure, undefined), ...fields });
+  assert.equal(record.code, "invalid_request"); assert.equal(record.status, 400);
+  assert.equal(record.translation_reason, "unsupported_compaction");
+  assert.ok(!JSON.stringify(record).includes("compaction inside the gateway"), "the fixed message text stays out of the line");
+  for (const value of ["private data", "Bearer sk-fixture", "invalid_shape", ""]) {
+    const other = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure, translation_reason: value });
+    assert.ok(!Object.hasOwn(other, "translation_reason"), `${JSON.stringify(value)} must be dropped`);
+  }
 });

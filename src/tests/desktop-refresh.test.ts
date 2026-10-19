@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
-import { readFile, writeFile, mkdir, readlink } from "node:fs/promises";
+import { readFile, readdir, writeFile, mkdir, readlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { shimFiles } from "./shim-fixture.js";
 import { modelCatalog } from "../catalog.js";
 import { DesktopCatalog } from "../desktop-catalog.js";
 import { writePrivateJson } from "../config.js";
+import { gatewayIdentities } from "./identity-cases.js";
 
 async function client(files?: Awaited<ReturnType<typeof shimFiles>>) {
   files ??= await shimFiles();
@@ -103,12 +104,13 @@ test("gateway failure leaves native discovery and primary account requests usabl
   const c = await client();
   try {
     const thread = await c.rpc("thread/start", { model: "claude/model" });
+    const before = await c.rpc("engine/info", { threadId: thread.thread.id });
     await assert.rejects(c.rpc("crash", { threadId: thread.thread.id }), /exited/);
     assert.equal((await c.rpc("account/read")).account.email, "primary-test-account");
     assert.equal((await c.rpc("model/list")).data[0].model, "native");
-    await assert.rejects(c.rpc("turn/start", { threadId: thread.thread.id, model: "claude/model" }), /resume this chat/);
-    await c.rpc("thread/resume", { threadId: thread.thread.id });
-    assert.equal((await c.rpc("engine/info", { threadId: thread.thread.id })).primaryAuthPresent, false);
+    // The chat's next request loads it on a new gateway executor first (docs/app-server.md, re-attaching a gateway chat).
+    const after = await c.rpc("engine/info", { threadId: thread.thread.id });
+    assert.notEqual(after.pid, before.pid); assert.equal(after.primaryAuthPresent, false);
   } finally { await c.stop(); }
 });
 
@@ -142,4 +144,30 @@ test("credential-free clients read saved gateway chats before model discovery an
     assert.equal((await reopened.rpc("account/read")).account.email, "primary-test-account");
     assert.equal(await readFile(join(files.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
   } finally { await reopened.stop(); }
+});
+
+for (const identity of gatewayIdentities) test(`a saved gateway chat resumes on a gateway executor whichever provider id it was saved with (${identity.name})`, { timeout: 15000 }, async () => {
+  const c = await client();
+  try {
+    // Saved before this adapter started, as by an earlier release: the desktop resumes both with no model and no provider.
+    const sessions = join(c.nativeHome, "sessions"); await mkdir(sessions, { recursive: true });
+    await writeFile(join(sessions, "saved-gateway.json"), JSON.stringify({ id: "saved-gateway", modelProvider: identity.provider, model: "claude/model" }));
+    await writeFile(join(sessions, "saved-native.json"), JSON.stringify({ id: "saved-native", modelProvider: "openai", model: "native" }));
+    const nativeEngine = await c.rpc("engine/info", {});
+    const resumed = await c.rpc("thread/resume", { threadId: "saved-gateway", model: null, modelProvider: null });
+    assert.deepEqual({ provider: resumed.modelProvider, model: resumed.model }, { provider: identity.provider, model: "claude/model" }, "a resume keeps the provider id the chat was saved with");
+    const gatewayEngine = await c.rpc("engine/info", { threadId: "saved-gateway" });
+    assert.notEqual(gatewayEngine.pid, nativeEngine.pid); assert.equal(gatewayEngine.primaryAuthPresent, false);
+    const nativeResume = await c.rpc("thread/resume", { threadId: "saved-native", model: null, modelProvider: null });
+    assert.deepEqual({ provider: nativeResume.modelProvider, model: nativeResume.model }, { provider: "openai", model: "native" });
+    assert.equal((await c.rpc("engine/info", { threadId: "saved-native" })).pid, nativeEngine.pid);
+    // A new gateway chat is recorded in the gateway's registry, so it is told apart without the provider id. This checkout has no
+    // gateway SDK artifact, so its executor is a stock Codex and new chats keep the legacy id (docs/harness-identity.md).
+    const started = await c.rpc("thread/start", { model: "claude/model" });
+    assert.equal(started.modelProvider, "subscription_gateway");
+    const registry = JSON.parse(await readFile(join(c.value.stateDirectory, "gateway-chats", (await readdir(join(c.value.stateDirectory, "gateway-chats"))).find(name => name.endsWith(".json"))!), "utf8"));
+    // A saved `openai` chat that only its alias identified is written too when it is routed; a legacy one needs no entry.
+    assert.deepEqual(registry.chats.map((chat: { id: string; origin: string }) => [chat.id, chat.origin]).sort(),
+      [[started.thread.id, "start"], ...(identity.name === "openai" ? [["saved-gateway", "started"]] : [])].sort());
+  } finally { await c.stop(); }
 });

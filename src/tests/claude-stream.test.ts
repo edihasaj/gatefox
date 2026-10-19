@@ -123,7 +123,7 @@ test("the provider forwards every parallel call and stops the CLI before it can 
   try {
     const events = await f.infer();
     assert.deepEqual(events.map(item => item.type === "tool" ? item.call.function.name : item.type), ["alpha", "beta", "done"]);
-    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100, cache_creation_tokens: 5 } } });
+    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 115, output_tokens: 64, total_tokens: 179, input_tokens_details: { cached_tokens: 100, cache_creation_tokens: 5 } }, accounting: { cacheWriteTokens: 5 } });
     await new Promise(resolve => setTimeout(resolve, 300));
     assert.equal(existsSync(posted), false, "the CLI was stopped at message_delta");
     assert.throws(() => process.kill(f.pid(), 0), { code: "ESRCH" });

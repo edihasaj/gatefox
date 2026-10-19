@@ -18,7 +18,8 @@ shipping a Developer ID signed app and its startup launcher.
 
 Build the matching canonical CLI archive first. From a clean, committed local
 `production` checkout whose `package.json` and lockfile have the exact release
-version, run the local release orchestrator:
+version. After the source, backend archive, and local gates are reviewed, run
+the one-pass distribution command:
 
 ```sh
 node scripts/release-macos-app.mjs \
@@ -26,16 +27,15 @@ node scripts/release-macos-app.mjs \
   --backend-sha256 LOWERCASE_SHA256 \
   --identity DEVELOPER_ID_SHA1 \
   --keychain /absolute/signing.keychain-db \
-  --profile asc-notary
+  --profile asc-notary \
+  --publish
 ```
 
 It verifies the canonical backend archive and production source, builds, signs,
 notarizes, assesses Gatekeeper, extracts the final signed ZIP for the runtime
-check, and writes immutable release assets under
-`.state/app-release/VERSION`. It does not publish by default.
-
-After reviewing that stage, repeat the same command with `--publish`. Publishing
-requires `origin/production` to resolve exactly to the current HEAD, creates
+check, validates the signed updater flow against the existing app and CLI release,
+then writes immutable release assets under `.state/app-release/VERSION`.
+Publishing requires `origin/production` to resolve exactly to the current HEAD, creates
 `app-vVERSION` as a draft, uploads the ZIP, backend archive, `app-update.json`,
 and `SHA256SUMS`, verifies every GitHub-reported digest and size, then publishes
 the draft. An existing release or any failed draft verification is left
@@ -43,6 +43,15 @@ untouched. This command never enables or dispatches GitHub Actions; follow the
 [CI cost policy](ci-cost-policy.md) for the separate paid native workflow.
 See [macOS app updates](macos-updates.md) for daily client activation and
 rollback behavior.
+
+Omit `--publish` only to exercise the local build, signing, and archive gates.
+It leaves the versioned stage in place and deliberately cannot resume it as a
+later publication. For an actual distribution, rerun only after moving that
+failed or inspection-only stage to Trash, then use the one-pass command above.
+`--publish` uses `~/Applications/Harness Gateway.app` and
+`~/.local/share/subscription-gateway/current` by default for the updater fixture;
+pass absolute `--previous-app` and `--installed-release` paths to select the
+intended existing signed app and CLI release.
 
 The installer contains the compiled package and official Node 24.21.0 runtime.
 The runtime archive is pinned to its published SHA-256 digest. Node's license
@@ -67,22 +76,92 @@ JavaScript. Installing a CLI update preserves the registration. See
 4. Run real model tool loops against the installed command on the test Mac. Use
    isolated native and gateway state directories. Record configuration digests,
    provider registration, client-requested chat names, and resume results.
+   For gateway sub-agent routing, run `scripts/e2e-subagent-sidebar.mjs --package
+   INSTALLED_PACKAGE --code CHECKOUT --root FRESH_EVIDENCE_DIRECTORY`.
+   Repeat with `--private`, `--openai`, `--cold --mixed-identity`, and
+   `--cold --config-override`. The real SDK spawns a child against a local mock
+   provider, opens it using the desktop's resume shapes, and continues it while
+   checking its saved identity and reasoning. These checks use private homes and
+   no paid inference. `--baseline` reproduces the pre-fix alias rejection.
+   Add `--v2` to verify that the delegated task and a follow-up reach the child,
+   that it executes a real command, and that its history includes that command
+   and the resulting answer. `--v2 --expect-payload-loss` reproduces the
+   missing-task failure in 0.5.1.
+   Before shipping collaboration transport changes, also run
+   `scripts/e2e-subagent-live.mjs --package INSTALLED_PACKAGE --code CHECKOUT
+   --config PRIVATE_GATEWAY_CONFIG --model CONFIGURED_CODEX_ALIAS --root
+   FRESH_EVIDENCE_DIRECTORY`. This opt-in check uses real subscription inference
+   and isolated chat homes. It requires an actual child command and an answer
+   containing a proof available only in the child's read-only fixture file.
+   For chat-list status changes, run `scripts/e2e-chat-state.mjs --package
+   INSTALLED_PACKAGE --root FRESH_EVIDENCE_DIRECTORY`, then repeat with `--native`
+   and a second evidence directory. Repeat with `--private` for per-connection
+   gateway executors. Two clients of the real SDK must expose an
+   already-running chat and receive its actual idle event without resuming it or
+   starting another inference. The fixture uses a local mock provider and private
+   state. By default it checks the checkout's compiled adapter with the package's
+   verified SDK; pass `--code INSTALLED_PACKAGE` to check the packaged adapter too.
+   These checks do not prove the phone's unread rendering.
    For shared execution changes, run `scripts/e2e-shared-execution.mjs` with the
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.
    The zero-inference run proves process ownership rather than durable chat resume.
+   Every host it starts, including the restart phase's replacement, is stopped at the
+   end, and a detached reaper (`scripts/e2e-reaper.mjs`) cleans up after a SIGKILL of
+   the check: its process groups, the SDK sockets its links name that nothing serves
+   (with their `.lock` files) and its private home. It kills only groups it saw
+   alive: a group that emptied or answers no probe is never signalled again, so a
+   reused process ID cannot be hit.
+   The check starts its host from the `dist` of an installed package: pass
+   `--package INSTALLED_PACKAGE`, or leave it out and the script uses the package
+   that `--gateway`'s launcher runs (its `current/package`). Only when neither has
+   `dist/execution-host.js` and `dist/config.js` does it fall back to the checkout's
+   `../dist`, and a package that ships `gateway-sdk` then refuses with "requires a
+   matching installed gateway SDK". The first JSON line printed names the `dist`
+   used, so confirm it is the installed package. Give the isolated native home a fixture
+   `models.json` named by `model_catalog_json`, as the other end-to-end scripts do,
+   and start the SDK once on it before the check, so the two adapters do not run
+   the first catalog preflight at the same moment.
    For speed controls, run `scripts/e2e-fast-mode.mjs --gateway INSTALLED_COMMAND
    --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. It uses the
    real signed SDK with a mock upstream through stdio and a private Unix socket.
    It proves requested and returned tiers, settings changes, saved-history resume,
    and native isolation; it sends no subscription inference and does not prove
    rendered desktop controls or the built-in cloud transport.
+   For chat identity changes, run `scripts/e2e-identity.mjs --package
+   INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
+   gateway SDK and a mock upstream it proves that new chats stay
+   `subscription_gateway` by default, and that with the `openai` opt-in a new gateway
+   chat is recorded as `openai` (thread, rollout and SQLite), is in the registry when its start returns,
+   compacts locally on the selected model, routes to the gateway when a new connection
+   resumes it, sends nothing with the gateway token to the ChatGPT backend, and is
+   listed by a default `thread/list`; and that a legacy chat stays
+   `subscription_gateway` and is listed through the router but not by a stock engine.
    For compaction changes, run `scripts/e2e-compaction-switch.mjs --gateway
    INSTALLED_COMMAND --package INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY
-   --shared`. It reproduces the previous-model failure with `--expect baseline`
-   and verifies selected-model recovery, Stop, failures, and reconnect through
-   stdio and Unix with a mock upstream and the signed SDK. Shared ownership is
-   checked for safe refusal of automatic compaction, not seamless recovery.
+   --expect selected-turn --shared`. This is the release step. A package that
+   ships `gateway-sdk` (0.4.3 and later) compacts inside the user turn, so the
+   run verifies the package's own gateway SDK receipt and selected-model recovery,
+   Stop, failures, and reconnect through stdio and Unix with a mock upstream and
+   the signed SDK. The script detects `gateway-sdk` in the package (through its
+   `dist/gateway-sdk-runtime.js`, else the same file layout). When the package
+   has it, `selected-turn` is the default and `automatic` and `baseline` are
+   refused; when it does not, `selected-turn` is refused. `--expect automatic`
+   and `--expect baseline` are for legacy packages without `gateway-sdk` only
+   (baseline reproduces the previous-model failure of the stock SDK). `--codex`
+   does not change the SDK of the gateway executor, which always runs the
+   package's own `gateway-sdk`; it only replaces the SDK the script itself
+   starts and checks. The script uses `gateway-sdk/gateway-codex` in the package
+   and says so if it is missing.
+   Every child runs under a private HOME inside the run folder, so no execution
+   host home or receipt reaches `~/.local/state`. Only the pinned SDK's fixed
+   socket folder, `/tmp/codex-daemon-UID`, stays outside, because the SDK
+   hard-codes it; the script removes its own stale sockets there. A passing run
+   removes its `/tmp/gw-compact-switch-*` run folder; a failing run keeps it, and
+   `--keep-fixture` keeps it on request. With `--shared`, the
+   `selected-turn` run also checks the shared execution host over stdio; a legacy
+   `automatic` run only checks the safe refusal of automatic compaction, not
+   seamless recovery.
    For Responses continuation changes, run
    `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
    SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies actual
@@ -122,7 +201,15 @@ JavaScript. Installing a CLI update preserves the registration. See
 6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
    the archive's file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
-   Install exactly that asset on each device.
+   Install exactly that asset on each device, then run `gateway versions --check`
+   there and require a zero exit before the device is treated as updated.
+   After every install, also run `gateway health` on every Mac; its verdict must
+   be `ok` or `warn` (see [the watchdog](health.md)). A `fail` means this Mac is
+   broken or half-moved, and the alert push is not configured until
+   `<state>/alert-push-url` exists with mode 0600. Run it as `gateway health
+   --smoke` on the machine that took the new release first: that is the one pass
+   that proves the app's own engine still chats, and its answer is remembered
+   against the app build, so the ten-minute check is paid once per update.
 
 ## Updating without quitting the app
 
@@ -133,16 +220,37 @@ release and moves to it at an idle moment:
 | Process | Moves when | How |
 | --- | --- | --- |
 | Adapter (one per app connection) | no active turn, no pending request, 30 seconds quiet | exits; the app starts a new adapter on the new release within seconds |
+| SSH listener (remote Mac) | a bootstrap on the installed release finds it running another release, or a newer release is installed and two idle checks in a row (about 1–2 minutes) pass with no active session | on bootstrap replacement the old listener keeps serving its open sessions and the new one binds a fresh alias; on self-retire the listener exits and the next connection's bootstrap starts the new one |
 | Inference server | at its next check, busy or not | the installed release's handler takes over the same socket in the same process: new requests use the new code at once, running requests finish on the old code; no connection is refused. A release whose serve runtime is incompatible falls back to an idle restart |
-| Supervisor, execution host, relay | fully idle: no app connected and no chat loaded | idle restart; launchd starts it on the new release |
+| Supervisor, execution host, relay | fully idle: no app connected and no chat loaded; after 15 minutes (awake time) of waiting, quiet is enough: no turn running, no background terminal and no turn ended in the last 5 minutes, with apps still connected ([services](services.md#moving-to-a-new-release)) | idle or quiet restart; launchd starts it on the new release, and connected apps resume their chats on it |
 
 Every server response carries `X-Gateway-Release` with the release that served it.
-Until the supervisor is idle it keeps the previous release, so adapters and the
+Until the supervisor is idle or quiet it keeps the previous release, so adapters and the
 host must stay protocol-compatible across one release. Each move is logged as
-`self_upgrade`. Processes started from a checkout never move. Releases before
+`self_upgrade`, except an SSH listener replaced by a bootstrap, which is logged
+as `ssh_listener_replaced`. In that event `from` is `unknown` when the old
+listener recorded no release, which means it started from a checkout or from a
+release before 0.4.4, so the first 0.4.4 rollout logs `from: "unknown"` for
+every listener it replaces. Processes started from a checkout never move
+themselves, except that an SSH listener started from a checkout is replaced
+when a bootstrap on the installed release connects. Releases before
 0.2.32 do not have this; moving from them needs one service restart. In-place
 server takeover starts with 0.2.35; a 0.2.32 to 0.2.34 server needs one restart of
 its inference process to reach it.
+
+Run `gateway versions --check` on every Mac after an install. A process is
+lagging when it loaded an older release than the installed `current` target,
+which the command reads from the files the process has mapped and not from
+its command line. The `X-Gateway-Release` header alone is not proof of that:
+it names whichever release served one inference response, and says nothing
+about the other processes on the machine. Components that move only when
+idle, such as the service supervisor, the shared execution host and the
+engines it starts, the SSH listeners, the desktop adapters and the native
+relay, can stay on the previous release until they go idle. That is expected,
+so recheck after they have been idle rather than force-killing them; a kill
+skips the idle guard and cuts off whatever that process was holding. See
+[diagnostics](diagnostics.md#running-component-releases) for what the command
+prints.
 
 The installer keeps the current release, the previous one and the newest other
 release. Older releases move to the Trash unless a running process still maps
@@ -153,8 +261,12 @@ download credentials or publish automatically.
 
 For a release containing the native connected-machine adapter, build and test
 the matching relay first, then use `node scripts/build-release.mjs --with-native`.
-The relay's source digest, package version, pinned SDK revision, and release
-profile must match the archive. Verify the original machine registration and
+The relay's source digest, package version, pinned SDK revision, archive checksum,
+linked Codex version and release profile must match the archive. The relay pins its
+own SDK (rust-v0.163.0-alpha.10.2 from 0.4.7) and the gateway SDK keeps its own, so
+reusing components checks each against its own pins. Run
+`node scripts/e2e-native-relay.mjs --root /tmp/gwrl-$(date +%s)` with the built relay
+before publishing. Verify the original machine registration and
 model picker before publishing. See [native transport checks](native-remote.md).
 
 Gateway executors can use a separately compiled SDK with selected-model compaction.
@@ -179,11 +291,18 @@ while its lockfile retains `0.0.0`. A guarded helper repairs exactly those 161
 source-less workspace versions. All external package versions, sources, checksums,
 and dependency blocks remain byte-identical. The repaired lockfile and helper are
 hashed in the receipt; Cargo tests and builds still use `--locked`.
-The four compaction cases use the upstream compact suite with its original test
-aliases and constructor. The runner temporarily narrows the suite aggregator to
-that module, avoiding unrelated upstream test compilation errors, then restores
-the exact original bytes. Its digest joins the receipt; the verified SDK source
-tree must match again before building the executable.
+The test gate runs three executor-identity unit tests in `codex-model-provider-info`
+and six compaction cases: the four for `subscription_gateway` and native chats, and
+two for `openai` inside a marked gateway executor. The compaction cases use the
+upstream compact suite with its original test aliases and constructor. The runner
+temporarily narrows the suite aggregator to that module, avoiding unrelated upstream
+test compilation errors, then restores the exact original bytes. Its digest joins the
+receipt; the verified SDK source tree must match again before building the executable.
+The cases set the executor marker in the process environment, so the gate runs every
+case on one thread. Patch v2 (`scripts/patches/gateway-executor.patch`, capability
+`gateway-executor-v2`, see [harness identity](harness-identity.md)) changed the source
+digest, so the first release with it builds the gateway SDK again; it cannot reuse the
+component of a release built with patch v1.
 
 A JavaScript-only fix can explicitly reuse unchanged native components from a
 previous published installer instead of rebuilding Rust. Download the exact
@@ -232,8 +351,12 @@ Run the installed SDK checks for the changed JavaScript path before publishing.
 # Upgrade and recovery
 
 The installer verifies file checksums before changing the current release link.
-It saves the previous release target. Reinstalling identical content is safe;
-different content under the same version is rejected. Preserve the existing data
+It saves the previous release target, and only when the current release is a
+different version, so reinstalling the same version keeps the last different
+release for rollback. Before switching, it runs the packaged `gateway-codex
+--version` once (60 s limit, failures only warn) so macOS scans the new large
+executable then and not during the service's first host start. Reinstalling
+identical content is safe; different content under the same version is rejected. Preserve the existing data
 directory. Service migration requests a safe idle stop before replacing a managed
 LaunchAgent. Busy inference or request uploads refuse the upgrade.
 The managed job is temporarily disabled during migration. The owning daemon
@@ -245,10 +368,11 @@ A 0.4.0 adapter that is still running, or a rollback to 0.4.0, reads the same st
 files, so this build saves a chat's tier or a new-chat default only when its row
 declares it; see [rollback and mixed versions](speed-controls.md#rollback-and-mixed-versions).
 
-Use `gateway service status`, `gateway doctor`, and `gateway desktop status` after
-installation. Registration prepares future app launches and does not interrupt an
-open app. One fresh launch is needed after first registration. The private desktop
-launch hook is specific to the tested Codex build, so verify it after app upgrades.
+Use `gateway service status`, `gateway doctor`, `gateway desktop status`, and
+`gateway versions --check` after installation on each Mac. Registration
+prepares future app launches and does not interrupt an open app. One fresh
+launch is needed after first registration. The private desktop launch hook is
+specific to the tested Codex build, so verify it after app upgrades.
 
 Preview job consolidation with `gateway service consolidate`. Apply it only after
 local and remote chats finish. See [the service migration checks](services.md).

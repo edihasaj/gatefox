@@ -1,4 +1,3 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,6 +8,11 @@ import { DesktopCatalog } from "../desktop-catalog.js";
 import { ThreadReasoningStore } from "../thread-reasoning.js";
 import { configureTelemetry } from "../telemetry.js";
 import type { GatewayConfig } from "../config.js";
+import { identityTest } from "./identity-cases.js";
+
+// The gateway parent is saved, and announced by its engine, with the identity under test; prediction forks must behave the same under both.
+let gateway = "subscription_gateway";
+const test = identityTest(identity => { gateway = identity.provider; });
 
 type ObjectValue = Record<string, unknown>;
 
@@ -41,7 +45,8 @@ async function fixture(parent: ObjectValue, options: Options = {}) {
     calls.push({ method, params });
     if (method === "model/list") return { data: [{ id: "native", model: "native", displayName: "Native", hidden: false }], nextCursor: null };
     if (method === "thread/read") return { thread: { id: params.threadId, ...parent } };
-    if (method === "thread/resume") return { thread: { id: params.threadId }, modelProvider: parent.modelProvider, model: parent.model, serviceTier: null };
+    // A resume that names a provider applies it, as the SDK does; one that names none restores the saved chat.
+    if (method === "thread/resume") return { thread: { id: params.threadId }, modelProvider: params.modelProvider ?? parent.modelProvider, model: params.model ?? parent.model, serviceTier: null };
     // The fork result carries the parent's effective settings, exactly as the SDK replies.
     if (method === "thread/fork") {
       sdkFork(params);
@@ -62,7 +67,7 @@ const held = (router: AppServerRouter, id: string): string[] => {
   return ["routes", "tierRecords", "activeTurns", "settingsVersions", "ephemeralThreads"].filter(name => maps[name]?.has(id));
 };
 const settingsUpdated = (threadId: string) => ({ method: "thread/settings/updated", emittedAtMs: Date.now(),
-  params: { threadId, threadSettings: { model: "codex/model", modelProvider: "subscription_gateway", serviceTier: null, effort: "low" } } });
+  params: { threadId, threadSettings: { model: "codex/model", modelProvider: gateway, serviceTier: null, effort: "low" } } });
 
 test("a native prediction fork reaches the engine exactly as the desktop sent it", async () => {
   const f = await fixture({ modelProvider: "openai", model: "native" });
@@ -77,7 +82,7 @@ test("a native prediction fork reaches the engine exactly as the desktop sent it
 test("a gateway prediction fork is forwarded unchanged and never refused over its tier", async () => {
   // A connection that has not read this chat's tier refuses an ordinary fork; a prediction
   // fork carries no tier, so the SDK inherits the parent's own.
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" });
   await f.store.write("parent", { model: "codex/model", effort: "high", atMs: Date.now() - 60_000 });
   await f.router.request("thread/fork", prediction("parent"));
   // The backends still route it to the engine that owns the parent; the router adds nothing.
@@ -111,7 +116,7 @@ test("an ordinary fork is not a prediction fork just because it asks to be ephem
 
 test("a gateway prediction fork whose result is not flagged ephemeral still writes nothing durable", async () => {
   // The request alone marks it throwaway: the engine's reply need not repeat the flag.
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source: null, forkThread: { id: "fork" } });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" }, { source: null, forkThread: { id: "fork" } });
   await f.router.request("thread/fork", prediction("parent"));
   assert.equal(await f.tiers.read("fork"), undefined, "no tier record");
   assert.equal(await f.store.read("fork"), undefined, "no reasoning record");
@@ -119,7 +124,7 @@ test("a gateway prediction fork whose result is not flagged ephemeral still writ
 });
 
 test("a gateway prediction fork records nothing durable and its turns route without a probe", async () => {
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source: null });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" }, { source: null });
   const result = await f.router.request("thread/fork", prediction("parent"));
   assert.equal((result.thread as ObjectValue).id, "fork");
   // The result's effort and tier must not reach either private store under the throwaway id.
@@ -138,7 +143,7 @@ for (const [name, close] of [
   ["thread/unsubscribe", (r: AppServerRouter) => r.request("thread/unsubscribe", { threadId: "fork" })],
   ["thread/closed", (r: AppServerRouter) => r.observeNotification({ method: "thread/closed", params: { threadId: "fork" } })],
 ] as const) test(`${name} leaves nothing of a prediction fork behind in the router`, async () => {
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source: null });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" }, { source: null });
   await f.router.request("thread/fork", prediction("parent"));
   await f.router.request("turn/start", { threadId: "fork", input: [] });
   await f.router.observeNotification(settingsUpdated("fork"));
@@ -151,7 +156,7 @@ for (const [name, close] of [
 });
 
 test("only the newest 256 prediction forks stay routed", async () => {
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source: null, unique: true });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" }, { source: null, unique: true });
   for (let i = 0; i < 257; i++) await f.router.request("thread/fork", prediction("parent"));
   assert.deepEqual(held(f.router, "fork-0"), [], "the oldest fork is evicted along with its route");
   assert.deepEqual(held(f.router, "fork-1"), ["routes", "ephemeralThreads"]);
@@ -170,7 +175,7 @@ test("a native prediction fork writes nothing durable", async () => {
 });
 
 test("a prediction fork survives an unreadable preferences file", async () => {
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" });
   await writeFile(join(f.state, "desktop-preferences.json"), "{ truncated", { mode: 0o600 });
   // The adapter's own settings are not consulted, so this breakage cannot reach the fork ...
   const result = await f.router.request("thread/fork", prediction("parent"));
@@ -181,7 +186,7 @@ test("a prediction fork survives an unreadable preferences file", async () => {
 
 test("a prediction fork survives a catalog refresh that throws", async () => {
   const source = { isNative: () => false, refresh: async () => { throw new Error("catalog unavailable"); } };
-  const f = await fixture({ modelProvider: "subscription_gateway", model: "codex/model" }, { source });
+  const f = await fixture({ modelProvider: gateway, model: "codex/model" }, { source });
   const result = await f.router.request("thread/fork", prediction("parent"));
   assert.equal((result.thread as ObjectValue).id, "fork");
   await assert.rejects(f.router.request("thread/fork", { threadId: "parent" }), /catalog unavailable/);

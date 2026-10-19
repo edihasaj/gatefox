@@ -23,19 +23,28 @@ private GitHub draft → signed ZIP + signed policy → daily check
                            activate retained bundle / preserve CLI service
 ```
 
-The updater checks the asset hashes, app metadata, and signed in-bundle
-`update-policy.json` before activation. The policy binds the app to the exact
-backend archive version, production commit, and SHA-256. It refuses missing,
-partial, modified, or mismatched assets.
+The updater downloads both the matching canonical CLI archive and signed app ZIP.
+It checks their hashes, app metadata, and signed in-bundle `update-policy.json`
+before activation. The policy binds the app to the exact backend archive version,
+production commit, and SHA-256. It refuses missing, partial, modified, or
+mismatched assets.
 
-Activation waits until every app window has closed. It does not stop or replace
-the existing managed gateway service, and active chats and jobs continue on the
-already installed CLI release. Opening the app before an update is ready keeps
-the current bundle active.
+Activation waits until every app window has closed. It preserves active chats and
+jobs: processes already loaded from the earlier CLI release continue, then adopt
+the installed CLI release through their normal idle-update protocol. Opening the
+app before an update is ready keeps the current bundle active.
 
-The previous app bundle remains available after activation. If the new bundle
-cannot launch or pass its verification, the updater restores that retained
-bundle and leaves the gateway installation and its configuration alone.
+The updater retains the previous app bundle for transaction rollback. A failed
+installation transaction restores that retained bundle; it does not claim to
+detect or roll back a later launch failure. The gateway configuration remains
+unchanged.
+
+Recovery restores only files that still match the transaction's publication
+receipts. It preserves concurrent changes. A forced termination can leave an
+unknown installation lock, which the updater will not break automatically.
+After confirming that no installer or updater remains, move only the stale
+`.gateway-installation-lock` directory in the installation root to Trash before
+retrying.
 
 ## Release availability
 
@@ -48,4 +57,20 @@ Use the local production release command described in
 [Release](RELEASING.md#macos-app-distribution). It does not dispatch, enable, or
 rerun GitHub Actions. Follow the [CI cost policy](ci-cost-policy.md): hosted
 native work stays off unless Edi explicitly requests its separate paid,
-production-only workflow.
+production-only workflow. Before the release is uploaded, that command runs the
+updater fixture against an existing signed app and installed CLI release in a
+fresh private fixture directory; no live service is changed.
+
+## Desktop verification limits
+
+The October 18 inspection found one gateway startup job on Studio and MacBook.
+MacBook's Login Items panel still displayed two enabled Harness Gateway rows.
+Reading the records behind those rows required administrator authorization, so
+their exact cause remains unverified. No background-item reset or service
+restart was used to clear the display.
+
+Existing services keep their loaded runtime until their normal idle upgrade.
+Matching signing requirements and passing isolated runtime checks do not prove
+that a macOS privacy grant survives an app update. That check still needs an
+existing approved action on an unlocked Mac; no privacy grants were reset or
+automatically accepted during verification.

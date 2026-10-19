@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 import { readSnapshot, type ConfigSnapshot } from "./app-management/storage.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { serviceLabel, serviceMarker } from "./service-plan.js";
-import { associateAppRuntime } from "./app-runtime.js";
+import { associateAppRuntime, associateAppRuntimeTransaction, managedInstallationForCommand } from "./app-runtime.js";
+import { installationAbortSignal, type InstallationGuard } from "./app-runtime-lock.js";
 
 const appIdentifier = "com.edihasaj.harness-gateway.app";
 const maximumPlistBytes = 64 * 1024;
-const installerMarker = "# Managed by subscription-gateway installer";
 const noFollow = constants.O_NOFOLLOW ?? 0;
 const owner = process.getuid?.();
 
@@ -27,12 +27,15 @@ export interface AppBackgroundDependencies {
   verifySignature?: (app: string, helper: string) => Promise<boolean>;
   registerApp?: (app: string) => Promise<void>;
   beforeReplace?: () => Promise<void>;
+  /** Runs after an owned plist receipt exists, before its post-publication validation. */
+  afterReplace?: () => Promise<void>;
   associateRuntime?: typeof associateAppRuntime;
 }
 
 export type CommandRunner = (command: string, args: string[]) => Promise<{ stdout: string; stderr: string; code: number }>;
 interface Source { bytes: Buffer; mode: number; dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number }
 interface Validated { source: Source; plist: Plist; needsChange: boolean }
+interface PublishedPlist { path: string; source: Source; output: Source }
 
 function failure(code: string, message: string): AppBackgroundResponse { return { ok: false, error: { code, message } }; }
 function result(status: Status, changed = false, wouldChange?: boolean): AppBackgroundResponse { return { ok: true, result: { status, changed, appliesAt: "next_service_start", ...(wouldChange === undefined ? {} : { wouldChange }) } }; }
@@ -119,6 +122,9 @@ async function readOwnedFile(path: string, limit = maximumPlistBytes): Promise<S
 function sameSource(left: Source, right: Source): boolean {
   return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mode === right.mode && left.mtimeMs === right.mtimeMs && left.ctimeMs === right.ctimeMs && left.bytes.equals(right.bytes);
 }
+function samePublication(left: Source, right: Source): boolean {
+  return left.dev === right.dev && left.ino === right.ino && left.size === right.size && left.mode === right.mode && left.bytes.equals(right.bytes);
+}
 
 async function plutil(input: Buffer, convert: "json" | "xml1"): Promise<Buffer> {
   if (input.length > maximumPlistBytes) throw new Error("plist");
@@ -163,12 +169,8 @@ export async function verifySignature(app: string, helper: string, run: CommandR
     return true;
   } catch { return false; }
 }
-function launcherPath(home: string, commandPath: string): boolean {
-  return ["gateway", "harness-gateway", "subscription-gateway"].some(name => commandPath === join(home, ".local", "bin", name));
-}
 async function trustedLauncher(path: string): Promise<boolean> {
-  const source = await readOwnedFile(path); if (!source || !(source.mode & 0o111)) return false;
-  return source.bytes.toString("utf8").split(/\r?\n/).includes(installerMarker);
+  try { await managedInstallationForCommand(path); return true; } catch { return false; }
 }
 async function readBundleInfo(path: string, decode: (bytes: Buffer) => Promise<Plist>): Promise<Plist> {
   await appResourceAncestry(resolve(path, ".."));
@@ -181,11 +183,11 @@ async function readBundleInfo(path: string, decode: (bytes: Buffer) => Promise<P
 function plistIsAssociated(plist: Plist, helper: string): boolean {
   return plist.Program === helper && plist.AssociatedBundleIdentifiers === appIdentifier;
 }
-async function validate(source: Source, configPath: string, home: string, helper: string, decode: (bytes: Buffer) => Promise<Plist>): Promise<Validated> {
+async function validate(source: Source, configPath: string, helper: string, decode: (bytes: Buffer) => Promise<Plist>): Promise<Validated> {
   if (!source.bytes.toString("utf8").includes(serviceMarker)) throw new Error("unsafe");
   const plist = await decode(source.bytes); const args = plist.ProgramArguments;
   if (plist.Label !== serviceLabel || !Array.isArray(args) || args.some(arg => typeof arg !== "string") || args[1] !== "daemon" && args[1] !== "serve") throw new Error("unsafe");
-  const commandPath = args[0]; if (typeof commandPath !== "string" || !launcherPath(home, commandPath) || !await trustedLauncher(commandPath)) throw new Error("unsafe");
+  const commandPath = args[0]; if (typeof commandPath !== "string" || !await trustedLauncher(commandPath)) throw new Error("unsafe");
   const positions = args.flatMap((arg, index) => arg === "--config" ? [index] : []);
   if (positions.length !== 1 || args[positions[0]! + 1] !== configPath) throw new Error("unsafe");
   if (plist.Program !== undefined && plist.Program !== commandPath && plist.Program !== helper) throw new Error("unsafe");
@@ -194,27 +196,63 @@ async function validate(source: Source, configPath: string, home: string, helper
   if (!emptyAssociated && associated !== appIdentifier && !(Array.isArray(associated) && associated.length === 1 && associated[0] === appIdentifier)) throw new Error("unsafe");
   return { source, plist, needsChange: !plistIsAssociated(plist, helper) };
 }
+/** Read-only proof that the selected configuration is the one the gateway's
+ * primary owned LaunchAgent actually runs. Update code reuses this boundary. */
+export async function managedAppServiceBinding(configPath: string, appPath: string, expectedCommand?: string): Promise<boolean> {
+  try {
+    const home = process.env.HOME;
+    if (!home || !isAbsolute(home) || !isAbsolute(configPath) || !isAbsolute(appPath)) return false;
+    const plist = await readOwnedFile(join(home, "Library", "LaunchAgents", `${serviceLabel}.plist`));
+    if (!plist) return false;
+    const bound = await validate(plist, resolve(configPath), join(appPath, "Contents", "MacOS", "GatewayService"), decodePlist);
+    if (expectedCommand) {
+      const expected = await managedInstallationForCommand(expectedCommand);
+      const command = (bound.plist.ProgramArguments as string[])[0]!;
+      const actual = await managedInstallationForCommand(command);
+      if (actual.root !== expected.root || actual.prefix !== expected.prefix) return false;
+    }
+    return true;
+  } catch { return false; }
+}
 function marked(bytes: Buffer): Buffer {
   const text = bytes.toString("utf8"); const index = text.indexOf("<plist"); if (index < 0 || text.includes(serviceMarker)) throw new Error("plist");
   return Buffer.from(`${text.slice(0, index)}${serviceMarker}\n${text.slice(index)}`);
 }
-async function replace(path: string, source: Source, plist: Plist, state: string, encode: (value: Plist) => Promise<Buffer>, beforeReplace?: () => Promise<void>): Promise<void> {
+async function replace(path: string, source: Source, plist: Plist, state: string, encode: (value: Plist) => Promise<Buffer>, beforeReplace: (() => Promise<void>) | undefined, guard: InstallationGuard): Promise<PublishedPlist> {
   const backups = join(state, "service-backups"); await ensureDirectory(backups, true);
   const backup = join(backups, `app-background-${randomUUID()}.plist`); const stagedBackup = join(backups, `.${randomUUID()}.app-background`);
   const original = await open(stagedBackup, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
   try {
-    await original.writeFile(source.bytes); await original.sync(); await chmod(stagedBackup, 0o600); await link(stagedBackup, backup);
-    const directory = await open(backups, constants.O_RDONLY); try { await directory.sync(); } finally { await directory.close(); }
+    guard.check(); await original.writeFile(source.bytes); guard.check(); await original.sync(); guard.check(); await chmod(stagedBackup, 0o600); guard.check(); await link(stagedBackup, backup); guard.check();
+    const directory = await open(backups, constants.O_RDONLY); try { await directory.sync(); guard.check(); } finally { await directory.close(); }
   }
   finally { await original.close(); await unlink(stagedBackup).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }); }
   const output = marked(await encode(plist)); if (output.length > maximumPlistBytes) throw new Error("plist");
   const temporary = join(resolve(path, ".."), `.${randomUUID()}.app-background`); const target = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, source.mode);
   try {
-    await target.writeFile(output); await target.sync(); await chmod(temporary, source.mode); await beforeReplace?.();
+    guard.check(); await target.writeFile(output); guard.check(); await target.sync(); guard.check(); await chmod(temporary, source.mode); guard.check(); await beforeReplace?.(); guard.check();
     const current = await readOwnedFile(path); if (!current || !sameSource(source, current)) throw new Error("changed");
-    await rename(temporary, path);
+    const info = await target.stat();
+    const published: Source = { bytes: output, mode: info.mode & 0o777, dev: info.dev, ino: info.ino, size: info.size, mtimeMs: info.mtimeMs, ctimeMs: info.ctimeMs };
+    await target.close(); await rename(temporary, path);
+    return { path, source, output: published };
   }
   finally { await target.close(); await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }); }
+}
+async function restorePlist(publication: PublishedPlist): Promise<boolean> {
+  const current = await readOwnedFile(publication.path).catch(() => undefined);
+  if (!current || !samePublication(publication.output, current)) return false;
+  const temporary = join(resolve(publication.path, ".."), `.${randomUUID()}.app-background-undo`);
+  const target = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, publication.source.mode).catch(() => undefined);
+  if (!target) return false;
+  let restored = false;
+  try {
+    await target.writeFile(publication.source.bytes); await target.sync(); await chmod(temporary, publication.source.mode);
+    const final = await readOwnedFile(publication.path);
+    if (final && samePublication(publication.output, final)) { await target.close(); await rename(temporary, publication.path); restored = true; }
+  } catch { /* A concurrent LaunchAgent writer wins. */ }
+  finally { await target.close().catch(() => undefined); await unlink(temporary).catch(() => undefined); }
+  return restored;
 }
 
 /** Core handler intentionally accepts only explicit dependencies so fixture tests cannot reach real signing or plist tools. */
@@ -226,7 +264,7 @@ export async function handleAppBackground(options: { configPath: string; apply: 
     const plistPath = join(home, "Library", "LaunchAgents", `${serviceLabel}.plist`); const first = await readOwnedFile(plistPath);
     if (!first) return result("not_installed");
     const decode = dependencies.decodePlist || decodePlist; const encode = dependencies.encodePlist || encodePlist; const helper = join(options.appPath, "Contents", "MacOS", "GatewayService");
-    const initial = await validate(first, resolve(options.configPath), home, helper, decode);
+    const initial = await validate(first, resolve(options.configPath), helper, decode);
     await appResourceAncestry(join(options.appPath, "Contents", "MacOS"));
     const info = await readBundleInfo(join(options.appPath, "Contents", "Info.plist"), decode);
     if (info.CFBundleIdentifier !== appIdentifier || !(await (dependencies.verifySignature || verifySignature)(options.appPath, helper))) return result("unsigned");
@@ -243,22 +281,34 @@ export async function handleAppBackground(options: { configPath: string; apply: 
       const currentSnapshot = await (dependencies.readSnapshot || readSnapshot)(options.configPath);
       if (!currentSnapshot || currentSnapshot.revision !== snapshot.revision || currentSnapshot.config.stateDirectory !== snapshot.config.stateDirectory) return failure("configuration_changed", "The gateway configuration changed; refresh and try again.");
       const current = await readOwnedFile(plistPath); if (!current) return result("not_installed");
-      const confirmed = await validate(current, resolve(options.configPath), home, helper, decode);
+      const confirmed = await validate(current, resolve(options.configPath), helper, decode);
       await (dependencies.registerApp || (async app => {
         if ((await runBoundedCommand("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister", ["-f", app])).code !== 0) throw new Error("register");
       }))(options.appPath);
-      const runtimeChanged = await (dependencies.associateRuntime || associateAppRuntime)({
-        home, appPath: options.appPath, stateDirectory: snapshot.config.stateDirectory,
-        commandPath: (confirmed.plist.ProgramArguments as string[])[0]!,
-      });
-      if (confirmed.needsChange) {
+      const runtimeOptions = { home, appPath: options.appPath, stateDirectory: snapshot.config.stateDirectory,
+        commandPath: (confirmed.plist.ProgramArguments as string[])[0]! };
+      const publishPlist = async (guard: InstallationGuard) => {
+        if (!confirmed.needsChange) return;
         const next: Plist = { ...confirmed.plist, Program: helper, AssociatedBundleIdentifiers: appIdentifier };
-        await replace(plistPath, confirmed.source, next, snapshot.config.stateDirectory, encode, dependencies.beforeReplace);
-        const written = await readOwnedFile(plistPath); if (!written || !plistIsAssociated((await validate(written, resolve(options.configPath), home, helper, decode)).plist, helper)) throw new Error("changed");
-      }
+        let publication: PublishedPlist | undefined;
+        try {
+          publication = await replace(plistPath, confirmed.source, next, snapshot.config.stateDirectory, encode, dependencies.beforeReplace, guard);
+          await dependencies.afterReplace?.(); guard.check();
+          const written = await readOwnedFile(plistPath); guard.check();
+          if (!written || !plistIsAssociated((await validate(written, resolve(options.configPath), helper, decode)).plist, helper)) throw new Error("changed");
+        } catch (error) {
+          if (publication && !await restorePlist(publication)) throw Object.assign(error as Error, { preserveRuntimeDependencies: true });
+          throw error;
+        }
+      };
+      const runtimeChanged = dependencies.associateRuntime
+        ? await dependencies.associateRuntime(runtimeOptions)
+        : await associateAppRuntimeTransaction(runtimeOptions, publishPlist);
+      if (dependencies.associateRuntime) await publishPlist({ check: () => undefined });
       return confirmed.needsChange || runtimeChanged ? result("associated", true) : result("already_associated");
     });
   } catch (error) {
+    if (installationAbortSignal(error)) throw error;
     const code = (error as { code?: unknown })?.code;
     if (code === "invalid_configuration") return failure("invalid_configuration", "The gateway configuration is invalid.");
     if (code === "configuration_changed" || (error as Error).message === "changed") return failure("configuration_changed", "The gateway configuration changed; refresh and try again.");
@@ -268,7 +318,13 @@ export async function handleAppBackground(options: { configPath: string; apply: 
 
 async function main(): Promise<void> {
   const parsed = parseAppBackgroundArgs(process.argv.slice(2)); const appPath = bundledAppPath();
-  const response = parsed && appPath ? await handleAppBackground({ ...parsed, appPath }) : failure("invalid_request", "The background attribution request is invalid.");
+  let response: AppBackgroundResponse;
+  try { response = parsed && appPath ? await handleAppBackground({ ...parsed, appPath }) : failure("invalid_request", "The background attribution request is invalid."); }
+  catch (error) {
+    const signal = installationAbortSignal(error);
+    if (signal) { process.exitCode = signal === "SIGHUP" ? 129 : signal === "SIGINT" ? 130 : 143; return; }
+    response = failure("operation_failed", "The background attribution did not complete.");
+  }
   const output = JSON.stringify(response); process.stdout.write(output.length <= 8192 ? output : JSON.stringify(failure("operation_failed", "The background attribution did not complete.")));
 }
 

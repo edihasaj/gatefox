@@ -43,7 +43,8 @@ test("Anthropic API wire path preserves images, replay and native custom calls, 
     const response = await request({ reasoning: { effort: "max", summary: "none" } }); const result = await response.json() as Record<string, unknown>;
     assert.equal(response.status, 200); assert.equal(result.status, "completed"); assert.equal(result.output_text, "answer-proof");
     assert.equal((result.output as Array<{ type: string }>).some(item => item.type === "reasoning"), false);
-    assert.deepEqual(result.usage, { input_tokens: 12, output_tokens: 3, total_tokens: 15, input_tokens_details: { cached_tokens: 2, cache_creation_tokens: 3 } });
+    // Cache writes count in input_tokens but stay out of the Responses usage detail; a Messages client gets them as cache_creation_input_tokens.
+    assert.deepEqual(result.usage, { input_tokens: 12, output_tokens: 3, total_tokens: 15, input_tokens_details: { cached_tokens: 2 } });
     assert.deepEqual(requests[0].output_config, { effort: "max" });
 
     mode = "tool"; stop = "tool_use";

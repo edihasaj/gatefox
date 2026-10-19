@@ -23,6 +23,11 @@ and inference. The client executes tools and returns their results to the gatewa
 Claude Code can use GPT, Claude, and local model routes through its native Messages
 interface; see [Claude Code setup and Messages compatibility](docs/messages.md).
 
+The optional [Claude Desktop client](docs/claude-desktop.md) shows truthful
+account and model labels for Claude, separately registered GPT accounts, and
+local models. Its isolated compatibility adapter preserves the existing Codex
+client and shared gateway configuration.
+
 Claude runs the unmodified Claude Code binary using its subscription login.
 A private virtual MCP server declares the client's tools. The gateway returns
 Claude's native tool calls to the client, which owns execution and approvals.
@@ -33,11 +38,21 @@ endpoint. Each account has its own provider ID, model aliases, and credentials.
 Routing never switches accounts or billing modes after a failure.
 
 Copilot uses the installed GitHub Copilot CLI's [SDK protocol](https://docs.github.com/en/copilot/how-tos/copilot-sdk/troubleshooting/compatibility) 3 and subscription
-login. Per-request sessions expose only caller tools, disable local instruction
-discovery, and are deleted after inference. Inherited BYOK settings and GitHub
-token overrides are removed. The adapter verifies the reported subscription
+login. Sessions expose only caller tools and disable local instruction
+discovery. A one-shot session whose turn ended with a complete text answer is deleted
+after inference; any other one-shot end kills its CLI. Live sessions (the
+default) last until they park out, are evicted or are closed, and their CLI is
+then killed and its private folder removed (see
+[live Copilot sessions](docs/copilot-sessions.md)). Inherited BYOK settings and
+GitHub token overrides are removed. The adapter verifies the reported subscription
 route and exact model before completing a response. The SDK's allowed-model list
 also restricts each session to the requested model. It adds no SDK dependency.
+By default the gateway keeps one live Copilot session per Codex thread, so Copilot's
+prompt cache stays warm across a tool loop; the same history sent as a new session on
+every request rewrites most of it to the cache each time, which cost about 9.5 times
+as much as the same work in a native Copilot session. Set `copilotSessions.mode: "oneshot"` on
+the provider to turn that off, which is also what a request falls back to when a live
+session cannot serve it (see [live Copilot sessions](docs/copilot-sessions.md)).
 
 The Apple Silicon installer bundles a verified Node runtime. Subscription
 inference hosts also need the native CLI for each configured provider. Desktop
@@ -47,11 +62,11 @@ forward is required only when that device uses the remote-gateway setup describe
 in [remote setup](docs/remote.md).
 
 ```sh
-gh release download v0.4.1 -R edihasaj/harness-gateway \
+gh release download v0.4.8 -R edihasaj/harness-gateway \
   --pattern '*macos-arm64.tar.gz' --pattern SHA256SUMS
 shasum -a 256 -c SHA256SUMS
-tar -xzf harness-gateway-0.4.1-macos-arm64.tar.gz
-./harness-gateway-0.4.1-macos-arm64/install
+tar -xzf harness-gateway-0.4.8-macos-arm64.tar.gz
+./harness-gateway-0.4.8-macos-arm64/install
 gateway --version
 ```
 
@@ -173,7 +188,17 @@ jobs with one supervisor. Apply with `--apply` after local and remote chats fini
 The migration preserves endpoints and saves rollback copies. See
 [service ownership](docs/services.md).
 
-Development gate: `npm run build && npm run check && npm test`.
+Development gate: `npm run build && npm run check && npm test`. `npm test` runs the suite under a private
+temporary folder and a private home folder (`scripts/run-tests.mjs`, `HOME` is `<folder>/home`) that it removes
+afterwards, so the real ones are left as they were, including `~/.local/state/gw-exec`, where execution hosts keep their
+folders, receipts and socket links; name test files
+after `--` to run only those. The runner fails a test that sets no timeout after 120 s
+(`GATEWAY_TEST_TIMEOUT_MS`), lets a test file exit once its tests have ended, and runs the suite in its own
+process group, so a signal to the runner stops every test process and it exits with 128 plus the signal. Each test
+process exits on the signal, so the Copilot CLIs it started (they run in groups of their own) stop with it, and the runner
+removes the stale sockets its run linked to in `/tmp/codex-daemon-<uid>`, the one place the pinned SDK fixes outside both folders.
+Test processes refuse the real per-user roots outside a temporary folder, and the runner fails a run that left a test
+receipt in the real `gw-native` or `gw-exec` ([CI](docs/ci.md)).
 Hosted macOS native CI is manual-only: dispatch from `production` with
 **Run paid macOS native checks** enabled (default off); ordinary development pushes and PRs stay on Ubuntu. The local
 guard is `node --test scripts/tests/ci-native-policy.test.mjs`; see [CI](docs/ci.md).
@@ -182,8 +207,21 @@ focus is Claude, Codex, and Copilot subscriptions.
 
 `chat-completions-api` supports local vLLM servers and compatible APIs through
 their native streaming endpoint. API providers accept either `credentialFile`
-(owner-only) or `apiKeyEnv`. Local HTTP endpoints must use loopback; reach a DGX
-Spark through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
+(owner-only) or `apiKeyEnv`. Plain HTTP endpoints must use loopback, except that a
+`chat-completions-api` provider may set `"tailnet": true` to use `http:` (or `https:`)
+toward a Tailscale host, for example the DGX Spark routers at
+`http://dgx.example:4000/v1`. The gateway resolves the host on every connection and
+dials only addresses in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`; any other answer is
+dropped before a connection is opened, so the key is never sent outside the tailnet. If
+the name resolves to several tailnet addresses (one per router), a connection that cannot be
+made in 3 seconds falls over to the next address; a request that reached a router is
+never replayed on another. If none can be reached the request fails with the retryable
+`upstream_unavailable`. When no address is on the tailnet it fails with
+`provider_unreachable` and the gateway records `provider_address_refused`. Model
+discovery (`gateway discover` and the periodic metadata refresh) uses the same checked
+transport, so the key is never sent anywhere else. Changing
+`tailnet` needs a restart, like changing `baseUrl`. Without `tailnet`, a DGX Spark
+can still be reached through `gateway tunnel install`. Qwen 3.8 Flash Next passed real Codex
 streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
 Its current gateway route supports text only.
 
@@ -216,9 +254,21 @@ See [architecture](docs/architecture.md), [Responses support](docs/responses.md)
 
 The project was renamed from Subscription Gateway. Names that existing installations
 and saved chats depend on keep the old spelling: the Codex provider ID
-`subscription_gateway` (stored in every gateway chat), the LaunchAgent labels
+`subscription_gateway` (stored in gateway chats, and registered in every gateway executor;
+a Mac that opts in to `"chatIdentity": "openai"` stores its new chats as `openai`, see
+[harness identity](docs/harness-identity.md)), the LaunchAgent labels
 `com.edihasaj.subscription-gateway*`, the install root `~/.local/share/subscription-gateway`,
 the state folder `~/Library/Application Support/Subscription Gateway`, and the
 ownership markers in service and execution-host receipts. Changing any of them
-needs a migration on every Mac. The `gateway` command remains; the installer also
-adds `harness-gateway`.
+needs a migration on every Mac. The installed command is `harness-gateway`, and
+`gateway` remains as a second launcher with the same contents, so existing scripts
+and old LaunchAgents keep working. macOS names a background item after the program a
+LaunchAgent runs, so the plists the gateway writes name `harness-gateway`, and System
+Settings, Login Items shows "harness-gateway" under "Allow in the Background". With
+the unified service that is the gateway's one background item: since 0.4.8 the
+service's daemon sets `CODEX_CLI_PATH` itself at its start, and the separate
+`harness-gateway-login-env` item that 0.4.7 added is removed at the first 0.4.8
+service start. Only a standalone `gateway desktop register`, with no unified
+service, keeps that login environment agent. When a service is rewritten by 0.4.7 macOS posts one "Background Items
+Added" notification for harness-gateway, and the old "gateway" entry disappears from
+the list. See [services](docs/services.md).

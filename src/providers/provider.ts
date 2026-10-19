@@ -2,7 +2,9 @@ import type { ResponsesRequest, InferenceEvent } from "../protocol/types.js";
 export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; reasoningItems: number; textDeltas: number; toolCalls: number }
 export class ProviderError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502,
-    readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic }) { super(message); }
+    readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;
+      /** Token counts an upstream context overflow reported (numbers only); a Messages client uses them to size its compaction. */
+      contextTokens?: { used: number; maximum: number } }) { super(message); }
 }
 export type InferenceRequestKind = "turn" | "compaction" | "prewarm" | "memory";
 /** Caller routing identifiers and the gateway-selected ingress protocol; never request content. */

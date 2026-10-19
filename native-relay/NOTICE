@@ -1,6 +1,6 @@
 The native transport links the OpenAI Codex SDK at commit
-740e5af33c71225640e0c1c1555c514c2c93ab74, released as
-rust-v0.162.0-alpha.17.2, under its Apache-2.0 license.
+4ebc485ca321243727539187169425fcf972f2c4, released as
+rust-v0.163.0-alpha.10.2, under its Apache-2.0 license.
 
 The build adds raw outgoing JSON envelopes and an optional server name to the
 SDK transport in a private build checkout, and refuses to create a new machine

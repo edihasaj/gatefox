@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 
-const { releaseComponentPlan, verifyReleaseComponents, copyReleaseComponents } = await import(new URL("../../scripts/release-components.mjs", import.meta.url).href);
+const { releaseComponentPlan, verifyReleaseComponents, verifyReleaseComponentSources, copyReleaseComponents } = await import(new URL("../../scripts/release-components.mjs", import.meta.url).href);
 const pins = await import(new URL("../../scripts/gateway-sdk-source.mjs", import.meta.url).href);
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const root = "subscription-gateway-0.2.23-macos-arm64";
@@ -25,7 +25,7 @@ function tar(entries: Entry[]) {
   }
   return gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)]));
 }
-async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean } = {}) {
+async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean | Record<string, unknown> } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-release-reuse-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const binary = Buffer.from("isolated component executable");
@@ -46,7 +46,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { n
   ]);
   if (options.native) {
     // A published relay whose source has changed since: its receipt no longer matches.
-    const nativeMetadata = { version: "0.2.23", profile: "release", codexVersion: pins.gatewaySdkCodexVersion,
+    const nativeMetadata = typeof options.native === "object" ? options.native : { version: "0.2.23", profile: "release", codexVersion: pins.gatewaySdkCodexVersion,
       revision: pins.gatewaySdkRevision, archiveSha256: pins.gatewaySdkArchiveSha256, sourceSha256: "e".repeat(64) };
     for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) files.set(`package/native/${name}`, Buffer.from("fixture"));
     files.set("package/native/build.json", Buffer.from(JSON.stringify(nativeMetadata)));
@@ -118,7 +118,7 @@ test("fresh native reuses only the gateway SDK from a bundle whose relay source 
   const f = await fixture(t, { native: true }); const a = await f.save();
   const base = { withNative: true, withGatewaySdk: true, reuseFrom: a.archive, componentsSha256: a.digest };
   const plan = releaseComponentPlan({ ...base, freshNative: true });
-  assert.deepEqual(plan, { reuse: { native: false, gatewaySdk: true }, freshNative: true, freshGatewaySdk: false });
+  assert.deepEqual(plan, { reuse: { native: false, gatewaySdk: true }, reuseNative: undefined, freshNative: true, freshGatewaySdk: false });
   const verified = verifyReleaseComponents(a.archive, a.digest, plan.reuse);
   assert.deepEqual(Object.keys(verified.provenance.components), ["gatewaySdk"]);
   const stage = join(f.directory, "stage"); await mkdir(stage);
@@ -127,8 +127,24 @@ test("fresh native reuses only the gateway SDK from a bundle whose relay source 
   await assert.rejects(stat(join(stage, "native")), { code: "ENOENT" });
   // Without the flag, today's reuse of both components is refused for the changed relay.
   const both = releaseComponentPlan(base);
-  assert.deepEqual(both, { reuse: { native: true, gatewaySdk: true }, freshNative: false, freshGatewaySdk: false });
+  assert.deepEqual(both, { reuse: { native: true, gatewaySdk: true }, reuseNative: undefined, freshNative: false, freshGatewaySdk: false });
   assert.throws(() => verifyReleaseComponents(a.archive, a.digest, both.reuse), /native source or build receipt changed/);
+});
+
+test("a relay is reused only under its own SDK pins, never the gateway SDK's", async t => {
+  const relay = await import(new URL("../../scripts/native-relay-sdk.mjs", import.meta.url).href);
+  const { nativeSourceDigest } = await import(new URL("../../scripts/native-source.mjs", import.meta.url).href);
+  const current = { version: "0.2.23", profile: "release", codexVersion: relay.sdkCodexVersion, revision: relay.sdkRevision,
+    archiveSha256: relay.sdkArchiveSha256, sourceSha256: nativeSourceDigest() };
+  const f = await fixture(t, { native: current }); const a = await f.save();
+  const verified = verifyReleaseComponents(a.archive, a.digest, { native: true, gatewaySdk: true });
+  assert.deepEqual(Object.keys(verified.provenance.components).sort(), ["gatewaySdk", "native"]);
+  // The relay and the gateway SDK no longer share a pin: a relay receipt naming the gateway SDK's is refused.
+  assert.notEqual(relay.sdkRevision, pins.gatewaySdkRevision);
+  for (const changed of [{ codexVersion: pins.gatewaySdkCodexVersion }, { revision: pins.gatewaySdkRevision }, { archiveSha256: pins.gatewaySdkArchiveSha256 }]) {
+    const old = await fixture(t, { native: { ...current, ...changed } }); const b = await old.save();
+    assert.throws(() => verifyReleaseComponents(b.archive, b.digest, { native: true, gatewaySdk: true }), /native source or build receipt changed/);
+  }
 });
 
 test("fresh native requires component reuse and both components", () => {
@@ -139,5 +155,133 @@ test("fresh native requires component reuse and both components", () => {
   }
   assert.throws(() => releaseComponentPlan({ withNative: true, reuseFrom: "/bundle.tar.gz" }), /requires both/);
   assert.deepEqual(releaseComponentPlan({ withNative: true, withGatewaySdk: true }),
-    { reuse: undefined, freshNative: true, freshGatewaySdk: true });
+    { reuse: undefined, reuseNative: undefined, freshNative: true, freshGatewaySdk: true });
+  // A relay archive of its own needs both digests, both components, the SDK reuse pair, and never arrives with --fresh-native.
+  const separate = { withNative: true, withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz", nativeSha256: "a".repeat(64) };
+  assert.throws(() => releaseComponentPlan({ withNative: true, withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz" }), /requires both --reuse-native-from/);
+  assert.throws(() => releaseComponentPlan({ withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz", nativeSha256: "a".repeat(64) }), /requires --with-native/);
+  assert.throws(() => releaseComponentPlan(separate), /requires --reuse-components-from and --components-sha256/);
+  assert.throws(() => releaseComponentPlan({ ...separate, reuseFrom: "/bundle.tar.gz" }), /Component reuse requires both/);
+  assert.throws(() => releaseComponentPlan({ ...separate, freshNative: true }), /cannot be combined/);
+});
+
+const relay = await import(new URL("../../scripts/native-relay-sdk.mjs", import.meta.url).href);
+const { nativeSourceDigest } = await import(new URL("../../scripts/native-source.mjs", import.meta.url).href);
+
+/** An original published bundle that built the named components for its own version, byte for byte. */
+async function originalBundle(t: { after(fn: () => Promise<void>): void }, options: {
+  version: string; native?: boolean; gatewaySdk?: boolean; changed?: Record<string, unknown>; reused?: string[];
+}) {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-release-original-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = `harness-gateway-${options.version}-macos-arm64`;
+  const files = new Map<string, Buffer>();
+  const release: Record<string, unknown> = { version: options.version, source: "b".repeat(40) };
+  if (options.reused?.length) release.reusedComponents = { bundleVersion: "0.1.0", bundleSha256: "c".repeat(64),
+    components: Object.fromEntries(options.reused.map(key => [key, { buildVersion: "0.1.0", sourceSha256: "d".repeat(64), files: [] }])) };
+  files.set("package/release.json", Buffer.from(JSON.stringify(release)));
+  files.set("package/package.json", Buffer.from(JSON.stringify({ version: options.version })));
+  const entries: Entry[] = [{ name: `${root}/`, type: "5" }, { name: `${root}/package/`, type: "5" }];
+  for (const [key, subdirectory, binary] of [["native", "native", "gateway-native-relay"], ["gatewaySdk", "gateway-sdk", "gateway-codex"]] as const) {
+    if (!options[key]) continue;
+    entries.push({ name: `${root}/package/${subdirectory}/`, type: "5" });
+    for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) {
+      files.set(`package/${subdirectory}/${name}`, Buffer.from(`original ${subdirectory} ${name}`));
+    }
+    const metadata: Record<string, unknown> = key === "native"
+      ? { version: options.version, profile: "release", codexVersion: relay.sdkCodexVersion, revision: relay.sdkRevision,
+          archiveSha256: relay.sdkArchiveSha256, sourceSha256: nativeSourceDigest() }
+      : { schemaVersion: 1, version: options.version, profile: "release", platform: "darwin", arch: "arm64",
+          codexVersion: pins.gatewaySdkCodexVersion, revision: pins.gatewaySdkRevision, archiveSha256: pins.gatewaySdkArchiveSha256,
+          patchSha256: pins.gatewaySdkPatchDigest(), lockfileRepairSha256: pins.gatewaySdkLockRepairDigest(),
+          lockfileSha256: pins.gatewaySdkLockSha256, sourceSha256: pins.gatewaySdkSourceDigest(),
+          testRunnerSha256: pins.gatewaySdkTestRunnerDigest(), patchedSdkSha256: "a".repeat(64), capabilities: [pins.gatewaySdkCapability] };
+    const executable = Buffer.from(`original ${binary} executable bytes ${options.version}`);
+    metadata.binarySha256 = hash(executable);
+    if (options.changed && options[key]) Object.assign(metadata, options.changed);
+    files.set(`package/${subdirectory}/build.json`, Buffer.from(JSON.stringify(metadata)));
+    files.set(`package/${subdirectory}/${binary}`, executable);
+  }
+  const manifest = Buffer.from([...files].map(([name, bytes]) => `${hash(bytes)}  ${name}`).join("\n") + "\n");
+  const bytes = tar([...entries, { name: `${root}/checksums.txt`, bytes: manifest }, ...[...files].map(([name, buffer]) => ({ name: `${root}/${name}`, bytes: buffer }))]);
+  const archive = join(directory, `${root}.tar.gz`); await writeFile(archive, bytes);
+  return { archive, digest: hash(bytes), files, root, directory };
+}
+
+test("two separately authenticated originals combine, each keeping its own origin and bytes", async t => {
+  const sdk = await originalBundle(t, { version: "0.4.7", gatewaySdk: true });
+  const native = await originalBundle(t, { version: "0.5.0", native: true });
+  const plan = releaseComponentPlan({ withNative: true, withGatewaySdk: true, reuseFrom: sdk.archive,
+    componentsSha256: sdk.digest, reuseNativeFrom: native.archive, nativeSha256: native.digest });
+  assert.deepEqual(plan, { reuse: { native: false, gatewaySdk: true }, reuseNative: { from: native.archive, sha256: native.digest },
+    freshNative: false, freshGatewaySdk: false });
+  const verified = verifyReleaseComponentSources({
+    gatewaySdk: { archivePath: sdk.archive, expectedSha256: sdk.digest, flag: "--components-sha256" },
+    native: { archivePath: native.archive, expectedSha256: native.digest, flag: "--native-sha256" },
+  });
+  // The parent receipt stays the SDK bundle's; each component names the archive it was really built in.
+  assert.deepEqual({ bundleVersion: verified.provenance.bundleVersion, bundleSha256: verified.provenance.bundleSha256 },
+    { bundleVersion: "0.4.7", bundleSha256: sdk.digest });
+  assert.deepEqual(verified.provenance.components.native.origin, { bundleVersion: "0.5.0", bundleSha256: native.digest });
+  assert.deepEqual(verified.provenance.components.gatewaySdk.origin, { bundleVersion: "0.4.7", bundleSha256: sdk.digest });
+  assert.deepEqual(verified.provenance.components.native.buildVersion, "0.5.0");
+  assert.equal(verified.provenance.components.native.files.length, 6);
+  assert.equal(verified.provenance.components.gatewaySdk.files.length, 6);
+  const stage = join(sdk.directory, "stage"); await mkdir(stage, { recursive: true });
+  copyReleaseComponents(verified, stage);
+  for (const [key, subdirectory, bundle] of [["native", "native", native], ["gatewaySdk", "gateway-sdk", sdk]] as const)
+    for (const file of verified.provenance.components[key].files) {
+      assert.deepEqual(await readFile(join(stage, subdirectory, file.name)), bundle.files.get(`package/${subdirectory}/${file.name}`));
+    }
+  assert.equal((await stat(join(stage, "native/gateway-native-relay"))).mode & 0o777, 0o755);
+  assert.equal((await stat(join(stage, "gateway-sdk/gateway-codex"))).mode & 0o777, 0o755);
+  assert.equal((await stat(join(stage, "native/build.json"))).mode & 0o777, 0o644);
+});
+
+test("a relay override never arrives without the gateway SDK reuse pair", async t => {
+  const native = await originalBundle(t, { version: "0.5.0", native: true });
+  // The separate-relay feature means two original archives: the override alone is refused
+  // so a release can't reuse the relay while building the gateway SDK fresh.
+  assert.throws(() => releaseComponentPlan({ withNative: true, withGatewaySdk: true,
+    reuseNativeFrom: native.archive, nativeSha256: native.digest }),
+    /--reuse-native-from requires --reuse-components-from and --components-sha256/);
+  // With the complete pair the plan names both originals and builds nothing fresh.
+  const sdk = await originalBundle(t, { version: "0.4.7", gatewaySdk: true });
+  assert.deepEqual(releaseComponentPlan({ withNative: true, withGatewaySdk: true, reuseFrom: sdk.archive,
+    componentsSha256: sdk.digest, reuseNativeFrom: native.archive, nativeSha256: native.digest }),
+    { reuse: { native: false, gatewaySdk: true }, reuseNative: { from: native.archive, sha256: native.digest },
+      freshNative: false, freshGatewaySdk: false });
+});
+
+test("a wrong digest, the wrong archive, or changed source in either original fails closed", async t => {
+  const sdk = await originalBundle(t, { version: "0.4.7", gatewaySdk: true });
+  const native = await originalBundle(t, { version: "0.5.0", native: true });
+  const good = { gatewaySdk: { archivePath: sdk.archive, expectedSha256: sdk.digest, flag: "--components-sha256" },
+    native: { archivePath: native.archive, expectedSha256: native.digest, flag: "--native-sha256" } };
+  assert.throws(() => verifyReleaseComponentSources({ ...good, native: { ...good.native, expectedSha256: "f".repeat(64) } }), /archive SHA-256 mismatch/);
+  assert.throws(() => verifyReleaseComponentSources({ ...good, gatewaySdk: { ...good.gatewaySdk, expectedSha256: "nonsense" } }), /exact SHA-256 digest/);
+  // Pointing the relay selection at the SDK bundle's archive finds no relay component.
+  assert.throws(() => verifyReleaseComponentSources({ ...good, native: { ...good.native, archivePath: sdk.archive, expectedSha256: sdk.digest } }),
+    /unexpected native component files|select --with/);
+  const wrongNativeSource = await originalBundle(t, { version: "0.5.0", native: true, changed: { sourceSha256: "e".repeat(64) } });
+  assert.throws(() => verifyReleaseComponentSources({ ...good, native: { ...good.native, archivePath: wrongNativeSource.archive, expectedSha256: wrongNativeSource.digest } }),
+    /native source or build receipt changed/);
+  const wrongSdkSource = await originalBundle(t, { version: "0.4.7", gatewaySdk: true, changed: { sourceSha256: "d".repeat(64) } });
+  assert.throws(() => verifyReleaseComponentSources({ ...good, gatewaySdk: { ...good.gatewaySdk, archivePath: wrongSdkSource.archive, expectedSha256: wrongSdkSource.digest } }),
+    /gatewaySdk source or build receipt changed/);
+  const stage = join(sdk.directory, "refused-stage"); await mkdir(stage, { recursive: true });
+  assert.throws(() => verifyReleaseComponentSources({ ...good, native: { ...good.native, expectedSha256: "f".repeat(64) } }), /archive SHA-256 mismatch/);
+  assert.deepEqual((await readdir(stage)), []);
+});
+
+test("a component that was itself reused is refused; reuse of the other component still passes", async t => {
+  const chainedSdk = await originalBundle(t, { version: "0.4.7", gatewaySdk: true, native: true, reused: ["gatewaySdk"] });
+  assert.throws(() => verifyReleaseComponents(chainedSdk.archive, chainedSdk.digest, { gatewaySdk: true }), /gatewaySdk component was itself reused/);
+  assert.throws(() => verifyReleaseComponentSources({ native: { archivePath: chainedSdk.archive, expectedSha256: chainedSdk.digest, flag: "--native-sha256" },
+    gatewaySdk: { archivePath: chainedSdk.archive, expectedSha256: chainedSdk.digest, flag: "--components-sha256" } }), /gatewaySdk component was itself reused/);
+  // Its relay was built there, so only that one may be reused from it.
+  const onlyNative = verifyReleaseComponentSources({ native: { archivePath: chainedSdk.archive, expectedSha256: chainedSdk.digest, flag: "--native-sha256" } });
+  assert.deepEqual(onlyNative.provenance.components.native.origin, { bundleVersion: "0.4.7", bundleSha256: chainedSdk.digest });
+  const chainedNative = await originalBundle(t, { version: "0.5.0", native: true, gatewaySdk: true, reused: ["native"] });
+  assert.throws(() => verifyReleaseComponents(chainedNative.archive, chainedNative.digest, { native: true }), /native component was itself reused/);
 });

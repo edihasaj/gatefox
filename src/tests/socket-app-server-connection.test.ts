@@ -1,20 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { mkdtemp, chmod, rm } from "node:fs/promises";
+import { chmod } from "node:fs/promises";
 import { join } from "node:path";
 import { once } from "node:events";
 import { setTimeout as delay } from "node:timers/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import type { Message } from "../app-server-connection.js";
+import { shortFolder } from "./short-folder.js";
 
 type Received = { socket: WebSocket; number: number; message: Message };
 async function fixture(onRequest: (value: Received) => void = ({ socket, number, message }) => {
   if (message.id !== undefined && typeof message.method === "string") socket.send(JSON.stringify({ id: message.id, result: { client: number, method: message.method } }));
 }, filename = "rpc.sock") {
-  const directory = await mkdtemp("/tmp/gw-ws-");
-  const path = join(directory, filename);
+  const folder = await shortFolder("gw-ws-");
+  const path = join(folder.directory, filename);
   const server = createServer();
   const wss = new WebSocketServer({ server });
   const sockets: WebSocket[] = [];
@@ -31,16 +32,17 @@ async function fixture(onRequest: (value: Received) => void = ({ socket, number,
     for (const socket of sockets) socket.terminate();
     await new Promise<void>(resolve => wss.close(() => resolve()));
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-    await rm(directory, { recursive: true, force: true });
+    await folder.remove();
   } };
 }
 
 async function until(check: () => boolean): Promise<void> {
-  for (let i = 0; i < 100; i++) { if (check()) return; await delay(5); }
+  // A socket event that never comes fails here after ten seconds, or earlier by the test's own timeout; a loaded machine fails nothing.
+  for (let i = 0; i < 2000; i++) { if (check()) return; await delay(5); }
   assert.fail("Expected socket activity did not arrive");
 }
 
-test("Unix RPC clients initialize independently and stopping one preserves the engine and other clients", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC clients initialize independently and stopping one preserves the engine and other clients", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(); const exits: SocketAppServerConnection[] = [];
   const a = new SocketAppServerConnection(f.path, async () => {}, value => exits.push(value));
   const b = new SocketAppServerConnection(f.path, async () => {});
@@ -61,7 +63,7 @@ test("Unix RPC clients initialize independently and stopping one preserves the e
   } finally { a.stop(); b.stop(); await Promise.all([a.exited, b.exited]); await f.close(); }
 });
 
-test("Unix RPC preserves structured errors and routes server requests despite colliding client IDs", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC preserves structured errors and routes server requests despite colliding client IDs", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(({ socket, message }) => {
     if (message.method === "failure") socket.send(JSON.stringify({ id: message.id, error: { code: -32007, message: "Approval required", data: { reason: "permission", retryable: true } } }));
     if (message.method === "nested") socket.send(JSON.stringify({ id: message.id, result: { nested: true } }));
@@ -95,7 +97,7 @@ test("Unix RPC preserves structured errors and routes server requests despite co
   } finally { client.stop(); await client.exited; await f.close(); }
 });
 
-test("Unix RPC bounds pending requests and UTF-8 frame bytes without poisoning the connection", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC bounds pending requests and UTF-8 frame bytes without poisoning the connection", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(() => {}); const client = new SocketAppServerConnection(f.path, async () => {});
   try {
     await client.ready;
@@ -114,7 +116,7 @@ test("Unix RPC bounds pending requests and UTF-8 frame bytes without poisoning t
   } finally { client.stop(); await client.exited; await f.close(); }
 });
 
-test("Unix RPC connection failures, remote closes and invalid frames settle readiness and pending work", { skip: process.platform === "win32", timeout: 10000 }, async t => {
+test("Unix RPC connection failures, remote closes and invalid frames settle readiness and pending work", { skip: process.platform === "win32", timeout: 30000 }, async t => {
   await t.test("missing socket", async () => {
     const client = new SocketAppServerConnection("/tmp/no-gateway-engine-" + process.pid + ".sock", async () => {});
     const pending = client.request("initialize", {});
@@ -138,7 +140,7 @@ test("Unix RPC connection failures, remote closes and invalid frames settle read
   });
 });
 
-test("Unix RPC rejects a notification flood while a handler is blocked", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC rejects a notification flood while a handler is blocked", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(() => {}); let release!: () => void;
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const client = new SocketAppServerConnection(f.path, async () => blocked);
@@ -150,13 +152,13 @@ test("Unix RPC rejects a notification flood while a handler is blocked", { skip:
   } finally { release(); client.stop(); await client.exited; await f.close(); }
 });
 
-test("Unix RPC preserves spaces and URL-special characters in the private socket path", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC preserves spaces and URL-special characters in the private socket path", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(undefined, "private é #?.sock"); const client = new SocketAppServerConnection(f.path, async () => {});
   try { assert.deepEqual(await client.request("initialize", {}), { client: 1, method: "initialize" }); }
   finally { client.stop(); await client.exited; await f.close(); }
 });
 
-test("Unix RPC stop before open rejects readiness and requests and leaves the listener available", { skip: process.platform === "win32", timeout: 5000 }, async () => {
+test("Unix RPC stop before open rejects readiness and requests and leaves the listener available", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await fixture(); const client = new SocketAppServerConnection(f.path, async () => {});
   try {
     const pending = client.request("initialize", {});

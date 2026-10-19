@@ -5,8 +5,10 @@ import { createInterface } from 'node:readline';
 import { Duplex } from 'node:stream';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readFile, writeFile, access } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { connect } from 'node:net';
+import { mkdir, mkdtemp, readFile, readdir, readlink, lstat, unlink, realpath, writeFile, access, rm } from 'node:fs/promises';
+import { resolve, join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -19,32 +21,100 @@ const root = resolve(v.root), gateway = resolve(v.gateway), sdk = resolve(v.code
 assert.ok(root !== resolve(homedir(), '.codex') && !root.startsWith(resolve(homedir(), '.codex') + '/'));
 const transports = v.transports.split(','); assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
-const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim();
-assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
+let sdkVersion;
 const { WebSocket } = createRequire(join(resolve(v.package), 'package.json'))('ws');
+const owned = new Set(), servers = new Set(), clients = new Set();
+let runFolder, isolatedHome, closing = false, stopping;
+const signalGroup = (child, signal) => {
+  if (child.pid === undefined) return;
+  try { process.kill(-child.pid, signal); } catch (error) { if (error.code !== 'ESRCH' && error.code !== 'EPERM') throw error; }
+};
+async function stop(child) {
+  if (!child) return;
+  try {
+    // Every child leads a process group of its own, and the engine's own children (git, in particular) live in that
+    // group: signal the group, not just the child, and sweep it once the child is gone, so nothing outlives this script.
+    if (child.exitCode !== null || child.signalCode !== null) return signalGroup(child, 'SIGKILL');
+    const exit = once(child, 'close').catch(() => {}); signalGroup(child, 'SIGTERM');
+    const closed = await Promise.race([exit.then(() => true), delay(3000).then(() => false)]);
+    signalGroup(child, 'SIGKILL');
+    if (!closed) await exit;
+  } finally { owned.delete(child); }
+}
+// One teardown for both endings: the finally below and the stopped-by-signal path. The check starts its
+// children in groups of their own, so every one of them must be stopped here or it outlives this script.
+// Once it starts nothing new may be spawned, and it repeats until nothing is left that the main flow added meanwhile.
+/**
+ * The pinned SDK puts the physical socket (and a lock beside it) of every execution host in the fixed folder
+ * `/tmp/codex-daemon-<uid>`, named by the hash of the socket's real path. That folder is shared with the live gateway and cannot be moved,
+ * so this removes only what this run made: the names its private HOME leads to, and only a socket nothing listens on.
+ */
+async function removeRendezvous(home) {
+  const folder = join(await realpath('/tmp'), 'codex-daemon-' + process.getuid());
+  const names = new Set(), sockets = [];
+  const add = async path => {
+    if (typeof path !== 'string') return;
+    const real = await realpath(dirname(path)).catch(() => undefined); if (!real) return;
+    names.add(createHash('sha256').update(join(real, basename(path))).digest('hex'));
+  };
+  const walk = async directory => { for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    const full = join(directory, entry.name);
+    if (entry.isDirectory()) await walk(full);
+    else if (entry.isSymbolicLink()) { const target = resolve(dirname(full), await readlink(full).catch(() => '')); if (dirname(target) === folder) names.add(basename(target)); }
+    else if (entry.name === 'owner.json') { const owner = JSON.parse(await readFile(full, 'utf8').catch(() => '{}')); sockets.push(owner.socketPath, owner.native?.socketPath, ...(owner.generations ?? []).map(row => row?.socketPath)); }
+  } };
+  await walk(home); for (const path of sockets) await add(path);
+  for (const name of names) {
+    if (!/^[a-f0-9]{64}$/.test(name)) continue;
+    const target = join(folder, name), info = await lstat(target).catch(() => undefined);
+    if (info && !(info.isSocket() && info.uid === process.getuid())) continue;
+    const busy = info && await new Promise(done => { const socket = connect(target); const timer = setTimeout(() => { socket.destroy(); done(true); }, 1500);
+      socket.once('connect', () => { clearTimeout(timer); socket.destroy(); done(true); }); socket.once('error', () => { clearTimeout(timer); done(false); }); });
+    if (busy) continue;
+    if (info) await unlink(target).catch(() => {});
+    const lock = await lstat(target + '.lock').catch(() => undefined); if (lock?.isFile() && lock.uid === process.getuid()) await unlink(target + '.lock').catch(() => {});
+  }
+}
+const cleanup = async () => {
+  if (stopping) return stopping;
+  closing = true;
+  stopping = (async () => {
+    await Promise.allSettled([...clients].map(client => client.close()));
+    while (owned.size) await Promise.allSettled([...owned].map(stop));
+    for (const server of servers) { server.closeAllConnections?.(); await new Promise(resolve => server.close(resolve)); }
+    const run = await runFolder?.catch(() => undefined);
+    // After every child is gone and before the folder is: the sockets this run left in the SDK's fixed folder.
+    if (run) await removeRendezvous(isolatedHome).catch(() => {});
+    if (run) await rm(run, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  })();
+  return stopping;
+};
+// Installed before anything is created, so a signal at any moment leaves nothing behind.
+for (const signal of ['SIGTERM', 'SIGINT']) process.on(signal, () => {
+  void cleanup().catch(() => {}).then(() => process.exit(1));
+});
 await mkdir(root, { recursive: true, mode: 0o700 });
 // macOS Unix socket names have a small limit; keep the private fixture path short.
-const run = await mkdtemp('/tmp/gw-fast-');
+runFolder = mkdtemp('/tmp/gw-fast-');
+const run = await runFolder;
+// Every child (serve, executor-host, codex-shim, the SDK) runs under this private HOME. The gateway derives its execution-host homes
+// (`~/.local/state/gw-exec`), relay and SSH control homes (`gw-native`, `gw-ssh`) and the default codex home (`~/.codex`) from it, so
+// none of them can land in the real one. The fixture still passes its own CODEX_HOME to the children that take one.
+isolatedHome = join(run, 'home'); await mkdir(isolatedHome, { mode: 0o700 });
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
-env.GATEWAY_FAST_FIXTURE_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
-const results = [], wire = [], returned = [], owned = new Set(), servers = new Set();
-let phase = 'setup', responseTier = 'priority';
+env.HOME = isolatedHome; env.GATEWAY_FAST_FIXTURE_KEY = 'fixture-only'; env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
+const results = [], wire = [], returned = [];
+let phase = 'setup', failedPhase, responseTier = 'priority';
+// Every row says where the check had got to; the failure names the phase it stopped in, and the
+// watchdog reads that one field and nothing else.
 const save = async row => {
-  results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway,
+  results.push(row);
+  await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, gateway, failedPhase,
     primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0, results, requestedTiers: wire, returnedTiers: returned }, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(row));
 };
-function command(args, extra = {}) { return spawn(gateway.endsWith('.js') ? process.execPath : gateway,
+function command(args, extra = {}) { if (closing) throw Error('Fixture is closing'); return spawn(gateway.endsWith('.js') ? process.execPath : gateway,
   gateway.endsWith('.js') ? [gateway, ...args] : args, { env, stdio: ['ignore', 'ignore', 'ignore'], detached: true, ...extra }); }
-async function stop(child) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exit = once(child, 'close'); child.kill('SIGTERM');
-  if (!await Promise.race([exit.then(() => true), delay(3000).then(() => false)])) {
-    try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-    await exit;
-  }
-  owned.delete(child);
-}
 async function until(check, label, timeout = 15000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) { const value = await check(); if (value) return value; await delay(25); }
@@ -67,9 +137,7 @@ await writeFile(serverConfig, JSON.stringify({ version: 1, port: servePort, stat
   providers: [{ id: 'fixture', type: 'responses-api', baseUrl: 'http://127.0.0.1:' + upstream.address().port, apiKeyEnv: 'GATEWAY_FAST_FIXTURE_KEY',
     models: { 'fixture/fast': 'mock-fast-model' }, modelMetadata: { 'fixture/fast': { contextWindow: 32768, reasoningEfforts: ['low'],
       additionalSpeedTiers: ['fast'], serviceTiers: [{ id: 'priority', name: 'Fast', description: 'Priority routing' }], defaultServiceTier: null } } }] }), { mode: 0o600 });
-const serving = command(['serve', '--config', serverConfig]); owned.add(serving);
 let proxy;
-const clients = new Set();
 function clientTransport(child, websocket) {
   const events = [], pending = new Map(); let sequence = 0;
   const send = value => websocket ? websocket.send(JSON.stringify(value)) : child.stdin.write(JSON.stringify(value) + '\n');
@@ -104,6 +172,12 @@ async function invoke(client, threadId, name, tier, params = {}, actual = 'prior
   await save({ phase: name, passed: true, requestedServiceTier: tier, actualReturnedServiceTier: actual });
 }
 try {
+  phase = 'setup';
+  // The native engine is the app's own signed CLI, whatever version the app ships; gateway chats run the package's pinned SDK.
+  sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8', env }).trim();
+  assert.match(sdkVersion, /^codex-cli \d+\.\d+\.\d+/);
+  phase = 'serve';
+  owned.add(command(['serve', '--config', serverConfig]));
   await until(() => fetch('http://127.0.0.1:' + servePort + '/health').then(res => res.ok).catch(() => false), 'Fixture CLI serve');
   const token = (await readFile(join(state, 'client-token'), 'utf8')).trim();
   proxy = createServer((req, res) => {
@@ -122,6 +196,7 @@ try {
   await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve)); servers.add(proxy);
   const clientConfig = join(run, 'client.json');
   await writeFile(clientConfig, JSON.stringify({ version: 1, port: proxy.address().port, stateDirectory: state, clientOnly: true, providers: [] }), { mode: 0o600 });
+  phase = 'catalog';
   const catCommand = gateway.endsWith('.js') ? process.execPath : gateway;
   const catalog = JSON.parse(execFileSync(catCommand, [...(gateway.endsWith('.js') ? [gateway] : []), 'catalog', '--config', serverConfig], { env, encoding: 'utf8' }));
   for (const transport of transports) {
@@ -129,11 +204,12 @@ try {
     await mkdir(home, { recursive: true, mode: 0o700 }); await mkdir(work, { recursive: true, mode: 0o700 });
     const nativeModel = { ...catalog.models[0], slug: 'native-fixture', display_name: 'Native fixture', additional_speed_tiers: [], service_tiers: [], default_service_tier: null };
     await writeFile(join(home, 'models.json'), JSON.stringify({ models: [nativeModel] }), { mode: 0o600 });
-    const nativeConfig = 'model = "native-fixture"\nmodel_catalog_json = ' + JSON.stringify(join(home, 'models.json')) + '\nweb_search = "disabled"\n[features]\nremote_control = false\nfast_mode = false\n';
+    const nativeConfig = 'model = "native-fixture"\nmodel_catalog_json = ' + JSON.stringify(join(home, 'models.json')) + '\nweb_search = "disabled"\n[features]\nremote_control = false\nfast_mode = false\nplugins = false\n';
     await writeFile(join(home, 'config.toml'), nativeConfig, { mode: 0o600 });
     // Each transport gets its own private preferences; no live gateway state is reused.
     await writeFile(join(state, 'desktop-preferences.json'), '{}\n', { mode: 0o600 });
     const host = async () => {
+      phase = transport + '-host';
       const child = command(['executor-host', '--config', clientConfig, '--codex', sdk, '--native-home', home], { cwd: work, stdio: ['ignore', 'pipe', 'ignore'] });
       owned.add(child); let ready = false;
       const lines = createInterface({ input: child.stdout });
@@ -142,6 +218,7 @@ try {
     };
     let executorHost = await host();
     const open = async () => {
+    phase = transport + '-open';
     let listener, client;
     if (transport === 'stdio') {
       const child = command(['codex-shim', '--config', clientConfig, '--codex', sdk, '--', 'app-server', '--listen', 'stdio://'],
@@ -150,6 +227,7 @@ try {
       listener = command(['codex-shim', '--ssh', '--ssh-home', proxyHome, '--config', clientConfig, '--codex', sdk, '--', 'app-server', '--listen', 'unix://'],
         { env: { ...env, CODEX_HOME: home }, cwd: work }); owned.add(listener);
       await until(() => access(join(proxyHome, 'app-server-control/app-server-control.sock')).then(() => true, () => false), 'Private Unix listener');
+      if (closing) throw Error('Fixture is closing');
       const child = spawn(sdk, ['app-server', 'proxy'], { env: { ...env, CODEX_HOME: proxyHome }, cwd: work, stdio: ['pipe', 'pipe', 'ignore'], detached: true }); owned.add(child);
       const pipe = Duplex.from({ readable: child.stdout, writable: child.stdin });
       const websocket = new WebSocket('ws://codex-app-server/rpc', { createConnection: () => pipe });
@@ -158,6 +236,7 @@ try {
     await initialize(client); return { listener, client };
     };
     let { listener, client } = await open();
+    phase = transport + '-catalog';
     const listed = await client.rpc('model/list', { limit: 1000 }); const model = listed.data.find(row => row.model === 'fixture/fast'); assert.ok(model);
     assert.deepEqual(model.additionalSpeedTiers, ['fast']); assert.equal(model.serviceTiers[0].id, 'priority'); assert.equal(model.defaultServiceTier, null);
     const nativeView = await client.rpc('config/read', { includeLayers: false });
@@ -214,6 +293,15 @@ try {
     executorHost = await host(); ({ listener, client } = await open());
     await client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work, serviceTier: null });
     await invoke(client, fast.thread.id, transport + '-cold-resume-null-standard', null, {}, 'default');
+    // ChatGPT 26.1013 picks features by the native engine's version and sends 0.163-only tables to every chat. A gateway chat's
+    // older pinned SDK rejected the whole configuration ("invalid type: map, expected a boolean in `features`") until 0.4.2.
+    await client.close(); await stop(listener); await stop(executorHost);
+    executorHost = await host(); ({ listener, client } = await open());
+    await client.rpc('thread/resume', { threadId: fast.thread.id, model: 'fixture/fast', cwd: work, serviceTier: null,
+      config: { 'features.async_compaction': { enabled: true, threshold: 3 }, 'features.multi_agent_v2.preserve_fork_prefix': true } });
+    await invoke(client, fast.thread.id, transport + '-cold-resume-newer-feature-tables', null, {}, 'default');
+    const featured = await start({ serviceTier: null, config: { features: { async_compaction: { mode: 'remote' }, multi_agent_v2: { enabled: true, preserve_fork_prefix: true } } } });
+    await invoke(client, featured.thread.id, transport + '-start-newer-feature-tables', null, {}, 'default');
     assert.equal(await readFile(join(home, 'config.toml'), 'utf8'), nativeConfig);
     assert.equal(await access(join(home, 'auth.json')).then(() => true, () => false), false);
     await client.close(); await stop(listener); await stop(executorHost);
@@ -222,10 +310,7 @@ try {
   await save({ phase: 'verification', passed: true, transports, realSignedSdk: true, paidInferenceRequests: 0,
     renderedDesktopUiTested: false, builtInCloudTransportTested: false });
 } catch (error) {
-  await save({ phase: 'verification', passed: false, errorClass: error?.name || 'Error', code: error?.code,
+  failedPhase = phase;
+  if (!closing) await save({ phase: 'verification', passed: false, failedPhase, errorClass: error?.name || 'Error', code: error?.code,
     check: error?.message?.startsWith('Expected') ? 'Assertion failed' : error?.message, fixtureDiagnostic: error?.fixtureDiagnostic }); process.exitCode = 1;
-} finally {
-  await Promise.allSettled([...clients].map(client => client.close()));
-  for (const child of owned) await stop(child);
-  for (const server of servers) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
-}
+} finally { await cleanup(); }

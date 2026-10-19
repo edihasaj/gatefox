@@ -1,5 +1,6 @@
 import type { OpenAIChatMessage, OpenAIChatRequest, OpenAITool, ResponsesMessageItem, ResponsesRequest, ResponsesTool, ResponseToolIdentity, MessagePart } from "./types.js";
 import { inlineImage } from "./images.js";
+import { telemetry } from "../telemetry.js";
 
 type Data = Record<string, unknown>;
 /** Why a request could not be translated. Fixed values only; never caller text. */
@@ -22,6 +23,14 @@ export const translationItemTypes: ReadonlySet<string> = new Set<string>([...tra
 export function translationItemType(value: unknown): TranslationItemType {
   return typeof value === "string" && translationItemTypes.has(value) ? value as TranslationItemType : "other";
 }
+/**
+ * `toolSearch` is set only for the Codex subscription route, where validation accepts the `tool_search` tool and the
+ * `tool_search_call` / `tool_search_output` items; that provider then drops them before forwarding, because the ChatGPT
+ * backend refuses a forwarded `tool_search` (see `tool_search_dropped`). Every other route rejects them as unsupported.
+ */
+export interface TranslationOptions { toolSearch?: boolean;
+  /** Record `tool_declarations_merged` for this translation. The server sets it on its one validation pass, so a request is reported once. */
+  reportMerges?: boolean }
 export class ResponsesTranslationError extends Error {
   constructor(message: string, readonly reason: TranslationReason, readonly itemType?: string) { super(message); }
 }
@@ -65,7 +74,7 @@ export function agentMessageInput(item: Record<string, unknown>): ResponsesMessa
 }
 
 /** Replay is compiled in order; opaque reasoning is never treated as text. */
-export function responsesInputToMessages(input: ResponsesRequest["input"]): OpenAIChatMessage[] {
+export function responsesInputToMessages(input: ResponsesRequest["input"], options: TranslationOptions = {}): OpenAIChatMessage[] {
   if (typeof input === "string") return [{ content: input, role: "user" }];
   if (!Array.isArray(input)) reject("input must be text or a list of Responses items", "invalid_shape");
   const replay: OpenAIChatMessage[] = [];
@@ -100,6 +109,10 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
       case "additional_tools": break;
+      // Search items are accepted on the Codex route only; its provider drops them before forwarding.
+      case "tool_search_call": case "tool_search_output":
+        if (!options.toolSearch) reject("Unsupported Responses input item type", "unsupported_input_item", translationItemType(item.type));
+        break;
       // Codex multi-agent replay: an agent's message to another agent. Its text is
       // the whole transcript content; encrypted parts are transport state, never text.
       case "agent_message": {
@@ -119,7 +132,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"]): Open
 }
 
 /** Compile a flat caller-tool catalog while retaining its original identities. */
-export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool[] {
+export function normalizeResponsesTools(tools: ResponsesTool[] = [], options: TranslationOptions = {}): OpenAITool[] {
   if (!Array.isArray(tools)) reject("tools must be an array", "invalid_shape");
   const catalog = new Map<string, OpenAITool>();
   const declare = (source: unknown, namespace?: string, groupDescription = "") => {
@@ -149,6 +162,7 @@ export function normalizeResponsesTools(tools: ResponsesTool[] = []): OpenAITool
   };
   for (const source of tools) {
     const tool = record(source);
+    if (options.toolSearch && tool.type === "tool_search") continue;
     if (tool.type !== "namespace") { declare(tool); continue; }
     const group = name(tool.name);
     if (!Array.isArray(tool.tools)) reject("Namespace tools must be a list", "unsupported_tool", "namespace");
@@ -169,8 +183,67 @@ export function normalizeResponsesToolChoice(choice: ResponsesRequest["tool_choi
   return { type: "function", function: { name: named(selection) } };
 }
 
-/** Tools a request declares, at the top level and in Responses lite `additional_tools` input items. */
-export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool[] {
+/** One declared tool, as the merge sees it: the tool itself, the namespace it came from (if any), and how it ranks. */
+interface Declaration { tool: unknown; group?: { source: Data; name: string }; rank: number; text: string }
+const topLevelRank = 2 ** 30;
+/** Key order must not make two equal definitions look different. */
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) => inner !== null && typeof inner === "object" && !Array.isArray(inner)
+    ? Object.fromEntries(Object.entries(inner as Data).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) : inner);
+}
+/** Identity of a declaration: its catalog name for function and custom tools, its type for the rest. Undefined when malformed, so validation reports it. */
+function declarationKey(tool: unknown, group?: string): string | undefined {
+  if (tool === null || typeof tool !== "object" || Array.isArray(tool)) return;
+  const source = tool as Data;
+  if (source.type === "function" || source.type === "custom") {
+    const definition = source.type === "function" && source.function !== undefined ? source.function : source;
+    if (definition === null || typeof definition !== "object" || Array.isArray(definition)) return;
+    const local = (definition as Data).name;
+    if (typeof local !== "string" || !local.trim()) return;
+    return `name:${group && group !== "functions" ? `${group}.${local}` : local}`;
+  }
+  return typeof source.type === "string" && source.type !== "namespace" ? `type:${source.type}` : undefined;
+}
+/**
+ * Merge repeated declarations by identity. A request's own top-level tools win over history, a later `additional_tools`
+ * item over an earlier one, and a later entry of one list over an earlier one. Position follows the first declaration.
+ */
+function mergeDeclarations(lists: Array<{ tools: unknown[]; top: boolean }>): { tools: ResponsesTool[]; replaced: number; identical: number } {
+  const merged = new Map<string, Declaration>();
+  let replaced = 0, identical = 0, sequence = 0;
+  const add = (key: string | undefined, entry: Omit<Declaration, "rank">, top: boolean) => {
+    const rank = (top ? topLevelRank : 0) + sequence++;
+    const id = key ?? `unkeyed:${sequence}`;
+    const known = merged.get(id);
+    if (!known) { merged.set(id, { ...entry, rank }); return; }
+    if (known.text === entry.text) identical++; else replaced++;
+    if (rank > known.rank) merged.set(id, { ...entry, rank });
+  };
+  for (const { tools, top } of lists) for (const tool of tools) {
+    const group = tool !== null && typeof tool === "object" && !Array.isArray(tool) && (tool as Data).type === "namespace" ? tool as Data : undefined;
+    if (!group || typeof group.name !== "string" || !group.name.trim() || !Array.isArray(group.tools) || !group.tools.length) { add(declarationKey(tool), { tool, text: stable(tool) }, top); continue; }
+    const description = typeof group.description === "string" ? group.description : "";
+    for (const child of group.tools) add(declarationKey(child, group.name), { tool: child, group: { source: group, name: group.name }, text: `${description}\0${stable(child)}` }, top);
+  }
+  const tools: ResponsesTool[] = [], namespaces = new Map<string, Data & { tools: unknown[] }>();
+  for (const { tool, group } of merged.values()) {
+    if (!group) { tools.push(tool as ResponsesTool); continue; }
+    // Children keep the description of the namespace they were declared in, so one namespace name can appear more than once.
+    const slot = `${group.name}\0${String(group.source.description ?? "")}`;
+    let namespace = namespaces.get(slot);
+    if (!namespace) { namespace = { ...group.source, tools: [] }; namespaces.set(slot, namespace); tools.push(namespace as unknown as ResponsesTool); }
+    namespace.tools.push(tool);
+  }
+  return { tools, replaced, identical };
+}
+
+/**
+ * Tools a request declares, at the top level and in Responses lite `additional_tools` input items, with repeated
+ * declarations merged: the current top-level list wins over history, and a later declaration wins over an earlier one.
+ * Merging is silent apart from the counts in the `tool_declarations_merged` event, which carries no names or definitions
+ * and is recorded only when the caller asks (`reportMerges`), so one request is never reported twice.
+ */
+export function declaredResponsesTools(request: ResponsesRequest, options: Pick<TranslationOptions, "reportMerges"> = {}): ResponsesTool[] {
   const lifted = Array.isArray(request.input) ? request.input.flatMap(source => {
     const item = record(source);
     if (item.type !== "additional_tools") return [];
@@ -178,15 +251,18 @@ export function declaredResponsesTools(request: ResponsesRequest): ResponsesTool
     return item.tools as ResponsesTool[];
   }) : [];
   if (request.tools !== undefined && request.tools !== null && !Array.isArray(request.tools)) reject("tools must be an array", "invalid_shape");
-  return [...(request.tools ?? []), ...lifted];
+  const result = mergeDeclarations([{ tools: request.tools ?? [], top: true }, { tools: lifted, top: false }]);
+  if (options.reportMerges && (result.replaced || result.identical)) telemetry("tool_declarations_merged", { replaced: result.replaced, identical: result.identical });
+  return result.tools;
 }
 
-export function responsesToChatRequest(request: ResponsesRequest): OpenAIChatRequest {
-  const tools = normalizeResponsesTools(declaredResponsesTools(request));
+export function responsesToChatRequest(request: ResponsesRequest, options: TranslationOptions = {}): OpenAIChatRequest {
+  const declared = declaredResponsesTools(request, options);
+  const tools = normalizeResponsesTools(declared, options);
   const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
-  if (tool_choice === "required" && !tools.length) reject("Required tool is not in the catalog", "unsupported_tool_choice");
+  if (tool_choice === "required" && !tools.length && !(options.toolSearch && declared.some(tool => tool.type === "tool_search"))) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
-  const messages = responsesInputToMessages(request.input);
+  const messages = responsesInputToMessages(request.input, options);
   if (request.instructions !== undefined) {
     if (typeof request.instructions !== "string") reject("instructions must be text", "invalid_instructions");
     if (request.instructions) messages.splice(0, 0, { content: request.instructions, role: "system" });

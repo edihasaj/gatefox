@@ -27,7 +27,7 @@ console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',resul
     const first: ResponsesInputItem[] = [{ type: "message", role: "developer", content: "Stable instructions" }, { type: "message", role: "user", content: "Read note alpha" }];
     const second: ResponsesInputItem[] = [...first, { type: "function_call", call_id: "call_1", name: "read_note", arguments: "{\"id\":\"alpha\"}" }, { type: "function_call_output", call_id: "call_1", output: "blue harbor" }];
     const events = await drain(adapter.infer({ model: "fixture", input: first, tools }, new AbortController().signal));
-    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 42, output_tokens: 1, total_tokens: 43, input_tokens_details: { cached_tokens: 40 } } });
+    assert.deepEqual(events.at(-1), { type: "done", usage: { input_tokens: 42, output_tokens: 1, total_tokens: 43, input_tokens_details: { cached_tokens: 40 } }, accounting: { cacheWriteTokens: 0 } });
     // The fixture never calls the required tool; only the prompt it received matters here.
     await assert.rejects(drain(adapter.infer({ model: "fixture", input: second, tools, tool_choice: "required" }, new AbortController().signal)), { code: "invalid_tool_call" });
     const [a, b] = (await readFile(capture, "utf8")).trim().split("\n").map(line => JSON.parse(line).message.content as Array<{ type: string; text?: string }>);

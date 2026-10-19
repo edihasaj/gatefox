@@ -2,7 +2,7 @@ import { apiCredential, type ProviderConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired, ChatGPTRefreshFailed, type OAuthFailureDetail } from "../auth/chatgpt.js";
 import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
-import type { ResponsesInputItem, ResponsesRequest, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
+import type { ResponsesInputItem, ResponsesNamespaceTool, ResponsesRequest, ResponsesTool, ResponsesToolSearchTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
@@ -12,6 +12,7 @@ import { createHash } from "node:crypto";
 import { telemetry } from "../telemetry.js";
 import { reasoningScope } from "../protocol/reasoning-state.js";
 import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
+import { plaintextCollaborationTransport, subscriptionCollaborationTransport } from "../protocol/collaboration-transport.js";
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
@@ -96,35 +97,62 @@ export class ResponsesAPI implements Provider {
       const namespaces = new Set(request.tools?.filter(tool => tool.type === "namespace").map(tool => tool.name));
       defaultNamespace = "gateway";
       while (namespaces.has(defaultNamespace)) defaultNamespace += "_";
-      const flat = request.tools?.filter(tool => tool.type !== "namespace") || [];
-      body.tools = [...(request.tools?.filter(tool => tool.type === "namespace") || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
+      // The ChatGPT backend refuses a forwarded `tool_search` tool (HTTP 400, seen in production on 0.4.4), so the tool, in the
+      // request or in a Responses lite `additional_tools` item, and any replayed search items are dropped; the rest of the turn
+      // runs as it would without search. Codex rows keep search off, so only an engine that still holds an older catalog sends them.
+      const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
+      const searchItem = (item: ResponsesInputItem) => "type" in item && (item.type === "tool_search_call" || item.type === "tool_search_output");
+      let droppedTools = (request.tools || []).filter(search).length, droppedItems = 0;
+      const forwarded = (tool: ResponsesTool) => tool.type === "namespace";
+      const flat = (request.tools?.filter(tool => !forwarded(tool) && !search(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
+      if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
+        if (searchItem(item)) { droppedItems++; return []; }
+        const lite = item as unknown as { type?: unknown; tools?: unknown };
+        if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
+        const kept = lite.tools.filter(tool => !search(tool));
+        droppedTools += lite.tools.length - kept.length;
+        return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
+      });
+      if (droppedTools || droppedItems) telemetry("tool_search_dropped", { provider: this.config.id, tools: droppedTools, items: droppedItems });
+      body.tools = [...(request.tools?.filter(forwarded) || []), ...(flat.length ? [{ type: "namespace" as const, name: defaultNamespace, description: "Caller-dispatched tools", tools: flat.map(tool => tool.type === "function" && "function" in tool ? { type: "function" as const, ...tool.function, responseTool: undefined } : tool) }] : [])];
       // Only calls of top-level tools move into the gateway namespace; tools declared
       // in Responses lite `additional_tools` items keep their own namespace.
       const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
       if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace && flatNames.has(String(item.name)) ? { ...item, namespace: defaultNamespace } : item);
       if (typeof body.tool_choice === "object" && "name" in body.tool_choice && !body.tool_choice.namespace) body.tool_choice = { ...body.tool_choice, namespace: defaultNamespace };
     }
-    const definitions = normalizeResponsesTools(declaredResponsesTools(request));
+    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan });
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
+    // On the Codex route top-level tools go up inside the gateway namespace and `additional_tools` tools keep their own, so a
+    // call is resolved against the list it was declared in first. A tool whose type changed between history and the current
+    // list then keeps the type of the declaration the call belongs to; the merged catalog is the fallback.
+    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
+    const current = plan ? scoped({ input: [] }) : identities, history = plan ? scoped({ tools: [] }) : identities;
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
     // when it sees the caller's own session and thread identifiers.
     const routing = plan ? { ...(context.sessionId ? { "session-id": context.sessionId } : {}), ...(context.threadId ? { "thread-id": context.threadId } : {}),
       ...(turnState ? { "x-codex-turn-state": turnState } : {}) } : {};
+    const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
+    const outgoing = collaborationTransport.body;
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(body) });
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...routing }, body: JSON.stringify(outgoing) });
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
     if (plan) { const returned = wrapTurnState(response.headers.get("x-codex-turn-state"), this.scope); yield { type: "transport", ...(returned ? { turnState: returned } : {}) }; }
     let done = false; const output = new ResponsesOutput();
-    const calls = new Map<string, { signature: string; identity: string; input: string }>();
-    const unfinished = new Map<string, { identity: string; length: number; digest: string }>();
+    const calls = new Map<string, { signature: string; identity: string; input: string; encryptedArgs: string }>();
+    const unfinished = new Map<string, { identity: string; encryptedArgs: string; length: number; digest: string }>();
     const stream: ProviderStreamDiagnostic = { events: 0, reasoningItems: 0, textDeltas: 0, toolCalls: 0 };
     const identityFor = (item: Record<string, unknown>): ResponseToolIdentity => {
-      const namespace = item.namespace === defaultNamespace ? undefined : item.namespace as string | undefined;
+      const upstreamNamespace = item.namespace as string | undefined;
+      // `gateway_collaboration` is a subscription-only wire alias. Resolve it
+      // before catalog lookup so the client continues to execute collaboration.
+      const effectiveNamespace = collaborationTransport.alias !== undefined && upstreamNamespace === collaborationTransport.alias ? "collaboration" : upstreamNamespace;
+      const namespace = effectiveNamespace === defaultNamespace ? undefined : effectiveNamespace;
       const name = String(item.name); const alias = namespace ? `${namespace}.${name}` : name;
-      const identity = identities.get(alias);
+      const identity = (effectiveNamespace === defaultNamespace ? current : plan ? history : identities).get(alias) ?? identities.get(alias);
       if (!identity) throw new ProviderError("invalid_tool_call", "Provider returned a tool outside the caller's catalog");
       return identity;
     };
@@ -135,22 +163,30 @@ export class ResponsesAPI implements Provider {
         (item.id !== undefined && (typeof item.id !== "string" || !item.id || item.id.length > 1024 || item.id.includes("\0")))) throw invalid();
       const arguments_ = item.type === "custom_tool_call" ? item.input : item.arguments;
       if (typeof arguments_ !== "string") throw invalid();
+      const encrypted = item.encrypted_function_args;
+      if (encrypted !== undefined && (!Array.isArray(encrypted) || encrypted.some(value => typeof value !== "string"))) throw invalid();
       const responseTool = identityFor(item);
-      return { id: item.call_id, name: item.name, input: arguments_, responseTool, identity: JSON.stringify([item.type, responseTool]) };
+      const effectiveNamespace = collaborationTransport.alias !== undefined && item.namespace === collaborationTransport.alias ? "collaboration" : item.namespace as string | undefined;
+      const encryptedFunctionArgs = encrypted === undefined ? undefined : [...encrypted] as string[];
+      // Missing and explicitly-empty metadata are distinct upstream facts. Preserve
+      // that distinction while checking partial items and final snapshots.
+      const encryptedArgs = encryptedFunctionArgs === undefined ? "missing" : JSON.stringify(encryptedFunctionArgs);
+      return { id: item.call_id, name: item.name, namespace: effectiveNamespace, input: arguments_, responseTool, encryptedFunctionArgs, encryptedArgs,
+        identity: JSON.stringify([item.type, responseTool]) };
     };
     const matchesPending = (value: ReturnType<typeof toolInput>) => {
       const pending = unfinished.get(value.id);
-      if (pending && (pending.identity !== value.identity || createHash("sha256").update(value.input.slice(0, pending.length)).digest("hex") !== pending.digest)) throw new ProviderError("invalid_tool_call", "Provider changed an unfinished tool call");
+      if (pending && (pending.identity !== value.identity || pending.encryptedArgs !== value.encryptedArgs || createHash("sha256").update(value.input.slice(0, pending.length)).digest("hex") !== pending.digest)) throw new ProviderError("invalid_tool_call", "Provider changed an unfinished tool call");
     };
     const partialTool = (item: Record<string, unknown>): void => {
       const value = toolInput(item); matchesPending(value);
       const completed = calls.get(value.id);
       if (completed) {
-        if (completed.identity !== value.identity || !completed.input.startsWith(value.input)) throw new ProviderError("invalid_tool_call", "Provider changed a completed tool call");
+        if (completed.identity !== value.identity || completed.encryptedArgs !== value.encryptedArgs || !completed.input.startsWith(value.input)) throw new ProviderError("invalid_tool_call", "Provider changed a completed tool call");
         return;
       }
       if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw new ProviderError("invalid_tool_call", "Provider returned too many tool calls");
-      unfinished.set(value.id, { identity: value.identity, length: value.input.length, digest: createHash("sha256").update(value.input).digest("hex") });
+      unfinished.set(value.id, { identity: value.identity, encryptedArgs: value.encryptedArgs, length: value.input.length, digest: createHash("sha256").update(value.input).digest("hex") });
     };
     const tool = (item: Record<string, unknown>, snapshot: boolean): InferenceEvent[] => {
       const invalid = () => new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call");
@@ -158,20 +194,35 @@ export class ResponsesAPI implements Provider {
       if (item.status !== undefined && item.status !== "completed") throw invalid();
       if (item.type === "function_call") try { JSON.parse(arguments_); } catch { throw invalid(); }
       matchesPending(value);
-      const signature = JSON.stringify([item.type, item.name, item.namespace, arguments_]);
+      const signature = JSON.stringify([item.type, item.name, value.namespace, arguments_, value.encryptedArgs]);
       const previous = calls.get(value.id);
       if (previous !== undefined) {
         if (snapshot && previous.signature === signature) return [];
         throw invalid();
       }
       if (!unfinished.has(value.id) && calls.size + unfinished.size >= 1024) throw invalid();
-      unfinished.delete(value.id); calls.set(value.id, { signature, identity: value.identity, input: arguments_ }); stream.toolCalls = calls.size;
+      unfinished.delete(value.id); calls.set(value.id, { signature, identity: value.identity, input: arguments_, encryptedArgs: value.encryptedArgs }); stream.toolCalls = calls.size;
       output.toolBoundary();
-      return [{ type: "tool", call: { id: value.id, type: "function", responseTool: value.responseTool, function: {
-        name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
-      } } }];
+      return [{ type: "tool", call: { id: value.id, type: "function", responseTool: value.responseTool,
+        ...(value.encryptedFunctionArgs === undefined ? {} : { encryptedFunctionArgs: value.encryptedFunctionArgs }), function: {
+          name: value.name, arguments: item.type === "custom_tool_call" ? JSON.stringify({ input: arguments_ }) : arguments_,
+        } } }];
+    };
+    // Search items the ChatGPT backend produced (client or server executed) reach the client as sent, once each.
+    const searchItems = new Set<string>();
+    const searchItem = (item: Record<string, unknown>): InferenceEvent[] => {
+      const key = `${item.type}:${typeof item.id === "string" && item.id ? item.id : typeof item.call_id === "string" && item.call_id ? item.call_id : JSON.stringify(item)}`;
+      if (searchItems.has(key)) return [];
+      if (searchItems.size >= 1024) throw new ProviderError("invalid_output", "Provider returned too many search items");
+      searchItems.add(key); output.toolBoundary();
+      return [{ type: "native-item", item }];
     };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
+      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
+        // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
+        if (interrupted && item.status !== "completed") return [];
+        return searchItem(item);
+      }
       if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
       if (item.type === "function_call" || item.type === "custom_tool_call") {
         // An interrupted final snapshot can contain an unfinished call. Only a
@@ -193,6 +244,12 @@ export class ResponsesAPI implements Provider {
         const item = event.item as Record<string, unknown>;
         if (item?.type === "message") output.added(item);
         if (item?.type === "reasoning") yield { type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item };
+        // Encryption metadata is an explicit transport fact. Record it at the
+        // first output boundary so a later done item or final snapshot cannot
+        // replace it with plaintext (or different opaque state). Ordinary early
+        // calls omit enough fields on some upstreams that they must stay lax
+        // until their completed boundary.
+        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args")) partialTool(item);
       }
       if (event.type === "response.output_text.delta") yield* output.delta(event);
       if (event.type === "response.output_item.done") {

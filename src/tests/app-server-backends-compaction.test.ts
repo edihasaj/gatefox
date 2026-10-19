@@ -4,11 +4,21 @@ import { compactionSdkFixture, largeModel, smallModel, until } from "./compactio
 import type { Message } from "../app-server-connection.js";
 import { readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+import { GatewayChatRegistry } from "../gateway-chat-registry.js";
+import { identityTest } from "./identity-cases.js";
 
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
+
+// The recovery cases that read the chat's own record run for both provider ids a gateway chat can be saved with.
+let gateway = "subscription_gateway";
+const bothIdentities = identityTest(identity => { gateway = identity.provider; });
 const sent = { input: [{ type: "text", text: "caller message remains unchanged" }], effort: "high", approvalPolicy: "never", sandboxPolicy: { type: "workspaceWrite", writableRoots: ["/fixture"] } };
 
-test("long model downshifts select the target and complete manual compaction before the original turn", { timeout: 15000 }, async () => {
-  const f = await compactionSdkFixture(); const id = "downshift";
+bothIdentities("long model downshifts select the target and complete manual compaction before the original turn", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(false, true, gateway); const id = "downshift";
   try {
     await f.start(id); await f.usage(id);
     const request = { threadId: id, model: smallModel, ...structuredClone(sent) };
@@ -21,6 +31,39 @@ test("long model downshifts select the target and complete manual compaction bef
     assert.equal(calls[compact].model, smallModel); assert.deepEqual(calls[turn].params, request);
     assert.ok(f.events.some(event => event.method === "item/completed" && (event.params as Message)?.turnId?.toString().startsWith("owned-compact")));
     assert.equal(await f.nativeUnchanged(), true);
+  } finally { await f.clean(); }
+});
+
+// A gateway chat on a native model slug and the native provider id: the chat's own record says nothing about the gateway, so
+// only the registry identifies it. Recovery must use the adapter's classification (registry included), not the record alone.
+async function registryOnlyChat(f: Awaited<ReturnType<typeof compactionSdkFixture>>, id: string): Promise<void> {
+  await writeFile(join(f.directory, "threads.json"), JSON.stringify({ [id]: { id, model: "native-original", modelProvider: "openai", reasoningEffort: "medium", status: { type: "idle" }, active: null, path: null, ephemeral: false } }));
+  await new GatewayChatRegistry(f.config.stateDirectory, f.nativeHome).record(id, "start");
+}
+
+test("a chat that only the registry identifies as gateway is recovered before the turn", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(false, true); const id = "registry-only-recovery";
+  try {
+    await registryOnlyChat(f, id);
+    await f.backends.request("thread/resume", { threadId: id });
+    await f.usage(id);
+    const request = { threadId: id, model: smallModel, ...structuredClone(sent) };
+    await f.backends.request("turn/start", request);
+    const calls = await f.ledger(id);
+    const compact = calls.findIndex(call => call.method === "thread/compact/start"); const turn = calls.findIndex(call => call.method === "turn/start");
+    assert.ok(compact >= 0 && turn > compact, "the registry-only chat was compacted before its turn");
+    assert.equal(calls.filter(call => call.method === "thread/compact/start").length, 1);
+  } finally { await f.clean(); }
+});
+
+test("a shared executor refuses automatic recovery for a chat that only the registry identifies as gateway", { timeout: 20000 }, async () => {
+  const f = await compactionSdkFixture(true, true); const id = "registry-only-shared";
+  try {
+    await registryOnlyChat(f, id);
+    await f.backends.request("thread/resume", { threadId: id });
+    await f.usage(id);
+    await assert.rejects(f.backends.request("turn/start", { threadId: id, model: smallModel, ...sent }), /shared|compaction.*recovery|exclusive/i);
+    assert.equal((await f.ledger(id)).some(call => call.method === "thread/compact/start" || call.method === "turn/start"), false);
   } finally { await f.clean(); }
 });
 
@@ -43,8 +86,8 @@ test("short model changes do not create unnecessary compaction even with large c
   } finally { await f.clean(); }
 });
 
-test("a failed compaction retries on the next selected-model turn without a model change", { timeout: 15000 }, async () => {
-  const f = await compactionSdkFixture(); const id = "same-model-retry";
+bothIdentities("a failed compaction retries on the next selected-model turn without a model change", { timeout: 15000 }, async () => {
+  const f = await compactionSdkFixture(false, true, gateway); const id = "same-model-retry";
   try {
     await f.start(id, smallModel); await f.usage(id, 1000, 27000);
     await f.backends.request("fixture/failedCompact", { threadId: id });
@@ -112,8 +155,8 @@ test("mutations during a recovery barrier fail without reaching the SDK", { time
   } finally { await f.clean(); }
 });
 
-test("shared executors refuse automatic recovery until host-wide admission is available", { timeout: 20000 }, async () => {
-  const f = await compactionSdkFixture(true); const id = "shared-needs-recovery";
+bothIdentities("shared executors refuse automatic recovery until host-wide admission is available", { timeout: 20000 }, async () => {
+  const f = await compactionSdkFixture(true, true, gateway); const id = "shared-needs-recovery";
   try {
     await f.start(id); await f.usage(id);
     await assert.rejects(f.backends.request("turn/start", { threadId: id, model: smallModel, ...sent }), /shared|compaction.*recovery|exclusive/i);
@@ -196,7 +239,7 @@ test("loaded resume ignores proposed compaction overrides that the SDK did not a
 test("a cold resume without overrides replaces an earlier per-chat compaction policy", { timeout: 15000 }, async () => {
   const f = await compactionSdkFixture(); const id = "cold-resume-policy";
   try {
-    await f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway", config: { model_auto_compact_token_limit: 1 } });
+    await f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway", config: { model_auto_compact_token_limit: 1 } }, { engine: "gateway" });
     await f.usage(id, 1000); await f.backends.request("thread/unsubscribe", { threadId: id });
     await f.backends.request("thread/resume", { threadId: id });
     await f.backends.request("turn/start", { threadId: id, model: smallModel, ...sent });
@@ -226,7 +269,7 @@ const remembered = async (f: Awaited<ReturnType<typeof compactionSdkFixture>>, i
   return engine!.compaction!.policy.goalsEnabled(id) === false;
 };
 const startWithOverride = (f: Awaited<ReturnType<typeof compactionSdkFixture>>, id: string) =>
-  f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway", config: override });
+  f.backends.request("thread/start", { fixtureId: id, model: largeModel, modelProvider: "subscription_gateway", config: override }, { engine: "gateway" });
 
 for (const method of ["thread/unsubscribe", "thread/archive", "thread/delete"]) test(`${method} forgets the executor's per-chat compaction overrides`, { timeout: 15000 }, async () => {
   const f = await compactionSdkFixture(); const id = `forget-${method.split("/")[1]}`;

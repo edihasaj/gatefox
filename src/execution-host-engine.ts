@@ -7,12 +7,33 @@ import { type GatewayConfig, writePrivateJson } from "./config.js";
 import { object, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { gatewayEngineHome, gatewayEnvironment } from "./gateway-engine-home.js";
-import { privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
+import { archiveStaleReceipt, privateDirectory, removeOwnedSocket, sdkIdentity, socketIdentity, type HostIdentity, type EngineOwner } from "./execution-host-storage.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
-import { gatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
+import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
+import { spawnStamp } from "./boot-identity.js";
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
 export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
+/** Which side of a refused gateway SDK mismatch runs the newer release: the adapter (the service has not moved yet) or the service. */
+export type SkewDirection = "adapter_newer" | "adapter_older";
+/**
+ * The fixed texts of a refused gateway SDK mismatch between an adapter and this host (two releases running side by side). The
+ * host passes the one for the direction through unchanged and the adapter shows it, so a user reads what is happening and what
+ * to do instead of a masked failure. A direction that could not be told reads as `adapter_older`.
+ */
+export const releaseSkewMessages: Record<SkewDirection, string> = {
+  adapter_newer: "This Mac's gateway service is moving to the newer release; this chat continues as soon as no turn is running",
+  adapter_older: "This app and this Mac's gateway service run different gateway releases; quit and reopen ChatGPT to load the installed release",
+};
+/** A generation request whose gateway SDK is not the one this host runs; `adapterSha256` is the SDK the adapter named. */
+export class ReleaseSkewError extends Error {
+  constructor(readonly adapterSha256: string, readonly direction: SkewDirection = "adapter_older") { super(releaseSkewMessages[direction]); }
+}
+/** Whether an error is the host's release-skew refusal, as the adapter receives it over the control connection. */
+export function isReleaseSkew(error: unknown): boolean {
+  return error instanceof Error && Object.values(releaseSkewMessages).includes(error.message);
+}
 export function executionDescriptor(value: unknown): ExecutionDescriptor {
   const input = object(value); const catalog = object(input.catalog);
   if (typeof input.revision !== "string" || !/^[a-f0-9]{64}$/.test(input.revision) || !Array.isArray(input.args) || input.args.length > 256 || !input.args.every(arg => typeof arg === "string" && !arg.includes("\0") && Buffer.byteLength(arg) < 65536)
@@ -32,7 +53,8 @@ export function canonicalJson(value: unknown): string {
 export function descriptorFingerprint(descriptor: ExecutionDescriptor): string { return createHash("sha256").update(canonicalJson(descriptor)).digest("hex"); }
 export function executionArgs(input: string[], socket: string, catalog: string, settings: Message = {}): string[] {
   // Older connected adapters can still supply legacy flags to a newer host.
-  const args = normalizeCodexFeatureArgs(input, settings);
+  // The SDK started here is the pinned gateway SDK, which rejects feature tables newer than itself.
+  const args = trimmedGatewayFeatures("spawn", stats => trimGatewayFeatureArgs(normalizeCodexFeatureArgs(input, settings), stats));
   const forwarded: string[] = [];
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -44,14 +66,30 @@ export function executionArgs(input: string[], socket: string, catalog: string, 
   }
   return [...forwarded, "--listen", `unix://${socket}`, "-c", `model_catalog_json=${JSON.stringify(catalog)}`];
 }
-export async function validateExecutionSdk(codex: string): Promise<void> {
+/**
+ * How long `codex --version` may take. macOS assesses a newly written executable the first time it runs: the pinned 335 MB
+ * gateway SDK of a just-installed release took 2.9 s on an M5 Pro before printing anything, and 0.01 s from the second run on.
+ * The service's first host start after an install is that first run; on a slower or busier Mac it can outlive a 5 s limit,
+ * fail as `sdk_invalid` and pass on the retry a second later. The limit only bounds a binary that hangs.
+ */
+export const sdkVersionTimeoutMs = 15_000;
+/** The gateway SDK every gateway generation runs. The app engines verified for native sharing are in native-engine-versions.ts. */
+export const gatewayEngineVersions: readonly string[] = ["0.162.0-alpha.17.2"];
+export async function validateExecutionSdk(codex: string, accepted: readonly string[] = gatewayEngineVersions): Promise<void> {
   const child = spawn(codex, ["--version"], { stdio: ["ignore", "pipe", "ignore"] });
   let output = ""; child.stdout.on("data", chunk => { output += String(chunk); if (output.length > 4096) child.kill("SIGTERM"); });
-  const timer = setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+  const timer = setTimeout(() => child.kill("SIGKILL"), sdkVersionTimeoutMs).unref();
   try {
     await new Promise<void>((resolve, reject) => { child.once("error", () => reject(new Error("Execution host SDK is unavailable"))); child.once("close", code => code === 0 ? resolve() : reject(new Error("Execution host SDK version check failed"))); });
-    if (output.trim() !== "codex-cli 0.162.0-alpha.17.2") throw new Error("Execution host requires the pinned Codex SDK version");
+    if (!accepted.some(version => output.trim() === `codex-cli ${version}`)) throw new Error("Execution host requires the pinned Codex SDK version");
   } finally { clearTimeout(timer); }
+}
+
+/** A JSON object read from a file, or undefined when the file does not hold one. */
+async function readJson(path: string): Promise<Record<string, unknown> | undefined> {
+  let value: unknown;
+  try { value = JSON.parse(await readFile(path, "utf8")); } catch (error) { if (error instanceof SyntaxError) return; throw error; }
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 export class ExecutionEngine {
@@ -65,31 +103,55 @@ export class ExecutionEngine {
   readonly owner: EngineOwner;
   readonly fingerprint: string;
   closed = false;
-  constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string) {
+  /**
+   * `codexValidated` says whether the host pinned the app's codex at start. A host that pinned its runtime instead never
+   * checked that binary, so it must not spawn it for a descriptor that names no runtime.
+   */
+  constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string, private readonly resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = gatewaySdkRuntime,
+    private readonly codexValidated = true) {
     this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases] };
     this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
     this.fingerprint = descriptorFingerprint(descriptor);
   }
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
     const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
-    const runtime = descriptor.gatewaySdkSha256 ? await gatewaySdkRuntime() : undefined;
-    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    const runtime = descriptor.gatewaySdkSha256 ? await this.resolveRuntime() : undefined;
+    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) {
+      // Another release's SDK is the release skew of a service and an adapter that moved at different times (see docs/services.md).
+      // A host with no runtime of its own cannot tell which side is older, so that case keeps its masked refusal.
+      if (runtime) throw new ReleaseSkewError(descriptor.gatewaySdkSha256);
+      throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    }
     if (runtime) this.record.selectedModelCompaction = true;
     await privateDirectory(directory);
     const metadata = resolve(directory, "execution-generation.json");
-    const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: this.identity.sdkSha256 };
+    // The runtime's checksum is already part of the fingerprint, so an app update that changes the native codex must not orphan its generations.
+    const expected = { version: 1, managed: "subscription-gateway-execution-generation", revision: descriptor.revision, fingerprint: this.fingerprint, nativeHome: this.identity.nativeHome, sdkSha256: runtime?.binarySha256 ?? this.identity.sdkSha256 };
     const saved = await lstat(metadata).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (saved) {
-      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077) || saved.size > 4096 || JSON.stringify(JSON.parse(await readFile(metadata, "utf8"))) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
+      if (!saved.isFile() || saved.isSymbolicLink() || saved.uid !== process.getuid?.() || (saved.mode & 0o077)) throw new Error("Execution generation identity changed; existing files were preserved");
+      // A record this code wrote and that names another identity protects that generation's files. One that is not such a
+      // record at all (truncated, garbled, foreign) proves nothing: it is moved aside and rewritten, so the revision is not lost.
+      const recorded = saved.size > 4096 ? undefined : await readJson(metadata);
+      if (!recorded || recorded.managed !== expected.managed) { await archiveStaleReceipt(metadata, "generation", "invalid_receipt"); await writePrivateJson(metadata, expected); }
+      else if (JSON.stringify(runtime ? { ...recorded, sdkSha256: expected.sdkSha256 } : recorded) !== JSON.stringify(expected)) throw new Error("Execution generation identity changed; existing files were preserved");
     } else await writePrivateJson(metadata, expected);
     const home = await gatewayEngineHome(directory, descriptor.settings, { nativeHome: this.identity.nativeHome, sharedWriterLocks: true, preserveConfig: true });
     const catalog = resolve(directory, "catalog.json");
-    try {
-      const existing = JSON.parse(await readFile(catalog, "utf8"));
-      if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
-    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await writePrivateJson(catalog, descriptor.catalog); }
-    const sdk = await sdkIdentity(this.identity.codex);
-    if (sdk.sdkSha256 !== this.identity.sdkSha256) throw new Error("Execution host SDK changed; restart during a maintenance window");
+    let existing: unknown;
+    try { existing = JSON.parse(await readFile(catalog, "utf8")); }
+    catch (error) {
+      if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (error instanceof SyntaxError) await archiveStaleReceipt(catalog, "generation", "invalid_receipt"); // Garbled: kept aside, then rewritten.
+    }
+    if (existing === undefined) await writePrivateJson(catalog, descriptor.catalog);
+    else if (JSON.stringify(existing) !== JSON.stringify(descriptor.catalog)) throw new Error("Execution generation catalog changed; existing files were preserved");
+    // The runtime is guarded by its checksum above. Only a generation that spawns the app's own codex depends on that binary staying put.
+    if (!runtime) {
+      if (!this.codexValidated) throw new Error("Execution generation requires this release's gateway SDK; its ownership was preserved");
+      const sdk = await sdkIdentity(this.identity.codex);
+      if (sdk.sdkSha256 !== this.identity.sdkSha256) throw new Error("Execution host SDK changed; restart during a maintenance window");
+    }
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
@@ -99,7 +161,7 @@ export class ExecutionEngine {
       child.once("error", () => { this.closed = true; });
       child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); void changed().catch(() => {}); resolve(); });
     });
-    this.owner.pid = child.pid || 0; await changed();
+    this.owner.pid = child.pid || 0; Object.assign(this.owner, child.pid ? await spawnStamp(child.pid) : {}); await changed();
     const deadline = Date.now() + 10000;
     for (;;) {
       if (this.closed || this.stopped) throw new Error("Execution SDK exited before initialization");

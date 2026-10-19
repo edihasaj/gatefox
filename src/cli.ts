@@ -12,8 +12,8 @@ import { modelCatalog, discoverModels, loadDiscoveredModels } from "./catalog.js
 import { codexSettings, remoteCodexSettings, readClientToken } from "./codex-config.js";
 import { claudeSettings, remoteClaudeSettings } from "./claude-config.js";
 import { codexShim } from "./codex-shim.js";
-import { readTelemetry, telemetry, flushTelemetry } from "./telemetry.js";
-import { shutdownDrainMs } from "./runtime-activity.js";
+import { readTelemetry, telemetry } from "./telemetry.js";
+import { stopServing } from "./serve-shutdown.js";
 import { summarizeTelemetry } from "./diagnostics.js";
 import { startServeRuntime } from "./serve-runtime.js";
 import { macService } from "./mac-service.js";
@@ -27,13 +27,17 @@ import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
 import { macNative } from "./mac-native.js";
 import { consolidateService } from "./mac-consolidate.js";
-import { stageLoginConsolidation, activatePendingLoginConsolidation } from "./mac-login-consolidate.js";
-import { runServiceSupervisor } from "./service-supervisor.js";
+import { stageLoginConsolidation } from "./mac-login-consolidate.js";
+import { runServiceDaemon } from "./service-daemon.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
+import { versionsCommand } from "./versions.js";
+import { healthCommand } from "./health.js";
+import { daemonConfigStatus } from "./config-rejection.js";
+import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 
 const help = `gateway — local subscription and API inference
 
@@ -56,12 +60,15 @@ const help = `gateway — local subscription and API inference
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
+  gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
+  gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
   gateway codex-config --model ALIAS --endpoint URL --token-file PATH [--catalog PATH]
   gateway claude-config --model ALIAS [--config PATH]
   gateway claude-config --model ALIAS --endpoint URL --token-file PATH
+  gateway claude-desktop configure|serve|install|status [--help]
   gateway codex-shim --config PATH --codex PATH -- CODEX_ARGUMENTS
   gateway token [--config PATH]   Credential helper; prints the local client token.
   gateway token --file PATH      Credential helper for a trusted remote gateway.
@@ -77,6 +84,9 @@ const defaults: GatewayConfig = { version: 1, port: 3457, stateDirectory: ".stat
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "codex-shim") return codexShim(argv.slice(1));
+  if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
+  if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
+  if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
@@ -125,9 +135,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }
   if (command === "executor-host") { await runExecutionHostCommand(path, values.codex, values["native-home"]); return; }
   if (command === "daemon") {
-    const config = await loadConfig(path); const plan = await activatePendingLoginConsolidation(path);
-    if (!plan || plan.config !== resolve(path)) throw new Error("Unified service plan is missing or uses another configuration");
-    await runServiceSupervisor(plan, config.stateDirectory); return;
+    await runServiceDaemon(path); return;
   }
   if (command === "native") { process.stdout.write(JSON.stringify(await macNative(id, path, { codex: values.codex, nativeHome: values["native-home"] }), null, 2) + "\n"); return; }
   if (command === "ssh") { process.stdout.write(JSON.stringify(await macSsh(id, path, values.codex)) + "\n"); return; }
@@ -175,7 +183,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       const target = source.providers.find(entry => entry.id === provider.id)!;
       target.models = provider.models; target.modelMetadata = provider.modelMetadata;
       await writePrivateJson(path, source);
-      process.stderr.write("Model routes saved. The daemon reloads them on the next request.\n");
+      // The daemon reads the file when it answers /health, so asking also tells whether it took the change or held it back.
+      const daemon = config.clientOnly ? { reachable: false } : await daemonConfigStatus(config.port);
+      process.stderr.write(daemon.rejection ? `Model routes saved, but the daemon did not apply them (${daemon.rejection}); fix gateway.json or restart the service to apply them.\n`
+        : daemon.reachable ? "Model routes saved. The daemon has loaded them.\n" : "Model routes saved. The daemon reloads them on the next request.\n");
     }
     process.stdout.write(JSON.stringify({ provider: provider.id, models }, null, 2) + "\n"); return;
   }
@@ -248,15 +259,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // Request handling, timers and in-place upgrades live in the serve runtime; signal
   // handlers below reach whichever generation currently owns the socket.
   const { server } = await startServeRuntime(path, values.port ? config.port : undefined);
-  process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
   let closing = false;
   const shutdown = (signal: NodeJS.Signals) => {
     if (closing) return; closing = true;
     telemetry("server_shutdown_signal", { signal });
     // Takes effect after an inference process restart; a hot swap keeps the old handler.
-    const exit = () => { void flushTelemetry().finally(() => process.exit(0)); };
-    const deadline = setTimeout(() => { server.closeAllConnections(); exit(); }, shutdownDrainMs() + 1500).unref();
-    server.close(() => { clearTimeout(deadline); exit(); });
+    stopServing(server);
   };
   process.on("SIGINT", shutdown); process.on("SIGTERM", shutdown);
   if (process.platform !== "win32") process.on("SIGUSR2", () => {
@@ -274,6 +282,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       })) closing = true;
     }).catch(() => undefined);
   });
+  // The line that says the server is up comes after its signal handlers: whoever waits for it may stop the server at once.
+  process.stderr.write(`Listening on http://127.0.0.1:${(server.address() as { port: number }).port}\n`);
 }
 
 /** What `gateway` prints when a command fails: SyntaxError becomes a fixed string so no file content leaks. */

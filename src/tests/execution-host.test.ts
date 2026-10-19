@@ -9,11 +9,17 @@ import { pathToFileURL } from "node:url";
 import { WebSocket } from "ws";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
-import { sdkSocketTarget, socketIdentity } from "../execution-host-storage.js";
+import { connectOnce, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
+import { hostRunsInThisProcess } from "./in-process-host.js";
+import { isolateExecutionRoots } from "./isolated-execution-roots.js";
+
+isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
+hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
 async function fixture() {
   const directory = await mkdtemp(join(tmpdir(), "gateway-execution-")); const configPath = join(directory, "gateway.json");
@@ -22,17 +28,19 @@ async function fixture() {
   await writeFile(join(nativeHome, "auth.json"), '{"fixture":"must-not-be-copied"}', { mode: 0o600 });
   const sdk = join(directory, "codex");
   await writeFile(sdk, `#!${process.execPath}\nimport {createServer} from 'node:http';
-import {writeFileSync} from 'node:fs';
+import {existsSync, writeFileSync} from 'node:fs';
 import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)};
 if(process.argv.includes('--version')) { console.log('codex-cli 0.162.0-alpha.17.2'); process.exit(0); }
 const args=process.argv.slice(2);const socket=args[args.indexOf('--listen')+1].slice(7);
+const gate=args.includes('--fixture-gate')?args[args.indexOf('--fixture-gate')+1]:undefined;
 const server=createServer();const ws=new WebSocketServer({server});const loaded=new Set();
 ws.on('connection',client=>client.on('message',bytes=>{const m=JSON.parse(bytes);if(m.id==null)return;let result={};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/start'||m.method==='thread/resume'){const id=m.params.threadId||'fixture-thread';loaded.add(id);result={thread:{id}};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
 client.send(JSON.stringify({id:m.id,result}));}));
-server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
+const listen=()=>server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
+if(gate){const wait=setInterval(()=>{if(existsSync(gate)){clearInterval(wait);listen();}},20);}else listen();
 process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close(()=>process.exit(0));});
 `, { mode: 0o700 });
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
@@ -124,6 +132,25 @@ test("execution generations preserve loaded/leased owners and retire only unowne
   } finally { engineClient?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
 });
 
+test("execution/status answers at once while an acquire holds the control queue, so a busy host never looks hung", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    host = await startExecutionHost(f); client = await control(join(f.hostHome, "host.sock"));
+    // The engine this acquire starts listens only once the gate file exists, so the acquire holds the queue until then.
+    const gate = join(f.directory, "listen"); const descriptor = f.descriptor("a"); descriptor.args.push("--fixture-gate", gate);
+    let acquired = false;
+    const acquiring = client.request<ExecutionRecord>("execution/acquire", descriptor).then(record => { acquired = true; return record; });
+    await delay(300);
+    const asked = performance.now();
+    const status = await client.request<{ version: number; pid: number }>("execution/status");
+    assert.equal(acquired, false, "the acquire was still waiting for its engine");
+    assert.ok(performance.now() - asked < 2000, "the answer did not wait behind it");
+    assert.equal(status.version, 1); assert.equal(status.pid, process.pid);
+    await writeFile(gate, "");
+    assert.equal((await acquiring).revision, "a".repeat(64), "the acquire then finished as usual");
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
 test("execution host refuses unrecorded occupied sockets", { timeout: 10000 }, async () => {
   const f = await fixture(); const server = createServer();
   try {
@@ -200,6 +227,95 @@ test("execution control preserves an unrecorded occupied protected target", { ti
     await assert.rejects(startExecutionHost(f), /occupied/);
     assert.deepEqual(await socketIdentity(path), before); assert.ok(server.listening);
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
+});
+
+// A host that died between its listen and its link left the socket at its own hashed target, recorded nowhere. Nothing serves
+// it, so it is removed and the next start succeeds instead of failing "occupied" until a reboot clears the folder.
+test("execution control removes an orphan socket at its own target that nothing serves, and starts", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); let host; let orphan;
+  try {
+    await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+    await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+    await once(orphan.stdout!, "data"); await chmod(target, 0o600);
+    const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+    assert.ok((await lstat(target)).isSocket(), "the orphan socket is left behind");
+    host = await startExecutionHost(f);
+    assert.equal(await readlink(join(f.hostHome, "host.sock")), target, "the host listens at its own target again");
+    await host.close(); host = undefined;
+  } finally { orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+});
+
+// A host killed after `listen` but before its chmod left the socket at the mode the process umask gave it. That orphan used to
+// fail every later start as "occupied" until a reboot cleared the folder; whatever its mode, a socket of this user that
+// refuses connects is reclaimed, and one that answers is never removed.
+test("execution control reclaims a dead orphan socket at its own target whatever its mode, and starts", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const mode of [0o755, 0o666]) {
+    const f = await fixture(); let host; let orphan;
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+      await once(orphan.stdout!, "data"); await chmod(target, mode);
+      const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+      assert.equal((await lstat(target)).mode & 0o777, mode, "the orphan is left open to others");
+      host = await startExecutionHost(f);
+      assert.equal(await readlink(join(f.hostHome, "host.sock")), target, `the host listens at its own target again (orphan mode ${mode.toString(8)})`);
+      assert.equal((await lstat(target)).mode & 0o777, 0o600);
+      await host.close(); host = undefined;
+    } finally { orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+  }
+});
+
+test("execution control never removes a live listener at its own target, whatever its mode", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const mode of [0o755, 0o700, 0o666]) {
+    const f = await fixture(); const server = createServer();
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const path = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(path), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      server.listen(path); await once(server, "listening"); await chmod(path, mode);
+      const before = await lstat(path);
+      await assert.rejects(startExecutionHost(f), /occupied/, `a live listener of mode ${mode.toString(8)} is refused`);
+      const after = await lstat(path);
+      assert.deepEqual([after.ino, after.dev, after.mode & 0o777], [before.ino, before.dev, mode]); assert.ok(server.listening);
+      await new Promise<void>((resolve, reject) => { const client = connect(path); client.once("connect", () => { client.destroy(); resolve(); }); client.once("error", reject); });
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
+  }
+});
+
+// On macOS a live listener whose accept queue is full also answers ECONNREFUSED, so a single refusal must not unlink a socket.
+test("execution control asks a refused socket twice: one that then answers is kept, one refused twice is removed", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  for (const [script, outcome] of [[["refused", "answered"], "kept"], [["refused", "refused"], "removed"]] as Array<[ProbeResult[], string]>) {
+    const f = await fixture(); let host; let orphan; const asked: string[] = [];
+    try {
+      await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const target = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+      await mkdir(dirname(target), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+      orphan = spawn(process.execPath, ["-e", "require('node:net').createServer().listen(process.argv[1],()=>console.log('ready'))", target], { stdio: ["ignore", "pipe", "ignore"] });
+      await once(orphan.stdout!, "data"); await chmod(target, 0o600);
+      const exited = once(orphan, "close"); orphan.kill("SIGKILL"); await exited;
+      const before = await lstat(target); const answers = [...script];
+      // Only the probes of the orphan's own path are scripted; every other path is asked for real.
+      setSocketProbeForTests({ retryMs: 5, probe: async path => { if (path !== target || !answers.length) return connectOnce(path); asked.push(path); return answers.shift()!; } });
+      if (outcome === "kept") {
+        await assert.rejects(startExecutionHost(f), /occupied/);
+        const after = await lstat(target); assert.deepEqual([after.ino, after.dev], [before.ino, before.dev], "the socket stayed");
+      } else {
+        host = await startExecutionHost(f); assert.equal(await readlink(join(f.hostHome, "host.sock")), target); await host.close(); host = undefined;
+      }
+      assert.equal(asked.length, 2, `the orphan was asked twice (${outcome})`);
+    } finally { setSocketProbeForTests(); orphan?.kill("SIGKILL"); await host?.close(); await f.clean(); }
+  }
+});
+
+test("a failed host start restores the process umask it narrowed for the listen", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); const server = createServer(); const before = process.umask(0o022);
+  try {
+    await mkdir(f.hostHome, { recursive: true, mode: 0o700 }); const path = await sdkSocketTarget(join(f.hostHome, "host.sock"));
+    await mkdir(dirname(path), { mode: 0o700 }).catch(error => { if (error.code !== "EEXIST") throw error; });
+    server.listen(path); await once(server, "listening");
+    await assert.rejects(startExecutionHost(f), /occupied/); assert.equal(process.umask(), 0o022);
+    const host = await startExecutionHost({ ...f, configPath: join(f.directory, "other.json") }); assert.equal(process.umask(), 0o022); await host.close();
+  } finally { process.umask(before); await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
 });
 
 test("idle restart preserves leased and loaded SDK writers and atomically quiesces new work", { timeout: 20000 }, async () => {

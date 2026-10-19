@@ -44,6 +44,19 @@ CLI installers preserve this app-runtime registration on later updates. A broken
 registered app path fails with an actionable error instead of silently selecting
 another Node identity.
 
+The installer and app share an installation lock for the selected prefix. Both
+managed command aliases retain the canonical `harness-gateway` command identity.
+Runtime registration accepts only recognized installer templates belonging to
+that prefix, including a user-owned custom prefix.
+
+Runtime and plist publication share one rollback boundary. On failure, the app
+restores only files that still match its own output; concurrent changes are
+preserved along with any runtime dependencies they may need. Catchable termination
+finishes rollback and releases the owned lock. `SIGKILL` cannot run cleanup: after
+confirming that no installer or runtime publisher remains, move a leftover
+`.gateway-installation-lock` directory to Trash before retrying. Unknown locks
+are never broken automatically.
+
 The app runs this check at launch and after setup. It uses its bundled management
 runtime rather than an older installed CLI. The tool never unloads, enables,
 bootstraps, signals, or restarts the live gateway. Its result describes the

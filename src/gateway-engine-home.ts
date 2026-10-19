@@ -4,6 +4,9 @@ import { resolve, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Message } from "./app-server-connection.js";
 import { normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
+import { testSafeRoot } from "./test-root-guard.js";
+import { trimGatewayFeatureConfig, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
+import { gatewayExecutorMarker } from "./executor-identity.js";
 
 function toml(value: unknown): string {
   if (typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
@@ -17,7 +20,8 @@ export interface GatewayHomeOptions { nativeHome?: string; sharedWriterLocks?: b
 
 /** Share chat storage; isolate every automatic config write and all provider auth. */
 export async function gatewayEngineHome(state: string, settings: Message, options: GatewayHomeOptions = {}): Promise<string> {
-  const nativeHome = resolve(options.nativeHome || process.env.CODEX_HOME || join(homedir(), ".codex"));
+  // A test that linked the real native home would write its fixture chats into the real `sessions` folder.
+  const nativeHome = testSafeRoot(resolve(options.nativeHome || process.env.CODEX_HOME || join(homedir(), ".codex")), "native Codex home");
   const home = resolve(state, "desktop-engine");
   if (home === nativeHome) throw new Error("The gateway executor home must be separate from native Codex");
   await mkdir(home, { recursive: true, mode: 0o700 });
@@ -43,7 +47,7 @@ export async function gatewayEngineHome(state: string, settings: Message, option
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; await symlink(target, path); }
   }
   const excluded = new Set(["model_providers", "forced_login_method", "forced_chatgpt_workspace_id", "openai_api_key", "model_provider", "model_catalog_json"]);
-  const copied = Object.fromEntries(Object.entries(normalizeCodexFeatureConfig(settings)).filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined));
+  const copied = Object.fromEntries(Object.entries(trimmedGatewayFeatures("home", stats => trimGatewayFeatureConfig(normalizeCodexFeatureConfig(settings), stats))).filter(([key, value]) => !excluded.has(key) && value !== null && value !== undefined));
   copied.sqlite_home = typeof settings.sqlite_home === "string" ? settings.sqlite_home : nativeHome;
   const content = Object.entries(copied).map(([key, value]) => `${JSON.stringify(key)} = ${toml(value)}\n`).join("");
   if (Buffer.byteLength(content) > 1024 * 1024) throw new Error("Native settings snapshot exceeds 1 MiB");
@@ -65,5 +69,9 @@ export function gatewayEnvironment(home: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, CODEX_HOME: home };
   // Inference must use the gateway helper, never an inherited platform credential.
   for (const key of ["CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"]) delete env[key];
+  // Gateway engines run headless on the gateway's pinned SDK, so remote control has nothing to pair with.
+  env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
+  // The gateway SDK serves `openai` as the gateway's own loopback provider only in a process marked as a gateway executor.
+  env[gatewayExecutorMarker] = "1";
   return env;
 }

@@ -30,7 +30,7 @@ existing subscription adapters retain their native CLI or API transports.
 | --- | --- |
 | `POST /v1/messages` | Accepts a native Messages request and returns JSON or Messages SSE. |
 | `POST /v1/messages?beta=true` | Uses the same route; routing matches the pathname. |
-| `POST /v1/messages/count_tokens` | Returns an explicit unsupported response. Claude Code uses its own context estimate. |
+| `POST /v1/messages/count_tokens` | Returns a 501 in the normal error envelope. Claude Code uses its own context estimate. The gateway records one `request_unsupported` telemetry event (`route`, `endpoint`), not `request_failed`, and prints no diagnostic. |
 | `POST /v1/responses` | Retains the existing Responses client behavior. |
 
 Messages requests use the existing gateway client credential in either
@@ -167,6 +167,23 @@ does not promise native Anthropic cache-boundary fidelity. A tool result marked
 `is_error` becomes a client tool result with a fixed `[Tool error] ` text prefix;
 empty tool results and empty stop-sequence lists remain valid no-ops.
 
+## Context overflow
+
+When the upstream rejects a request for exceeding the model's context window, the
+Messages reply is a 400 `invalid_request_error` whose message starts with
+`prompt is too long`, on the JSON path and as the SSE `error` event. Claude Code
+recognizes that text (and `input is too long for requested model`) as a
+prompt-too-long error, so this is what lets its reactive auto-compact run. When
+the provider reported the counts in `prompt is too long: <n> tokens > <max>
+maximum`, as the Anthropic API does, the message repeats them and Claude Code
+reads the token gap from it. Current Claude CLIs report an overflow without counts
+(`Prompt is too long`, or a longer `Prompt is too long · …` form, or
+`terminal_reason: "prompt_too_long"`), so on Claude subscription routes the reply
+carries no counts and Claude Code compacts with its own fallback.
+Otherwise the message reads `prompt is too long: the request exceeds the model's
+context window`. Only the two numbers are kept; no other upstream text is
+repeated. Responses errors are unchanged.
+
 ## Provider limits
 
 `max_tokens` is required by Messages. API adapters enforce an output limit when
@@ -185,6 +202,26 @@ or context window for an unfamiliar model alias; those client estimates do not
 establish the upstream model's actual price or maximum context. The gateway
 neither invents reasoning signatures nor promises that every provider supports
 every native Claude feature.
+
+## Usage accounting
+
+A Messages request runs through the same request handler as a Responses request,
+so telemetry and the [usage ledger](diagnostics.md#usage-ledger) record it the same
+way: one row per finished request with the same token counts, Copilot credits and
+status, including the usage of a request that fails or whose client leaves after
+the provider reported it. On `copilot-subscription` and `claude-subscription` routes,
+while the ledger is on, the message id is `msg_gl_<request id without dashes>` and
+the ledger row records that id, just as Responses requests carry `resp_gl_`. The two
+prefixes are the `gatewayMarkerPrefixes` list in `src/usage-ledger.ts`; the
+[diagnostics](diagnostics.md#usage-ledger) page says how a consumer reads them.
+
+The reply's `usage` reports `cache_read_input_tokens` and, where the provider reports
+cache writes in its usage (Claude subscription and the Anthropic API),
+`cache_creation_input_tokens`; `input_tokens` excludes the cache reads and, on those
+routes, the cache writes. Copilot reports no separate cache-write field to the
+reply, so its cache writes stay inside `input_tokens`. Copilot credits, reasoning
+token counts and the Copilot cache-write figure stay in the local ledger and never
+appear in the reply. A Responses reply never carries cache writes.
 
 ## Verification
 
