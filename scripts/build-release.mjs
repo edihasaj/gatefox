@@ -10,11 +10,13 @@ import { releaseComponentPlan, verifyReleaseComponentSources, copyReleaseCompone
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
+import { assertFreeSpace, releaseDiskSpaceRequirements } from './disk-space.mjs';
 
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
   'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' },
   'reuse-native-from': { type: 'string' }, 'native-sha256': { type: 'string' }, 'fresh-native': { type: 'boolean' } } });
 const root = resolve('.state/release'); const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+assertFreeSpace(root, releaseDiskSpaceRequirements.buildRelease, 'Release archive build');
 const versionProblem = releaseVersionProblem(version); if (versionProblem) throw new Error(versionProblem);
 if (execFileSync('git', ['status', '--porcelain'], { encoding: 'utf8' }).trim() && !values['allow-dirty']) throw new Error('Commit release source first; use --allow-dirty only for installer tests');
 const plan = releaseComponentPlan({ withNative: values['with-native'], withGatewaySdk: values['with-gateway-sdk'],

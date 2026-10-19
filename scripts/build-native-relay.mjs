@@ -1,16 +1,25 @@
 import {execFileSync} from 'node:child_process';
 import {mkdirSync,readFileSync,writeFileSync,cpSync,existsSync} from 'node:fs';
-import {resolve,join} from 'node:path';
+import {dirname,resolve,join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {parseArgs} from 'node:util';
 import {nativeSourceDigest} from './native-source.mjs';
 import {checkSdkTestOutput,materializeSdk,sdkArchiveSha256 as archiveDigest,sdkBuildKey,sdkCodexVersion,sdkRevision as revision,sdkTestArguments} from './native-relay-sdk.mjs';
+import {withPrivateFileLock} from '../dist/private-file-lock.js';
+import {withCargoTargetLocks} from './cargo-target-lock.mjs';
+import {assertFreeSpaceForPaths,releaseDiskSpaceRequirements} from './disk-space.mjs';
 
 const {values}=parseArgs({options:{archive:{type:'string'},'target-dir':{type:'string'},dev:{type:'boolean'},test:{type:'boolean'},version:{type:'string'}}});
 // Sources, pristine copies and the crate manifest are kept per pinned revision. The gateway SDK build reads its own pinned
 // archive from `sdk.tar.gz` here, so the relay never replaces those bytes; the target folders are shared, as cargo keys them by path.
 const root=resolve('.state/native-relay-build');const sdk=join(root,`sdk-${sdkBuildKey}`);const build=join(root,`build-${sdkBuildKey}`);
+const target=resolve(values['target-dir']||join(root,'target'));
+const sdkTarget=values['target-dir']?`${target}-sdk`:join(root,'sdk-target');
 mkdirSync(root,{recursive:true});mkdirSync(build,{recursive:true});
+mkdirSync(dirname(target),{recursive:true});if(values.test)mkdirSync(dirname(sdkTarget),{recursive:true});
+await withPrivateFileLock(join(root,'build'),async()=>{
+await withCargoTargetLocks(values.test?[target,sdkTarget]:[target],async()=>{
+assertFreeSpaceForPaths(values.test?[root,target,sdkTarget]:[root,target],releaseDiskSpaceRequirements.nativeRelay,'Native relay build');
 const archive=resolve(values.archive||join(root,`sdk-${sdkBuildKey}.tar.gz`));
 if(!existsSync(archive)){
   // The pinned bytes use GitHub's API tarball format (including its root name).
@@ -25,13 +34,11 @@ if(!/^\d+\.\d+\.\d+$/.test(version))throw Error('Invalid relay release version')
 writeFileSync(join(build,'Cargo.toml'),readFileSync('native-relay/Cargo.toml.in','utf8').replaceAll('@SDK@',sdk.replaceAll('\\','/')).replace('@VERSION@',version));
 cpSync('native-relay/src',join(build,'src'),{recursive:true});
 if(!existsSync(join(build,'Cargo.lock')))cpSync(join(sdk,'codex-rs/Cargo.lock'),join(build,'Cargo.lock'));
-const target=resolve(values['target-dir']||join(root,'target'));
 const cargoEnvironment={...process.env,CARGO_BUILD_JOBS:'2'};
 const args=[values.test?'test':'build',...(values.dev?[]:['--release']),'--manifest-path',join(build,'Cargo.toml'),'--target-dir',target];
 execFileSync('cargo',args,{stdio:'inherit',env:cargoEnvironment});
 if(values.test){
   // The SDK workspace resolves its own features and lockfile, so it keeps a separate target directory.
-  const sdkTarget=values['target-dir']?`${target}-sdk`:join(root,'sdk-target');
   let output;
   try{
     output=execFileSync('cargo',sdkTestArguments({sdk,target:sdkTarget,dev:values.dev}),{cwd:join(sdk,'codex-rs'),env:cargoEnvironment,encoding:'utf8',stdio:['ignore','pipe','inherit'],maxBuffer:64*1024*1024});
@@ -51,3 +58,5 @@ if(!values.test){
   writeFileSync(join(output,'build.json'),JSON.stringify({version,codexVersion:sdkCodexVersion,revision,archiveSha256:archiveDigest,profile:values.dev?'dev':'release',sourceSha256:nativeSourceDigest()},null,2));
   console.log(JSON.stringify({artifact:output,version,revision}));
 }
+});
+},3_600_000);

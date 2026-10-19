@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { chmodSync, closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatches, gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
@@ -9,13 +9,20 @@ import { gatewaySdkLockRepairDigest, gatewaySdkTestRunnerDigest } from './gatewa
 import { gatewaySdkLockSha256, repairGatewaySdkLock } from './gateway-sdk-lock.mjs';
 import { recoverGatewaySdkCompactionTests, withGatewaySdkCompactionTests } from './gateway-sdk-test-runner.mjs';
 import { withPrivateFileLock } from '../dist/private-file-lock.js';
+import { withCargoTargetLocks } from './cargo-target-lock.mjs';
+import { assertFreeSpaceForPaths, releaseDiskSpaceRequirements } from './disk-space.mjs';
 
 const { values } = parseArgs({ options: { archive: { type: 'string' }, 'target-dir': { type: 'string' },
   'build-root': { type: 'string' }, dev: { type: 'boolean' }, test: { type: 'boolean' }, version: { type: 'string' } } });
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Gateway SDK release requires an Apple Silicon Mac');
 const root = resolve(values['build-root'] || '.state/gateway-sdk-build');
+const target = resolve(values['target-dir'] || join(root, 'target'));
 mkdirSync(root, { recursive: true, mode: 0o700 });
+mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
 await withPrivateFileLock(join(root, 'build'), async () => {
+await withCargoTargetLocks([target], async () => {
+assertFreeSpaceForPaths([root, target], values.test ? releaseDiskSpaceRequirements.gatewaySdkTest : releaseDiskSpaceRequirements.gatewaySdkBuild,
+  values.test ? 'Gateway SDK test build' : 'Gateway SDK build');
 const archive = resolve(values.archive || join(root, `source-${gatewaySdkRevision}.tar.gz`));
 if (!existsSync(archive)) {
   const response = await fetch(`https://api.github.com/repos/openai/codex/tarball/${gatewaySdkRevision}`);
@@ -70,7 +77,6 @@ if (input.revision !== gatewaySdkRevision || input.archiveSha256 !== gatewaySdkA
 const version = values.version || JSON.parse(readFileSync('package.json', 'utf8')).version;
 if (!/^\d+\.\d+\.\d+$/.test(version)) throw Error('Invalid gateway SDK release version');
 const manifest = join(sdk, 'codex-rs/Cargo.toml');
-const target = resolve(values['target-dir'] || join(root, 'target'));
 // A build started from inside a gateway chat inherits the executor marker; the SDK's tests set or remove it per case themselves.
 const cargoEnvironment = { ...process.env, CARGO_BUILD_JOBS: '2' }; delete cargoEnvironment.HARNESS_GATEWAY_EXECUTOR;
 const profile = values.dev ? [] : ['--release'];
@@ -135,4 +141,5 @@ if (values.test) {
     capabilities: [gatewaySdkCapability] }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ artifact, version, revision: gatewaySdkRevision, patchSha256, sourceSha256 }));
 }
+});
 }, 3_600_000);

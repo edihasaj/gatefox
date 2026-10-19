@@ -283,6 +283,24 @@ node scripts/build-gateway-sdk.mjs
 node scripts/build-release.mjs --with-native --with-gateway-sdk
 ```
 
+## Disk space
+
+Release scripts check free space before their heavy work. Gateway SDK tests require
+40 GiB and SDK-only builds require 25 GiB; the native relay requires 40 GiB; the
+release archive requires 4 GiB; the macOS app release and its updater-fixture
+check each require 10 GiB; and the updater fixture requires 6 GiB on its
+`--root` volume before inspecting the candidate. Set
+`GATEWAY_RELEASE_MIN_FREE_GIB` to a positive number to replace the applicable
+default when a deliberately tighter host has been reviewed.
+
+After a release is published and installed, run `npm run release:clean` to reclaim
+the cached Cargo targets while preserving release artifacts and source archives.
+Use `npm run release:clean -- --dry-run` to review the planned Cargo cleanup.
+It retains updater-fixture directories and prints their sizes with the exact
+manual Trash command. A failed updater fixture reports `errorClass` and, when
+space is exhausted or critically low, `disk: "low"` without exposing its error
+message.
+
 For a development-profile test run, the SDK's large test futures need a larger
 thread stack: `RUST_MIN_STACK=33554432 node scripts/build-gateway-sdk.mjs --test --dev`.
 
