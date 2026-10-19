@@ -20,6 +20,8 @@ function fixture(t) {
   git(['init']); git(['config', 'user.email', 'fixture@example.invalid']); git(['config', 'user.name', 'Fixture']);
   writeFileSync(join(root, '.gitignore'), '.state/\n');
   writeFileSync(join(root, 'unrelated.json'), '{"must":"stay"}\n');
+  mkdirSync(join(root, 'scripts/tests'), { recursive: true });
+  writeFileSync(join(root, 'scripts/tests/provider-fixture.test.mjs'), 'import test from "node:test";\ntest("fixture", () => {});\n');
   for (const path of promotedFiles) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     writeFileSync(join(root, path), `original ${path}\n`);
@@ -69,7 +71,9 @@ function validationRunner({ failAt, mutateCandidate, calls = [] } = {}) {
       writeFileSync(join(dist, 'provider-tool-contract.js'), '// candidate contract fixture\n');
     }
     if (args.includes('scripts/build-gateway-sdk.mjs') && !args.includes('--test')) {
-      const artifact = join(options.cwd, '.state/gateway-sdk-build/artifact');
+      const buildRoot = args.at(args.indexOf('--build-root') + 1);
+      assert.ok(buildRoot, 'SDK build must use an immutable build root');
+      const artifact = join(buildRoot, 'artifact');
       mkdirSync(artifact, { recursive: true });
       writeFileSync(join(artifact, 'build.json'), '{}\n');
       writeFileSync(join(artifact, 'gateway-codex'), 'fixture SDK\n');

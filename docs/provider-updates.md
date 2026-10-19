@@ -94,6 +94,11 @@ An upstream incompatibility is a blocked update, not permission to weaken
 permissions or remove tests. The job retains the existing pins and retries on the
 next run. Compatible releases need no manual version or hash edits. A breaking
 patch, protocol, schema or safety change still requires implementation work.
+SDK builds retain immutable source paths through the updater's `--build-root`
+selection, while still verifying the archive, complete tree and build outputs.
+A private build lock serializes their temporary compaction-test isolation.
+After an interruption, only the authenticated original or reduced aggregator can
+be recovered automatically; other changes remain a blocked update.
 
 ## Generated SDK inputs
 

@@ -35,7 +35,7 @@ test("trimming never widens permissions: network_proxy is never changed, and the
   assert.equal(stats.count, 3);
   assert.deepEqual(config, copy);
   // multi_agent_v2 carries the caller's limits: the strict form keeps them instead of the SDK's looser defaults.
-  const agents = { features: { multi_agent_v2: { enabled: true, max_concurrent_threads_per_session: 1, expose_spawn_agent_model_overrides: false, preserve_fork_prefix: true } },
+  const agents = { features: { multi_agent_v2: { enabled: true, max_concurrent_threads_per_session: 1, expose_spawn_agent_model_overrides: false, gateway_test_unknown_field: true } },
     "features.multi_agent_v2.max_wait_timeout_ms": 5 };
   assert.deepEqual(strictGatewayFeatureRequest("thread/resume", { config: agents }), { config: {
     features: { multi_agent_v2: { enabled: true, max_concurrent_threads_per_session: 1, expose_spawn_agent_model_overrides: false } }, "features.multi_agent_v2.max_wait_timeout_ms": 5 } });
@@ -81,8 +81,8 @@ test("tool_registry is a table only: a boolean or any other value is dropped", (
 });
 
 test("bare dotted keys in inline TOML expand to nested tables before they are checked", () => {
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", "features={ multi_agent_v2.enabled = true, multi_agent_v2.preserve_fork_prefix = true, async_compaction.enabled = true, fast_mode = false }"]),
-    ["-c", "features={ multi_agent_v2 = { enabled = true }, async_compaction = true, fast_mode = false }"]);
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", "features={ multi_agent_v2.enabled = true, multi_agent_v2.gateway_test_unknown_field = true, gateway_test_unstructured_feature.enabled = true, fast_mode = false }"]),
+    ["-c", "features={ multi_agent_v2 = { enabled = true }, gateway_test_unstructured_feature = true, fast_mode = false }"]);
   assert.deepEqual(trimGatewayFeatureArgs(["-c", "features.guardianv2={ transcript.include_images = true, transcript.bogus = 1 }"]), ["-c", "features.guardianv2={ transcript = { include_images = true } }"]);
   // Valid dotted input is rewritten only when something was removed.
   const valid = "features.multi_agent_v2={ enabled = true, message_board_remote.url = \"u\" }";
@@ -92,23 +92,23 @@ test("bare dotted keys in inline TOML expand to nested tables before they are ch
 test("a literal key with a dot stays as it was", () => {
   const input = { features: { "fast_mode.enabled": false, "a.b": true } };
   assert.equal(trimGatewayFeatureConfig(input), input);
-  assert.deepEqual(trim({ features: { "fast_mode.enabled": false, async_compaction: { enabled: true } } }), { features: { "fast_mode.enabled": false, async_compaction: true } });
+  assert.deepEqual(trim({ features: { "fast_mode.enabled": false, gateway_test_unstructured_feature: { enabled: true } } }), { features: { "fast_mode.enabled": false, gateway_test_unstructured_feature: true } });
   // The same holds for a quoted key inside inline TOML, which is one segment.
   const quoted = 'features={ "fast_mode.enabled" = false }';
   assert.deepEqual(trimGatewayFeatureArgs(["-c", quoted]), ["-c", quoted]);
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features={ "fast_mode.enabled" = false, async_compaction = { enabled = true } }']), ["-c", 'features={ "fast_mode.enabled" = false, async_compaction = true }']);
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features={ "fast_mode.enabled" = false, gateway_test_unstructured_feature = { enabled = true } }']), ["-c", 'features={ "fast_mode.enabled" = false, gateway_test_unstructured_feature = true }']);
 });
 
 test("override keys are split on every dot and never unquoted, as the pinned SDK applies them", () => {
   // codex-rs/config/src/overrides.rs splits an override key with `path.split('.')`: a quoted segment keeps its quote characters,
   // so `"multi_agent_v2"` is an unknown feature name, not multi_agent_v2. Nothing is respelled.
-  assert.deepEqual(trim({ 'features."multi_agent_v2".preserve_fork_prefix': true, 'features.multi_agent_v2."wait_agent_enabled"': true,
+  assert.deepEqual(trim({ 'features."multi_agent_v2".gateway_test_unknown_field': true, 'features.multi_agent_v2."wait_agent_enabled"': true,
     "features.'guardianv2'.thread_context": true, 'features."newthing".enabled': false, 'features."guardianv2"."transcript".bogus': 1 }), { 'features."newthing"': false });
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features."multi_agent_v2".preserve_fork_prefix=true', "-c", 'features.multi_agent_v2."wait_agent_enabled"=true',
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'features."multi_agent_v2".gateway_test_unknown_field=true', "-c", 'features.multi_agent_v2."wait_agent_enabled"=true',
     "-c", 'features."newthing".enabled=false', "-c", "features.'multi_agent_v2'.bogus=1", "-c", "features . fast_mode=true"]),
   ["-c", 'features."newthing"=false', "-c", "features . fast_mode=true"]);
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'profiles."w".features.async_compaction={ enabled = true }', "-c", 'profiles."a.b".features.async_compaction={ enabled = true }']),
-    ["-c", 'profiles."w".features.async_compaction=true', "-c", 'profiles."a.b".features.async_compaction={ enabled = true }']);
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", 'profiles."w".features.gateway_test_unstructured_feature={ enabled = true }', "-c", 'profiles."a.b".features.gateway_test_unstructured_feature={ enabled = true }']),
+    ["-c", 'profiles."w".features.gateway_test_unstructured_feature=true', "-c", 'profiles."a.b".features.gateway_test_unstructured_feature={ enabled = true }']);
   // A space is part of the name too: this is a feature called "not a key" holding a table, which the SDK would reject.
   assert.deepEqual(trim({ "features.not a key": { x: 1 }, "mcp_servers.my server.command": "x" }), { "mcp_servers.my server.command": "x" });
 });
@@ -129,12 +129,12 @@ test("apps_mcp_path_override accepts a boolean or only enabled and path", () => 
 
 test("a flat profile key holds the same feature settings as a nested profile", () => {
   // Inside a profile's table the SDK keeps keys literal, so a dotted key there is not a feature path and is left alone.
-  assert.deepEqual(trim({ "profiles.w": { features: { async_compaction: { enabled: true } }, "features.multi_agent_v2.preserve_fork_prefix": true, model: "m" } }),
-    { "profiles.w": { features: { async_compaction: true }, "features.multi_agent_v2.preserve_fork_prefix": true, model: "m" } });
-  assert.deepEqual(trim({ 'profiles."a.b"': { "features.async_compaction": { enabled: false } }, "profiles.w.model": "m", "profiles.w.features": { x: { y: 1 }, fast_mode: true } }),
-    { 'profiles."a.b"': { "features.async_compaction": { enabled: false } }, "profiles.w.model": "m", "profiles.w.features": { fast_mode: true } });
-  assert.deepEqual(trimGatewayFeatureArgs(["-c", "profiles.w={ features = { async_compaction = { enabled = true } } }", "-c", 'profiles.w.model="m"']),
-    ["-c", "profiles.w={ features = { async_compaction = true } }", "-c", 'profiles.w.model="m"']);
+  assert.deepEqual(trim({ "profiles.w": { features: { gateway_test_unstructured_feature: { enabled: true } }, "features.multi_agent_v2.gateway_test_unknown_field": true, model: "m" } }),
+    { "profiles.w": { features: { gateway_test_unstructured_feature: true }, "features.multi_agent_v2.gateway_test_unknown_field": true, model: "m" } });
+  assert.deepEqual(trim({ 'profiles."a.b"': { "features.gateway_test_unstructured_feature": { enabled: false } }, "profiles.w.model": "m", "profiles.w.features": { x: { y: 1 }, fast_mode: true } }),
+    { 'profiles."a.b"': { "features.gateway_test_unstructured_feature": { enabled: false } }, "profiles.w.model": "m", "profiles.w.features": { fast_mode: true } });
+  assert.deepEqual(trimGatewayFeatureArgs(["-c", "profiles.w={ features = { gateway_test_unstructured_feature = { enabled = true } } }", "-c", 'profiles.w.model="m"']),
+    ["-c", "profiles.w={ features = { gateway_test_unstructured_feature = true } }", "-c", 'profiles.w.model="m"']);
 });
 
 test("the strict retry form reduces features to booleans in every spelling, except settings that carry limits", () => {

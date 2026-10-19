@@ -7,13 +7,15 @@ import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
   gatewaySdkPatches, gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockSha256, repairGatewaySdkLock } from './gateway-sdk-lock.mjs';
-import { withGatewaySdkCompactionTests } from './gateway-sdk-test-runner.mjs';
+import { recoverGatewaySdkCompactionTests, withGatewaySdkCompactionTests } from './gateway-sdk-test-runner.mjs';
+import { withPrivateFileLock } from '../dist/private-file-lock.js';
 
 const { values } = parseArgs({ options: { archive: { type: 'string' }, 'target-dir': { type: 'string' },
-  dev: { type: 'boolean' }, test: { type: 'boolean' }, version: { type: 'string' } } });
+  'build-root': { type: 'string' }, dev: { type: 'boolean' }, test: { type: 'boolean' }, version: { type: 'string' } } });
 if (process.platform !== 'darwin' || process.arch !== 'arm64') throw Error('Gateway SDK release requires an Apple Silicon Mac');
-const root = resolve('.state/gateway-sdk-build');
+const root = resolve(values['build-root'] || '.state/gateway-sdk-build');
 mkdirSync(root, { recursive: true, mode: 0o700 });
+await withPrivateFileLock(join(root, 'build'), async () => {
 const archive = resolve(values.archive || join(root, `source-${gatewaySdkRevision}.tar.gz`));
 if (!existsSync(archive)) {
   const response = await fetch(`https://api.github.com/repos/openai/codex/tarball/${gatewaySdkRevision}`);
@@ -59,6 +61,7 @@ if (!existsSync(sdk)) {
 }
 if (!lstatSync(sdk).isDirectory() || !existsSync(marker)) throw Error('Refusing an unrecognized gateway SDK checkout');
 const input = JSON.parse(readFileSync(marker, 'utf8'));
+recoverGatewaySdkCompactionTests(sdk);
 if (input.revision !== gatewaySdkRevision || input.archiveSha256 !== gatewaySdkArchiveSha256 ||
     input.patchSha256 !== patchSha256 || input.lockfileRepairSha256 !== lockfileRepairSha256 ||
     input.lockfileSha256 !== gatewaySdkLockSha256 || input.patchedSdkSha256 !== treeDigest(sdk)) {
@@ -132,3 +135,4 @@ if (values.test) {
     capabilities: [gatewaySdkCapability] }, null, 2), { mode: 0o600 });
   console.log(JSON.stringify({ artifact, version, revision: gatewaySdkRevision, patchSha256, sourceSha256 }));
 }
+}, 3_600_000);
