@@ -26,6 +26,25 @@ Added gateway model rows ignore task prompt text from older hosts and offline
 caches. The original native model catalog and explicit client instructions remain
 unchanged.
 
+### Provider admission
+
+Each provider has an independent FIFO admission queue with a fixed waiting capacity
+of 32. Its running limit is `provider.maxConcurrent`, or the gateway-wide
+`maxConcurrent` when the provider does not set one, or 4 by default. A busy Codex
+provider therefore cannot delay a Claude or API-provider request. The reviewer route
+uses the queue of the provider that serves its route. The pre-body flood guard allows
+the larger of the gateway-wide limit and the sum of the configured provider limits,
+plus 32 requests, so a lower provider override does not reduce the previous capacity.
+`/health` reports the running and queued totals
+across all provider queues.
+
+On a live configuration reload, existing queues keep their in-flight work, changed
+limits take effect immediately, and new providers receive new queues. A removed
+provider's queue remains until it is idle and no live request snapshot refers to it,
+so requests accepted before the reload can finish and a later re-add reuses that
+queue. A hot-swapped handler retains its own queues until that handler is idle,
+alongside the requests it already accepted.
+
 ### Live configuration
 
 An inference keeps the configuration snapshot with which it began. New requests

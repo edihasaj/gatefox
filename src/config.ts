@@ -21,6 +21,8 @@ export interface ProviderConfig {
   agentName?: string;
   authDirectory?: string;
   label?: string;
+  /** Per-provider admission cap; falls back to top-level maxConcurrent, then 4. */
+  maxConcurrent?: number;
   modelMetadata?: Record<string, ModelMetadata>;
   /** Claude subscription only: one-shot replay or a live CLI session per Codex thread. */
   claudeSessions?: ClaudeSessionConfig;
@@ -107,6 +109,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
     if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
+    if (provider.maxConcurrent !== undefined && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 16)) throw new Error(`${provider.id}: maxConcurrent must be 1 through 16`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
       if (!alias || typeof model !== "string" || !model) throw new Error(`${provider.id}: model aliases and IDs must be non-empty strings`);
