@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Claude's private Qwen route can preserve generated no-tools text that the
+upstream tool parser silently discarded. A pinned tokenizer decodes complete
+raw output, and unsolicited XML remains text rather than an executable call.
+The policy requires explicit private opt-in and preserves the existing
+tool-enabled path. Thanks to @edihasaj for requesting the root-cause fix.
+
 Claude's private inference service can recover a clean, empty Qwen completion
 with one identical request to the same model. A second empty reply becomes an
 explicit failure. Retry spend remains in the ledger while Claude receives the

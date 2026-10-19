@@ -235,6 +235,58 @@ attempt's usage so repeated input is not mistaken for a doubled current context.
 Recovery telemetry contains route identity, outcome, timing, and numeric usage,
 without prompts or completion text.
 
+## Preserving Qwen output without tools
+
+The private service can also opt Qwen into
+`noToolsOutputRecoveryProviders`, mapping its provider ID to an absolute
+`tokenizer.json` path:
+
+```json
+{
+  "contextProviders": ["qwen"],
+  "emptyCompletionRecoveryProviders": ["qwen"],
+  "noToolsOutputRecoveryProviders": {
+    "qwen": "/absolute/Claude-3p/inference/tokenizers/qwen3.8-tokenizer.json"
+  }
+}
+```
+
+This addresses a vLLM no-tools parsing failure. Qwen can generate tool-shaped
+text after reasoning even when the request offers no tools. The configured
+upstream tool parser consumes that text, then removes the calls because tool
+use is disabled, leaving an empty successful reply.
+
+For eligible requests, the private proxy requests raw token IDs as diagnostic
+metadata. It retains the same instructions, model, credentials, reasoning
+effort, and sampling controls. If the upstream supplies no visible text, a
+complete validated token sequence can recover the actual generated text after
+reasoning. That text remains ordinary text, including any unsolicited XML;
+it never becomes an executable tool call or an invented answer. Normal visible
+replies and requests offering tools retain their existing handling.
+
+Recovery requires the final assistant prompt boundary, complete output ending
+in the configured EOS token, an unambiguous reasoning boundary, valid UTF-8,
+matching provider token counts, a normal stop, and clean stream closure.
+Invalid or incomplete evidence retains the existing empty-response retry and
+explicit failure. Added token metadata is removed before the normal provider
+and client see the response. Reasoning activity and usage continue streaming;
+only the final stop waits for validation. Buffering and closure waits are
+bounded.
+
+The tokenizer is public data from
+[`nvidia/Qwen3.8-Flash-Next-NVFP4`](https://huggingface.co/nvidia/Qwen3.8-Flash-Next-NVFP4/tree/fc694b54fb0174e0913e6adf86691ef85a4ead47),
+revision `fc694b54fb0174e0913e6adf86691ef85a4ead47`. Its exact SHA-256 is
+`0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3`.
+The service validates the asset before allocating listeners. It is stored in
+Claude's private configuration area and is not bundled with the gateway.
+The model card identifies the NVIDIA Open Model License and Qwen Community
+License 1.0 as governing terms. No tokenizer runtime dependency or model weights
+are added.
+
+This policy preserves generated output; it does not guarantee that Qwen follows
+every instruction. It changes neither the shared Qwen workers nor the native
+Codex configuration or routing.
+
 ## Verified coverage and limits
 
 The initial macOS trial verified the rendered picker, real GPT and Qwen replies,
