@@ -9,8 +9,8 @@ import { responsesHttpError, responsesStreamError } from "./responses-errors.js"
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
-const chatEnvelopeFields = new Set(["type", "id", "object", "created", "model", "choices", "usage", "system_fingerprint", "service_tier"]);
-const chatChoiceFields = new Set(["index", "delta", "finish_reason", "logprobs"]);
+const chatEnvelopeFields = new Set(["type", "id", "object", "created", "model", "choices", "usage", "system_fingerprint", "service_tier", "prompt_token_ids", "prompt_text"]);
+const chatChoiceFields = new Set(["index", "delta", "finish_reason", "logprobs", "stop_reason", "token_ids"]);
 const chatDeltaFields = new Set(["role", "content", "reasoning", "reasoning_content", "tool_calls"]);
 
 export interface ChatCompletionRecoveryPolicy {
@@ -52,6 +52,7 @@ function addUsage(left: Usage, right: Usage): Usage {
 function timeoutError(): ProviderError { return new ProviderError("timeout", "Chat API inference timed out", 504); }
 function incomplete(message: string): ProviderError { return new ProviderError("incomplete", message, 502); }
 function unknownFields(value: object, allowed: ReadonlySet<string>): boolean { return Object.keys(value).some(key => !allowed.has(key)); }
+function nullOnly(value: object, fields: readonly string[]): boolean { return fields.some(field => Object.hasOwn(value, field) && (value as Record<string, unknown>)[field] !== null); }
 function reportRecovery(policy: ChatCompletionRecoveryPolicy, event: Parameters<NonNullable<ChatCompletionRecoveryPolicy["onRecovery"]>>[0]): void {
   try { policy.onRecovery?.(event); } catch { /* Observability never changes an inference. */ }
 }
@@ -174,7 +175,7 @@ export class ChatCompletionsAPI implements Provider {
       if (!response.body) throw incomplete("Chat API returned no stream");
       for await (const event of readEvents(response.body, "chat")) {
         if (done) throw incomplete("Chat API returned data after completion");
-        if (strictEmpty && unknownFields(event, chatEnvelopeFields)) refusedOrMalformed = true;
+        if (strictEmpty && (nullOnly(event, ["prompt_token_ids", "prompt_text"]) || unknownFields(event, chatEnvelopeFields))) refusedOrMalformed = true;
         if (event.type === "error") {
           const typed = responsesStreamError(event); if (typed.code === "context_length_exceeded") throw typed;
           throw new ProviderError("inference_failed", "Chat API inference failed");
@@ -208,7 +209,7 @@ export class ChatCompletionsAPI implements Provider {
           exactChoiceModels &&= event.model === request.model;
         }
         for (const next of choices) {
-          if (strictEmpty && unknownFields(next, chatChoiceFields)) refusedOrMalformed = true;
+          if (strictEmpty && (nullOnly(next, ["stop_reason", "token_ids"]) || unknownFields(next, chatChoiceFields))) refusedOrMalformed = true;
           const rawDelta = next.delta;
           if (strictEmpty && (rawDelta === undefined || rawDelta === null || typeof rawDelta !== "object" || Array.isArray(rawDelta))) refusedOrMalformed = true;
           const delta = rawDelta && typeof rawDelta === "object" && !Array.isArray(rawDelta) ? rawDelta : {};
