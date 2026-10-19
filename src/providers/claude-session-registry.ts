@@ -18,6 +18,8 @@ export interface SessionRegistry {
   ended: Map<string, string>;
   /** Keys held to the one-shot path, so a hold keeps its reason when the ended log cycles. */
   replayUntil: Map<string, ReplayHold>;
+  /** Completed live-mode requests per session key, used to avoid parking one-request threads. */
+  warmups: Map<string, Warmup>;
   /** The provider scope that owns each live session key, so one provider can retire its own. */
   scopes: Map<string, string>;
 }
@@ -27,6 +29,7 @@ export interface SessionRegistry {
  * the miss that gave it up. The reason rides with the hold so it cannot cycle out from under it.
  */
 export type ReplayHold = { since: number; why: string };
+export type Warmup = { count: number; lastTouched: number };
 
 const symbol = Symbol.for("harness-gateway/claude-sessions/v1");
 const recentToolWait = 10 * 60 * 1000;
@@ -35,6 +38,8 @@ const recentToolWait = 10 * 60 * 1000;
  * (context_management clear_tool_uses after 65 idle minutes), so continuing saves nothing.
  */
 export const idleMs = 60 * 60 * 1000;
+export const warmupMs = 24 * 60 * 60 * 1000;
+export const warmupLimit = 4096;
 
 /**
  * The process-wide registry an earlier release left on the global symbol, upgraded in place, or
@@ -45,6 +50,7 @@ function adopt(): SessionRegistry | undefined {
   const existing = (globalThis as unknown as Record<symbol, Partial<SessionRegistry> | undefined>)[symbol];
   if (existing?.interfaceVersion !== 1) return;
   existing.replayUntil ??= new Map();
+  existing.warmups ??= new Map();
   existing.scopes ??= new Map();
   return existing as SessionRegistry;
 }
@@ -53,7 +59,7 @@ function adopt(): SessionRegistry | undefined {
 export function sessionRegistry(): SessionRegistry {
   const existing = adopt();
   if (existing) return existing;
-  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map(), replayUntil: new Map(), scopes: new Map() };
+  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map(), replayUntil: new Map(), warmups: new Map(), scopes: new Map() };
   (globalThis as unknown as Record<symbol, SessionRegistry>)[symbol] = registry;
   registerActivityProbe("claude_sessions", () => sessionsBusy(registry));
   registerShutdownHook("claude_sessions", () => closeSessions(registry, "shutdown", false));
@@ -114,6 +120,28 @@ export function replayPinned(registry: SessionRegistry, key: string, now = Date.
   if (held === undefined) return;
   if (now - (typeof held === "number" ? held : held.since) >= idleMs) { registry.replayUntil.delete(key); registry.ended.delete(key); return; }
   return typeof held === "number" ? registry.ended.get(key) : held.why;
+}
+
+/** Drops expired entries; a clock rollback can leave insertion order newer than an older timestamp. */
+function pruneWarmups(registry: SessionRegistry, now: number): void {
+  for (const [key, entry] of registry.warmups) {
+    if (now - entry.lastTouched >= warmupMs) registry.warmups.delete(key);
+  }
+}
+
+/** Completed requests for this key in the last 24 hours. Reading never extends the retention window. */
+export function warmupCompletions(registry: SessionRegistry, key: string, now = Date.now()): number {
+  pruneWarmups(registry, now);
+  return registry.warmups.get(key)?.count ?? 0;
+}
+
+/** Records a final `done`, retaining at most the newest 4096 thread keys. */
+export function recordWarmupCompletion(registry: SessionRegistry, key: string, now = Date.now()): void {
+  pruneWarmups(registry, now);
+  const count = (registry.warmups.get(key)?.count ?? 0) + 1;
+  registry.warmups.delete(key);
+  registry.warmups.set(key, { count, lastTouched: now });
+  while (registry.warmups.size > warmupLimit) registry.warmups.delete(registry.warmups.keys().next().value!);
 }
 
 /**

@@ -92,11 +92,16 @@ export class ClaudeSubscription implements Provider {
       ...(context.threadId ? { threadKey: sessionKey(this.scope(), context.threadId).slice(0, 8) } : {}) };
     // Switching to replay ends this provider's parked sessions now instead of when their park timers fire.
     if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
+    let completed: (() => void) | undefined;
+    const markCompleted = (event: InferenceEvent) => {
+      if (event.type === "done" && !signal.aborted && event.interrupted !== true && completed) { const complete = completed; completed = undefined; complete(); }
+    };
     if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
-      const outcome = await this.live(run, request, context, settings, signal);
-      if (outcome?.kind === "stream") {
+      const live = await this.live(run, request, context, settings, signal);
+      completed = live?.complete;
+      if (live?.outcome.kind === "stream") {
         let yielded = false;
-        try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
+        try { for await (const event of live.outcome.events) { yielded = true; markCompleted(event); yield event; } return; }
         catch (error) {
           // A session that dies before its first event (the CLI or relay exits right after the seed)
           // falls back to one-shot. Limits, cancellation and caller errors would only repeat.
@@ -107,21 +112,21 @@ export class ClaudeSubscription implements Provider {
     }
     let streamed = false;
     try {
-      for await (const event of this.oneShot(run, signal)) { if (event.type === "text") streamed = true; yield event; }
+      for await (const event of this.oneShot(run, signal)) { if (event.type === "text") streamed = true; markCompleted(event); yield event; }
     } catch (error) {
       if (!(error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") || typeof choice !== "object" || signal.aborted) throw error;
       // Text already reached the caller, so a local retry would duplicate it. A caller retry would
       // repeat the same full-catalog inference, so the failure is final (Codex: invalid_prompt).
       if (streamed) throw new ProviderError("upstream_rejected", error.message, 502, error.upstream);
       // One retry with only the forced tool: a single cache miss instead of a failed turn.
-      yield* this.oneShot({ ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }, signal);
+      for await (const event of this.oneShot({ ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }, signal)) { markCompleted(event); yield event; }
     }
   }
 
   /** The provider half of a live session key; the thread's half is whatever the caller added. */
   private scope(): string { return `${this.config?.id ?? "claude"}` + `\0` + `${this.config?.authDirectory ?? ""}`; }
 
-  private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number }, signal: AbortSignal): Promise<ClaudeLiveOutcome | undefined> {
+  private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number; warmup: number }, signal: AbortSignal): Promise<{ outcome: ClaudeLiveOutcome; complete: () => void } | undefined> {
     const module = await loadLive(this.liveModule);
     if (!module) {
       if (!unavailable.has(this.liveModule)) { unavailable.add(this.liveModule); telemetry("claude_session", { outcome: "fallback", missReason: "unavailable", threadKey: run.threadKey }); }
@@ -129,8 +134,11 @@ export class ClaudeSubscription implements Provider {
     }
     const { model, effort, fast, summaryVisible, tools, conversation, images, format, systemPrompt, leading } = run; const mcpCatalog = claudeMcpCatalog(tools);
     let outcome: ClaudeLiveOutcome;
+    let complete = () => {};
     try {
-      outcome = await module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes }).attach({
+      const live = module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup });
+      complete = () => live.complete?.(this.scope(), context.threadId!);
+      outcome = await live.attach({
         scope: this.scope(), threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
         model, effort, fast, summaryVisible, instructionsDigest: digest(systemPrompt), leading,
         toolsDigest: digest(JSON.stringify(mcpCatalog)), tools, choice: run.choice, request, conversation, images,
@@ -142,13 +150,15 @@ export class ClaudeSubscription implements Provider {
         onUsage: async limit => { await this.onUsage?.(limit).catch(() => {}); },
         onContextWindow: (name, window) => this.onContextWindow?.(name, window),
       }, signal);
+      if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
+      return { outcome, complete };
     } catch (error) {
       // Any failure before a stream exists falls back to one-shot; only cancellation propagates.
       if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
       outcome = { kind: "fallback", reason: "spawn_failed" };
     }
-    if (outcome.kind === "fallback") telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
-    return outcome;
+    telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });
+    return { outcome, complete };
   }
 
   private async *oneShot(run: Run, signal: AbortSignal): AsyncGenerator<InferenceEvent> {

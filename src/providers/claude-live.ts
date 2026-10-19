@@ -6,7 +6,7 @@ import { choiceBlock } from "./claude-render.js";
 import { decide, ledgerEntries, type LedgerDecision, type LedgerPhase } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
-import { closeSessions, evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry, slotsTaken, type SessionRegistry } from "./claude-session-registry.js";
+import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
 import { sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
 import { systemPrefixOnly } from "./claude-usage.js";
 
@@ -21,7 +21,7 @@ type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected";
  * A request's own provider settings. The cap counts every live session in the process, so a
  * provider with a lower cap may evict another provider's idle sessions; park time is per session.
  */
-type Settings = { max: number; parkMinutes: number };
+type Settings = { max: number; parkMinutes: number; warmup: number };
 type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -45,25 +45,48 @@ const heldReason = (why: string | undefined): ClaudeMissReason =>
 // Session files of a gateway process that died without closing its sessions are removed once per process.
 let swept: Promise<void> | undefined;
 
-export function claudeLive(settings: Settings) {
-  const registry = sessionRegistry(); const limits = { max: settings.max, parkMinutes: settings.parkMinutes };
+export function claudeLive(settings: Omit<Settings, "warmup"> & { warmup?: number }) {
+  const registry = sessionRegistry(); const limits: Settings = { max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup ?? 1 };
   return {
     attach: (input: ClaudeLiveInput, signal: AbortSignal) => attach(registry, limits, input, signal),
+    complete: (scope: string, threadId: string) => recordWarmupCompletion(registry, sessionKey(scope, threadId)),
     /** Closes every session at once and forgets how earlier ones ended (tests; shutdown uses the registry hook). */
-    stop: async () => { await closeSessions(registry, "stopped", true); registry.ended.clear(); registry.replayUntil.clear(); registry.scopes.clear(); },
+    stop: async () => { await closeSessions(registry, "stopped", true); registry.ended.clear(); registry.replayUntil.clear(); registry.warmups.clear(); registry.scopes.clear(); },
     sessions: (): ClaudeSession[] => [...registry.sessions.values()],
   };
+}
+
+/** Refreshes a replay hold exactly when a cold request reaches it. */
+function replayFallback(registry: SessionRegistry, key: string): Extract<ClaudeLiveOutcome, { kind: "fallback" }> | undefined {
+  const hold = replayPinned(registry, key);
+  // Asking again starts the hour over: a thread that keeps talking has no use for a session that
+  // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
+  if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
+}
+
+/** A thread without an open session cannot reserve capacity while it is held or still warming up. */
+function coldFallback(registry: SessionRegistry, settings: Settings, key: string): Extract<ClaudeLiveOutcome, { kind: "fallback" }> | undefined {
+  const replay = replayFallback(registry, key);
+  if (replay) return replay;
+  if (warmupCompletions(registry, key) < settings.warmup) return { kind: "fallback", reason: "warmup" };
 }
 
 async function attach(registry: SessionRegistry, settings: Settings, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
   if (signal.aborted) throw cancelled();
   const key = sessionKey(input.scope, input.threadId);
   if (registry.starting.has(key)) return { kind: "fallback", reason: "concurrent" };
+  const session = registry.sessions.get(key);
+  const cold = !session || session.state === "closed";
+  // Keep cold fallbacks out of `starting`: they neither own nor need a live-session slot.
+  if (cold) {
+    const fallback = coldFallback(registry, settings, key);
+    if (fallback) return fallback;
+  }
   registry.starting.add(key);
-  try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal); } finally { registry.starting.delete(key); }
+  try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal, { afterWarmup: cold && settings.warmup > 0 }); } finally { registry.starting.delete(key); }
 }
 
-async function place(registry: SessionRegistry, settings: Settings, key: string, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
+async function place(registry: SessionRegistry, settings: Settings, key: string, input: ClaudeLiveInput, signal: AbortSignal, admission: { afterWarmup: boolean }): Promise<ClaudeLiveOutcome> {
   let session = registry.sessions.get(key);
   if (session?.state === "interrupting") await session.waitIdle(1500);
   if (session?.state === "generating" || session?.state === "interrupting") return { kind: "fallback", reason: "concurrent" };
@@ -99,10 +122,8 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     }
   } else {
     session = undefined;
-    const hold = replayPinned(registry, key);
-    // Asking again starts the hour over: a thread that keeps talking has no use for a session that
-    // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
-    if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
+    const fallback = replayFallback(registry, key);
+    if (fallback) return fallback;
     const ended = registry.ended.get(key);
     if (ended) reason = ended === "evicted" ? "evicted" : "session_dead";
   }
@@ -136,6 +157,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   registry.scopes.set(key, input.scope);
   return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
+    afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined,
   }) };
 }
 
