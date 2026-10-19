@@ -63,8 +63,9 @@ test("API adapters validate and forward Messages generation options", async () =
     ] }, new AbortController().signal, { clientProtocol: "messages" }));
     assert.deepEqual(anthropicBodies.at(-1)!.system, [
       { type: "text", text: "You are Claude Code, the gateway client." },
-      { type: "text", text: "Follow the caller's actual instruction." },
+      { type: "text", text: "Follow the caller's actual instruction.", cache_control: { type: "ephemeral" } },
     ]);
+    assert.deepEqual((anthropicBodies.at(-1)!.messages as Array<{ content: Array<Record<string, unknown>> }>)[0]!.content[0], { type: "text", text: "Continue", cache_control: { type: "ephemeral" } });
     const beforeMidSystem = anthropicBodies.length;
     await assert.rejects(drain(anthropic.infer({ model: "anthropic-model", input: [
       { role: "user", content: "First" }, { role: "system", content: "Late instruction" },

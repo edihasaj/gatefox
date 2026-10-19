@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { startGateway } from "../server.js";
+import { AnthropicAPI } from "../providers/anthropic-api.js";
 import { gatewayToken } from "../config.js";
 import { readEvents } from "../protocol/sse.js";
 
@@ -84,4 +85,99 @@ test("Anthropic API wire path preserves images, replay and native custom calls, 
     gateway.closeAllConnections(); upstream.closeAllConnections();
     await Promise.all([new Promise<void>(resolve => gateway.close(() => resolve())), new Promise<void>(resolve => upstream.close(() => resolve()))]);
   }
+});
+
+async function anthropicOutbound(request: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const key = "GATEWAY_TEST_ANTHROPIC_CACHE_KEY"; const before = process.env[key]; process.env[key] = "fixture-only";
+  const upstream = createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const emit = (value: unknown) => res.write(`data: ${JSON.stringify(value)}\n\n`);
+    emit({ type: "message_start", message: { usage: { input_tokens: 1 } } });
+    emit({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "ok" } });
+    emit({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } });
+    emit({ type: "message_stop" }); res.end();
+  });
+  await new Promise<void>(resolve => upstream.listen(0, "127.0.0.1", resolve));
+  const provider = new AnthropicAPI({ id: "cache", type: "anthropic-api", baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}`, apiKeyEnv: key, models: { alias: "upstream" } });
+  let captured: Record<string, unknown> | undefined;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    captured = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return realFetch(input as string | URL, init);
+  }) as typeof fetch;
+  try { for await (const _event of provider.infer({ model: "upstream", ...request } as never, new AbortController().signal)); }
+  finally { globalThis.fetch = realFetch; if (before === undefined) delete process.env[key]; else process.env[key] = before; upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+  assert.ok(captured);
+  return captured;
+}
+
+const ephemeral = (block: Record<string, unknown> | undefined) => block?.cache_control as { type: string } | undefined;
+
+test("Anthropic API marks at most four ephemeral breakpoints without reordering or nesting", async () => {
+  // Last tool, last system block, last message tail, penultimate message tail, any role.
+  const basic = await anthropicOutbound({
+    input: [{ role: "system", content: "s1" }, { role: "system", content: "s2" }, { role: "user", content: "q1" }, { role: "assistant", content: "a1" }, { role: "user", content: "q2" }],
+    tools: [{ type: "function", name: "read" }, { type: "function", name: "write" }],
+  });
+  const basicMessages = basic.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+  assert.deepEqual((basic.tools as Array<Record<string, unknown>>).map(tool => tool.name), ["tool_0", "tool_1"]);
+  assert.deepEqual(ephemeral((basic.tools as Array<Record<string, unknown>>).at(-1)!), { type: "ephemeral" });
+  assert.equal(ephemeral((basic.tools as Array<Record<string, unknown>>)[0]!), undefined);
+  assert.deepEqual(ephemeral((basic.system as Array<Record<string, unknown>>).at(-1)!), { type: "ephemeral" });
+  assert.equal(ephemeral((basic.system as Array<Record<string, unknown>>)[0]!), undefined);
+  assert.deepEqual(ephemeral(basicMessages.at(-2)!.content.at(-1)!), { type: "ephemeral" });
+  assert.deepEqual(ephemeral(basicMessages.at(-1)!.content.at(-1)!), { type: "ephemeral" });
+
+  // Penultimate tail is by position, not by a user-role filter: assistant keeps its slot.
+  const assistantPenultimate = await anthropicOutbound({
+    input: [{ role: "system", content: "s1" }, { role: "user", content: "q1" }, { role: "assistant", content: "a1" }, { role: "user", content: "q2" }, { role: "assistant", content: "a2" }, { role: "user", content: "q3" }],
+  });
+  const apMessages = assistantPenultimate.messages as Array<{ content: Array<Record<string, unknown>> }>;
+  assert.deepEqual(ephemeral(apMessages.at(-2)!.content.at(-1)!), { type: "ephemeral" });
+  assert.equal(ephemeral(apMessages[0]!.content[0]!), undefined);
+
+  // A tool result is a user-role message whose tail is a tool_result block: its nested content stays unmarked.
+  const nested = await anthropicOutbound({
+    input: [{ role: "user", content: "run" }, { type: "function_call", call_id: "c1", name: "read", arguments: "{}" }, { type: "function_call_output", call_id: "c1", output: [{ type: "input_text", text: "proof" }] }],
+    tools: [{ type: "function", name: "read" }],
+  });
+  const nestedMessages = nested.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>;
+  assert.deepEqual(nestedMessages.map(message => message.role), ["user", "assistant", "user"]);
+  const toolResult = nestedMessages.at(-1)!.content.at(-1)!;
+  assert.equal(toolResult.type, "tool_result");
+  assert.deepEqual(ephemeral(toolResult), { type: "ephemeral" });
+  // Text-only results serialize content as a plain string leaf: the marker stays on the outer tool_result.
+  assert.equal(toolResult.content, "proof");
+
+  // Array results (for example an image) keep their nested blocks unmarked.
+  const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const nestedArray = await anthropicOutbound({
+    input: [{ role: "user", content: "run" }, { type: "function_call", call_id: "c1", name: "read", arguments: "{}" }, { type: "function_call_output", call_id: "c1", output: [{ type: "input_image", image_url: "data:image/png;base64," + png }] }],
+    tools: [{ type: "function", name: "read" }],
+  });
+  const arrayToolResult = (nestedArray.messages as Array<{ content: Array<Record<string, unknown>> }>).at(-1)!.content.at(-1)!;
+  assert.equal(arrayToolResult.type, "tool_result");
+  assert.deepEqual(ephemeral(arrayToolResult), { type: "ephemeral" });
+  assert.ok(Array.isArray(arrayToolResult.content));
+  assert.deepEqual((arrayToolResult.content as Array<Record<string, unknown>>).map(block => block.cache_control), [undefined]);
+
+  // Long conversations keep exactly four markers: last tool, last system, last two tails.
+  const longInput: Array<Record<string, unknown>> = [{ role: "system", content: "s1" }, { role: "system", content: "s2" }];
+  for (let turn = 0; turn < 12; turn++) { longInput.push({ role: "user", content: `u${turn}` }, { role: "assistant", content: `a${turn}` }); }
+  const long = await anthropicOutbound({ input: longInput, tools: [{ type: "function", name: "read" }] });
+  const longMessages = long.messages as Array<{ content: Array<Record<string, unknown>> }>;
+  const markers = [
+    ...((long.tools as Array<Record<string, unknown>>).flatMap(tool => tool.cache_control ? [tool] : [])),
+    ...((long.system as Array<Record<string, unknown>>).flatMap(block => block.cache_control ? [block] : [])),
+    ...longMessages.flatMap(message => message.content.filter(block => block.cache_control)),
+  ];
+  assert.equal(markers.length, 4);
+  assert.deepEqual(ephemeral(longMessages.at(-2)!.content.at(-1)!), { type: "ephemeral" });
+  assert.deepEqual(ephemeral(longMessages.at(-1)!.content.at(-1)!), { type: "ephemeral" });
+
+  // Order stays as the caller sent it: markers never move or merge blocks.
+  const order = await anthropicOutbound({
+    input: [{ role: "system", content: "system before" }, { role: "user", content: "first" }, { role: "assistant", content: "second" }, { role: "user", content: "third" }],
+  });
+  assert.deepEqual((order.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>).map(message => [message.role, (message.content[0] as { text?: string }).text]), [["user", "first"], ["assistant", "second"], ["user", "third"]]);
 });

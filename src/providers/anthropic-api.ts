@@ -12,6 +12,28 @@ import { anthropicParts } from "../protocol/images.js";
 import { anthropicContextFailure, anthropicHttpContextFailure, contextWindowFailure } from "./context-errors.js";
 import { responsesHttpError } from "./responses-errors.js";
 
+/** Attaches up to four ephemeral breakpoints to an outbound body: the last tool, the last system block, then the tails of the last two messages. */
+function attachEphemeralCacheControl(body: {
+  tools?: Array<Record<string, unknown>>;
+  system?: Array<Record<string, unknown>>;
+  messages?: Array<{ role?: string; content?: Array<Record<string, unknown>> }>;
+}): void {
+  const marked = new WeakSet<object>();
+  let budget = 4;
+  const mark = (target: Record<string, unknown> | undefined): void => {
+    if (!target || marked.has(target)) return;
+    if (budget === 0) return;
+    budget--;
+    marked.add(target);
+    target.cache_control = { type: "ephemeral" };
+  };
+  mark(body.tools?.at(-1));
+  mark(body.system?.at(-1));
+  const messages = body.messages || [];
+  if (messages.length >= 2) mark(messages.at(-2)?.content?.at(-1));
+  mark(messages.at(-1)?.content?.at(-1));
+}
+
 export class AnthropicAPI implements Provider {
   constructor(private readonly config: ProviderConfig) {}
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
@@ -56,10 +78,10 @@ export class AnthropicAPI implements Provider {
     const choice = normalized.tool_choice;
     const maxTokens = request.max_output_tokens === undefined ? 8192 : request.max_output_tokens;
     if (!Number.isInteger(maxTokens) || Number(maxTokens) < 1) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
-    const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/messages`, {
-      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model: request.model, stream: true, max_tokens: maxTokens, system: system.map(text => ({ type: "text", text })), messages,
-        tools: tools.map((tool, index) => ({ name: `tool_${index}`, description: tool.function.description || "", input_schema: tool.function.parameters || { type: "object", properties: {} } })),
+    const outboundMessages = messages;
+    const outboundSystem = system.map(text => ({ type: "text", text }));
+    const outboundTools = tools.map((tool, index) => ({ name: `tool_${index}`, description: tool.function.description || "", input_schema: tool.function.parameters || { type: "object", properties: {} } }));
+    const body = { model: request.model, stream: true, max_tokens: maxTokens, system: outboundSystem, messages: outboundMessages, tools: outboundTools,
         ...(effort !== undefined && !noEffort ? { output_config: { effort } } : {}),
         ...(choice || options.parallelToolCalls === false ? { tool_choice: {
           ...(choice ? (typeof choice === "object" ? { type: "tool", name: nativeName(choice.function.name) } : { type: choice === "required" ? "any" : choice }) : { type: "auto" }),
@@ -69,7 +91,11 @@ export class AnthropicAPI implements Provider {
         ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
         ...(options.topP === undefined ? {} : { top_p: options.topP }),
         ...(context.clientProtocol === "messages" && context.adaptiveThinking ? { thinking: { type: "adaptive" } } : {}),
-      }),
+    };
+    attachEphemeralCacheControl(body);
+    const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/messages`, {
+      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       const context = await anthropicHttpContextFailure(response); if (context) throw context;
