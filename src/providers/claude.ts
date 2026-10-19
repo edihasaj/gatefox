@@ -94,7 +94,7 @@ export class ClaudeSubscription implements Provider {
     if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
     let completed: (() => void) | undefined;
     const markCompleted = (event: InferenceEvent) => {
-      if (event.type === "done" && completed) { const complete = completed; completed = undefined; complete(); }
+      if (event.type === "done" && !signal.aborted && event.interrupted !== true && completed) { const complete = completed; completed = undefined; complete(); }
     };
     if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
       const live = await this.live(run, request, context, settings, signal);

@@ -56,10 +56,25 @@ export function claudeLive(settings: Omit<Settings, "warmup"> & { warmup?: numbe
   };
 }
 
+/** A thread without an open session cannot reserve capacity while it is held or still warming up. */
+function coldFallback(registry: SessionRegistry, settings: Settings, key: string): Extract<ClaudeLiveOutcome, { kind: "fallback" }> | undefined {
+  const hold = replayPinned(registry, key);
+  // Asking again starts the hour over: a thread that keeps talking has no use for a session that
+  // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
+  if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
+  if (warmupCompletions(registry, key) < settings.warmup) return { kind: "fallback", reason: "warmup" };
+}
+
 async function attach(registry: SessionRegistry, settings: Settings, input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome> {
   if (signal.aborted) throw cancelled();
   const key = sessionKey(input.scope, input.threadId);
   if (registry.starting.has(key)) return { kind: "fallback", reason: "concurrent" };
+  const session = registry.sessions.get(key);
+  // Keep cold fallbacks out of `starting`: they neither own nor need a live-session slot.
+  if (!session || session.state === "closed") {
+    const fallback = coldFallback(registry, settings, key);
+    if (fallback) return fallback;
+  }
   registry.starting.add(key);
   try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal); } finally { registry.starting.delete(key); }
 }
@@ -100,12 +115,8 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     }
   } else {
     session = undefined;
-    const hold = replayPinned(registry, key);
-    // Asking again starts the hour over: a thread that keeps talking has no use for a session that
-    // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
-    if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
-    const completed = warmupCompletions(registry, key);
-    if (completed < settings.warmup) return { kind: "fallback", reason: "warmup" };
+    const fallback = coldFallback(registry, settings, key);
+    if (fallback) return fallback;
     afterWarmup = settings.warmup > 0;
     const ended = registry.ended.get(key);
     if (ended) reason = ended === "evicted" ? "evicted" : "session_dead";

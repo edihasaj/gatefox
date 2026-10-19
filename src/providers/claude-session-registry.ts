@@ -122,11 +122,10 @@ export function replayPinned(registry: SessionRegistry, key: string, now = Date.
   return typeof held === "number" ? registry.ended.get(key) : held.why;
 }
 
-/** Drops expired entries in insertion order; every completed request moves its entry to the end. */
+/** Drops expired entries; a clock rollback can leave insertion order newer than an older timestamp. */
 function pruneWarmups(registry: SessionRegistry, now: number): void {
   for (const [key, entry] of registry.warmups) {
-    if (now - entry.lastTouched < warmupMs) break;
-    registry.warmups.delete(key);
+    if (now - entry.lastTouched >= warmupMs) registry.warmups.delete(key);
   }
 }
 
