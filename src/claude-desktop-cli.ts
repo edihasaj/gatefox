@@ -8,6 +8,7 @@ import { readClientToken } from "./config.js";
 import { applyClaudeDesktopProfile, claudeDesktopPaths, readSelectedClaudeDesktopProfile, writeClaudeDesktopCandidate } from "./claude-desktop-files.js";
 import { buildClaudeDesktopProfile, type ClaudeDesktopCatalog, type ClaudeDesktopGatewaySource } from "./claude-desktop-profile.js";
 import { claudeDesktopServiceStatus, installClaudeDesktopService } from "./claude-desktop-service.js";
+import { startClaudeDesktopInference } from "./claude-desktop-inference.js";
 
 const catalogLimitBytes = 1024 * 1024;
 const help = `gateway claude-desktop — isolated Claude Desktop aliases
@@ -17,6 +18,7 @@ const help = `gateway claude-desktop — isolated Claude Desktop aliases
   gateway claude-desktop serve --config ADAPTER_CONFIG.json
   gateway claude-desktop install --config ADAPTER_CONFIG.json [--home PATH]
   gateway claude-desktop status [--config ADAPTER_CONFIG.json] [--home PATH]
+  gateway claude-desktop inference --gateway-config PATH --native-config PATH
 
 configure reads the selected Claude Desktop Harness Gateway profile and writes a
 candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
@@ -153,6 +155,17 @@ async function serve(configPath: string): Promise<void> {
   process.stderr.write(`Claude Desktop adapter listening on http://127.0.0.1:${started.port}\n`);
 }
 
+async function inference(gatewayConfig: string, nativeConfig: string): Promise<void> {
+  const started = await startClaudeDesktopInference(gatewayConfig, nativeConfig);
+  let closing = false;
+  const close = () => {
+    if (closing) return; closing = true;
+    void started.close().then(() => { process.exitCode = 0; }, () => { process.exitCode = 2; });
+  };
+  process.once("SIGINT", close); process.once("SIGTERM", close);
+  process.stderr.write(`Private Claude Desktop inference listening on http://127.0.0.1:${started.port}\n`);
+}
+
 export async function runClaudeDesktopCommand(argv: string[]): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h") || argv.length === 0) { process.stdout.write(help + "\n"); return; }
   const { values, positionals } = parseArgs({
@@ -160,16 +173,23 @@ export async function runClaudeDesktopCommand(argv: string[]): Promise<void> {
     options: {
       config: { type: "string" }, "gateway-config": { type: "string" }, home: { type: "string" }, port: { type: "string" },
       "primary-claude-provider": { type: "string" }, model: { type: "string" }, apply: { type: "boolean" },
-      "token-file": { type: "string" }, endpoint: { type: "string" },
+      "token-file": { type: "string" }, endpoint: { type: "string" }, "native-config": { type: "string" },
     },
   });
   const [command, ...extra] = positionals;
-  if (extra.length || !["configure", "serve", "install", "status"].includes(command || "")) throw new Error("Choose claude-desktop configure, serve, install, or status");
+  if (extra.length || !["configure", "serve", "install", "status", "inference"].includes(command || "")) throw new Error("Choose claude-desktop configure, serve, install, status, or inference");
   if (command === "configure") {
-    if (values.config) throw new Error("--config is only valid for claude-desktop serve, install, or status");
+    if (values.config || values["native-config"]) throw new Error("--config and --native-config are only valid for their matching Claude Desktop command");
     await configure(values); return;
   }
-  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint].some(value => value !== undefined)) {
+  if (command === "inference") {
+    if ([values.config, values.home, values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint].some(value => value !== undefined)) {
+      throw new Error("Inference accepts only --gateway-config and --native-config");
+    }
+    await inference(requireAbsolute(values["gateway-config"], "--gateway-config"), requireAbsolute(values["native-config"], "--native-config"));
+    return;
+  }
+  if ([values["gateway-config"], values.port, values["primary-claude-provider"], values.model, values.apply, values["token-file"], values.endpoint, values["native-config"]].some(value => value !== undefined)) {
     throw new Error("Configure options are only valid for claude-desktop configure");
   }
   if (command === "serve") {

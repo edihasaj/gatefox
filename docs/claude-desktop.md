@@ -122,6 +122,86 @@ values, existing nullability, and explicit non-null choices are preserved.
 Reference and composition subtrees remain unchanged. This conversion is scoped
 to the Claude client and does not alter the existing Codex request path.
 
+## Native Auto review
+
+Auto mode uses a second model to review proposed actions before the client
+executes them. The initial trial's review failed before inference: its disabled
+thinking and stop-sequence controls were unsupported by the subscription
+Messages translation. That failure was not a safety verdict.
+
+An opt-in private inference entry point can serve native auxiliary reviews
+through a restricted, one-turn Claude CLI process:
+
+```sh
+gateway claude-desktop inference \
+  --gateway-config /absolute/claude-gateway.json \
+  --native-config /absolute/claude-native.json
+```
+
+Example native configuration:
+
+```json
+{
+  "command": "/absolute/path/to/claude",
+  "models": {
+    "claude/claude-sonnet-5": "claude-sonnet-5"
+  },
+  "timeoutMs": 60000,
+  "maxConcurrent": 2,
+  "maxRequestBytes": 262144,
+  "contextProviders": ["qwen"]
+}
+```
+
+Every native alias must belong to the same `claude-subscription` provider and
+native model in the gateway configuration. An optional `authDirectory` must
+match that provider. Use the existing signed-in CLI executable; `--bare` cannot
+use its OAuth or keychain login.
+
+The listener keeps the private gateway's configured loopback port and serves
+ordinary requests through the original gateway on an ephemeral loopback port.
+Only explicitly configured, tool-free, nonstreaming Claude requests matching
+the observed native classifier control profiles use this transport. The native
+client normally omits request-class hints behind a custom endpoint; an absent
+hint is accepted, while an explicit conflicting hint stays on the ordinary
+backend. Original system, messages, and generation controls are preserved, and
+the native classifier protocol metadata is supplied to the Claude endpoint.
+No tool executes inside this process, and no permission verdict is invented.
+A response is returned only
+after a consistent completed native stream and successful terminal result.
+Refusals, truncation, cancellation, unsupported requests, and native failures
+remain failures.
+
+The native request and child environment are bounded. Current Auto review
+requests can exceed 140 KiB even for a short task. The macOS bound accommodates
+these requests; a platform's smaller environment limit can still refuse one
+before spawning. The adapter never truncates a review transcript to make it fit.
+
+This entry point belongs only to the separate Claude inference service. It
+does not install or restart the shared gateway or register a Codex client.
+
+## Context recovery for compatibility models
+
+An unknown model ID makes Claude assume a 200K context window. This assumption
+can trigger early compaction as well as affect the meter. The current Desktop
+profile supports a 1M capability flag, not arbitrary numeric windows for each
+model. Advertising 1M for a smaller model is not a correction.
+
+Claude Code documents `CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1`
+for unknown aliases. Scoped to a Claude Desktop environment, it permits the
+provider to report its actual overflow and retains reactive and manual
+compaction. It does not correct the meter or provide an exact proactive
+threshold for every model. Do not set `DISABLE_COMPACT` as a substitute.
+The deployed backup clients retain conservative 200K enforcement; this override
+has not been enabled in their live Desktop environments.
+
+The optional `contextProviders` list wraps only named Chat Completions providers
+inside this private service. It preserves the original endpoint, credential,
+and tailnet checks. A bounded, structured vLLM input-overflow error becomes the
+canonical context-overflow code before the unchanged provider adapter reads it.
+An excessive output-token request and unrelated HTTP 400 errors remain their
+original failures.
+
 ## Verified coverage and limits
 
 The initial macOS trial verified the rendered picker, real GPT and Qwen replies,
@@ -130,9 +210,16 @@ subagents, skills, MCP, background agents, resume, and GPT image input. Model
 identity was checked in child transcripts and route records rather than relying
 on the assistant's claim.
 
-- Use **Manual** permissions for compatibility models. The tested Auto
-  permission classifier could not assess an opaque GPT alias and failed closed;
-  the same native subagent task succeeded in Manual mode.
+The October 19 private rollout passed real Auto-mode tasks through all three
+Macs' installed Desktop engines. Each GPT parent delegated a Qwen file reader
+and a second-account GPT writer, with exact output and four successful native
+Sonnet reviews. One earlier Qwen attempt skipped its assigned read and failed
+the validator; the successful retry does not qualify model reliability for
+every task. These are native-engine proofs, not a new rendered GUI check.
+
+- Keep **Manual** permissions on another installation until its native review
+  transport passes a real Auto-mode task. Manual remains a fallback, and the
+  deployed GUI's saved permission choice remains unchanged.
 - Opaque aliases use Claude's generic 200K client context estimate and do not
   expose the native effort picker. The estimate is not the provider's true limit.
 - Native Claude mobile Remote Control excludes custom gateways and proxies.
@@ -142,6 +229,12 @@ on the assistant's claim.
 - Short connectivity proofs do not qualify long-session compaction or every
   possible MCP JSON schema.
 
+Offline native-engine fixtures exercise overflow, reactive compaction, and a
+smaller retry through the actual GPT and Qwen provider adapters. A live Qwen
+overflow also produces the recognized context error through the private
+frontend. These checks do not establish a larger Desktop context meter or
+qualify long-running live compaction.
+
 Run `npm run build`, `npm run check`, and `npm test`. The adapter's loopback
 fixtures also run separately with `npm run test:claude-desktop`. Packaging
-includes both adapter modules; no Python runtime is required.
+includes all three Claude runtime modules; no Python runtime is required.
