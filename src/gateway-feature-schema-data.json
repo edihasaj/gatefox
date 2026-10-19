@@ -6,6 +6,13 @@
     ],
     "nested": {}
   },
+  "async_compaction": {
+    "fields": [
+      "enabled",
+      "model_async_compact_threshold_percent"
+    ],
+    "nested": {}
+  },
   "code_mode": {
     "fields": [
       "default_exec_yield_time_ms",
@@ -57,7 +64,8 @@
       "review_scope",
       "review_threshold",
       "thread_context",
-      "transcript"
+      "transcript",
+      "transcript_mode"
     ],
     "nested": {
       "review_scope": {
@@ -85,6 +93,7 @@
     "fields": [
       "default_wait_timeout_ms",
       "disable_direct_message",
+      "disable_native_tools",
       "enabled",
       "expose_spawn_agent_model_overrides",
       "hide_spawn_agent_metadata",
@@ -95,6 +104,7 @@
       "min_wait_timeout_ms",
       "multi_agent_mode_hint_text",
       "non_code_mode_only",
+      "preserve_fork_prefix",
       "root_agent_usage_hint_text",
       "subagent_developer_instructions",
       "subagent_usage_hint_text",

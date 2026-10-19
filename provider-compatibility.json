@@ -1,13 +1,32 @@
 {
   "schemaVersion": 1,
   "codex": {
-    "version": "0.162.0-alpha.17.2",
-    "revision": "740e5af33c71225640e0c1c1555c514c2c93ab74"
+    "version": "0.163.0",
+    "tag": "rust-v0.163.0",
+    "revision": "83086188ae0614bd882818ff1aa23f3194962012"
   },
   "claude": {
-    "status": "awaiting_stable_validation"
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.303",
+    "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.303.tgz",
+    "integrity": "sha512-vGwsxL/bjxl7crYg2/BLBs75ErQ22x9L3LKqZqwqZ9vwp6A41sVCDdBXsPftM19V5LAwK6/s/sAxIVjX6F4O6Q==",
+    "checks": [
+      "version",
+      "required_flags",
+      "stream_json_control"
+    ],
+    "license": "SEE LICENSE IN README.md"
   },
   "copilot": {
-    "status": "awaiting_stable_validation"
+    "package": "@github/copilot",
+    "version": "1.0.98",
+    "tarball": "https://registry.npmjs.org/@github/copilot/-/copilot-1.0.98.tgz",
+    "integrity": "sha512-zpXwyI8hLUM/0r9DqSRqxemRBIewLrUzTH+5sQXVH7/VKUaC4SbtbG0YHj1gpjH4YDZOvHZAl9taFQa9Kwl+Pg==",
+    "checks": [
+      "version",
+      "required_flags",
+      "rpc_v3"
+    ],
+    "license": "SEE LICENSE IN LICENSE.md"
   }
 }
