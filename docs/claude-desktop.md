@@ -254,6 +254,22 @@ contained no assistant text and were not treated as substantive completions.
 This qualifies that bounded manual workflow, not automatic compaction at a large
 live context window.
 
+Separate live checks on both registered GPT accounts processed about 193K
+provider input tokens with conservative 200K client enforcement. The native
+engine compacted automatically and retained a seeded fact after compaction and
+after a separate resume process. The later prompts did not reinsert the fact.
+These bounded synthetic-text checks do not qualify multi-hour workloads.
+
+A fresh Qwen automatic-compaction check stopped before its large-input phase:
+two HTTP 200/end-turn responses contained no assistant content, followed by an
+empty native success result. Retain that failed sample; it establishes a blank
+reply, not an automatic-compaction failure. An unchanged repeat then passed at
+193,210 provider input tokens, including native automatic compaction and fact
+recall before and after restart, after trimming surrounding whitespace. The repeat does not qualify
+first-attempt reliability. An isolated content-path probe also confirmed that
+all visible upstream answer text reached the native client unchanged; its
+strict comparison failed only because the correct marker had surrounding whitespace.
+
 An isolated native-engine cancellation proof uses the deployed adapter,
 inference frontend, gateway, provider, and context proxy with a controlled HTTP
 upstream. Interrupting before headers and after a content delta closes the
