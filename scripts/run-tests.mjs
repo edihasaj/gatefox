@@ -26,7 +26,7 @@
 // removing none (scripts/real-state-guard.mjs); test processes themselves refuse those roots (src/test-root-guard.ts).
 import { spawn } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
-import { constants, homedir, tmpdir } from "node:os";
+import { availableParallelism, constants, homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { groupGone } from "./group-gone.mjs";
@@ -56,7 +56,9 @@ const realStateLeaks = watchRealState(homedir());
 // How long a stopped suite may take to end before its group gets SIGKILL.
 const killGrace = Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) > 0 ? Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) : 10000;
 const preload = pathToFileURL(join(root, "scripts", "test-preload.mjs")).href;
-const child = spawn(process.execPath, ["--import", preload, "--test", "--test-force-exit", `--test-timeout=${timeout}`, ...files], { cwd: root, stdio: "inherit", detached: grouped,
+// Each fixture file can start several CLI trees; large CPU counts otherwise overwhelm startup and lease deadlines.
+const concurrency = Math.min(8, availableParallelism());
+const child = spawn(process.execPath, ["--import", preload, "--test", `--test-concurrency=${concurrency}`, "--test-force-exit", `--test-timeout=${timeout}`, ...files], { cwd: root, stdio: "inherit", detached: grouped,
   env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, GATEWAY_TEST_TMPDIR: folder } });
 /** Signals the suite's whole process group (the child leads it), or just the child where there are no groups. */
 const send = signal => { try { if (grouped && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already gone. */ } };

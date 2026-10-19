@@ -26,7 +26,9 @@ npm test
 `npm test` runs the suite under a private temporary folder and a private home
 folder (`HOME` is `<folder>/home` and `CODEX_HOME` is `<folder>/home/.codex`,
 overriding an inherited Codex home, so execution hosts keep nothing in
-`~/.local/state/gw-exec`), so the real ones are left as they were. It also
+`~/.local/state/gw-exec`), so the real ones are left as they were. At most eight
+test files run concurrently because each can start several CLI processes.
+It also
 fails a test that hangs (120 s by default for a test with no timeout of its
 own), lets a test file exit once its tests have ended, and stops every test
 process when the run is signalled: the test processes exit on the signal, which
