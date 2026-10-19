@@ -57,7 +57,9 @@ const realStateLeaks = watchRealState(homedir());
 const killGrace = Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) > 0 ? Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) : 10000;
 const preload = pathToFileURL(join(root, "scripts", "test-preload.mjs")).href;
 // Each fixture file can start several CLI trees; large CPU counts otherwise overwhelm startup and lease deadlines.
-const concurrency = Math.min(8, availableParallelism());
+const requestedConcurrency = process.env.GATEWAY_TEST_CONCURRENCY === undefined ? 8 : Number(process.env.GATEWAY_TEST_CONCURRENCY);
+if (!Number.isInteger(requestedConcurrency) || requestedConcurrency < 1 || requestedConcurrency > 8) fail("GATEWAY_TEST_CONCURRENCY must be between 1 and 8.");
+const concurrency = Math.min(requestedConcurrency, availableParallelism());
 const child = spawn(process.execPath, ["--import", preload, "--test", `--test-concurrency=${concurrency}`, "--test-force-exit", `--test-timeout=${timeout}`, ...files], { cwd: root, stdio: "inherit", detached: grouped,
   env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, GATEWAY_TEST_TMPDIR: folder } });
 /** Signals the suite's whole process group (the child leads it), or just the child where there are no groups. */

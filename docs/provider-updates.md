@@ -89,6 +89,9 @@ test diagnostics are not logged because upstream failures can print mock request
 bodies. Failed candidates stay under that directory for inspection. Validation
 uses no subscription inference or copied authentication. Handshakes prove CLI
 interfaces, not model behavior or billing.
+Maintenance limits the source suite to four concurrent fixture files to avoid
+host-load-dependent lease and startup failures. The ordinary runner keeps its
+eight-file cap; `GATEWAY_TEST_CONCURRENCY` can lower it to any value from 1 to 8.
 
 An upstream incompatibility is a blocked update, not permission to weaken
 permissions or remove tests. The job retains the existing pins and retries on the

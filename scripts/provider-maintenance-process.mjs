@@ -7,7 +7,7 @@ export function validationEnvironment(home, extra = {}) {
   return { PATH: process.env.PATH, HOME: home, USERPROFILE: home, TMPDIR: home, TEMP: home, TMP: home,
     LANG: 'en_US.UTF-8', CODEX_HOME: `${home}/.codex`, CLAUDE_CONFIG_DIR: `${home}/.claude`,
     COPILOT_HOME: `${home}/.copilot`, DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1',
-    DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...extra };
+    DISABLE_ERROR_REPORTING: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', GATEWAY_TEST_CONCURRENCY: '4', ...extra };
 }
 
 /** Bound owned process groups; discard diagnostics so upstream errors cannot print request bodies. */
