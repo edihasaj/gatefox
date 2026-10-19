@@ -82,6 +82,29 @@ test("retries a clean reasoning-only empty Messages completion once with exact r
   } finally { await legacyReasoning.close(); }
 });
 
+test("null usage chunks are ignored until a numeric usage snapshot arrives", async () => {
+  const withNullUsage = (content: string): Frame[] => [
+    { model: "qwen-flash", choices: [{ index: 0, delta: { content }, finish_reason: null }], usage: null },
+    { model: "qwen-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: null },
+    usage(4, 2), "[DONE]",
+  ];
+  const visible = await fixture(() => withNullUsage("visible"));
+  const retry = await fixture(attempt => attempt === 1 ? [
+    { model: "qwen-flash", choices: [{ index: 0, delta: { reasoning_content: "private" }, finish_reason: null }], usage: null },
+    { model: "qwen-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: null }, usage(3, 1), "[DONE]",
+  ] : withNullUsage("recovered"));
+  try {
+    const normal = await collect(visible.provider);
+    assert.equal(visible.attempts(), 1); assert.equal(normal.error, undefined);
+    assert.deepEqual((normal.events.at(-1) as Extract<InferenceEvent, { type: "done" }>).usage, { input_tokens: 4, output_tokens: 2, total_tokens: 6 });
+    const result = await collect(retry.provider, undefined, { reasoning: { summary: "none" } });
+    const done = result.events.at(-1) as Extract<InferenceEvent, { type: "done" }>;
+    assert.equal(retry.attempts(), 2); assert.equal(result.error, undefined);
+    assert.deepEqual(done.usage, { input_tokens: 7, output_tokens: 3, total_tokens: 10 });
+    assert.deepEqual(done.clientUsage, { input_tokens: 4, output_tokens: 2, total_tokens: 6 });
+  } finally { await Promise.all([visible.close(), retry.close()]); }
+});
+
 test("allows an auto tool response after an empty completion but never retries twice-empty", async () => {
   const tool = (attempt: number): Frame[] => attempt === 1 ? empty() : [
     terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),

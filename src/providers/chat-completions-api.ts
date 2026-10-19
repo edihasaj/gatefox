@@ -192,8 +192,8 @@ export class ChatCompletionsAPI implements Provider {
           return { empty: false, usage, durationMs: Date.now() - started, calls, capped };
         }
         if (event.model !== undefined && event.model !== request.model) throw new ProviderError("model_route", "Chat API returned a different model", 502);
-        if (strictEmpty && event.usage !== undefined && (!event.usage || typeof event.usage !== "object" || Array.isArray(event.usage))) throw incomplete("Chat API returned invalid usage");
-        const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined;
+        if (strictEmpty && event.usage != null && (typeof event.usage !== "object" || Array.isArray(event.usage))) throw incomplete("Chat API returned invalid usage");
+        const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null | undefined;
         if (wireUsage) {
           if (strictEmpty && [wireUsage.prompt_tokens, wireUsage.completion_tokens, wireUsage.total_tokens].some(value => value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) {
             throw incomplete("Chat API returned invalid usage");
