@@ -14,6 +14,8 @@ export interface FixtureReply {
   slow?: boolean;
   /** Streams a gateway tool_use block until interrupted. */
   slowTool?: string;
+  /** Exits after consuming this reply, before the request yields `done`. */
+  fail?: boolean;
   /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
 }
@@ -117,6 +119,7 @@ async function fixtureMain(): Promise<void> {
   };
   const play = async (reply: Json): Promise<void> => {
     const id = `msg_${process.pid}_${++counter}`;
+    if (reply.fail) process.exit(4);
     event({ type: "message_start", message: { id, usage: usage(1) } });
     if (reply.slowTool) {
       event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_slow", name: `mcp__gateway__${names.get(reply.slowTool)}`, input: {} } });

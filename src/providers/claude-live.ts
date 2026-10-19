@@ -6,7 +6,7 @@ import { choiceBlock } from "./claude-render.js";
 import { decide, ledgerEntries, type LedgerDecision, type LedgerPhase } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
-import { closeSessions, evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry, slotsTaken, type SessionRegistry } from "./claude-session-registry.js";
+import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
 import { sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
 import { systemPrefixOnly } from "./claude-usage.js";
 
@@ -21,7 +21,7 @@ type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected";
  * A request's own provider settings. The cap counts every live session in the process, so a
  * provider with a lower cap may evict another provider's idle sessions; park time is per session.
  */
-type Settings = { max: number; parkMinutes: number };
+type Settings = { max: number; parkMinutes: number; warmup: number };
 type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
@@ -45,12 +45,13 @@ const heldReason = (why: string | undefined): ClaudeMissReason =>
 // Session files of a gateway process that died without closing its sessions are removed once per process.
 let swept: Promise<void> | undefined;
 
-export function claudeLive(settings: Settings) {
-  const registry = sessionRegistry(); const limits = { max: settings.max, parkMinutes: settings.parkMinutes };
+export function claudeLive(settings: Omit<Settings, "warmup"> & { warmup?: number }) {
+  const registry = sessionRegistry(); const limits: Settings = { max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup ?? 1 };
   return {
     attach: (input: ClaudeLiveInput, signal: AbortSignal) => attach(registry, limits, input, signal),
+    complete: (scope: string, threadId: string) => recordWarmupCompletion(registry, sessionKey(scope, threadId)),
     /** Closes every session at once and forgets how earlier ones ended (tests; shutdown uses the registry hook). */
-    stop: async () => { await closeSessions(registry, "stopped", true); registry.ended.clear(); registry.replayUntil.clear(); registry.scopes.clear(); },
+    stop: async () => { await closeSessions(registry, "stopped", true); registry.ended.clear(); registry.replayUntil.clear(); registry.warmups.clear(); registry.scopes.clear(); },
     sessions: (): ClaudeSession[] => [...registry.sessions.values()],
   };
 }
@@ -71,7 +72,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   const { entries, messages } = ledgerEntries(input.request, input.tools, input.leading);
   const fingerprint = sha(JSON.stringify({ model: input.model, thinking: input.effort !== undefined, fast: input.fast, instructions: input.instructionsDigest, tools: input.toolsDigest }));
   const window = input.windowId ?? "";
-  let reason: ReseedReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined;
+  let reason: ReseedReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined; let afterWarmup = false;
   if (session && session.state !== "closed") {
     parkedMs = Date.now() - session.lastUse;
     const decision = decide(session.ledger, entries, messages, session.state as LedgerPhase, session.pending);
@@ -103,6 +104,9 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     // Asking again starts the hour over: a thread that keeps talking has no use for a session that
     // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
     if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
+    const completed = warmupCompletions(registry, key);
+    if (completed < settings.warmup) return { kind: "fallback", reason: "warmup" };
+    afterWarmup = settings.warmup > 0;
     const ended = registry.ended.get(key);
     if (ended) reason = ended === "evicted" ? "evicted" : "session_dead";
   }
@@ -136,6 +140,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   registry.scopes.set(key, input.scope);
   return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
+    afterWarmup: plan.kind === "seed" && !reason && afterWarmup || undefined,
   }) };
 }
 

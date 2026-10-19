@@ -8,8 +8,8 @@ const event = (name: string, fields: Record<string, string | number | boolean | 
 
 test("the telemetry field filter keeps the Claude session identifiers", () => {
   // Ids and numbers only: a thread's hashed key prefix and a boolean, never a body, token or name.
-  const fields = telemetryFields({ event: "claude_session", threadKey: "ab12cd34", systemPrefixOnly: true, cacheReadTokens: 32035, liveSessions: 2 });
-  assert.deepEqual(fields, { event: "claude_session", threadKey: "ab12cd34", systemPrefixOnly: true, cacheReadTokens: 32035, liveSessions: 2 });
+  const fields = telemetryFields({ event: "claude_session", threadKey: "ab12cd34", missReason: "warmup", systemPrefixOnly: true, afterWarmup: true, cacheReadTokens: 32035, liveSessions: 2 });
+  assert.deepEqual(fields, { event: "claude_session", threadKey: "ab12cd34", missReason: "warmup", systemPrefixOnly: true, afterWarmup: true, cacheReadTokens: 32035, liveSessions: 2 });
 });
 
 test("diagnostics summarize live Claude sessions by outcome and miss reason, with cache tokens", () => {

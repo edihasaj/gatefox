@@ -20,7 +20,7 @@ const user = (text: string): ResponsesInputItem => ({ type: "message", role: "us
 const said = (text: string): ResponsesInputItem => ({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
 const providerId = `claude-b4-${process.pid}`;
 const keyOf = (threadId: string) => createHash("sha256").update(`${providerId}\0\0${threadId}`).digest("hex");
-const adapter = (sessions: Record<string, unknown>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "replay", ...sessions } });
+const adapter = (sessions: Record<string, unknown>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "replay", warmup: 0, ...sessions } });
 const thread = (id: string): InferenceContext => ({ threadId: id });
 
 async function turn(provider: ClaudeSubscription, input: ResponsesInputItem[], context: InferenceContext): Promise<string> {
@@ -217,7 +217,7 @@ test("a returning thread costs live sessions no more cache than replay would hav
 
 test("switching a provider to replay closes its parked sessions at once and leaves other providers' alone", async () => {
   const { f, livePids, since } = await setup({ replies: [{ text: "a" }, { text: "b" }, { text: "c" }] });
-  const other = (mode: string) => new ClaudeSubscription({ id: `${providerId}-other`, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: mode as "live" | "replay" } });
+  const other = (mode: string) => new ClaudeSubscription({ id: `${providerId}-other`, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: mode as "live" | "replay", warmup: 0 } });
   try {
     await turn(adapter({ mode: "live", max: 4 }), [user("mine")], thread("m1"));
     await turn(other("live"), [user("theirs")], thread("o1"));
