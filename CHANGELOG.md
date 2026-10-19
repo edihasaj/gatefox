@@ -9,6 +9,13 @@ so scoped reactive compaction can recover beyond the unknown-model estimate.
 The private rollout passed native Auto review and mixed-model subagent tasks
 on three Macs. Thanks to @edihasaj for the acceptance testing.
 
+Claude's private frontend now refuses to start backend work when a client
+disconnects during asynchronous classifier selection. A regression reproduces
+the abandoned request before the fix and verifies the listener stays available
+after cancellation. Native cancellation and bounded live Qwen manual compaction
+also passed their dedicated checks. A rendered Desktop Auto task passed with
+the default Fable parent, Qwen reader, and second-account GPT writer.
+
 ## 0.5.4 — 2026-10-19
 
 Claude Desktop can use an opt-in model catalog with real account labels for

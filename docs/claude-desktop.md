@@ -179,6 +179,10 @@ before spawning. The adapter never truncates a review transcript to make it fit.
 
 This entry point belongs only to the separate Claude inference service. It
 does not install or restart the shared gateway or register a Codex client.
+Client cancellation also remains effective while asynchronous classifier
+selection is pending: a closed request cannot start fresh backend work when
+selection finishes. Ordinary streaming cancellation closes the owned upstream
+connection and releases the private request counters.
 
 ## Context recovery for compatibility models
 
@@ -215,7 +219,15 @@ Macs' installed Desktop engines. Each GPT parent delegated a Qwen file reader
 and a second-account GPT writer, with exact output and four successful native
 Sonnet reviews. One earlier Qwen attempt skipped its assigned read and failed
 the validator; the successful retry does not qualify model reliability for
-every task. These are native-engine proofs, not a new rendered GUI check.
+every task. These checks used the native engine.
+
+A separate rendered Desktop task on macbook-server also passed in Auto mode:
+the default Fable parent delegated only to the assigned Qwen reader and
+second-account GPT writer. Retained child transcripts confirm their models,
+tools, and file paths, and the output matches the source byte for byte.
+No session permission override was added. This GUI task used the native-review
+runtime before the subsequent cancellation-only fix; the fixed package passed
+its own complete native cancellation chain and a live Fable request.
 
 - Keep **Manual** permissions on another installation until its native review
   transport passes a real Auto-mode task. Manual remains a fallback, and the
@@ -234,6 +246,20 @@ smaller retry through the actual GPT and Qwen provider adapters. A live Qwen
 overflow also produces the recognized context error through the private
 frontend. These checks do not establish a larger Desktop context meter or
 qualify long-running live compaction.
+
+A bounded live Qwen manual-compaction task also passed: the native engine emitted
+a real compact boundary and retained a seeded fact before and after a separate
+resume process. The manual phase took about 63 seconds. Its initial seed replies
+contained no assistant text and were not treated as substantive completions.
+This qualifies that bounded manual workflow, not automatic compaction at a large
+live context window.
+
+An isolated native-engine cancellation proof uses the deployed adapter,
+inference frontend, gateway, provider, and context proxy with a controlled HTTP
+upstream. Interrupting before headers and after a content delta closes the
+upstream socket before fixture cleanup, returns all owned components to idle,
+and permits a subsequent native request. This does not inspect remote providers'
+internal generation jobs.
 
 Run `npm run build`, `npm run check`, and `npm test`. The adapter's loopback
 fixtures also run separately with `npm run test:claude-desktop`. Packaging

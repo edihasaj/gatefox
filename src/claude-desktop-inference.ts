@@ -213,6 +213,10 @@ function endToEndHeaders(headers: IncomingHttpHeaders): Record<string, string | 
   return stripped;
 }
 
+function requestStopped(request: IncomingMessage, response: ServerResponse, signal: AbortSignal, stopping: () => boolean): boolean {
+  return stopping() || signal.aborted || request.aborted || response.destroyed || response.writableEnded;
+}
+
 function waitForDrain(response: ServerResponse, signal: AbortSignal): Promise<void> {
   if (!response.writableNeedDrain) return Promise.resolve();
   return new Promise((resolveResult, reject) => {
@@ -227,8 +231,11 @@ function waitForDrain(response: ServerResponse, signal: AbortSignal): Promise<vo
 }
 
 async function proxy(request: IncomingMessage, response: ServerResponse, body: Buffer, backendPort: number, signal: AbortSignal,
+  stopping: () => boolean,
   transform?: (status: number, headers: Record<string, string | string[] | undefined>, body: Buffer) => { status: number; headers: Record<string, string | string[] | undefined>; body: Buffer }): Promise<void> {
+  if (requestStopped(request, response, signal, stopping)) return;
   await new Promise<void>((resolveResult, reject) => {
+    if (requestStopped(request, response, signal, stopping)) { resolveResult(); return; }
     let settled = false;
     const finish = (error?: Error) => {
       if (settled) return; settled = true; signal.removeEventListener("abort", abort);
@@ -333,6 +340,7 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
         const directHeaders = nativeHeaders(request);
         const possibleCandidate = directHeaders ? nativeCandidate(parsed, routes) : undefined;
         const candidate = possibleCandidate && await classifierRequest({ ...possibleCandidate.payload, model: possibleCandidate.route.nativeModel }) ? possibleCandidate : undefined;
+        if (requestStopped(request, response, controller.signal, () => stopping)) return;
         if (candidate) {
           const limit = candidate.route.config.maxRequestBytes ?? defaultNativeRequestLimit;
           if (wire.length > limit) { writeError(response, path, 413, "request_too_large", "Native Claude request exceeds the configured size"); return; }
@@ -361,7 +369,7 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
           return;
         }
         const health = request.method === "GET" && path === "/health";
-        await proxy(request, response, wire, backendPort, controller.signal, health ? (status, headers, reply) => {
+        await proxy(request, response, wire, backendPort, controller.signal, () => stopping, health ? (status, headers, reply) => {
           let body = reply;
           try {
             const parsed = JSON.parse(reply.toString("utf8"));
