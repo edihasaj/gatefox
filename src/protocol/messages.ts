@@ -84,7 +84,7 @@ export class MessagesWriter {
     if (event.interrupted) throw new Error("Interrupted inference cannot complete a Messages response");
     if (event.stopReason === "max_tokens" && this.ids.size) throw new Error("Provider reached its output limit while returning tools");
     if (event.endTurn === false && !this.ids.size && event.stopReason !== "max_tokens") throw new Error("Provider continued without a tool or output limit");
-    this.closeText(); this.usage = event.usage;
+    this.closeText(); this.usage = event.clientUsage ?? event.usage;
     this.stopReason = event.stopReason === "max_tokens" ? "max_tokens" : event.stopReason === "stop_sequence" ? "stop_sequence" : this.ids.size ? "tool_use" : "end_turn";
     this.stopSequence = this.stopReason === "stop_sequence" && typeof event.stopSequence === "string" ? event.stopSequence : null;
     this.status = "completed";

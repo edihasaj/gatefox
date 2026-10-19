@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Claude's private inference service can recover a clean, empty Qwen completion
+with one identical request to the same model. A second empty reply becomes an
+explicit failure. Retry spend remains in the ledger while Claude receives the
+final attempt's context usage. The policy requires explicit private opt-in.
+Thanks to @edihasaj for reporting the blank replies.
+
 Both registered GPT accounts passed native automatic compaction at about 193K
 input tokens, including exact fact recall after a separate resume. A fresh Qwen
 check stopped on empty initial replies before reaching its large-input phase;
