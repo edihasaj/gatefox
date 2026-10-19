@@ -2,10 +2,12 @@ import { request as httpRequest, createServer, type IncomingHttpHeaders, type In
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { gatewayToken, loadConfig, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
-import { startClaudeContextProxy, type ClaudeContextProxy } from "./claude-desktop-context-proxy.js";
+import { startClaudeContextProxy, type ClaudeContextProxy, type ClaudeContextProxyDeps } from "./claude-desktop-context-proxy.js";
+import { loadQwenTokenizer } from "./claude-desktop-tokenizer.js";
+import type { NoToolsOutputRecovery } from "./claude-desktop-no-tools.js";
 import { anthropicError } from "./protocol/messages.js";
 import { createProvider, maxRequestBytes, startGateway, type GatewayServer } from "./server.js";
-import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
+import { ChatCompletionsAPI, type ChatCompletionRecoveryPolicy } from "./providers/chat-completions-api.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
 import { telemetry } from "./telemetry.js";
 import { requestPath } from "./server-upgrade.js";
@@ -24,6 +26,7 @@ export interface ClaudeDesktopNativeConfig {
   maxConcurrent?: number;
   contextProviders?: string[];
   emptyCompletionRecoveryProviders?: string[];
+  noToolsOutputRecoveryProviders?: Record<string, string>;
 }
 
 export interface NativeMessagesOptions {
@@ -43,7 +46,7 @@ export interface ClaudeDesktopInferenceDeps {
   backendFactory?: (config: GatewayConfig) => Promise<GatewayServer>;
   nativeRunner?: NativeMessagesRunner;
   nativeClassifierRequest?: NativeClassifierRequest;
-  contextProxyFactory?: (provider: ProviderConfig) => Promise<ClaudeContextProxy>;
+  contextProxyFactory?: (provider: ProviderConfig, deps?: ClaudeContextProxyDeps) => Promise<ClaudeContextProxy>;
   tokenReader?: (stateDirectory: string) => Promise<string>;
 }
 
@@ -86,7 +89,7 @@ async function readBody(request: IncomingMessage, limit: number): Promise<Buffer
 }
 
 function parseNativeConfig(value: unknown): ClaudeDesktopNativeConfig {
-  if (!isRecord(value) || Object.keys(value).some(key => !["command", "authDirectory", "models", "timeoutMs", "maxRequestBytes", "maxConcurrent", "contextProviders", "emptyCompletionRecoveryProviders"].includes(key))) {
+  if (!isRecord(value) || Object.keys(value).some(key => !["command", "authDirectory", "models", "timeoutMs", "maxRequestBytes", "maxConcurrent", "contextProviders", "emptyCompletionRecoveryProviders", "noToolsOutputRecoveryProviders"].includes(key))) {
     throw new Error("Native Claude configuration is invalid");
   }
   if (typeof value.command !== "string" || !isAbsolute(value.command)) throw new Error("Native Claude command must be an absolute path");
@@ -99,6 +102,7 @@ function parseNativeConfig(value: unknown): ClaudeDesktopNativeConfig {
   const maxConcurrent = value.maxConcurrent;
   const contextProviders = value.contextProviders;
   const emptyCompletionRecoveryProviders = value.emptyCompletionRecoveryProviders;
+  const noToolsOutputRecoveryProviders = value.noToolsOutputRecoveryProviders;
   if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1000 || timeoutMs > 600000)) throw new Error("Native Claude timeoutMs must be 1000 through 600000");
   if (maxBytes !== undefined && (typeof maxBytes !== "number" || !Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > nativeRequestLimit)) {
     throw new Error("Native Claude maxRequestBytes must be 1 through 262144");
@@ -112,6 +116,9 @@ function parseNativeConfig(value: unknown): ClaudeDesktopNativeConfig {
   if (emptyCompletionRecoveryProviders !== undefined && (!Array.isArray(emptyCompletionRecoveryProviders) || emptyCompletionRecoveryProviders.some(id => typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) || new Set(emptyCompletionRecoveryProviders).size !== emptyCompletionRecoveryProviders.length)) {
     throw new Error("Native Claude emptyCompletionRecoveryProviders must be unique provider IDs");
   }
+  if (noToolsOutputRecoveryProviders !== undefined && (!isRecord(noToolsOutputRecoveryProviders) || Object.entries(noToolsOutputRecoveryProviders).some(([id, path]) => !/^[a-z][a-z0-9_-]*$/.test(id) || typeof path !== "string" || !isAbsolute(path)))) {
+    throw new Error("Native Claude noToolsOutputRecoveryProviders must map provider IDs to absolute tokenizer assets");
+  }
   return {
     command: resolve(value.command), ...(value.authDirectory === undefined ? {} : { authDirectory: resolve(value.authDirectory) }),
     models: Object.fromEntries(Object.entries(value.models) as Array<[string, string]>),
@@ -120,6 +127,7 @@ function parseNativeConfig(value: unknown): ClaudeDesktopNativeConfig {
     ...(maxConcurrent === undefined ? {} : { maxConcurrent }),
     ...(contextProviders === undefined ? {} : { contextProviders }),
     ...(emptyCompletionRecoveryProviders === undefined ? {} : { emptyCompletionRecoveryProviders }),
+    ...(noToolsOutputRecoveryProviders === undefined ? {} : { noToolsOutputRecoveryProviders: Object.fromEntries(Object.entries(noToolsOutputRecoveryProviders) as Array<[string, string]>) }),
   };
 }
 
@@ -156,14 +164,35 @@ function recoveryProviders(source: GatewayConfig, ids: string[] | undefined): Ma
   return result;
 }
 
+async function noToolsRecoveryProviders(source: GatewayConfig, native: ClaudeDesktopNativeConfig): Promise<Map<string, NoToolsOutputRecovery>> {
+  const result = new Map<string, NoToolsOutputRecovery>();
+  for (const [id, asset] of Object.entries(native.noToolsOutputRecoveryProviders || {})) {
+    const provider = source.providers.find(entry => entry.id === id);
+    const models = provider?.type === "chat-completions-api" ? [...new Set(Object.values(provider.models))] : [];
+    if (!provider || provider.type !== "chat-completions-api" || !native.contextProviders?.includes(id) || !native.emptyCompletionRecoveryProviders?.includes(id) || models.length !== 1) {
+      throw new Error("Native Claude noToolsOutputRecoveryProviders must name an opted-in context and empty-completion Chat provider");
+    }
+    const codec = await loadQwenTokenizer(asset);
+    if (codec.model !== models[0]) throw new Error("Native Claude no-tools tokenizer model does not match the configured provider");
+    result.set(id, {
+      model: codec.model, codec,
+      onRestored: event => telemetry("claude_no_tools_output_restored", {
+        provider: id, model: codec.model, outputTokens: event.outputTokens, recoveredBytes: event.recoveredBytes,
+      }),
+    });
+  }
+  return result;
+}
+
 async function contextProxyProviders(source: GatewayConfig, ids: string[] | undefined,
-  factory: (provider: ProviderConfig) => Promise<ClaudeContextProxy>): Promise<ClaudeContextProxy[]> {
+  factory: (provider: ProviderConfig, deps?: ClaudeContextProxyDeps) => Promise<ClaudeContextProxy>,
+  noTools: ReadonlyMap<string, NoToolsOutputRecovery>): Promise<ClaudeContextProxy[]> {
   const proxies: ClaudeContextProxy[] = [];
   try {
     for (const id of ids || []) {
       const provider = source.providers.find(entry => entry.id === id);
       if (!provider || provider.type !== "chat-completions-api") throw new Error("Native Claude contextProviders must name configured Chat Completions providers");
-      proxies.push(await factory(provider));
+      proxies.push(await factory(provider, noTools.has(id) ? { noToolsOutputRecovery: noTools.get(id) } : undefined));
     }
     return proxies;
   } catch (error) {
@@ -315,8 +344,10 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
   const native = await loadNativeConfig(nativeConfigPath);
   const routes = nativeRoutes(source, native);
   const recovery = recoveryProviders(source, native.emptyCompletionRecoveryProviders);
-  const contextProxies = await contextProxyProviders(source, native.contextProviders, deps.contextProxyFactory ?? startClaudeContextProxy);
+  const noTools = await noToolsRecoveryProviders(source, native);
+  const contextProxies = await contextProxyProviders(source, native.contextProviders, deps.contextProxyFactory ?? startClaudeContextProxy, noTools);
   const contextById = new Map(contextProxies.map(proxy => [proxy.provider.id, proxy.provider]));
+  const noToolsBases = new Map(contextProxies.flatMap(proxy => proxy.noToolsBaseUrl ? [[proxy.provider.id, proxy.noToolsBaseUrl] as const] : []));
   let backend: GatewayServer | undefined;
   let front: Server | undefined;
   let drainFrontWork: (() => Promise<void>) | undefined;
@@ -329,11 +360,21 @@ export async function startClaudeDesktopInference(gatewayConfigPath: string, nat
   try {
     const factory = (provider: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void) => {
       const models = recovery.get(provider.id);
-      return models ? new ChatCompletionsAPI(provider, undefined, {
+      const policy: ChatCompletionRecoveryPolicy | undefined = models ? {
         models,
         onRecovery: event => telemetry("chat_empty_completion_recovery", { provider: provider.id, model: event.model, attempt: event.attempt, outcome: event.outcome, durationMs: event.durationMs,
           inputTokens: event.usage.input_tokens, outputTokens: event.usage.output_tokens }),
-      }) : createProvider(provider, onUsage, onContextWindow);
+      } : undefined;
+      if (!policy) return createProvider(provider, onUsage, onContextWindow);
+      const regular = new ChatCompletionsAPI(provider, undefined, policy);
+      const noToolsBaseUrl = noToolsBases.get(provider.id);
+      if (!noToolsBaseUrl) return regular;
+      const scoped = new ChatCompletionsAPI({ ...provider, baseUrl: noToolsBaseUrl }, undefined, policy);
+      return {
+        async *infer(request: Parameters<ChatCompletionsAPI["infer"]>[0], signal: Parameters<ChatCompletionsAPI["infer"]>[1], context: NonNullable<Parameters<ChatCompletionsAPI["infer"]>[2]> = {}) {
+          yield* (context.clientProtocol === "messages" ? scoped : regular).infer(request, signal, context);
+        },
+      };
     };
     backend = await (deps.backendFactory ?? (config => startGateway(config, factory)))({
       ...source, port: 0, providers: source.providers.map(provider => contextById.get(provider.id) ?? provider),
