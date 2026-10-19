@@ -59,6 +59,63 @@ test("Responses stream rate, quota, and authentication failures stay distinct", 
   }
 });
 
+test("stream quota classes in code or type stop retries across error envelopes", () => {
+  const classes = ["insufficient_quota", "usage_limit_reached", "credit_balance_exhausted", "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded", "billing_hard_limit_reached", "billing_not_active", "billing_error"];
+  for (const name of classes) {
+    for (const field of ["code", "type"]) {
+      const detail = { [field]: name, message: privateMessage };
+      const events = [
+        { type: "response.failed", response: { error: detail } },
+        { type: "response.incomplete", response: { error: detail } },
+        { type: "error", error: detail },
+        ...(field === "code" ? [{ type: "error", ...detail }] : []),
+      ];
+      for (const event of events) {
+        const error = responsesStreamError(event, "req_quota_fixture");
+        assert.equal(error.code, name === "usage_limit_reached" ? "usage_limit" : "insufficient_quota");
+        assert.equal(error.status, 429);
+        assert.equal(error.message, name === "usage_limit_reached" ? "Provider usage limit reached" : "Provider credits or quota are exhausted");
+        assert.equal(streamFailureCode(error), "invalid_prompt");
+        assert.deepEqual(error.upstream, { code: name, event: event.type, requestId: "req_quota_fixture" });
+        assert.ok(!JSON.stringify(error).includes(privateMessage));
+      }
+    }
+    const incomplete = responsesStreamError({ type: "response.incomplete", response: { incomplete_details: { reason: name } } });
+    assert.equal(incomplete.status, 429); assert.equal(streamFailureCode(incomplete), "invalid_prompt");
+  }
+});
+
+test("a named stream quota wins over throttles, while transient rate limits stay retryable", () => {
+  for (const detail of [
+    { code: "rate_limit_exceeded", type: "insufficient_quota" },
+    { code: "insufficient_quota", type: "rate_limit_error" },
+    { code: privateMessage, type: "credit_balance_exhausted" },
+  ]) {
+    const error = responsesStreamError({ type: "error", error: { ...detail, message: privateMessage } });
+    assert.equal(error.code, "insufficient_quota"); assert.equal(streamFailureCode(error), "invalid_prompt");
+    assert.ok(!JSON.stringify(error).includes(privateMessage));
+  }
+  for (const name of ["rate_limit_exceeded", "slow_down", "rate_limit_error", "too_many_requests", "limit_requests", "limit_burst_rate"]) {
+    for (const field of ["code", "type"]) {
+      const error = responsesStreamError({ type: "error", error: { [field]: name, message: privateMessage } });
+      assert.equal(error.code, "rate_limit_exceeded"); assert.equal(streamFailureCode(error), "rate_limit_exceeded");
+    }
+  }
+  const plan = responsesStreamError({ type: "error", error: { type: "usage_not_included", message: privateMessage } });
+  assert.equal(plan.code, "upstream_rejected"); assert.equal(streamFailureCode(plan), "usage_not_included");
+});
+
+test("unknown error types and private quota prose do not establish exhausted credits", () => {
+  for (const error of [{ type: privateMessage }, { message: "insufficient_quota" }, { code: privateMessage, type: privateMessage }]) {
+    const failure = responsesStreamError({ type: "error", error });
+    assert.equal(failure.code, "inference_failed"); assert.equal(failure.upstream?.code, "unknown");
+    assert.equal(failure.message, "Provider inference did not complete");
+    assert.equal(streamFailureCode(failure), "inference_failed");
+    assert.ok(!JSON.stringify(failure).includes(privateMessage));
+  }
+});
+
 test("Unrecognized upstream codes and messages are not passed to gateway clients", async () => {
   const http = await failure(400, { error: { code: privateMessage, message: privateMessage } }); assert.equal(http.code, "upstream_error");
   const stream = await failure(200, { type: "response.failed", response: { error: { code: privateMessage, message: privateMessage } } }); assert.equal(stream.code, "inference_failed");

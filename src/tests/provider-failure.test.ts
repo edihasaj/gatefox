@@ -36,12 +36,12 @@ test("a shutdown abort is a retryable 503 whatever the provider raised", () => {
 
 test("stream failures that would repeat go to Codex as one of its final codes", () => {
   const wire = (code: string, upstream?: ConstructorParameters<typeof ProviderError>[3]) => streamFailureCode(new ProviderError(code, "private", 400, upstream));
-  for (const code of ["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit"]) assert.equal(wire(code), "invalid_prompt", code);
+  for (const code of ["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota"]) assert.equal(wire(code), "invalid_prompt", code);
   for (const code of ["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]) assert.equal(wire("upstream_rejected", { code, httpStatus: 400 }), code, code);
   for (const upstream of [undefined, { code: "invalid_encrypted_content" }, { code: "content_filter" }, { code: "private data" }]) assert.equal(wire("upstream_rejected", upstream), "invalid_prompt");
   for (const httpStatus of [400, 404, 413, 422]) assert.equal(wire("upstream_error", { httpStatus }), "invalid_prompt", String(httpStatus));
   for (const upstream of [undefined, { httpStatus: 409 }, { httpStatus: 429 }, { httpStatus: 500 }, { code: "invalid_prompt" }]) assert.equal(wire("upstream_error", upstream), "upstream_error");
-  for (const code of ["upstream_unavailable", "timeout", "cancelled", "busy", "rate_limit_exceeded", "insufficient_quota", "context_length_exceeded", "inference_failed", "incomplete", "provider_failed", "invalid_tool_call"]) {
+  for (const code of ["upstream_unavailable", "timeout", "cancelled", "busy", "rate_limit_exceeded", "context_length_exceeded", "inference_failed", "incomplete", "provider_failed", "invalid_tool_call"]) {
     assert.equal(wire(code, { code: "cyber_policy", httpStatus: 400 }), code, `${code} keeps its own retry behavior`);
   }
   let reads = 0; const hostile = { httpStatus: 400 }; Object.defineProperty(hostile, "code", { get() { reads++; throw new Error("private data"); } });
@@ -100,7 +100,7 @@ test("EOF diagnostics retain only terminal metadata, bounded counts and public r
 });
 
 test("known API codes and typed invalid output remain diagnostic enums", () => {
-  for (const code of ["rate_limit_exceeded", "slow_down", "insufficient_quota", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded"]) {
+  for (const code of ["rate_limit_exceeded", "slow_down", "insufficient_quota", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "usage_limit_reached", "billing_hard_limit_reached", "billing_not_active", "billing_error"]) {
     const record = providerFailureDiagnostic({ requestId: "invalid", durationMs: 1, failure: new ProviderError("invalid_output", "private body", 502, { code, event: "response.failed" }) });
     assert.equal(record.code, "invalid_output"); assert.equal(record.upstreamCode, code); assert.ok(!JSON.stringify(record).includes("private body"));
   }

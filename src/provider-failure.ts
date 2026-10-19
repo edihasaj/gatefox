@@ -21,6 +21,7 @@ const upstreamCodes = new Set([
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",
   "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing",
   "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
+  "usage_limit_reached", "billing_hard_limit_reached", "billing_not_active",
 ]);
 const streamEvents = new Set([
   "response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
@@ -55,7 +56,7 @@ function networkFailure(error: unknown): boolean {
 // Codex retries a failed stream up to five times unless its code is one Codex treats
 // as final. These failures repeat identically, so the stream reports such a code and
 // the turn stops at once instead of re-running inference.
-const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit"]);
+const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota"]);
 const finalUpstreamCodes = new Set(["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]);
 const rejectedStatuses = new Set([400, 404, 413, 422]);
 /** The error code a failed stream sends to Codex. */

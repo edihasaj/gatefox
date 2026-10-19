@@ -202,13 +202,19 @@ Codex ends a failed turn without a final answer and does not save the error in
 the chat transcript, so a client that reconnects later sees only the ended turn.
 Claude failures without a native error code record the CLI's allowlisted result
 subtype, such as `error_max_turns`.
-A usage limit is final: Codex receives it as `invalid_prompt` and stops instead of
-retrying five times (verified: one upstream request instead of six). An HTTP 429
+A usage limit or exhausted credit balance is final: Codex receives it as
+`invalid_prompt` and stops instead of retrying five times (verified: one upstream
+request instead of six). An HTTP 429
 throttle, as defined above, stays retryable on every HTTP route, including the
 Anthropic API and Chat Completions servers, so per-minute API limits still clear
 by themselves. A Claude rate limit without a
 rejected `rate_limit_event`, and a Copilot error that names a rate limit without
 usage-limit or quota wording, are retryable throttles too.
+Responses streams recognize explicit usage, credit, quota, and billing classes
+in either the upstream error's `code` or `type`. A named quota takes precedence
+over a temporary rate-limit class. Exhausted credits report
+"Provider credits or quota are exhausted"; a subscription usage limit reports
+"Provider usage limit reached". Private upstream error prose is never shown.
 Upstream rejections that would repeat identically (`invalid_prompt`,
 `invalid_encrypted_content`, `cyber_policy`, `bio_policy`,
 `misalignment_policy_violation`, `usage_not_included`), from a stream or an HTTP
