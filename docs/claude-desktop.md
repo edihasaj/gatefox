@@ -149,7 +149,8 @@ Example native configuration:
   "timeoutMs": 60000,
   "maxConcurrent": 2,
   "maxRequestBytes": 262144,
-  "contextProviders": ["qwen"]
+  "contextProviders": ["qwen"],
+  "emptyCompletionRecoveryProviders": ["qwen"]
 }
 ```
 
@@ -205,6 +206,34 @@ and tailnet checks. A bounded, structured vLLM input-overflow error becomes the
 canonical context-overflow code before the unchanged provider adapter reads it.
 An excessive output-token request and unrelated HTTP 400 errors remain their
 original failures.
+
+## Empty completion recovery
+
+The private inference configuration can opt selected Chat Completions providers
+into `emptyCompletionRecoveryProviders`. The entire list must name configured
+Chat Completions providers. The shared gateway factory and Responses ingress
+retain their existing behavior.
+
+For an opted-in Messages request, a clean upstream completion with no answer
+text or tool fragments can trigger one additional request. Reasoning alone
+does not count as an answer. Recovery requires the exact configured upstream
+model, a normal stop, one completion marker, and clean stream closure within
+five seconds. Whitespace counts as visible text. Refusals, filtering, unknown
+semantic output, malformed streams, partial output, output limits, required or
+named tools, and nonempty stop-sequence lists are not eligible.
+
+The retry preserves the same provider, account, model, serialized request,
+credentials, and generation controls. It has a separate 90-second deadline;
+the first request retains its existing caller timeout. A second empty
+completion returns an explicit incomplete-response error. This bounds recovery
+per gateway inference; Claude can independently retry a failed inference.
+The gateway never substitutes reasoning text for an answer.
+
+The usage ledger retains spend from both attempts, including usage received
+before failure or cancellation. The Messages reply reports the final successful
+attempt's usage so repeated input is not mistaken for a doubled current context.
+Recovery telemetry contains route identity, outcome, timing, and numeric usage,
+without prompts or completion text.
 
 ## Verified coverage and limits
 

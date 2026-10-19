@@ -110,7 +110,9 @@ export type InferenceEvent =
   | { text: string; type: "text"; messageId?: string; phase?: AssistantMessagePhase }
   | { type: "message-done"; messageId?: string; phase?: AssistantMessagePhase; status?: "completed" | "incomplete" }
   | { call: OpenAIToolCall; type: "tool" }
-  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string }
+  | { usage: Usage; type: "done"; serviceTier?: PublicServiceTier; endTurn?: boolean; interrupted?: true; accounting?: UsageAccounting; stopReason?: "max_tokens" | "stop_sequence"; stopSequence?: string;
+    /** A private retry can retain total spend while Messages reports the final attempt's current context. */
+    clientUsage?: Usage }
   | { item: Record<string, unknown>; type: "reasoning-state" }
   /** An output item the client executes or reads itself (native tool search): streamed back exactly as the upstream sent it. */
   | { item: Record<string, unknown>; type: "native-item" }
