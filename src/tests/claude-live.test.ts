@@ -33,7 +33,7 @@ const user = (text: string): ResponsesInputItem => ({ type: "message", role: "us
 // Session directories live in the shared temporary directory; a per-process provider id keeps concurrent suites apart.
 const providerId = `claude-${process.pid}`;
 const sessionKey = (threadId: string) => createHash("sha256").update(`${providerId}\0\0${threadId}`).digest("hex");
-const adapter = (sessions: Record<string, unknown> = {}, onUsage?: (limit: ClaudeLimit) => Promise<void>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", ...sessions } }, onUsage);
+const adapter = (sessions: Record<string, unknown> = {}, onUsage?: (limit: ClaudeLimit) => Promise<void>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", warmup: 0, ...sessions } }, onUsage);
 
 /** One request as the server runs it, plus the output items Codex would replay next time. */
 async function turn(provider: ClaudeSubscription, input: ResponsesInputItem[], options: { context?: InferenceContext; effort?: string; signal?: AbortSignal; abortAfterTexts?: number; controller?: AbortController } = {}) {

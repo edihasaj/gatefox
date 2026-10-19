@@ -26,6 +26,7 @@ own parked sessions on its next request, so they do not wait out the park timer.
 | `mode` | `replay` | `live` keeps a session per thread |
 | `max` | 10% of RAM | Live sessions in the whole process (1–32). The default is `clamp(floor(0.10 × totalmem / 300 MB), 6, 32)`: 6 up to 20 GiB, 21 on 64 GiB, 32 from about 94 GiB. A session being started counts toward it |
 | `parkMinutes` | 60 | Idle time before a session closes (5–240), per session |
+| `warmup` | 1 | Completed requests a thread needs before its first live session may start (0–5). `0` restores immediate spawning. |
 | `replayFormat` | `text` | Item encoding for one-shot requests and session seeds; `json` restores the old one |
 
 ## How a request is served
@@ -50,6 +51,12 @@ own parked sessions on its next request, so they do not wait out the park timer.
   starts the window over, so a thread that keeps talking is never seeded a process it
   would have to reseed on its next turn. The old session closes at once.
 - **Capacity** (no eviction): see Admission below.
+- **Warmup** (no session): a thread must complete `warmup` ordinary requests before
+  its first live CLI starts. Until then, it runs one-shot with the `warmup` miss
+  reason. This keeps composer prediction forks and one-request subagents from
+  occupying a parked CLI for an hour. The default of one is cheap: the promoted
+  session seed reads the cache the one-shot request wrote and writes only its new
+  content.
 - **One-shot fallback:** compaction, prewarm and memory requests; requests without a
   thread id; a second request for a thread that is still generating; and any failure
   before the first event, including a CLI that exits right after the seed.
@@ -61,8 +68,10 @@ cache. While every slot holds a warm session, a new thread runs one-shot (`capac
 and stays on replay until a slot frees; nothing is evicted and no warm cache is spent
 on a newcomer. Sessions being started count toward `max`, in arrival order, so
 concurrent attaches can never run more processes than the cap. Telemetry records the
-`capacity` fallback and each replay-hold reason as `claude_session` events with the
-`fallback` outcome and the thread's `threadKey`; see [diagnostics](diagnostics.md).
+`warmup` and `capacity` fallbacks and each replay-hold reason as `claude_session`
+events with the `fallback` outcome and the thread's `threadKey`. A promoted spawn has
+`afterWarmup: true`, so diagnostics records its cache cost; see
+[diagnostics](diagnostics.md).
 
 The system prompt is the gateway's fixed text plus the caller's instructions and
 the system and developer messages before the first other message, as on the
@@ -75,6 +84,27 @@ An effort change between turns uses the CLI's `apply_flag_settings` and keeps th
 cache. Cancelling interrupts the turn and keeps the session; the next history may
 keep or drop the partial text. The session closes instead if a tool call was being
 written.
+
+## Prompt cache across threads
+
+Each Claude request's system array has a billing header with no cache marker, then the
+CLI identity block with a breakpoint, then one block with a breakpoint that joins the
+gateway's fixed text to the caller's leading system and developer content.
+`--append-system-prompt-file` joins that same block and creates no separate breakpoint.
+`--exclude-dynamic-system-prompt-sections` is ignored with a custom system prompt. The
+CLI sorts tools alphabetically and marks no tool.
+
+A new thread therefore reuses the tools, billing header and identity block from
+another thread's cache. It reuses caller instructions only when they are byte-identical,
+such as two root chats within the cache lifetime. On 2026-10-19, a new thread's first
+request read 33,331 cached tokens 66 seconds after another thread on the same model.
+A subagent, or any thread whose leading instructions differ, rewrites that block. The
+gateway does not move caller developer text into user history to improve this cache
+reuse because that would change its role.
+
+The block layout was captured with CLI 2.1.299 in API-key mode against a local mock.
+The subscription cache TTL is one hour: a direct CLI run reported
+`ephemeral_1h_input_tokens` of 9,604 and `ephemeral_5m_input_tokens` of 0.
 
 ## Safety
 
@@ -109,6 +139,14 @@ Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
   The seed itself is not rewritten. A turn that ends in tool use has no such miss.
 - Each session uses about 240 MB for the CLI and 44 MB for its MCP child, which is
   why the default pool is sized at 300 MB a slot.
+- On 2026-10-19, CLI 2.1.299 with Haiku 5.5, a subscription login, an approximately
+  8k-token fixed instruction prefix and synthetic history served a first one-shot
+  request with 0 cache-read tokens and 21,319 cache-write tokens. Its second request,
+  which spawned after warmup, read 20,960 and wrote 423, so the session seed read the
+  one-shot cache instead of rewriting it. The next continued turn read 21,016 and
+  wrote 435. Changing effort from low to medium continued through
+  `apply_flag_settings` and read 21,426 while writing 95. A control new thread with
+  different history read only the shared system prefix (12,159) and wrote 9,167.
 - Before the admission policy, least-recently-used eviction on a working set larger
   than the pool evicted the thread needed next. One window with 7 threads against
   `max` 6 saw 14 evictions after a median 49 s idle (20–160 s, against a 1 h cache), and

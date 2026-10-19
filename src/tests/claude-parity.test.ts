@@ -125,7 +125,7 @@ test("a live session reseeds when the leading instructions change, and continues
   const f = await installClaudeFixture({ replies: [{ text: "ok" }, { text: "two" }, { text: "three" }] });
   configureTelemetry(f.directory, "test"); const since = Date.now();
   try {
-    const adapter = new ClaudeSubscription({ id: `claude-b3-${process.pid}`, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live" } });
+    const adapter = new ClaudeSubscription({ id: `claude-b3-${process.pid}`, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
     const context = { threadId: "thread-b3" }; const first = [message("developer", "Dev A"), message("user", "one")];
     await drain(adapter.infer({ model: "fixture", input: first }, new AbortController().signal, context));
     const second = [...first, message("assistant", "ok"), message("developer", "Later dev"), message("user", "two")];

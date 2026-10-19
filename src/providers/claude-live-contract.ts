@@ -12,7 +12,7 @@ import type { ClaudeConversation, ClaudeImages, ContentBlock } from "./claude-re
 export const sessionKey = (scope: string, threadId: string) => createHash("sha256").update(`${scope}\0${threadId}`).digest("hex");
 
 /** Why a request used the one-shot path instead of a live session. Fixed values only. */
-export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "capacity" | "spawn_failed" | "initialize_timeout" |
+export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "warmup" | "capacity" | "spawn_failed" | "initialize_timeout" |
   "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
@@ -69,8 +69,10 @@ export interface ClaudeLiveModule {
    * Called on every live request. Must return the one process-wide registry (memoized), applying
    * changed settings to it; a fresh registry per call would never reuse a session.
    */
-  claudeLive(settings: { max: number; parkMinutes: number }): {
+  claudeLive(settings: { max: number; parkMinutes: number; warmup?: number }): {
     /** A throw before the stream exists falls back to one-shot (spawn_failed), except cancellation. */
     attach(input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome>;
+    /** Records a completed live-mode request after its final `done` reached the caller. */
+    complete?(scope: string, threadId: string): void;
   };
 }
