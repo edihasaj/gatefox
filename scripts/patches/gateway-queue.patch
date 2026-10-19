@@ -1,0 +1,431 @@
+diff --git a/codex-rs/ext/queue/src/service.rs b/codex-rs/ext/queue/src/service.rs
+index 06aeb63..d7662b5 100644
+--- a/codex-rs/ext/queue/src/service.rs
++++ b/codex-rs/ext/queue/src/service.rs
+@@ -221,7 +221,8 @@ impl QueuedItemService {
+                                     | AgentStatus::Interrupted
+                                     | AgentStatus::Shutdown
+                                     | AgentStatus::NotFound
+-                            ) {
++                            ) || Self::automatic_dispatch_paused(&thread).await
++                            {
+                                 return;
+                             }
+                             match service
+@@ -409,6 +410,9 @@ impl QueuedItemService {
+         let Ok(thread) = manager.get_thread(thread_id).await else {
+             return Ok(());
+         };
++        if Self::automatic_dispatch_paused(&thread).await {
++            return Ok(());
++        }
+ 
+         loop {
+             let Some(record) = self
+@@ -437,10 +441,12 @@ impl QueuedItemService {
+             }
+ 
+             match thread
+-                .start_turn_if_idle(TurnInputRequest::new(input).on_start(TurnStartOptions {
+-                    turn_trigger: Some("queue".to_string()),
+-                    ..Default::default()
+-                }))
++                .start_queued_turn_if_idle(TurnInputRequest::new(input).on_start(
++                    TurnStartOptions {
++                        turn_trigger: Some("queue".to_string()),
++                        ..Default::default()
++                    },
++                ))
+                 .await
+             {
+                 Ok(StartIfIdleSubmission::Started { .. }) => {
+@@ -469,12 +475,18 @@ impl QueuedItemService {
+         }
+     }
+ 
++    // A failed gateway turn leaves the caller's queued work available for an
++    // explicit continuation. The explicit start() path intentionally bypasses this.
++    async fn automatic_dispatch_paused(thread: &CodexThread) -> bool {
++        thread.automatic_queue_paused().await
++    }
++
+     async fn wake_if_loaded(&self, thread_id: ThreadId) {
+         let Some(manager) = self.thread_manager.upgrade() else {
+             return;
+         };
+         if let Ok(thread) = manager.get_thread(thread_id).await
+-            && !matches!(thread.agent_status().await, AgentStatus::Interrupted)
++            && !Self::automatic_dispatch_paused(&thread).await
+         {
+             thread
+                 .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+diff --git a/codex-rs/core/src/session/mod.rs b/codex-rs/core/src/session/mod.rs
+index dd70a76..171f139 100644
+--- a/codex-rs/core/src/session/mod.rs
++++ b/codex-rs/core/src/session/mod.rs
+@@ -1418,6 +1418,22 @@ impl Session {
+         matches!(*self.agent_status.borrow(), AgentStatus::Interrupted)
+     }
+ 
++    fn preserves_failed_queue(provider_id: &str) -> bool {
++        provider_id == codex_model_provider_info::LEGACY_GATEWAY_PROVIDER_ID
++            || codex_model_provider_info::gateway_executor_marker()
++    }
++
++    pub(crate) async fn automatic_queue_paused(&self) -> bool {
++        let status = self.agent_status.borrow().clone();
++        match status {
++            AgentStatus::Interrupted => true,
++            AgentStatus::Errored(_) => {
++                Self::preserves_failed_queue(&self.thread_config_snapshot().await.model_provider_id)
++            }
++            _ => false,
++        }
++    }
++
+     pub(crate) fn get_tx_event(&self) -> Sender<Event> {
+         self.tx_event.clone()
+     }
+@@ -1607,14 +1623,18 @@ impl Session {
+             InitialHistory::Resumed(resumed_history) => {
+                 let turn_context = self.new_default_turn().await;
+                 let rollout_items = resumed_history.history;
+-                if matches!(
+-                    rollout_items.iter().rev().find_map(|item| match item {
+-                        RolloutItem::EventMsg(event) => agent_status_from_event(event),
+-                        _ => None,
+-                    }),
+-                    Some(AgentStatus::Interrupted)
+-                ) {
+-                    self.agent_status.send_replace(AgentStatus::Interrupted);
++                let prior_status = rollout_items.iter().rev().find_map(|item| match item {
++                    RolloutItem::EventMsg(event) => agent_status_from_event(event),
++                    _ => None,
++                });
++                if let Some(status) = prior_status
++                    && (matches!(&status, AgentStatus::Interrupted)
++                        || (matches!(&status, AgentStatus::Errored(_))
++                            && Self::preserves_failed_queue(
++                                &turn_context.config.model_provider_id,
++                            )))
++                {
++                    self.agent_status.send_replace(status);
+                 }
+                 let previous_turn_settings = self
+                     .apply_rollout_reconstruction(&turn_context, &rollout_items)
+diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
+index 7672b54..e467108 100644
+--- a/codex-rs/core/src/session/turn_input.rs
++++ b/codex-rs/core/src/session/turn_input.rs
+@@ -226,9 +226,10 @@ pub(super) async fn handle(
+     submission_id: String,
+ ) -> CodexResult<TurnInputSubmission> {
+     let request = request.into();
++    let queued_dispatch = matches!(&mode, TurnInputMode::StartQueuedIfIdle);
+     let result = match mode {
+         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
+-        TurnInputMode::StartIfIdle => {
++        TurnInputMode::StartIfIdle | TurnInputMode::StartQueuedIfIdle => {
+             let kind = match &request.request.input {
+                 SubmittedTurnInput::UserInput { content, .. } if !content.is_empty() => {
+                     TurnStartKind::User
+@@ -243,6 +244,7 @@ pub(super) async fn handle(
+                 submission_id,
+                 kind,
+                 /*expected_previous_turn_id*/ None,
++                queued_dispatch,
+             )
+             .await
+         }
+@@ -260,6 +262,7 @@ pub(super) async fn handle(
+                 submission_id,
+                 TurnStartKind::Recovery,
+                 Some(expected_previous_turn_id),
++                /*queued_dispatch*/ false,
+             )
+             .await
+         }
+@@ -305,6 +308,7 @@ pub(super) async fn handle_recovery(
+         submission_id,
+         TurnStartKind::Recovery,
+         /*expected_previous_turn_id*/ None,
++        /*queued_dispatch*/ false,
+     )
+     .await;
+     if let Ok(TurnInputSubmission::Started { turn_id, .. }) = &result {
+@@ -438,6 +442,7 @@ async fn start_if_idle(
+     submission_id: String,
+     kind: TurnStartKind,
+     expected_previous_turn_id: Option<String>,
++    queued_dispatch: bool,
+ ) -> CodexResult<TurnInputSubmission> {
+     let WithTurnExtensionData {
+         request,
+@@ -490,7 +495,7 @@ async fn start_if_idle(
+ 
+     let turn_state = {
+         let mut active_turn = session.active_turn.lock().await;
+-        if active_turn.is_some() {
++        if active_turn.is_some() || (queued_dispatch && session.automatic_queue_paused().await) {
+             return Ok(TurnInputSubmission::NotSubmitted {
+                 reason: NotSubmittedReason::NotIdle,
+             });
+diff --git a/codex-rs/core/src/codex_thread.rs b/codex-rs/core/src/codex_thread.rs
+index e3beb6b..6e0e3cb 100644
+--- a/codex-rs/core/src/codex_thread.rs
++++ b/codex-rs/core/src/codex_thread.rs
+@@ -422,10 +422,29 @@ impl CodexThread {
+         &self,
+         request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
+     ) -> CodexResult<StartIfIdleSubmission> {
+-        match self
+-            .submit_turn_input_with_mode(request, TurnInputMode::StartIfIdle)
+-            .await?
+-        {
++        self.start_idle_turn_with_mode(request, TurnInputMode::StartIfIdle)
++            .await
++    }
++
++    /// Automatic queue dispatch checks its pause state inside Core's idle reservation.
++    pub async fn start_queued_turn_if_idle(
++        &self,
++        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
++    ) -> CodexResult<StartIfIdleSubmission> {
++        self.start_idle_turn_with_mode(request, TurnInputMode::StartQueuedIfIdle)
++            .await
++    }
++
++    pub async fn automatic_queue_paused(&self) -> bool {
++        self.session.automatic_queue_paused().await
++    }
++
++    async fn start_idle_turn_with_mode(
++        &self,
++        request: impl Into<WithTurnExtensionData<TurnInputRequest>>,
++        mode: TurnInputMode,
++    ) -> CodexResult<StartIfIdleSubmission> {
++        match self.submit_turn_input_with_mode(request, mode).await? {
+             TurnInputSubmission::Started {
+                 turn_id,
+                 root_turn_id,
+diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
+index 3069a5f..4a10556 100644
+--- a/codex-rs/protocol/src/turn_input.rs
++++ b/codex-rs/protocol/src/turn_input.rs
+@@ -159,6 +159,8 @@ pub enum TurnInputMode {
+     StartOrSteer,
+     /// Start only when the thread is idle.
+     StartIfIdle,
++    /// Automatically start queued input only when idle and the queue is not paused.
++    StartQueuedIfIdle,
+     /// Start an internal continuation when idle.
+     /// Reject if another task has started since the expected previous turn.
+     ContinueIfIdle { expected_previous_turn_id: String },
+diff --git a/codex-rs/ext/queue/tests/queue_service.rs b/codex-rs/ext/queue/tests/queue_service.rs
+index 305b8ed..390a155 100644
+--- a/codex-rs/ext/queue/tests/queue_service.rs
++++ b/codex-rs/ext/queue/tests/queue_service.rs
+@@ -514,6 +514,203 @@ async fn interrupted_turns_pause_queued_messages_but_failed_turns_drain_them() -
+     Ok(())
+ }
+ 
++// These cases run serially because the gateway marker belongs to the process.
++struct GatewayQueueMarker(Option<std::ffi::OsString>);
++
++impl GatewayQueueMarker {
++    fn set(enabled: bool) -> Self {
++        let previous = std::env::var_os("HARNESS_GATEWAY_EXECUTOR");
++        unsafe {
++            if enabled {
++                std::env::set_var("HARNESS_GATEWAY_EXECUTOR", "1");
++            } else {
++                std::env::remove_var("HARNESS_GATEWAY_EXECUTOR");
++            }
++        }
++        Self(previous)
++    }
++}
++
++impl Drop for GatewayQueueMarker {
++    fn drop(&mut self) {
++        unsafe {
++            match self.0.take() {
++                Some(value) => std::env::set_var("HARNESS_GATEWAY_EXECUTOR", value),
++                None => std::env::remove_var("HARNESS_GATEWAY_EXECUTOR"),
++            }
++        }
++    }
++}
++
++#[tokio::test]
++async fn gateway_failed_queue_survives_writes_and_cold_resume() -> anyhow::Result<()> {
++    for (provider_id, marked, start_queue) in [
++        ("subscription_gateway", false, false),
++        ("subscription_gateway", false, true),
++        ("openai", true, false),
++        ("openai", true, true),
++    ] {
++        let _marker = GatewayQueueMarker::set(marked);
++        let server = start_mock_server().await;
++        let responses = responses::mount_sse_sequence(
++            &server,
++            std::iter::once(responses::sse_failed(
++                "unavailable",
++                "invalid_prompt",
++                "Provider credits or quota are exhausted",
++            ))
++            .chain(
++                (0..if start_queue { 4 } else { 5 })
++                    .map(|_| responses::sse_completed("queue-success")),
++            )
++            .collect(),
++        )
++        .await;
++        let (installed, extensions) = registered_queue_extensions();
++        let test = test_codex()
++            .with_extensions(extensions)
++            .with_config(move |config| {
++                config.model_provider_id = provider_id.to_string();
++                config.include_environment_context = false;
++            })
++            .build_with_auto_env(&server)
++            .await?;
++        let thread_id = test.session_configured.thread_id;
++        let staging = QueuedItemService::new(
++            loaded_thread_queue(&test)?,
++            Weak::new(),
++            Arc::new(NoopExtensionEventSink),
++        );
++        let first = staging.enqueue(thread_id, user_input("B")).await?;
++        let second = staging.enqueue(thread_id, user_input("C")).await?;
++        let queue = install_registered_queue(&test, installed.as_ref())?;
++        let mut watcher_extensions = ExtensionRegistryBuilder::<codex_core::config::Config>::new();
++        codex_queue_extension::install(&mut watcher_extensions, Arc::clone(&queue));
++
++        test.submit_text_turn("A").await?;
++        assert!(matches!(
++            test.codex.agent_status().await,
++            codex_protocol::protocol::AgentStatus::Errored(_)
++        ));
++        assert_eq!(
++            vec![first.clone(), second.clone()],
++            queue.list(thread_id).await?
++        );
++        let third = queue.enqueue(thread_id, user_input("D")).await?;
++        let external = staging.enqueue(thread_id, user_input("E")).await?;
++        let preserved = vec![first, second, third, external];
++        advance_queue_poll().await;
++        emit_idle(&queue, thread_id).await;
++        assert_eq!(preserved, queue.list(thread_id).await?);
++        assert_eq!(1, responses.requests().len());
++
++        let rollout = test.codex.rollout_path().context("rollout missing")?;
++        test.codex.shutdown_and_wait().await?;
++        test.thread_manager.remove_thread(&thread_id).await;
++        let resumed = test
++            .thread_manager
++            .resume_legacy_thread_from_rollout(
++                test.config.clone(),
++                rollout,
++                test.thread_manager.auth_manager(),
++                None,
++                Default::default(),
++            )
++            .await?;
++        assert!(matches!(
++            resumed.thread.agent_status().await,
++            codex_protocol::protocol::AgentStatus::Errored(_)
++        ));
++        advance_queue_poll().await;
++        emit_idle(&queue, thread_id).await;
++        assert_eq!(preserved, queue.list(thread_id).await?);
++        assert_eq!(1, responses.requests().len());
++        assert!(matches!(
++            resumed
++                .thread
++                .start_queued_turn_if_idle(TurnInputRequest::new(user_input("must stay queued")))
++                .await?,
++            codex_core::StartIfIdleSubmission::NotSubmitted { .. }
++        ));
++
++        let expected = if start_queue {
++            assert!(matches!(
++                queue.start(resumed.thread.as_ref(), None, None).await?,
++                codex_core::StartIfIdleSubmission::Started { .. }
++            ));
++            vec!["A", "B", "C", "D", "E"]
++        } else {
++            resumed
++                .thread
++                .start_or_steer_turn(TurnInputRequest::new(user_input("continue A")))
++                .await?;
++            vec!["A", "continue A", "B", "C", "D", "E"]
++        };
++        for _ in 1..expected.len() {
++            wait_for_event_with_timeout(
++                resumed.thread.as_ref(),
++                |event| matches!(event, EventMsg::TurnComplete(_)),
++                Duration::from_secs(15),
++            )
++            .await;
++        }
++        wait_for_queue_empty(&queue, thread_id).await?;
++        let prompts = responses
++            .requests()
++            .into_iter()
++            .map(|request| {
++                request
++                    .message_input_texts("user")
++                    .pop()
++                    .context("input missing")
++            })
++            .collect::<anyhow::Result<Vec<_>>>()?;
++        assert_eq!(expected, prompts);
++        resumed.thread.shutdown_and_wait().await?;
++    }
++    Ok(())
++}
++
++#[tokio::test]
++async fn gateway_queue_change_leaves_unmarked_native_failure_behavior_intact() -> anyhow::Result<()>
++{
++    let _marker = GatewayQueueMarker::set(false);
++    let server = start_mock_server().await;
++    let responses = responses::mount_sse_sequence(
++        &server,
++        vec![
++            responses::sse_failed("native-failed", "invalid_prompt", "fixture failure"),
++            responses::sse_completed("native-follow-up"),
++        ],
++    )
++    .await;
++    let (installed, extensions) = registered_queue_extensions();
++    let test = test_codex()
++        .with_extensions(extensions)
++        .build_with_auto_env(&server)
++        .await?;
++    let staging = QueuedItemService::new(
++        loaded_thread_queue(&test)?,
++        Weak::new(),
++        Arc::new(NoopExtensionEventSink),
++    );
++    staging
++        .enqueue(test.session_configured.thread_id, user_input("B"))
++        .await?;
++    let queue = install_registered_queue(&test, installed.as_ref())?;
++    test.submit_text_turn("A").await?;
++    wait_for_event_with_timeout(
++        test.codex.as_ref(),
++        |event| matches!(event, EventMsg::TurnComplete(_)),
++        Duration::from_secs(15),
++    )
++    .await;
++    wait_for_queue_empty(&queue, test.session_configured.thread_id).await?;
++    assert_eq!(2, responses.requests().len());
++    test.codex.shutdown_and_wait().await?;
++    Ok(())
++}
++
+ #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+ async fn registered_queue_lifecycle_starts_messages_in_fifo_order() -> anyhow::Result<()> {
+     let server = start_mock_server().await;

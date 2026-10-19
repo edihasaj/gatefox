@@ -795,6 +795,26 @@ failure of the provider lookup still fails closed.
 `thread/queue/*` goes to the chat's own engine like any other chat request, and the
 SDK owns the queue: it is saved on disk in the shared queue database, the next
 message starts when the running turn completes, and an interrupt pauses the queue.
+With gateway SDK capability `gateway-executor-v3`, a failed gateway turn also
+pauses automatic queue dispatch. This applies to every provider routed through
+that executor, including Claude, Codex, Copilot, and ordinary API models. Queued
+messages keep their IDs, contents, and order in the native database. Adding or
+editing a queued message, another connection writing to the queue, or resuming
+the chat after a restart does not release the pause.
+
+An explicit new turn can continue the failed work from saved history. After it
+succeeds, queued messages run in their existing order. An explicit
+`thread/queue/start` can instead start the selected queued message. The failed
+turn remains a real failure; the gateway does not fabricate an interruption,
+retry a subscription limit, or choose another account or model. Unmarked native
+Codex engines keep their own queue behavior. Clients outside this executor,
+such as Claude Code or Claude Desktop, own their own queues.
+
+The automatic queue start checks the pause while reserving an idle turn, so a
+concurrent failure cannot slip past a prior queue inspection. Older SDK artifacts
+retain their previous behavior; the release must build the v3 SDK before this
+protection is available.
+
 The SDK reads every attached local image or audio file while it enqueues a message.
 macOS gives file access to the desktop app, not to the service that owns shared
 executors, so a screenshot from a protected folder failed there with `-32600`

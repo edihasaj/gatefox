@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
-  gatewaySdkPatch, gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
+  gatewaySdkPatches, gatewaySdkPatchDigest, gatewaySdkRevision, gatewaySdkSourceDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockRepairDigest, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 import { gatewaySdkLockSha256, repairGatewaySdkLock } from './gateway-sdk-lock.mjs';
 import { withGatewaySdkCompactionTests } from './gateway-sdk-test-runner.mjs';
@@ -47,10 +47,12 @@ function treeDigest(directory) {
 if (!existsSync(sdk)) {
   mkdirSync(sdk, { mode: 0o700 });
   execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', sdk]);
-  const patch = resolve(gatewaySdkPatch);
   const gitEnvironment = { ...process.env, GIT_CEILING_DIRECTORIES: root };
-  execFileSync('git', ['apply', '--check', patch], { cwd: sdk, env: gitEnvironment });
-  execFileSync('git', ['apply', patch], { cwd: sdk, env: gitEnvironment });
+  for (const path of gatewaySdkPatches) {
+    const patch = resolve(path);
+    execFileSync('git', ['apply', '--check', patch], { cwd: sdk, env: gitEnvironment });
+    execFileSync('git', ['apply', patch], { cwd: sdk, env: gitEnvironment });
+  }
   repairGatewaySdkLock(join(sdk, 'codex-rs/Cargo.lock'));
   writeFileSync(marker, JSON.stringify({ revision: gatewaySdkRevision, archiveSha256: gatewaySdkArchiveSha256,
     patchSha256, lockfileRepairSha256, lockfileSha256: gatewaySdkLockSha256, patchedSdkSha256: treeDigest(sdk) }), { mode: 0o600 });
@@ -82,8 +84,9 @@ if (values.test) {
   passed(run(['-p', 'codex-model-provider-info', '--lib', 'gateway_executor']), 3, 'executor identity');
   passed(withGatewaySdkCompactionTests(sdk, () => run(['-p', 'codex-core', '--test', 'all',
     'gateway_pre_sampling_compaction_stays_in_selected_user_turn'])), 6, 'compaction');
+  passed(run(['-p', 'codex-queue-extension', '--test', 'queue_service', 'gateway_']), 2, 'queue preservation');
   if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
-  console.log(JSON.stringify({ tests: 9, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+  console.log(JSON.stringify({ tests: 11, revision: gatewaySdkRevision, patchSha256, sourceSha256,
     testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],

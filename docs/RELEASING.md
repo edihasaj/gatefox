@@ -278,6 +278,9 @@ node scripts/build-gateway-sdk.mjs
 node scripts/build-release.mjs --with-native --with-gateway-sdk
 ```
 
+For a development-profile test run, the SDK's large test futures need a larger
+thread stack: `RUST_MIN_STACK=33554432 node scripts/build-gateway-sdk.mjs --test --dev`.
+
 The gateway SDK has its own executable, licenses, dependency inventory, and build
 receipt. The release builder verifies its version, SDK revision, archive and patch
 digests, source digest, binary checksum, and capability. It refuses modified cached
@@ -293,16 +296,20 @@ and dependency blocks remain byte-identical. The repaired lockfile and helper ar
 hashed in the receipt; Cargo tests and builds still use `--locked`.
 The test gate runs three executor-identity unit tests in `codex-model-provider-info`
 and six compaction cases: the four for `subscription_gateway` and native chats, and
-two for `openai` inside a marked gateway executor. The compaction cases use the
+two for `openai` inside a marked gateway executor. It also runs two queue integration
+tests covering both gateway identities, writes during a pause, cold resume,
+explicit continuation, explicit queue start, and the native failure behavior.
+The compaction cases use the
 upstream compact suite with its original test aliases and constructor. The runner
 temporarily narrows the suite aggregator to that module, avoiding unrelated upstream
 test compilation errors, then restores the exact original bytes. Its digest joins the
 receipt; the verified SDK source tree must match again before building the executable.
 The cases set the executor marker in the process environment, so the gate runs every
-case on one thread. Patch v2 (`scripts/patches/gateway-executor.patch`, capability
-`gateway-executor-v2`, see [harness identity](harness-identity.md)) changed the source
-digest, so the first release with it builds the gateway SDK again; it cannot reuse the
-component of a release built with patch v1.
+case on one thread. Capability `gateway-executor-v3` combines the executor identity
+patch with `scripts/patches/gateway-queue.patch`, which preserves queued messages
+after failed gateway turns. Both patches contribute to the patch and source
+digests. The first release with this capability must build the SDK again; it
+cannot reuse an SDK component from a v1 or v2 release.
 
 A JavaScript-only fix can explicitly reuse unchanged native components from a
 previous published installer instead of rebuilding Rust. Download the exact

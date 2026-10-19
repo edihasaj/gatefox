@@ -29,7 +29,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 }
 
 async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
-  const f = await fixture(t); const sourceSha256 = "ebab4827d4410db13581634f192ecec034a6741253b6ef4c90cfcb935b01bb99";
+  const f = await fixture(t); const sourceSha256 = "aa7c3146f2ca075477dddeaa7088dc10089177b6659a953b1364f04cfd24b972";
   await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" })); await f.save({ sourceSha256 });
   for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) await writeFile(join(f.directory, name), `fixture ${name}`, { mode: 0o600 });
   const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {
@@ -49,7 +49,7 @@ test("legacy packages omit the separately built gateway SDK", async t => {
 
 test("matching release receipt proves the gateway executor capability: selected-model compaction and the openai alias", async t => {
   const f = await fixture(t);
-  assert.equal(gatewaySdkCapability, "gateway-executor-v2");
+  assert.equal(gatewaySdkCapability, "gateway-executor-v3");
   assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
 });
 
@@ -68,7 +68,9 @@ test("foreign revision, patch, release, platform and capabilities are refused", 
     { platform: "foreign" }, { arch: "foreign" }, { profile: "dev" }, { capabilities: [] },
     { capabilities: [gatewaySdkCapability, "other"] }, { sourceSha256: "invalid" },
     // An SDK built with patch v1 compacts on the selected model but cannot serve openai as the gateway.
-    { capabilities: ["selected-model-compaction-v1"] }]) {
+    { capabilities: ["selected-model-compaction-v1"] },
+    // A v2 SDK has the native identity but still drains queued messages after failure.
+    { capabilities: ["gateway-executor-v2"] }]) {
     await f.save(change); await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/);
   }
 });

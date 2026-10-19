@@ -69,7 +69,7 @@ opted out again serve the same chats.
    `supports_websockets = false`, `request_max_retries = 2`,
    `stream_idle_timeout_ms = 90000`), and set `model_provider` to the identity for new chats.
 3. The gateway SDK patch (`scripts/patches/gateway-executor.patch`, capability
-   `gateway-executor-v2`) makes `openai` a second name for that provider, but only when the
+   retained in capability `gateway-executor-v3`) makes `openai` a second name for that provider, but only when the
    marker is `1` and the provider's base URL is plain HTTP on a loopback address with no
    credentials in it (a name such as `127.0.0.1.nip.io` or a mapped IPv6 address does not
    count). Inference, authentication, retries and timeouts are therefore exactly the legacy
@@ -84,7 +84,7 @@ opted out again serve the same chats.
    which refuses the request; it never reaches OpenAI.
 
 The adapter uses `openai` for new chats only when the Mac opted in and the package's
-gateway SDK declares `gateway-executor-v2`. A checkout without the artifact runs a stock
+gateway SDK declares `gateway-executor-v3`. A checkout without the artifact runs a stock
 Codex as its executor and keeps `subscription_gateway`. A new chat on an engine this
 connection did not launch (a shared host's, found by its chat) keeps `subscription_gateway`
 too, since its SDK is unknown, and an executor that records a new chat with any provider
