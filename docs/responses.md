@@ -186,8 +186,9 @@ messages; they do not imply a failed login. Responses upstream server errors ret
 once after one second only before any text, reasoning state, or tool output has
 been published. A clean EOF without a terminal event has the same single retry
 only before any inference output has been published. Cancellation stops that
-wait. Quota, authentication, malformed streams, unclassified stream failures, and
-partial responses never retry automatically. EOF and `[DONE]` never substitute
+wait. Quota, authentication, malformed streams, partial responses, and unclassified
+stream failures other than an `error` or `response.failed` event with an unknown code
+never retry automatically. EOF and `[DONE]` never substitute
 for a genuine Responses terminal.
 Private failure logs contain a UTC timestamp, bounded request/provider/model
 identifiers, elapsed time, error code, and status, excluding request bodies,
@@ -448,8 +449,9 @@ which the gateway does not support yet."; nonstream requests get HTTP 400 `inval
 that message. `request_failed` records `translation_reason: unsupported_compaction`, and the
 stderr `provider_failure` line and `gateway diagnostics` carry it too
 ([diagnostics](diagnostics.md#local-telemetry)). Neither invokes a
-provider nor takes an admission slot, and the refusal is final. A gateway at capacity (`maxConcurrent`
-plus 32 requests in flight) answers every inference request (`/v1/responses` and `/v1/messages`)
+provider nor takes an admission slot, and the refusal is final. A gateway at capacity (the larger of
+top-level `maxConcurrent` and the sum of effective provider limits, plus 32 requests in flight)
+answers every inference request (`/v1/responses` and `/v1/messages`)
 with a retryable `429` before reading its body,
 so an overload never buffers bodies; a compaction refused that way is retried and gets this final
 refusal once a slot is free.
@@ -471,6 +473,11 @@ Configured reasoning effort maps to `output_config.effort`; unsupported model
 levels fail before inference. `summary: "none"` hides thinking deltas. Tool calls
 must have distinct IDs, valid object input, and names allowed by the current
 catalog and tool selection. Required tool selection cannot finish without a call.
+Outbound requests carry up to four ephemeral prompt-cache breakpoints
+(`cache_control: { "type": "ephemeral" }`): the last tool, the last system block,
+and the tails of the last two messages, regardless of their role. A block already
+marked is never marked twice, nested tool-result content never receives a marker
+of its own, and markers never reorder or merge caller blocks.
 
 Only `end_turn`, `stop_sequence`, and valid caller `tool_use` turns complete.
 Paused, truncated, refused, and unknown stop reasons fail, including

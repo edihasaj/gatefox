@@ -149,7 +149,8 @@ Example native configuration:
   "timeoutMs": 60000,
   "maxConcurrent": 2,
   "maxRequestBytes": 262144,
-  "contextProviders": ["qwen"]
+  "contextProviders": ["qwen"],
+  "emptyCompletionRecoveryProviders": ["qwen"]
 }
 ```
 
@@ -206,6 +207,34 @@ canonical context-overflow code before the unchanged provider adapter reads it.
 An excessive output-token request and unrelated HTTP 400 errors remain their
 original failures.
 
+## Empty completion recovery
+
+The private inference configuration can opt selected Chat Completions providers
+into `emptyCompletionRecoveryProviders`. The entire list must name configured
+Chat Completions providers. The shared gateway factory and Responses ingress
+retain their existing behavior.
+
+For an opted-in Messages request, a clean upstream completion with no answer
+text or tool fragments can trigger one additional request. Reasoning alone
+does not count as an answer. Recovery requires the exact configured upstream
+model, a normal stop, one completion marker, and clean stream closure within
+five seconds. Whitespace counts as visible text. Refusals, filtering, unknown
+semantic output, malformed streams, partial output, output limits, required or
+named tools, and nonempty stop-sequence lists are not eligible.
+
+The retry preserves the same provider, account, model, serialized request,
+credentials, and generation controls. It has a separate 90-second deadline;
+the first request retains its existing caller timeout. A second empty
+completion returns an explicit incomplete-response error. This bounds recovery
+per gateway inference; Claude can independently retry a failed inference.
+The gateway never substitutes reasoning text for an answer.
+
+The usage ledger retains spend from both attempts, including usage received
+before failure or cancellation. The Messages reply reports the final successful
+attempt's usage so repeated input is not mistaken for a doubled current context.
+Recovery telemetry contains route identity, outcome, timing, and numeric usage,
+without prompts or completion text.
+
 ## Verified coverage and limits
 
 The initial macOS trial verified the rendered picker, real GPT and Qwen replies,
@@ -253,6 +282,22 @@ resume process. The manual phase took about 63 seconds. Its initial seed replies
 contained no assistant text and were not treated as substantive completions.
 This qualifies that bounded manual workflow, not automatic compaction at a large
 live context window.
+
+Separate live checks on both registered GPT accounts processed about 193K
+provider input tokens with conservative 200K client enforcement. The native
+engine compacted automatically and retained a seeded fact after compaction and
+after a separate resume process. The later prompts did not reinsert the fact.
+These bounded synthetic-text checks do not qualify multi-hour workloads.
+
+A fresh Qwen automatic-compaction check stopped before its large-input phase:
+two HTTP 200/end-turn responses contained no assistant content, followed by an
+empty native success result. Retain that failed sample; it establishes a blank
+reply, not an automatic-compaction failure. An unchanged repeat then passed at
+193,210 provider input tokens, including native automatic compaction and fact
+recall before and after restart, after trimming surrounding whitespace. The repeat does not qualify
+first-attempt reliability. An isolated content-path probe also confirmed that
+all visible upstream answer text reached the native client unchanged; its
+strict comparison failed only because the correct marker had surrounding whitespace.
 
 An isolated native-engine cancellation proof uses the deployed adapter,
 inference frontend, gateway, provider, and context proxy with a controlled HTTP

@@ -54,6 +54,7 @@ export class ResponsesAPI implements Provider {
         // Body codes mark a transient failure only in the stream; HTTP 5xx is covered below.
         const temporary = (error.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "")) ||
           (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code)) ||
+          (error.code === "inference_failed" && ["error", "response.failed"].includes(error.upstream?.event || "") && error.upstream?.code === "unknown") ||
           (error.code === "incomplete" && error.upstream?.code === "missing_terminal" && error.upstream.event === "eof");
         const backoff = error.upstream?.retryAfterMs ?? 1000;
         if (!temporary || backoff > 30000) throw error;

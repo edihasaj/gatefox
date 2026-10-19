@@ -203,6 +203,12 @@ establish the upstream model's actual price or maximum context. The gateway
 neither invents reasoning signatures nor promises that every provider supports
 every native Claude feature.
 
+The separate Claude Desktop inference service can explicitly enable
+[empty completion recovery](claude-desktop.md#empty-completion-recovery) for
+selected Chat Completions providers. Its ledger includes both attempts, while
+the successful Messages reply reports the final attempt's context usage.
+The ordinary shared gateway and Responses requests do not enable this policy.
+
 ## Usage accounting
 
 A Messages request runs through the same request handler as a Responses request,

@@ -39,7 +39,8 @@ test("native Messages through Anthropic HTTP preserves system boundaries, adapti
     assert.equal(response.status, 200);
     const result = await response.json() as any;
     assert.deepEqual(body!.thinking, { type: "adaptive" });
-    assert.deepEqual(body!.system, [{ type: "text", text: "attribution fixture" }, { type: "text", text: "Keep caller instructions" }]);
+    assert.deepEqual(body!.system, [{ type: "text", text: "attribution fixture" }, { type: "text", text: "Keep caller instructions", cache_control: { type: "ephemeral" } }]);
+    assert.deepEqual((body!.messages as Array<{ content: Array<Record<string, unknown>> }>).at(-1)!.content.at(-1), { type: "text", text: "hello", cache_control: { type: "ephemeral" } });
     assert.equal(body!.max_tokens, 16); assert.deepEqual(body!.stop_sequences, ["END"]);
     assert.equal(result.stop_reason, "stop_sequence"); assert.equal(result.stop_sequence, "END");
     assert.deepEqual(result.usage, { input_tokens: 7, output_tokens: 1, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 });
