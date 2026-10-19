@@ -61,11 +61,11 @@ test("the test runner gives a run its own temp folder, passes the exit code on, 
   try {
     const record = join(work, "record.json");
     // The test runner marks the processes it starts; a nested run must start as a run of its own.
-    const environment: NodeJS.ProcessEnv = { ...process.env, RUNNER_RECORD: record }; delete environment.NODE_TEST_CONTEXT;
+    const environment: NodeJS.ProcessEnv = { ...process.env, RUNNER_RECORD: record, CODEX_HOME: join(work, "inherited-codex-home") }; delete environment.NODE_TEST_CONTEXT;
     const suite = async (name: string, body: string) => {
       const file = join(work, `${name}.test.mjs`);
-      await writeFile(file, `import test from "node:test"; import assert from "node:assert/strict"; import { writeFileSync } from "node:fs"; import { homedir, tmpdir } from "node:os";\n` +
-        `test("${name}", () => { writeFileSync(process.env.RUNNER_RECORD, JSON.stringify({ tmpdir: tmpdir(), home: homedir(), marker: process.env.GATEWAY_TEST_TMPDIR })); ${body} });\n`);
+      await writeFile(file, `import test from "node:test"; import assert from "node:assert/strict"; import { writeFileSync } from "node:fs"; import { homedir, tmpdir } from "node:os"; import { join } from "node:path";\n` +
+        `test("${name}", () => { assert.ok(process.env.CODEX_HOME === join(homedir(), ".codex"), "native home must belong to this run"); writeFileSync(process.env.RUNNER_RECORD, JSON.stringify({ tmpdir: tmpdir(), home: homedir(), marker: process.env.GATEWAY_TEST_TMPDIR })); ${body} });\n`);
       return file;
     };
     for (const [name, body, passes] of [["passing", "", true], ["failing", "assert.fail('fixture failure');", false]] as const) {

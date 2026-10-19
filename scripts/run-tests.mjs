@@ -48,6 +48,7 @@ const timeout = Number(process.env.GATEWAY_TEST_TIMEOUT_MS) > 0 ? Math.round(Num
 const folder = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "gwt-"));
 // The home folder is private (0700) and inside it, so the execution-host folders the tests make go with the run's folder.
 const home = join(folder, "home"); mkdirSync(home, { mode: 0o700 });
+const codexHome = join(home, ".codex"); mkdirSync(codexHome, { mode: 0o700 });
 const remove = () => { try { rmSync(folder, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Best effort; it is one folder under the temp folder. */ } };
 const grouped = process.platform !== "win32";
 // The user's own state folders, taken before the run: a receipt a test left there fails the run (see real-state-guard.mjs).
@@ -56,7 +57,7 @@ const realStateLeaks = watchRealState(homedir());
 const killGrace = Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) > 0 ? Number(process.env.GATEWAY_TEST_KILL_GRACE_MS) : 10000;
 const preload = pathToFileURL(join(root, "scripts", "test-preload.mjs")).href;
 const child = spawn(process.execPath, ["--import", preload, "--test", "--test-force-exit", `--test-timeout=${timeout}`, ...files], { cwd: root, stdio: "inherit", detached: grouped,
-  env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, HOME: home, USERPROFILE: home, GATEWAY_TEST_TMPDIR: folder } });
+  env: { ...process.env, TMPDIR: folder, TEMP: folder, TMP: folder, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, GATEWAY_TEST_TMPDIR: folder } });
 /** Signals the suite's whole process group (the child leads it), or just the child where there are no groups. */
 const send = signal => { try { if (grouped && child.pid) process.kill(-child.pid, signal); else child.kill(signal); } catch { /* Already gone. */ } };
 let stopped;
