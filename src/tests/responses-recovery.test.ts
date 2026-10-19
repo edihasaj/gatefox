@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import type { InferenceEvent } from "../protocol/types.js";
+import { ProviderError } from "../providers/provider.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 async function fixture(frames: (attempt: number) => unknown[] | { status: number; code: string; retryAfter?: string }) {
   let attempts = 0;
@@ -23,6 +28,7 @@ async function fixture(frames: (attempt: number) => unknown[] | { status: number
   return { provider, attempts: () => attempts, close: async () => { delete process.env[env]; server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); } };
 }
 const failed = (code: string) => ({ type: "response.failed", response: { error: { code, message: "private caller data" } } });
+const error = (code: string) => ({ type: "error", error: { code, message: "private caller data" } });
 const complete = [{ type: "response.output_text.delta", delta: "recovered" }, { type: "response.completed", response: { status: "completed" } }];
 const collect = async (provider: ResponsesAPI, signal = new AbortController().signal) => {
   const events: InferenceEvent[] = []; for await (const event of provider.infer({ model: "test", input: "fixture" }, signal)) events.push(event); return events;
@@ -37,10 +43,10 @@ test("transient failure before output retries once and returns only the successf
   }
   finally { await f.close(); }
 });
-test("persistent transient errors exhaust one retry, while quota and unknown failures never retry", async () => {
+test("persistent retryable stream errors exhaust one retry, while quota never retries", async () => {
   for (const code of ["server_is_overloaded", "insufficient_quota", "unknown"]) {
     const f = await fixture(() => [failed(code)]);
-    try { await assert.rejects(collect(f.provider)); assert.equal(f.attempts(), code === "server_is_overloaded" ? 2 : 1); }
+    try { await assert.rejects(collect(f.provider)); assert.equal(f.attempts(), code === "insufficient_quota" ? 1 : 2); }
     finally { await f.close(); }
   }
 });
@@ -70,5 +76,39 @@ test("HTTP quota, unspecified 429, and rate limits needing a long wait never ret
     const f = await fixture(() => initial);
     try { await assert.rejects(collect(f.provider)); assert.equal(f.attempts(), 1); }
     finally { await f.close(); }
+  }
+});
+
+test("an unknown error event retries once before output and records provider_retry", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-responses-retry-"));
+  configureTelemetry(directory, "test");
+  const f = await fixture(attempt => attempt === 1 ? [error("unrecognized_upstream_failure")] : complete);
+  const since = Date.now();
+  try {
+    const events = await collect(f.provider);
+    assert.deepEqual(events.filter(event => event.type === "text").map(event => event.text), ["recovered"]);
+    assert.equal(f.attempts(), 2);
+    await flushTelemetry();
+    assert.equal((await readTelemetry(directory, since)).filter(event => event.event === "provider_retry").length, 1);
+  } finally {
+    await f.close(); await flushTelemetry(); await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("an unknown error event after text output does not retry", async () => {
+  const f = await fixture(() => [{ type: "response.output_text.delta", delta: "partial" }, error("unrecognized_upstream_failure")]);
+  try {
+    await assert.rejects(collect(f.provider), (caught: unknown) => caught instanceof ProviderError && caught.code === "inference_failed");
+    assert.equal(f.attempts(), 1);
+  } finally { await f.close(); }
+});
+
+test("context and authentication error events never retry", async () => {
+  for (const code of ["context_length_exceeded", "invalid_api_key"]) {
+    const f = await fixture(() => [error(code)]);
+    try {
+      await assert.rejects(collect(f.provider));
+      assert.equal(f.attempts(), 1);
+    } finally { await f.close(); }
   }
 });

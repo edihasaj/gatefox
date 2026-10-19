@@ -21,7 +21,8 @@ import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from ".
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "./provider-failure.js";
-import { Admission } from "./admission.js";
+import { AdmissionRegistry, providerAdmissionLimit } from "./admission-registry.js";
+import type { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
 import { telemetry } from "./telemetry.js";
@@ -69,11 +70,7 @@ export function nativeModelAlias(config: GatewayConfig, model: string): string |
   return matches.length === 1 ? matches[0] : undefined;
 }
 
-/**
- * The Codex subscription provider that serves a reviewer slug when no alias names it: the only one the
- * gateway has. With none or several, which account's data the review would use is not decided, so no
- * provider serves it (fail closed).
- */
+/** The only Codex subscription provider serves an unnamed reviewer; ambiguity fails closed. */
 export function autoReviewProvider(config: GatewayConfig, slug: string): ProviderConfig | undefined {
   if (!isAutoReviewModel(slug)) return;
   const codex = config.providers.filter(provider => provider.type === "codex-subscription");
@@ -104,16 +101,9 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
   return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
-/**
- * Whole-request cap. Native Codex sends long chats with inline screenshots to its upstream with no
- * client-side byte limit, and upstreams accept tens of megabytes, so this stays above them and lets
- * the upstream decide. It only bounds gateway memory.
- */
+/** Whole-request cap: it bounds gateway memory while letting the upstream set its own large limit. */
 export const maxRequestBytes = 64 * 1024 * 1024;
-/**
- * Names the missing alias so a chat left on a removed provider says what to do. Only
- * alias characters are echoed, and the length is capped.
- */
+/** Names a missing alias with only capped, safe characters. */
 export function unknownModelMessage(model: string): string {
   const shown = model.replace(/[^A-Za-z0-9._/:@-]/g, "").slice(0, 80);
   return `Model "${shown}" is not offered by this gateway; it may have been turned off. Choose another model for this chat.`;
@@ -136,6 +126,8 @@ export interface GatewayFailure {
 }
 export interface GatewayStartOptions {
   heartbeatMs?: number; onFailure?: (failure: GatewayFailure) => void;
+  /** Test hook for observing one handler's admission lifetime. */
+  admissionRegistry?: AdmissionRegistry;
   /** The temp folder whose Copilot parent the startup sweep reads; the OS temp folder by default. Tests pass a private one. */
   copilotTempBase?: string;
   /** Why the newest change to the configuration file is not applied, if it is not; `/health` reports it as `configRejected`. */
@@ -238,31 +230,32 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
+  const admissions = options.admissionRegistry ?? new AdmissionRegistry();
   const buildRoutes = (current: GatewayConfig) => {
+    admissions.configure(current);
     const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window))] as const));
-    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
+    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
     // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and reasoning scope match.
     const reviewers = new Map(autoReviewModels.flatMap(slug => {
       const provider = autoReviewProvider(current, slug);
-      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
+      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
     }));
-    return { routes, reviewers };
+    return { routes, reviewers, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };
   };
-  let current = config; let { routes, reviewers } = buildRoutes(config);
+  let current = config; let currentRoutes = buildRoutes(config); let { routes, reviewers } = currentRoutes;
   const snapshot = async () => {
     const next = reload ? await reload() : current;
     if (next !== current) {
-      const updated = buildRoutes(next); routes = updated.routes; reviewers = updated.reviewers; current = next;
+      const previous = currentRoutes; const updated = buildRoutes(next); currentRoutes = updated; routes = updated.routes; reviewers = updated.reviewers; current = next; previous.release();
       // Live Copilot sessions of a provider the new configuration removed or changed would otherwise live out their timers.
       retireUnconfiguredCopilotScopes(next.providers);
     }
-    return { config: current, routes, reviewers };
+    return { config: current, routes, reviewers, release: currentRoutes.retain() };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
   const admitted = new Set<AbortController>(); let draining = false;
   /** One recorder per running request: writes its failure record if the request has none yet. */
   const pending = new Set<() => boolean>();
-  const admission = new Admission(config.maxConcurrent || 4);
   let requests = 0;
   // Every response names the release whose code served it; useful during in-place upgrades.
   const servingRelease = releaseState()?.running;
@@ -280,7 +273,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const requestId = randomUUID(); res.setHeader("X-Request-Id", requestId);
     if (messagesProtocol) res.setHeader("request-id", requestId);
     if (req.method === "GET" && path === "/health") {
-      try { await snapshot(); const configRejected = options.configRejection?.(); send(res, 200, { status: "ok", ...(configRejected ? { configRejected } : {}), active: active.size, running: admission.running, queued: admission.queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); }
+      try { const state = await snapshot(); try { const { running, queued } = admissions.totals(); const configRejected = options.configRejection?.(); send(res, 200, { status: "ok", ...(configRejected ? { configRejected } : {}), active: active.size, running, queued, idleRestart: true, idleUpgrade: true, features: gatewayFeatures }); } finally { state.release(); } }
       catch { send(res, 503, { status: "configuration_error", active: active.size, idleRestart: true }); }
       return;
     }
@@ -296,25 +289,28 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     let state: Awaited<ReturnType<typeof snapshot>>;
     try { state = await snapshot(); }
     catch { fail(503, "configuration_error", "Gateway configuration is invalid; fix it before retrying"); return; }
-    if (req.method === "GET" && path === "/v1/models") { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); return; }
-    if (req.method === "GET" && path === "/v1/model-catalog") { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); return; }
-    if (req.method === "GET" && path === "/v1/provider-usage") { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); return; }
-    if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { fail(404, "not_found", "Unknown endpoint"); return; }
+    if (req.method === "GET" && path === "/v1/models") { try { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
+    if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { try { fail(404, "not_found", "Unknown endpoint"); } finally { state.release(); } return; }
     // Over capacity every inference request gets a retryable 429 before its body is read, so an overload never buffers bodies. A remote
     // compaction refused this way is retried and gets its final refusal once a slot is free.
-    if (active.size >= (state.config.maxConcurrent || 4) + 32) { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); return; }
+    const maximumActive = admissions.maximumActive(state.config);
+    if (active.size >= maximumActive) { try { res.setHeader("Retry-After", "1"); fail(429, "busy", "Gateway waiting queue is full; retry shortly"); } finally { state.release(); } return; }
+    const releaseSnapshot = state.release;
     const controller = new AbortController();
-    let releaseAdmission: (() => void) | undefined;
+    let releaseAdmission: (() => void) | undefined; let admission: Admission | undefined;
     let writer: ResponsesWriter | MessagesWriter | undefined; let open: ((turnState?: string) => void) | undefined;
     let heartbeat: NodeJS.Timeout | undefined; let headWait: NodeJS.Timeout | undefined; let abortCause: AbortCause | undefined;
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
     // A request is recorded once, whichever of its end and a process exit gets there first.
     let recorded = false;
-    let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let context: InferenceContext | undefined;
+    let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let requestedModel: string | undefined; let context: InferenceContext | undefined;
     const startedAt = Date.now();
     let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
-      autoReview: model !== undefined && isAutoReviewModel(model) ? true : undefined,
+      autoReview: model !== undefined && isAutoReviewModel(model) ? true : undefined, requestedModel,
+      clientProtocol: messagesProtocol ? "messages" : "responses",
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
       providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined }; };
@@ -379,7 +375,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route && isAutoReviewModel(request.model)) model = request.model;
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
-      providerId = route.id; providerType = route.type; model = request.model;
+      providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
       // Validate the supported protocol before invoking any provider. Only the Codex subscription route accepts tool_search
       // (its provider drops it before forwarding); every other route rejects it here, and Messages requests carry only function tools.
       responsesToChatRequest(request, { toolSearch: route.type === "codex-subscription", reportMerges: true });
@@ -388,7 +384,6 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       }
       const providerRequest = messagesProtocol ? messagesProviderRequest(request, route.type) : request;
       if (messagesProtocol && ["codex-subscription", "claude-subscription", "copilot-subscription"].includes(route.type)) res.setHeader("X-Gateway-Output-Limit", "provider-managed");
-      const limit = state.config.maxConcurrent || 4; admission.setLimit(limit);
       // Compaction is refused for good below, whatever the queue holds, so a full queue cannot turn it into a retryable 429.
       if (!internal.unsupportedCompaction) admission.check();
       const streaming = request.stream === true;
@@ -416,7 +411,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // heartbeat interval after admission: the same silence an open stream allows. A queued
       // request still opens at once and shows progress while it waits.
       const deferred = streaming && route.adapter.emitsTransport === true;
-      if (!deferred || admission.running >= limit || admission.queued > 0) open();
+      if (!deferred || admission.running >= route.limit || admission.queued > 0) open();
       // Remote compaction is an executor control item the gateway does not serve: it fails as a final error once the
       // head a stream needs exists, before admission and without a provider. Nonstream requests get the plain HTTP 400.
       if (internal.unsupportedCompaction) throw unsupportedCompactionFailure();
@@ -473,6 +468,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) open?.();
       clearInterval(heartbeat);
       const known = recordFailure(error);
+      if (known.code === "busy" && known.status === 429 && !res.headersSent) res.setHeader("Retry-After", "1");
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
@@ -483,7 +479,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         }
         else fail(known.status, known.code, known.message, known.upstream?.contextTokens);
       }
-    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
+    } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); releaseSnapshot(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };
   // A failure the handler did not catch answers 500 while the head is unsent and never takes the process down.
   const answerCrash = (res: ServerResponse, error: unknown): void => {

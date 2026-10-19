@@ -16,9 +16,9 @@ test("telemetry fields drop secret-shaped keys, objects and unsafe text", () => 
   assert.equal(fields.durationMs, 12.346);
 });
 
-test("billing fields pass the telemetry filter while look-alike fields do not", () => {
-  const fields = telemetryFields({ providerType: "copilot-subscription", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial", promptTokens: "x", authToken: 5 });
-  assert.deepEqual(fields, { providerType: "copilot-subscription", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial" });
+test("billing and protocol fields pass the telemetry filter while look-alike fields do not", () => {
+  const fields = telemetryFields({ providerType: "copilot-subscription", clientProtocol: "messages", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial", promptTokens: "x", authToken: 5 });
+  assert.deepEqual(fields, { providerType: "copilot-subscription", clientProtocol: "messages", cacheWriteTokens: 10, reasoningTokens: 3, nanoAiu: 2e9, nanoAiuStatus: "partial" });
 });
 
 test("diagnostics sum Copilot credits per model", () => {
