@@ -71,8 +71,13 @@ test("configure reads a metadata-only source and writes only an isolated candida
 test("Claude Desktop help is handled before the ordinary gateway configuration parser", async () => {
   const { stdout } = await run(process.execPath, [cli, "claude-desktop", "--help"], { env: { ...process.env, GATEWAY_CONFIG: "/missing/gateway.json" } });
   assert.match(stdout, /claude-desktop configure/);
+  assert.match(stdout, /claude-desktop inference --gateway-config PATH --native-config PATH/);
   assert.match(stdout, /--endpoint LOOPBACK_URL --token-file PATH/);
   assert.match(stdout, /loopback SSH forward/);
+});
+
+test("inference requires absolute private gateway and native configuration paths", async () => {
+  await assert.rejects(run(process.execPath, [cli, "claude-desktop", "inference", "--gateway-config", "/tmp/gateway.json", "--native-config", "native.json"]), /--native-config must be an absolute path/);
 });
 
 test("configure refuses non-loopback or HTTPS endpoints before writing a candidate", async () => {

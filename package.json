@@ -34,7 +34,8 @@
     "README.md",
     "docs",
     "scripts/claude-desktop-adapter.mjs",
-    "scripts/claude-desktop-optional-tools.mjs"
+    "scripts/claude-desktop-optional-tools.mjs",
+    "scripts/claude-desktop-native-messages.mjs"
   ],
   "scripts": {
     "build": "tsc",

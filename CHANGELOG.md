@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Claude Desktop's private inference service can run genuine native Claude Auto
+reviews with their original generation controls and protocol metadata. A
+Claude-only context proxy also preserves recognized Qwen input-overflow errors,
+so scoped reactive compaction can recover beyond the unknown-model estimate.
+The private rollout passed native Auto review and mixed-model subagent tasks
+on three Macs. Thanks to @edihasaj for the acceptance testing.
+
 ## 0.5.4 — 2026-10-19
 
 Claude Desktop can use an opt-in model catalog with real account labels for
