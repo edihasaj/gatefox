@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { pinReplay, sessionRegistry, recordWarmupCompletion, warmupCompletions, warmupLimit, warmupMs } from "../providers/claude-session-registry.js";
@@ -13,9 +16,9 @@ import type { InferenceEvent, ResponsesInputItem, ResponsesRequest } from "../pr
 const providerId = `claude-warmup-${process.pid}`;
 const user = (text: string): ResponsesInputItem => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
 const key = (threadId: string) => createHash("sha256").update(`${providerId}\0\0${threadId}`).digest("hex");
-const provider = (sessions: Record<string, unknown> = {}) => new ClaudeSubscription({
+const provider = (sessions: Record<string, unknown> = {}, liveModule?: string) => new ClaudeSubscription({
   id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live", ...sessions },
-});
+}, undefined, undefined, liveModule);
 
 async function turn(subscription: ClaudeSubscription, input: ResponsesInputItem[], context: InferenceContext, controller = new AbortController()) {
   const events: InferenceEvent[] = []; const writer = new ResponsesWriter("fixture", () => {});
@@ -36,6 +39,27 @@ async function teardown(fixture: ClaudeFixture): Promise<void> {
 }
 
 const starts = async (fixture: ClaudeFixture) => (await fixture.capture()).flatMap(entry => entry.start ? [entry.start] : []);
+const waitFor = async (check: () => boolean) => {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    if (check()) return;
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  throw new Error("timed out waiting for test admission");
+};
+
+async function slowSweep(label: string): Promise<() => Promise<void>> {
+  const directory = join(tmpdir(), "gateway-claude", `warmup-race-${process.pid}-${label}`);
+  await Promise.all(Array.from({ length: 256 }, (_, index) => mkdir(join(directory, String(index)), { recursive: true })));
+  return () => rm(directory, { recursive: true, force: true });
+}
+
+function fillWarmup(registry: ReturnType<typeof sessionRegistry>, first: string, second: string): void {
+  registry.warmups.clear();
+  recordWarmupCompletion(registry, first);
+  for (let index = 0; index < warmupLimit - 2; index++) recordWarmupCompletion(registry, `filler-${index}`);
+  recordWarmupCompletion(registry, second);
+  assert.equal(registry.warmups.size, warmupLimit);
+}
 
 test("the default warmup serves the first request one-shot, then promotes and continues", { timeout: 30000 }, async () => {
   const { fixture, since } = await setup({ replies: [{ text: "one" }, { text: "two" }, { text: "three" }] });
@@ -79,6 +103,96 @@ test("a cold warmup fallback does not reserve capacity from an eligible concurre
     assert.equal(sessions.some(event => event.missReason === "capacity"), false, "the eligible thread was not rejected by a cold fallback");
     assert.ok(sessions.some(event => event.outcome === "fallback" && event.missReason === "warmup"));
     assert.ok(sessions.some(event => event.outcome === "spawned"));
+  } finally { await teardown(fixture); }
+});
+
+test("a passed warmup admission remains eligible when its entry is evicted during sweep", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ replies: [] });
+  const removeSweep = await slowSweep("cap-one");
+  try {
+    const registry = sessionRegistry(); const a = "evicted-a"; const b = "evicted-b";
+    fillWarmup(registry, key(a), key(b));
+    const module = new URL("../providers/claude-live.js?warmup-cap-one", import.meta.url).href;
+    const subscription = provider({ max: 1 }, module);
+    const first = turn(subscription, [user("a")], { threadId: a });
+    await waitFor(() => registry.starting.has(key(a)));
+    recordWarmupCompletion(registry, "unrelated");
+    const second = turn(subscription, [user("b")], { threadId: b });
+    await Promise.all([first, second]);
+    assert.equal(claudeLive({ max: 1, parkMinutes: 60 }).sessions().length, 1);
+    assert.equal(registry.starting.size, 0);
+    await flushTelemetry();
+    const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
+    assert.equal(events.some(event => event.threadKey === key(a).slice(0, 8) && event.missReason === "warmup"), false);
+    assert.ok(events.some(event => event.threadKey === key(a).slice(0, 8) && event.outcome === "spawned"));
+    assert.ok(events.some(event => event.threadKey === key(b).slice(0, 8) && event.missReason === "capacity"));
+  } finally { await removeSweep(); await teardown(fixture); }
+});
+
+test("two passed warmup admissions both spawn when the cap has room", { timeout: 30000 }, async () => {
+  const { fixture } = await setup({ replies: [] });
+  const removeSweep = await slowSweep("cap-two");
+  try {
+    const registry = sessionRegistry(); const a = "room-a"; const b = "room-b";
+    fillWarmup(registry, key(a), key(b));
+    const module = new URL("../providers/claude-live.js?warmup-cap-two", import.meta.url).href;
+    const subscription = provider({ max: 2 }, module);
+    const first = turn(subscription, [user("a")], { threadId: a });
+    await waitFor(() => registry.starting.has(key(a)));
+    recordWarmupCompletion(registry, "unrelated");
+    const second = turn(subscription, [user("b")], { threadId: b });
+    await Promise.all([first, second]);
+    assert.equal(claudeLive({ max: 2, parkMinutes: 60 }).sessions().length, 2);
+    assert.equal(registry.starting.size, 0);
+    assert.deepEqual((await starts(fixture)).sort(), ["live", "live"]);
+  } finally { await removeSweep(); await teardown(fixture); }
+});
+
+test("a warmup entry expiring during sweep does not revise its passed admission", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ replies: [] });
+  const removeSweep = await slowSweep("expiry");
+  const originalNow = Date.now; let now = 1000;
+  try {
+    Date.now = () => now;
+    const registry = sessionRegistry(); const threadId = "expiry";
+    recordWarmupCompletion(registry, key(threadId));
+    const module = new URL("../providers/claude-live.js?warmup-expiry", import.meta.url).href;
+    const request = turn(provider({ max: 1 }, module), [user("expiry")], { threadId });
+    await waitFor(() => registry.starting.has(key(threadId)));
+    now += warmupMs;
+    await request;
+    assert.equal(claudeLive({ max: 1, parkMinutes: 60 }).sessions().length, 1);
+    await flushTelemetry();
+    const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
+    assert.ok(events.some(event => event.threadKey === key(threadId).slice(0, 8) && event.outcome === "spawned"));
+    assert.equal(events.some(event => event.threadKey === key(threadId).slice(0, 8) && event.missReason === "warmup"), false);
+  } finally { Date.now = originalNow; await removeSweep(); await teardown(fixture); }
+});
+
+test("a session that closes during waitIdle replays a hold or spawns without afterWarmup", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ replies: [{ text: "held" }, { text: "spawned" }] });
+  const closing = () => {
+    const session: { state: "interrupting" | "closed"; waitIdle: () => Promise<boolean> } = {
+      state: "interrupting",
+      waitIdle: async () => { session.state = "closed"; return false; },
+    };
+    return session;
+  };
+  try {
+    const registry = sessionRegistry(); const held = "closed-held"; const open = "closed-open";
+    registry.sessions.set(key(held), closing() as never);
+    pinReplay(registry, key(held), Date.now(), "prefix_diverged");
+    await turn(provider({ max: 6 }), [user("held")], { threadId: held });
+    registry.sessions.delete(key(held));
+
+    registry.sessions.set(key(open), closing() as never);
+    await turn(provider({ max: 6 }), [user("open")], { threadId: open });
+    await flushTelemetry();
+    const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
+    assert.ok(events.some(event => event.threadKey === key(held).slice(0, 8) && event.missReason === "prefix_diverged"));
+    const spawned = events.find(event => event.threadKey === key(open).slice(0, 8) && event.outcome === "spawned");
+    assert.equal(spawned?.afterWarmup, undefined);
+    assert.deepEqual((await starts(fixture)).sort(), ["live", "oneshot"]);
   } finally { await teardown(fixture); }
 });
 
