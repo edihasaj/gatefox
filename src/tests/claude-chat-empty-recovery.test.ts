@@ -105,6 +105,31 @@ test("null usage chunks are ignored until a numeric usage snapshot arrives", asy
   } finally { await Promise.all([visible.close(), retry.close()]); }
 });
 
+test("observed vLLM null-only metadata can recover, but non-null metadata fails closed", async () => {
+  const metadata = (value: null | "not-null"): Frame[] => [
+    { model: "qwen-flash", prompt_token_ids: value, prompt_text: value, choices: [{ index: 0, delta: { reasoning_content: "private" }, finish_reason: null, stop_reason: value, token_ids: value }] },
+    { model: "qwen-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop", stop_reason: value, token_ids: value }] },
+    usage(3, 1), "[DONE]",
+  ];
+  const allowed = await fixture(attempt => attempt === 1 ? metadata(null) : text("recovered"));
+  try {
+    const result = await collect(allowed.provider, undefined, { reasoning: { summary: "none" } });
+    assert.equal(result.error, undefined); assert.equal(allowed.attempts(), 2); assert.equal(allowed.bodies[0], allowed.bodies[1]);
+  } finally { await allowed.close(); }
+  for (const frames of [
+    [{ model: "qwen-flash", prompt_token_ids: "bad", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, usage(1, 1), "[DONE]"],
+    [{ model: "qwen-flash", prompt_text: "bad", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] }, usage(1, 1), "[DONE]"],
+    [{ model: "qwen-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop", stop_reason: "bad" }] }, usage(1, 1), "[DONE]"],
+    [{ model: "qwen-flash", choices: [{ index: 0, delta: {}, finish_reason: "stop", token_ids: "bad" }] }, usage(1, 1), "[DONE]"],
+  ] as Frame[][]) {
+    const rejected = await fixture(() => frames);
+    try {
+      const result = await collect(rejected.provider);
+      assert.equal(rejected.attempts(), 1); assert.equal((result.error as { code?: string }).code, "incomplete");
+    } finally { await rejected.close(); }
+  }
+});
+
 test("allows an auto tool response after an empty completion but never retries twice-empty", async () => {
   const tool = (attempt: number): Frame[] => attempt === 1 ? empty() : [
     terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),
