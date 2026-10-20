@@ -159,7 +159,11 @@ test("adapter loads a fifth catalog while older chats retain their writers and a
     await f.backends.request("thread/unsubscribe", { threadId: "chat-0" });
     f.next();
     assert.equal(((await f.start("chat-5")).thread as Message).id, "chat-5");
-    const status = await f.control.request("execution/status", {}); assert.equal((status.generations as unknown[]).length, 5);
+    let status = await f.control.request("execution/status", {});
+    for (let attempt = 0; attempt < 200 && (status.generations as unknown[]).length > 5; attempt++) {
+      await delay(10); status = await f.control.request("execution/status", {});
+    }
+    assert.equal((status.generations as unknown[]).length, 5);
     assert.deepEqual(await f.control.request("execution/find", { threadId: "chat-0" }), { found: false });
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await f.clean(); }

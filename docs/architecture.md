@@ -118,8 +118,11 @@ The adapter fetches authenticated public model metadata from the inference host.
 A catalog change creates a fresh gateway executor for new chats. Loaded chats
 retain their original executor, including active turns and terminal state.
 Loaded gateway chats can retain as many catalog generations as they need; a fifth
-catalog does not require closing an older chat. Unleased generations without
-loaded chats are stopped before a new generation starts. A gateway executor
+catalog does not require closing an older chat. Released and disconnected
+generations are checked in the background and periodically. Only an unleased
+generation proven to have no loaded chats is stopped. An older engine whose
+probe fails stays owned and does not block acquisition of a new catalog.
+A gateway executor
 failure does not stop the native connection; saved gateway history can be resumed.
 
 Gateway-owned compaction metadata contains only current-window counters and SDK

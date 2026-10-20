@@ -19,6 +19,8 @@ import { telemetry } from "./telemetry.js";
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
 export interface ExecutionHostOptions { config: GatewayConfig; configPath: string; nativeHome: string; codex: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkVerifier?: NativeSdkVerifier; gatewayRuntime?: () => Promise<GatewaySdkRuntime | undefined>;
+  /** Bounded background retirement of empty gateway generations. The seam keeps tests deterministic without process-wide settings. */
+  maintenance?: { intervalMs?: number; candidateLimit?: number; probeConcurrency?: number };
   /** The installed release that is newer than this process, with its gateway SDK checksum; defaults to reading the installed release. A stand-in for tests. */
   pendingRelease?: () => Promise<PendingGatewaySdk | undefined>;
   /**
@@ -114,8 +116,11 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath,
     capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration } : {}) });
   let native: NativeExecutionEngine | undefined; let richestNative: NativeExecutionDescriptor | undefined; let nativeLease: NativeHomeLease | undefined;
-  const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
-  let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let pending = 0;
+  const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let leaseEpoch = 0; let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
+  const maintenanceIntervalMs = options.maintenance?.intervalMs ?? 60_000;
+  const maintenanceCandidateLimit = options.maintenance?.candidateLimit ?? 8;
+  const maintenanceProbeConcurrency = options.maintenance?.probeConcurrency ?? 2;
+  let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let controlEpoch = 0; let pending = 0;
   // Release skew: a generation request that names another release's gateway SDK. The adapter is newer when its SDK is the
   // installed (pending) release's, and older otherwise. Each direction is recorded at most once per `skewEventGapMs`, with the
   // refusals since the last record; a newer adapter also marks its release urgent for the supervisor (see `skewRefused`).
@@ -139,7 +144,69 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     const sdkState = native ? native.closed ? "exited" : native.owner.pid > 0 ? "running" : "starting" : "idle";
     writes = writes.catch(() => undefined).then(async () => { await nativeLease?.publish(snapshot.native, snapshot.state === "stopped", sdkState); await publishOwner(home, snapshot); }); return writes;
   };
-  const remove = async (engine: ExecutionEngine) => { await engine.stop(); engines.delete(engine.record.revision); await publish(); };
+  const remove = async (engine: ExecutionEngine) => { await engine.stop(); if (engines.get(engine.record.revision) === engine) engines.delete(engine.record.revision); await publish(); };
+  const leased = (engine: ExecutionEngine) => [...leases.values()].some(values => values.has(engine.record.revision));
+  let maintenanceTimer: NodeJS.Timeout | undefined; let maintenance: Promise<void> | undefined; let maintenanceRequested = false; let maintenanceCursor = 0;
+  const maintenancePass = async (): Promise<void> => {
+    // Snapshot only after preceding acquires/releases have settled. The potentially slow SDK probes deliberately run outside
+    // that queue: a stopped or broken old generation must never delay a new catalog.
+    const snapshot = serial.then(() => {
+      if (stopping || quiescing) return [] as ExecutionEngine[];
+      const all = [...engines.values()]; if (!all.length) return [] as ExecutionEngine[];
+      const selected: ExecutionEngine[] = [];
+      for (let offset = 0; offset < all.length && selected.length < maintenanceCandidateLimit; offset++) {
+        const engine = all[(maintenanceCursor + offset) % all.length];
+        if (!leased(engine)) selected.push(engine);
+      }
+      maintenanceCursor = (maintenanceCursor + Math.max(1, maintenanceCandidateLimit)) % all.length;
+      return selected;
+    });
+    serial = snapshot.catch(() => undefined);
+    const candidates = await snapshot;
+    const retireEmpty = async (engine: ExecutionEngine): Promise<void> => {
+      // Enter the queue first, then take a fresh proof outside it. This avoids using an empty result that sat behind a slow
+      // probe, while never putting an SDK request on the acquisition path.
+      const eligible = serial.then(() => !stopping && !quiescing && engines.get(engine.record.revision) === engine && !leased(engine)
+        ? { lease: leaseEpoch, control: controlEpoch } : undefined);
+      serial = eligible.catch(() => undefined);
+      const epoch = await eligible; if (!epoch) return;
+      let empty = engine.closed;
+      if (!empty) try { empty = !(await engine.loadedThreads()).size; } catch { return; }
+      if (!empty) return;
+      if (controlEpoch !== epoch.control) { maintenanceRequested ||= !stopping; return; }
+      const retire = serial.then(async () => {
+        if (stopping || quiescing || engines.get(engine.record.revision) !== engine || leased(engine) || leaseEpoch !== epoch.lease) return;
+        if (controlEpoch !== epoch.control) { maintenanceRequested ||= !stopping; return; }
+        // Stopping another writer can take seconds. Mark it as queue interference so any proof waiting behind it is retried.
+        controlEpoch++;
+        await remove(engine);
+        maintenanceRequested = true;
+      });
+      serial = retire.catch(() => undefined); await retire.catch(() => undefined);
+    };
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(maintenanceProbeConcurrency, candidates.length) }, async () => {
+      for (;;) {
+        const index = next++; if (index >= candidates.length) return;
+        const engine = candidates[index];
+        await retireEmpty(engine);
+      }
+    }));
+  };
+  const scheduleMaintenance = () => {
+    if (stopping) return;
+    maintenanceRequested = true;
+    if (maintenance) return;
+    maintenance = (async () => {
+      try {
+        do { maintenanceRequested = false; await maintenancePass(); } while (maintenanceRequested && !stopping);
+      } finally {
+        maintenance = undefined;
+        if (maintenanceRequested && !stopping) scheduleMaintenance();
+      }
+    })();
+    void maintenance.catch(() => undefined);
+  };
   const acquire = async (params: Message): Promise<ExecutionRecord> => {
     if (!capabilities.includes("gateway")) throw new Error("Execution host does not offer gateway ownership");
     const descriptor = executionDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
@@ -149,9 +216,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       return existing.record;
     }
     if (existing) await remove(existing);
-    // Reclaim unused generations without limiting how many distinct catalogs loaded chats may need.
-    // A lease or an SDK-loaded chat always preserves its original writer, settings and terminal state.
-    for (const engine of [...engines.values()]) if (engine.closed || (![...leases.values()].some(values => values.has(engine.record.revision)) && !(await engine.loadedThreads()).size)) await remove(engine);
+    if (stopping) throw new Error("Execution host is closing");
+    // Empty generations are retired by bounded background maintenance. Never probe an unrelated old SDK while this caller
+    // is loading a new catalog: an old socket can be stopped or wedged while its saved chat remains recoverable.
     const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) throw new ReleaseSkewError(error.adapterSha256, await noteSkew(error.adapterSha256).catch(() => "adapter_older" as const)); throw error; }
@@ -220,7 +287,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     }
     if (method === "execution/release") {
       if (typeof params.revision !== "string" || !/^[a-f0-9]{64}$/.test(params.revision)) throw new Error("Invalid execution generation release");
-      return { released: held.delete(params.revision) };
+      const released = held.delete(params.revision); if (released) leaseEpoch++; scheduleMaintenance(); return { released };
     }
     if (method === "execution/find") {
       if (!capabilities.includes("gateway")) throw new Error("Execution host does not offer gateway ownership");
@@ -243,7 +310,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (stopping || sockets.clients.size >= 8 || request.headers.origin || request.url !== "/") { socket.destroy(); return; }
     sockets.handleUpgrade(request, socket, head, client => {
       const ids = new Set<Id>(); const held = new Set<string>(); leases.set(client, held);
-      client.on("close", () => leases.delete(client)); client.on("error", () => client.terminate());
+      client.on("close", () => { if (held.size) leaseEpoch++; leases.delete(client); scheduleMaintenance(); }); client.on("error", () => client.terminate());
       client.on("message", (bytes, binary) => {
         if (binary) { client.close(1003, "Text JSON required"); return; }
         let message: Message;
@@ -251,15 +318,16 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         if (!isId(message.id) || typeof message.method !== "string" || ids.has(message.id)) { client.close(1008, "Invalid control request"); return; }
         if (pending >= 64) { client.close(1013, "Execution control busy"); return; }
         const id = message.id; ids.add(id); pending++;
+        const status = message.method === "execution/status";
         const run = async () => {
+          if (!status) controlEpoch++;
           const result = await dispatch(message.method as string, object(message.params), held);
-          if (["execution/acquire", "execution/find"].includes(message.method as string) && typeof object(result).revision === "string") held.add((result as ExecutionRecord).revision);
-          if (message.method === "native/acquire") held.add(`native:${(result as NativeExecutionRecord).revision}`);
+          if (["execution/acquire", "execution/find"].includes(message.method as string) && typeof object(result).revision === "string") { held.add((result as ExecutionRecord).revision); leaseEpoch++; }
+          if (message.method === "native/acquire") { held.add(`native:${(result as NativeExecutionRecord).revision}`); leaseEpoch++; }
           return result;
         };
         // `execution/status` only reads memory, so it is answered at once rather than behind an acquire or an idle check
         // in the queue: the service's 5 s probe must never read a busy host as a hung one.
-        const status = message.method === "execution/status";
         const operation = status ? Promise.resolve().then(run) : serial.then(run);
         if (!status) serial = operation.catch(() => undefined);
         void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
@@ -274,6 +342,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   });
   const prepareStop = (): Promise<boolean> => {
     const operation = serial.then(async () => {
+      controlEpoch++;
       if (stopping) return false;
       if (quiescing) return true;
       if ([...leases.values()].some(held => held.size)) return false;
@@ -303,6 +372,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
    */
   const prepareQuietStop = (quietMs = defaultQuietMs): Promise<QuietStop | undefined> => {
     const operation = serial.then(async (): Promise<QuietStop | undefined> => {
+      controlEpoch++;
       if (stopping || quiescing) return;
       const owned: Array<[string, ExecutionEngine | NativeExecutionEngine]> = [...engines.values()].map(engine => [engine.record.revision, engine]);
       if (native) owned.push(["native", native]);
@@ -334,10 +404,11 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     serial = operation.catch(() => undefined); return operation;
   };
   const close = (): Promise<void> => closed ||= (async () => {
-    stopping = true; skew.stop(); for (const socket of sockets.clients) socket.terminate();
+    stopping = true; skew.stop(); if (maintenanceTimer) clearInterval(maintenanceTimer); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));
+    await maintenance?.catch(() => undefined);
     await serial.catch(() => undefined); await writes.catch(() => undefined); await stoppedServer; sockets.close();
     if (results.some(result => result.status === "rejected")) throw new Error("An execution generation did not stop; its ownership record was preserved");
     // A host that never claimed the native home (a live owner held it) may find it free now, holding the receipt a fallback
@@ -381,6 +452,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     await listenPrivate(server, physicalPath); await chmod(physicalPath, 0o600);
     await symlink(physicalPath, socketPath);
     owner.socket = await socketIdentity(socketPath); await publish();
+    maintenanceTimer = setInterval(scheduleMaintenance, maintenanceIntervalMs); maintenanceTimer.unref();
     return { close, prepareStop, prepareQuietStop, skewRefused: release => !stopping && skew.has(release), resume: () => { if (!stopping) quiescing = false; } };
   } catch (error) { await close(); throw error; }
 }
