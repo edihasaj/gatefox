@@ -166,6 +166,29 @@ recorded failure, which stays in every report for that pair until the app moves
 or `--smoke` runs the check again. A missing script or missing installed release
 reads as `unavailable` and warns.
 
+## Serving-host execution probe
+
+Rollout readiness asks the running execution host for `execution/probe`. This
+is a real function-tool canary: it starts the release's verified gateway SDK in
+a private temporary home, uses only a loopback mock provider, and makes its
+disposable Git repository write a nonce-bearing file and local commit through
+`exec_command`. It never sends paid inference or reads the Mac's gateway
+configuration, credentials, chat history, hooks, plugins, MCP settings, or
+native home.
+
+The host captures its PID/start identity, loaded release, source receipt,
+catalog fingerprint, and SDK checksum before it starts the child, then checks
+all of them again before returning success. A changed or unavailable identity,
+catalog, release, or SDK is never ready, even if the child completed. Calls
+coalesce while one canary is running; the run is bounded to 30 seconds and
+shutdown terminates only its private child process group.
+
+The response uses fixed reason codes and only these proof booleans:
+`sdkVerified`, `configVerified`, `directToolVerified`, `completedTurn`, and
+`commandVerified`. It never includes command text, tool arguments, paths,
+environment values, provider responses, or child errors. Rollout readiness
+passes only when every proof is true and the identity remained unchanged.
+
 ## State file
 
 `<state>/health-state.json` (0600) holds exactly two records: the last app

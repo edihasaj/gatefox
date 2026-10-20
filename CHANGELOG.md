@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Release readiness now requires evidence from loaded processes and the serving
+execution host, including an isolated SDK tool canary. Older adapters cannot
+create a gateway catalog that requires an unavailable Code Mode host. The live
+upgrade regression keeps a chat connection open while replacing its host and
+checks that tools and child-agent commits continue without replaying prior work.
+Thanks to @edihasaj for reporting the incomplete executor adoption after updates.
+
 Gateway updates preserve the release files that open desktop and SSH connections
 still use. A connection whose older release was already removed can recover its
 gateway SDK from the installed release after validating it against the loaded

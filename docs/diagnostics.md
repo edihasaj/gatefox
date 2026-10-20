@@ -274,10 +274,16 @@ server retains each old marker only until that generation's requests drain.
 user's gateway processes, names each one's role (`service`, `inference`,
 `desktop-adapter`, `ssh-listener`, `ssh-proxy`, `executor-host`,
 `gateway-engine`, `native-relay`, `tunnel` or `other`) and reads the release
-from mapped files found with `lsof`, falling back to its launch path when no
-mapped release can be identified. With a signed app-owned Node, JavaScript may
-have no mapped file and a floating `current` launch path can therefore describe
-the installed release instead. The report skips this process itself, so
+from mapped files found with `lsof`. For CLI roles, it reads all descriptors
+for that same PID and accepts only one open immutable
+`releases/V/package/dist/cli.js` entry beneath this install root. A floating
+`current` launch path is never evidence: if the immutable CLI descriptor cannot
+be read, the release is `unknown` unless the process was launched directly from
+one unambiguous immutable release path. A release marker alone does not prove
+the bootstrap release, because an older CLI can hot-load a newer server
+generation and retain its marker. It rechecks the PID and its start time after
+reading descriptors, dropping a row if that process exited or its PID was
+reused during the scan. The report skips this process itself, so
 running the command never adds a row.
 
 For the service, `gateway health` instead uses the optional `runningRelease`
