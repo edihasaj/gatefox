@@ -608,6 +608,32 @@ alone; the replayed `config` drops the keys that would block that restore.
 Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`
 ([diagnostics](diagnostics.md)).
 
+### A listener that outlives its release
+
+An adapter can stay open after the installer prunes the release directory it
+started from. When its complete original `package` directory is gone, it may load
+the SDK from the managed installation's `current` release and continue saved chats
+without reconnecting. That replacement is accepted only when the installation
+marker, `current` link, selected release marker, package version, SDK receipt,
+component hashes, capability and pinned SDK source all verify. The link must select
+a direct, user-owned release beneath that installation; a checkout, escaped link,
+partial old package, or present package whose SDK is missing or invalid never falls
+back.
+
+The connection keeps the provider it selected for new chats. A legacy
+`subscription_gateway` connection can use a newly verified SDK without changing its
+identity. A connection that selected `openai` continues only when the replacement
+proves the gateway executor capability; it never resumes gateway history on a stock
+executor.
+
+An already-loaded executor retains the catalog it loaded. Changing a catalog file
+cannot alter that generation, and a live owner continues serving its loaded chats.
+After an update, let the shared service adopt the release when it is quiet; do not
+force-kill it. To move one affected chat sooner, unsubscribe it from every frontend,
+wait for its `thread/closed` event (or for the host to report no owner), then resume
+it through an adapter on the fixed release. A resume before the old owner unloads
+returns to that owner.
+
 ## Native chats keep their model
 
 The adapter never changes a native chat's model or provider. When "Authenticated
@@ -735,6 +761,14 @@ model alias spelled exactly like a native slug is refused whenever the adapter l
 gateway catalog, at launch and at each refresh, against the native slugs it read at launch;
 a native model that appears later is checked at the next launch. (Before 0.4.4 every such sub-agent request failed with
 `unsupported_tool`.) The native engine keeps its own catalog unchanged.
+
+The executable selected for each new executor generation decides whether Code Mode
+is available; the adapter does not reuse that decision from the package that opened
+the desktop connection. A recovered SDK without the companion host gives every
+gateway and carried native row an explicit `tool_mode: "direct"`, including rows
+whose native metadata omitted or named an unknown mode. Direct mode overrides Code
+Mode feature flags. It preserves node_repl, permissions, review and instructions,
+and never changes the native engine's catalog.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global

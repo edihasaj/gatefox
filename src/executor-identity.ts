@@ -23,6 +23,11 @@ export function newChatProvider(config: Pick<GatewayConfig, "chatIdentity">, run
   return config.chatIdentity === "openai" && runtime?.executorIdentity === true ? nativeIdentityProvider : legacyGatewayProvider;
 }
 
+/** A connection keeps its first new-chat identity, provided the executor it is about to use still serves it. */
+export function executorServesProvider(provider: string, runtime: GatewaySdkRuntime | undefined): boolean {
+  return provider === legacyGatewayProvider || provider === nativeIdentityProvider && runtime?.executorIdentity === true;
+}
+
 /**
  * The provider id a gateway chat resumes with: the one it was saved with, so no rollout or SQLite row is ever rewritten. An id
  * the executor cannot serve falls back to the legacy one, as before the native identity.

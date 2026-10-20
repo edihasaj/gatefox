@@ -29,6 +29,13 @@ and the Codex source (`ModelInfo` in `codex-rs/protocol`, pinned revision 740e5a
   declares `cua_repl` with `omit_tools_from: ["code_mode", "deferred"]`, and
   `~/.codex/config.toml` runs `[mcp_servers.node_repl]` from the app. Only
   `tool_mode` follows code mode.
+- A gateway executor selects tool mode from the executable that starts that
+  generation. If its selected SDK has no executable `codex-code-mode-host` beside
+  it, every executor catalog row explicitly uses `tool_mode: "direct"`, including
+  rows whose native metadata omitted or used an unknown tool mode. Direct mode
+  overrides Code Mode feature flags, so it runs normal tools without attempting to
+  start a missing host. This does not change node_repl, permissions, review,
+  instructions, or the native engine's own catalog.
 - Every native row has `node_repl_disabled: false`. `gpt-6-astra`, `gpt-6.1-sol` and
   `gpt-6-sol` set `node_repl_auto_review_required: true`; `gpt-6-luna`, `gpt-reserve`,
   the 5.6 rows and `gpt-daybreak-blue-latest` set it to false. `guardian`,

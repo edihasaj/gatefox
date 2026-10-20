@@ -266,6 +266,10 @@ per request id and prefers the gateway's own row over an imported one.
 An install only moves the `current` link, so a process that started earlier
 keeps running the release it loaded. Its command line can still say
 `.../current/...`, which no longer identifies that code after an install.
+Managed releases keep a read-only descriptor for their immutable CLI entrypoint
+and release marker, so `lsof` can preserve that release during installer
+cleanup even when the app-owned Node itself only names `current`. A hot-swapped
+server retains each old marker only until that generation's requests drain.
 `gateway versions [--json] [--check]` answers that question: it lists this
 user's gateway processes, names each one's role (`service`, `inference`,
 `desktop-adapter`, `ssh-listener`, `ssh-proxy`, `executor-host`,

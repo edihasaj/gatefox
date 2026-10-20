@@ -1,5 +1,5 @@
-import { accessSync, constants, lstatSync } from "node:fs";
-import { resolve } from "node:path";
+import { accessSync, constants, lstatSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { autoReviewModels } from "./auto-review.js";
@@ -13,6 +13,30 @@ const usageFlags = ["include_skills_usage_instructions", "include_plugin_usage_i
 
 const plain = (value: unknown): Row | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
 const positive = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= max;
+const releaseVersion = (value: string) => /^\d+\.\d+\.\d+$/.test(value);
+const owned = (uid: number) => !process.getuid || uid === process.getuid();
+const safeDirectory = (path: string): boolean => {
+  const info = lstatSync(path);
+  return info.isDirectory() && !info.isSymbolicLink() && owned(Number(info.uid)) && !(Number(info.mode) & 0o022);
+};
+
+/** A missing package only means hostless when it is a verified managed release path; ordinary checkouts keep native Codex. */
+function missingManagedPackage(packageDirectory: string): boolean {
+  try {
+    const packagePath = resolve(packageDirectory); const release = dirname(packagePath); const releases = dirname(release); const root = dirname(releases);
+    if (basename(packagePath) !== "package" || basename(releases) !== "releases" || !releaseVersion(basename(release))
+      || packagePath !== join(root, "releases", basename(release), "package")) return false;
+    if (!safeDirectory(root) || !safeDirectory(releases)) return false;
+    const marker = join(root, ".gateway-installation"); const info = lstatSync(marker);
+    return info.isFile() && !info.isSymbolicLink() && owned(Number(info.uid)) && !(Number(info.mode) & 0o022)
+      && readFileSync(marker, "utf8") === "subscription-gateway\n";
+  } catch { return false; }
+}
+
+/** Code mode is available only when the selected executable has its companion host. */
+export function executableRunsCodeMode(executable: string): boolean {
+  try { accessSync(resolve(dirname(executable), "codex-code-mode-host"), constants.X_OK); return true; } catch { return false; }
+}
 
 /**
  * Codex runs code mode in a host it spawns from beside its own executable. Gateway executors run the
@@ -20,9 +44,18 @@ const positive = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is numbe
  * the desktop's own Codex, which does. A code-mode row on an executor without the host fails closed.
  */
 export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL("..", import.meta.url))): boolean {
+  try { lstatSync(packageDirectory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return !missingManagedPackage(packageDirectory);
+    return false;
+  }
   const directory = resolve(packageDirectory, "gateway-sdk");
-  try { lstatSync(directory); } catch { return true; }
-  try { accessSync(resolve(directory, "codex-code-mode-host"), constants.X_OK); return true; } catch { return false; }
+  try { lstatSync(directory); }
+  catch (error) {
+    // A complete package without a gateway SDK launches the desktop's native Codex, which carries its own host.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  return executableRunsCodeMode(resolve(directory, "gateway-codex"));
 }
 
 /**

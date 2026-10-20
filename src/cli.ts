@@ -39,6 +39,11 @@ import { healthCommand } from "./health.js";
 import { daemonConfigStatus } from "./config-rejection.js";
 import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 import { providerCommand } from "./provider-tool-runtime.js";
+import { retainCliEntryPoint } from "./release-retention.js";
+
+// This happens before command dispatch. A managed release remains visible to the
+// installer even when an app-owned Node executes this file through `current`.
+retainCliEntryPoint(import.meta.url);
 
 const help = `gateway — local subscription and API inference
 

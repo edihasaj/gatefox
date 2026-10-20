@@ -85,6 +85,21 @@ test("offline cache contains only extra public rows and an opaque source identit
   } finally { f.close(); }
 });
 
+test("a cache rejected for carrying the client token cannot seed a later executor-capability snapshot", async () => {
+  const f = await fixture();
+  try {
+    const token = await readFile(join(f.value.stateDirectory, "client-token"), "utf8");
+    f.setCatalog({ models: [{ slug: "claude/model", display_name: "Claude", supported_reasoning_levels: [] }] });
+    await f.create().refresh(true);
+    const cache = JSON.parse(await readFile(f.cachePath, "utf8"));
+    cache.models[0].display_name = token;
+    await writePrivateJson(f.cachePath, cache); f.close();
+    const restored = new DesktopCatalog(f.value, f.native, f.path, true);
+    await restored.initialize();
+    assert.equal(restored.snapshotForExecutor(restored.current(), false).models.some(model => model.slug === "claude/model"), false);
+  } finally { f.close(); }
+});
+
 test("older live catalogs and offline caches cannot restore gateway agent instructions", async () => {
   const f = await fixture();
   const gateway = { slug: "claude/model", display_name: "Claude · Updated", supported_reasoning_levels: [{ effort: "max", description: "Max" }], input_modalities: ["text", "image"],
@@ -240,10 +255,15 @@ test("public rows keep numeric window limits and drop other values before cachin
 
 test("executors without the code-mode host give native rows direct tools; the rest of each row is unchanged", async () => {
   const repl = { node_repl_disabled: false, node_repl_auto_review_required: false };
-  const native = [{ slug: "gpt-native", display_name: "Native", tool_mode: "code_mode_only", priority: 1, ...repl }, { slug: "gpt-direct", display_name: "Direct", tool_mode: "direct", priority: 2, ...repl }];
+  const native = [{ slug: "gpt-native", display_name: "Native", tool_mode: "code_mode_only", priority: 1, ...repl }, { slug: "gpt-direct", display_name: "Direct", tool_mode: "direct", priority: 2, ...repl },
+    { slug: "gpt-unset", display_name: "Unset", priority: 3, ...repl }, { slug: "gpt-unknown", display_name: "Unknown", tool_mode: "future", priority: 4, ...repl }];
   const without = new DesktopCatalog({ version: 1, port: 0, stateDirectory: tmpdir(), providers: [] }, structuredClone(native), join(tmpdir(), "unused.json"), false);
-  assert.deepEqual(without.combined().models.map(row => row.tool_mode), ["direct", "direct"], "a sub-agent that names a native model can still run commands");
+  assert.deepEqual(without.combined().models.map(row => row.tool_mode), ["direct", "direct", "direct", "direct"], "a sub-agent that names a native model can still run commands");
   assert.deepEqual({ ...without.combined().models[0], tool_mode: "code_mode_only" }, native[0]);
   const withHost = new DesktopCatalog({ version: 1, port: 0, stateDirectory: tmpdir(), providers: [] }, structuredClone(native), join(tmpdir(), "unused.json"), true);
-  assert.deepEqual(withHost.combined().models.map(row => row.tool_mode), ["code_mode_only", "direct"]);
+  assert.deepEqual(withHost.combined().models.map(row => row.tool_mode), ["code_mode_only", "direct", undefined, "future"]);
+  const previous = withHost.current().revision;
+  const hostless = withHost.snapshotForExecutor(withHost.current(), false);
+  assert.deepEqual(withHost.combined(hostless).models.map(row => row.tool_mode), ["direct", "direct", "direct", "direct"], "the runtime selected for a later generation overrides the constructor capability");
+  assert.notEqual(hostless.revision, previous, "a private executor gets a fresh catalog generation even when every published gateway row was already direct");
 });
