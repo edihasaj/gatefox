@@ -117,8 +117,8 @@ test("a section that cannot be read warns, and the run and its push still finish
 test("the stale clock comes from the release switch, not from a process start", async () => {
   const day = 24 * 60 * 60_000;
   const behind = { installed: "0.4.4", lagging: 1, processes: [{ role: "service" as const, pid: 1, startedAt: new Date(at - 30 * day).toISOString(), release: "0.2.0" }] };
-  const switched = await check({}, { versions: async () => behind, switchedAt: async () => at - day });
-  assert.deepEqual(switched.report.components.stale, [], "the release only moved a day ago: not stale yet");
+  const switched = await check({}, { versions: async () => behind, switchedAt: async () => at - 30 * 60_000 });
+  assert.deepEqual(switched.report.components.stale, [], "the service still has its hour to move");
   assert.equal(switched.report.verdict, "warn");
   const old = await check({}, { versions: async () => behind, switchedAt: async () => at - 3 * day });
   assert.deepEqual(old.report.components.stale, ["service@0.2.0"]);
@@ -149,6 +149,21 @@ test("a lagging component warns; a stopped inference or a refusal fails", async 
   ] });
   assert.equal(three.report.verdict, "fail");
   assert.equal(three.code, 2);
+});
+
+test("the watchdog alerts when an older service misses an installed patch for an hour", async () => {
+  let pushed: Verdict | undefined;
+  const result = await check({ push: true }, {
+    versions: async () => versions("0.5.6", [["service", "0.5.5"]]),
+    switchedAt: async () => at - 61 * 60_000,
+    probe: async () => ({ ...healthyProbe, release: "0.5.6" }),
+    pushUrl: async () => ({ url: secretUrl }),
+    pushSend: async (_url, verdict) => { pushed = verdict; return { state: "sent", up: false }; },
+  });
+  assert.equal(result.report.verdict, "fail");
+  assert.deepEqual(result.report.components.stale, ["service@0.5.5"]);
+  assert.equal(pushed, "fail");
+  assert.equal(result.code, 2);
 });
 
 test("a remote client skips the loopback probe", async () => {

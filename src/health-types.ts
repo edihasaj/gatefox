@@ -24,6 +24,8 @@ export const smokeKillGraceMs = 15_000;
 export const refusalFailThreshold = 3;
 /** A component that has run an older release for this long has stopped being "idle, not yet moved". */
 export const staleLagMs = 48 * 60 * 60_000;
+/** A service still running an older installed release after an hour needs attention, even for a patch update. */
+export const staleServiceLagMs = 60 * 60_000;
 
 /** Where this Mac keeps its own gateway state, and the port its inference serves. */
 export interface HealthTargets { stateDirectory: string; port: number; clientOnly: boolean }
