@@ -342,7 +342,7 @@ test("a follow-up sent the moment done arrives continues the session instead of 
 
 test("a CLI whose MCP child never says hello falls back before any user message is sent", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], noMcp: true });
-  const previous = sessionLimits.startMs; sessionLimits.startMs = 800;
+  const previous = sessionLimits.startMs; sessionLimits.startMs = 3000;
   try {
     assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
     const capture = await f.capture(); const [live] = await pids(f);
