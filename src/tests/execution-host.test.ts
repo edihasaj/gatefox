@@ -12,7 +12,7 @@ import { connect } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type ExecutionRecord } from "../execution-host.js";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
-import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
+import { ExecutionEngine, executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { connectOnce, readOwner, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
@@ -34,11 +34,12 @@ import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modul
 if(process.argv.includes('--version')) { console.log('codex-cli 0.162.0-alpha.17.2'); process.exit(0); }
 const args=process.argv.slice(2);const socket=args[args.indexOf('--listen')+1].slice(7);
 const gate=args.includes('--fixture-gate')?args[args.indexOf('--fixture-gate')+1]:undefined;
-const server=createServer();const ws=new WebSocketServer({server});const loaded=new Set();
+const server=createServer();const ws=new WebSocketServer({server});const loaded=new Set();let hangLoaded=false;
 ws.on('connection',client=>client.on('message',bytes=>{const m=JSON.parse(bytes);if(m.id==null)return;let result={};
-if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
+if(m.method==='thread/loaded/list'){if(hangLoaded)return;result={data:[...loaded],nextCursor:null};}
 if(m.method==='thread/start'||m.method==='thread/resume'){const id=m.params.threadId||'fixture-thread';loaded.add(id);result={thread:{id}};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
+if(m.method==='fixture/hangLoaded')hangLoaded=m.params.hang===true;
 client.send(JSON.stringify({id:m.id,result}));}));
 const listen=()=>server.listen(socket,()=>writeFileSync(args[args.indexOf('--fixture-state')+1],JSON.stringify({pid:process.pid,socket,home:process.env.CODEX_HOME,args})));
 if(gate){const wait=setInterval(()=>{if(existsSync(gate)){clearInterval(wait);listen();}},20);}else listen();
@@ -61,6 +62,11 @@ async function control(path: string) {
     });
   };
   return { socket, request, close: async () => { socket.terminate(); await once(socket, "close"); } };
+}
+async function eventually(check: () => Promise<boolean>, message: string, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) { if (await check()) return; await delay(20); }
+  assert.fail(message);
 }
 
 test("execution descriptors bound metadata and replace only host-owned socket/catalog arguments", () => {
@@ -115,7 +121,7 @@ test("shared execution survives adapter disconnect, finds loaded owners, and pre
 });
 
 test("more than four execution generations preserve loaded/leased owners and reclaim unused engines", { timeout: 30000 }, async () => {
-  const f = await fixture(); let host; let client; let engineClient;
+  const f = await fixture(); let host; let client!: Awaited<ReturnType<typeof control>>; let engineClient;
   try {
     host = await startExecutionHost(f); client = await control(join(f.hostHome, "host.sock"));
     const first = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("a"));
@@ -132,9 +138,67 @@ test("more than four execution generations preserve loaded/leased owners and rec
     assert.equal((await readOwner(join(f.hostHome, "owner.json")))?.generations.length, 6);
     await client.request("execution/release", { revision: "b".repeat(64) });
     const next = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("1")); assert.equal(next.revision, "1".repeat(64));
-    const state = await client.request<{ generations: ExecutionRecord[] }>("execution/status"); assert.equal(state.generations.length, 6); assert.ok(state.generations.some(g => g.revision === "a".repeat(64))); assert.ok(!state.generations.some(g => g.revision === "b".repeat(64)));
+    await eventually(async () => {
+      const state = await client.request<{ generations: ExecutionRecord[] }>("execution/status");
+      return state.generations.length === 6 && state.generations.some(g => g.revision === "a".repeat(64)) && !state.generations.some(g => g.revision === "b".repeat(64));
+    }, "the released empty generation was retired in the background");
     assert.deepEqual(await client.request("execution/find", { threadId: "loaded-without-a-client-lease" }), first);
   } finally { engineClient?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
+});
+
+test("generation maintenance is asynchronous, retries unloaded chats, and does not block a new catalog", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client!: Awaited<ReturnType<typeof control>>; let engine: SocketAppServerConnection | undefined;
+  try {
+    host = await startExecutionHost({ ...f, maintenance: { intervalMs: 25 } }); client = await control(join(f.hostHome, "host.sock"));
+    const first = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("a"));
+    engine = new SocketAppServerConnection(first.socketPath, async () => {}); await engine.ready; await engine.request("initialize", {}); engine.send({ method: "initialized", params: {} });
+    await engine.request("thread/start", { threadId: "later-unloaded" }); await client.request("execution/release", { revision: "a".repeat(64) });
+    await delay(100);
+    assert.ok((await client.request<{ generations: ExecutionRecord[] }>("execution/status")).generations.some(row => row.revision === "a".repeat(64)), "a loaded chat preserves its writer");
+    await engine.request("thread/unsubscribe", { threadId: "later-unloaded" });
+    await eventually(async () => !(await client.request<{ generations: ExecutionRecord[] }>("execution/status")).generations.some(row => row.revision === "a".repeat(64)), "periodic maintenance retires a chat after it unloads");
+
+    const stalled = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("b"));
+    engine.stop(); await engine.exited; engine = new SocketAppServerConnection(stalled.socketPath, async () => {}); await engine.ready; await engine.request("initialize", {}); engine.send({ method: "initialized", params: {} });
+    await engine.request("fixture/hangLoaded", { hang: true }); await client.request("execution/release", { revision: "b".repeat(64) }); await delay(50);
+    const started = performance.now(); const next = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("c"));
+    assert.equal(next.revision, "c".repeat(64)); assert.ok(performance.now() - started < 2_000, "a hung old probe does not delay a new catalog");
+    await delay(100); assert.ok((await client.request<{ generations: ExecutionRecord[] }>("execution/status")).generations.some(row => row.revision === "c".repeat(64)), "a lease acquired during maintenance preserves its writer");
+    await engine.request("fixture/hangLoaded", { hang: false });
+  } finally { engine?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
+});
+
+test("maintenance never retires a writer from an empty probe made stale by a new lease", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client!: Awaited<ReturnType<typeof control>>; let direct: SocketAppServerConnection | undefined;
+  const original = ExecutionEngine.prototype.loadedThreads; let releaseProbe!: () => void; let probeSeen!: () => void;
+  const heldProbe = new Promise<void>(resolve => { releaseProbe = resolve; }); const probeObserved = new Promise<void>(resolve => { probeSeen = resolve; });
+  let hold = false; let observed = false;
+  ExecutionEngine.prototype.loadedThreads = async function(this: ExecutionEngine) {
+    const threads = await original.call(this);
+    if (hold && this.record.revision === "a".repeat(64) && !observed) { observed = true; probeSeen(); await heldProbe; }
+    return threads;
+  };
+  try {
+    host = await startExecutionHost({ ...f, maintenance: { intervalMs: 60_000 } }); client = await control(join(f.hostHome, "host.sock"));
+    const first = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("a"));
+    hold = true; await client.request("execution/release", { revision: "a".repeat(64) }); await probeObserved;
+    const attached = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("a")); assert.deepEqual(attached, first);
+    direct = new SocketAppServerConnection(first.socketPath, async () => {}); await direct.ready; await direct.request("initialize", {}); direct.send({ method: "initialized", params: {} });
+    await direct.request("thread/start", { threadId: "stale-empty-chat" }); await client.request("execution/release", { revision: "a".repeat(64) }); releaseProbe();
+    await delay(100);
+    assert.ok((await client.request<{ generations: ExecutionRecord[] }>("execution/status")).generations.some(row => row.revision === first.revision), "the original writer remains owned");
+    assert.deepEqual(await client.request("execution/find", { threadId: "stale-empty-chat" }), first);
+    assert.deepEqual((await direct.request("thread/resume", { threadId: "stale-empty-chat" })).thread, { id: "stale-empty-chat" });
+  } finally { releaseProbe?.(); ExecutionEngine.prototype.loadedThreads = original; direct?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
+});
+
+test("disconnecting the final lease retires an empty generation without another acquire", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let holder!: Awaited<ReturnType<typeof control>>; let observer!: Awaited<ReturnType<typeof control>>;
+  try {
+    host = await startExecutionHost({ ...f, maintenance: { intervalMs: 60_000 } }); holder = await control(join(f.hostHome, "host.sock")); observer = await control(join(f.hostHome, "host.sock"));
+    await holder.request("execution/acquire", f.descriptor("a")); await holder.close();
+    await eventually(async () => (await observer.request<{ generations: ExecutionRecord[] }>("execution/status")).generations.length === 0, "disconnect cleanup retires the empty writer");
+  } finally { holder?.socket.terminate(); observer?.socket.terminate(); await host?.close(); await f.clean(); }
 });
 
 test("execution/status answers at once while an acquire holds the control queue, so a busy host never looks hung", { timeout: 30000 }, async () => {

@@ -548,8 +548,12 @@ owning generation before attempting a new executor.
 
 There is no fixed limit on live catalog generations. A connected adapter lease or
 loaded chat keeps its generation, so resuming a chat never requires closing an
-unrelated chat. Before starting a new generation, the host retires unused ones
-only after all leases close and the signed SDK reports no loaded chats. Unknown sockets and live
+unrelated chat. Background maintenance checks for unused generations after leases
+are released, after adapters disconnect, and periodically. The checks are bounded
+and coalesced, and run outside the acquisition queue. The host retires a generation
+only after all leases close and the signed SDK reports no loaded chats, rechecking
+the engine's identity and leases before stopping it. An unreadable engine remains
+owned and cannot prevent a new catalog from loading. Unknown sockets and live
 processes survive recovery checks. A stopped ownership receipt remains in place;
 clients report an unavailable managed host instead of starting a competing writer.
 

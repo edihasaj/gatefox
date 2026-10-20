@@ -12,9 +12,14 @@ read_when:
 Run `node scripts/e2e-generation-capacity.mjs --package /absolute/release/package`
 against a compiled release with its verified gateway SDK. Five real SDK processes
 load separate catalogs and chats, and each chat remains readable through its
-original writer. The check uses isolated chat storage, copies no authentication,
-and sends no inference requests. Version 0.5.5 reproduces the four-generation
-refusal; the 0.5.6 package passes. Shared and per-connection adapter regressions
+original writer. The check then suspends one unloaded fixture SDK, starts a sixth
+catalog within five seconds, resumes that SDK, and verifies the released sixth
+generation (which loaded no chat) retires without another acquisition. The SDK
+may retain the five started chats after unsubscribe; cleanup preserves them.
+It uses isolated chat storage,
+copies no authentication, and sends no inference requests. Version 0.5.5
+reproduces the four-generation refusal; 0.5.6 passes that part but remains
+vulnerable to the suspended-engine case. Shared and per-connection adapter regressions
 also cover retaining loaded chats, active turns, client leases, and reclaiming
 unused generations. Rendered desktop recovery still requires live activation.
 
