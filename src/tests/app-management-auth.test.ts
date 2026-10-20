@@ -129,18 +129,19 @@ test("existing CLI connections are unchecked while new drafts still need sign-in
 
 test("aborting a resistant owned login child escalates and waits for its exit", async () => {
   const root = await mkdtemp(join(tmpdir(), "gateway-management-auth-")); const marker = join(root, "login.pid"); const fakeClaude = join(root, "fake-claude.mjs");
-  await writeFile(fakeClaude, "#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.LOGIN_PID_MARKER, String(process.pid), { mode: 0o600 });\nprocess.on('SIGTERM', () => {});\nsetInterval(() => {}, 1000);\n", { mode: 0o700 }); await chmod(fakeClaude, 0o700);
-  const control = new AbortController(); const started = Date.now(); const login = childLogin(fakeClaude, [], { ...process.env, LOGIN_PID_MARKER: marker }, control.signal);
+  await writeFile(fakeClaude, "#!/usr/bin/env node\nimport { writeFileSync } from 'node:fs';\nprocess.on('SIGTERM', () => {});\nwriteFileSync(process.env.LOGIN_PID_MARKER, String(process.pid), { mode: 0o600 });\nsetInterval(() => {}, 1000);\n", { mode: 0o700 }); await chmod(fakeClaude, 0o700);
+  const control = new AbortController(); const login = childLogin(fakeClaude, [], { ...process.env, LOGIN_PID_MARKER: marker }, control.signal);
   let pid: number | undefined;
   try {
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 200; attempt++) {
       const value = await readFile(marker, "utf8").catch(() => ""); pid = Number(value);
       if (Number.isInteger(pid) && pid > 0) break;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
-    assert.ok(pid); control.abort(); await assert.rejects(login, /cancelled/); assert.ok(Date.now() - started < 2_000);
+    assert.ok(pid); const cancelledAt = Date.now(); control.abort(); await assert.rejects(login, /cancelled/); assert.ok(Date.now() - cancelledAt < 2_000);
     assert.throws(() => process.kill(pid!, 0), { code: "ESRCH" });
   } finally {
+    control.abort(); await login.catch(() => {});
     if (pid) { try { process.kill(pid, "SIGKILL"); } catch { /* child already exited */ } }
   }
 });
