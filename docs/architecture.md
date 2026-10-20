@@ -117,10 +117,10 @@ linked. All model preferences are saved in gateway-owned state.
 The adapter fetches authenticated public model metadata from the inference host.
 A catalog change creates a fresh gateway executor for new chats. Loaded chats
 retain their original executor, including active turns and terminal state.
-At most four catalog generations can retain loaded gateway chats. Close an older
-gateway chat before adding another generation at that limit. Idle generations
-without loaded chats are stopped. A gateway executor failure does not stop the
-native connection; saved gateway history can be resumed.
+Loaded gateway chats can retain as many catalog generations as they need; a fifth
+catalog does not require closing an older chat. Unleased generations without
+loaded chats are stopped before a new generation starts. A gateway executor
+failure does not stop the native connection; saved gateway history can be resumed.
 
 Gateway-owned compaction metadata contains only current-window counters and SDK
 compaction lifecycle events, scoped to the native storage home. Recovery uses
@@ -147,8 +147,8 @@ starting another executor.
 
 Shared generation homes use the native home's writer-lock directory as well as
 its rollout storage. An unrelated writer therefore remains protected even across
-catalog generations. The execution host retains at most four generations and only
-retires an engine with no client leases and no SDK-loaded chats. A missing or
+catalog generations. The execution host retains every generation still in use
+and only retires an engine with no client leases and no SDK-loaded chats. A missing or
 changed managed owner fails closed. It never deletes live locks or takes over an
 old executor. Existing per-connection executors must finish before migration.
 

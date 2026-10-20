@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Gateway chats can load more than four catalog generations without closing older
+chats. Loaded chats and client leases keep their original executors, and unused
+executors are reclaimed before another generation starts. This fixes the
+"Four gateway generations have loaded chats" resume failure.
+
 Claude's private inference service can recover a clean, empty Qwen completion
 with one identical request to the same model. A second empty reply becomes an
 explicit failure. Retry spend remains in the ledger while Claude receives the
