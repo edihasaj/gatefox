@@ -7,6 +7,15 @@ read_when:
 
 # Verification
 
+## Loaded service release
+
+Run `node scripts/e2e-service-release.mjs --package /absolute/release/package`
+to copy public runtime code into an isolated release tree, start its supervisor,
+move `current`, and observe a real heartbeat. The supervisor keeps its original
+`runningRelease`, and the watchdog detects it even when the injected process
+inventory incorrectly reports the newly installed release. The check copies no
+authentication and sends no inference requests.
+
 ## Catalog generation capacity (0.5.6)
 
 Run `node scripts/e2e-generation-capacity.mjs --package /absolute/release/package`
