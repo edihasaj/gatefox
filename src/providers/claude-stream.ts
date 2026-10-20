@@ -41,13 +41,17 @@ export function claudeUsage(tokens: ClaudeTokens): Usage {
 
 /** Maps an unsuccessful CLI result; private result text is only classified, never returned. */
 export function claudeResultFailure(result: Record<string, unknown>, limit?: ClaudeLimit): ProviderError {
-  const diagnosis = String(result.result || "");
+  const failure = claudeFailure({ ...result, is_error: true }, limit)!;
+  // A structured provider classification wins over explanatory result prose.
+  if (typeof result.error_code === "string" && ["rate_limit", "authentication_failed", "billing_error", "server_error"].includes(result.error_code)) return failure;
+  if (failure.code === "insufficient_quota") return failure;
+  const diagnosis = typeof result.result === "string" ? result.result : "";
   // "Server is temporarily limiting requests (not your usage limit)" is the CLI's transient
   // subscriber 429; it stays a throttle even after a rejected event for another window.
   if (/rate.?limit|usage.?limit|limiting requests/i.test(diagnosis)) return claudeRateLimit(/not your usage.?limit/i.test(diagnosis) ? undefined : limit);
   if (/auth|log.?in|oauth/i.test(diagnosis)) return new ProviderError("authentication", "Claude subscription requires login", 401);
   // Keep the CLI's allowlisted end reason (for example max turns) so failures stay diagnosable.
-  return claudeFailure(result, limit) || claudeFailure({ ...result, is_error: true }, limit)!;
+  return failure;
 }
 
 /** The context windows a CLI result reports it actually used; the catalog adopts them on refresh. */

@@ -8,6 +8,11 @@ catalog. Loaded chats and live client leases preserve their writers. The
 watchdog also fails a service that remains on any older release for more than
 one hour after installation, including patch updates.
 
+Claude billing and extra-usage credit refusals now explain how to check billing
+settings and payment methods. These failures stop automatic stream retries and
+keep private provider diagnostics out of responses and telemetry.
+Thanks to @edihasaj for reporting the unclear billing error.
+
 Gateway chats can load more than four catalog generations without closing older
 chats. Loaded chats and client leases keep their original executors, and unused
 executors are reclaimed before another generation starts. This fixes the
