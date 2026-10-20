@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { appFindings, componentFindings, errorFindings, inferenceFindings, minorDistance, nativePaused, serviceFindings, smokeFindings, statusFields } from "../health-checks.js";
-import { exitCodeFor, staleLagMs, verdictOf, type AppInfo, type InferenceProbe } from "../health-types.js";
+import { exitCodeFor, staleLagMs, staleServiceLagMs, verdictOf, type AppInfo, type InferenceProbe } from "../health-types.js";
 import { emptySignals, type TelemetrySignals } from "../health-telemetry.js";
 import type { VersionsResult } from "../versions.js";
 
@@ -72,11 +72,26 @@ test("the stale clock runs from the release switch, not the process start", () =
   // A daemon that has run for a month is only as behind as the release it is running is old.
   const behind = versions("0.4.0", [["service", "0.2.0", (40 * day) / 60_000]]);
   assert.deepEqual(componentFindings(behind, at).stale, ["service@0.2.0"], "with no switch answer, the process start is the clock");
-  assert.deepEqual(componentFindings(behind, at, at - day).stale, [], "this release moved a day ago: not stale yet");
+  assert.deepEqual(componentFindings(behind, at, at - minutes(30)).stale, [], "a fresh release gives the service time to move");
   assert.deepEqual(componentFindings(behind, at, at - 3 * day).stale, ["service@0.2.0"]);
   // A different major counts as more than one minor behind, whatever its minor numbers say.
   assert.ok((minorDistance("2.0.0", "1.99.0") ?? 0) > 1);
   assert.deepEqual(componentFindings(versions("2.0.0", [["service", "1.99.0", 10]]), at, at - 3 * day).stale, ["service@1.99.0"]);
+});
+
+test("a service stuck one minor or one patch behind fails after an hour without evicting old chat engines", () => {
+  const old = (staleServiceLagMs + 1) / 60_000;
+  for (const release of ["0.4.8", "0.5.5"]) {
+    const result = versions("0.5.6", [["service", release, old], ["gateway-engine", release, old]]);
+    const stale = componentFindings(result, at, at - staleServiceLagMs - 1);
+    assert.deepEqual(stale.stale, [`service@${release}`]);
+    assert.deepEqual(stale.lagging, [`gateway-engine@${release}`]);
+    assert.equal(verdictOf(stale.findings), "fail");
+    assert.deepEqual(componentFindings(result, at, at - staleServiceLagMs).stale, [], "the full grace is available");
+  }
+  for (const release of ["0.5.6", "0.5.7", "checkout", "unknown"]) {
+    assert.deepEqual(componentFindings(versions("0.5.6", [["service", release, old]]), at).stale, []);
+  }
 });
 
 test("a lagging row with an unreadable start is a lag, not stale", () => {

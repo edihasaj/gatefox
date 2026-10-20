@@ -1,5 +1,5 @@
 import type { VersionsResult } from "./versions.js";
-import { refusalFailThreshold, safePhase, safeToken, staleLagMs, type AppInfo, type Finding, type InferenceProbe } from "./health-types.js";
+import { refusalFailThreshold, safePhase, safeToken, staleLagMs, staleServiceLagMs, type AppInfo, type Finding, type InferenceProbe } from "./health-types.js";
 import type { TelemetrySignals } from "./health-telemetry.js";
 
 /**
@@ -32,8 +32,9 @@ export function laggingNames(result: VersionsResult): string[] {
 }
 
 /**
- * The lagging pair that is no longer a lag: more than one minor behind the installed
- * release, and behind it for long enough that an idle move had every chance to happen.
+ * A service still behind any installed release after an hour needs attention. Other
+ * processes retain the wider allowance for loaded chats and reused native components:
+ * more than one minor behind for longer than `lagMs`.
  *
  * The clock starts when `current` was switched (`since`, the link's own mtime), not when the
  * process started: a daemon that has run for a week was still given the release the moment
@@ -46,9 +47,22 @@ export function staleNames(result: VersionsResult, now: number, lagMs = staleLag
     if (row.release === result.installed) continue;
     const distance = minorDistance(result.installed, row.release);
     const sinceRow = since ?? Date.parse(row.startedAt);
-    if (distance !== undefined && distance > 1 && !Number.isNaN(sinceRow) && now - sinceRow > lagMs) names.add(`${row.role}@${row.release}`);
+    const stale = row.role === "service"
+      ? olderRelease(row.release, result.installed) && now - sinceRow > staleServiceLagMs
+      : distance !== undefined && distance > 1 && now - sinceRow > lagMs;
+    if (stale && Number.isFinite(sinceRow)) names.add(`${row.role}@${row.release}`);
   }
   return [...names].sort();
+}
+
+/** Compare canonical releases only; unknown receipts and a newer service during rollback never earn an older-release alarm. */
+function olderRelease(release: string, installed: string): boolean {
+  const version = /^(\d+)\.(\d+)\.(\d+)$/;
+  const before = version.exec(release)?.slice(1).map(Number);
+  const after = version.exec(installed)?.slice(1).map(Number);
+  if (!before || !after || ![...before, ...after].every(Number.isSafeInteger)) return false;
+  for (let index = 0; index < 3; index++) if (before[index] !== after[index]) return before[index] < after[index];
+  return false;
 }
 
 export function componentFindings(result: VersionsResult, now: number, since?: number): { findings: Finding[]; lagging: string[]; stale: string[] } {
