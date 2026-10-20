@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+Gateway updates preserve the release files that open desktop and SSH connections
+still use. A connection whose older release was already removed can recover its
+gateway SDK from the installed release after validating it against the loaded
+code's compatibility and integrity checks. Saved chat identities stay unchanged.
+Executors without the optional Code Mode host keep direct tools available,
+including for sub-agents, so file edits and Git commands do not depend on a
+missing helper.
+Thanks to @edihasaj for reporting the failed chat resume after an update.
+
 Claude billing and extra-usage credit refusals now explain how to check billing
 settings and payment methods. These failures stop automatic stream retries and
 keep private provider diagnostics out of responses and telemetry.

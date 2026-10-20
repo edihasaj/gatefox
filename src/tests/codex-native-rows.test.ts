@@ -74,6 +74,10 @@ test("an executor without the code-mode host keeps the published tool mode and s
   const root = await mkdtemp(join(tmpdir(), "gateway-code-mode-"));
   try {
     assert.equal(executorRunsCodeMode(root), true, "without a packaged SDK the desktop's own Codex runs gateway chats");
+    const pruned = join(root, "releases", "0.2.20", "package");
+    await mkdir(join(root, "releases"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+    assert.equal(executorRunsCodeMode(pruned), false, "a pruned managed package cannot imply the native host");
     await mkdir(join(root, "gateway-sdk")); await writeFile(join(root, "gateway-sdk", "gateway-codex"), "", { mode: 0o755 });
     assert.equal(executorRunsCodeMode(root), false, "the packaged SDK has no code-mode host beside it");
     await writeFile(join(root, "gateway-sdk", "codex-code-mode-host"), "", { mode: 0o644 });

@@ -261,8 +261,15 @@ skips the idle guard and cuts off whatever that process was holding. See
 prints.
 
 The installer keeps the current release, the previous one and the newest other
-release. Older releases move to the Trash unless a running process still maps
-their files (checked with `lsof`); nothing is deleted.
+release. Older releases move to the Trash, never delete in place. Each managed
+CLI opens its immutable `package/dist/cli.js` and release marker read-only at
+startup; each loaded server runtime shares one marker descriptor until that
+runtime's own in-flight requests finish. This keeps an app-owned Node that was
+launched through the movable `current` link visible to `lsof` after later
+installs. Before pruning, the installer checks same-user `lsof`, `ps`, and
+managed LaunchAgent references. If any inspection fails, or an older process
+has no immutable bootstrap proof, pruning is skipped for that install. A later
+install cleans up once the holder exits.
 
 The build refuses dirty source unless the preflight flag is explicit. It does not
 download credentials or publish automatically.

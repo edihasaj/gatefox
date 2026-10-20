@@ -90,6 +90,13 @@ connection did not launch (a shared host's, found by its chat) keeps `subscripti
 too, since its SDK is unknown, and an executor that records a new chat with any provider
 but the requested one is refused.
 
+An already-open adapter keeps the identity it selected for new chats. If its original
+managed package is pruned after an install, it may recover only to the verified SDK in
+that installation's `current` release. A verified replacement can serve an existing
+legacy connection without changing it to `openai`; an existing `openai` connection
+remains fail-closed unless that replacement proves `gateway-executor-v3`. Saved chats
+always retain their saved provider id.
+
 ### Routing follows the chat
 
 The adapter decides a chat's engine from the chat, never from the provider id. The

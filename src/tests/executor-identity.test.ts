@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { executorOverrides, gatewayExecutorMarker, gatewayProviderIds, nativeEnvironment, newChatProvider, savedChatProvider } from "../executor-identity.js";
+import { executorOverrides, executorServesProvider, gatewayExecutorMarker, gatewayProviderIds, nativeEnvironment, newChatProvider, savedChatProvider } from "../executor-identity.js";
 import { gatewayEnvironment } from "../gateway-engine-home.js";
 import { nativeExecutionEnvironment } from "../native-execution-host-engine.js";
 import { validateConfig, type GatewayConfig } from "../config.js";
@@ -22,6 +22,14 @@ test("new gateway chats keep the legacy id unless a Mac opts into the native ide
   assert.equal(newChatProvider({}, undefined), "subscription_gateway");
   assert.equal(newChatProvider({ chatIdentity: "openai" }, undefined), "subscription_gateway");
   assert.equal(newChatProvider({ chatIdentity: "openai" }, { ...runtime, executorIdentity: undefined } as unknown as GatewaySdkRuntime), "subscription_gateway");
+});
+
+test("a connection can retain its legacy identity when a verified executor appears, while openai remains fail-closed without one", () => {
+  assert.equal(executorServesProvider("subscription_gateway", undefined), true);
+  assert.equal(executorServesProvider("subscription_gateway", runtime), true);
+  assert.equal(executorServesProvider("openai", runtime), true);
+  assert.equal(executorServesProvider("openai", undefined), false);
+  assert.equal(executorServesProvider("azure", runtime), false);
 });
 
 test("a resumed gateway chat names the provider it was saved with; an id no executor serves falls back to the legacy one", () => {

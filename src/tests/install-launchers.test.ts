@@ -15,19 +15,26 @@ const marker = "# Managed by subscription-gateway installer";
 async function layout() {
   const root = await mkdtemp(join(tmpdir(), "gateway-install-"));
   const source = join(root, "release"); const prefix = join(root, "prefix"); const home = join(root, "home");
-  await mkdir(join(source, "package/dist"), { recursive: true }); await mkdir(join(source, "runtime/bin"), { recursive: true }); await mkdir(home); await mkdir(join(prefix, "bin"), { recursive: true });
-  await writeFile(join(source, "package/dist/cli.js"), "console.log(`${process.env.GATEWAY_INSTALLED}:${process.env.GATEWAY_COMMAND}`);\n");
+  await mkdir(join(source, "package/dist"), { recursive: true }); await mkdir(join(source, "runtime/bin"), { recursive: true }); await mkdir(join(home, ".Trash"), { recursive: true }); await mkdir(join(prefix, "bin"), { recursive: true });
+  await copyFile(new URL("../release-retention.js", import.meta.url), join(source, "package/dist/release-retention.js"));
+  await writeFile(join(source, "package/dist/cli.js"), `import { retainCliEntryPoint, retainRunningRelease } from "./release-retention.js";
+if (process.argv.includes("--legacy-runtime-hold")) retainRunningRelease(import.meta.url);
+else if (!process.argv.includes("--legacy-hold")) retainCliEntryPoint(import.meta.url);
+if (process.argv.includes("--hold") || process.argv.includes("--legacy-hold") || process.argv.includes("--legacy-runtime-hold")) {
+  process.stdout.write("holding\\n"); setInterval(() => {}, 1000);
+} else console.log(\`\${process.env.GATEWAY_INSTALLED}:\${process.env.GATEWAY_COMMAND}\`);
+`);
   await symlink(process.execPath, join(source, "runtime/bin/node"));
   await copyFile(new URL("../../scripts/install.sh", import.meta.url), join(source, "install")); await chmod(join(source, "install"), 0o755);
   /** Makes the release folder carry this version (a different version is a different release to the installer). */
   const publish = async (version: string) => {
-    await writeFile(join(source, "package/package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version }));
-    const sums = await run("/usr/bin/shasum", ["-a", "256", "package/package.json", "package/dist/cli.js"], { cwd: source });
+    await writeFile(join(source, "package/package.json"), JSON.stringify({ name: "@edihasaj/harness-gateway", version, type: "module" }));
+    const sums = await run("/usr/bin/shasum", ["-a", "256", "package/package.json", "package/dist/cli.js", "package/dist/release-retention.js"], { cwd: source });
     await writeFile(join(source, "checksums.txt"), sums.stdout);
   };
   await publish("9.9.9");
   const install = (args: string[] = []) => run("/bin/sh", [join(source, "install"), "--prefix", prefix, ...args], { cwd: source, env: { ...process.env, HOME: home } })
-    .then(result => ({ code: 0, stderr: result.stderr }), (error: { code: number; stderr: string }) => ({ code: error.code, stderr: error.stderr }));
+    .then(result => ({ code: 0, stdout: result.stdout, stderr: result.stderr }), (error: { code: number; stdout: string; stderr: string }) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }));
   const bin = (name: string) => join(prefix, "bin", name);
   return { root, source, prefix, home, install, bin, publish, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
@@ -210,4 +217,59 @@ test("a gateway-codex that fails does not stop the install, and the failure is r
     assert.equal(result.code, 0); assert.match(result.stderr, /did not pre-warm/);
     assert.equal(await readlink(join(l.prefix, "share/subscription-gateway/current")), "releases/9.9.9");
   } finally { await l.cleanup(); }
+});
+
+test("an app-owned Node retains its old immutable release while current advances, then permits normal cleanup after it exits", apple, async () => {
+  const l = await layout(); let child: ReturnType<typeof spawn> | undefined;
+  try {
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    const root = join(l.prefix, "share/subscription-gateway"), old = join(root, "releases/1.0.0");
+    child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
+    await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`holder exited ${code}`))); });
+    const open = await run("/usr/sbin/lsof", ["-nP", "-p", String(child.pid), "-Fn"]);
+    assert.match(open.stdout, new RegExp(`${old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/\\.gateway-release`), "the immutable marker is a real open descriptor");
+    for (const version of ["2.0.0", "3.0.0", "4.0.0", "5.0.0"]) { await l.publish(version); assert.equal((await l.install()).code, 0); }
+    assert.equal(await lstat(old).then(() => true, () => false), true, "the live old release was not pruned");
+    child.kill("SIGTERM"); await new Promise(resolve => child!.once("exit", resolve)); child = undefined;
+    await l.publish("6.0.0"); const after = await l.install(); assert.equal(after.code, 0);
+    assert.equal(await lstat(old).then(() => true, () => false), false, `a stopped release is eligible for cleanup: ${after.stdout} ${after.stderr}`);
+  } finally {
+    if (child?.pid) child.kill("SIGKILL");
+    await l.cleanup();
+  }
+});
+
+test("an unpinned legacy app-owned Node makes pruning fail closed", apple, async () => {
+  const l = await layout(); let child: ReturnType<typeof spawn> | undefined;
+  try {
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    const root = join(l.prefix, "share/subscription-gateway"), old = join(root, "releases/1.0.0");
+    child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--legacy-hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
+    await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`legacy holder exited ${code}`))); });
+    for (const version of ["2.0.0", "3.0.0", "4.0.0", "5.0.0"]) { await l.publish(version); assert.equal((await l.install()).code, 0); }
+    assert.equal(await lstat(old).then(() => true, () => false), true, "an unpinned legacy current argv blocks cleanup");
+    child.kill("SIGTERM"); await new Promise(resolve => child!.once("exit", resolve)); child = undefined;
+    await l.publish("6.0.0"); assert.equal((await l.install()).code, 0);
+    assert.equal(await lstat(old).then(() => true, () => false), false);
+  } finally {
+    if (child?.pid) child.kill("SIGKILL");
+    await l.cleanup();
+  }
+});
+
+test("a legacy current CLI with only a runtime marker still blocks every prune", apple, async () => {
+  const l = await layout(); let child: ReturnType<typeof spawn> | undefined;
+  try {
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    await l.publish("2.0.0"); assert.equal((await l.install()).code, 0);
+    const root = join(l.prefix, "share/subscription-gateway"), oldest = join(root, "releases/1.0.0");
+    child = spawn(process.execPath, [join(root, "current/package/dist/cli.js"), "--legacy-runtime-hold"], { cwd: l.source, stdio: ["ignore", "pipe", "ignore"] });
+    await new Promise<void>((resolve, reject) => { child!.stdout!.once("data", () => resolve()); child!.once("error", reject); child!.once("exit", code => reject(new Error(`runtime holder exited ${code}`))); });
+    for (const version of ["3.0.0", "4.0.0", "5.0.0", "6.0.0"]) { await l.publish(version); assert.equal((await l.install()).code, 0); }
+    assert.equal(await lstat(oldest).then(() => true, () => false), true, "a runtime marker alone cannot identify a current CLI bootstrap");
+    child.kill("SIGTERM"); await new Promise(resolve => child!.once("exit", resolve)); child = undefined;
+  } finally {
+    if (child?.pid) child.kill("SIGKILL");
+    await l.cleanup();
+  }
 });

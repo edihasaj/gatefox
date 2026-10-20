@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision, gatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import pin from "../gateway-sdk-pin.json" with { type: "json" };
@@ -12,9 +13,10 @@ import { gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "../gateway-s
 type ComponentReceipt = { bundleVersion: string; bundleSha256: string;
   components: { gatewaySdk: { buildVersion: string; sourceSha256: string; files: { name: string; size: number; sha256: string }[]; origin?: { bundleVersion: string; bundleSha256: string } } } };
 
-async function fixture(t: { after(fn: () => Promise<void>): void }) {
-  const root = await mkdtemp(join(tmpdir(), "gateway-sdk-runtime-"));
+async function fixture(t: { after(fn: () => Promise<void>): void }, root?: string, source = "a".repeat(64)) {
+  root ??= await mkdtemp(join(tmpdir(), "gateway-sdk-runtime-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(root, { recursive: true, mode: 0o700 });
   await writeFile(join(root, "package.json"), JSON.stringify({ version: "0.2.21" }));
   const directory = join(root, "gateway-sdk"); await mkdir(directory, { mode: 0o700 });
   const executable = join(directory, "gateway-codex"); const bytes = "isolated gateway SDK fixture";
@@ -24,10 +26,25 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
     archiveSha256: pin.archiveSha256, patchSha256: gatewaySdkPatchSha256,
     lockfileSha256: pin.lockSha256,
     lockfileRepairSha256: gatewaySdkLockRepairSha256,
-    sourceSha256: "a".repeat(64), binarySha256: createHash("sha256").update(bytes).digest("hex"), profile: "release",
+    sourceSha256: source, binarySha256: createHash("sha256").update(bytes).digest("hex"), profile: "release",
     platform: process.platform, arch: process.arch, capabilities: [gatewaySdkCapability] };
   const save = (change: Record<string, unknown> = {}) => writeFile(receipt, JSON.stringify({ ...metadata, ...change }), { mode: 0o600 });
   await save(); return { root, directory, executable, receipt, metadata, save };
+}
+
+async function managedRecoveryFixture(t: { after(fn: () => Promise<void>): void }) {
+  const root = await mkdtemp(join(tmpdir(), "gateway-sdk-recovery-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const previous = join(root, "releases", "0.2.20", "package");
+  const current = join(root, "releases", "0.2.21", "package");
+  await mkdir(previous, { recursive: true, mode: 0o700 });
+  await mkdir(current, { recursive: true, mode: 0o700 });
+  const candidate = await fixture(t, current, gatewaySdkSourceSha256);
+  await rm(previous, { recursive: true, force: true });
+  await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+  await writeFile(join(root, "releases", "0.2.21", ".gateway-release"), "0.2.21\n", { mode: 0o600 });
+  await symlink("releases/0.2.21", join(root, "current"));
+  return { root, previous, current, candidate };
 }
 
 async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
@@ -47,6 +64,60 @@ async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
 test("legacy packages omit the separately built gateway SDK", async t => {
   const root = await mkdtemp(join(tmpdir(), "gateway-sdk-absent-")); t.after(() => rm(root, { recursive: true, force: true }));
   assert.equal(await gatewaySdkRuntime(root), undefined);
+});
+
+test("a listener whose whole managed release was pruned recovers only the verified current SDK", async t => {
+  const f = await managedRecoveryFixture(t);
+  const runtime = await gatewaySdkRuntime(f.previous);
+  assert.deepEqual(runtime, { executable: f.candidate.executable, binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+});
+
+test("recovery never substitutes a current SDK for a present old package, a checkout, or an unpinned source", async t => {
+  const f = await managedRecoveryFixture(t);
+  await mkdir(f.previous, { recursive: true, mode: 0o700 });
+  await writeFile(join(f.previous, "package.json"), JSON.stringify({ version: "0.2.20" }));
+  assert.equal(await gatewaySdkRuntime(f.previous), undefined, "a present old package that lacks its SDK stays legacy");
+  await rm(f.previous, { recursive: true, force: true });
+  await mkdir(join(f.root, "checkout"), { mode: 0o700 });
+  assert.equal(await gatewaySdkRuntime(join(f.root, "checkout")), undefined, "an arbitrary missing checkout never falls back");
+  await f.candidate.save({ sourceSha256: "b".repeat(64) });
+  await assert.rejects(gatewaySdkRuntime(f.previous), /does not match this release/);
+});
+
+test("managed recovery rejects a malformed installation link instead of escaping to another package", async t => {
+  const f = await managedRecoveryFixture(t);
+  await unlink(join(f.root, "current"));
+  await symlink("../elsewhere", join(f.root, "current"));
+  await assert.rejects(gatewaySdkRuntime(f.previous), /does not match this release/);
+});
+
+test("managed recovery requires the current release marker and package version", async t => {
+  const f = await managedRecoveryFixture(t);
+  const marker = join(f.root, "releases", "0.2.21", ".gateway-release");
+  await unlink(marker);
+  await assert.rejects(gatewaySdkRuntime(f.previous), /does not match this release/);
+  await writeFile(marker, "0.2.20\n", { mode: 0o600 });
+  await assert.rejects(gatewaySdkRuntime(f.previous), /does not match this release/);
+  await unlink(marker);
+  await symlink(join(f.root, ".gateway-installation"), marker);
+  await assert.rejects(gatewaySdkRuntime(f.previous), /does not match this release/);
+});
+
+test("a loaded module can recover after its own managed release directory is pruned", async t => {
+  const f = await managedRecoveryFixture(t);
+  const old = join(f.root, "releases", "0.2.20", "package");
+  const oldDist = join(old, "dist"); await mkdir(oldDist, { recursive: true, mode: 0o700 });
+  await writeFile(join(old, "package.json"), JSON.stringify({ version: "0.2.20", type: "module" }), { mode: 0o600 });
+  await writeFile(join(f.root, "releases", "0.2.20", ".gateway-release"), "0.2.20\n", { mode: 0o600 });
+  for (const name of ["gateway-sdk-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
+    await writeFile(join(oldDist, name), await readFile(new URL(`../${name}`, import.meta.url)));
+  }
+  const loaded = await import(`${pathToFileURL(join(oldDist, "gateway-sdk-runtime.js")).href}?managed-recovery`);
+  await rm(join(f.root, "releases", "0.2.20"), { recursive: true, force: true });
+  const runtime = await loaded.gatewaySdkRuntime();
+  assert.deepEqual({ binarySha256: runtime?.binarySha256, selectedModelCompaction: runtime?.selectedModelCompaction, executorIdentity: runtime?.executorIdentity },
+    { binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.match(runtime?.executable || "", /releases\/0\.2\.21\/package\/gateway-sdk\/gateway-codex$/);
 });
 
 test("matching release receipt proves the gateway executor capability: selected-model compaction and the openai alias", async t => {
