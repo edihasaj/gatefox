@@ -31,7 +31,7 @@ async function hostOptions(f: Fixture) {
     gatewayRuntime: async () => ({ executable: identity.codex, binarySha256: identity.sdkSha256, selectedModelCompaction: true as const, executorIdentity: true as const }) };
 }
 const descriptor = async (f: Fixture, digit: string): Promise<Message> => ({ revision: digit.repeat(64), args: ["app-server"], settings: { model: "fixture" },
-  catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"], gatewaySdkSha256: (await sdkIdentity(f.sdk)).sdkSha256 });
+  catalog: { models: [{ slug: "fixture", tool_mode: "direct" }] }, aliases: ["fixture"], gatewaySdkSha256: (await sdkIdentity(f.sdk)).sdkSha256 });
 
 test("a host that comes back while the fallback runs refuses native ownership, keeps serving gateway work, and takes the home once the fallback ends", { timeout: 30000 }, async () => {
   const f = await fallbackFixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");

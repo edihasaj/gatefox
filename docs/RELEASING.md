@@ -207,7 +207,13 @@ JavaScript. Installing a CLI update preserves the registration. See
    the archive's file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
-   there and require a zero exit before the device is treated as updated.
+   there and require a zero exit before the device is treated as updated. Run
+   `gateway rollout` after each install and require `ready` before declaring the
+   machine shipped. It ties immutable loaded process releases, the service's
+   PID-frozen release, the inference response header, execution-host identity,
+   and a current tool canary together; a moved `current` link or an HTTP 200
+   alone cannot pass it. Use `gateway rollout --verify` for a new isolated
+   no-provider canary when a cached proof is pending. See [rollout readiness](rollout.md).
    After every install, also run `gateway health` on every Mac; its verdict must
    be `ok` or `warn` (see [the watchdog](health.md)). A `fail` means this Mac is
    broken or half-moved, and the alert push is not configured until

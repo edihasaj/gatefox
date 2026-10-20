@@ -7,6 +7,30 @@ read_when:
 
 # Verification
 
+## Live adapter upgrade (0.6.1)
+
+Run `node scripts/e2e-live-upgrade.mjs --previous /absolute/0.6.0/package
+--package /absolute/0.6.1/package --code /absolute/compiled/0.6.1 --root
+/private/evidence`. The check copies both complete immutable packages into a
+private managed layout, starts the released adapter over a private Unix socket,
+and keeps that one frontend connection open while its 0.6.0 execution host is
+replaced by the candidate host. A mock provider makes no paid requests.
+
+Before replacement the old host performs a real direct tool command and local
+Git commit. A deliberately held second turn proves the host's quiet-stop guard
+refuses a busy upgrade. Once it finishes, the fixture stops only its host,
+fault-injects removal of its private old package, and starts the candidate host.
+The already-loaded old adapter must recover its verified SDK through
+`managed/current`, resume the same thread with its saved model, provider,
+workspace and permissions, and use the resumed connection to spawn a child
+agent that performs a second command and commit. The result independently
+checks that the original commit was not replayed, the host PID changed, both
+SDK packages passed receipt verification, native authentication was never
+copied, and all owned process groups and sockets stopped. It records only
+sanitized booleans and versions in a `live-upgrade-*.json` evidence file under
+the supplied root; active fixture state uses a short private `/tmp` path so its
+Unix sockets fit macOS's address limit.
+
 ## Hostless direct tools (0.6.0)
 
 Run `node scripts/e2e-direct-tools.mjs --package /absolute/release/package

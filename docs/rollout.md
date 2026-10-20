@@ -1,0 +1,50 @@
+---
+summary: 'Readiness evidence for an installed gateway release.'
+read_when:
+  - Installing or publishing a gateway release
+  - Investigating a stale desktop executor, missing tool runner, or failed chat resume
+---
+
+# Rollout readiness
+
+Run `gateway rollout` after each machine installs the published archive. It is a
+read-only gate: it does not restart the service, acquire a gateway generation,
+or reconnect a desktop client.
+
+```
+gateway rollout
+gateway rollout --json
+gateway rollout --verify
+```
+
+`ready` means all of the following agree on one installed release:
+
+1. Each relevant loaded gateway process has a known immutable release and it
+   matches the installed release.
+2. The service status belongs to the currently running service PID, has a fresh
+   frozen `runningRelease`, and its running plan components are current.
+3. The local inference health endpoint answers HTTP 200 with the installed
+   `X-Gateway-Release` header. A successful body alone is insufficient.
+4. The execution host belongs to that service PID and OS start stamp, attests
+   its immutable release source, active catalog fingerprint, verified SDK, and
+   direct-tool compatibility.
+5. The host's fresh canary proves a completed turn with a direct tool edit and
+   Git commit. Its proof must name the same host, SDK, source, and active
+   catalog fingerprint.
+
+The normal command accepts only a host-controlled cached canary report that is
+less than five minutes old and still matches the live status. `--verify` runs a
+new isolated serving-host canary. It uses a local mock provider and a temporary
+repository; it does not use an account, send provider inference, replay chats,
+or write user gateway state.
+
+| State | Exit | Meaning |
+| --- | ---: | --- |
+| `ready` | 0 | All required live evidence agrees. |
+| `pending` | 1 | A process, service, host, or proof has not adopted the release yet. Recheck after idle adoption. |
+| `blocked` | 1 | The host explicitly reports active work, so a canary was not claimed. |
+| `failed` | 2 | Inference or the direct-tool canary failed. Investigate before publishing or declaring the machine ready. |
+
+The command reports only fixed reason codes, counts, versions, capabilities and
+PIDs. It does not print command lines, paths, request bodies, tool arguments,
+configuration values, or probe-child output.

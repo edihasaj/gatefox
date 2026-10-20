@@ -52,6 +52,8 @@ export interface VersionsExecutors {
   ps?: () => Promise<string>;
   /** Runs `lsof -a -p <pid> -d txt -Fn` (mapped files) and returns its stdout. */
   lsof?: (pid: number) => Promise<string>;
+  /** Runs `lsof -a -p <pid> -Ffdn` (all open descriptors) and returns its stdout. */
+  lsofFiles?: (pid: number) => Promise<string>;
   /** Runs `lsof -a -p <pid> -iTCP -sTCP:LISTEN -P -n -Fn` (listening sockets) and returns its stdout. */
   sockets?: (pid: number) => Promise<string>;
   /** Only rows owned by this uid are considered. Defaults to the current user. */
@@ -74,6 +76,7 @@ const exec = promisify(execFile);
 const execTimeoutMs = 5000;
 const psArgs = ["-axo", "pid,uid,lstart,command"];
 const lsofTxtArgs = (pid: number) => ["-a", "-p", String(pid), "-d", "txt", "-Fn"];
+const lsofFilesArgs = (pid: number) => ["-a", "-p", String(pid), "-Ffdn"];
 const lsofSocketArgs = (pid: number) => ["-a", "-p", String(pid), "-iTCP", "-sTCP:LISTEN", "-P", "-n", "-Fn"];
 const healthTimeoutMs = 2000;
 /** What a release folder may be named; a health header is only trusted when it fits. */
@@ -81,6 +84,7 @@ const releaseName = /^\d+\.\d+\.\d+[0-9A-Za-z.+-]{0,32}$/;
 
 const realPs = async () => (await exec("ps", psArgs, { timeout: execTimeoutMs, maxBuffer: 16 * 1024 * 1024 })).stdout;
 const realLsof = async (pid: number) => (await exec("lsof", lsofTxtArgs(pid), { timeout: execTimeoutMs })).stdout;
+const realLsofFiles = async (pid: number) => (await exec("lsof", lsofFilesArgs(pid), { timeout: execTimeoutMs })).stdout;
 const realSockets = async (pid: number) => (await exec("lsof", lsofSocketArgs(pid), { timeout: execTimeoutMs })).stdout;
 const realHealth = async (port: number) => (await fetch(`http://127.0.0.1:${port}/health`,
   { signal: AbortSignal.timeout(healthTimeoutMs) })).headers.get("x-gateway-release") ?? undefined;
@@ -255,6 +259,69 @@ export function parseLsofTxt(out: string): string {
   return RELEASE_UNKNOWN;
 }
 
+/**
+ * Immutable CLI entrypoints this exact process still holds open. `current` is
+ * deliberately absent: it is a mutable link and proves only what is installed
+ * now, not what this process bootstrapped. A marker is likewise insufficient;
+ * an older CLI can load a newer server generation and retain its marker.
+ *
+ * `lsof -Ffdn` emits one `pPID` record followed by descriptor (`f`) and name
+ * (`n`) records. Requiring both the matching PID and a preceding descriptor
+ * avoids treating loose path-shaped output as evidence for another process.
+ */
+export function parseImmutableCliFds(out: string, pid: number, scope: InstallScope): string[] {
+  const releases = new Set<string>();
+  let ownsProcess = false;
+  let descriptor = false;
+  for (const line of out.split("\n")) {
+    if (line.startsWith("p")) {
+      ownsProcess = line === `p${pid}`;
+      descriptor = false;
+      continue;
+    }
+    if (!ownsProcess) continue;
+    if (line.startsWith("f")) {
+      // Only a numeric, open descriptor can prove this process still holds the
+      // entrypoint. lsof labels such as `txt`, `cwd`, and `mem` are mappings,
+      // not the startup file handle this check is about.
+      descriptor = /^\d+[rwu-]?$/.test(line.slice(1));
+      continue;
+    }
+    if (!descriptor || !line.startsWith("n")) continue;
+    const path = line.slice(1);
+    for (const root of scope.roots) {
+      const match = new RegExp(`^${escapeRe(strip(root))}/releases/([^/]+)/package/dist/cli\\.js$`).exec(path);
+      if (match?.[1] && releaseName.test(match[1])) releases.add(match[1]);
+    }
+  }
+  return [...releases];
+}
+
+/** A release named by an immutable CLI path, never by `current`. */
+function immutableCliArgRelease(command: string, scope: InstallScope): string | undefined {
+  const named = classifyCommand(command, scope);
+  if (!named || named.release === RELEASE_UNKNOWN) return;
+  if (named.release === RELEASE_CHECKOUT) return RELEASE_CHECKOUT;
+  for (const root of scope.roots) {
+    const pattern = new RegExp(`(?:^|\\s)${escapeRe(strip(root))}/releases/${escapeRe(named.release)}/package/dist/cli\\.js(?=\\s|$)`);
+    if (pattern.test(command)) return named.release;
+  }
+  return;
+}
+
+/** CLI launch rows that must prove their immutable bootstrap entrypoint. */
+function isCliRole(role: VersionsRole): boolean {
+  return role !== "inference" && role !== "gateway-engine" && role !== "native-relay";
+}
+
+/** A PID may exit and be reused while lsof reads it; retain only the original process identity. */
+async function isSameProcess(row: ProcessRow, ps: () => Promise<string>): Promise<boolean> {
+  try {
+    return parsePs(await ps()).some(candidate =>
+      candidate.pid === row.pid && candidate.uid === row.uid && candidate.startedAt === row.startedAt);
+  } catch { return false; }
+}
+
 /** The loopback ports a process listens on, from `lsof -a -p <pid> -iTCP -sTCP:LISTEN -P -n -Fn`. */
 export function parseListenPorts(out: string): number[] {
   const ports = new Set<number>();
@@ -285,6 +352,9 @@ async function servedRelease(pid: number, deps: VersionsExecutors): Promise<stri
 export async function runVersions(deps: VersionsExecutors = {}): Promise<VersionsResult> {
   const ps = deps.ps ?? realPs;
   const lsof = deps.lsof ?? realLsof;
+  // Faked mapped-file fixtures remain hermetic unless they opt into a separate
+  // descriptor reader. Production always uses a complete descriptor listing.
+  const lsofFiles = deps.lsofFiles ?? (deps.lsof ? deps.lsof : realLsofFiles);
   const uid = deps.uid ?? (process.getuid?.() ?? 0);
   const scope: InstallScope = deps.root !== undefined
     ? { roots: pathForms(deps.root), installed: deps.installed ?? installedRelease(deps.root) }
@@ -299,6 +369,25 @@ export async function runVersions(deps: VersionsExecutors = {}): Promise<Version
     // An inference process that upgraded in place keeps its old runtime mapped, so its health answer wins.
     const served = named.role === "inference" ? await servedRelease(row.pid, deps) : undefined;
     if (served) { processes.push({ role: named.role, pid: row.pid, startedAt: row.startedAt, release: served }); continue; }
+    if (isCliRole(named.role)) {
+      const immutable = await lsofFiles(row.pid).then(out => parseImmutableCliFds(out, row.pid, scope), () => [] as string[]);
+      // Bind descriptor evidence to the process snapshot that supplied this
+      // row. A vanished/reused PID or an unreadable recheck is kept as unknown
+      // for this scan: silently dropping it could turn an incomplete rollout
+      // into a false "all on current" verdict.
+      if (!(await isSameProcess(row, ps))) {
+        processes.push({ role: named.role, pid: row.pid, startedAt: row.startedAt, release: RELEASE_UNKNOWN });
+        continue;
+      }
+      // Exactly one immutable CLI entry is evidence. Two releases mean the
+      // bootstrap release cannot be known; a marker or Node runtime cannot
+      // resolve that conflict.
+      const release = immutable.length === 1 ? immutable[0]
+        : immutable.length === 0 ? immutableCliArgRelease(row.command, scope) ?? RELEASE_UNKNOWN
+          : RELEASE_UNKNOWN;
+      processes.push({ role: named.role, pid: row.pid, startedAt: row.startedAt, release });
+      continue;
+    }
     const mapped = await lsof(row.pid).then(parseLsofTxt, () => RELEASE_UNKNOWN as string);
     processes.push({ role: named.role, pid: row.pid, startedAt: row.startedAt, release: mapped === RELEASE_UNKNOWN ? named.release : mapped });
   }

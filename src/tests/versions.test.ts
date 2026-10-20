@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -23,6 +25,7 @@ function psLine(pid: number, owner: number, command: string, day = 12, second = 
   return `${String(pid).padStart(5)} ${String(owner).padStart(3)} ${start(day, second)} ${command}`;
 }
 const mapped = (...paths: string[]) => [`p${paths.length}`, ...paths.flatMap(path => ["ftxt", `n${path}`])].join("\n");
+const opened = (pid: number, ...paths: string[]) => [`p${pid}`, ...paths.flatMap((path, index) => [`f${20 + index}u`, `n${path}`])].join("\n");
 /** What `lsof -a -p <pid> -iTCP -sTCP:LISTEN -P -n -Fn` prints for one loopback listener. */
 const listening = (...names: string[]) => ["p402", ...names.flatMap(name => ["f12u", `n${name}`])].join("\n");
 
@@ -58,7 +61,12 @@ const readableLsof = async (pid: number) => {
   return lsofFor[pid] ?? "";
 };
 const fleet = (extra: Partial<VersionsCommandDeps> = {}): VersionsCommandDeps =>
-  ({ ps: async () => psOut, lsof: readableLsof, sockets: async () => "", uid, root, installed, health: async () => undefined, ...extra });
+  ({ ps: async () => psOut, lsof: readableLsof,
+    lsofFiles: async pid => {
+      const out = await readableLsof(pid);
+      return opened(pid, ...out.split("\n").filter(line => line.startsWith("n")).map(line => line.slice(1)));
+    },
+    sockets: async () => "", uid, root, installed, health: async () => undefined, ...extra });
 
 /** The same instant as the local clock the human report prints. */
 function localStart(iso: string): string {
@@ -168,7 +176,7 @@ test("a command line is matched in both forms of the install root", async () => 
       assert.deepEqual(classifyCommand(`${node} ${written} daemon`, { roots: [other, real], installed: "1.2.3" }),
         { role: "service", release: "1.2.3" }, written);
       const result = await runVersions({ ps: async () => psLine(801, uid, `${node} ${written} daemon`), lsof: async () => { throw new Error("lsof: no access"); },
-        sockets: async () => "", uid, root: other, installed: "1.2.3" });
+        lsofFiles: async pid => opened(pid, resolved), sockets: async () => "", uid, root: other, installed: "1.2.3" });
       assert.deepEqual(result.processes.map(row => `${row.role}@${row.release}`), ["service@1.2.3"], written);
       // A run rooted at the resolved form still reads its own `current` link.
       assert.equal(installedRelease(real), "1.2.3");
@@ -181,6 +189,114 @@ test("lsof names the release a process mapped, or unknown when it cannot", () =>
   assert.equal(parseLsofTxt("p401\nftxt\n/usr/lib/dyld"), "unknown");
   assert.equal(parseLsofTxt(""), "unknown");
   assert.equal(parseLsofTxt("lsof: operation not permitted"), "unknown");
+});
+
+test("CLI rows require one immutable CLI descriptor from their own install", async () => {
+  const report = async (command: string, lsofFiles: (pid: number) => Promise<string>) => runVersions({
+    ps: async () => psLine(701, uid, command),
+    lsof: async () => "",
+    lsofFiles,
+    sockets: async () => "",
+    uid,
+    root,
+    installed,
+  });
+  const currentCommand = `${node} ${current()} daemon`;
+
+  // The mutable link alone is never evidence after an install.
+  assert.equal((await report(currentCommand, async () => "")).processes[0]!.release, "unknown");
+  // An older CLI wins even if a newer generation marker remains open.
+  assert.equal((await report(currentCommand, async pid => opened(pid,
+    release("0.4.1"),
+    `${root}/releases/${installed}/package/dist/release-marker`,
+  ))).processes[0]!.release, "0.4.1");
+  // More than one CLI entrypoint is contradictory, and malformed, wrong-PID,
+  // or another install's descriptors cannot decide the row.
+  assert.equal((await report(currentCommand, async pid => opened(pid, release("0.4.1"), release(installed)))).processes[0]!.release, "unknown");
+  assert.equal((await report(currentCommand, async () => `p701\nn${release(installed)}\nf20u\nn/elsewhere/releases/${installed}/package/dist/cli.js`)).processes[0]!.release, "unknown");
+  assert.equal((await report(currentCommand, async () => opened(702, release(installed)))).processes[0]!.release, "unknown");
+  // A current-path process with a matching immutable descriptor genuinely loaded
+  // the installed release. A direct immutable launch remains the safe fallback
+  // when lsof cannot be read.
+  assert.equal((await report(currentCommand, async pid => opened(pid, release(installed)))).processes[0]!.release, installed);
+  assert.equal((await report(`${node} ${release(installed)} daemon`, async () => { throw new Error("denied"); })).processes[0]!.release, installed);
+  // An unrelated repository is never a gateway process.
+  assert.deepEqual((await report(`${node} /elsewhere/releases/${installed}/package/dist/cli.js daemon`, async () => "")).processes, []);
+});
+
+test("an ambiguous descriptor recheck remains unknown instead of disappearing", async () => {
+  let reads = 0;
+  const result = await runVersions({
+    ps: async () => {
+      reads += 1;
+      return psLine(701, uid, `${node} ${current()} daemon`, 12, reads === 1 ? 1 : 2);
+    },
+    lsof: async () => "",
+    lsofFiles: async pid => opened(pid, release(installed)),
+    sockets: async () => "",
+    uid,
+    root,
+    installed,
+  });
+  assert.equal(result.processes[0]!.release, "unknown", "a reused PID cannot inherit another process's release or make a rollout ready");
+});
+
+test("an unreadable descriptor recheck remains unknown instead of disappearing", async () => {
+  let reads = 0;
+  const result = await runVersions({
+    ps: async () => {
+      reads += 1;
+      if (reads === 1) return psLine(701, uid, `${node} ${current()} daemon`);
+      throw new Error("ps: operation not permitted");
+    },
+    lsof: async () => "",
+    lsofFiles: async pid => opened(pid, release(installed)),
+    sockets: async () => "",
+    uid,
+    root,
+    installed,
+  });
+  assert.equal(result.processes[0]!.release, "unknown", "a missing recheck is not evidence the old process is gone");
+});
+
+test("real lsof keeps an open immutable CLI descriptor after current moves", async () => {
+  const base = await mkdtemp(join(tmpdir(), "gateway-versions-open-fd-"));
+  const install = join(base, "gateway");
+  const oldVersion = "1.2.3";
+  const newVersion = "1.2.4";
+  const oldCli = join(install, `releases/${oldVersion}/package/dist/cli.js`);
+  const newCli = join(install, `releases/${newVersion}/package/dist/cli.js`);
+  let holder: ReturnType<typeof spawn> | undefined;
+  try {
+    await mkdir(join(install, `releases/${oldVersion}/package/dist`), { recursive: true });
+    await mkdir(join(install, `releases/${newVersion}/package/dist`), { recursive: true });
+    await writeFile(oldCli, "// old CLI\n");
+    await writeFile(newCli, "// new CLI\n");
+    await symlink(`releases/${oldVersion}`, join(install, "current"));
+    holder = spawn(process.execPath, ["--input-type=module", "--eval",
+      "import { open } from 'node:fs/promises'; const file = await open(process.argv[1]); process.stdout.write('ready\\n'); setInterval(() => file.stat(), 1000);",
+      oldCli], { stdio: ["ignore", "pipe", "ignore"] });
+    if (!holder.pid || !holder.stdout) throw new Error("could not start descriptor holder");
+    await once(holder.stdout, "data");
+    await unlink(join(install, "current"));
+    await symlink(`releases/${newVersion}`, join(install, "current"));
+
+    const result = await runVersions({
+      ps: async () => psLine(holder!.pid!, process.getuid?.() ?? uid, `${node} ${install}/current/package/dist/cli.js daemon`),
+      sockets: async () => "",
+      uid: process.getuid?.() ?? uid,
+      root: install,
+      installed: newVersion,
+    });
+    assert.equal(result.processes[0]!.release, oldVersion);
+  } finally {
+    if (holder && !holder.killed) {
+      const exited = once(holder, "exit");
+      holder.kill("SIGTERM");
+      await exited;
+    }
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test("the inference port comes from the process's own listening socket", () => {
@@ -233,7 +349,7 @@ test("versions reports the release each process loaded, not the one current name
   assert.equal(byRole["ssh-listener"]!.role, "ssh-listener");
   assert.equal(byRole["tunnel"]!.pid, 409);
   assert.equal(result.installed, installed);
-  assert.equal(result.lagging, 3);
+  assert.equal(result.lagging, 4, "an unproven current-path CLI row is conservatively lagging");
   assert.ok(!result.processes.some(row => row.pid === 411), "another user's gateway is not ours to report");
   assert.ok(result.processes.every(row => row.startedAt.endsWith("Z")));
 });
@@ -297,14 +413,14 @@ test("--json prints the result and --check only fails the run when something lag
   const printed: string[] = [];
   const plain = await versionsCommand([], fleet({ stdout: text => printed.push(text), stderr: () => {} }));
   assert.equal(plain, 0, "without --check a lagging fleet still succeeds");
-  assert.match(printed.at(-1)!, /3 lagging: desktop-adapter@0\.4\.1 gateway-engine@0\.4\.1 native-relay@0\.4\.1\n$/);
+  assert.match(printed.at(-1)!, /4 lagging: desktop-adapter@0\.4\.1 gateway-engine@0\.4\.1 native-relay@0\.4\.1 other@unknown\n$/);
 
   printed.length = 0;
   const json = await versionsCommand(["--json"], fleet({ stdout: text => printed.push(text), stderr: () => {} }));
   assert.equal(json, 0);
   const parsed = JSON.parse(printed.at(-1)!);
   assert.equal(parsed.installed, installed);
-  assert.equal(parsed.lagging, 3);
+  assert.equal(parsed.lagging, 4);
   assert.equal(parsed.processes.length, 10);
   assert.ok(parsed.processes.every((row: { startedAt: string }) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(row.startedAt)),
     "the JSON keeps the UTC instant the report only displays locally");

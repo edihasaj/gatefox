@@ -50,7 +50,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const hostHome = executionHostHome(configPath, nativeHome);
   const options = { config, configPath, nativeHome, codex: appCodex, gatewayRuntime: async () => runtime };
   const descriptor = (sha: string | undefined = binarySha256, digit = "a"): ExecutionDescriptor => ({ revision: digit.repeat(64), args: ["app-server", "--listen", "stdio://", "--fixture-state", join(directory, `engine-${digit}.state`)],
-    settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"], ...(sha ? { gatewaySdkSha256: sha } : {}) });
+    settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture", tool_mode: "direct" }] }, aliases: ["fixture"], ...(sha ? { gatewaySdkSha256: sha } : {}) });
   const events = async () => { await flushTelemetry(); return (await readTelemetry(config.stateDirectory, Date.now() - 600_000)).filter(event => event.event === "release_skew_refused"); };
   const clean = async () => { await flushTelemetry(); await rm(directory, { recursive: true, force: true }); await rm(hostHome, { recursive: true, force: true }); await rm(dirname(nativeHomeOwnerPath(nativeHome)), { recursive: true, force: true }); };
   return { directory, options, hostHome, binarySha256, descriptor, events, clean };

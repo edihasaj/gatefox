@@ -47,7 +47,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
 `, { mode: 0o700 });
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   const hostHome = executionHostHome(configPath, nativeHome);
-  const descriptor = (digit = "a"): ExecutionDescriptor => ({ revision: digit.repeat(64), args: ["app-server", "--listen", "stdio://", "--fixture-state", join(directory, `engine-${digit}.json`)], settings: { model: "fixture", agents: { max_concurrent_threads_per_session: 30 } }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"] });
+  const descriptor = (digit = "a"): ExecutionDescriptor => ({ revision: digit.repeat(64), args: ["app-server", "--listen", "stdio://", "--fixture-state", join(directory, `engine-${digit}.json`)], settings: { model: "fixture", agents: { max_concurrent_threads_per_session: 30 } }, catalog: { models: [{ slug: "fixture", tool_mode: "direct" }] }, aliases: ["fixture"] });
   const clean = async () => { await rm(directory, { recursive: true, force: true }); await rm(hostHome, { recursive: true, force: true }); };
   return { directory, config, configPath, nativeHome, codex: sdk, hostHome, descriptor, clean };
 }
@@ -93,6 +93,52 @@ test("a shared host cleans flags from an older adapter before its SDK starts", {
     assert.match(settings, /"hooks"\s*=\s*true/);
     assert.equal(JSON.stringify(descriptor), original);
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("a host without Code Mode normalizes old catalogs before persistent generation ownership", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let raw; let adapter: ExecutionHostClient | undefined;
+  try {
+    host = await startExecutionHost(f); raw = await control(join(f.hostHome, "host.sock"));
+    const legacy = f.descriptor();
+    legacy.catalog = { models: [
+      { slug: "missing", instructions: "preserve", model_provider: "gateway", permissions: { allow: ["exec"] } },
+      { slug: "unknown", tool_mode: "something_future", review: { required: true }, args: ["kept"] },
+      { slug: "direct", tool_mode: "direct", model: "kept" },
+    ] };
+    legacy.aliases = legacy.catalog.models.map(row => String(row.slug));
+    const original = structuredClone(legacy);
+    const first = await raw.request<ExecutionRecord>("execution/acquire", legacy);
+    assert.notEqual(first.revision, legacy.revision, "the incompatible catalog gets its own immutable generation directory");
+    assert.deepEqual(legacy, original, "the old adapter descriptor is never mutated");
+    const state = JSON.parse(await readFile(join(f.directory, "engine-a.json"), "utf8")) as { args: string[] };
+    const inline = state.args.find(arg => arg.startsWith("model_catalog_json="));
+    assert.ok(inline);
+    const catalogPath = JSON.parse(inline!.slice("model_catalog_json=".length)) as string;
+    const catalog = JSON.parse(await readFile(catalogPath, "utf8")) as { models: Array<Record<string, unknown>> };
+    assert.deepEqual(catalog.models, [
+      { slug: "missing", instructions: "preserve", model_provider: "gateway", permissions: { allow: ["exec"] }, tool_mode: "direct" },
+      { slug: "unknown", tool_mode: "direct", review: { required: true }, args: ["kept"] },
+      { slug: "direct", tool_mode: "direct", model: "kept" },
+    ]);
+    assert.equal((await raw.request<ExecutionRecord>("execution/acquire", legacy)).revision, first.revision, "the same old descriptor reattaches to the normalized generation");
+    adapter = await ExecutionHostClient.discover(f.configPath, f.nativeHome, f.codex, "gateway", true);
+    assert.ok(adapter);
+    assert.equal((await adapter.acquire(legacy)).revision, first.revision, "a client accepts the host's normalized revision");
+    await assert.rejects(raw.request("execution/acquire", { ...legacy, settings: { model: "changed" } }), /cannot change/, "a caller cannot take over normalized ownership by reusing its old revision");
+    const direct = f.descriptor("b");
+    assert.equal((await raw.request<ExecutionRecord>("execution/acquire", direct)).revision, direct.revision, "already direct rows keep their adapter revision");
+  } finally { adapter?.close(); await raw?.close(); await host?.close(); await f.clean(); }
+});
+
+test("a legacy app SDK with its Code Mode companion preserves an unset tool mode", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    await writeFile(join(dirname(f.codex), "codex-code-mode-host"), "#!/bin/sh\n", { mode: 0o700 });
+    host = await startExecutionHost(f); client = await control(join(f.hostHome, "host.sock"));
+    const descriptor = f.descriptor();
+    descriptor.catalog = { models: [{ slug: "fixture" }] };
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", descriptor)).revision, descriptor.revision);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 

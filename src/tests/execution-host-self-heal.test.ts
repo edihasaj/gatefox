@@ -36,7 +36,7 @@ setInterval(()=>{if(process.ppid===1)process.exit(0);},1000);
   const config: GatewayConfig = { version: 1, port: 3460, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   configureTelemetry(config.stateDirectory, "test");
   const hostHome = executionHostHome(configPath, nativeHome);
-  const descriptor: ExecutionDescriptor = { revision: "a".repeat(64), args: ["app-server", "--listen", "stdio://"], settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"] };
+  const descriptor: ExecutionDescriptor = { revision: "a".repeat(64), args: ["app-server", "--listen", "stdio://"], settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture", tool_mode: "direct" }] }, aliases: ["fixture"] };
   const generation = join(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
   return { directory, config, configPath, nativeHome, codex, hostHome, descriptor, generation,
     clean: async () => { roots.restore(); await rm(directory, { recursive: true, force: true }); await rm(hostHome, { recursive: true, force: true }); } };

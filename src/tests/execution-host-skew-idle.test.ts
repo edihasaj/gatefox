@@ -19,7 +19,11 @@ async function skewHost(pending = true) {
   const idle: string[] = []; let sha = ""; let record: ExecutionRecord | undefined;
   const state: { pending?: { release: string; gatewaySdkSha256: string } } = pending ? { pending: { release: "0.4.7", gatewaySdkSha256: refusedSha } } : {};
   const f = await quietHost(undefined, codex => ({
-    gatewayRuntime: async () => ({ executable: codex, binarySha256: sha, selectedModelCompaction: true as const, executorIdentity: true as const }),
+    gatewayRuntime: async () => {
+      const binarySha256 = (await sdkIdentity(codex)).sdkSha256;
+      sha ||= binarySha256;
+      return { executable: codex, binarySha256, selectedModelCompaction: true as const, executorIdentity: true as const };
+    },
     pendingRelease: async () => state.pending,
     onSkewIdle: release => { idle.push(release); } }), );
   return { f, idle, state, async start() {

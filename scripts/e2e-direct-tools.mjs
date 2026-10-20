@@ -20,18 +20,21 @@ for (const key of ["package", "root"]) assert.ok(values[key], `Pass --${key}`);
 const pkg = resolve(values.package);
 const code = resolve(values.code ?? new URL("..", import.meta.url).pathname);
 const root = resolve(values.root);
-const fixture = await mkdtemp("/tmp/gw-direct-tools-");
+await mkdir(root, { recursive: true, mode: 0o700 });
+const fixture = await mkdtemp(join(root, "fixture-"));
 const native = join(fixture, "native");
 const home = join(fixture, "home");
 const state = join(fixture, "state");
 const work = join(fixture, "work");
-for (const path of [root, native, home, state, work]) await mkdir(path, { recursive: true, mode: 0o700 });
+for (const path of [native, home, state, work]) await mkdir(path, { recursive: true, mode: 0o700 });
 
 // This is the complete inherited environment of fixture processes. It carries no account
 // credentials, gateway configuration, or provider token from the developer's shell.
-const allowedEnvironment = new Set(["PATH", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER", "LOGNAME", "SHELL"]);
+const allowedEnvironment = new Set(["TMPDIR", "LANG", "LC_ALL"]);
 for (const key of Object.keys(process.env)) if (!allowedEnvironment.has(key)) delete process.env[key];
+process.env.PATH = "/usr/bin:/bin";
 process.env.HOME = home;
+process.env.ZDOTDIR = home;
 process.env.CODEX_HOME = native;
 process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
 process.env.GATEWAY_TELEMETRY = "off";
@@ -39,9 +42,9 @@ process.env.GATEWAY_ERROR_REPORTS = "off";
 
 const load = name => import(pathToFileURL(join(code, "dist", `${name}.js`)));
 const [{ AppServerBackends }, { AppServerRouter }, { DesktopCatalog }, { modelCatalog }, { startGateway },
-  { writePrivateJson }, { gatewaySdkRuntime }, { executableRunsCodeMode }, { responsesInputToMessages }] = await Promise.all([
+  { writePrivateJson }, { gatewaySdkRuntime }, { executableRunsCodeMode }, { responsesInputToMessages }, { AppServerConnection }] = await Promise.all([
   load("app-server-backends"), load("app-server-router"), load("desktop-catalog"), load("catalog"),
-  load("server"), load("config"), load("gateway-sdk-runtime"), load("codex-native-rows"), load("protocol/request"),
+  load("server"), load("config"), load("gateway-sdk-runtime"), load("codex-native-rows"), load("protocol/request"), load("app-server-connection"),
 ]);
 
 const runtime = await gatewaySdkRuntime(pkg);
@@ -56,7 +59,11 @@ const aliases = [
 ];
 // The missing-host trap: these remain caller settings through launch and turn start.
 // An explicit direct row must take precedence over both of them.
-const callerConfig = { features: { code_mode_only: true, code_mode_host: true, multi_agent_v2: { enabled: true } } };
+const callerConfig = {
+  web_search: "disabled",
+  analytics: { enabled: false },
+  features: { code_mode_only: true, code_mode_host: true, multi_agent_v2: { enabled: true }, plugins: false, hooks: false },
+};
 const configPath = join(fixture, "gateway.json");
 const config = {
   version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
@@ -80,6 +87,10 @@ const evidence = {
   expectedProvider,
   nativeRows: Object.create(null),
   chats: [],
+  configReadVerified: false,
+  nativeConfigUnchanged: false,
+  nativeAuthAbsent: false,
+  completedChildTurns: 0,
   passed: false,
 };
 const toolsFor = request => {
@@ -126,12 +137,25 @@ const commandFor = entry => [
   "git status --porcelain",
   "printf 'DIRECT_TOOL_EXIT=0\\n'",
 ].join(" && ");
+const disabled = value => value === undefined || value === null || value === false || value === "disabled"
+  || !!value && typeof value === "object" && !Array.isArray(value) && value.enabled === false;
+const empty = value => value === undefined || value === null || value === false || Array.isArray(value) && value.length === 0
+  || !!value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === 0;
+const verifySafeConfig = result => {
+  const effective = result?.config;
+  assert.ok(effective && typeof effective === "object" && !Array.isArray(effective));
+  for (const key of ["hooks", "external_features"]) assert.ok(disabled(effective[key]), `Canary config unexpectedly enables ${key}`);
+  for (const key of ["plugins", "memory", "mcp", "mcp_servers"]) assert.ok(disabled(effective[key]) || empty(effective[key]), `Canary config unexpectedly enables ${key}`);
+  assert.ok(disabled(effective.web_search), "Canary web access must be disabled");
+  assert.ok(disabled(effective.analytics), "Canary analytics must be disabled");
+};
 
 let gateway;
 let backend;
 let phase = "setup";
 const events = [];
 const completed = new Set();
+const childFinished = new Set();
 let active;
 try {
   await exec("git", ["init", "--quiet"], { cwd: work });
@@ -158,7 +182,12 @@ try {
             message: `Run the assigned direct-tool fixture command ${entry.task} and return.`,
             model: entry.upstream, reasoning_effort: "low", fork_turns: "none",
           });
-        } else yield { type: "text", text: "PARENT_FIXTURE_COMPLETE" };
+        } else {
+          const deadline = Date.now() + 15_000;
+          while (!childFinished.has(entry.alias) && Date.now() < deadline) await delay(10);
+          assert.ok(childFinished.has(entry.alias), "The direct child must save its completed command turn before its parent completes");
+          yield { type: "text", text: "PARENT_FIXTURE_COMPLETE" };
+        }
         yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
         return;
       }
@@ -170,14 +199,16 @@ try {
       const callId = `direct_${entry.file}`;
       const output = (request.input ?? []).find(item => item?.type === "function_call_output" && item.call_id === callId);
       if (!output) {
-        yield callFor(command, callId, { cmd: commandFor(entry) });
+        yield callFor(command, callId, { cmd: commandFor(entry), login: false });
       } else {
         // This is the actual continuation after the SDK dispatched the command. Filesystem and
         // Git assertions below prove that it was not merely a model-generated claim.
         assert.ok(output.output !== undefined, "The command result must return to the provider");
         assert.match(JSON.stringify(output.output), /DIRECT_TOOL_EXIT=0/, "The direct command must complete successfully");
-        completed.add(entry.alias);
         yield { type: "text", text: "DIRECT_TOOL_COMPLETE" };
+        yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
+        completed.add(entry.alias);
+        return;
       }
       yield { type: "done", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } };
     },
@@ -201,6 +232,8 @@ try {
     'web_search = "disabled"',
     "[features]",
     "remote_control = false",
+    "plugins = false",
+    "hooks = false",
     "[analytics]",
     "enabled = false",
     "",
@@ -209,6 +242,17 @@ try {
   await writeFile(join(native, "config.toml"), nativeConfig, { mode: 0o600 });
   const catalogPath = join(state, "desktop-catalog.json");
   const catalog = new DesktopCatalog(config, [nativeCode, nativeUnset], catalogPath);
+  // Inspect the exact private home the canary will use before it creates a
+  // thread. A separate SDK connection leaves the router and its chat state alone.
+  const configConnection = new AppServerConnection(runtime.executable, ["app-server", "--listen", "stdio://"], async message => {
+    if (message.id !== undefined) configConnection.send({ id: message.id, error: { code: -32601, message: "Probe has no server methods" } });
+  }, () => {}, { ...process.env, HOME: home, CODEX_HOME: native, CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED: "1" }, "gateway");
+  try {
+    await configConnection.request("initialize", { clientInfo: { name: "gateway_execution_probe", version: "1" }, capabilities: { experimentalApi: true } });
+    configConnection.send({ method: "initialized", params: {} });
+    verifySafeConfig(await configConnection.request("config/read", { includeLayers: false }));
+    evidence.configReadVerified = true;
+  } finally { configConnection.stop(); await configConnection.exited; }
   const overrides = {
     name: "Direct tools fixture", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses",
     requires_openai_auth: false, supports_websockets: false, request_max_retries: 0, stream_idle_timeout_ms: 30_000,
@@ -222,7 +266,6 @@ try {
   await router.initialize();
   await router.request("initialize", { clientInfo: { name: "gateway_direct_tools_e2e", version: "1" }, capabilities: { experimentalApi: true } });
   backend.notify({ method: "initialized", params: {} });
-
   // gateway() resolves the actual packaged executable and changes the catalog from code_mode_only
   // (or absent) to direct before it launches the SDK.
   phase = "direct-chats";
@@ -256,20 +299,23 @@ try {
         } catch { /* A just-created child can expose its id before its rollout has a header. */ }
       }
     }, `${entry.alias} child`);
-    await until(async () => {
+    const saved = await until(async () => {
       try {
-        const { thread } = await router.request("thread/read", { threadId: child.id, includeTurns: false });
-        return completed.has(entry.alias) && thread.status?.type !== "active";
+        const value = await router.request("thread/read", { threadId: child.id, includeTurns: true });
+        const turns = value.thread?.turns;
+        return Array.isArray(turns) && turns.at(-1)?.status === "completed"
+          && turns.flatMap(turn => turn.items).some(item => item.type === "commandExecution") ? value : false;
       } catch { return false; }
-    }, `${entry.alias} child completion`);
-    const parentDone = await until(() => events.find(event => event.method === "turn/completed" && event.params?.turn?.id === parentTurn.turn.id), `${entry.alias} parent completion`);
-    assert.equal(parentDone.params.turn.status, "completed", "The parent must not fail after spawning its child");
-    const saved = await router.request("thread/read", { threadId: child.id, includeTurns: true });
+    }, `${entry.alias} saved child terminal`);
     assert.equal(saved.thread.modelProvider, expectedProvider, "The saved provider must not change");
     assert.equal(saved.thread.model, entry.upstream, "The child retains its bare native model");
     const childTurns = saved.thread.turns;
     assert.equal(childTurns.at(-1)?.status, "completed", "The child must save a completed terminal turn");
     assert.ok(childTurns.flatMap(turn => turn.items).some(item => item.type === "commandExecution"), "The child history records the real command");
+    await until(() => completed.has(entry.alias), `${entry.alias} command continuation`);
+    childFinished.add(entry.alias);
+    const parentDone = await until(() => events.find(event => event.method === "turn/completed" && event.params?.turn?.id === parentTurn.turn.id), `${entry.alias} parent completion`);
+    assert.equal(parentDone.params.turn.status, "completed", "The parent must not fail after spawning its child");
     evidence.chats.push({ alias: entry.alias, bareModel: saved.thread.model, provider: saved.thread.modelProvider, commandContinuationObserved: completed.has(entry.alias) });
   }
 
@@ -280,6 +326,9 @@ try {
   assert.equal((await exec("git", ["status", "--porcelain"], { cwd: work })).stdout, "", "The fixture repository must be clean after both commits");
   assert.equal(await readFile(join(native, "config.toml"), "utf8"), nativeConfig, "The native configuration must stay unchanged");
   await assert.rejects(readFile(join(native, "auth.json"), "utf8"), { code: "ENOENT" }, "The fixture must not copy native authentication");
+  evidence.nativeConfigUnchanged = true;
+  evidence.nativeAuthAbsent = true;
+  evidence.completedChildTurns = aliases.length;
   evidence.passed = true;
 } catch (error) {
   evidence.phase = phase;
