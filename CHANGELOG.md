@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Claude billing and extra-usage credit refusals now explain how to check billing
+settings and payment methods. These failures stop automatic stream retries and
+keep private provider diagnostics out of responses and telemetry.
+Thanks to @edihasaj for reporting the unclear billing error.
+
 Claude's private Qwen route can preserve generated no-tools text that the
 upstream tool parser silently discarded. A pinned tokenizer decodes complete
 raw output, and unsolicited XML remains text rather than an executable call.
