@@ -46,6 +46,7 @@ const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nat
  * waiting for the five-minute re-check would leave the machine's one remote-control slot free for any engine that starts meanwhile.
  */
 const nativeRegistrationPollMs = 2000;
+const canonicalRelease = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
 const execFileAsync = promisify(execFile);
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; quickExits: number; fingerprint?: string; pausedAt: number; resumedOnce: boolean }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
@@ -68,6 +69,8 @@ export class ServiceSupervisor {
   private registrationChecking = false;
   private registrationSeen?: string;
   private readonly heal: SupervisorHealing;
+  /** The release this supervisor loaded. Capture once: `current` can move while it keeps serving. */
+  private readonly runningRelease?: string;
   /** The shared execution host's start, backoff, kick, probe and host-only restart (src/service-host-keeper.ts). */
   private readonly host: ServiceHostKeeper;
   private stopHealth?: () => void;
@@ -83,6 +86,8 @@ export class ServiceSupervisor {
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs) {
     this.heal = { ...defaultHealing, ...healing };
+    const running = this.heal.releaseState()?.running;
+    if (running && canonicalRelease.test(running)) this.runningRelease = running;
     // A host that refused a newer adapter says when no turn runs, so the urgent move is tried in that gap (see skewIdle).
     const signalling: typeof startExecutionHost = options => startHost({ ...options, onSkewIdle: () => this.nudgeUpgrade?.() });
     this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost: signalling, heal: this.heal,
@@ -96,7 +101,7 @@ export class ServiceSupervisor {
    * the service, is reported at most once a minute, and the next heartbeat simply writes again. The promise never rejects.
    */
   private publish(): Promise<void> {
-    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
+    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
     this.writes = this.writes.then(() => writePrivateJson(serviceStatusPath(this.state), snapshot)).catch(error => this.statusWriteFailed(error));
     return this.writes;
   }

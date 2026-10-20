@@ -51,6 +51,18 @@ test("one failed child restarts without replacing another child or rerunning the
   assert.ok((await read()).components.every(value => value.state === "stopped"));
 });
 
+test("status records the release the supervisor loaded once, not a later current target", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-release-")); let running = "0.5.7";
+  const supervisor = new ServiceSupervisor({ version: 1, config: join(directory, "config.json"), components: [] }, directory, 5, undefined, undefined, undefined, undefined,
+    { releaseState: () => ({ running, installed: running }) });
+  try {
+    await (supervisor as unknown as { publish(): Promise<void> }).publish(); running = "0.5.8";
+    await (supervisor as unknown as { publish(): Promise<void> }).publish();
+    const status = JSON.parse(await readFile(serviceStatusPath(directory), "utf8")) as { pid: number; updatedAt: string; runningRelease?: string };
+    assert.equal(status.pid, process.pid); assert.ok(Number.isFinite(Date.parse(status.updatedAt))); assert.equal(status.runningRelease, "0.5.7");
+  } finally { await supervisor.stop(); }
+});
+
 test("a missing child executable is retried with a backoff, and shutdown stops it", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-supervisor-missing-")); await relayRegistered(directory);
   const child = component(directory, "tunnel", "tunnel", ""); child.command = join(directory, "absent");

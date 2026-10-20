@@ -245,8 +245,11 @@ its inference process to reach it.
 
 Run `gateway versions --check` on every Mac after an install. A process is
 lagging when it loaded an older release than the installed `current` target,
-which the command reads from the files the process has mapped and not from
-its command line. The `X-Gateway-Release` header alone is not proof of that:
+which the command reads from mapped files with a launch-path fallback. For an
+app-owned Node whose JavaScript is not mapped, also check `gateway health`: a
+service that publishes `runningRelease` is compared against its live PID instead
+of the movable `current` link. Older services need one normal restart to publish
+that field. The `X-Gateway-Release` header alone is not proof of that:
 it names whichever release served one inference response, and says nothing
 about the other processes on the machine. Components that move only when
 idle, such as the service supervisor, the shared execution host and the

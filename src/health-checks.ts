@@ -85,6 +85,9 @@ export interface ServiceStatus {
   installed: boolean;
   components: Array<{ kind: string; state: string; pausedReason?: string; pausedAt?: string; startedAt?: string; lastConnectedAt?: string }>;
   executionHost?: string;
+  pid?: number;
+  updatedAt?: string;
+  runningRelease?: string;
   stopping?: boolean;
   published: boolean;
 }
@@ -103,7 +106,11 @@ export function statusFields(value: unknown): ServiceStatus {
         ...(typeof component.lastConnectedAt === "string" && Number.isFinite(Date.parse(component.lastConnectedAt)) ? { lastConnectedAt: component.lastConnectedAt } : {}) }] : [];
   }) : [];
   const host = row.executionHost as Record<string, unknown> | undefined;
-  return { installed: true, published: true, components, ...(typeof host?.state === "string" ? { executionHost: host.state } : {}), ...(row.stopping === true ? { stopping: true } : {}) };
+  return { installed: true, published: true, components, ...(typeof host?.state === "string" ? { executionHost: host.state } : {}),
+    ...(Number.isSafeInteger(row.pid) && Number(row.pid) > 0 ? { pid: Number(row.pid) } : {}),
+    ...(typeof row.updatedAt === "string" && Number.isFinite(Date.parse(row.updatedAt)) ? { updatedAt: row.updatedAt } : {}),
+    ...(typeof row.runningRelease === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/.test(row.runningRelease) ? { runningRelease: row.runningRelease } : {}),
+    ...(row.stopping === true ? { stopping: true } : {}) };
 }
 
 /** A component the service is still waiting on. A paused native relay is a choice, not a fault. */
