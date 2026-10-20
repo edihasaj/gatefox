@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+The service publishes the release it actually loaded, independently of the
+installed `current` link and signed app runtime. The watchdog checks that report
+against the live service process, so an older JavaScript service cannot appear
+updated merely because installation changed the link.
+
 Gateway generation cleanup runs in the background after release or disconnect
 and periodically, so an older engine that stops answering cannot block a new
 catalog. Loaded chats and live client leases preserve their writers. The

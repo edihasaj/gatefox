@@ -112,12 +112,15 @@ test("app change and absence are info, never a fault", () => {
 test("statusFields keeps only kinds, states, and the host answer", () => {
   assert.deepEqual(statusFields(undefined), { installed: false, components: [], published: false });
   assert.deepEqual(statusFields(42), { installed: false, components: [], published: false });
-  const value = statusFields({ components: [{ kind: "inference", state: "running", command: ["secret"] }, { kind: 7 }], executionHost: { state: "running" }, stopping: true });
+  const value = statusFields({ pid: 42, updatedAt: iso(0), runningRelease: "0.5.7", components: [{ kind: "inference", state: "running", command: ["secret"] }, { kind: 7 }], executionHost: { state: "running" }, stopping: true });
   assert.deepEqual(value.components, [{ kind: "inference", state: "running" }]);
   assert.equal(value.executionHost, "running");
   assert.equal(value.stopping, true);
+  assert.equal(value.pid, 42); assert.equal(value.updatedAt, iso(0)); assert.equal(value.runningRelease, "0.5.7");
   assert.equal(value.published, true);
   assert.equal(JSON.stringify(value).includes("secret"), false);
+  const rejected = statusFields({ pid: "42", updatedAt: "not a date", runningRelease: "/private/secret" });
+  assert.equal(rejected.pid, undefined); assert.equal(rejected.updatedAt, undefined); assert.equal(rejected.runningRelease, undefined);
 });
 
 test("service findings cover installed, empty, states and host answers", () => {

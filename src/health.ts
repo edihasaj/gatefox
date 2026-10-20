@@ -71,6 +71,17 @@ export interface HealthDeps {
 
 const owned = (path: string) => access(path, constants.F_OK).then(() => true, () => false);
 
+/** A supervisor's own frozen release wins only when its snapshot still belongs to the inspected service process. */
+function reconcileServiceRelease(versions: VersionsResult, status: ServiceStatus): VersionsResult {
+  if (!status.runningRelease || !status.pid || !status.updatedAt) return versions;
+  const updatedAt = Date.parse(status.updatedAt);
+  const row = versions.processes.find(process => process.role === "service" && process.pid === status.pid);
+  const startedAt = row ? Date.parse(row.startedAt) : Number.NaN;
+  if (!row || !Number.isFinite(updatedAt) || !Number.isFinite(startedAt) || updatedAt < startedAt) return versions;
+  const processes = versions.processes.map(process => process === row ? { ...process, release: status.runningRelease! } : process);
+  return { ...versions, processes, lagging: processes.filter(process => process.release !== versions.installed).length };
+}
+
 /** The loopback answer: whether inference serves at all, and which release replies. */
 export async function probeInference(port: number): Promise<InferenceProbe> {
   try {
@@ -160,7 +171,7 @@ export async function runHealth(options: HealthOptions, deps: HealthDeps = {}): 
   // the watchdog already knows how to say, and it never stops the run or the alert.
   const smoke = await decideSmoke(options, app, state, change.changed, deps, now)
     .catch(() => ({ outcome: { ran: false, result: "unavailable" } as SmokeOutcome }));
-  const components = componentFindings(versions, now, switched);
+  const components = componentFindings(reconcileServiceRelease(versions, status), now, switched);
   const findings: Finding[] = [
     ...appFindings(app, change.changed), ...components.findings,
     ...serviceFindings(status, signals), ...relayFindings(status, relay, now), ...inferenceFindings(inference, versions.installed),

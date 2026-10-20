@@ -166,6 +166,30 @@ test("the watchdog alerts when an older service misses an installed patch for an
   assert.equal(result.code, 2);
 });
 
+test("a matching supervisor snapshot reports its frozen service release after current moves", async () => {
+  const status: ServiceStatus = { ...runningStatus, pid: 100, updatedAt: iso(), runningRelease: "0.5.5" };
+  const result = await check({}, {
+    versions: async () => versions("0.5.6", [["service", "0.5.6"]]), readStatus: async () => status,
+    switchedAt: async () => at - 61 * 60_000, probe: async () => ({ ...healthyProbe, release: "0.5.6" }),
+  });
+  assert.deepEqual(result.report.components.stale, ["service@0.5.5"]);
+  assert.equal(result.report.verdict, "fail");
+});
+
+test("a stale or mismatched supervisor snapshot cannot override a service process", async () => {
+  const current = () => versions("0.5.6", [["service", "0.5.6"]]);
+  for (const status of [
+    { ...runningStatus, pid: 99, updatedAt: iso(), runningRelease: "0.5.5" },
+    { ...runningStatus, pid: 100, updatedAt: iso(61 * 60_000), runningRelease: "0.5.5" },
+  ] satisfies ServiceStatus[]) {
+    const result = await check({}, { versions: async () => current(), readStatus: async () => status, switchedAt: async () => at - 61 * 60_000, probe: async () => ({ ...healthyProbe, release: "0.5.6" }) });
+    assert.deepEqual(result.report.components.stale, []);
+  }
+  const malformed: VersionsResult = { installed: "0.5.6", lagging: 0, processes: [{ role: "service", pid: 100, startedAt: "not a date", release: "0.5.6" }] };
+  const result = await check({}, { versions: async () => malformed, readStatus: async () => ({ ...runningStatus, pid: 100, updatedAt: iso(), runningRelease: "0.5.5" }), probe: async () => ({ ...healthyProbe, release: "0.5.6" }) });
+  assert.deepEqual(result.report.components.stale, []);
+});
+
 test("a remote client skips the loopback probe", async () => {
   let probed = 0;
   const { report } = await check({ clientOnly: true }, { probe: async () => { probed++; return healthyProbe; } });

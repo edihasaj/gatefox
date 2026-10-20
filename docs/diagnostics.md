@@ -264,16 +264,24 @@ per request id and prefers the gateway's own row over an imported one.
 ## Running component releases
 
 An install only moves the `current` link, so a process that started earlier
-keeps running the release it loaded. Its command line still says
-`.../current/...`, a link the operating system resolved when the process
-started, which is why it says nothing about what that process is running.
+keeps running the release it loaded. Its command line can still say
+`.../current/...`, which no longer identifies that code after an install.
 `gateway versions [--json] [--check]` answers that question: it lists this
 user's gateway processes, names each one's role (`service`, `inference`,
 `desktop-adapter`, `ssh-listener`, `ssh-proxy`, `executor-host`,
 `gateway-engine`, `native-relay`, `tunnel` or `other`) and reads the release
-from the text files the process actually has mapped, found with `lsof`,
-rather than from its command line. The report skips this process itself, so
+from mapped files found with `lsof`, falling back to its launch path when no
+mapped release can be identified. With a signed app-owned Node, JavaScript may
+have no mapped file and a floating `current` launch path can therefore describe
+the installed release instead. The report skips this process itself, so
 running the command never adds a row.
+
+For the service, `gateway health` instead uses the optional `runningRelease`
+published by that service at startup. It accepts the release only when the status
+names the live service PID and was published after that process started. This
+keeps an older JavaScript service visible after an install even with an app-owned
+Node. Older services without the field retain the inventory fallback until they
+restart on a release that publishes it.
 
 A command line is only read where the program sits: at argv[0], or at argv[1]
 behind a node interpreter for the CLI script. A wrapper that merely mentions

@@ -44,6 +44,14 @@ from outside — an `X-Gateway-Release` header, an inference body status, a phas
 name from the check or from the state file — has to look like a version token or
 a phase slug first, and is named `unknown` rather than quoted if it does not.
 
+The service's optional `runningRelease` is frozen when that process starts.
+The watchdog uses it only when the status PID matches a live service row and the
+snapshot was published after that process started. It overrides a guessed
+inventory release: a signed app-owned Node does not necessarily map its loaded
+JavaScript, and a floating `current` command path can otherwise follow a new
+installation before the service actually moves. Missing, malformed, mismatched,
+or older status snapshots do not override the inventory.
+
 A section that cannot be read says so once, as a warning (`versions unreadable`,
 `telemetry unreadable`, `inference unreadable`), and the rest of the run
 continues, push included. A watchdog that could not run `ps` is degraded, not

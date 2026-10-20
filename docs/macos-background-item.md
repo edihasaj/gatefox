@@ -113,6 +113,12 @@ still resolve to a different runtime path.
 Tool children that resolve `node` through the inherited service `PATH` use that
 same app runtime.
 
+The service records its loaded JavaScript release in its status snapshot. The
+watchdog matches that snapshot to the live service process before using it, so a
+switch of `current` cannot relabel the service's code. This does not change the
+signed runtime or managed launcher templates; older signed apps can still
+recognize them for runtime association and updates.
+
 The app and its signed helpers carry the Apple Events entitlement. The app's
 Info.plist explains Automation and local-network use. Node retains the runtime
 exceptions from the bundled official runtime, with the debug-only
