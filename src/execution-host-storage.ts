@@ -12,6 +12,8 @@ import { testSafeRoot } from "./test-root-guard.js";
 import { telemetry } from "./telemetry.js";
 
 export const executionHostMarker = "subscription-gateway-execution-host";
+// Bound receipt bytes, rather than the number of catalog generations loaded chats may retain.
+const maxOwnerBytes = 4 * 1024 * 1024;
 export type ExecutionCapability = "native" | "gateway";
 export interface SocketIdentity { inode: string; device: string; targetPath?: string; targetInode?: string; targetDevice?: string }
 export interface HostIdentity { version: 1; managed: typeof executionHostMarker; configPath: string; nativeHome: string; codex: string; sdkSha256: string; socketPath: string; capabilities?: ExecutionCapability[]; nativeRelayOwnsRegistration?: boolean; nativeSdkExecutable?: string; nativeSdkSha256?: string }
@@ -87,10 +89,10 @@ export async function sdkIdentity(codex: string): Promise<{ codex: string; sdkSh
 export async function readOwner(path: string): Promise<HostOwner | undefined> {
   const info = await lstat(path).catch(error => { if (error.code === "ENOENT") return; throw error; });
   if (!info) return;
-  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) || info.size > 16384) throw new Error("Execution host ownership receipt is invalid");
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || (info.mode & 0o077) || info.size > maxOwnerBytes) throw new Error("Execution host ownership receipt is invalid");
   let owner: HostOwner;
   try { owner = JSON.parse(await readFile(path, "utf8")); } catch { throw new Error("Execution host ownership receipt is unreadable"); }
-  if (!owner || owner.version !== 1 || owner.managed !== executionHostMarker || !["running", "stopped"].includes(owner.state) || !Number.isSafeInteger(owner.pid) || owner.pid < 0 || !Array.isArray(owner.generations) || owner.generations.length > 4) throw new Error("Execution host ownership receipt is invalid");
+  if (!owner || owner.version !== 1 || owner.managed !== executionHostMarker || !["running", "stopped"].includes(owner.state) || !Number.isSafeInteger(owner.pid) || owner.pid < 0 || !Array.isArray(owner.generations)) throw new Error("Execution host ownership receipt is invalid");
   const capabilities = executionCapabilities(owner.capabilities);
   if (owner.nativeRelayOwnsRegistration !== undefined && typeof owner.nativeRelayOwnsRegistration !== "boolean" || owner.nativeRelayOwnsRegistration && !capabilities.includes("native")) throw new Error("Execution host ownership receipt is invalid");
   if (owner.native && (!capabilities.includes("native") || !/^[a-f0-9]{64}$/.test(owner.native.revision) || !Number.isSafeInteger(owner.native.pid) || owner.native.pid < 0 || typeof owner.native.socketPath !== "string")) throw new Error("Native execution ownership receipt is invalid");
@@ -254,7 +256,7 @@ export async function readLenientJson(path: string): Promise<Record<string, unkn
   try {
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | (constants.O_NONBLOCK || 0));
     const info = await file.stat();
-    if (!info.isFile() || info.uid !== process.getuid?.() || info.size > 65536) return;
+    if (!info.isFile() || info.uid !== process.getuid?.() || info.size > maxOwnerBytes) return;
     const value: unknown = JSON.parse(await file.readFile("utf8"));
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
   } catch { return; }
@@ -263,7 +265,7 @@ export async function readLenientJson(path: string): Promise<Record<string, unkn
 /** What an invalid host receipt still says: every process it names, and the boot it was stamped with. */
 function lenientHostOwner(body: Record<string, unknown> | undefined): { records: ReceiptOwner[]; bootId?: string } {
   if (!body) return { records: [] };
-  const generations = Array.isArray(body.generations) ? body.generations.slice(0, 8) : [];
+  const generations = Array.isArray(body.generations) ? body.generations : [];
   const records = [lenientRecord(body), ...generations.map(engine => lenientRecord(engine)), lenientRecord(body.native)].filter((record): record is ReceiptOwner => !!record);
   return { records, ...(typeof body.bootId === "string" ? { bootId: body.bootId } : {}) };
 }

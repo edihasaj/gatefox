@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/harness-gateway",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
