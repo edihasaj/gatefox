@@ -22,6 +22,55 @@ test("native Claude rate-limit, authentication, billing and server errors surviv
   assert.equal(claudeFailure({ type: "result", is_error: false, subtype: "success", result: "rate_limit" }), undefined);
 });
 
+test("native billing failures and result-only credit refusals explain the account action without private details", () => {
+  const privateText = "Your credit balance is too low to access the Anthropic API. private payment and account details";
+  const refusals = [
+    { type: "assistant", error: "billing_error", message: { content: [{ type: "text", text: "private payment and account details" }] } },
+    { type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: privateText }] } },
+    { type: "result", is_error: true, error_code: "billing_error", result: "authentication and usage limit instructions" },
+    { type: "result", is_error: true, subtype: "error_during_execution", errors: [privateText] },
+    { type: "result", is_error: true, subtype: "success", result: "Credit balance is too low · private payment and account details" },
+    { type: "result", is_error: true, subtype: "success", result: "API Error: Insufficient credits. private payment and account details" },
+  ];
+  for (const refusal of refusals) {
+    const failure = claudeFailure(refusal)!;
+    assert.equal(failure.code, "insufficient_quota"); assert.equal(failure.status, 429);
+    assert.equal(streamFailureCode(failure), "invalid_prompt");
+    assert.match(failure.message, /Claude billing or extra-usage credits/);
+    assert.match(failure.message, /billing settings and payment method/);
+    assert.ok(!JSON.stringify(failure).includes("private payment and account details"));
+    for (const endTurn of [false, true]) {
+      const stream = new ClaudeMessageStream({ tools: [], summaryVisible: false, endTurn });
+      assert.throws(() => stream.accept(refusal), error => error instanceof ProviderError && error.code === "insufficient_quota");
+    }
+  }
+  const failure = claudeResultFailure({ type: "result", is_error: true, subtype: "success",
+    result: "Credit balance is too low. Check authentication or usage limits in your account." });
+  assert.equal(failure.code, "insufficient_quota", "billing precedes unstructured auth and usage-limit heuristics");
+});
+
+test("credit diagnosis ignores successful prose, unknown errors, tool data and unbounded diagnostics", () => {
+  const credit = "Credit balance is too low";
+  assert.equal(claudeFailure({ type: "assistant", message: { content: [{ type: "text", text: credit }] } }), undefined);
+  assert.equal(claudeFailure({ type: "result", is_error: false, subtype: "success", result: credit }), undefined);
+  const success = new ClaudeMessageStream({ tools: [], summaryVisible: false });
+  assert.equal(success.accept({ type: "result", is_error: false, subtype: "success", result: credit }).end?.kind, "result");
+  const failures = [
+    { type: "result", is_error: true, result: "We discussed billing and payment methods." },
+    { type: "result", is_error: true, result: "An unrelated error quotes: Credit balance is too low" },
+    { type: "result", is_error: true, result: credit + "x" },
+    { type: "result", is_error: true, result: credit + ".".repeat(16 * 1024) },
+    { type: "result", is_error: true, errors: [{ message: credit }, null, 42] },
+    { type: "result", is_error: true, errors: [...Array(8).fill("unknown"), credit] },
+    { type: "assistant", error: "unknown", message: { content: [{ type: "tool_use", text: credit }] } },
+  ];
+  for (const message of failures) assert.equal(claudeFailure(message)!.code, "inference_failed");
+  assert.equal(claudeResultFailure({ type: "result", is_error: true, error_code: { toString: "private unknown code" } }).code, "inference_failed");
+  for (const [error_code, expected] of [["rate_limit", "rate_limit_exceeded"], ["authentication_failed", "authentication"], ["server_error", "upstream_unavailable"]] as const) {
+    assert.equal(claudeResultFailure({ type: "result", is_error: true, error_code, result: credit }).code, expected);
+  }
+});
+
 test("the observed CLI rate-limit event wins over a following is_error success result", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-rate-"));
   const reset = Math.floor(Date.now() / 1000) + 3600;

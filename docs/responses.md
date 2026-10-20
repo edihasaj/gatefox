@@ -68,6 +68,14 @@ events can also use an exact caller alias or an unambiguous caller-local name;
 ambiguous names, stale numeric aliases, and foreign tools are rejected.
 Native Claude `assistant.error` discriminants identify subscription rate limits,
 authentication, billing, and server failures before an opaque result is handled.
+Billing refusals report: "Claude billing or extra-usage credits are unavailable.
+Check your Claude billing settings and payment method, then retry." The gateway
+also recognizes bounded, known credit-refusal messages inside native failure
+results when the CLI omits its billing discriminant. These failures are final
+`insufficient_quota` errors, so Codex does not repeatedly retry a charge that needs
+account action. The gateway never returns the provider's private refusal text or
+guesses whether a card was declined for insufficient funds. Ordinary successful
+assistant text and an unexplained disconnection do not establish a billing failure.
 In particular, `is_error: true` with `subtype: success` is not successful inference.
 The CLI reports every 429 as `rate_limit`, including a transient subscriber
 capacity throttle ("not your usage limit"). Only a `rate_limit_event` with status
