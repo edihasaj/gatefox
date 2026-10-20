@@ -45,7 +45,7 @@ function stopConnection(connection: RpcConnection, reason: EngineStopReason): vo
   if (connection instanceof AppServerConnection) connection.stop(reason); else connection.stop();
 }
 
-/** A stable native connection plus bounded gateway generations pinned to loaded chats. */
+/** A stable native connection plus gateway generations pinned to loaded chats. */
 export class AppServerBackends {
   readonly native: NativeRpcConnection;
   private readonly engines: Engine[] = [];
@@ -530,7 +530,6 @@ export class AppServerBackends {
         const old = this.engines[index];
         if (old.connection.closed || (!old.requests && !old.threads.size && !old.active.size)) { old.detaching = true; stopConnection(old.connection, "replaced"); await old.connection.exited; this.engines.splice(index, 1); }
       }
-      if (this.engines.filter(engine => !engine.connection.closed).length >= 4) throw new Error("Four gateway catalog versions still have loaded chats. Close an older gateway chat before selecting a newly added model; native chats remain available.");
       if (!this.initialized) throw new Error("Initialize the desktop connection before starting a gateway chat");
       const latest = object((await this.native.request("config/read", {})).config);
       const settings = { ...this.settings, ...(latest.agents ? { agents: latest.agents } : {}) };

@@ -150,7 +150,7 @@ export class ExecutionHostClient {
   async generations(): Promise<ExecutionRecord[]> {
     if (!this.capabilities.includes("gateway")) return [];
     const status = await this.request("execution/status", {});
-    if (status.version !== 1 || !Array.isArray(status.generations) || status.generations.length > 4) {
+    if (status.version !== 1 || !Array.isArray(status.generations)) {
       throw new Error("Shared executor returned invalid generation status");
     }
     const seen = new Set<string>(); const records: ExecutionRecord[] = [];

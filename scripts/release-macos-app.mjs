@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { inflateRawSync } from 'node:zlib';
 import { extractProductionBackend } from './macos-app-production.mjs';
 import { rejectSymlinkedPath, rejectSymlinks } from './sign-macos-app.mjs';
+import { assertFreeSpace, releaseDiskSpaceRequirements } from './disk-space.mjs';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const sha256Pattern = /^[a-f0-9]{64}$/;
@@ -62,12 +63,31 @@ export function parseArgs(argv) {
   return values;
 }
 
-function defaultRun(command, args, { cwd = root, allowFailure = false } = {}) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 20 * 60_000 });
+export function defaultRun(command, args, { cwd = root, allowFailure = false, spawn = spawnSync } = {}) {
+  const result = spawn(command, args, { cwd, encoding: 'utf8', timeout: 20 * 60_000 });
   if (result.error || (!allowFailure && result.status !== 0)) {
-    throw new Error(`${command} failed`);
+    const name = basename(command);
+    const script = /^node(?:\.exe)?$/i.test(name) && args[0] ? ` ${args[0]}` : '';
+    const outcome = result.signal ? `signal ${result.signal}` : `exit status ${result.status ?? 'unknown'}`;
+    const tail = scrubFailureTail([result.stderr, result.stdout].filter(Boolean).join('\n'), homedir());
+    throw new Error(`${name}${script} failed with ${outcome}. Last output:\n${tail || '(no safe output)'}`);
   }
   return { status: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+export function scrubFailureTail(output, home) {
+  const unsafe = /token|password|secret|authorization|bearer|api[_-]?key|cookie|[a-z][a-z0-9+.-]*:\/\/[^/\s]*@|\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{10,}|\bsk-[A-Za-z0-9_-]{10,}|\bxox[abposr]-|\bAKIA[0-9A-Z]{16}\b|-----BEGIN [A-Z ]*PRIVATE KEY-----|\beyJ[A-Za-z0-9_-]{10,}\.|^\s*(?:export\s+)?[A-Z][A-Z0-9_]*=/i;
+  const safeLines = [];
+  const lines = output.split(/\r?\n/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const begin = /^-----BEGIN ([A-Z0-9 ]+)-----$/.exec(lines[index]);
+    if (!begin) { safeLines.push(lines[index]); continue; }
+    const end = `-----END ${begin[1]}-----`;
+    while (index < lines.length && lines[index] !== end) index += 1;
+    if (index === lines.length) break;
+  }
+  return safeLines.slice(-20).filter(line => !unsafe.test(line))
+    .map(line => home ? line.replaceAll(home, '~').slice(0, 300) : line.slice(0, 300)).join('\n');
 }
 
 const output = (run, command, args, options) => run(command, args, options).stdout.trim();
@@ -376,6 +396,7 @@ export function validatePublishFixtureInputs({ previousApp, installedRelease, ru
 }
 
 export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = runUpdateFixture } = {}) {
+  assertFreeSpace(join(cwd, '.state'), releaseDiskSpaceRequirements.releaseMacosApp, 'macOS app release');
   const head = assertReleaseContext({ cwd, run });
   const version = assertVersionLockfile({ cwd });
   validateBackendArchive({ archive: options.backendArchive, sha256: options.backendSha256,
@@ -417,6 +438,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
     validateSignedApp({ app: build.app, version, source: head, backendSha256: options.backendSha256 });
     verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
     validatePublishFixtureInputs({ previousApp: options.previousApp, installedRelease: options.installedRelease, run });
+    assertFreeSpace(join(cwd, '.state'), releaseDiskSpaceRequirements.releaseMacosApp, 'macOS app update fixture');
     e2e({ appArchive: stage.app, backendArchive: options.backendArchive, previousApp: options.previousApp,
       installedRelease: options.installedRelease, cwd, run });
     publishRelease({ version, head, stage, cwd, run, beforePublish: () => {

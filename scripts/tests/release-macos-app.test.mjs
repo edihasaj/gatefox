@@ -7,7 +7,8 @@ import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { assertReleaseContext, assertRemoteProduction, assertRemoteTag, assertVersionLockfile, finalJson, inspectFinalZip,
-  parseArgs, publishRelease, releaseAssets, releaseMacosApp, validateBackendArchive, verifyUploadedAssets } from '../release-macos-app.mjs';
+  defaultRun, parseArgs, publishRelease, releaseAssets, releaseMacosApp, scrubFailureTail, validateBackendArchive, verifyUploadedAssets } from '../release-macos-app.mjs';
+import { classifyFixtureError, fixtureCommand } from '../e2e-app-updates.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const run = (command, args, options = {}) => {
@@ -236,6 +237,77 @@ test('refuses an existing app release and rejects mismatched draft digests', () 
 test('reads only the final builder or signer JSON record', () => {
   assert.deepEqual(finalJson('verbose line\n{"answer":42}\n', 'fixture'), { answer: 42 });
   assert.throws(() => finalJson('no result', 'fixture'), /final JSON/);
+});
+
+test('includes a scrubbed child-output tail when a release command fails', () => {
+  const home = process.env.HOME;
+  const output = Array.from({ length: 24 }, (_, index) => `line-${index}`).concat([
+    `token=${'x'.repeat(20)}`, `${home}/private-path`, 'z'.repeat(400),
+  ]).join('\n');
+  assert.throws(() => defaultRun(process.execPath, ['scripts/e2e-app-updates.mjs'], {
+    spawn: () => ({ status: 1, signal: null, stdout: output, stderr: '' }),
+  }), error => {
+    assert.match(error.message, /node scripts\/e2e-app-updates\.mjs failed with exit status 1/);
+    assert.doesNotMatch(error.message, /token=/);
+    assert.doesNotMatch(error.message, new RegExp(home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.match(error.message, /~\/private-path/);
+    assert.ok(error.message.split('\n').some(line => line.length === 300));
+    return true;
+  });
+});
+
+test('drops credential-shaped child output but retains ordinary diagnostics', () => {
+  const sensitive = [
+    'Cookie: session=synthetic',
+    'Set-Cookie: session=synthetic',
+    'https://user:pass@example.invalid/path',
+    ...['ghp', 'gho', 'ghu', 'ghs', 'ghr', 'github_pat'].map(prefix => `${prefix}_${'a'.repeat(20)}`),
+    `sk-${'a'.repeat(20)}`,
+    'xoxb-synthetic',
+    'AKIA1234567890ABCDEF',
+    '-----BEGIN PRIVATE KEY-----',
+    `eyJ${'a'.repeat(20)}.signature`,
+    'DATABASE_URL=postgres://user:pass@example.invalid/database',
+    'export DATABASE_URL=postgres://user:pass@example.invalid/database',
+  ];
+  const scrubbed = scrubFailureTail(['Compiling gateway v0.5.5', 'test result: ok. 3 passed', ...sensitive].join('\n'), '/private/home');
+  assert.equal(scrubbed, 'Compiling gateway v0.5.5\ntest result: ok. 3 passed');
+});
+
+test('removes complete and unterminated PEM blocks before taking the output tail', () => {
+  const body = Array.from({ length: 25 }, (_, index) => `QUJD+/synthetic-${index}`);
+  assert.equal(scrubFailureTail([
+    'before', '-----BEGIN OPENSSH PRIVATE KEY-----', ...body, '-----END OPENSSH PRIVATE KEY-----', 'after',
+  ].join('\n')), 'before\nafter');
+  assert.equal(scrubFailureTail([
+    'ordinary-before', '-----BEGIN CERTIFICATE-----', ...body, '-----END CERTIFICATE-----', 'ordinary-after',
+  ].join('\n')), 'ordinary-before\nordinary-after');
+  assert.equal(scrubFailureTail([
+    'ordinary-before', '-----BEGIN RSA PRIVATE KEY-----', ...body,
+  ].join('\n')), 'ordinary-before');
+  assert.equal(scrubFailureTail([
+    'first ordinary line', '-----BEGIN PUBLIC KEY-----', 'QUJD+/synthetic', '-----END PUBLIC KEY-----', 'last ordinary line',
+  ].join('\n')), 'first ordinary line\nlast ordinary line');
+});
+
+test('classifies updater fixture failures without exposing their messages', () => {
+  assert.equal(classifyFixtureError({ code: 'ENOSPC' }), 'ENOSPC');
+  assert.equal(classifyFixtureError({ name: 'AssertionError' }), 'assertion');
+  assert.equal(classifyFixtureError({ code: 'command_failed' }), 'command_failed');
+  assert.equal(classifyFixtureError({ code: 'unexpected' }), 'other');
+});
+
+test('classifies a real failed fixture command without retaining its output', async () => {
+  const runner = fixtureCommand(async (file, args) => {
+    const result = spawnSync(file, args, { encoding: 'utf8' });
+    return { code: result.status ?? 1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  });
+  await assert.rejects(runner('/usr/bin/false', []), error => {
+    assert.equal(error.code, 'COMMAND_FAILED');
+    assert.equal(classifyFixtureError(error), 'command_failed');
+    assert.equal(error.message, 'Fixture command failed');
+    return true;
+  });
 });
 
 test('rejects stale remote app tags before publishing', () => {

@@ -7,6 +7,17 @@ read_when:
 
 # Verification
 
+## Catalog generation capacity (0.5.6)
+
+Run `node scripts/e2e-generation-capacity.mjs --package /absolute/release/package`
+against a compiled release with its verified gateway SDK. Five real SDK processes
+load separate catalogs and chats, and each chat remains readable through its
+original writer. The check uses isolated chat storage, copies no authentication,
+and sends no inference requests. Version 0.5.5 reproduces the four-generation
+refusal; the 0.5.6 package passes. Shared and per-connection adapter regressions
+also cover retaining loaded chats, active turns, client leases, and reclaiming
+unused generations. Rendered desktop recovery still requires live activation.
+
 The v0.2.23 source passes the reduced gateway scope checks. The v0.2.22 candidate
 passed installed Responses terminal checks, and v0.2.21 passed isolated backend
 ownership and compaction checks.

@@ -14,7 +14,8 @@ import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type E
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
-import { connectOnce, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
+import { connectOnce, readOwner, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
+import { ExecutionHostClient } from "../execution-host-client.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
@@ -113,7 +114,7 @@ test("shared execution survives adapter disconnect, finds loaded owners, and pre
   } finally { admin1?.stop(); admin2?.stop(); first?.socket.terminate(); second?.socket.terminate(); await host?.close(); await f.clean(); }
 });
 
-test("execution generations preserve loaded/leased owners and retire only unowned empty engines", { timeout: 30000 }, async () => {
+test("more than four execution generations preserve loaded/leased owners and reclaim unused engines", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client; let engineClient;
   try {
     host = await startExecutionHost(f); client = await control(join(f.hostHome, "host.sock"));
@@ -123,12 +124,16 @@ test("execution generations preserve loaded/leased owners and retire only unowne
     await engineClient.request("thread/start", { threadId: "loaded-without-a-client-lease" });
     engineClient.stop(); await engineClient.exited;
     for (const digit of ["b", "c", "d"]) await client.request("execution/acquire", f.descriptor(digit));
-    await assert.rejects(client.request("execution/acquire", f.descriptor("e")), /Four gateway generations/);
+    await client.request("execution/acquire", f.descriptor("e"));
     await client.request("execution/release", { revision: "a".repeat(64) });
-    await assert.rejects(client.request("execution/acquire", f.descriptor("e")), /Four gateway generations/);
+    await client.request("execution/acquire", f.descriptor("f"));
+    const observer = await ExecutionHostClient.discover(f.configPath, f.nativeHome, f.codex, "gateway", true);
+    try { assert.equal((await observer!.generations()).length, 6); } finally { observer?.close(); }
+    assert.equal((await readOwner(join(f.hostHome, "owner.json")))?.generations.length, 6);
     await client.request("execution/release", { revision: "b".repeat(64) });
-    const e = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("e")); assert.equal(e.revision, "e".repeat(64));
-    const state = await client.request<{ generations: ExecutionRecord[] }>("execution/status"); assert.equal(state.generations.length, 4); assert.ok(state.generations.some(g => g.revision === "a".repeat(64))); assert.ok(!state.generations.some(g => g.revision === "b".repeat(64)));
+    const next = await client.request<ExecutionRecord>("execution/acquire", f.descriptor("1")); assert.equal(next.revision, "1".repeat(64));
+    const state = await client.request<{ generations: ExecutionRecord[] }>("execution/status"); assert.equal(state.generations.length, 6); assert.ok(state.generations.some(g => g.revision === "a".repeat(64))); assert.ok(!state.generations.some(g => g.revision === "b".repeat(64)));
+    assert.deepEqual(await client.request("execution/find", { threadId: "loaded-without-a-client-lease" }), first);
   } finally { engineClient?.stop(); client?.socket.terminate(); await host?.close(); await f.clean(); }
 });
 

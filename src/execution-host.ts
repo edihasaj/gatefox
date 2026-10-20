@@ -149,11 +149,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       return existing.record;
     }
     if (existing) await remove(existing);
-    if (engines.size >= 4) {
-      // Prove the SDK has no loaded owners before retiring a generation.
-      for (const engine of [...engines.values()]) if (engine.closed || (![...leases.values()].some(values => values.has(engine.record.revision)) && !(await engine.loadedThreads()).size)) { await remove(engine); if (engines.size < 4) break; }
-    }
-    if (engines.size >= 4) throw new Error("Four gateway generations have loaded chats. Close an older chat before loading another catalog");
+    // Reclaim unused generations without limiting how many distinct catalogs loaded chats may need.
+    // A lease or an SDK-loaded chat always preserves its original writer, settings and terminal state.
+    for (const engine of [...engines.values()]) if (engine.closed || (![...leases.values()].some(values => values.has(engine.record.revision)) && !(await engine.loadedThreads()).size)) await remove(engine);
     const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) throw new ReleaseSkewError(error.adapterSha256, await noteSkew(error.adapterSha256).catch(() => "adapter_older" as const)); throw error; }

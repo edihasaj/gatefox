@@ -546,9 +546,10 @@ cannot write the same saved chat at the same time. It does not copy authenticati
 or replace native configuration and IPC sockets. Adapter lookups find the live
 owning generation before attempting a new executor.
 
-At most four generations can remain live. A connected adapter lease or loaded
-chat keeps its generation. The host retires a generation only after all leases
-close and the signed SDK reports no loaded chats. Unknown sockets and live
+There is no fixed limit on live catalog generations. A connected adapter lease or
+loaded chat keeps its generation, so resuming a chat never requires closing an
+unrelated chat. Before starting a new generation, the host retires unused ones
+only after all leases close and the signed SDK reports no loaded chats. Unknown sockets and live
 processes survive recovery checks. A stopped ownership receipt remains in place;
 clients report an unavailable managed host instead of starting a competing writer.
 

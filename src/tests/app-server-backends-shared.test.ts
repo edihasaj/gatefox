@@ -144,14 +144,22 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   }
 }
 
-test("adapter releases a closed chat's generation before acquiring a fifth catalog", { timeout: 20000 }, async () => {
+test("adapter loads a fifth catalog while older chats retain their writers and active turns", { timeout: 20000 }, async () => {
   const f = await fixture();
   try {
     for (let index = 0; index < 4; index++) { await f.start("chat-" + index); f.next(); }
-    await assert.rejects(f.start("chat-4"), /Four gateway generations/);
-    await f.backends.request("thread/unsubscribe", { threadId: "chat-0" });
+    const original = await f.backends.request("thread/read", { threadId: "chat-0" });
+    await f.backends.request("turn/start", { threadId: "chat-0", fixtureActive: true });
     assert.equal(((await f.start("chat-4")).thread as Message).id, "chat-4");
-    const status = await f.control.request("execution/status", {}); assert.equal((status.generations as unknown[]).length, 4);
+    assert.equal(((await f.control.request("execution/status", {})).generations as unknown[]).length, 5);
+    const retained = await f.backends.request("thread/read", { threadId: "chat-0" });
+    assert.equal(retained.executorPid, original.executorPid);
+    assert.equal(((retained.thread as Message).status as Message).type, "active");
+    await f.backends.request("turn/interrupt", { threadId: "chat-0", turnId: "fixture-active-turn" });
+    await f.backends.request("thread/unsubscribe", { threadId: "chat-0" });
+    f.next();
+    assert.equal(((await f.start("chat-5")).thread as Message).id, "chat-5");
+    const status = await f.control.request("execution/status", {}); assert.equal((status.generations as unknown[]).length, 5);
     assert.deepEqual(await f.control.request("execution/find", { threadId: "chat-0" }), { found: false });
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await f.clean(); }
@@ -164,6 +172,18 @@ test("a per-connection factory plan does not inherit an older gateway-only host"
     assert.equal(((await f.control.request("execution/status", {})).generations as Message[]).length, 0);
     assert.notEqual(started.executorPid, (await f.backends.native.request("thread/read", { threadId: "ordinary-native-chat" })).executorPid);
     assert.equal(f.backends.native.closed, false); assert.equal(f.backends.native.shared, undefined);
+  } finally { await f.clean(); }
+});
+
+test("per-connection adapters load more than four catalogs without replacing loaded chats", { timeout: 20000 }, async () => {
+  const f = await fixture(undefined, undefined, false, false);
+  try {
+    const original = await f.start("private-chat-0"); f.next();
+    for (let index = 1; index < 6; index++) { await f.start("private-chat-" + index); f.next(); }
+    const resumed = await f.backends.request("thread/resume", { threadId: "private-chat-0", model: alias });
+    assert.equal(resumed.executorPid, original.executorPid);
+    assert.equal(((await f.control.request("execution/status", {})).generations as unknown[]).length, 0);
+    assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), f.nativeConfig);
   } finally { await f.clean(); }
 });
 
@@ -344,10 +364,10 @@ test("SDK client disconnect resumes through the same live writer and retains its
     // Reacquired same-generation connection must retain its lease even while empty.
     const descriptor = (digit: string) => ({ revision: digit.repeat(64), args: ["app-server", "--fixture-root", f.directory], settings: {}, catalog: { models: [{ slug: alias }] }, aliases: [alias] });
     for (const digit of ["a", "b", "c"]) await f.control.request("execution/acquire", descriptor(digit));
-    await assert.rejects(f.control.request("execution/acquire", descriptor("d")), /Four gateway generations/);
+    await f.control.request("execution/acquire", descriptor("d"));
     const status = await f.control.request("execution/status", {});
     assert.equal((status.generations as Message[]).filter(value => value.revision === original.revision).length, 1);
-    assert.equal((status.generations as Message[]).length, 4);
+    assert.equal((status.generations as Message[]).length, 5);
   } finally { await f.clean(); }
 });
 

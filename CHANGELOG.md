@@ -7,6 +7,11 @@ settings and payment methods. These failures stop automatic stream retries and
 keep private provider diagnostics out of responses and telemetry.
 Thanks to @edihasaj for reporting the unclear billing error.
 
+Gateway chats can load more than four catalog generations without closing older
+chats. Loaded chats and client leases keep their original executors, and unused
+executors are reclaimed before another generation starts. This fixes the
+"Four gateway generations have loaded chats" resume failure.
+
 Claude's private Qwen route can preserve generated no-tools text that the
 upstream tool parser silently discarded. A pinned tokenizer decodes complete
 raw output, and unsolicited XML remains text rather than an executable call.

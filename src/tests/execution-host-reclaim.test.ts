@@ -274,6 +274,18 @@ test("an invalid receipt that still names a live process is kept", { skip: proce
   } finally { const exited = once(holder, "exit"); holder.kill("SIGKILL"); await exited; await f.clean(); }
 });
 
+test("recovery preserves a live generation beyond the eighth entry of a large invalid receipt", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture(); const holder = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+  try {
+    setBootIdentityForTests(current); setProcessStartReaderForTests(async () => undefined);
+    const generations = [...Array.from({ length: 8 }, () => ({ pid: f.gone })), { pid: holder.pid }];
+    await f.receipt({ state: "draining", generations, padding: "x".repeat(70 * 1024) });
+    await assert.rejects(claimHost(f.home, f.identity), /receipt is invalid/);
+    assert.deepEqual(await f.reclaims(), []);
+    assert.equal(JSON.parse(await readFile(join(f.home, "owner.json"), "utf8")).generations[8].pid, holder.pid);
+  } finally { const exited = once(holder, "exit"); holder.kill("SIGKILL"); await exited; await f.clean(); }
+});
+
 // L4: archiving reads only a plain file; anything else is moved aside whole, never followed, never read.
 test("a receipt that is a link or a pipe is moved aside as it is, and what it names is untouched", { skip: process.platform === "win32", timeout: 20000 }, async () => {
   const f = await fixture();
