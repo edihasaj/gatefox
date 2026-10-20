@@ -7,6 +7,25 @@ read_when:
 
 # Verification
 
+## Hostless direct tools (0.6.0)
+
+Run `node scripts/e2e-direct-tools.mjs --package /absolute/release/package
+--code /absolute/compiled/checkout --root /private/evidence`. It starts the real
+packaged gateway SDK through `DesktopCatalog`, `AppServerBackends`, and
+`AppServerRouter` with no `codex-code-mode-host`. Two gateway chats carry native
+rows that respectively declare `code_mode_only` and no tool mode at all. The
+selected runtime changes both to explicit `direct` rows, exposes `exec_command`
+(not Code Mode's `exec` or `wait`), then uses the SDK's real `spawn_agent` path
+to create bare-native child chats. The children edit two isolated workspace files
+and make local conventional Git commits. The fixture asks for `code_mode_only`
+and `code_mode_host` while only its disposable repository uses full access; the
+explicit direct rows take precedence. A local mock provider observes successful
+command-output continuations; the fixture independently verifies exact file bytes,
+Git history, clean status, completed child turns, saved provider identity, and
+untouched native config and authentication. It records only sanitized booleans and
+model/provider identifiers in `result.json`, copies no authentication, and sends
+no paid inference requests.
+
 ## Catalog generation capacity (0.5.6)
 
 Run `node scripts/e2e-generation-capacity.mjs --package /absolute/release/package`
