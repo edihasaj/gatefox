@@ -201,6 +201,15 @@ fixed outcome (`attempted`, `recovered`, `failed`, or `cancelled`). These record
 distinguish a bounded recovery from a final login failure without treating local
 credential presence as proof of working authentication.
 
+## Grok CLI records
+
+Each Grok subscription request writes one `grok_cli` event: `model`, `effort`,
+`durationMs`, `result` (`tool_use`, `end_turn`, `result` or `none`), `exitCode`,
+`spawnFailed`, `aborted`, `toolCalls`, `inputTokens`, `cacheReadTokens`,
+`outputTokens` and `costUsd`, the allowance cost the CLI reported. Failures use
+the upstream events `grok.assistant`, `grok.result` and `grok.tool_use`. See
+[Grok subscription](grok-sessions.md).
+
 ## Native relay records
 
 The native relay writes its own JSON records to its managed log, one record per

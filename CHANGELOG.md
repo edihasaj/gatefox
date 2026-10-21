@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Grok models can run on a Grok subscription through the official Grok Build CLI
+in a private, gateway-owned Grok home. Grok's own tools, xAI-side tools and
+personal MCP servers are switched off; caller tool calls return to the client,
+which executes them. Requests that would let Grok act on its own fail closed.
+Thanks to @edihasaj for asking to use the Grok allowance from the model picker.
+
 A ChatGPT account that has used its shared-subscription allowance now stops
 the turn with a usage-limit message. Previously the gateway did not recognize
 `subscription_sharing_usage_limit_exceeded`, so Codex retried five times and
