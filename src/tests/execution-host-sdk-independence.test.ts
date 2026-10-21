@@ -42,7 +42,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   await writeApp("codex-cli 0.163.0-alpha.10.2");
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   const binarySha256 = (await sdkIdentity(runtimeExecutable)).sdkSha256;
-  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true };
+  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
   const gatewayRuntime = async () => runtime;
   const hostHome = executionHostHome(configPath, nativeHome);
   const options = { config, configPath, nativeHome, codex: appCodex, gatewayRuntime };

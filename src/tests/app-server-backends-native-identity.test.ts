@@ -57,7 +57,7 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
     nativeSlugs: new Set([nativeModel]) } as unknown as DesktopCatalog;
   const priorHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
   // The fake SDK stands in for the verified gateway SDK artifact; `sdkServesIdentity` false is one built before patch v2.
-  let runtime = { executable: sdk, binarySha256: "c".repeat(64), selectedModelCompaction: true, ...(sdkServesIdentity ? { executorIdentity: true } : {}) } as GatewaySdkRuntime | undefined;
+  let runtime = { executable: sdk, binarySha256: "c".repeat(64), selectedModelCompaction: true, codeModeHost: false, ...(sdkServesIdentity ? { executorIdentity: true } : {}) } as GatewaySdkRuntime | undefined;
   const opened: AppServerBackends[] = [];
   const open = async (overrides: Message = {}) => {
     const backends = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory], config, {}, overrides, catalog, async () => {}, () => {});
@@ -179,7 +179,7 @@ test("a connection keeps its legacy new-chat identity when its pruned release re
   try {
     const backends = await f.open();
     await backends.request("thread/start", { fixtureId: "before-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
-    f.setRuntime({ executable: join(f.directory, "codex"), binarySha256: "d".repeat(64), selectedModelCompaction: true, executorIdentity: true });
+    f.setRuntime({ executable: join(f.directory, "codex"), binarySha256: "d".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
     const after = await backends.request("thread/start", { fixtureId: "after-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
     assert.equal(after.modelProvider, "subscription_gateway");
     assert.equal((await f.saved())["after-recovery"].requested, "subscription_gateway");

@@ -65,8 +65,15 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
         metadata.binarySha256 !== createHash('sha256').update(readFileSync(join(gatewayArtifact, 'gateway-codex'))).digest('hex')) {
       throw new Error('Gateway SDK artifact does not match this release source');
     }
-    const expectedFiles = ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', 'gateway-codex'];
+    // The Code Mode companion is optional: a receipt names it, or the artifact carries none.
+    const namedHost = typeof metadata.codeModeHostSha256 === 'string' && /^[a-f0-9]{64}$/.test(metadata.codeModeHostSha256);
+    if ('codeModeHostSha256' in metadata && !namedHost) throw new Error('Gateway SDK artifact code-mode host receipt is invalid');
+    const expectedFiles = ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', 'gateway-codex',
+      ...(namedHost ? ['codex-code-mode-host'] : [])];
     if (JSON.stringify(readdirSync(gatewayArtifact).sort()) !== JSON.stringify(expectedFiles.sort())) throw new Error('Unexpected gateway SDK artifact files');
+    if (namedHost && metadata.codeModeHostSha256 !== createHash('sha256').update(readFileSync(join(gatewayArtifact, 'codex-code-mode-host'))).digest('hex')) {
+      throw new Error('Gateway SDK code-mode host does not match its receipt');
+    }
     cpSync(gatewayArtifact, join(directory, 'package/gateway-sdk'), { recursive: true });
   }
   writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.22.1', nodeArchiveSha256: runtimeDigest,

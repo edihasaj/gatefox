@@ -14,7 +14,7 @@ import { startExecutionHost, executionHostHome, type ExecutionDescriptor, type E
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import { ExecutionEngine, executionArgs, executionDescriptor } from "../execution-host-engine.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
-import { connectOnce, readOwner, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
+import { connectOnce, readOwner, sdkIdentity, sdkSocketTarget, setSocketProbeForTests, socketIdentity, type ProbeResult } from "../execution-host-storage.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
 import { hostRunsInThisProcess } from "./in-process-host.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
@@ -140,6 +140,25 @@ test("a legacy app SDK with its Code Mode companion preserves an unset tool mode
     descriptor.catalog = { models: [{ slug: "fixture" }] };
     assert.equal((await client.request<ExecutionRecord>("execution/acquire", descriptor)).revision, descriptor.revision);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("a gateway SDK enables Code Mode only when its verified receipt pinned the host", { timeout: 30000 }, async () => {
+  const f = await fixture(); const binarySha256 = (await sdkIdentity(f.codex)).sdkSha256;
+  try {
+    for (const codeModeHost of [true, false]) {
+      // The companion sits beside the executable in both runs: an adjacent file the receipt never
+      // recorded must not manufacture the capability, and a recorded one must not need it.
+      await writeFile(join(dirname(f.codex), "codex-code-mode-host"), "#!/bin/sh\n", { mode: 0o700 });
+      const host = await startExecutionHost({ ...f, gatewayRuntime: async () => ({ executable: f.codex, binarySha256, selectedModelCompaction: true as const, executorIdentity: true as const, codeModeHost }) });
+      const client = await control(join(f.hostHome, "host.sock"));
+      const descriptor = f.descriptor(codeModeHost ? "c" : "d");
+      descriptor.catalog = { models: [{ slug: "fixture" }] }; descriptor.gatewaySdkSha256 = binarySha256;
+      const record = await client.request<ExecutionRecord>("execution/acquire", descriptor);
+      if (codeModeHost) assert.equal(record.revision, descriptor.revision, "a verified host keeps the adapter's row byte-for-byte");
+      else assert.notEqual(record.revision, descriptor.revision, "a host the receipt did not pin gives the row direct tools");
+      await client.close(); await host.close();
+    }
+  } finally { await f.clean(); }
 });
 
 test("shared execution survives adapter disconnect, finds loaded owners, and preserves native files", { timeout: 30000 }, async () => {

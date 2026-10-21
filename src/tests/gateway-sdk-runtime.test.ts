@@ -13,6 +13,11 @@ import { gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "../gateway-s
 type ComponentReceipt = { bundleVersion: string; bundleSha256: string;
   components: { gatewaySdk: { buildVersion: string; sourceSha256: string; files: { name: string; size: number; sha256: string }[]; origin?: { bundleVersion: string; bundleSha256: string } } } };
 
+const hostName = "codex-code-mode-host";
+const hostBytes = "isolated gateway code-mode host fixture";
+const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+const componentNames = (host = false) => ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex", ...(host ? [hostName] : [])];
+
 async function fixture(t: { after(fn: () => Promise<void>): void }, root?: string, source = "a".repeat(64)) {
   root ??= await mkdtemp(join(tmpdir(), "gateway-sdk-runtime-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -47,12 +52,15 @@ async function managedRecoveryFixture(t: { after(fn: () => Promise<void>): void 
   return { root, previous, current, candidate };
 }
 
-async function reusedFixture(t: { after(fn: () => Promise<void>): void }) {
+async function reusedFixture(t: { after(fn: () => Promise<void>): void }, options: { host?: boolean } = {}) {
   const f = await fixture(t); const sourceSha256 = gatewaySdkSourceSha256;
-  await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" })); await f.save({ sourceSha256 });
+  await writeFile(join(f.root, "package.json"), JSON.stringify({ version: "0.2.24" }));
+  const declared = options.host ? { codeModeHostSha256: sha(hostBytes) } : {};
+  await f.save({ sourceSha256, ...declared });
   for (const name of ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"]) await writeFile(join(f.directory, name), `fixture ${name}`, { mode: 0o600 });
-  const files = await Promise.all(["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"].map(async name => {
-    const bytes = await readFile(join(f.directory, name)); return { name, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+  if (options.host) await writeFile(join(f.directory, "codex-code-mode-host"), hostBytes, { mode: 0o700 });
+  const files = await Promise.all(componentNames(options.host).map(async name => {
+    const bytes = await readFile(join(f.directory, name)); return { name, size: bytes.length, sha256: sha(bytes) };
   }));
   const release: { version: string; reusedComponents: ComponentReceipt } = { version: "0.2.24",
     reusedComponents: { bundleVersion: f.metadata.version, bundleSha256: "b".repeat(64),
@@ -69,7 +77,7 @@ test("legacy packages omit the separately built gateway SDK", async t => {
 test("a listener whose whole managed release was pruned recovers only the verified current SDK", async t => {
   const f = await managedRecoveryFixture(t);
   const runtime = await gatewaySdkRuntime(f.previous);
-  assert.deepEqual(runtime, { executable: f.candidate.executable, binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.deepEqual(runtime, { executable: f.candidate.executable, binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
 });
 
 test("recovery never substitutes a current SDK for a present old package, a checkout, or an unpinned source", async t => {
@@ -115,15 +123,15 @@ test("a loaded module can recover after its own managed release directory is pru
   const loaded = await import(`${pathToFileURL(join(oldDist, "gateway-sdk-runtime.js")).href}?managed-recovery`);
   await rm(join(f.root, "releases", "0.2.20"), { recursive: true, force: true });
   const runtime = await loaded.gatewaySdkRuntime();
-  assert.deepEqual({ binarySha256: runtime?.binarySha256, selectedModelCompaction: runtime?.selectedModelCompaction, executorIdentity: runtime?.executorIdentity },
-    { binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.deepEqual({ binarySha256: runtime?.binarySha256, selectedModelCompaction: runtime?.selectedModelCompaction, executorIdentity: runtime?.executorIdentity, codeModeHost: runtime?.codeModeHost },
+    { binarySha256: f.candidate.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
   assert.match(runtime?.executable || "", /releases\/0\.2\.21\/package\/gateway-sdk\/gateway-codex$/);
 });
 
 test("matching release receipt proves the gateway executor capability: selected-model compaction and the openai alias", async t => {
   const f = await fixture(t);
   assert.equal(gatewaySdkCapability, "gateway-executor-v3");
-  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
 });
 
 test("present but incomplete or changed binaries fail closed", async t => {
@@ -159,7 +167,7 @@ test("writable receipts or executables and executable symlinks are refused", asy
 
 test("an explicitly verified reused SDK accepts an unchanged foreign-version component", async t => {
   const f = await reusedFixture(t);
-  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
   assert.equal(JSON.parse(await readFile(f.receipt, "utf8")).version, f.metadata.version);
 });
 
@@ -217,7 +225,7 @@ test("a reused component origin wins over the parent bundle it was staged from",
   release.reusedComponents.bundleVersion = "0.2.19"; release.reusedComponents.bundleSha256 = "c".repeat(64);
   release.reusedComponents.components.gatewaySdk.origin = { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64) };
   await f.saveRelease(release);
-  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true });
+  assert.deepEqual(await gatewaySdkRuntime(f.root), { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
   const malformed: unknown[] = [{ bundleVersion: f.metadata.version }, { bundleSha256: "d".repeat(64) }, { bundleVersion: "0.2.19", bundleSha256: "d".repeat(64) },
     { bundleVersion: f.metadata.version, bundleSha256: "not-a-digest" }, { bundleVersion: null, bundleSha256: "d".repeat(64) },
     null, "0.2.23", { bundleVersion: f.metadata.version, bundleSha256: "d".repeat(64), extra: 1 }];
@@ -230,4 +238,51 @@ test("a reused component origin wins over the parent bundle it was staged from",
   const legacy = structuredClone(f.release); delete legacy.reusedComponents.components.gatewaySdk.origin;
   await f.saveRelease(legacy);
   assert.equal((await gatewaySdkRuntime(f.root))?.binarySha256, f.metadata.binarySha256);
+});
+
+test("a package that carries its code-mode host reports it, and every other pairing fails closed", async t => {
+  const f = await fixture(t);
+  const host = join(f.directory, hostName);
+  await writeFile(host, hostBytes, { mode: 0o700 });
+  await f.save({ codeModeHostSha256: sha(hostBytes) });
+  assert.deepEqual(await gatewaySdkRuntime(f.root),
+    { executable: f.executable, binarySha256: f.metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: true });
+  await f.save();
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a host the receipt never recorded is not a capability");
+  await f.save({ codeModeHostSha256: sha(hostBytes) });
+  await rm(host);
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a receipt naming a host that is absent fails closed");
+  await writeFile(host, "changed code-mode host bytes", { mode: 0o700 });
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a host that changed since the receipt fails closed");
+  await rm(host); await symlink(join(f.root, "package.json"), host);
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a symlinked host fails closed");
+  await rm(host); await writeFile(host, hostBytes, { mode: 0o600 });
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a host that cannot be executed fails closed");
+  await chmod(host, 0o777);
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a group-writable host fails closed");
+  await chmod(host, 0o700); await f.save({ codeModeHostSha256: "not-a-digest" });
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a malformed host receipt fails closed");
+  await f.save({ codeModeHostSha256: sha(hostBytes) });
+  assert.equal((await gatewaySdkRuntime(f.root))?.codeModeHost, true);
+});
+
+test("the legacy six-file package reports no code-mode host", async t => {
+  const f = await fixture(t);
+  assert.equal((await gatewaySdkRuntime(f.root))?.codeModeHost, false);
+});
+
+test("a reused component carries the host only when both receipts and the file agree", async t => {
+  const f = await reusedFixture(t, { host: true });
+  assert.equal((await gatewaySdkRuntime(f.root))?.codeModeHost, true);
+  const lost = structuredClone(f.release);
+  lost.reusedComponents.components.gatewaySdk.files.pop();
+  await f.saveRelease(lost);
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "the reused receipt stopped naming the host file");
+  const changed = structuredClone(f.release);
+  const named = changed.reusedComponents.components.gatewaySdk.files.find(file => file.name === hostName)!;
+  named.sha256 = "b".repeat(64);
+  await f.saveRelease(changed);
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "the reused receipt describes another file");
+  await f.save();
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/, "a component host its own build receipt never recorded fails closed");
 });

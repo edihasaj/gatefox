@@ -24,12 +24,13 @@ function refreshChecksums(root) {
 }
 
 // Mirrors the production receipt: fresh native is absent from reuse, while an older SDK is reused.
-function fixture() {
+function fixture({ host = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'gateway-sign-test-'));
   const app = join(root, 'Harness Gateway.app');
   const backend = join(app, 'Contents/Resources/backend');
   const nativeBuild = { version: '1.2.3', source: 'native-source', license: 'MIT', provenance: 'local-build' };
-  const sdkBuild = { version: '1.1.9', binarySha256: hash(bytes('sdk')), source: 'sdk-source', license: 'Apache-2.0', provenance: 'reused-release' };
+  const sdkBuild = { version: '1.1.9', binarySha256: hash(bytes('sdk')), source: 'sdk-source', license: 'Apache-2.0', provenance: 'reused-release',
+    ...(host ? { codeModeHostSha256: hash(bytes('code-mode-host')) } : {}) };
   write(join(backend, 'package/native/build.json'), JSON.stringify(nativeBuild));
   write(join(backend, 'package/gateway-sdk/build.json'), JSON.stringify(sdkBuild));
   const release = {
@@ -38,6 +39,7 @@ function fixture() {
       { name: 'build.json', size: readFileSync(join(backend, 'package/gateway-sdk/build.json')).length,
         sha256: hash(readFileSync(join(backend, 'package/gateway-sdk/build.json'))) },
       { name: 'gateway-codex', size: 3, sha256: hash(bytes('sdk')) },
+      ...(host ? [{ name: 'codex-code-mode-host', size: bytes('code-mode-host').length, sha256: hash(bytes('code-mode-host')) }] : []),
     ] } } },
   };
   const files = [
@@ -47,6 +49,7 @@ function fixture() {
     ['package/native/dependencies.json', '{}'], ['package/native/gateway-native-relay', 'native'],
     ['package/gateway-sdk/CODEX-LICENSE', 'license'], ['package/gateway-sdk/CODEX-NOTICE', 'notice'], ['package/gateway-sdk/NOTICE', 'notice'],
     ['package/gateway-sdk/dependencies.json', '{}'], ['package/gateway-sdk/gateway-codex', 'sdk'],
+    ...(host ? [['package/gateway-sdk/codex-code-mode-host', 'code-mode-host']] : []),
     ['runtime/bin/node', 'official-node-signature'], ['runtime/LICENSE', 'node-license'],
   ];
   for (const [path, value] of files) write(join(backend, path), value);
@@ -56,7 +59,7 @@ function fixture() {
   write(join(app, 'Contents/MacOS/GatewayUpdateInstaller'), 'updater');
   write(join(app, 'Contents/MacOS/GatewayApp'), 'main');
   write(join(app, 'Contents/Resources/app-build.json'), JSON.stringify({ signedForDistribution: false, build: 'fixture' }));
-  return { app, backend, nativeBuild, sdkBuild };
+  return { app, backend, nativeBuild, sdkBuild, hostFile: host ? join(backend, 'package/gateway-sdk/codex-code-mode-host') : null };
 }
 
 function runner({ failFinalSign = false, failFinalVerify = false, failTrust = false, notaryStatus = null } = {}) {
@@ -257,4 +260,53 @@ test('does not publish a partial ZIP when ditto fails', () => {
   const receipt = JSON.parse(readFileSync(`${archive}.notarization.json`));
   assert.equal(receipt.notarized, true);
   assert.equal(receipt.published, false);
+});
+
+function signCalls(app) {
+  const calls = [];
+  const result = signMacosApp(options(app), { run: (binary, args) => {
+    if (binary === 'codesign' && args.includes('--sign')) calls.push(args);
+    return runner()(binary, args);
+  } });
+  return { calls, result };
+}
+
+test('signs an optional code-mode host with its own identifier and JIT entitlements', () => {
+  const { app, backend } = fixture({ host: true });
+  const before = readFileSync(join(backend, 'package/gateway-sdk/codex-code-mode-host'));
+  const { calls, result } = signCalls(app);
+  assert.equal(result.signedForDistribution, true);
+  const host = calls.find(args => args.at(-1).endsWith('/package/gateway-sdk/codex-code-mode-host'));
+  assert.ok(host, 'the companion beside the gateway SDK is signed');
+  assert.equal(host[host.indexOf('--identifier') + 1], 'com.edihasaj.harness-gateway.code-mode-host');
+  const entitlements = readFileSync(host[host.indexOf('--entitlements') + 1], 'utf8');
+  assert.match(entitlements, /com\.apple\.security\.cs\.allow-jit/);
+  assert.match(entitlements, /com\.apple\.security\.cs\.allow-unsigned-executable-memory/);
+  assert.doesNotMatch(entitlements, /apple-events|get-task-allow/, 'the host gets only the two JIT entitlements');
+  assert.notDeepEqual(readFileSync(join(backend, 'package/gateway-sdk/codex-code-mode-host')), before);
+  const sdk = JSON.parse(readFileSync(join(backend, 'package/gateway-sdk/build.json')));
+  assert.equal(sdk.originalCodeModeHostSha256, hash(before));
+  assert.equal(sdk.codeModeHostSha256, hash(readFileSync(join(backend, 'package/gateway-sdk/codex-code-mode-host'))));
+  assert.notEqual(sdk.codeModeHostSha256, sdk.originalCodeModeHostSha256, 'the signed companion is what the receipt pins');
+  assert.equal(sdk.originalBinarySha256, hash(bytes('sdk')), 'the CLI keeps its own original hash');
+  const release = JSON.parse(readFileSync(join(backend, 'package/release.json')));
+  const record = release.reusedComponents.components.gatewaySdk.files.find(file => file.name === 'codex-code-mode-host');
+  assert.equal(record.sha256, sdk.codeModeHostSha256, 'the reused-component receipt follows the signed host');
+});
+
+test('a package without the companion signs the gateway SDK exactly as before', () => {
+  const { app, backend } = fixture();
+  const { calls } = signCalls(app);
+  assert.ok(!calls.some(args => args.at(-1).endsWith('codex-code-mode-host')), 'no host target is invented');
+  const sdk = JSON.parse(readFileSync(join(backend, 'package/gateway-sdk/build.json')));
+  assert.equal(Object.hasOwn(sdk, 'codeModeHostSha256'), false);
+  assert.equal(Object.hasOwn(sdk, 'originalCodeModeHostSha256'), false);
+});
+
+test('a companion and its receipt must agree before signing starts', () => {
+  const { app, backend } = fixture({ host: true });
+  const sdk = JSON.parse(readFileSync(join(backend, 'package/gateway-sdk/build.json')));
+  write(join(backend, 'package/gateway-sdk/build.json'), JSON.stringify({ ...sdk, codeModeHostSha256: undefined }));
+  refreshChecksums(backend);
+  assert.throws(() => signCalls(app), /Incomplete backend component or licenses/, 'a host no receipt names');
 });

@@ -11,7 +11,7 @@ import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
 import { AppServerRouter } from "../app-server-router.js";
 import { GatewayChatRegistry } from "../gateway-chat-registry.js";
 
-const runtime: GatewaySdkRuntime = { executable: "/sdk/gateway-codex", binarySha256: "a".repeat(64), selectedModelCompaction: true, executorIdentity: true };
+const runtime: GatewaySdkRuntime = { executable: "/sdk/gateway-codex", binarySha256: "a".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
 
 test("new gateway chats keep the legacy id unless a Mac opts into the native identity and its gateway SDK serves it", () => {
   // The default: the phone reaches gateway chats through the relay, so nothing needs the native identity.

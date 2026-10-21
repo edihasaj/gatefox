@@ -25,7 +25,9 @@ function tar(entries: Entry[]) {
   }
   return gzipSync(Buffer.concat([...parts, Buffer.alloc(1024)]));
 }
-async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean | Record<string, unknown> } = {}) {
+const hostBytes = Buffer.from("isolated gateway code-mode host executable");
+
+async function fixture(t: { after(fn: () => Promise<void>): void }, options: { native?: boolean | Record<string, unknown>; host?: boolean } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "gateway-release-reuse-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const binary = Buffer.from("isolated component executable");
@@ -41,8 +43,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, options: { n
     ["package/unselected-sample.json", Buffer.from("unselected payload must stay out of component stage")],
     ...["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "dependencies.json"].map(name =>
       [`package/gateway-sdk/${name}`, Buffer.from("fixture")] as [string, Buffer]),
-    ["package/gateway-sdk/build.json", Buffer.from(JSON.stringify(metadata))],
+    ["package/gateway-sdk/build.json", Buffer.from(JSON.stringify(options.host ? { ...metadata, codeModeHostSha256: hash(hostBytes) } : metadata))],
     ["package/gateway-sdk/gateway-codex", binary],
+    ...(options.host ? [["package/gateway-sdk/codex-code-mode-host", hostBytes] as [string, Buffer]] : []),
   ]);
   if (options.native) {
     // A published relay whose source has changed since: its receipt no longer matches.
@@ -78,6 +81,32 @@ test("explicit reuse preserves earlier receipts and copies only verified compone
   assert.deepEqual(await readFile(join(stage, "gateway-sdk/build.json")), f.files.get("package/gateway-sdk/build.json"));
   assert.equal((await stat(join(stage, "gateway-sdk/gateway-codex"))).mode & 0o777, 0o755);
   await assert.rejects(stat(join(stage, "unselected-sample.json")), { code: "ENOENT" });
+});
+
+test("a reused gateway SDK may carry its code-mode host, and the component and its receipt must agree", async t => {
+  const f = await fixture(t, { host: true }); const a = await f.save();
+  const verified = verifyReleaseComponents(a.archive, a.digest, { gatewaySdk: true });
+  assert.equal(verified.provenance.components.gatewaySdk.files.length, 7);
+  const stage = join(f.directory, "stage"); await mkdir(stage);
+  copyReleaseComponents(verified, stage);
+  assert.deepEqual(await readFile(join(stage, "gateway-sdk/codex-code-mode-host")), hostBytes);
+  assert.equal((await stat(join(stage, "gateway-sdk/codex-code-mode-host"))).mode & 0o777, 0o755, "the companion is staged as an executable");
+  const unnamed = await fixture(t, { host: true });
+  unnamed.files.set("package/gateway-sdk/build.json", Buffer.from(JSON.stringify(f.metadata)));
+  const carried = await unnamed.save();
+  assert.throws(() => verifyReleaseComponents(carried.archive, carried.digest, { gatewaySdk: true }), /code-mode host receipt and files disagree/, "a host no receipt names");
+  const unfiled = await fixture(t);
+  unfiled.files.set("package/gateway-sdk/build.json", Buffer.from(JSON.stringify({ ...f.metadata, codeModeHostSha256: hash(hostBytes) })));
+  const named = await unfiled.save();
+  assert.throws(() => verifyReleaseComponents(named.archive, named.digest, { gatewaySdk: true }), /code-mode host receipt and files disagree/, "a receipt naming a host the bundle never carried");
+  const malformed = await fixture(t);
+  malformed.files.set("package/gateway-sdk/build.json", Buffer.from(JSON.stringify({ ...f.metadata, codeModeHostSha256: "not-a-digest" })));
+  const broken = await malformed.save();
+  assert.throws(() => verifyReleaseComponents(broken.archive, broken.digest, { gatewaySdk: true }), /code-mode host receipt is invalid/, "a malformed digest names no file");
+  const changed = await fixture(t, { host: true });
+  changed.files.set("package/gateway-sdk/codex-code-mode-host", Buffer.from("another code-mode host build"));
+  const stale = await changed.save();
+  assert.throws(() => verifyReleaseComponents(stale.archive, stale.digest, { gatewaySdk: true }), /gateway SDK pins or capability changed/, "a host that changed since its receipt");
 });
 
 test("missing authorization, changed archive, changed payload and changed source fail closed", async t => {

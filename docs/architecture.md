@@ -169,8 +169,8 @@ is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
 
 Before a shared host creates or looks up a gateway generation, it verifies the
-selected SDK executable. If that executable lacks its adjacent Code Mode helper,
-the host changes every row in that generation's gateway catalog to
+selected SDK executable. If that executable's verified receipt names no adjacent Code
+Mode helper, the host changes every row in that generation's gateway catalog to
 `tool_mode: "direct"`. This includes missing and unknown modes, while preserving
 the row's instructions, model, provider, permissions, review policy and every
 other catalog field. A changed catalog receives a deterministic replacement
