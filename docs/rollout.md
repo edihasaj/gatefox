@@ -48,3 +48,9 @@ or write user gateway state.
 The command reports only fixed reason codes, counts, versions, capabilities and
 PIDs. It does not print command lines, paths, request bodies, tool arguments,
 configuration values, or probe-child output.
+
+A pending native-sharing intent keeps the rollout pending even when its gateway
+tool canary passes. After combined adoption, the host must also hold the actual
+native-home lease; advertising the native capability alone is insufficient.
+The current canary requires gateway sharing. A native-only service uses its
+service status and the shared-native fixture instead of this combined gate.

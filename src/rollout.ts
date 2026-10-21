@@ -10,6 +10,7 @@ import { statusFields } from "./health-checks.js";
 import { configPath } from "./paths.js";
 import { readServicePlan, serviceExecutionPaths, serviceStatusPath, type ServicePlan } from "./service-plan.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
+import { readPendingNativeSharing } from "./service-native-staging.js";
 import { locateInstall, parsePs, runVersions, type VersionsResult } from "./versions.js";
 
 export type RolloutState = "ready" | "pending" | "blocked" | "failed";
@@ -18,7 +19,7 @@ export type RolloutReason =
   | "service_status_pending" | "service_identity_pending" | "service_release_pending"
   | "component_pending" | "inference_pending" | "inference_failed" | "host_pending"
   | "host_status_pending" | "host_identity_pending" | "probe_pending" | "probe_stale"
-  | "probe_failed" | "active_work" | "rollout_changed";
+  | "probe_failed" | "active_work" | "rollout_changed" | "native_sharing_pending" | "native_owner_pending";
 
 interface HostIdentity {
   hostPid: number;
@@ -36,6 +37,7 @@ interface HostStatus {
   quiescing: boolean;
   cachedProbe?: ScrubbedExecutionProbeReport;
   activeWork: boolean;
+  nativeHomeOwned?: boolean;
 }
 
 interface ServiceComponentStatus {
@@ -69,6 +71,7 @@ export interface RolloutDeps {
   host?: (input: { configPath: string; plan: ServicePlan; verify: boolean }) => Promise<{ status?: HostStatus; probe?: ScrubbedExecutionProbeReport; unavailable?: boolean }>;
   releaseSource?: (installed: string) => Promise<string | undefined>;
   componentLiveness?: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>;
+  nativeSharingPending?: (state: string) => Promise<boolean>;
 }
 
 const release = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
@@ -113,6 +116,7 @@ export function hostStatus(value: unknown): HostStatus | undefined {
     identity: host, capabilities: [...new Set(capabilities)].sort(), compatible: true, quiescing: row.quiescing === true,
     ...(executionProbeReportValid(cached) ? { cachedProbe: cached } : {}),
     activeWork: row.activeWork === true || row.probeState === "active_work",
+    nativeHomeOwned: row.nativeHomeOwned === true,
   };
 }
 
@@ -268,6 +272,11 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   const base = { checkedAt, installed: versions.installed, versions: counts };
   if (!versions.installed || !release.test(versions.installed)) return result("pending", "installed_unknown", base);
   if (counts.pending || counts.unknown) return result("pending", "process_version_pending", base);
+  const sharingPending = async (): Promise<boolean> => {
+    try { return await (deps.nativeSharingPending ?? (async state => !!await readPendingNativeSharing(state)))(config.stateDirectory); }
+    catch { return true; } // An unreadable adoption receipt cannot earn readiness.
+  };
+  if (await sharingPending()) return result("pending", "native_sharing_pending", base);
 
   const plan = await (deps.plan ?? readServicePlan)(config.stateDirectory);
   if (!plan) return result("pending", "service_plan_pending", base);
@@ -303,6 +312,9 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     || host.sourceCommit !== installedSource || !hostRead.status.compatible || !hostRead.status.capabilities.includes("gateway")) {
     return result("pending", "host_status_pending", { ...base, service: serviceReport, inference, host: hostReport });
   }
+  if (plan.sharedNativeExecutor && (!hostRead.status.capabilities.includes("native") || !hostRead.status.nativeHomeOwned)) {
+    return result("pending", "native_owner_pending", { ...base, service: serviceReport, inference, host: hostReport });
+  }
   const probe = hostRead.probe ?? hostRead.status.cachedProbe;
   if (!probe) {
     const state: RolloutState = hostRead.status.activeWork ? "blocked" : "pending";
@@ -318,6 +330,7 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
   if (verify && !sameCohort(versions, await (deps.versions ?? (() => runVersions()))())) {
     return result("pending", "rollout_changed", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
   }
+  if (await sharingPending()) return result("pending", "native_sharing_pending", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
   return result("ready", "ready", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
 }
 

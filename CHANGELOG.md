@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Native executor sharing can be staged for the service's next natural start,
+without quitting applications or changing the active service plan. Adoption
+preserves existing gateway sharing and components, rechecks the signed SDK and
+old writers, and remains pending while ownership is uncertain. Managed private
+native engines reserve the matching native home before starting, preventing a
+shared host from racing them. Rollout readiness also requires staged adoption
+to finish and the native home to be owned when native sharing is enabled.
+The signed native 0.163 engine passed detached completion, single-execution
+command recovery, and approval replay checks over stdio and Unix.
+Thanks to @edihasaj for reporting interrupted work during travel and disconnects.
+
 Release readiness now requires evidence from loaded processes and the serving
 execution host, including an isolated SDK tool canary. Older adapters cannot
 create a gateway catalog that requires an unavailable Code Mode host. The live

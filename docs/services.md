@@ -736,6 +736,36 @@ native home, while local and connected-machine adapters attach as independent
 Unix clients. A second client can read the actual running turn and Stop it,
 rather than reading a saved rollout through an unrelated SDK process.
 
+For laptops that sleep or disconnect, executor ownership must outlive the client
+connection. See [sleep, travel, and reconnects](travel-recovery.md) for the
+durability boundary and the checks that prove reconnect does not replay work.
+
+Native sharing can also be staged without closing active applications:
+
+```sh
+gateway service shared-native --on-restart
+```
+
+This writes a separate pending intent and leaves the current service plan and
+processes alone. Only a subsequent primary LaunchAgent start can activate it.
+Startup rechecks the original plan, verified SDK, and existing writers. An old
+adapter, a changed plan, or an uncertain owner leaves activation pending; nothing
+is killed to make it pass. Existing gateway sharing and service components keep
+their values.
+
+On an installation that also needs service-owned gateway executors, explicitly
+include them in that staged adoption:
+
+```sh
+gateway service shared-native --on-restart --with-gateway
+```
+
+Staging and installation are not proof of activation. Check the live service after
+natural adoption; combined native and gateway sharing also requires
+`gateway rollout --verify`. That command's canary requires gateway sharing, so
+native-only adoption is checked through service status and the native fixture.
+The immediate migration below continues to require its existing maintenance window.
+
 Preview and apply migration through the existing unified service:
 
 ```sh

@@ -30,7 +30,8 @@ const work = join(fixture, "work");
 const unpacked = join(fixture, "unpacked");
 const prefix = join(home, ".local");
 const resultPath = join(evidenceRoot, "rollout-readiness.json");
-const expectedVersion = "0.6.1";
+const expectedVersion = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version;
+assert.match(expectedVersion, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/, "Use a canonical release version");
 
 const evidence = {
   checkedAt: new Date().toISOString(),
@@ -151,7 +152,7 @@ try {
 
   const release = await extractRelease();
   const packaged = JSON.parse(await readFile(join(release, "package", "package.json"), "utf8"));
-  assert.equal(packaged.version, expectedVersion, "This readiness proof is pinned to the 0.6.1 candidate");
+  assert.equal(packaged.version, expectedVersion, "The packaged release must match this verification checkout");
   const installer = join(release, "install");
   assert.ok((await lstat(installer)).isFile(), "The packaged installer is required");
   for (let install = 0; install < 2; install++) {

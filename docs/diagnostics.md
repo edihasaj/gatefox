@@ -342,6 +342,13 @@ lagging process may legitimately take to move.
 
 ## Exception reports
 
+Staged native executor adoption records `native_sharing_staged`,
+`native_sharing_activated`, and `native_sharing_deferred`. Records carry only
+fixed mode or reason codes. A deferral means the staged change was not applied
+and the current service plan remains authoritative, for example because an old writer remained, the plan changed, or the
+SDK could not be verified. It does not report a failed chat or authorize
+replaying a turn. See [travel recovery](travel-recovery.md).
+
 Only exceptions go to `errors.applifyer.com`, project `harness-gateway`. The DSN
 is the 1Password item `GlitchTip DSN - harness-gateway` (vault `applifyer`) and
 lives on each Mac in `<state>/glitchtip.dsn` (mode 0600, owned by the user); a

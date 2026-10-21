@@ -47,6 +47,7 @@ function base(extra: Partial<RolloutDeps> = {}): RolloutDeps {
     inference: async () => ({ status: 200, release: installed }),
     host: async () => ({ status: { identity: { hostPid: 101, startedAtMs, runningRelease: installed, sourceCommit, catalogFingerprint, sdkSha256 }, capabilities: ["gateway"], compatible: true, quiescing: false, activeWork: false, cachedProbe: probe({ hostPid: 101 }) } }),
     releaseSource: async () => sourceCommit,
+    nativeSharingPending: async () => false,
     ...extra,
   };
 }
@@ -58,6 +59,32 @@ test("rollout ready requires current process, PID-frozen service, header release
   assert.equal(report.versions.current, 2);
   assert.equal(report.host?.pid, 101);
   assert.equal(report.probe?.commandVerified, true);
+});
+
+test("staged native adoption cannot earn readiness before activation, including a stage created during verification", async () => {
+  let hostCalls = 0;
+  const staged = await runRollout(true, undefined, base({
+    nativeSharingPending: async () => true,
+    host: async () => { hostCalls++; throw new Error("No probe should run before adoption"); },
+  }));
+  assert.equal(staged.reason, "native_sharing_pending");
+  assert.equal(hostCalls, 0);
+  const unreadable = await runRollout(false, undefined, base({ nativeSharingPending: async () => { throw new Error("private receipt unreadable"); } }));
+  assert.equal(unreadable.reason, "native_sharing_pending");
+  let reads = 0;
+  const raced = await runRollout(true, undefined, base({ nativeSharingPending: async () => ++reads > 1 }));
+  assert.equal(raced.reason, "native_sharing_pending");
+  assert.equal(raced.probe?.ready, true, "a successful old-mode canary cannot certify a newly staged ownership change");
+});
+
+test("a combined host must actually own the native home before shared-native rollout is ready", async () => {
+  const sharedPlan = { ...plan, sharedNativeExecutor: true, sharedExecutors: true };
+  const host = { identity: { hostPid: 101, startedAtMs, runningRelease: installed, sourceCommit, catalogFingerprint, sdkSha256 },
+    capabilities: ["gateway", "native"], compatible: true, quiescing: false, activeWork: false, cachedProbe: probe({ hostPid: 101 }) };
+  const pending = await runRollout(false, undefined, base({ plan: async () => sharedPlan, host: async () => ({ status: host }) }));
+  assert.equal(pending.reason, "native_owner_pending", "advertising native support does not prove a competing private writer is gone");
+  const ready = await runRollout(false, undefined, base({ plan: async () => sharedPlan, host: async () => ({ status: { ...host, nativeHomeOwned: true } }) }));
+  assert.equal(ready.state, "ready");
 });
 
 test("a prior process, unknown process, or HTTP 200 from an old release remains pending", async () => {

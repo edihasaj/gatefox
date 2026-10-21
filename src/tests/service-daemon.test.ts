@@ -66,3 +66,17 @@ test("the daemon presets the login environment before it activates, runs or wait
     assert.deepEqual(order, ["preset", "activate"], "and a refusal comes after it");
   } finally { await f.remove(); }
 });
+
+test("the daemon attempts staged native adoption after login activation and before starting its supervisor", async () => {
+  const f = await configured();
+  try {
+    const order: string[] = [];
+    await runServiceDaemon(f.config, {
+      preset: async () => { order.push("preset"); },
+      activate: async () => { order.push("login"); return { plan: f.plan, restored: false }; },
+      activateNative: async (_path, plan) => { order.push("native"); return plan; },
+      run: async () => { order.push("supervisor"); },
+    });
+    assert.deepEqual(order, ["preset", "login", "native", "supervisor"]);
+  } finally { await f.remove(); }
+});

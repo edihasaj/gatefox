@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readTelemetry } from "../telemetry.js";
 import { gatewayToken } from "../config.js";
-import { cliFailureMessage } from "../cli.js";
+import { cliFailureMessage, main } from "../cli.js";
 
 test("npm-style CLI symlinks execute help and version without a provider configuration", { skip: process.platform === "win32" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-cli-"));
@@ -75,6 +75,12 @@ test("cliFailureMessage hides what a JSON parse error quoted from the file", () 
   assert.equal(cliFailureMessage(leaked), "Invalid JSON data");
   assert.equal(cliFailureMessage(new Error("Unknown command; run gateway --help")), "Unknown command; run gateway --help");
   assert.equal(cliFailureMessage(undefined), "Command failed");
+});
+
+test("staged native-sharing option conflicts fail before configuration access", async () => {
+  await assert.rejects(main(["service", "shared-native", "--on-restart", "--apply", "--config", "/unreadable/gateway.json"]), /--on-restart cannot be combined/);
+  await assert.rejects(main(["service", "shared-native", "--with-gateway", "--config", "/unreadable/gateway.json"]), /--with-gateway is only valid/);
+  await assert.rejects(main(["service", "shared-executors", "--on-restart", "--config", "/unreadable/gateway.json"]), /--on-restart is only valid/);
 });
 
 test("desktop status reports a corrupt registration as invalid JSON only", { skip: process.platform !== "darwin" }, async () => {

@@ -26,23 +26,36 @@ async function assertPlanNativeHome(nativeHome: string, plan: ServicePlan | unde
 }
 
 /**
+ * A managed service that intentionally runs private native engines still needs a lease before an adapter starts its SDK.
+ * Other adapters keep their standalone behavior: a missing plan, another configuration, or another spelling of the native
+ * home cannot turn a private launch into a restriction imposed by this service plan.
+ */
+function managedPrivateNativeHome(configPath: string | undefined, nativeHome: string, plan: ServicePlan | undefined): boolean {
+  if (!configPath || !plan || plan.config !== resolve(configPath)) return false;
+  try { return serviceNativeExecutionPaths(plan).nativeHome === resolve(nativeHome); }
+  catch { return false; }
+}
+
+/**
  * What a desktop adapter needs before it spawns its own native engine. Every private engine gets the verdict a host's claim
- * gets (a live or unconfirmed native owner keeps it out). An adapter that shares native chats but falls back (the host stayed
- * down, or it runs without native sharing) also takes a private native-home lease, before the spawn, and holds it until the
- * engine exits. Private leases share the home with each other, as the app's own engine and an SSH remote's do in stock
- * Codex, but never with the host's writer: a host that comes back meanwhile finds a live owner and does not become a second
- * kind of writer beside them. A fallback is recorded only once it is allowed, with how many private engines then hold the home.
+ * gets (a live or unconfirmed native owner keeps it out). A managed private engine whose configuration and native home
+ * match the service plan takes a private native-home lease before the spawn, and holds it until the engine exits. That
+ * includes an adapter that shares native chats but falls back (the host stayed down, or it runs without native sharing).
+ * Private leases share the home with each other, as the app's own engine and an SSH remote's do in stock Codex, but never
+ * with the host's writer: a host that comes back meanwhile finds a live owner and does not become a second kind of writer
+ * beside them. A fallback is recorded only once it is allowed, with how many private engines then hold the home.
  */
 export async function privateNativeOwnership(configPath: string | undefined, nativeHome: string, codex: string, fallback?: NativeFallbackReason, plan?: ServicePlan): Promise<PrivateNativeLease | undefined> {
   if (fallback) await assertPlanNativeHome(nativeHome, plan);
+  const managed = !fallback && managedPrivateNativeHome(configPath, nativeHome, plan);
   let lease: PrivateNativeLease | undefined;
   try {
     // A host that refused native ownership to private engines is itself live with native sharing, so its receipt would keep
     // this adapter out; the lease below only joins those engines (refused with `nothingToJoin` once none is left) and is
     // refused beside the host's writer, under its lock.
     if (fallback !== "native_owner") await ExecutionHostClient.assertNativeUnowned(configPath, nativeHome);
-    if (fallback) {
-      if (!configPath) throw new Error("A private native fallback requires this adapter's configuration path");
+    if (fallback || managed) {
+      if (!configPath) throw new Error("A managed private native engine requires this adapter's configuration path");
       lease = await claimPrivateNativeHome({ configPath: resolve(configPath), nativeHome, codex }, executionHostHome(configPath, nativeHome), { joinOnly: fallback === "native_owner" });
     }
   } catch (error) {
