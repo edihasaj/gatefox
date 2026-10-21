@@ -301,9 +301,8 @@ export class AppServerRouter {
    * identity and only recover reasoning we can actually observe.
    */
   private async nativeChildResume(params: ObjectValue, route: ThreadRoute): Promise<ObjectValue> {
-    // As for gateway aliases, the executor must not ask an inference provider to
-    // run native web search after loading saved child history.
-    params = { ...params, config: { ...object(params.config), web_search: "disabled" } };
+    // The child's own settings are forwarded as the caller saved them. The gateway no longer forces
+    // `web_search` off: the Codex 2 route forwards the hosted tool and every other route drops it.
     if (!this.resumeOverride(params)) return params;
     const model = route.nativeChildModel!;
     if (typeof params.modelProvider === "string" && typeof route.provider === "string" && params.modelProvider !== route.provider) {
@@ -347,8 +346,9 @@ export class AppServerRouter {
     // default here would silently reset a Max chat to Medium on reload. A restored
     // choice is the chat's own setting, which the engine cannot recover on its own.
     const reasoning = restored === null ? {} : { model_reasoning_effort: restored?.effort ?? effort, model_reasoning_summary: restored?.summary ?? summary };
+    // The caller's `web_search` config passes through untouched: Codex 2 rows offer hosted search and the gateway drops it elsewhere.
     return { ...selected, model, modelProvider: provider,
-      config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath, web_search: "disabled" } };
+      config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath } };
   }
   private assertSameProvider(route: ThreadRoute, model: unknown): void {
     if (typeof model !== "string") return;

@@ -165,7 +165,7 @@ test("context rejection before provider output is a terminal SSE failure and inv
     assert.equal((await gateway.health()).active, 0); assertDiagnostics(gateway.failures, "context_length_exceeded");
     for (const [body, status] of [
       [{ model: "missing", stream: true }, 404], [{ model: "alias", stream: 1 }, 400],
-      [{ model: "alias", input: "hello", stream: true, tools: [{ type: "web_search" }] }, 400],
+      [{ model: "alias", input: "hello", stream: true, tools: [{ type: "file_search" }] }, 400],
     ] as const) {
       const invalid = await gateway.post(body); assert.equal(invalid.status, status);
       assert.match(invalid.headers.get("content-type")!, /application\/json/);

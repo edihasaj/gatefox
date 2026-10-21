@@ -677,8 +677,9 @@ native catalog slug such as `gpt-6.1-sol`. That child remains a gateway chat: it
 saved provider stays `subscription_gateway` or (on an opted-in Mac) `openai`, and
 the adapter routes reads, history, interrupts, turns and resumes to the executor
 that owns it. A resume with no model or reasoning override lets the SDK restore
-its saved state. Native web search stays disabled, as on gateway aliases, so opening
-saved history cannot enable tools the inference provider would execute.
+its saved state. The child's web search settings are forwarded as the caller saved them,
+as on gateway aliases: the adapter no longer forces `web_search` off, because the Codex
+route forwards the hosted tool and every other route drops it.
 If an explicit model/provider or a `config.model` or
 `config.model_reasoning_effort` key opens the SDK's restore gate without selecting a
 different child, the adapter repeats the child's saved native model and provider.
@@ -729,10 +730,13 @@ window maximum, the auto-compaction limit, input modalities and reasoning levels
 when the native row has it on: the ChatGPT backend refuses a `tool_search` tool that the
 gateway forwards, so the gateway drops it on that route, and support returns once it is
 verified against the real backend
-([details](responses.md#tool-search-on-the-codex-subscription-route)). The adapter
-still keeps the hosted `web_search` tool disabled; that is a separate setting. A
-slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it (search off), apart from the strictest native node_repl policy and the
+([details](responses.md#tool-search-on-the-codex-subscription-route)). The hosted
+`web_search` tool is a separate setting and is on there: the adapter copies the native row's
+`web_search_tool_type`, so a Codex 2 chat sends that tool exactly as native Codex does and the
+Codex route forwards it. A slug without a native row, and every Claude, Copilot or other row,
+loses the field -- those routes cannot run hosted search and the gateway drops the tool
+([details](responses.md#hosted-web-search)). Every row otherwise stays as the
+gateway published it (tool search off), apart from the strictest native node_repl policy and the
 native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
 preflight first writes `desktop-models.json` with the plain gateway rows, marker

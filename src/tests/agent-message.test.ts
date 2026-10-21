@@ -74,9 +74,9 @@ test("a nested function tool with a non-string description reports its own type"
 
 test("reasons label every translation rejection the gateway can produce", () => {
   assert.deepEqual(rejection(() => responsesToChatRequest(request([{ type: "foo_bar" } as unknown as ResponsesInputItem]))), ["unsupported_input_item", "other"]);
-  assert.deepEqual(rejection(() => responsesToChatRequest(request([{ type: "web_search_call", id: "ws_1" } as unknown as ResponsesInputItem]))), ["unsupported_input_item", "web_search_call"]);
+  assert.deepEqual(rejection(() => responsesToChatRequest(request([{ type: "file_search_call", id: "fs_1" } as unknown as ResponsesInputItem]))), ["unsupported_input_item", "file_search_call"]);
   assert.deepEqual(rejection(() => responsesToChatRequest(request([{ type: "agent_message", content: "delegation" } as unknown as ResponsesInputItem, { type: "message", role: "captain", content: "x" } as unknown as ResponsesInputItem]))), ["unsupported_role", "message"]);
-  assert.deepEqual(rejection(() => responsesToChatRequest({ model: "m", input: "hi", tools: [{ type: "web_search" }] } as unknown as ResponsesRequest)), ["unsupported_tool", "web_search"]);
+  assert.deepEqual(rejection(() => responsesToChatRequest({ model: "m", input: "hi", tools: [{ type: "file_search" }] } as unknown as ResponsesRequest)), ["unsupported_tool", "file_search"]);
   // A repeated declaration merges (last wins) instead of failing the request; see tool-merge.test.ts.
   assert.deepEqual(responsesToChatRequest({ model: "m", input: "hi", tools: [{ type: "function", name: "same" }, { type: "function", name: "same" }] } as unknown as ResponsesRequest).tools!.map(tool => tool.function.name), ["same"]);
   assert.deepEqual(rejection(() => responsesToChatRequest({ model: "m", input: "hi", tools: "nope" } as unknown as ResponsesRequest)), ["invalid_shape", undefined]);

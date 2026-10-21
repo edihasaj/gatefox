@@ -27,8 +27,14 @@ export function translationItemType(value: unknown): TranslationItemType {
  * `toolSearch` is set only for the Codex subscription route, where validation accepts the `tool_search` tool and the
  * `tool_search_call` / `tool_search_output` items; that provider then drops them before forwarding, because the ChatGPT
  * backend refuses a forwarded `tool_search` (see `tool_search_dropped`). Every other route rejects them as unsupported.
+ * `webSearch` is set only for that same route, the only one whose backend takes the hosted `web_search` tool: it forwards
+ * the tool and replayed `web_search_call` items upstream unchanged. Translation skips both whichever way they come -
+ * neither ever becomes a function tool or transcript text - so a route without the option drops them (see
+ * `web_search_dropped`) instead of failing a chat that switched here from the Codex route mid-turn.
  */
 export interface TranslationOptions { toolSearch?: boolean;
+  /** Set only for the Codex subscription route, where a declared `web_search` may satisfy a forced tool call. */
+  webSearch?: boolean;
   /** Record `tool_declarations_merged` for this translation. The server sets it on its one validation pass, so a request is reported once. */
   reportMerges?: boolean }
 export class ResponsesTranslationError extends Error {
@@ -109,6 +115,9 @@ export function responsesInputToMessages(input: ResponsesRequest["input"], optio
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.
       case "additional_tools": break;
+      // The hosted web search item is never chat text: the Codex route replays it upstream as sent; every other route
+      // drops it here (see `web_search_dropped`), so a switched chat still translates.
+      case "web_search_call": break;
       // Search items are accepted on the Codex route only; its provider drops them before forwarding.
       case "tool_search_call": case "tool_search_output":
         if (!options.toolSearch) reject("Unsupported Responses input item type", "unsupported_input_item", translationItemType(item.type));
@@ -163,6 +172,9 @@ export function normalizeResponsesTools(tools: ResponsesTool[] = [], options: Tr
   for (const source of tools) {
     const tool = record(source);
     if (options.toolSearch && tool.type === "tool_search") continue;
+    // Hosted search never joins the catalog: the Codex route forwards the declaration itself, every other route drops it
+    // (see `web_search_dropped`). A web_search nested in a namespace still fails in declare, as every hosted tool there does.
+    if (tool.type === "web_search") continue;
     if (tool.type !== "namespace") { declare(tool); continue; }
     const group = name(tool.name);
     if (!Array.isArray(tool.tools)) reject("Namespace tools must be a list", "unsupported_tool", "namespace");
@@ -256,11 +268,33 @@ export function declaredResponsesTools(request: ResponsesRequest, options: Pick<
   return result.tools;
 }
 
+/**
+ * The hosted `web_search` tools and replayed `web_search_call` items a request declares, at the top level and inside
+ * `additional_tools` items. The server records these as the counts of a `web_search_dropped` event on the routes that
+ * do not forward hosted search. Counts only: never a name, definition or content.
+ */
+export function webSearchPresence(request: ResponsesRequest): { tools: number; items: number } {
+  const hosted = (tool: unknown) => tool !== null && typeof tool === "object" && !Array.isArray(tool) && (tool as Data).type === "web_search";
+  let tools = 0, items = 0;
+  if (Array.isArray(request.tools)) tools += request.tools.filter(hosted).length;
+  if (Array.isArray(request.input)) for (const source of request.input) {
+    if (source === null || typeof source !== "object" || Array.isArray(source)) continue;
+    const item = source as Data;
+    if (item.type === "web_search_call") items++;
+    if (item.type === "additional_tools" && Array.isArray(item.tools)) tools += (item.tools as unknown[]).filter(hosted).length;
+  }
+  return { tools, items };
+}
+
 export function responsesToChatRequest(request: ResponsesRequest, options: TranslationOptions = {}): OpenAIChatRequest {
   const declared = declaredResponsesTools(request, options);
   const tools = normalizeResponsesTools(declared, options);
-  const tool_choice = normalizeResponsesToolChoice(request.tool_choice);
-  if (tool_choice === "required" && !tools.length && !(options.toolSearch && declared.some(tool => tool.type === "tool_search"))) reject("Required tool is not in the catalog", "unsupported_tool_choice");
+  // A route that does not forward hosted search cannot run a tool_choice naming web_search: it drops to auto, like the tool itself.
+  const choice = request.tool_choice;
+  const namedSearch = typeof choice === "object" && choice !== null && !Array.isArray(choice) && (choice as Data).type === "web_search";
+  const tool_choice = !options.webSearch && namedSearch ? "auto" : normalizeResponsesToolChoice(choice);
+  const forced = (tool: ResponsesTool) => (options.toolSearch && tool.type === "tool_search") || (options.webSearch && (tool as Data).type === "web_search");
+  if (tool_choice === "required" && !tools.length && !declared.some(forced)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   const messages = responsesInputToMessages(request.input, options);
   if (request.instructions !== undefined) {

@@ -16,7 +16,7 @@ import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
-import { responsesToChatRequest } from "./protocol/request.js";
+import { responsesToChatRequest, webSearchPresence } from "./protocol/request.js";
 import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
@@ -380,7 +380,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
       // Validate the supported protocol before invoking any provider. Only the Codex subscription route accepts tool_search
       // (its provider drops it before forwarding); every other route rejects it here, and Messages requests carry only function tools.
-      responsesToChatRequest(request, { toolSearch: route.type === "codex-subscription", reportMerges: true });
+      // That same route is the only one that forwards the hosted web_search tool; every other route drops it and its replayed
+      // items here, so a chat that switches from Codex 2 keeps working, and the drop is counted once per request.
+      const codexRoute = route.type === "codex-subscription";
+      responsesToChatRequest(request, { toolSearch: codexRoute, webSearch: codexRoute, reportMerges: true });
+      if (!codexRoute) {
+        const dropped = webSearchPresence(request);
+        if (dropped.tools || dropped.items) telemetry("web_search_dropped", { provider: route.id, tools: dropped.tools, items: dropped.items });
+      }
       if (countTokens) {
         throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
       }

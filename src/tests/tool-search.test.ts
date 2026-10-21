@@ -43,9 +43,9 @@ test("with the Codex route's option, search is skipped by translation and never 
   const chat = responsesToChatRequest(request(), { toolSearch: true });
   assert.deepEqual(chat.tools?.map(tool => tool.function.name), ["exec_command"]);
   assert.deepEqual(chat.messages.map(message => message.role), ["user", "user"]);
-  // Only search is accepted: another unsupported tool or item type still fails.
-  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tools: [{ type: "web_search" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool" });
-  assert.throws(() => responsesToChatRequest({ model: "m", input: [{ type: "web_search_call" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_input_item" });
+  // Only tool search is accepted here: another unsupported tool or item type still fails (hosted web search is skipped, never rejected; see web-search.test.ts).
+  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tools: [{ type: "file_search" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool" });
+  assert.throws(() => responsesToChatRequest({ model: "m", input: [{ type: "file_search_call" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_input_item" });
   // A forced tool call is satisfied by a declared search tool, which the client executes.
   assert.doesNotThrow(() => responsesToChatRequest({ model: "m", input: "x", tool_choice: "required", tools: [searchTool] } as unknown as ResponsesRequest, { toolSearch: true }));
   assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tool_choice: "required", tools: [] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool_choice" });

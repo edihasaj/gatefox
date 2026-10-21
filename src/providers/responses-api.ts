@@ -88,6 +88,8 @@ export class ResponsesAPI implements Provider {
     // Responses wire values omit the summary to disable it. Codex's local
     // setting uses "none", which is not accepted by the upstream endpoint.
     if (hideSummary) { body.reasoning = { ...(body.reasoning as Record<string, unknown>) }; delete (body.reasoning as Record<string, unknown>).summary; }
+    const hosted = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "web_search";
+    const hostedItem = (item: unknown) => item !== null && typeof item === "object" && !Array.isArray(item) && (item as { type?: unknown }).type === "web_search_call";
     let defaultNamespace = "";
     if (plan) {
       if (body.previous_response_id) throw new ProviderError("invalid_request", "ChatGPT plan requires replayed history rather than previous_response_id", 400);
@@ -103,16 +105,19 @@ export class ResponsesAPI implements Provider {
       // The ChatGPT backend refuses a forwarded `tool_search` tool (HTTP 400, seen in production on 0.4.4), so the tool, in the
       // request or in a Responses lite `additional_tools` item, and any replayed search items are dropped; the rest of the turn
       // runs as it would without search. Codex rows keep search off, so only an engine that still holds an older catalog sends them.
+      // The hosted `web_search` tool is the one hosted tool this backend allows (its refusal names it: `subscription_sharing_
+      // unsupported_capability`), so it is forwarded unchanged: at the top level, never in the gateway namespace, kept inside
+      // `additional_tools` items, and its replayed `web_search_call` items go upstream as sent.
       const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
       const searchItem = (item: ResponsesInputItem) => "type" in item && (item.type === "tool_search_call" || item.type === "tool_search_output");
       let droppedTools = (request.tools || []).filter(search).length, droppedItems = 0;
-      const forwarded = (tool: ResponsesTool) => tool.type === "namespace";
+      const forwarded = (tool: ResponsesTool) => tool.type === "namespace" || hosted(tool);
       const flat = (request.tools?.filter(tool => !forwarded(tool) && !search(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
       if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
         if (searchItem(item)) { droppedItems++; return []; }
         const lite = item as unknown as { type?: unknown; tools?: unknown };
         if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
-        const kept = lite.tools.filter(tool => !search(tool));
+        const kept = lite.tools.filter(tool => !search(tool)); // hosted web_search inside the item is kept, as sent
         droppedTools += lite.tools.length - kept.length;
         return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
       });
@@ -123,13 +128,24 @@ export class ResponsesAPI implements Provider {
       const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
       if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace && flatNames.has(String(item.name)) ? { ...item, namespace: defaultNamespace } : item);
       if (typeof body.tool_choice === "object" && "name" in body.tool_choice && !body.tool_choice.namespace) body.tool_choice = { ...body.tool_choice, namespace: defaultNamespace };
+    } else {
+      // A Responses endpoint the caller reached is not the Codex subscription backend: it gets no hosted web search it never
+      // declared. The server already dropped and counted it before translation (`web_search_dropped`); this keeps the wire clean.
+      if (Array.isArray(body.tools)) body.tools = (body.tools as unknown[]).filter(tool => !hosted(tool)) as ResponsesTool[];
+      if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
+        if (hostedItem(item)) return [];
+        const lite = item as unknown as { type?: unknown; tools?: unknown };
+        if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
+        const kept = lite.tools.filter(tool => !hosted(tool));
+        return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
+      });
     }
-    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan });
+    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan, webSearch: plan });
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
     // On the Codex route top-level tools go up inside the gateway namespace and `additional_tools` tools keep their own, so a
     // call is resolved against the list it was declared in first. A tool whose type changed between history and the current
     // list then keeps the type of the declaration the call belongs to; the merged catalog is the fallback.
-    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
+    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan, webSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
     const current = plan ? scoped({ input: [] }) : identities, history = plan ? scoped({ tools: [] }) : identities;
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
@@ -224,7 +240,7 @@ export class ResponsesAPI implements Provider {
     };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
       item = grokTools?.restoreItem(item) || item;
-      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
+      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output" || item.type === "web_search_call")) {
         // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
         if (interrupted && item.status !== "completed") return [];
         return searchItem(item);

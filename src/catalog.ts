@@ -39,6 +39,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       max_context_window: metadata?.maxContextWindow ?? (metadata?.contextWindow || 32768),
       ...(metadata?.autoCompactTokenLimit !== undefined ? { auto_compact_token_limit: metadata.autoCompactTokenLimit } : {}),
       // Off for every published row, and the desktop adapter keeps it off on Codex 2 rows: the ChatGPT backend refuses a forwarded tool_search, and other routes reject it.
+      // The hosted web_search tool is separate: no published row carries a web_search_tool_type, because the desktop
+      // adapter is what enables it, by copying the native row's field onto a Codex 2 row (and dropping it elsewhere).
       supports_search_tool: false, supports_experimental_context: false,
       // The strictest node_repl policy; the desktop adapter replaces it with the native rows' policy.
       node_repl_disabled: true, node_repl_auto_review_required: true,

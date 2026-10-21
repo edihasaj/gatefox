@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Codex 2 chats can use OpenAI's hosted web search. A Codex 2 row now copies the
+native model's `web_search_tool_type`, and the Codex subscription route forwards the
+`web_search` tool and its replayed `web_search_call` items exactly as native Codex
+sends them; the ChatGPT backend accepts this one hosted tool (`tool_search` stays
+off, and its refusal names web search as allowed). Claude, Copilot and every API
+route drop the tool and its items instead of failing the request, so a chat can
+switch models mid-work, and each drop is counted in a `web_search_dropped`
+telemetry event. The gateway no longer forces `web_search` off when it starts or
+resumes a chat, and the Codex config it generates leaves the setting at Codex's
+own default.
+
 Grok models can run on a Grok subscription through the official Grok Build CLI
 in a private, gateway-owned Grok home. Grok's own tools, xAI-side tools and
 personal MCP servers are switched off; caller tool calls return to the client,

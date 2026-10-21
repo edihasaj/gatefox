@@ -45,7 +45,7 @@ test("routing authenticates first, rejects malformed requests, and never silentl
     assert.equal((await fetch(`${gateway.url}/v1/models`, { headers: { ...gateway.headers, Origin: "https://example.test" } })).status, 403);
     const post = (value: unknown) => fetch(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers, body: JSON.stringify(value) });
     assert.equal((await post({ model: "missing", input: "Hi" })).status, 404);
-    assert.equal((await post({ model: "alias", input: "Hi", tools: [{ type: "web_search" }] })).status, 400);
+    assert.equal((await post({ model: "alias", input: "Hi", tools: [{ type: "file_search" }] })).status, 400);
     assert.equal((await post({ model: "alias", input: "Hi", tool_choice: "invalid" })).status, 400);
     assert.equal(calls, 0);
     const response = await post({ model: "alias", input: "Hi" });
