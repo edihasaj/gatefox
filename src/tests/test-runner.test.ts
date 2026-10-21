@@ -169,18 +169,23 @@ test("a stopped run removes the stale execution sockets its folder links to, and
   // socket nobody listens on: none of them is the SDK's socket. (Where a connection to a plain file is refused, as it is on Linux,
   // only the check of the file's type keeps it; on macOS only the symbolic link shows that check.)
   const oddName = join(rendezvous, `not-a-hash-${randomUUID()}`); const plain = join(rendezvous, name()); const linked = join(rendezvous, name());
-  // A stale socket with a hash for a name, but not in the SDK's folder.
-  const outside = join(w.work, name());
+  // A stale socket with a hash for a name, but not in the SDK's folder. It gets a folder of its own: under a nested run the
+  // work folder is deep enough that a 64-character socket name in it goes over the Unix socket path limit that Node enforces.
+  const outsideFolder = await shortFolder("gwo-");
+  const outside = join(realpathSync(outsideFolder.directory), name());
   let server: Server | undefined;
   try {
     server = createServer(socket => socket.end()); await new Promise<void>(resolve => server!.listen(live, resolve));
     // A socket nobody listens on any more: the process that made it is killed.
     await writeFile(plain, "not a socket");
-    for (const path of [stale, unlinked, elsewhere, oddName, outside]) {
+    const makers: Array<readonly [string, string]> = [["the stale socket the run links to", stale], ["a stale socket nothing links to", unlinked], ["a stale socket outside the folder", elsewhere], ["a stale socket with a name that is not a hash", oddName], ["a stale socket with a hash for a name outside the folder", outside]];
+    for (const [what, path] of makers) {
       const maker = spawn(process.execPath, ["-e", `require("node:net").createServer().listen(${JSON.stringify(path)}, () => process.kill(process.pid, "SIGKILL"))`], { stdio: "ignore" });
       await once(maker, "exit");
+      // A socket path that is too long fails the listen, so the maker ends without ever making the socket and the cleanup below
+      // would pass on fixtures that were never there. Check that each one exists before the run is started.
+      assert.ok(await exists(path), `${what} was made`);
     }
-    assert.ok(await exists(stale) && await exists(unlinked) && await exists(elsewhere) && await exists(oddName), "the stale sockets exist");
     await symlink(elsewhere, linked);
     // The suite links to the stale one, the live one, and a socket elsewhere, and waits for ever.
     const file = await w.suite("links", `import { renameSync, symlinkSync, writeFileSync } from "node:fs"; import { join } from "node:path"; import { tmpdir } from "node:os";
@@ -202,7 +207,7 @@ test("links", () => { for (const [index, target] of JSON.parse(process.env.RUNNE
   } finally {
     if (!passed) await cleanUp(child, started);
     server?.close();
-    await sdk.remove(); await rm(w.work, { recursive: true, force: true });
+    await sdk.remove(); await outsideFolder.remove(); await rm(w.work, { recursive: true, force: true });
   }
 });
 
