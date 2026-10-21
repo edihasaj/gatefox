@@ -338,7 +338,17 @@ For a development-profile test run, the SDK's large test futures need a larger
 thread stack: `RUST_MIN_STACK=33554432 node scripts/build-gateway-sdk.mjs --test --dev`.
 
 The gateway SDK has its own executable, licenses, dependency inventory, and build
-receipt. The release builder verifies its version, SDK revision, archive and patch
+receipt, and it now also carries `codex-code-mode-host`, the Code Mode companion
+built from the same pinned source; app signing gives that file its own identifier and
+the two JIT entitlements V8 needs, and the companion statically links V8 through
+Codex's code-mode runtime, whose license is listed with the Cargo packages in
+`dependencies.json`. The SDK build downloads V8's pointer-compression sandbox library
+from OpenAI's `rusty-v8-v<version>` release, as Codex's `setup-rusty-v8` action does.
+It accepts the library only after its checksum manifest matches the digest pinned in the
+verified source (`third_party/v8/rusty_v8_<version>_release_manifests.sha256`), and
+records the version and archive digest as `rustyV8` in `build.json`. After a build, run
+`node scripts/e2e-code-mode-host.mjs --artifact .state/gateway-sdk-build/artifact
+--catalog ~/.codex/models_cache.json` to prove a Code Mode cell runs. The release builder verifies its version, SDK revision, archive and patch
 digests, source digest, binary checksum, and capability. It refuses modified cached
 SDK source or unexpected artifact files. The native signed Codex executable and
 desktop bundle remain unchanged. Only a verified gateway executable can enable

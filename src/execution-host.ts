@@ -134,11 +134,10 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   // Gateway and native engines have independent pins. A native-only host is
   // verified by the signed native SDK verifier below, not the gateway SDK pin.
   if (requested.includes("gateway")) await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
-  // The verified gateway SDK receipt has a closed file list and does not include
-  // the Code Mode companion. Do not let a later adjacent file manufacture a
-  // capability after runtime verification. Legacy app-SDK launches retain their
-  // native companion check, after selecting and validating that executable.
-  const codeModeAvailable = runtime === undefined && executableRunsCodeMode(sdk.codex);
+  // The verified receipt now pins the companion, so only a verified host enables
+  // Code Mode; an adjacent file the receipt never recorded still never does.
+  // Legacy app-SDK launches retain their companion check on the selected executable.
+  const codeModeAvailable = runtime ? runtime.codeModeHost : executableRunsCodeMode(sdk.codex);
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
     try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }

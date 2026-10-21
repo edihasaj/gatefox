@@ -494,9 +494,9 @@ export class AppServerBackends {
     const observed = this.catalog.current();
     const runtime = await this.resolveRuntime();
     // An adapter can outlive its original package. The selected runtime, rather than the adapter's module path, decides whether
-    // this generation may advertise Code Mode.
+    // this generation may advertise Code Mode: a gateway SDK only through its verified receipt, the desktop's Codex by its host.
     const snapshot = (this.catalog as DesktopCatalog & { snapshotForExecutor?: (value: typeof observed, codeMode: boolean) => typeof observed })
-      .snapshotForExecutor?.(observed, executableRunsCodeMode(runtime?.executable || this.executable)) ?? observed;
+      .snapshotForExecutor?.(observed, runtime ? runtime.codeModeHost : executableRunsCodeMode(this.executable)) ?? observed;
     const priority = offersPriority(snapshot.models);
     const provider = this.newChatProvider(runtime);
     // The identity is fixed for the connection. A later verified SDK can still serve a legacy connection, but an openai

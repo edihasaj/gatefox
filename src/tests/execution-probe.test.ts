@@ -12,6 +12,7 @@ const runtime = (suffix = "a"): GatewaySdkRuntime => ({
   binarySha256: suffix.repeat(64),
   selectedModelCompaction: true,
   executorIdentity: true,
+  codeModeHost: false,
 });
 const snapshot = (suffix = "a"): ExecutionProbeHostSnapshot => ({
   hostPid: 1234,

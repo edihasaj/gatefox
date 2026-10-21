@@ -10,7 +10,9 @@ import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const invalid = reason => new Error(`Component reuse refused: ${reason}`);
-const filesFor = binary => ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', binary].sort();
+const codeModeHost = 'codex-code-mode-host';
+// A gateway SDK may carry its Code Mode companion; the relay never does. Either its receipt names that file or the component lacks it.
+const filesFor = (binary, host = false) => ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', binary, ...(host ? [codeModeHost] : [])].sort();
 const text = bytes => bytes.toString('utf8').split('\0', 1)[0];
 function safePath(name) {
   const path = name.endsWith('/') ? name.slice(0, -1) : name;
@@ -149,8 +151,14 @@ function verifyComponent(bundle, key) {
   const { subdirectory, binary } = componentKinds[key]; const prefix = `package/${subdirectory}/`;
   if (bundle.release.reusedComponents?.components?.[key]) throw invalid(`${key} component was itself reused in that bundle; reuse the archive that built it`);
   const names = [...bundle.payload.keys()].filter(name => name.startsWith(prefix)).map(name => name.slice(prefix.length)).sort();
-  if (JSON.stringify(names) !== JSON.stringify(filesFor(binary))) throw invalid(`unexpected ${key} component files`);
+  const optionalHost = key === 'gatewaySdk';
+  // Only the gateway SDK may carry the companion, and its file list says so before any receipt is read.
+  const carriesHost = optionalHost && JSON.stringify(names) === JSON.stringify(filesFor(binary, true));
+  if (!carriesHost && JSON.stringify(names) !== JSON.stringify(filesFor(binary))) throw invalid(`unexpected ${key} component files`);
   const metadata = json(bundle.entries, `${bundle.root}/${prefix}build.json`);
+  const named = optionalHost && typeof metadata.codeModeHostSha256 === 'string' && /^[a-f0-9]{64}$/.test(metadata.codeModeHostSha256);
+  if (optionalHost && 'codeModeHostSha256' in metadata && !named) throw invalid('gateway SDK code-mode host receipt is invalid');
+  if (optionalHost && named !== carriesHost) throw invalid('gateway SDK code-mode host receipt and files disagree');
   // The relay links its own pinned SDK (the app's newest verified engine); the gateway SDK keeps the gateway pin.
   const pins = key === 'native' ? { codexVersion: relaySdkCodexVersion, revision: relaySdkRevision, archiveSha256: relaySdkArchiveSha256, sourceSha256: nativeSourceDigest() }
     : { codexVersion: gatewaySdkCodexVersion, revision: gatewaySdkRevision, archiveSha256: gatewaySdkArchiveSha256, sourceSha256: gatewaySdkSourceDigest() };
@@ -162,7 +170,8 @@ function verifyComponent(bundle, key) {
       metadata.lockfileSha256 !== gatewaySdkLockSha256 || metadata.testRunnerSha256 !== gatewaySdkTestRunnerDigest() ||
       !/^[a-f0-9]{64}$/.test(metadata.patchedSdkSha256 || '') ||
       metadata.capabilities?.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability ||
-      metadata.binarySha256 !== digest(bundle.payload.get(prefix + binary)))) throw invalid('gateway SDK pins or capability changed');
+      metadata.binarySha256 !== digest(bundle.payload.get(prefix + binary)) ||
+      (named && metadata.codeModeHostSha256 !== digest(bundle.payload.get(prefix + codeModeHost))))) throw invalid('gateway SDK pins or capability changed');
   const files = names.map(name => { const bytes = bundle.payload.get(prefix + name); return { name, size: bytes.length, sha256: digest(bytes) }; });
   return { buildVersion: metadata.version, sourceSha256: metadata.sourceSha256, origin: { bundleVersion: bundle.version, bundleSha256: bundle.sha256 }, files };
 }
@@ -221,7 +230,8 @@ export function copyReleaseComponents(verified, packageDirectory) {
     for (const file of component.files) {
       const bytes = verified.payload.get(`package/${subdirectory}/${file.name}`);
       if (bytes.length !== file.size || digest(bytes) !== file.sha256) throw invalid('verified component bytes changed');
-      writeFileSync(join(directory, file.name), bytes, { flag: 'wx', mode: file.name.startsWith('gateway-') ? 0o755 : 0o644 });
+      const executable = file.name.startsWith('gateway-') || file.name === codeModeHost;
+      writeFileSync(join(directory, file.name), bytes, { flag: 'wx', mode: executable ? 0o755 : 0o644 });
     }
   }
 }

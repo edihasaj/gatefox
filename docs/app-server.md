@@ -749,9 +749,13 @@ on every start, and a changed native row changes the catalog revision, which sta
 a new executor generation for new chats.
 
 Code mode runs in a separate `codex-code-mode-host` process that Codex starts from
-beside its own executable. The gateway SDK package does not ship that host yet, so
-code mode in its executors fails closed. When the installed package has a gateway
-SDK without the host, the adapter keeps the gateway's `direct` tool mode and still
+beside its own executable. The gateway SDK package ships that companion and records
+its digest in the build receipt as `codeModeHostSha256`; the execution host enables
+Code Mode only after that verified receipt. A host file the receipt does not name,
+or one whose bytes differ from it, fails the whole SDK's verification, as any other
+changed component does. When the installed package has a gateway SDK whose
+receipt names no host (a package built before the companion shipped), the adapter
+keeps the gateway's `direct` tool mode and still
 copies the other fields. Without a gateway SDK, executors run the desktop's own
 Codex and take the native code mode. The same rule covers the native rows that the
 executor catalog carries for sub-agents naming a model directly (a role's model,
