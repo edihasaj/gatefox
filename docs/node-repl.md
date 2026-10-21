@@ -183,9 +183,10 @@ that slug, on `request_completed`, `request_empty` and `request_failed`, includi
   directly follow the same rule as the Codex 2 row for that model, so one upstream
   model has one policy in an executor. A native row that states no node_repl policy
   gets node_repl off there. The reviewer row keeps its node_repl and review fields.
-  Every carried row always follows the native tool search flag, because the Codex
-  subscription route passes `tool_search` through; a gateway alias spelled like a
-  native slug, which could take that name first, is refused at launch. The native engine's
+  Every carried row has the tool search flag off, whatever the native row says: a bare
+  model name resolves to a route only when the request runs, and that route may drop
+  `tool_search` rather than bridge it. A gateway alias spelled like a native slug, which
+  could take that name first, is refused at launch. The native engine's
   own catalog is unchanged. No row's messages are rewritten.
 - A row with no native counterpart (Claude, Copilot, Qwen, API, or a Codex row whose
   upstream is missing) always requires review, the strictest policy, and carries no

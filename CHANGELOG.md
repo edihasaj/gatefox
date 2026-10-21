@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Codex tool search can work through the gateway as an opt-in. With `"toolSearch": "bridge"`
+on a `codex-subscription` provider, the gateway sends Codex's `tool_search` as an ordinary
+function, which the shared-subscription backend accepts, and returns the model's search to
+Codex, which still runs it. Loaded tools are declared again where the search returned them,
+so a Responses lite chat keeps its prompt prefix. The default stays off, and every other
+route now drops search items instead of refusing the request, keeping the tools a search
+loaded, so a chat can switch away from Codex 2. The Claude session ledger also no longer
+counts search and hosted web search items as conversation messages. The bridge has not yet
+been checked against the real backend, because the account's sharing usage limit was reached.
+Thanks to @edihasaj for asking to keep tool search available even before it is needed.
+
 The rollout readiness probe accepts gateway SDKs that ship the Code Mode host.
 Its direct-tools canary previously required a hostless SDK, so every package
 carrying the new host failed readiness before it could be installed. The canary

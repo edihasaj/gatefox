@@ -229,6 +229,10 @@ can still be reached through `gateway tunnel install`. Qwen 3.8 Flash Next passe
 streaming, file reads, patches, follow-ups, reasoning, interruption, and recovery.
 Its current gateway route supports text only.
 
+A `codex-subscription` provider may set `"toolSearch": "bridge"` to let Codex's tool search
+work through the gateway's login, which refuses the `tool_search` tool type. The default
+`"off"` drops it. See [tool search](docs/responses.md#tool-search-on-the-codex-subscription-route).
+
 The gateway translates subscription and API inference into the caller's Responses or Messages
 protocol. The client owns agent roles, delegation, model selection, permissions,
 tool execution, and chat names. The gateway adds no role instructions, default

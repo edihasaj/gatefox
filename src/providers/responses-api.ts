@@ -1,6 +1,7 @@
-import { apiCredential, type ProviderConfig } from "../config.js";
+import { apiCredential, bridgesToolSearch, type ProviderConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired, ChatGPTRefreshFailed, type OAuthFailureDetail } from "../auth/chatgpt.js";
-import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
+import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools, searchLoadedTools } from "../protocol/request.js";
+import { BridgeCallError, bridgeToolSearch, bridgedSearchCall, missingTools } from "../protocol/tool-search-bridge.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesInputItem, ResponsesNamespaceTool, ResponsesRequest, ResponsesTool, ResponsesToolSearchTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
@@ -31,7 +32,12 @@ export class ResponsesAPI implements Provider {
       const declared = metadata.filter(entry => entry?.serviceTiers !== undefined);
       if (declared.length && !declared.some(entry => entry?.serviceTiers?.some(option => option.id === tier))) throw new ProviderError("invalid_request", "Selected Codex model does not offer this service tier", 400);
     }
-    const normalized = { ...request };
+    let normalized = { ...request }; let bridgeName: string | undefined;
+    // An opted-in Codex route sends the client's search as a function (see tool-search-bridge.ts); once per request, not per retry.
+    if (this.config.type === "codex-subscription" && bridgesToolSearch(this.config)) {
+      const bridged = bridgeToolSearch(normalized); normalized = bridged.request; bridgeName = bridged.name;
+      if (bridged.counts.tools || bridged.counts.calls || bridged.counts.outputs) telemetry("tool_search_bridged", { provider: this.config.id, ...bridged.counts });
+    }
     if (tier === undefined || tier === null) delete normalized.service_tier;
     else normalized.service_tier = tier;
     // The turn-state is opaque and scoped to this account route; a value from another route is dropped.
@@ -39,7 +45,7 @@ export class ResponsesAPI implements Provider {
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
-        for await (const event of this.attempt(normalized, signal, context, turnState)) {
+        for await (const event of this.attempt(normalized, signal, context, turnState, bridgeName)) {
           // Response headers are not output, so they never prevent the retry. Only the first reaches the
           // caller, and a retry carries the turn-state it returned, as Codex does for the rest of a turn.
           if (event.type === "transport") { if (!transported) { transported = true; turnState ??= unwrapTurnState(event.turnState, this.scope); yield event; } continue; }
@@ -66,7 +72,7 @@ export class ResponsesAPI implements Provider {
       }
     }
   }
-  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined): AsyncGenerator<InferenceEvent> {
+  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined, bridgeName?: string): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
@@ -131,12 +137,17 @@ export class ResponsesAPI implements Provider {
     } else {
       // A Responses endpoint the caller reached is not the Codex subscription backend: it gets no hosted web search it never
       // declared. The server already dropped and counted it before translation (`web_search_dropped`); this keeps the wire clean.
-      if (Array.isArray(body.tools)) body.tools = (body.tools as unknown[]).filter(tool => !hosted(tool)) as ResponsesTool[];
+      // Nor does it get the client's tool_search or its replayed items (the server counted them as `tool_search_dropped`); the
+      // tools an earlier search loaded stay declared, so a chat that switched here from a bridged Codex route can call them.
+      const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
+      const own = ((body.tools as unknown[] | undefined) ?? []).filter(tool => !hosted(tool) && !search(tool));
+      const loaded = missingTools(searchLoadedTools(request.input), own) as ResponsesTool[];
+      if (Array.isArray(body.tools) || loaded.length) body.tools = [...loaded, ...own] as ResponsesTool[];
       if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
-        if (hostedItem(item)) return [];
+        if (hostedItem(item) || (item as { type?: unknown }).type === "tool_search_call" || (item as { type?: unknown }).type === "tool_search_output") return [];
         const lite = item as unknown as { type?: unknown; tools?: unknown };
         if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
-        const kept = lite.tools.filter(tool => !hosted(tool));
+        const kept = lite.tools.filter(tool => !hosted(tool) && !search(tool));
         return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
       });
     }
@@ -238,6 +249,12 @@ export class ResponsesAPI implements Provider {
       searchItems.add(key); output.toolBoundary();
       return [{ type: "native-item", item }];
     };
+    // The bridge function stands for the client's search: it goes back as the `tool_search_call` the client runs, never as a tool.
+    const isBridge = (item: Record<string, unknown> | undefined) => !!bridgeName && item?.type === "function_call" && item.name === bridgeName && (item.namespace === undefined || item.namespace === defaultNamespace);
+    const bridgedCall = (item: Record<string, unknown>) => {
+      try { return bridgedSearchCall(item, bridgeName, defaultNamespace)!; }
+      catch (error) { if (error instanceof BridgeCallError) throw new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call"); throw error; }
+    };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
       item = grokTools?.restoreItem(item) || item;
       if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output" || item.type === "web_search_call")) {
@@ -246,6 +263,8 @@ export class ResponsesAPI implements Provider {
         return searchItem(item);
       }
       if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
+      // An unfinished bridge call is withheld like an unfinished function call; its arguments are parsed only once complete.
+      if (isBridge(item)) return (interrupted || item.status === "incomplete" || item.status === "in_progress") && item.status !== "completed" ? [] : searchItem(bridgedCall(item));
       if (item.type === "function_call" || item.type === "custom_tool_call") {
         // An interrupted final snapshot can contain an unfinished call. Only a
         // genuine item.done boundary or explicitly completed snapshot dispatches it.
@@ -271,7 +290,7 @@ export class ResponsesAPI implements Provider {
         // replace it with plaintext (or different opaque state). Ordinary early
         // calls omit enough fields on some upstreams that they must stay lax
         // until their completed boundary.
-        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args")) partialTool(item);
+        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args") && !isBridge(item)) partialTool(item);
       }
       if (event.type === "response.output_text.delta") yield* output.delta(event);
       if (event.type === "response.output_item.done") {

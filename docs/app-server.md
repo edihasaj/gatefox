@@ -726,17 +726,17 @@ local native catalog it loaded at startup and copies these fields:
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
-`comp_hash` is never copied. `supports_search_tool` stays off on a Codex 2 row even
-when the native row has it on: the ChatGPT backend refuses a `tool_search` tool that the
-gateway forwards, so the gateway drops it on that route, and support returns once it is
-verified against the real backend
+`comp_hash` is never copied. `supports_search_tool` is on for a Codex 2 row only when
+its provider bridges tool search (`"toolSearch": "bridge"`) and the native row has it on.
+Otherwise it stays off: the ChatGPT backend refuses a `tool_search` tool that the gateway
+forwards, so without the bridge the gateway drops it on that route
 ([details](responses.md#tool-search-on-the-codex-subscription-route)). The hosted
 `web_search` tool is a separate setting and is on there: the adapter copies the native row's
 `web_search_tool_type`, so a Codex 2 chat sends that tool exactly as native Codex does and the
 Codex route forwards it. A slug without a native row, and every Claude, Copilot or other row,
 loses the field -- those routes cannot run hosted search and the gateway drops the tool
 ([details](responses.md#hosted-web-search)). Every row otherwise stays as the
-gateway published it (tool search off), apart from the strictest native node_repl policy and the
+gateway published it (tool search off unless bridged), apart from the strictest native node_repl policy and the
 native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
 preflight first writes `desktop-models.json` with the plain gateway rows, marker
