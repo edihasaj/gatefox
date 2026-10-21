@@ -74,8 +74,11 @@ function packagedSdkRunsCodeMode(directory: string): boolean {
  * The client's own native row supplies a Codex 2 row's harness behaviour: its instructions and
  * messages with their usage flags, tool mode (a code mode only where the executor runs it),
  * defaults, window share and truncation. Account capabilities keep the upstream values: service
- * tiers, multi-agent fields, the window maximum and auto-compaction limit. Search stays off whatever the native
- * row says: the ChatGPT backend refuses a forwarded `tool_search`, so a Codex 2 row must not make Codex add one. comp_hash is never copied. The node_repl policy (both
+ * tiers, multi-agent fields, the window maximum and auto-compaction limit. Tool search stays off whatever the native
+ * row says: the ChatGPT backend refuses a forwarded `tool_search`, so a Codex 2 row must not make Codex add one. The hosted
+ * web search is the one exception: the backend accepts a `web_search` tool, so the row copies the native `web_search_tool_type`
+ * and Codex sends that tool on a Codex 2 chat exactly as it does natively. A row with no native counterpart loses the field:
+ * those routes cannot run hosted search and the gateway drops the tool. comp_hash is never copied. The node_repl policy (both
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
  * requires_sandboxed_review, model_specialty) follow the native row too; requires_sandboxed_review
  * is data only, because neither the pinned SDK nor ChatGPT 26.1007's codex reads it. Without a marker or a native
@@ -85,7 +88,9 @@ function packagedSdkRunsCodeMode(directory: string): boolean {
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true, reviewers: ReadonlySet<string> = noReviewers): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
-  if (!source) return row;
+  // A row with no native counterpart (Claude, Copilot, or any other route) serves hosted web search nowhere:
+  // drop a published `web_search_tool_type` so Codex is not told to add a tool the gateway would drop.
+  if (!source) { delete row.web_search_tool_type; return row; }
   // Both node_repl fields come from the native row's policy; the review fields shape the same review,
   // so they are copied with it. Only plainly typed values are copied.
   const copy: Row = { ...nodeReplPolicy(source, native, reviewers) };
@@ -101,9 +106,11 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
   if (typeof source.support_verbosity === "boolean") copy.support_verbosity = source.support_verbosity;
-  // Search stays off: the ChatGPT backend refuses `tool_search` when the gateway forwards it (HTTP 400, seen in
-  // production on 0.4.4), so a Codex 2 row must never make Codex add that tool.
+  // Tool search stays off: the ChatGPT backend refuses `tool_search` when the gateway forwards it (HTTP 400, seen in
+  // production on 0.4.4), so a Codex 2 row must never make Codex add that tool. Hosted web search is allowed there,
+  // so the row keeps the native tool type and Codex sends `web_search` exactly as it does on the native row.
   copy.supports_search_tool = false;
+  if (typeof source.web_search_tool_type === "string") copy.web_search_tool_type = source.web_search_tool_type;
   // The default must be a level this route offers; Codex would otherwise start chats at an unsupported effort.
   const levels = Array.isArray(row.supported_reasoning_levels) ? row.supported_reasoning_levels.map(level => plain(level)?.effort) : [];
   if (typeof source.default_reasoning_level === "string" && levels.includes(source.default_reasoning_level)) copy.default_reasoning_level = source.default_reasoning_level;

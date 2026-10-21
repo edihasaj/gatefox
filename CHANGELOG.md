@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+Codex 2 chats can use OpenAI's hosted web search. A Codex 2 row now copies the
+native model's `web_search_tool_type`, and the Codex subscription route forwards the
+`web_search` tool and its replayed `web_search_call` items exactly as native Codex
+sends them; the ChatGPT backend accepts this one hosted tool (`tool_search` stays
+off, and its refusal names web search as allowed). Claude, Copilot and every API
+route drop the tool and its items instead of failing the request, so a chat can
+switch models mid-work, and each drop is counted in a `web_search_dropped`
+telemetry event. The gateway no longer forces `web_search` off when it starts or
+resumes a chat, and the Codex config it generates leaves the setting at Codex's
+own default.
+Thanks to @edihasaj for asking to make gateway Codex match native web search.
+
 Gateway executors now get native Code Mode. The packaged gateway SDK ships
 Codex's `codex-code-mode-host` beside `gateway-codex`, and its build receipt pins the
 companion as `codeModeHostSha256`, so an executor only runs Code Mode after the

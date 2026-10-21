@@ -426,6 +426,45 @@ Support returns once forwarding is verified against the real backend.
   queries and outputs are never logged; failures record only the fixed reason and the
   allowlisted item type.
 
+## Hosted web search
+
+Native Codex rows that carry `web_search_tool_type` send OpenAI's hosted `web_search`
+tool, and the ChatGPT backend accepts exactly that one hosted tool through a shared
+subscription: forwarding `tool_search` answers HTTP 400 `subscription_sharing_unsupported_capability`
+-- "User subscription sharing currently supports only 'web_search' and developer-defined
+'function' and 'custom' tools, including 'namespace'" -- which is why [tool search](#tool-search-on-the-codex-subscription-route)
+stays off while web search is forwarded.
+
+`scripts/probe-hosted-tools.mjs` asks the backend directly, one short request per case,
+and records only status codes and fixed error fields. On 21 Oct 2026 it showed the refusal
+above for `tool_search`, and showed that `web_search` passed the backend's tool check. The
+account had reached its sharing usage limit, so no search had completed yet; rerun the probe
+after the limit resets to observe a `web_search_call` result. The same run showed that
+`https://chatgpt.com/backend-api/codex`, which native Codex uses, answers 401 to the
+gateway's own login, so the gateway keeps `https://api.openai.com/v1`.
+
+- **Codex subscription route.** The `web_search` tool, declared at the top level or inside a
+  Responses lite `additional_tools` item, is forwarded upstream unchanged and never wrapped into
+  the gateway namespace, and replayed `web_search_call` input items go upstream as sent. A
+  `web_search_call` the backend produces streams back to the client as received, once each, and
+  an interrupted final snapshot withholds one whose status is not `completed`, as it does a
+  search item. `response.web_search_call.*` progress events are ignored. A forced
+  `tool_choice: "required"` counts a declared `web_search` as satisfying the call.
+- **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic Responses
+  routes drop the tool and its replayed items before anything is translated or sent, so a chat
+  that switches here from Codex 2 mid-turn keeps working; a `tool_choice` naming `web_search`
+  drops to `auto` on those routes. When anything was dropped, the gateway records
+  `web_search_dropped` with the count of tools and items
+  ([diagnostics](diagnostics.md#local-telemetry)) -- counts only, never a name, query or result.
+  Every other hosted tool type (`file_search`, `computer_use`, `image_generation`, ...) keeps
+  failing with `unsupported_tool` on every route, exactly as before.
+- **Catalog.** A Codex 2 row copies the native row's `web_search_tool_type`, so Codex sends the
+  tool on it exactly as it does natively; Claude, Copilot and other rows lose the field, and
+  `supports_search_tool` -- a different tool's flag -- stays off everywhere
+  ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
+- **Ownership.** The backend runs the search and the client renders its items. The gateway never
+  runs a search itself and never logs a query or result.
+
 ## WebSocket refusals, internal fields, and control items
 
 The gateway serves `/v1/responses` over plain HTTP only. A WebSocket (or any other) upgrade

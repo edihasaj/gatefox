@@ -78,7 +78,7 @@ test("the Codex route drops a top-level tool_search, completes the turn, and str
     assert.deepEqual(done, [emitted]);
     assert.equal(JSON.stringify(done[0]), JSON.stringify(emitted));
     // Search is the only thing dropped: another unsupported tool still fails on the Codex route, and nothing else reaches upstream.
-    assert.equal((await failure(await h.post({ model: "codex/gpt-6.1-sol", input: [user("hi")], tools: [{ type: "web_search" }] }))).status, 400);
+    assert.equal((await failure(await h.post({ model: "codex/gpt-6.1-sol", input: [user("hi")], tools: [{ type: "file_search" }] }))).status, 400);
     assert.equal(h.upstream.length, 1);
   } finally { await h.close(); }
 });

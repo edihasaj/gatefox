@@ -96,6 +96,8 @@ nodeTest("a new chat's engine is the router's hint: an alias or the gateway's ow
   await f.router.request("thread/start", { model: sol, modelProvider: "openai" });
   assert.deepEqual(f.sent("thread/start").hint, { engine: "gateway" });
   assert.equal(f.sent("thread/start").params.modelProvider, legacyProvider, "the router asks for a gateway chat; the backends record it with the connection's identity");
+  await f.router.request("thread/start", { model: sol, modelProvider: "openai", config: { web_search: "enabled" } });
+  assert.equal((f.sent("thread/start").params.config as ObjectValue).web_search, "enabled", "a gateway chat keeps the caller's web_search setting instead of forcing it off");
   const nativeStart = { model: native, modelProvider: "openai", config: { trusted: true } };
   await f.router.request("thread/start", structuredClone(nativeStart));
   assert.deepEqual(f.sent("thread/start"), { method: "thread/start", params: nativeStart, hint: { engine: "native" } });
@@ -130,15 +132,15 @@ test("a gateway-owned native-row child keeps its saved identity when an override
   const f = await fixture();
   const untouched = desktopResume("gw-sub");
   const restored = await f.router.request("thread/resume", structuredClone(untouched));
-  assert.deepEqual(f.sent("thread/resume").params, { ...untouched, config: { web_search: "disabled" } },
-    "the transport restriction does not gate SDK settings restore");
+  assert.deepEqual(f.sent("thread/resume").params, untouched,
+    "the saved settings pass through with nothing injected, hosted web search included");
   assert.deepEqual({ model: restored.model, provider: restored.modelProvider }, { model: nativeSol, provider: identity.provider });
 
   const configOnly = { threadId: "gw-sub", config: { model: null } };
   const gated = await f.router.request("thread/resume", structuredClone(configOnly));
   assert.deepEqual(f.sent("thread/resume").params, {
     ...configOnly, model: nativeSol, modelProvider: identity.provider,
-    config: { model: null, model_reasoning_effort: "high", web_search: "disabled" },
+    config: { model: null, model_reasoning_effort: "high" },
   }, "a cold executor cannot replace the child with its own model, provider or reasoning default");
   assert.deepEqual({ model: gated.model, provider: gated.modelProvider, effort: gated.reasoningEffort },
     { model: nativeSol, provider: identity.provider, effort: "high" });
@@ -146,7 +148,7 @@ test("a gateway-owned native-row child keeps its saved identity when an override
   const explicitEffort = { threadId: "gw-sub", config: { model_reasoning_effort: "low" } };
   await f.router.request("thread/resume", structuredClone(explicitEffort));
   assert.deepEqual(f.sent("thread/resume").params, { ...explicitEffort, model: nativeSol, modelProvider: identity.provider,
-    config: { model_reasoning_effort: "low", web_search: "disabled" } },
+    config: { model_reasoning_effort: "low" } },
     "the caller's explicit effort is never replaced");
   await assert.rejects(f.router.request("thread/resume", { threadId: "gw-sub", config: { model: native } }), /cannot change a loaded chat between native and gateway providers/);
   await assert.rejects(f.router.request("thread/resume", { threadId: "gw-sub", modelProvider: identity.provider === "openai" ? legacyProvider : "openai" }), /cannot change a loaded chat between native and gateway providers/);
