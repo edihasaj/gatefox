@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
 import { CopilotSubscription, retireUnconfiguredCopilotScopes } from "./providers/copilot.js";
+import { GrokSubscription } from "./providers/grok.js";
 import { sweepCopilotDirectories } from "./providers/copilot-directories.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
@@ -99,7 +100,7 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
 }
 
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
 /** Whole-request cap: it bounds gateway memory while letting the upstream set its own large limit. */
 export const maxRequestBytes = 64 * 1024 * 1024;

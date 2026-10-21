@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Grok models can run on a Grok subscription through the official Grok Build CLI
+in a private, gateway-owned Grok home. Grok's own tools, xAI-side tools and
+personal MCP servers are switched off; caller tool calls return to the client,
+which executes them. Requests that would let Grok act on its own fail closed.
+Thanks to @edihasaj for asking to use the Grok allowance from the model picker.
+
 Turn telemetry now records the engine and model of chats that an engine starts
 on its own, such as sub-agents and reviews. These turns were previously logged as
 `provider: "unknown"` with no model, which hid about three quarters of all turns.

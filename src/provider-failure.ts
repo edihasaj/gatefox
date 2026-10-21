@@ -136,7 +136,7 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
     if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
-    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
     if (upstreamCode === "authentication_failed" && (event === "claude.assistant" || event === "claude.result")) {
       const reason = allowlisted(own(upstream, "reason"), claudeCredentialReasons);
       if (reason) result.upstreamReason = reason;
