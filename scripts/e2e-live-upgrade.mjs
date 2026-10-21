@@ -19,7 +19,8 @@ const code = resolve(values.code ?? candidateSource), root = resolve(values.root
 const packageVersion = async path => JSON.parse(await readFile(join(path, "package.json"), "utf8")).version;
 const [previousVersion, candidateVersion] = await Promise.all([packageVersion(previousSource), packageVersion(candidateSource)]);
 assert.equal(previousVersion, "0.6.0", "This regression starts from the released 0.6.0 package");
-assert.equal(candidateVersion, "0.6.1", "This regression requires the candidate 0.6.1 package");
+assert.match(candidateVersion, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/, "Use a canonical candidate release");
+assert.notEqual(candidateVersion, previousVersion, "The candidate must be a different immutable release");
 assert.notEqual(resolve(previousSource), resolve(candidateSource), "Use distinct immutable package inputs");
 
 const runId = randomUUID();

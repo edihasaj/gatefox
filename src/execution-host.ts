@@ -131,7 +131,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!runtime || requested.includes("native")) throw error;
     sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
   }
-  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
+  // Gateway and native engines have independent pins. A native-only host is
+  // verified by the signed native SDK verifier below, not the gateway SDK pin.
+  if (requested.includes("gateway")) await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
   // The verified gateway SDK receipt has a closed file list and does not include
   // the Code Mode companion. Do not let a later adjacent file manufacture a
   // capability after runtime verification. Legacy app-SDK launches retain their
@@ -392,7 +394,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (method === "execution/probe") return executionProbe(params);
     if (method === "execution/status") {
       const currentAttestation = attestation();
-      return { version: 1, pid: process.pid, quiescing, capabilities,
+      return { version: 1, pid: process.pid, quiescing, capabilities, nativeHomeOwned: capabilities.includes("native") && nativeLease !== undefined,
       ...(currentAttestation ? { attestation: currentAttestation } : {}),
       ...(lastProbe ? { lastProbe } : {}),
       native: native ? { ...native.record, state: native.closed ? "exited" : "running" } : null,

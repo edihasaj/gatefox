@@ -88,6 +88,15 @@ LaunchAgent. See [service ownership and migration](services.md). Migration is
 explicit and requires a maintenance window; release installation preserves
 running chats.
 
+Native executor sharing may instead be staged for a subsequent primary service
+start. The staging receipt is separate from the active plan, so clients keep
+their existing ownership mode until activation. Activation verifies the same
+plan and signed SDK again, and defers while old adapters or unknown writers
+remain. Private native starts matching the existing native relay service plan
+reserve the home before spawning, which prevents a concurrent shared host from
+creating another owner. See
+[travel recovery](travel-recovery.md).
+
 `gateway service restart` asks the daemon to stop only while idle. The daemon
 checks all HTTP requests, including unfinished body uploads, before closing its
 listener. Active work refuses the restart and keeps its process. Older daemons

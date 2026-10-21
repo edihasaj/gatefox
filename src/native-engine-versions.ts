@@ -12,4 +12,4 @@
  * Gateway chats are a separate pin: they run this release's gateway SDK (`gatewayEngineVersions`), whatever the app ships.
  */
 export const relayAcceptedAppEngines: readonly string[] = ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];
-export const hostVerifiedAppEngines: readonly string[] = ["0.162.0-alpha.17.2"];
+export const hostVerifiedAppEngines: readonly string[] = ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];

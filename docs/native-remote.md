@@ -38,9 +38,9 @@ separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
-| `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Not shared: the host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version`; native chats run on private engines |
+| `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, and approval checks |
 | `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
-| Anything else | Exits with status 1 before it connects | As for 0.163 |
+| Anything else | Exits with status 1 before it connects | Not shared; a combined host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version` |
 
 The two SDK releases ship a byte-identical `app-server-transport` crate, so the
 remote-control protocol, the patched stream-end hooks, the existing-registration
@@ -48,11 +48,14 @@ guard and the `remoteControl/*` methods are the same for both apps. The 0.163 st
 database adds two migrations, and the SDK opens a database that a newer release
 migrated, so a rollback to a 0.162 relay still opens the relay home.
 
-The host waits because a shared engine depends on more than the protocol. 0.163
-changed behaviour the host relies on: pending unloads became a map with a wake-up
+Shared-engine verification covers more than the protocol. In 0.163,
+pending unloads became a map with a wake-up
 signal, listener removal now checks the thread's generation, finished v2 sub-agent
 threads unload automatically, and startup configuration resolves against the
-working directory. An engine joins `hostVerifiedAppEngines` only after
+working directory. The 0.163 fixture also verifies every frontend disappearing
+during inference or a pending approval, followed by recovery of the same SDK
+process, turn, history, and original approval request. An engine joins
+`hostVerifiedAppEngines` only after
 `scripts/e2e-shared-native.mjs` passes against it. The relay needs none of that,
 because it never uses the host's engine (see the next section).
 
@@ -212,8 +215,8 @@ OpenAI. What to expect depends on the Mac:
 
 | Mac | Plan | Relay slot before | After this release |
 | --- | --- | --- | --- |
-| Studio, macbook-server | `sharedNativeExecutor: false` (set on 17 October) | `paused`: `failing` where a relay is registered, `not_registered` on macbook-server | Relay sessions run private native engines; the host never shares a native engine there |
-| A Mac with `sharedNativeExecutor: true` | Host shares native chats | `paused`, `failing` | The host stays gateway-only on 0.163 (`native_sharing_unavailable`, `sdk_version`), and relay sessions fall back to private engines |
+| Studio, macbook-server | `sharedNativeExecutor: false` (set on 17 October) | `paused`: `failing` where a relay is registered, `not_registered` on macbook-server | Relay sessions retain private native engines until native sharing is explicitly adopted |
+| A Mac with `sharedNativeExecutor: true` | Host shares native chats | `paused`, `failing` | The verified 0.163 host shares native work; clients detach without stopping its SDK |
 
 A relay that the service starts again does not restart the host
 (`resumePaused` in `src/service-supervisor.ts`), and the host and each adapter decide
@@ -273,9 +276,12 @@ state or use the gateway's own commands.
 9. In the relay log, expect `session_started` and `session_ended` records, an
    `rc_connected` SDK label, and no `session_rejected`.
 
-Do not turn native sharing back on (`gateway service shared-native --apply`) on Studio
-or macbook-server in this release: the host does not share 0.163 until
-`scripts/e2e-shared-native.mjs` passes against it.
+Native sharing can be staged on the verified release with
+`gateway service shared-native --on-restart`, preserving the active service
+plan until a safe primary daemon start. Include `--with-gateway` explicitly on
+an installation that also needs gateway sharing. See
+[travel recovery](travel-recovery.md). Old adapters and uncertain writers defer
+adoption instead of being stopped.
 
 If the relay stays paused, `gateway service status` names the reason. `failing` after
 the install means the relay still refuses the engine or cannot start; the relay log

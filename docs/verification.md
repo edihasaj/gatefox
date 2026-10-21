@@ -7,6 +7,42 @@ read_when:
 
 # Verification
 
+## Disconnected native clients (0.6.2)
+
+The signed `codex-cli 0.163.0-alpha.10.2` passed
+`scripts/e2e-shared-native.mjs` with combined native and gateway ownership over
+both stdio and the real SDK's Unix proxy. The fixture verifies the exact OpenAI
+signature, executable, and engine version before accepting the candidate:
+
+```sh
+node scripts/e2e-shared-native.mjs \
+  --gateway /absolute/release/package/dist/cli.js \
+  --package /absolute/release/package \
+  --candidate-engine 0.163.0-alpha.10.2 \
+  --host-capabilities native,gateway \
+  --root /private/evidence
+```
+
+Every frontend disconnects while native inference is held. The same host and SDK
+finish that turn while detached, and a fresh frontend reads its real completed
+history without another provider request. A separate turn executes one approved
+command that appends a byte to a fixture counter, then disconnects during its
+next inference request. After detached completion and resume, the counter still
+contains one byte and no extra provider request was sent.
+
+Every frontend also disconnects during a pending user approval. Resume replays
+the original request and settings without answering it or executing its command;
+an explicit Stop then cancels it and a follow-up completes. Two-client Stop,
+steering, model and speed isolation, immutable SDK identity, native configuration
+preservation, and owned-process cleanup also pass. The fixture uses private
+homes, no copied authentication, and local mock inference. It does not prove
+rendered desktop controls or the built-in cloud transport.
+
+Staged-adoption regressions separately cover unchanged live plans, primary-daemon
+activation, legacy-writer deferral, changed plans, signature/runtime failures,
+post-commit recovery, and exact private receipt checks. Readiness remains pending
+until staged ownership is active and the host actually holds the native home.
+
 ## Live adapter upgrade (0.6.1)
 
 Run `node scripts/e2e-live-upgrade.mjs --previous /absolute/0.6.0/package

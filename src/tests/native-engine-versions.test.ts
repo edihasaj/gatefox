@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:f
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { startExecutionHost, executionHostHome, hostFailureReason } from "../execution-host.js";
+import { startExecutionHost, executionHostHome } from "../execution-host.js";
 import { gatewayEngineVersions, validateExecutionSdk } from "../execution-host-engine.js";
 import { readOwner, sdkIdentity } from "../execution-host-storage.js";
 import { nativeHomeOwnerPath } from "../native-execution-host-storage.js";
@@ -28,16 +28,16 @@ async function engine(directory: string, version: string): Promise<string> {
 }
 const refusalOf = (work: Promise<unknown>): Promise<Error | undefined> => work.then(() => undefined, error => error as Error);
 
-test("the relay accepts the 0.163 and 0.162 app engines; the host shares only 0.162 and gateway chats keep the gateway SDK pin", { timeout: 30000 }, async () => {
+test("the relay and native host accept the verified 0.163 and 0.162 app engines while gateway chats keep the gateway SDK pin", { timeout: 30000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gw-engine-versions-"));
   try {
     assert.deepEqual([...relayAcceptedAppEngines], ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
-    assert.deepEqual([...hostVerifiedAppEngines], ["0.162.0-alpha.17.2"]);
+    assert.deepEqual([...hostVerifiedAppEngines], ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.equal(gatewayEngineVersions.includes("0.162.0-alpha.17.2"), true);
+    await validateNativeEngine(await engine(directory, app163));
     await validateNativeEngine(await engine(directory, app162));
     await validateExecutionSdk(await engine(directory, app162));
-    // Native sharing of 0.163 waits for the shared-native end-to-end check; the relay does not need it.
-    for (const version of [app163, "codex-cli 0.164.0", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
+    for (const version of ["codex-cli 0.164.0", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
       const refusal = await refusalOf(validateNativeEngine(await engine(directory, version)));
       assert.ok(refusal, `the host accepted ${JSON.stringify(version)}`);
       assert.equal(nativeUnavailableReason(refusal), "sdk_version");
@@ -46,19 +46,18 @@ test("the relay accepts the 0.163 and 0.162 app engines; the host shares only 0.
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("a native-only host refuses the 0.163 app engine and still shares 0.162", { timeout: 30000 }, async () => {
+test("a native-only host shares each verified app engine without requiring the gateway SDK pin", { timeout: 30000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gw-native-only-")); const nativeHome = join(directory, "native"); await mkdir(nativeHome, { mode: 0o700 });
   const configPath = join(directory, "gateway.json"); const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), clientOnly: true, providers: [] };
   const nativeSdkVerifier = async (path: string) => { await validateNativeEngine(path); const identity = await sdkIdentity(path); return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 }; };
   const home = executionHostHome(configPath, nativeHome);
   const options = (codex: string) => ({ config, configPath, nativeHome, codex, capabilities: ["native" as const], nativeSdkVerifier });
   try {
-    const refusal = await refusalOf(startExecutionHost(options(await engine(directory, app163))));
-    assert.match(String(refusal?.message), /requires the pinned Codex SDK version/);
-    assert.equal(hostFailureReason(refusal), "sdk_invalid");
-    const host = await startExecutionHost(options(await engine(directory, app162)));
-    try { assert.deepEqual((await readOwner(join(home, "owner.json")))?.capabilities, ["native"]); }
-    finally { await host.close(); }
+    for (const version of [app163, app162]) {
+      const host = await startExecutionHost(options(await engine(directory, version)));
+      try { assert.deepEqual((await readOwner(join(home, "owner.json")))?.capabilities, ["native"]); }
+      finally { await host.close(); }
+    }
   } finally {
     await rm(dirname(nativeHomeOwnerPath(nativeHome)), { recursive: true, force: true }); await rm(home, { recursive: true, force: true });
     await rm(directory, { recursive: true, force: true });
