@@ -8,6 +8,7 @@ on its own, such as sub-agents and reviews. These turns were previously logged a
 A new real-inference check, `scripts/e2e-goal-switch.mjs`, switches an active
 goal's chat from Claude to Codex 2 and requires the next automatic turn to run on
 the new model.
+Thanks to @edihasaj for asking whether silent model switches really took effect.
 
 A ChatGPT account that has used its shared-subscription allowance now stops
 the turn with a usage-limit message. Previously the gateway did not recognize
