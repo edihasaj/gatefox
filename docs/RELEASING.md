@@ -193,6 +193,11 @@ JavaScript. Installing a CLI update preserves the registration. See
    It starts an active goal on a gateway model, SIGKILLs the adapter and every
    SDK child mid-turn like a power cut, then resumes and requires the goal to
    survive and finish. Both use real inference in an isolated native home.
+   For model switches during a goal, run `scripts/e2e-goal-switch.mjs` with the
+   same options. It starts an active goal on `--from`, switches the chat to `--to`
+   with `thread/settings/update` as the picker does, and requires the next turn to
+   start by itself and send its requests on the new model. It also uses real
+   inference in an isolated native home.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Turn telemetry now records the engine and model of chats that an engine starts
+on its own, such as sub-agents and reviews. These turns were previously logged as
+`provider: "unknown"` with no model, which hid about three quarters of all turns.
+A new real-inference check, `scripts/e2e-goal-switch.mjs`, switches an active
+goal's chat from Claude to Codex 2 and requires the next automatic turn to run on
+the new model.
+
 The service publishes the release it actually loaded, independently of the
 installed `current` link and signed app runtime. The watchdog checks that report
 against the live service process, so an older JavaScript service cannot appear
