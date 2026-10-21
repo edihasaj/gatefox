@@ -203,8 +203,9 @@ JavaScript. Installing a CLI update preserves the registration. See
    model and effort. It uses isolated homes and a localhost mock upstream, with no
    authentication or paid inference.
 5. Commit and push the final source. Wait for green CI.
-6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
-   the archive's file list and verify `SHA256SUMS`.
+6. Run `node scripts/build-release.mjs` from the clean release commit. Its final
+   JSON line gives absolute `asset` and `checksum` paths; inspect the archive's
+   file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
    there and require a zero exit before the device is treated as updated.
@@ -295,6 +296,17 @@ check each require 10 GiB; and the updater fixture requires 6 GiB on its
 `--root` volume before inspecting the candidate. Set
 `GATEWAY_RELEASE_MIN_FREE_GIB` to a positive number to replace the applicable
 default when a deliberately tighter host has been reviewed.
+
+`build-release.mjs` stages packages under a per-checkout namespace in the operating
+system temporary directory, then retains only the newest successful archive and
+`SHA256SUMS` there. It removes its staging directory after success or ordinary
+failure. Signal cleanup is best effort between synchronous archive commands; a
+force-killed build can leave its exact `build.lock`, which must be removed manually
+only after checking that its recorded owner has stopped. Concurrent release builds
+for the same checkout refuse. Copy or upload the reported absolute paths before
+macOS clears temporary storage. To intentionally retain build outputs, pass
+`--output-dir /absolute/release-assets`; that directory is never broadly pruned,
+so its archives remain the operator's responsibility.
 
 After a release is published and installed, run `npm run release:clean` to reclaim
 the cached Cargo targets while preserving release artifacts and source archives.
