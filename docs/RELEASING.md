@@ -58,7 +58,7 @@ failed or inspection-only stage to Trash, then use the one-pass command above.
 pass absolute `--previous-app` and `--installed-release` paths to select the
 intended existing signed app and CLI release.
 
-The installer contains the compiled package and official Node 24.21.0 runtime.
+The installer contains the compiled package and official Node 24.22.1 runtime.
 The runtime archive is pinned to its published SHA-256 digest. Node's license
 travels with it. No provider credentials, test output, or local configuration
 belongs in the release archive.

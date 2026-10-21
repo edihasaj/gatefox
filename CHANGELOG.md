@@ -17,6 +17,10 @@ pinned in the verified Codex source. `scripts/e2e-code-mode-host.mjs` runs a Cod
 cell through the built SDK and a mock provider, and confirms that the same SDK without
 the host fails.
 
+The bundled runtime and release checks use Node 24.22.1, including the security
+fixes released on 21 October 2026. Existing signed macOS apps receive the runtime
+through the normal signed app update.
+
 Grok models can run on a Grok subscription through the official Grok Build CLI
 in a private, gateway-owned Grok home. Grok's own tools, xAI-side tools and
 personal MCP servers are switched off; caller tool calls return to the client,
