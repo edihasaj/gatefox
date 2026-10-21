@@ -1,4 +1,6 @@
-// Proves hostless gateway SDKs expose direct tools and can edit and commit in a private fixture.
+// Proves gateway SDKs expose direct tools and can edit and commit in a private fixture. A hostless SDK must
+// turn every carried row direct; an SDK whose verified receipt pins a Code Mode host carries native modes, so
+// the fixture gives it explicit direct native rows and proves they win over the caller's Code Mode settings.
 // It uses the real packaged SDK, AppServerBackends, AppServerRouter and DesktopCatalog with a
 // local mock provider. It sends no provider request outside this process.
 import assert from "node:assert/strict";
@@ -49,8 +51,8 @@ const [{ AppServerBackends }, { AppServerRouter }, { DesktopCatalog }, { modelCa
 
 const runtime = await gatewaySdkRuntime(pkg);
 assert.ok(runtime?.executorIdentity, "Use a verified installed gateway SDK");
-assert.equal(runtime.codeModeHost, false, "This proof requires a gateway SDK whose verified receipt names no code-mode host");
-assert.equal(executableRunsCodeMode(runtime.executable), false, "The hostless proof also requires no companion beside that executable");
+const hosted = runtime.codeModeHost === true;
+assert.equal(executableRunsCodeMode(runtime.executable), hosted, "A Code Mode host must sit beside the executable exactly when the verified receipt names one");
 
 const proof = `DIRECT_${randomUUID()}`;
 const expectedProvider = values.openai ? "openai" : "subscription_gateway";
@@ -83,7 +85,7 @@ await writeFile(config.providers[0].credentialFile, JSON.stringify({ fixture: tr
 const evidence = {
   checkedAt: new Date().toISOString(),
   realGatewaySdk: true,
-  hostlessSdk: true,
+  hostlessSdk: !hosted,
   paidInferenceRequests: 0,
   expectedProvider,
   nativeRows: Object.create(null),
@@ -193,7 +195,7 @@ try {
         return;
       }
       const command = tools.find(tool => tool.name === "exec_command");
-      assert.ok(command, "The hostless row must expose exec_command directly");
+      assert.ok(command, "The direct row must expose exec_command directly");
       assert.equal(names.has("exec"), false, "The fixture must not fall back to the missing Code Mode host");
       assert.equal(names.has("wait"), false, "The fixture must not fall back to the missing Code Mode host");
       assert.equal(names.has("spawn_agent"), false, "The carried native child must use its native catalog row");
@@ -223,10 +225,12 @@ try {
 
   const published = modelCatalog(config).models;
   const base = published[0];
-  const nativeCode = { ...base, slug: aliases[0].upstream, tool_mode: "code_mode_only", upstream_slug: undefined };
+  // A hosted SDK keeps native tool modes, so its fixture rows are explicitly direct; a hostless SDK must rewrite them.
+  const nativeCode = { ...base, slug: aliases[0].upstream, tool_mode: hosted ? "direct" : "code_mode_only", upstream_slug: undefined };
   const nativeUnset = { ...base, slug: aliases[1].upstream, upstream_slug: undefined };
   delete nativeCode.multi_agent_version; delete nativeCode.multi_agent_reasoning_effort;
-  delete nativeUnset.tool_mode; delete nativeUnset.multi_agent_version; delete nativeUnset.multi_agent_reasoning_effort;
+  if (hosted) nativeUnset.tool_mode = "direct"; else delete nativeUnset.tool_mode;
+  delete nativeUnset.multi_agent_version; delete nativeUnset.multi_agent_reasoning_effort;
   const nativeConfig = [
     `model = ${JSON.stringify(aliases[0].upstream)}`,
     `model_catalog_json = ${JSON.stringify(join(native, "models.json"))}`,
@@ -282,7 +286,7 @@ try {
     const emitted = (await emittedExecutorCatalog()).models;
     for (const nativeModel of aliases) {
       const nativeRow = emitted.find(row => row.slug === nativeModel.upstream);
-      assert.equal(nativeRow?.tool_mode, "direct", "Every hostless carried native row must use direct tools");
+      assert.equal(nativeRow?.tool_mode, "direct", "Every carried native row must use direct tools");
       evidence.nativeRows[nativeModel.upstream] = nativeRow?.tool_mode;
     }
     const parentTurn = await router.request("turn/start", {
