@@ -227,3 +227,18 @@ test("A named non-OpenAI throttle stays retryable; a named quota class stays fin
   }
   assert.equal((await http429({ code: "unrecognized_limit" })).code, "usage_limit", "an unknown name without a short wait stays final");
 });
+
+test("a ChatGPT subscription usage limit is final with account guidance in every envelope", async () => {
+  // Observed from a shared ChatGPT account on 2026-10-21: an error event followed by response.failed.
+  const detail = { type: "invalid_request_error", code: "subscription_sharing_usage_limit_exceeded", param: null, message: privateMessage };
+  for (const event of [{ type: "error", error: detail }, { type: "response.failed", response: { error: detail } }]) {
+    const error = responsesStreamError(event);
+    assert.equal(error.code, "usage_limit"); assert.equal(error.status, 429);
+    assert.equal(streamFailureCode(error), "invalid_prompt", "Codex stops instead of retrying into a stream disconnect");
+    assert.match(error.message, /ChatGPT account reached its usage limit/);
+    assert.equal(error.upstream?.code, "subscription_sharing_usage_limit_exceeded");
+    assert.ok(!JSON.stringify(error).includes(privateMessage));
+  }
+  const http = await responsesHttpError(new Response(JSON.stringify({ error: detail }), { status: 429, headers: { "retry-after": "2" } }));
+  assert.equal(http.code, "usage_limit"); assert.match(http.message, /ChatGPT account reached its usage limit/);
+});

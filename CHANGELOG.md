@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+A ChatGPT account that has used its shared-subscription allowance now stops
+the turn with a usage-limit message. Previously the gateway did not recognize
+`subscription_sharing_usage_limit_exceeded`, so Codex retried five times and
+reported a stream disconnect.
+Thanks to @edihasaj for reporting the misleading message after Codex 2 ran out.
+
 Claude requests can recover one explicit upstream authentication rejection before
 any output or tool dispatch. Expired, revoked, missing and unclassified logins
 remain final, and a repeated rejection stops with its original error. Diagnostics
