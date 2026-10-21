@@ -86,6 +86,14 @@ untouched native config and authentication. It records only sanitized booleans a
 model/provider identifiers in `result.json`, copies no authentication, and sends
 no paid inference requests.
 
+The same script accepts an SDK whose verified receipt pins `codex-code-mode-host`
+(0.6.6 and later). Such an SDK keeps native tool modes, so the fixture gives both
+native rows an explicit `direct` mode and proves they still win over the caller's
+`code_mode_only` and `code_mode_host` settings. `hostlessSdk` in `result.json`
+records which shape ran. The script also checks that a host sits beside the
+executable exactly when the receipt names one. The rollout readiness probe runs
+this script, so every release package with either SDK shape must pass it.
+
 ## Loaded service release
 
 Run `node scripts/e2e-service-release.mjs --package /absolute/release/package`

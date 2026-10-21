@@ -13,6 +13,12 @@ counts search and hosted web search items as conversation messages. The bridge h
 been checked against the real backend, because the account's sharing usage limit was reached.
 Thanks to @edihasaj for asking to keep tool search available even before it is needed.
 
+The rollout readiness probe accepts gateway SDKs that ship the Code Mode host.
+Its direct-tools canary previously required a hostless SDK, so every package
+carrying the new host failed readiness before it could be installed. The canary
+now gives a hosted SDK explicit direct native rows and still proves that child
+chats edit files and make commits through direct tools.
+
 Codex 2 chats can use OpenAI's hosted web search. A Codex 2 row now copies the
 native model's `web_search_tool_type`, and the Codex subscription route forwards the
 `web_search` tool and its replayed `web_search_call` items exactly as native Codex
