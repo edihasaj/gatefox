@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+Turn telemetry now records the engine and model of chats that an engine starts
+on its own, such as sub-agents and reviews. These turns were previously logged as
+`provider: "unknown"` with no model, which hid about three quarters of all turns.
+A new real-inference check, `scripts/e2e-goal-switch.mjs`, switches an active
+goal's chat from Claude to Codex 2 and requires the next automatic turn to run on
+the new model.
+
 A ChatGPT account that has used its shared-subscription allowance now stops
 the turn with a usage-limit message. Previously the gateway did not recognize
 `subscription_sharing_usage_limit_exceeded`, so Codex retried five times and
@@ -61,6 +68,12 @@ Gateway chats can load more than four catalog generations without closing older
 chats. Loaded chats and client leases keep their original executors, and unused
 executors are reclaimed before another generation starts. This fixes the
 "Four gateway generations have loaded chats" resume failure.
+
+Claude's private Qwen route can preserve generated no-tools text that the
+upstream tool parser silently discarded. A pinned tokenizer decodes complete
+raw output, and unsolicited XML remains text rather than an executable call.
+The policy requires explicit private opt-in and preserves the existing
+tool-enabled path. Thanks to @edihasaj for requesting the root-cause fix.
 
 Claude's private inference service can recover a clean, empty Qwen completion
 with one identical request to the same model. A second empty reply becomes an
