@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { gunzipSync } from "node:zlib";
 import { apiCredential, validBearer, type ProviderConfig } from "./config.js";
+import { noToolsOutputRecoveryRequest, relayNoToolsOutput, type NoToolsOutputRecovery } from "./claude-desktop-no-tools.js";
 import { tailnetFetch } from "./tailnet.js";
 
 const requestLimit = 64 * 1024 * 1024;
@@ -18,10 +19,12 @@ type ProxyFetch = typeof fetch;
 export interface ClaudeContextProxyDeps {
   fetch?: ProxyFetch;
   credentialReader?: (provider: ProviderConfig) => Promise<string | undefined>;
+  noToolsOutputRecovery?: NoToolsOutputRecovery;
 }
 
 export interface ClaudeContextProxy {
   provider: ProviderConfig;
+  noToolsBaseUrl?: string;
   close(): Promise<void>;
   isIdle(): boolean;
 }
@@ -33,10 +36,12 @@ function fixedError(response: ServerResponse, status: number, code: string): voi
   } else if (!response.destroyed) response.destroy();
 }
 
-function pathAndQuery(request: IncomingMessage): string | undefined {
+function pathAndQuery(request: IncomingMessage, noTools: boolean): { query: string; noTools: boolean } | undefined {
   try {
     const parsed = new URL(request.url || "/", "http://loopback.invalid");
-    return parsed.pathname === "/v1/chat/completions" ? parsed.search : undefined;
+    if (parsed.pathname === "/v1/chat/completions") return { query: parsed.search, noTools: false };
+    if (noTools && parsed.pathname === "/claude-no-tools/v1/chat/completions") return { query: parsed.search, noTools: true };
+    return;
   } catch {
     return;
   }
@@ -291,8 +296,8 @@ export async function startClaudeContextProxy(
   let closing: Promise<void> | undefined;
   const server = createServer((request, response) => {
     const work = (async () => {
-      const query = pathAndQuery(request);
-      if (request.method !== "POST" || query === undefined) {
+      const target = pathAndQuery(request, deps.noToolsOutputRecovery !== undefined);
+      if (request.method !== "POST" || target === undefined) {
         fixedError(response, 404, "not_found");
         return;
       }
@@ -321,32 +326,36 @@ export async function startClaudeContextProxy(
           return;
         }
         const body = await readBody(request);
-        const url = `${upstreamBase}/chat/completions${query}`;
-        const headers = requestHeaders(request, credential, body);
+        const recoveryBody = target.noTools && deps.noToolsOutputRecovery ? noToolsOutputRecoveryRequest(body, deps.noToolsOutputRecovery) : undefined;
+        const forwardedBody = recoveryBody ?? body;
+        const url = `${upstreamBase}/chat/completions${target.query}`;
+        const headers = requestHeaders(request, credential, forwardedBody);
         const upstream = protectedFetch
           ? await protectedFetch(url, {
             method: "POST",
             headers: Object.fromEntries(headers),
-            body: body as unknown as string,
+            body: forwardedBody as unknown as string,
             signal: controller.signal,
           })
           : await directFetch(url, {
             method: "POST",
             headers,
-            body: body as unknown as RequestInit["body"],
+            body: forwardedBody as unknown as RequestInit["body"],
             signal: controller.signal,
             redirect: "error",
           });
         // Native fetch decodes a noncompliant gzip reply despite identity; its
         // stale encoding header must not reach the next HTTP client. Tailnet
         // transport retains raw bytes, except for bounded 400 classification.
-        await relayOrTranslate400(
-          response,
-          upstream,
-          controller.signal,
-          !protectedFetch,
-          Boolean(protectedFetch),
-        );
+        const contentType = upstream.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() || "";
+        if (recoveryBody && upstream.status === 200) {
+          if (!upstream.headers.has("content-encoding") && contentType === "text/event-stream") {
+            await relayNoToolsOutput(response, upstream, controller.signal, deps.noToolsOutputRecovery!, responseHeaders(upstream.headers, { stripContentEncoding: !protectedFetch }));
+          } else {
+            await upstream.body?.cancel().catch(() => {});
+            fixedError(response, 502, "unsupported_format");
+          }
+        } else await relayOrTranslate400(response, upstream, controller.signal, !protectedFetch, Boolean(protectedFetch));
       } catch (error) {
         if (!controller.signal.aborted && !response.destroyed) {
           fixedError(response, (error as Error).message === "body_too_large" ? 413 : 502,
@@ -372,6 +381,7 @@ export async function startClaudeContextProxy(
   const port = (server.address() as { port: number }).port;
   return {
     provider: { ...original, baseUrl: `http://127.0.0.1:${port}/v1`, tailnet: false },
+    ...(deps.noToolsOutputRecovery ? { noToolsBaseUrl: `http://127.0.0.1:${port}/claude-no-tools/v1` } : {}),
     isIdle: () => active.size === 0,
     close: async () => {
       if (closing) return closing;
