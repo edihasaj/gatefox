@@ -217,7 +217,13 @@ The gateway retries a throttle once before output when its wait is at most 30
 seconds (one second when no wait is given); a longer wait returns at once and
 stays retryable for Codex. A 429 that names a quota, billing, spend or plan class
 (such as `insufficient_quota` or `usage_limit_reached`), and any other 429, is a
-final usage limit. Cancellation and the request deadline bound all backoff waits;
+final usage limit. ChatGPT reports a shared subscription that has used its
+allowance as `subscription_sharing_usage_limit_exceeded`, with the generic type
+`invalid_request_error`, either in a 429 body or in a stream `error` and
+`response.failed` event. That code is a final usage limit too, and the message
+says the ChatGPT account reached its usage limit. Earlier releases treated it as
+an unknown stream failure, so Codex retried five times and showed a stream
+disconnect. Cancellation and the request deadline bound all backoff waits;
 no quota or account switch is attempted.
 
 `timeoutMs` (ten minutes by default) bounds silence, not total length. It covers

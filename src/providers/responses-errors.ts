@@ -6,7 +6,7 @@ const object = (value: unknown): ObjectValue => value && typeof value === "objec
 const contextError = () => new ProviderError("context_length_exceeded", "The request exceeds the model's context window", 400);
 const errorBodyLimit = 64 * 1024;
 const knownCodes = new Set(["server_error", "server_is_overloaded", "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens", "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted", "organization_spend_limit_exceeded", "project_spend_limit_exceeded",
-  "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "usage_limit_reached",
+  "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "usage_limit_reached", "subscription_sharing_usage_limit_exceeded",
   "billing_hard_limit_reached", "billing_not_active", "billing_error"]);
 // The upstream rejected this exact request, so a retry repeats the failure. Each class has a
 // fixed message; upstream prose may quote caller data and is never forwarded.
@@ -41,8 +41,14 @@ export function responsesEOFError(stream: ProviderStreamDiagnostic, requestId?: 
 
 // A 429 that names one of these classes is a usage, billing or plan limit and does not clear by
 // itself. The ChatGPT backend and Anthropic put the class in error.type rather than error.code.
-const quotaClasses = new Set(["insufficient_quota", "usage_limit_reached", "usage_not_included", "credit_balance_exhausted",
+const quotaClasses = new Set(["insufficient_quota", "usage_limit_reached", "subscription_sharing_usage_limit_exceeded", "usage_not_included", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "billing_hard_limit_reached", "billing_not_active", "billing_error"]);
+// Plan usage windows that reset on their own schedule. ChatGPT reports a shared subscription that ran out as
+// subscription_sharing_usage_limit_exceeded with type invalid_request_error; its message names the account limit.
+const usageWindows = new Set(["usage_limit_reached", "subscription_sharing_usage_limit_exceeded"]);
+const usageLimitMessage = (name: unknown) => name === "subscription_sharing_usage_limit_exceeded"
+  ? "This ChatGPT account reached its usage limit. Try again after it resets, or choose another account."
+  : "Provider usage limit reached";
 // Named per-minute throttles, including the names OpenAI-compatible Chat Completions servers use.
 const throttleClasses = new Set(["rate_limit_exceeded", "slow_down", "rate_limit_error", "too_many_requests", "limit_requests", "limit_burst_rate"]);
 
@@ -81,7 +87,7 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
     if (throttle) return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429,
       { code: typeof code === "string" && knownCodes.has(code) ? code : "rate_limit_exceeded", event: "http",
         retryAfterMs: milliseconds !== undefined && Number.isFinite(milliseconds) ? Math.max(1000, milliseconds) : 1000 });
-    return new ProviderError("usage_limit", "Provider usage limit reached", 429);
+    return new ProviderError("usage_limit", usageLimitMessage(names.find(name => usageWindows.has(name))), 429);
   }
   if ([500, 502, 503, 504].includes(response.status)) return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503,
     { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown", event: "http" });
@@ -102,7 +108,7 @@ export function responsesStreamError(event: ObjectValue, requestId?: string): Pr
     responseError.type ?? eventError.type ?? reason;
   const upstream = { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown",
     event: ["error", "response.failed", "response.incomplete"].includes(String(event.type)) ? String(event.type) : "unknown", ...requestIdOf(requestId) };
-  if (quota === "usage_limit_reached") return new ProviderError("usage_limit", "Provider usage limit reached", 429, upstream);
+  if (typeof quota === "string" && usageWindows.has(quota)) return new ProviderError("usage_limit", usageLimitMessage(quota), 429, upstream);
   // A plan exclusion keeps its existing rejection code and message below.
   if (quota && quota !== "usage_not_included") return new ProviderError("insufficient_quota", "Provider credits or quota are exhausted", 429, upstream);
   if (code === "server_error" || code === "server_is_overloaded") return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503, upstream);
