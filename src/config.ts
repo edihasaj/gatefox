@@ -22,6 +22,12 @@ export interface ProviderConfig {
   authDirectory?: string;
   /** Grok subscription only: the private Grok home the gateway signs in once (default <stateDirectory>/grok-home). */
   grokHome?: string;
+  /**
+   * Codex subscription only: how a client-run `tool_search` travels upstream. `off` (the default) drops the tool and its
+   * replayed items, because the ChatGPT backend refuses a forwarded `tool_search`; `bridge` sends the search as an ordinary
+   * function tool inside the gateway namespace, which the client still executes. Capability metadata, so it applies live.
+   */
+  toolSearch?: "off" | "bridge";
   label?: string;
   /** Per-provider admission cap; falls back to top-level maxConcurrent, then 4. */
   maxConcurrent?: number;
@@ -53,6 +59,10 @@ export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSe
   const value = provider.copilotSessions || {};
   return { mode: value.mode === "oneshot" || value.mode === "replay" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
+/** Whether a provider bridges the client's `tool_search` instead of dropping it; `off` and any other value stay today's drop. */
+export const bridgesToolSearch = (provider: Pick<ProviderConfig, "type" | "toolSearch">): boolean =>
+  provider.type === "codex-subscription" && provider.toolSearch === "bridge";
+
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
   displayName?: string;
@@ -146,6 +156,11 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
+    // An opt-in capability, not an account or a route: `bindings` leaves it out, so a change applies live, without a rebind.
+    if (provider.toolSearch !== undefined) {
+      if (provider.type !== "codex-subscription") throw new Error(`${provider.id}: toolSearch is only valid for codex-subscription providers`);
+      if (provider.toolSearch !== "off" && provider.toolSearch !== "bridge") throw new Error(`${provider.id}: toolSearch must be off or bridge`);
+    }
     if (provider.type === "codex-subscription" && !provider.credentialFile) throw new Error(`${provider.id}: credentialFile is required`);
     const sessions = provider.claudeSessions;
     if (sessions !== undefined) {

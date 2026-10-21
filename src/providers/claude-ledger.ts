@@ -51,7 +51,8 @@ const text = (list: Part[]) => list.map(([kind, value]) => kind === "t" ? value 
 
 /** How many translated conversation messages an input item becomes (request.ts responsesInputToMessages). */
 function messageCount(item: Record<string, unknown>): number {
-  if (item.type === "additional_tools") return 0;
+  // Tool declarations and search items never become conversation text (responsesInputToMessages skips them).
+  if (["additional_tools", "web_search_call", "tool_search_call", "tool_search_output"].includes(String(item.type))) return 0;
   if (item.type === "reasoning") return Array.isArray(item.summary) && item.summary.map(part => (part as { text?: unknown }).text).join("\n") ? 1 : 0;
   if (item.type === "agent_message") { try { return agentMessageInput(item) ? 1 : 0; } catch { return 0; } }
   return 1;
