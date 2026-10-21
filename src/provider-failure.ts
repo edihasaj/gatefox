@@ -23,6 +23,7 @@ const upstreamCodes = new Set([
   "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
   "usage_limit_reached", "billing_hard_limit_reached", "billing_not_active",
 ]);
+const claudeCredentialReasons = new Set(["login_unavailable", "session_expired", "credential_revoked", "upstream_rejected", "unknown"]);
 const streamEvents = new Set([
   "response.created", "response.queued", "response.in_progress", "response.output_item.added", "response.output_item.done",
   "response.output_text.delta", "response.output_text.done", "response.content_part.added", "response.content_part.done",
@@ -136,6 +137,10 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
     if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
     if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result"].includes(event)) result.upstreamEvent = event;
+    if (upstreamCode === "authentication_failed" && (event === "claude.assistant" || event === "claude.result")) {
+      const reason = allowlisted(own(upstream, "reason"), claudeCredentialReasons);
+      if (reason) result.upstreamReason = reason;
+    }
     if (typeof subtype === "string" && ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(subtype)) result.upstreamSubtype = subtype;
     if (typeof upstreamRequestId === "string" && /^[a-z0-9_-]{1,128}$/i.test(upstreamRequestId)) result.upstreamRequestId = upstreamRequestId;
     const stream = own(upstream, "stream");

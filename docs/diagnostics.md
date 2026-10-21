@@ -190,6 +190,17 @@ read this log for the last 15 minutes, using only the fields `at`, `event`, `com
 with `rejection` `other`, `gateway_features_trimmed` with `site` `retry` followed by such a
 refusal, and `native_sharing_unavailable` and `native_sharing_fallback`.
 
+## Claude credential failures
+
+Claude authentication failures carry `upstreamReason` only when a native
+`claude.assistant` or `claude.result` failure reports `authentication_failed`.
+The value is a fixed reason listed in [Claude sessions](claude-sessions.md#authentication-failures);
+provider diagnostic text and credentials are never recorded. A
+`claude_credential_recovery` event records only the reason, attempt number and
+fixed outcome (`attempted`, `recovered`, `failed`, or `cancelled`). These records
+distinguish a bounded recovery from a final login failure without treating local
+credential presence as proof of working authentication.
+
 ## Native relay records
 
 The native relay writes its own JSON records to its managed log, one record per

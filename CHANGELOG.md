@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Claude requests can recover one explicit upstream authentication rejection before
+any output or tool dispatch. Expired, revoked, missing and unclassified logins
+remain final, and a repeated rejection stops with its original error. Diagnostics
+record a fixed failure reason without retaining provider text or credentials.
+Thanks to @edihasaj for reporting chats that resumed without signing in again.
+
 Native executor sharing can be staged for the service's next natural start,
 without quitting applications or changing the active service plan. Adoption
 preserves existing gateway sharing and components, rechecks the signed SDK and
