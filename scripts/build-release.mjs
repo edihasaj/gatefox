@@ -34,14 +34,14 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
   if (plan.reuseNative) sources.native = { archivePath: resolve(plan.reuseNative.from), expectedSha256: plan.reuseNative.sha256, flag: '--native-sha256' };
   const reused = plan.reuse || plan.reuseNative ? verifyReleaseComponentSources(sources) : undefined;
   const name = `harness-gateway-${version}-macos-arm64`; const directory = join(root, name);
-  const runtimeArchive = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64.tar.gz');
+  const runtimeArchive = resolve('.state/release-runtime/node-v24.22.1-darwin-arm64.tar.gz');
   const runtimeDigest = createHash('sha256').update(readFileSync(runtimeArchive)).digest('hex');
-  if (runtimeDigest !== 'bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057') throw new Error('Official Node runtime checksum mismatch');
+  if (runtimeDigest !== '89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7') throw new Error('Official Node runtime checksum mismatch');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { encoding: 'utf8' }))[0];
   execFileSync('tar', ['-xzf', join(root, packed.filename), '-C', directory]);
   mkdirSync(join(directory, 'runtime/bin'), { recursive: true });
-  const runtime = resolve('.state/release-runtime/node-v24.21.0-darwin-arm64');
+  const runtime = resolve('.state/release-runtime/node-v24.22.1-darwin-arm64');
   cpSync(join(runtime, 'bin/node'), join(directory, 'runtime/bin/node'));
   cpSync(join(runtime, 'LICENSE'), join(directory, 'runtime/LICENSE'));
   cpSync('scripts/install.sh', join(directory, 'install')); chmodSync(join(directory, 'install'), 0o700);
@@ -69,7 +69,7 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
     if (JSON.stringify(readdirSync(gatewayArtifact).sort()) !== JSON.stringify(expectedFiles.sort())) throw new Error('Unexpected gateway SDK artifact files');
     cpSync(gatewayArtifact, join(directory, 'package/gateway-sdk'), { recursive: true });
   }
-  writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.21.0', nodeArchiveSha256: runtimeDigest,
+  writeFileSync(join(directory, 'package/release.json'), JSON.stringify({ version, node: '24.22.1', nodeArchiveSha256: runtimeDigest,
     source: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
     ...(reused ? { reusedComponents: reused.provenance } : {}) }, null, 2));
   const files = [];
