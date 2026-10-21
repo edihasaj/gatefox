@@ -6,6 +6,7 @@ import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
 import { NativeControl } from "./native-control.js";
 import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
+import { AnnouncedThreads, describeChat } from "./announced-threads.js";
 import { telemetry } from "./telemetry.js";
 import { reportException } from "./error-report.js";
 import { watchForUpgrade } from "./self-update.js";
@@ -47,7 +48,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   let router: AppServerRouter | undefined;
   const order = new ThreadStartOrder();
   let backends: AppServerBackends;
-  const turns = new TurnTelemetry(threadId => router?.describeThread(threadId) ?? {});
+  const announced = new AnnouncedThreads();
+  const turns = new TurnTelemetry(threadId => describeChat(router?.describeThread(threadId), announced, threadId));
   const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
   const tasks = new Set<Promise<void>>();
   // Idle means no turn, no request in flight and no traffic for 30 s. The SSH listener asks this process-wide question (see
@@ -57,7 +59,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   try {
     backends = await AppServerBackends.create(executable, args, config, prepared.settings, overrides, source, async (message, engine) => {
       await router?.observeNotification(message, engine);
-      if (!isId(message.id)) { turns.observe(message); lastActivity = Date.now(); }
+      if (!isId(message.id)) { announced.observe(message, engine); turns.observe(message); lastActivity = Date.now(); }
       if (control && message.method === "remoteControl/status/changed") return;
       // Server requests keep their own correlation; only notifications wait for a new thread's reply.
       if (isId(message.id)) { await Promise.all(order.before(message).map(emit)); await emit(message); return; }

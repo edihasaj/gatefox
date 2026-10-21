@@ -193,6 +193,11 @@ JavaScript. Installing a CLI update preserves the registration. See
    It starts an active goal on a gateway model, SIGKILLs the adapter and every
    SDK child mid-turn like a power cut, then resumes and requires the goal to
    survive and finish. Both use real inference in an isolated native home.
+   For model switches during a goal, run `scripts/e2e-goal-switch.mjs` with the
+   same options. It starts an active goal on `--from`, switches the chat to `--to`
+   with `thread/settings/update` as the picker does, and requires the next turn to
+   start by itself and send its requests on the new model. It also uses real
+   inference in an isolated native home.
    A first real turn is required before the SDK can resume an empty chat.
    Run `scripts/e2e-execution-sandbox.mjs` to confirm the live control socket is
    unreachable inside the actual macOS sandbox, including through its alias.
@@ -203,8 +208,9 @@ JavaScript. Installing a CLI update preserves the registration. See
    model and effort. It uses isolated homes and a localhost mock upstream, with no
    authentication or paid inference.
 5. Commit and push the final source. Wait for green CI.
-6. Run `node scripts/build-release.mjs` from the clean release commit. Inspect
-   the archive's file list and verify `SHA256SUMS`.
+6. Run `node scripts/build-release.mjs` from the clean release commit. Its final
+   JSON line gives absolute `asset` and `checksum` paths; inspect the archive's
+   file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
    there and require a zero exit before the device is treated as updated. Run
@@ -298,6 +304,35 @@ node scripts/build-gateway-sdk.mjs --test
 node scripts/build-gateway-sdk.mjs
 node scripts/build-release.mjs --with-native --with-gateway-sdk
 ```
+
+## Disk space
+
+Release scripts check free space before their heavy work. Gateway SDK tests require
+40 GiB and SDK-only builds require 25 GiB; the native relay requires 40 GiB; the
+release archive requires 4 GiB; the macOS app release and its updater-fixture
+check each require 10 GiB; and the updater fixture requires 6 GiB on its
+`--root` volume before inspecting the candidate. Set
+`GATEWAY_RELEASE_MIN_FREE_GIB` to a positive number to replace the applicable
+default when a deliberately tighter host has been reviewed.
+
+`build-release.mjs` stages packages under a per-checkout namespace in the operating
+system temporary directory, then retains only the newest successful archive and
+`SHA256SUMS` there. It removes its staging directory after success or ordinary
+failure. Signal cleanup is best effort between synchronous archive commands; a
+force-killed build can leave its exact `build.lock`, which must be removed manually
+only after checking that its recorded owner has stopped. Concurrent release builds
+for the same checkout refuse. Copy or upload the reported absolute paths before
+macOS clears temporary storage. To intentionally retain build outputs, pass
+`--output-dir /absolute/release-assets`; that directory is never broadly pruned,
+so its archives remain the operator's responsibility.
+
+After a release is published and installed, run `npm run release:clean` to reclaim
+the cached Cargo targets while preserving release artifacts and source archives.
+Use `npm run release:clean -- --dry-run` to review the planned Cargo cleanup.
+It retains updater-fixture directories and prints their sizes with the exact
+manual Trash command. A failed updater fixture reports `errorClass` and, when
+space is exhausted or critically low, `disk: "low"` without exposing its error
+message.
 
 For a development-profile test run, the SDK's large test futures need a larger
 thread stack: `RUST_MIN_STACK=33554432 node scripts/build-gateway-sdk.mjs --test --dev`.

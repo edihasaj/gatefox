@@ -548,8 +548,11 @@ subsequent turns.
 
 These controls passed live tests with Claude Sonnet 5.5 and Codex 2 GPT-6.1-Sol,
 which were then in one node_repl group; only adapter tests cover a rejected switch.
-Goal creation, reads, updates, notifications, and clearing were tested. Automatic
-goal continuation and every rendered control remain separate desktop checks.
+Goal creation, reads, updates, notifications, and clearing were tested.
+`scripts/e2e-goal-switch.mjs` checks automatic goal continuation with real inference in an
+isolated native home: an active goal whose chat switches gateway model mid-goal with
+`thread/settings/update`, as the picker does, must start its next turn by itself and send
+that turn's requests on the new model. Every rendered control remains a separate desktop check.
 
 ## Re-attaching a gateway chat
 
