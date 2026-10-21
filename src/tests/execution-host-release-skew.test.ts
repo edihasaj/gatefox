@@ -46,7 +46,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   configureTelemetry(config.stateDirectory, "test");
   const binarySha256 = (await sdkIdentity(runtimeExecutable)).sdkSha256;
-  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true };
+  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
   const hostHome = executionHostHome(configPath, nativeHome);
   const options = { config, configPath, nativeHome, codex: appCodex, gatewayRuntime: async () => runtime };
   const descriptor = (sha: string | undefined = binarySha256, digit = "a"): ExecutionDescriptor => ({ revision: digit.repeat(64), args: ["app-server", "--listen", "stdio://", "--fixture-state", join(directory, `engine-${digit}.state`)],

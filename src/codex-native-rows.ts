@@ -40,8 +40,10 @@ export function executableRunsCodeMode(executable: string): boolean {
 
 /**
  * Codex runs code mode in a host it spawns from beside its own executable. Gateway executors run the
- * packaged gateway SDK when the package has one, and that package ships no host; without it they run
- * the desktop's own Codex, which does. A code-mode row on an executor without the host fails closed.
+ * packaged gateway SDK when the package has one, and that package carries the host only when its build
+ * receipt pins it; without one they run the desktop's own Codex, which does. A code-mode row on an
+ * executor without the host fails closed. The host's verified check in the execution host is
+ * authoritative; this is the adapter's synchronous catalog hint over the same package layout.
  */
 export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL("..", import.meta.url))): boolean {
   try { lstatSync(packageDirectory); }
@@ -55,7 +57,17 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
     // A complete package without a gateway SDK launches the desktop's native Codex, which carries its own host.
     return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
-  return executableRunsCodeMode(resolve(directory, "gateway-codex"));
+  return packagedSdkRunsCodeMode(directory);
+}
+
+/** The receipt names the companion and that file is the executable it describes; anything else runs `direct`. */
+function packagedSdkRunsCodeMode(directory: string): boolean {
+  try {
+    const receipt = JSON.parse(readFileSync(resolve(directory, "build.json"), "utf8")) as { codeModeHostSha256?: unknown };
+    if (typeof receipt.codeModeHostSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.codeModeHostSha256)) return false;
+    const host = lstatSync(resolve(directory, "codex-code-mode-host"));
+    return host.isFile() && !host.isSymbolicLink() && (Number(host.mode) & 0o100) !== 0;
+  } catch { return false; }
 }
 
 /**

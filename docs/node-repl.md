@@ -30,8 +30,9 @@ and the Codex source (`ModelInfo` in `codex-rs/protocol`, pinned revision 740e5a
   `~/.codex/config.toml` runs `[mcp_servers.node_repl]` from the app. Only
   `tool_mode` follows code mode.
 - A gateway executor selects tool mode from the executable that starts that
-  generation. If its selected SDK has no executable `codex-code-mode-host` beside
-  it, every executor catalog row explicitly uses `tool_mode: "direct"`, including
+  generation. If its selected gateway SDK receipt names no executable, verified
+  `codex-code-mode-host` beside that executable, every executor catalog row
+  explicitly uses `tool_mode: "direct"`, including
   rows whose native metadata omitted or used an unknown tool mode. Direct mode
   overrides Code Mode feature flags, so it runs normal tools without attempting to
   start a missing host. This does not change node_repl, permissions, review,

@@ -66,7 +66,7 @@ const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destina
 run('/usr/bin/tar', ['-xzf', join(stage, packed.filename), '-C', management, '--strip-components=1']);
 for (const path of ['install', 'runtime/bin/node']) chmodSync(join(resources, 'backend', path), 0o755);
 // Native executables, if present in the release, keep their executable bit.
-for (const path of ['package/native/gateway-native-relay', 'package/gateway-sdk/gateway-codex']) {
+for (const path of ['package/native/gateway-native-relay', 'package/gateway-sdk/gateway-codex', 'package/gateway-sdk/codex-code-mode-host']) {
   if (backend.files.includes(path)) chmodSync(join(resources, 'backend', path), 0o755);
 }
 const runtime = join(stagedBackend, 'runtime/bin/node');

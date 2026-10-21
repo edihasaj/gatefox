@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCatalog } from "../catalog.js";
@@ -79,11 +79,21 @@ test("an executor without the code-mode host keeps the published tool mode and s
     await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
     assert.equal(executorRunsCodeMode(pruned), false, "a pruned managed package cannot imply the native host");
     await mkdir(join(root, "gateway-sdk")); await writeFile(join(root, "gateway-sdk", "gateway-codex"), "", { mode: 0o755 });
-    assert.equal(executorRunsCodeMode(root), false, "the packaged SDK has no code-mode host beside it");
-    await writeFile(join(root, "gateway-sdk", "codex-code-mode-host"), "", { mode: 0o644 });
+    assert.equal(executorRunsCodeMode(root), false, "a packaged SDK with no host beside it runs direct tools");
+    await writeFile(join(root, "gateway-sdk", "codex-code-mode-host"), "", { mode: 0o755 });
+    assert.equal(executorRunsCodeMode(root), false, "a host its build receipt never recorded does not count");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "a".repeat(64) }));
+    assert.equal(executorRunsCodeMode(root), true, "the receipt and the executable file together enable code mode");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "not-a-digest" }));
+    assert.equal(executorRunsCodeMode(root), false, "a receipt that names no digest does not count");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "a".repeat(64) }));
+    await chmod(join(root, "gateway-sdk", "codex-code-mode-host"), 0o644);
     assert.equal(executorRunsCodeMode(root), false, "a host that cannot be executed does not count");
     await chmod(join(root, "gateway-sdk", "codex-code-mode-host"), 0o755);
     assert.equal(executorRunsCodeMode(root), true);
+    await rm(join(root, "gateway-sdk", "codex-code-mode-host"));
+    await symlink(join(root, "gateway-sdk", "gateway-codex"), join(root, "gateway-sdk", "codex-code-mode-host"));
+    assert.equal(executorRunsCodeMode(root), false, "a symlinked host does not count");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

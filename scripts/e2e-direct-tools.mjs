@@ -49,7 +49,8 @@ const [{ AppServerBackends }, { AppServerRouter }, { DesktopCatalog }, { modelCa
 
 const runtime = await gatewaySdkRuntime(pkg);
 assert.ok(runtime?.executorIdentity, "Use a verified installed gateway SDK");
-assert.equal(executableRunsCodeMode(runtime.executable), false, "This proof requires the hostless packaged gateway SDK");
+assert.equal(runtime.codeModeHost, false, "This proof requires a gateway SDK whose verified receipt names no code-mode host");
+assert.equal(executableRunsCodeMode(runtime.executable), false, "The hostless proof also requires no companion beside that executable");
 
 const proof = `DIRECT_${randomUUID()}`;
 const expectedProvider = values.openai ? "openai" : "subscription_gateway";

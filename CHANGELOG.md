@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+Gateway executors now get native Code Mode. The packaged gateway SDK ships
+Codex's `codex-code-mode-host` beside `gateway-codex`, and its build receipt pins the
+companion as `codeModeHostSha256`, so an executor only runs Code Mode after the
+verifier has matched that file byte for byte. A package whose receipt names no host,
+including every release before this one, keeps the explicit `tool_mode: "direct"`
+catalog it has today. A host file that the receipt does not name fails the SDK's
+verification instead of enabling Code Mode. App signing gives the companion its own identifier and the two JIT
+entitlements V8 requires, and the host statically links V8 through Codex's code-mode
+runtime, whose license is listed with the other Cargo packages in the SDK's
+`dependencies.json`. The SDK build fetches that V8 library from OpenAI's own
+`rusty-v8` release, the same way Codex's CI does, and checks it against a checksum
+pinned in the verified Codex source. `scripts/e2e-code-mode-host.mjs` runs a Code Mode
+cell through the built SDK and a mock provider, and confirms that the same SDK without
+the host fails.
+Thanks to @edihasaj for asking to make gateway Codex match native Code Mode.
+
 The bundled runtime and release checks use Node 24.22.1, including the security
 fixes released on 21 October 2026. Existing signed macOS apps receive the runtime
 through the normal signed app update.

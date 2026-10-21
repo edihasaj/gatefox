@@ -58,7 +58,7 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   await writePrivateJson(join(config.stateDirectory, "service-plan.json"), { version: 1, config: configPath, sharedExecutors: true,
     components: [{ id: "native", kind: "native", command: sdk, args: ["--codex", sdk, "--native-home", nativeHome], log: join(config.stateDirectory, "native.log") }] });
   const previousHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
-  const runtime = (digit: string): GatewaySdkRuntime => ({ executable: sdk, binarySha256: shaOf(digit), selectedModelCompaction: true, executorIdentity: true });
+  const runtime = (digit: string): GatewaySdkRuntime => ({ executable: sdk, binarySha256: shaOf(digit), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
   let host: Awaited<ReturnType<typeof startExecutionHost>> | undefined;
   const startHost = async (digit: string) => { host = await startExecutionHost({ config, configPath, nativeHome, codex: sdk, gatewayRuntime: async () => runtime(digit) }); };
   const snapshot = () => ({ revision: "1".repeat(64), models: [{ slug: alias, display_name: "Fixture" }] });

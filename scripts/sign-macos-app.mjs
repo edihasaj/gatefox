@@ -151,6 +151,9 @@ function signArguments(identity, keychain, target, identifier, entitlements = en
     ...(keychain ? ['--keychain', keychain] : []), target];
 }
 
+// A component binary and its optional companion host are each signed with their own identifier.
+const signingTargets = targets => targets.flatMap(target => target.companion ? [target, target.companion] : [target]);
+
 function componentTargets(app, backend) {
   const targets = [
     { component: 'service', binary: 'Contents/MacOS/GatewayService', receipt: null,
@@ -162,14 +165,22 @@ function componentTargets(app, backend) {
   ];
   for (const [component, binary] of [['native', 'gateway-native-relay'], ['gateway-sdk', 'gateway-codex']]) {
     const relative = `package/${component}/${binary}`;
+    const host = `package/${component}/codex-code-mode-host`;
     if (backend.entries.has(relative)) targets.push({
       component,
       binary: `${BACKEND}/${relative}`,
       receipt: `package/${component}/build.json`,
       identifier: `com.edihasaj.harness-gateway.${component}`,
+      // Codex's Code Mode host needs its own identifier plus the JIT entitlements V8 requires; its
+      // signed hash is recorded in the same gateway SDK receipt the CLI's goes into.
+      ...(component === 'gateway-sdk' && backend.entries.has(host) ? { companion: {
+        binary: `${BACKEND}/${host}`,
+        identifier: 'com.edihasaj.harness-gateway.code-mode-host',
+        entitlements: entitlement('CodeModeHost'),
+      } } : {}),
     });
   }
-  for (const target of targets) {
+  for (const target of signingTargets(targets)) {
     const path = appPath(app, target.binary);
     if (!lstatSync(path).isFile()) throw new Error(`Missing signing target: ${target.binary}`);
   }
@@ -210,11 +221,20 @@ function preflightComponents(app, backend, release) {
       throw new Error(`Invalid ${target.component} build receipt`);
     }
     const reused = reusedFiles(release, target.component, build, backend.version);
+    let companionBefore;
+    if (target.companion) {
+      companionBefore = fileRecord(app, target.companion.binary);
+      if (build.originalCodeModeHostSha256 || typeof build.codeModeHostSha256 !== 'string' ||
+          build.codeModeHostSha256 !== companionBefore.sha256) {
+        throw new Error(`Invalid ${target.component} code-mode host receipt`);
+      }
+      if (reused) matchingReusedFile(reused, companionBefore);
+    }
     if (reused) {
       matchingReusedFile(reused, before);
       matchingReusedFile(reused, buildBefore);
     }
-    return { target, before, buildRelative, buildBefore, build, reused };
+    return { target, before, buildRelative, buildBefore, build, reused, companionBefore };
   });
 }
 
@@ -376,7 +396,7 @@ export function signMacosApp(options, { run = command, runGit = sourceGit } = {}
   const releasePath = join(backendRoot, 'package/release.json');
   const release = readJson(releasePath, 'release receipt');
   const components = preflightComponents(app, backend, release);
-  const targets = components.map(({ target }) => target);
+  const targets = signingTargets(components.map(({ target }) => target));
   const originalManifestSha256 = sha256(backend.manifest);
   const changed = [];
 
@@ -387,15 +407,28 @@ export function signMacosApp(options, { run = command, runGit = sourceGit } = {}
         target.identifier, target.entitlements));
       const after = fileRecord(app, target.binary);
       changed.push({ before, after });
+      let companionAfter;
+      if (target.companion) {
+        run('codesign', signArguments(options.identity, options.keychain, appPath(app, target.companion.binary),
+          target.companion.identifier, target.companion.entitlements));
+        companionAfter = fileRecord(app, target.companion.binary);
+        changed.push({ before: component.companionBefore, after: companionAfter });
+      }
       if (!target.receipt) continue;
 
       component.build.originalBinarySha256 = before.sha256;
       component.build.binarySha256 = after.sha256;
+      if (companionAfter) {
+        component.build.originalCodeModeHostSha256 = component.companionBefore.sha256;
+        component.build.codeModeHostSha256 = companionAfter.sha256;
+      }
       writeJson(appPath(app, component.buildRelative), component.build);
       const buildAfter = fileRecord(app, component.buildRelative);
       changed.push({ before: component.buildBefore, after: buildAfter });
       if (component.reused) {
-        for (const change of [{ before, after }, { before: component.buildBefore, after: buildAfter }]) {
+        const changes = [{ before, after }];
+        if (companionAfter) changes.push({ before: component.companionBefore, after: companionAfter });
+        for (const change of [...changes, { before: component.buildBefore, after: buildAfter }]) {
           const record = matchingReusedFile(component.reused, change.before);
           record.sha256 = change.after.sha256;
           record.size = change.after.size;

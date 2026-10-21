@@ -13,14 +13,17 @@ const lockfileSha256 = pin.lockSha256;
 const lockfileRepairSha256 = gatewaySdkLockRepairSha256;
 const sourceSha256 = gatewaySdkSourceSha256;
 const componentFiles = ["CODEX-LICENSE", "CODEX-NOTICE", "NOTICE", "build.json", "dependencies.json", "gateway-codex"];
+const codeModeHostFile = "codex-code-mode-host";
+const hostSizeLimit = 256 * 1024 * 1024;
 const invalid = () => new Error("Gateway executor artifact does not match this release. Reinstall the gateway before loading another gateway chat.");
 const releaseVersion = (value: string): boolean => /^\d+\.\d+\.\d+$/.test(value);
 /**
  * A verified gateway SDK. `selectedModelCompaction`: the SDK compacts on the selected model inside the user's turn.
  * `executorIdentity`: inside a gateway executor (HARNESS_GATEWAY_EXECUTOR=1) the SDK resolves `openai` to the gateway's own
  * loopback provider, so new gateway chats can be recorded as `openai` (see docs/harness-identity.md).
+ * `codeModeHost`: the verified receipt pinned this package's `codex-code-mode-host`, so Code Mode runs here.
  */
-export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true; executorIdentity: true }
+export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true; executorIdentity: true; codeModeHost: boolean }
 /** The gateway patch capability, independent of the upstream Codex version. */
 export const gatewaySdkCapability = "gateway-executor-v3";
 
@@ -61,6 +64,27 @@ async function releaseMarker(release: string): Promise<void> {
   } finally { await file.close(); }
 }
 
+/** The receipt either names the companion host or the package carries none; an unrecorded adjacency is never a capability. */
+function declaredCodeModeHost(metadata: Record<string, unknown>): string | undefined {
+  if (!Object.hasOwn(metadata, "codeModeHostSha256")) return undefined;
+  const value = metadata.codeModeHostSha256;
+  if (!digest(value)) throw invalid();
+  return value;
+}
+
+/** A named host must be the owner-only, executable, byte-matching file beside the SDK; anything else fails closed. */
+async function verifiedCodeModeHost(directory: string, declared: string | undefined): Promise<boolean> {
+  const path = resolve(directory, codeModeHostFile);
+  const present = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw invalid();
+  });
+  if (declared === undefined) { if (present) throw invalid(); return false; }
+  if (!present) throw invalid();
+  if ((await componentHash(path, hostSizeLimit, true).catch(() => { throw invalid(); })).sha256 !== declared) throw invalid();
+  return true;
+}
+
 interface ManagedPackageLayout { root: string; releases: string; release: string; packageDirectory: string }
 
 /** A pruned module may only follow the installer's own `current` link, never an adjacent checkout. */
@@ -92,7 +116,8 @@ function componentOrigin(component: Record<string, unknown>, legacy: Record<stri
 }
 
 /** A different build version needs an explicit, byte-verified reused component receipt. */
-async function reusedBinaryHash(packageDirectory: string, directory: string, version: string, metadata: Record<string, unknown>, receiptBytes: Buffer): Promise<string> {
+async function reusedBinaryHash(packageDirectory: string, directory: string, version: string, metadata: Record<string, unknown>, receiptBytes: Buffer, declared: string | undefined): Promise<string> {
+  const names = [...(declared === undefined ? componentFiles : [...componentFiles, codeModeHostFile])].sort();
   const receipt = resolve(packageDirectory, "release.json"); const info = await lstat(receipt);
   if (!info.isFile() || info.isSymbolicLink() || !owned(info.uid) || (info.mode & 0o022) || info.size > 16384) throw invalid();
   let release: Record<string, unknown>;
@@ -101,21 +126,23 @@ async function reusedBinaryHash(packageDirectory: string, directory: string, ver
   const origin = componentOrigin(component, reuse);
   if (release.version !== version || origin.bundleVersion !== metadata.version || !digest(origin.bundleSha256)
     || component.buildVersion !== metadata.version || component.sourceSha256 !== metadata.sourceSha256 || component.sourceSha256 !== sourceSha256
-    || !Array.isArray(component.files) || component.files.length !== componentFiles.length
-    || JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(componentFiles)) throw invalid();
+    || !Array.isArray(component.files) || component.files.length !== names.length
+    || JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(names)) throw invalid();
   const files = new Map<string, { size: number; sha256: string }>();
   for (const entry of component.files) {
     const file = record(entry);
-    if (typeof file.name !== "string" || !componentFiles.includes(file.name) || files.has(file.name)
+    if (typeof file.name !== "string" || !names.includes(file.name) || files.has(file.name)
       || typeof file.size !== "number" || !Number.isSafeInteger(file.size) || file.size < 0 || !digest(file.sha256)) throw invalid();
     files.set(file.name, { size: file.size, sha256: file.sha256 });
   }
   if (files.get("build.json")?.sha256 !== createHash("sha256").update(receiptBytes).digest("hex")) throw invalid();
-  for (const name of componentFiles) {
-    const limit = name === "gateway-codex" ? 512 * 1024 * 1024 : name === "dependencies.json" ? 16 * 1024 * 1024 : name === "build.json" ? 16384 : 2 * 1024 * 1024;
-    const actual = await componentHash(resolve(directory, name), limit, name === "gateway-codex"); const expected = files.get(name)!;
+  for (const name of names) {
+    const executable = name === "gateway-codex" || name === codeModeHostFile;
+    const limit = name === "gateway-codex" ? 512 * 1024 * 1024 : name === codeModeHostFile ? hostSizeLimit : name === "dependencies.json" ? 16 * 1024 * 1024 : name === "build.json" ? 16384 : 2 * 1024 * 1024;
+    const actual = await componentHash(resolve(directory, name), limit, executable); const expected = files.get(name)!;
     if (actual.size !== expected.size || actual.sha256 !== expected.sha256) throw invalid();
   }
+  if (declared !== undefined && files.get(codeModeHostFile)?.sha256 !== declared) throw invalid();
   return files.get("gateway-codex")!.sha256;
 }
 
@@ -140,11 +167,14 @@ async function directGatewaySdkRuntime(packageDirectory: string): Promise<Gatewa
     typeof metadata.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.sourceSha256) ||
     typeof metadata.binarySha256 !== "string" || !/^[a-f0-9]{64}$/.test(metadata.binarySha256) ||
     !Array.isArray(metadata.capabilities) || metadata.capabilities.length !== 1 || metadata.capabilities[0] !== gatewaySdkCapability) throw invalid();
-  const binarySha256 = metadata.version === version
+  const declared = declaredCodeModeHost(metadata);
+  const sameVersion = metadata.version === version;
+  const binarySha256 = sameVersion
     ? (await componentHash(executable, 512 * 1024 * 1024, true)).sha256
-    : await reusedBinaryHash(packageDirectory, directory, version, metadata, receiptBytes).catch(() => { throw invalid(); });
+    : await reusedBinaryHash(packageDirectory, directory, version, metadata, receiptBytes, declared).catch(() => { throw invalid(); });
   if (binarySha256 !== metadata.binarySha256) throw invalid();
-  return { executable, binarySha256: metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true };
+  const codeModeHost = sameVersion ? await verifiedCodeModeHost(directory, declared) : declared !== undefined;
+  return { executable, binarySha256: metadata.binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost };
 }
 
 /** The candidate was validated as a component; recovery also binds its declared source to this loaded release's pin. */

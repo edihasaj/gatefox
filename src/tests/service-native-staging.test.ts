@@ -18,7 +18,7 @@ async function fixture(sharedExecutors = false) {
   await writePrivateJson(servicePlanPath(state), plan);
   const notices: Array<{ event: string; fields: Record<string, string> }> = [];
   const stage: Partial<NativeSharingStageDependencies> = {
-    platform: "darwin", registration: async () => true, nativeSdk: async () => {}, runtime: async () => ({ executable: "/private/gateway-sdk", binarySha256: "a".repeat(64), selectedModelCompaction: true, executorIdentity: true }),
+    platform: "darwin", registration: async () => true, nativeSdk: async () => {}, runtime: async () => ({ executable: "/private/gateway-sdk", binarySha256: "a".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false }),
     pendingLogin: async () => undefined, notice: (event, fields) => { notices.push({ event, fields }); },
   };
   const activation: Partial<NativeSharingActivationDependencies> = {
