@@ -160,6 +160,13 @@ test("the managed config keeps CLI-written sections and is idempotent", () => {
   assert.equal(mergeGrokConfig(once), once);
 });
 
+test("the catalog server stops the CLI when the gateway that owns it is gone", async () => {
+  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 200)"]);
+  const parent = spawn(process.execPath, ["-e", `const c=require("node:child_process").spawn(process.execPath,[${JSON.stringify(fileURLToPath(new URL("../providers/grok-cli-tools.js", import.meta.url)))}],{env:{...process.env,GATEWAY_GROK_OWNER:"${owner.pid}"},stdio:["pipe","ignore","ignore"]});setInterval(()=>{},1000);`], { stdio: "ignore" });
+  try { assert.ok(await gone(parent.pid!) || (await new Promise(r => setTimeout(r, 4000)), !alive(parent.pid!)), "the orphaned CLI is stopped"); }
+  finally { try { parent.kill("SIGKILL"); } catch {} }
+});
+
 test("the catalog server lists caller tools and never answers tools/call", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-grok-mcp-")); const catalog = join(directory, "tools.json");
   await writeFile(catalog, JSON.stringify([{ name: "t", description: "d", inputSchema: { type: "object" } }]));

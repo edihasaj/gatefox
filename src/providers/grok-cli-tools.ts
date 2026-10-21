@@ -11,6 +11,15 @@ import { createInterface } from "node:readline";
 const path = process.env.GATEWAY_GROK_CATALOG;
 const tools = path ? JSON.parse(await readFile(path, "utf8")) as Array<Record<string, unknown>> : [];
 const send = (message: Record<string, unknown>) => { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); };
+// Deadman: if the gateway that started this request is gone, nobody can stop the CLI waiting on
+// an unanswered tools/call, so stop it (our parent) and exit.
+const owner = Number(process.env.GATEWAY_GROK_OWNER);
+if (Number.isInteger(owner) && owner > 1) setInterval(() => {
+  try { process.kill(owner, 0); } catch {
+    try { if (process.ppid > 1) process.kill(process.ppid, "SIGKILL"); } catch { /* Already gone. */ }
+    process.exit(1);
+  }
+}, 2000).unref();
 const lines = createInterface({ input: process.stdin });
 lines.on("line", line => {
   let message: { id?: number | string; method?: string; params?: { protocolVersion?: string } };

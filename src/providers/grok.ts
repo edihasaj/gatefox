@@ -56,7 +56,7 @@ export function grokEnv(home: string, catalog: string): NodeJS.ProcessEnv {
   for (const name of Object.keys(env)) if (name.startsWith("XAI_") || name.startsWith("GROK_")) delete env[name];
   return Object.assign(env, { GROK_HOME: home, GROK_MEMORY: "0", GROK_BACKEND_SEARCH: "0", GROK_CLAUDE_MCPS_ENABLED: "false", GROK_CURSOR_MCPS_ENABLED: "false",
     GROK_CLAUDE_SKILLS_ENABLED: "false", GROK_CURSOR_SKILLS_ENABLED: "false", GROK_DISABLE_AUTOUPDATER: "1", GROK_TELEMETRY_ENABLED: "false",
-    GATEWAY_GROK_NODE: process.execPath, GATEWAY_GROK_TOOLS: toolsScript, GATEWAY_GROK_CATALOG: catalog });
+    GATEWAY_GROK_NODE: process.execPath, GATEWAY_GROK_TOOLS: toolsScript, GATEWAY_GROK_CATALOG: catalog, GATEWAY_GROK_OWNER: String(process.pid) });
 }
 
 export function grokArgs(promptPath: string, system: string, model: string, effort?: string): string[] {
