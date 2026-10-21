@@ -18,6 +18,13 @@ export interface FixtureReply {
   fail?: boolean;
   /** After the reply's text, starts a tool_use block for this non-gateway tool, then waits. */
   foreign?: string;
+  /** Emits one native authentication failure before any stream event. Test diagnostics only. */
+  authenticationFailed?: string;
+  /** Emits native reasoning or text, then an authentication failure. Test diagnostics only. */
+  authenticationAfterThinking?: string;
+  authenticationAfterText?: string;
+  /** Emits one native non-authentication assistant failure before any stream event. */
+  failureCode?: string;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
   /** Report cache tokens from what this CLI was actually sent, the way Claude bills a growing prefix; see `cacheModel`. */
@@ -29,6 +36,8 @@ export interface FixtureEntry {
   /** Names (never values) of the Claude Code session variables the CLI inherited. */
   claudeVars?: string[];
   control?: string; effort?: string; user?: number; heads?: string[]; toolResult?: string; exit?: string;
+  /** Whether the latest earlier live CLI was still alive when this one-shot CLI started. */
+  priorLiveAlive?: boolean;
 }
 
 /**
@@ -47,10 +56,16 @@ async function fixtureMain(): Promise<void> {
   const log = (entry: Json) => fs.appendFileSync(env.CLAUDE_FIXTURE_CAPTURE!, JSON.stringify({ pid: process.pid, ...entry }) + "\n");
   const out = (message: Json) => { process.stdout.write(JSON.stringify(message) + "\n"); };
   const live = env.DISABLE_AUTO_COMPACT === "1"; const scenario = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json;
+  const earlier = fs.readFileSync(env.CLAUDE_FIXTURE_CAPTURE!, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as Json);
+  const priorLive = [...earlier].reverse().find(entry => entry.start === "live")?.pid;
+  let priorLiveAlive: boolean | undefined;
+  if (!live && typeof priorLive === "number") {
+    try { process.kill(priorLive, 0); priorLiveAlive = true; } catch { priorLiveAlive = false; }
+  }
   const argv = process.argv.slice(2);
   log({ start: live ? "live" : "oneshot", advisorOff: env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL === "1", toolSearchOff: env.ENABLE_TOOL_SEARCH === "false",
     claudeVars: Object.keys(env).filter(name => /^(CLAUDECODE$|CLAUDE_CODE_|CLAUDE_AGENT_SDK_)/.test(name)).sort(),
-    descriptionLimit: env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, system: fs.readFileSync(argv[argv.indexOf("--system-prompt-file") + 1], "utf8") });
+    descriptionLimit: env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH, system: fs.readFileSync(argv[argv.indexOf("--system-prompt-file") + 1], "utf8"), priorLiveAlive });
   if (live && scenario.exitAtSpawn) process.exit(3);
   const nextReply = (): Json => {
     const current = JSON.parse(fs.readFileSync(scenarioPath, "utf8")) as Json; const reply = current.replies.shift() ?? { text: "ok" };
@@ -120,6 +135,16 @@ async function fixtureMain(): Promise<void> {
   const play = async (reply: Json): Promise<void> => {
     const id = `msg_${process.pid}_${++counter}`;
     if (reply.fail) process.exit(4);
+    if (typeof reply.authenticationFailed === "string") {
+      out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: reply.authenticationFailed }] } });
+      if (!live) process.exit(0);
+      return;
+    }
+    if (typeof reply.failureCode === "string") {
+      out({ type: "assistant", error: reply.failureCode, message: { content: [{ type: "text", text: "test native failure" }] } });
+      if (!live) process.exit(0);
+      return;
+    }
     event({ type: "message_start", message: { id, usage: usage(1) } });
     if (reply.slowTool) {
       event({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_slow", name: `mcp__gateway__${names.get(reply.slowTool)}`, input: {} } });
@@ -136,6 +161,13 @@ async function fixtureMain(): Promise<void> {
       for (const piece of [value.slice(0, 2), value.slice(2)]) if (piece) event({ type: "content_block_delta", index, delta: { type: "text_delta", text: piece } });
       out({ type: "assistant", message: { id, content: [{ type: "text", text: value }] } }); event({ type: "content_block_stop", index: index++ });
     };
+    const authentication = (diagnostic: string) => out({ type: "assistant", error: "authentication_failed", message: { content: [{ type: "text", text: diagnostic }] } });
+    if (typeof reply.authenticationAfterThinking === "string") {
+      thinking(reply.thinking ?? "private reasoning"); authentication(reply.authenticationAfterThinking); if (!live) process.exit(0); return;
+    }
+    if (typeof reply.authenticationAfterText === "string") {
+      text(reply.text ?? "visible"); authentication(reply.authenticationAfterText); if (!live) process.exit(0); return;
+    }
     if (reply.slow) {
       if (reply.text) text(reply.text);
       if (reply.thinking) thinking(reply.thinking);

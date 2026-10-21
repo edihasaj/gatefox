@@ -1,8 +1,11 @@
 import type { ResponsesRequest, InferenceEvent } from "../protocol/types.js";
 export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; reasoningItems: number; textDeltas: number; toolCalls: number }
+export type ProviderUpstreamReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "unknown";
 export class ProviderError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502,
     readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;
+      /** Fixed provider-specific classification; never provider diagnostic text. */
+      reason?: ProviderUpstreamReason;
       /** Token counts an upstream context overflow reported (numbers only); a Messages client uses them to size its compaction. */
       contextTokens?: { used: number; maximum: number } }) { super(message); }
 }

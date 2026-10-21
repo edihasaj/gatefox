@@ -329,10 +329,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
       if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
-      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
+      const diagnostic = providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: Date.now() - startedAt, failure: known, abortCause, ...translation });
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, upstreamReason: diagnostic.upstreamReason, subtype: known.upstream?.subtype, ...translation });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
-      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
+      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(diagnostic)); } catch { /* Diagnostics never replace the request outcome. */ }
       return known;
     };
     // A process that exits while this request runs records it as it stands: the stop it is about to suffer is the shutdown's doing.

@@ -3,6 +3,7 @@ import { ProviderError } from "./provider.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "./claude-calls.js";
 import { claudeToolBindings } from "./claude-tool-names.js";
 import { claudeFailure, claudeRateLimit } from "./claude-errors.js";
+import { claudeAuthenticationFailure } from "./claude-auth.js";
 import { claudeContextFailure } from "./context-errors.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 
@@ -41,6 +42,7 @@ export function claudeUsage(tokens: ClaudeTokens): Usage {
 
 /** Maps an unsuccessful CLI result; private result text is only classified, never returned. */
 export function claudeResultFailure(result: Record<string, unknown>, limit?: ClaudeLimit): ProviderError {
+  const authentication = claudeAuthenticationFailure(result); if (authentication) return authentication;
   const failure = claudeFailure({ ...result, is_error: true }, limit)!;
   // A structured provider classification wins over explanatory result prose.
   if (typeof result.error_code === "string" && ["rate_limit", "authentication_failed", "billing_error", "server_error"].includes(result.error_code)) return failure;
@@ -49,7 +51,10 @@ export function claudeResultFailure(result: Record<string, unknown>, limit?: Cla
   // "Server is temporarily limiting requests (not your usage limit)" is the CLI's transient
   // subscriber 429; it stays a throttle even after a rejected event for another window.
   if (/rate.?limit|usage.?limit|limiting requests/i.test(diagnosis)) return claudeRateLimit(/not your usage.?limit/i.test(diagnosis) ? undefined : limit);
-  if (/auth|log.?in|oauth/i.test(diagnosis)) return new ProviderError("authentication", "Claude subscription requires login", 401);
+  // Older CLI result forms have no structured error_code. Keep their final login outcome,
+  // but never permit credential recovery without the native authentication_failed discriminator.
+  if (/auth|log.?in|oauth/i.test(diagnosis)) return new ProviderError("authentication", "Claude could not authenticate this request. Retry; if it persists, sign in again.", 401,
+    { ...failure.upstream, reason: "unknown" });
   // Keep the CLI's allowlisted end reason (for example max turns) so failures stay diagnosable.
   return failure;
 }

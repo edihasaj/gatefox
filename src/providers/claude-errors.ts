@@ -1,5 +1,6 @@
 import { ProviderError } from "./provider.js";
 import { claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
+import { claudeAuthenticationFailure } from "./claude-auth.js";
 
 const codes = new Set(["rate_limit", "authentication_failed", "billing_error", "server_error", "invalid_request", "unknown"]);
 const subtypes = new Set(["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries"]);
@@ -45,11 +46,12 @@ export function claudeFailure(message: Record<string, unknown>, limit?: ClaudeLi
   const assistant = message.type === "assistant" && typeof message.error === "string";
   const result = message.type === "result" && message.is_error === true;
   if (!assistant && !result) return;
+  const authentication = claudeAuthenticationFailure(message); if (authentication) return authentication;
   const raw = assistant ? message.error : message.error_code;
   const code = typeof raw === "string" && codes.has(raw) ? raw : "unknown";
   const upstream = { code, event: assistant ? "claude.assistant" : "claude.result" };
   if (code === "rate_limit") return claudeRateLimit(message.apiErrorIsTransient === true ? undefined : limit, upstream);
-  if (code === "authentication_failed") return new ProviderError("authentication", "Claude subscription requires login", 401, upstream);
+  if (code === "authentication_failed") return new ProviderError("authentication", "Claude could not authenticate this request. Retry; if it persists, sign in again.", 401, { ...upstream, reason: "unknown" });
   if (code === "billing_error") return new ProviderError("insufficient_quota", billingMessage, 429, upstream);
   if (code === "server_error") return new ProviderError("upstream_unavailable", "Claude service is temporarily unavailable", 503, upstream);
   if (creditRefusal(message)) return new ProviderError("insufficient_quota", billingMessage, 429, upstream);
