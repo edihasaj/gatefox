@@ -77,3 +77,21 @@ test("a tool_choice naming web_search is valid on the Codex route when declared,
     assert.equal(bodies[1].tool_choice, "auto", "a route without hosted search sends no choice it cannot run");
   } finally { delete process.env.SEARCH_REVIEW_KEY; await rm(directory, { recursive: true, force: true }); }
 });
+
+test("a tool declared inside the default functions namespace also wins over a flat copy a search loaded", async t => {
+  const bodies: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => { bodies.push(JSON.parse(String(options.body)));
+    return new Response(sse({ type: "response.completed", response: { id: "r", status: "completed", usage } }), { headers: { "Content-Type": "text/event-stream" } }); });
+  process.env.SEARCH_REVIEW_KEY = "fixture-only";
+  try {
+    const generic = new ResponsesAPI({ id: "api", type: "responses-api", baseUrl: "https://example.invalid/v1", apiKeyEnv: "SEARCH_REVIEW_KEY", models: { "api/upstream": "upstream" } } as ProviderConfig);
+    const loaded = { type: "tool_search_output", call_id: "call_s1", execution: "client", status: "completed", tools: [{ type: "function", name: "lookup", description: "old", parameters: { type: "object", properties: {} } }] };
+    const declared = { type: "additional_tools", role: "developer", tools: [{ type: "namespace", name: "functions", description: "Defaults", tools: [{ type: "custom", name: "lookup", description: "new" }] }] };
+    await drain(generic.infer({ model: "upstream", stream: true, input: [user("find"), { type: "tool_search_call", call_id: "call_s1", execution: "client", arguments: { query: "q" } }, loaded, declared, user("use it")] } as unknown as ResponsesRequest, new AbortController().signal));
+    const sent = bodies[0] as { tools?: Array<{ name?: string }> };
+    assert.deepEqual((sent.tools ?? []).filter(tool => tool.name === "lookup"), [], "functions.lookup and a flat lookup are the same tool");
+    // The bridge's own de-duplication uses the same identity.
+    const bridged = bridgeToolSearch({ model: "m", tools: [{ type: "namespace", name: "functions", tools: [{ type: "function", name: "lookup" }] }, searchTool], input: [{ type: "tool_search_call", call_id: "c", execution: "client", arguments: {} }, loaded] } as unknown as ResponsesRequest);
+    assert.equal(bridged.counts.loaded, 0, "an already declared default-namespace tool is not loaded again");
+  } finally { delete process.env.SEARCH_REVIEW_KEY; }
+});
