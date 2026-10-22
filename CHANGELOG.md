@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The service now starts the native relay from the installed release even when its plan names an older release folder. A plan written by an older installer could pin `releases/0.5.0/package/native/gateway-native-relay`, so every update and every service restart kept starting that 0.5.0 relay and health kept reporting it as lagging. The supervisor now uses `current/package/native/gateway-native-relay` whenever that relay is installed, and it leaves the plan file unchanged so staged native-sharing receipts still match it.
+
 `gateway tool-search on`, `off` and `status` turn the tool search bridge on or off for every
 Codex subscription provider without editing `gateway.json` by hand. The command validates the
 file before saving it, changes no other setting, and the running service picks the change up
