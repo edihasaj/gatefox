@@ -9,7 +9,7 @@ import { AppServerBackends } from "../app-server-backends.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import { startExecutionHost, executionHostHome } from "../execution-host.js";
 import { ExecutionHostClient } from "../execution-host-client.js";
-import type { Message } from "../app-server-connection.js";
+import { object, type Message } from "../app-server-connection.js";
 import { writePrivateJson, type GatewayConfig } from "../config.js";
 import { setHostDownWindowForTests } from "../executor-reattach.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
@@ -52,6 +52,8 @@ const typed=v=>v!==undefined&&v!==null;
 const log=(m)=>{const p=m.params||{};appendFileSync(root+'/log.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:p.threadId,turnId:p.turnId,modelProvider:p.modelProvider,model:p.model,cwd:p.cwd,runtimeWorkspaceRoots:p.runtimeWorkspaceRoots,approvalPolicy:p.approvalPolicy,excludeTurns:p.excludeTurns,config:p.config,serviceTier:p.serviceTier,text:p.input?.[0]?.text})+'\\n');};
 async function rpc(m,send,drop){if(m.id==null)return;log(m);const p=m.params||{};let result={};
 if(m.method==='fixture/disconnect'){drop?.();return;}
+if(m.method==='fixture/forget-turn'){turns.delete(p.threadId);}
+if(m.method==='fixture/reject-turns-list'){writeFileSync(root+'/reject-turns-list','');}
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
 if(m.method==='thread/loaded/list')result={data:[...loaded],nextCursor:null};
 if(m.method==='thread/unsubscribe'){loaded.delete(p.threadId);result={status:'unsubscribed'};}
@@ -60,7 +62,7 @@ if(m.method==='fixture/close'){loaded.delete(p.threadId);send({method:'thread/cl
 if(m.method==='fixture/exit'){send({id:m.id,result:{}});setTimeout(()=>process.exit(3),20);return;}
 if(m.method==='thread/start'){const thread={id:p.fixtureId,model:p.model,modelProvider:p.modelProvider||'subscription_gateway',approvalPolicy:typed(p.approvalPolicy)?p.approvalPolicy:'never',effort:typed(p.config&&p.config.model_reasoning_effort)?p.config.model_reasoning_effort:null,serviceTier:typed(p.serviceTier)?p.serviceTier:null,cwd:p.cwd};keep(thread);loaded.add(thread.id);result={thread,model:thread.model,modelProvider:thread.modelProvider,serviceTier:thread.serviceTier};}
 if(m.method==='thread/fork'){const parent=all()[p.threadId]||{};const thread={...parent,id:p.fixtureId,model:p.model||parent.model,modelProvider:p.modelProvider||parent.modelProvider,approvalPolicy:typed(p.approvalPolicy)?p.approvalPolicy:parent.approvalPolicy,cwd:typed(p.cwd)?p.cwd:parent.cwd};keep(thread);loaded.add(thread.id);result={thread,model:thread.model,modelProvider:thread.modelProvider,serviceTier:thread.serviceTier||null};}
-if(m.method==='thread/resume'){if(existsSync(root+'/refuse-resume')){send({id:m.id,error:{code:-32603,message:'the fixture refuses to resume chats'}});return;}
+if(m.method==='thread/resume'){while(existsSync(root+'/hold-resume'))await new Promise(resolve=>setTimeout(resolve,5));if(existsSync(root+'/refuse-resume')){send({id:m.id,error:{code:-32603,message:'the fixture refuses to resume chats'}});return;}
  const thread=all()[p.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'no rollout found for thread id '+p.threadId}});return;}
  // The SDK's rule: naming a model or provider, or a config.model / config.model_reasoning_effort key, skips its restore.
  const gated=typed(p.model)||typed(p.modelProvider)||(p.config&&(Object.prototype.hasOwnProperty.call(p.config,'model')||Object.prototype.hasOwnProperty.call(p.config,'model_reasoning_effort')));
@@ -69,7 +71,7 @@ if(m.method==='thread/resume'){if(existsSync(root+'/refuse-resume')){send({id:m.
   serviceTier:typed(p.serviceTier)?p.serviceTier:thread.serviceTier||null,cwd:typed(p.cwd)?p.cwd:thread.cwd};
  keep(next);loaded.add(next.id);result={thread:next,model:next.model,modelProvider:next.modelProvider,serviceTier:next.serviceTier};}
 if(m.method==='thread/read'){const thread=all()[p.threadId];result={thread:thread?{...thread,turns:[]}:{id:p.threadId,modelProvider:'openai'}};}
-if(m.method==='thread/turns/list')result={data:[],nextCursor:null};
+if(m.method==='thread/turns/list'){while(existsSync(root+'/hold-turns-list'))await new Promise(resolve=>setTimeout(resolve,5));if(existsSync(root+'/reject-turns-list')){send({id:m.id,error:{code:-32603,message:'fixture snapshot rejected'}});return;}const turn=turns.get(p.threadId);result={data:turn?[turn]:[],nextCursor:null};}
 if(m.method==='turn/start'){const a=all();const thread=a[p.threadId];
  if(thread){if(p.model)thread.model=p.model;if(p.cwd)thread.cwd=p.cwd;if(p.approvalPolicy)thread.approvalPolicy=p.approvalPolicy;if(typed(p.effort))thread.effort=p.effort;if(p.config&&typed(p.config.model_reasoning_effort))thread.effort=p.config.model_reasoning_effort;keep(thread);}
  const turn={id:'turn-'+process.pid+'-'+(++sequence),status:p.fixtureActive?'inProgress':'completed'};turns.set(p.threadId,turn);result={turn};send({method:'turn/started',params:{threadId:p.threadId,turn}});if(!p.fixtureActive)send({method:'turn/completed',params:{threadId:p.threadId,turn}});}
@@ -115,6 +117,10 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
     backends, events, logged, engine, until, telemetry: events_, discovers: () => discovers, directory,
     openHostConnections: () => hostClients.filter(client => !client.closed).length,
     windowClosed: () => until(() => Date.now() >= (backends as unknown as { reattacher: { hostDownUntil: number } }).reattacher.hostDownUntil, "the fail-fast window to pass"),
+    holdTurnsList: () => writeFile(join(directory, "hold-turns-list"), ""),
+    releaseTurnsList: () => rm(join(directory, "hold-turns-list"), { force: true }),
+    holdResume: () => writeFile(join(directory, "hold-resume"), ""),
+    releaseResume: () => rm(join(directory, "hold-resume"), { force: true }),
     start: (id: string, provider = "subscription_gateway") => backends.request("thread/start", { fixtureId: id, model: alias, modelProvider: provider, cwd: "/work", approvalPolicy: "never" }, { engine: "gateway" }),
     /** Stops the host, as the service does for an upgrade; its generations go with it. */
     async stopHost() { await host?.close(); host = undefined; },
@@ -433,6 +439,118 @@ test("a connection the live host dropped is re-attached to the generation that s
     assert.deepEqual(rows.map(row => [row.method, row.pid === owner]), [["thread/resume", true], ["turn/start", true]], "the owning generation serves the chat again");
     assert.deepEqual((await f.telemetry("executor_reattached")).map(event => event.reason), ["generation_retired"]);
   } finally { await f.clean(); }
+});
+
+test("a terminal race and a second active chat both recover after one shared socket drops", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("active");
+    const started = await f.backends.request("turn/start", turn("active", "keep running", { fixtureActive: true }));
+    const turnId = String(object(started.turn).id);
+    await f.start("peer");
+    const peer = await f.backends.request("turn/start", turn("peer", "also running", { fixtureActive: true }));
+    const peerTurnId = String(object(peer.turn).id);
+    await f.holdTurnsList();
+    await f.backends.request("fixture/disconnect", { threadId: "active" }).catch(() => undefined);
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/turns/list" && row.threadId === "active"), "the recovery snapshot starting");
+    await f.backends.request("turn/interrupt", { threadId: "active", turnId });
+    await f.releaseTurnsList();
+    await f.until(() => f.events.filter(event => event.method === "turn/completed" && object(event.params).threadId === "active").length === 1, "the live terminal reaching the desktop");
+    await f.until(() => (f.engine("peer") as unknown as { active: Map<string, string> }).active.get("peer") === peerTurnId, "the second active chat reconnecting");
+    await delay(50);
+    assert.equal(f.events.some(event => event.method === "error" && ["active", "peer"].includes(String(object(event.params).threadId))), false, "a live owner did not report either recovered turn as lost");
+    assert.equal(f.events.filter(event => event.method === "turn/completed" && object(event.params).threadId === "active").length, 1, "the saved snapshot did not duplicate the terminal");
+    assert.equal((f.engine("active") as unknown as { active: Map<string, string> }).active.has("active"), false, "the completed turn was not resurrected as active");
+    const rows = (await f.logged()).filter(row => ["active", "peer"].includes(String(row.threadId)) && ["thread/resume", "turn/start"].includes(row.method));
+    assert.deepEqual(rows.map(row => [row.threadId, row.method]), [["active", "turn/start"], ["peer", "turn/start"], ["active", "thread/resume"], ["peer", "thread/resume"]], "recovery only resumed each saved chat once");
+  } finally { await f.clean(); }
+});
+
+test("an unsubscribe during proactive recovery suppresses its stale lost-turn error", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("leaving");
+    const started = await f.backends.request("turn/start", turn("leaving", "keep running", { fixtureActive: true }));
+    await f.holdTurnsList();
+    await f.backends.request("fixture/disconnect", { threadId: "leaving" }).catch(() => undefined);
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/turns/list" && row.threadId === "leaving"), "the recovery snapshot starting");
+    assert.deepEqual(await f.backends.request("thread/unsubscribe", { threadId: "leaving" }), { status: "unsubscribed" });
+    await f.releaseTurnsList();
+    await delay(50);
+    assert.equal(f.engine("leaving"), undefined, "the explicit unsubscribe retained no executor binding");
+    assert.equal(f.events.some(event => event.method === "error" && object(event.params).threadId === "leaving"), false, "a stale recovery did not report a lost turn after unsubscribe");
+    assert.equal(f.events.some(event => event.method === "turn/completed" && object(event.params).threadId === "leaving"), false, "a stale recovery did not publish a terminal after unsubscribe");
+    assert.ok(started.turn, "the fixture started the active turn before the disconnect");
+  } finally { await f.releaseTurnsList(); await f.clean(); }
+});
+
+test("a second socket loss for the same recovered turn falls back without another automatic resume", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("again");
+    const started = await f.backends.request("turn/start", turn("again", "keep running", { fixtureActive: true }));
+    const turnId = String(object(started.turn).id);
+    await f.backends.request("fixture/disconnect", { threadId: "again" }).catch(() => undefined);
+    await f.until(() => (f.engine("again") as unknown as { active: Map<string, string> }).active.get("again") === turnId, "the first recovery completing");
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/resume" && row.threadId === "again"), "the first resume recording");
+    const resumes = (await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "again").length;
+    await f.backends.request("fixture/disconnect", { threadId: "again" }).catch(() => undefined);
+    await f.until(() => f.events.some(event => event.method === "error" && object(event.params).threadId === "again"), "the repeat-loss fallback");
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "again").length, resumes, "the second loss did not start another automatic resume");
+    assert.equal(f.events.some(event => event.method === "turn/completed" && object(event.params).threadId === "again"), false, "the fallback did not invent a terminal turn");
+  } finally { await f.clean(); }
+});
+
+test("proactive recovery joins a foreground resume flight and restores the active turn", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("joined");
+    const started = await f.backends.request("turn/start", turn("joined", "keep running", { fixtureActive: true }));
+    const turnId = String(object(started.turn).id);
+    const state = f.backends as unknown as { recoverActiveTurn: (...args: unknown[]) => Promise<unknown> };
+    const original = state.recoverActiveTurn.bind(state); let enter!: () => void; let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; }); const gate = new Promise<void>(resolve => { release = resolve; });
+    state.recoverActiveTurn = async (...args) => { enter(); await gate; return original(...args); };
+    await f.holdResume();
+    await f.backends.request("fixture/disconnect", { threadId: "joined" }).catch(() => undefined);
+    await entered;
+    const foreground = f.backends.request("thread/read", { threadId: "joined", includeTurns: false });
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/resume" && row.threadId === "joined"), "the foreground resume starting");
+    release(); await f.releaseResume(); await foreground;
+    await f.until(() => (f.engine("joined") as unknown as { active: Map<string, string> }).active.get("joined") === turnId, "the joined proactive recovery restoring the turn");
+    assert.equal(f.events.some(event => event.method === "error" && object(event.params).threadId === "joined"), false, "a joined foreground resume did not produce a lost-turn error");
+    assert.equal((await f.logged()).filter(row => row.method === "thread/resume" && row.threadId === "joined").length, 1, "both paths shared one SDK resume");
+  } finally { await f.releaseResume(); await f.clean(); }
+});
+
+test("a proactive resume with no authoritative turn still reports the saved chat as disconnected", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("missing");
+    await f.backends.request("turn/start", turn("missing", "keep running", { fixtureActive: true }));
+    await f.holdTurnsList();
+    await f.backends.request("fixture/disconnect", { threadId: "missing" }).catch(() => undefined);
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/turns/list" && row.threadId === "missing"), "the recovery snapshot starting");
+    await f.backends.request("fixture/forget-turn", { threadId: "missing" });
+    await f.releaseTurnsList();
+    await f.until(() => f.events.some(event => event.method === "error" && object(event.params).threadId === "missing"), "the explicit lost-turn error");
+    assert.equal(f.events.some(event => event.method === "turn/completed" && object(event.params).threadId === "missing"), false, "missing evidence never invents a terminal turn");
+  } finally { await f.releaseTurnsList(); await f.clean(); }
+});
+
+test("a rejected proactive snapshot still reports the saved chat as disconnected", { timeout: 30000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.start("rejected");
+    await f.backends.request("turn/start", turn("rejected", "keep running", { fixtureActive: true }));
+    await f.holdTurnsList();
+    await f.backends.request("fixture/disconnect", { threadId: "rejected" }).catch(() => undefined);
+    await f.until(async () => (await f.logged()).some(row => row.method === "thread/turns/list" && row.threadId === "rejected"), "the recovery snapshot starting");
+    await f.backends.request("fixture/reject-turns-list", { threadId: "rejected" });
+    await f.releaseTurnsList();
+    await f.until(() => f.events.some(event => event.method === "error" && object(event.params).threadId === "rejected"), "the explicit lost-turn error");
+    assert.equal(f.events.some(event => event.method === "turn/completed" && object(event.params).threadId === "rejected"), false, "a rejected snapshot never invents a terminal turn");
+  } finally { await f.releaseTurnsList(); await f.clean(); }
 });
 
 test("a chat whose folder changed after loading re-attaches without a folder or roots, and stays where it moved", { timeout: 30000 }, async () => {

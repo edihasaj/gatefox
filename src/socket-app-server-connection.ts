@@ -69,12 +69,12 @@ export class SocketAppServerConnection {
     } else this.write(frame);
   }
 
-  request(method: string, params: Message): Promise<Message> {
+  request(method: string, params: Message, timeoutMs = 120_000): Promise<Message> {
     return new Promise((resolve, reject) => {
       if (this.stopping || this.closed) { reject(new Error("Codex app-server is closed")); return; }
       if (this.requests.size >= PENDING_LIMIT) { reject(new Error("Too many pending Codex requests")); return; }
       const id = ++this.sequence;
-      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error("Codex app-server request timed out")); }, 120000).unref();
+      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error("Codex app-server request timed out")); }, timeoutMs).unref();
       this.requests.set(id, { resolve, reject, timer });
       try { this.send({ id, method, params }); }
       catch (error) { this.requests.delete(id); clearTimeout(timer); reject(error); }

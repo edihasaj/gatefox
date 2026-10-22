@@ -35,7 +35,8 @@ export class ResponsesAPI implements Provider {
     let normalized = { ...request }; let bridgeName: string | undefined;
     // An opted-in Codex route sends the client's search as a function (see tool-search-bridge.ts); once per request, not per retry.
     if (this.config.type === "codex-subscription" && bridgesToolSearch(this.config)) {
-      const bridged = bridgeToolSearch(normalized); normalized = bridged.request; bridgeName = bridged.name;
+      // Only a request that declares search can make the model call the bridge function, so only then are calls intercepted.
+      const bridged = bridgeToolSearch(normalized); normalized = bridged.request; bridgeName = bridged.counts.tools ? bridged.name : undefined;
       if (bridged.counts.tools || bridged.counts.calls || bridged.counts.outputs) telemetry("tool_search_bridged", { provider: this.config.id, ...bridged.counts });
     }
     if (tier === undefined || tier === null) delete normalized.service_tier;
@@ -141,7 +142,12 @@ export class ResponsesAPI implements Provider {
       // tools an earlier search loaded stay declared, so a chat that switched here from a bridged Codex route can call them.
       const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
       const own = ((body.tools as unknown[] | undefined) ?? []).filter(tool => !hosted(tool) && !search(tool));
-      const loaded = missingTools(searchLoadedTools(request.input), own) as ResponsesTool[];
+      // Every explicit declaration wins over a copy a search loaded, including tools declared in `additional_tools` items.
+      const lifted = Array.isArray(body.input) ? (body.input as unknown[]).flatMap(item => item !== null && typeof item === "object" && (item as { type?: unknown }).type === "additional_tools"
+        && Array.isArray((item as { tools?: unknown }).tools) ? (item as { tools: unknown[] }).tools : []) : [];
+      const loaded = missingTools(searchLoadedTools(request.input), [...own, ...lifted]) as ResponsesTool[];
+      // A tool_choice naming hosted search has nothing to run here; it drops to auto, as translation already did.
+      if (typeof body.tool_choice === "object" && body.tool_choice !== null && (body.tool_choice as { type?: unknown }).type === "web_search") body.tool_choice = "auto";
       if (Array.isArray(body.tools) || loaded.length) body.tools = [...loaded, ...own] as ResponsesTool[];
       if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
         if (hostedItem(item) || (item as { type?: unknown }).type === "tool_search_call" || (item as { type?: unknown }).type === "tool_search_output") return [];

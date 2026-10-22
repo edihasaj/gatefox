@@ -611,6 +611,18 @@ alone; the replayed `config` drops the keys that would block that restore.
 Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`
 ([diagnostics](diagnostics.md)).
 
+When only a shared executor client's socket closes during an active gateway turn,
+the adapter attempts that same re-attach immediately. It reads the owning SDK's
+saved turn state before updating the desktop: an in-progress turn is rejoined and
+a terminal turn is forwarded once. It never repeats a prompt, steering request,
+tool result or approval decision. Genuine pending approval requests retain their
+frontend IDs and require an explicit answer. Paginated histories restore completed display items
+only when the SDK recorded their completion time.
+If an active turn's earlier item history is unavailable, the adapter keeps its
+genuine future stream; reopening the chat may still be needed to reload earlier
+output. A turn already finished during the disconnect requires readable item
+history before the adapter reports its recovered completion.
+
 ### A listener that outlives its release
 
 An adapter can stay open after the installer prunes the release directory it
