@@ -54,6 +54,23 @@ function timeoutError(): ProviderError { return new ProviderError("timeout", "Ch
 function incomplete(message: string): ProviderError { return new ProviderError("incomplete", message, 502); }
 function unknownFields(value: object, allowed: ReadonlySet<string>): boolean { return Object.keys(value).some(key => !allowed.has(key)); }
 function nullOnly(value: object, fields: readonly string[]): boolean { return fields.some(field => Object.hasOwn(value, field) && (value as Record<string, unknown>)[field] !== null); }
+
+type ChatToolDefinition = { name: string; responseTool?: { name?: string; namespace?: string } };
+/**
+ * Map a returned tool name to its declaration. The wire names are `tool_N`; some self-hosted models (Qwen through vLLM's
+ * tool parser) occasionally answer with the caller's original name instead. Accept that only when exactly one declared
+ * tool carries it, so a guess never runs a different tool.
+ */
+export function resolveChatTool<T extends { function: ChatToolDefinition }>(name: string, tools: readonly T[]): T["function"] | undefined {
+  if (/^tool_\d+$/.test(name)) return tools[Number(name.slice(5))]?.function;
+  if (!name) return undefined;
+  const unique = (matches: T[]) => matches.length === 1 ? matches[0]!.function : undefined;
+  const local = (tool: T) => tool.function.responseTool?.name;
+  const qualified = (tool: T) => tool.function.responseTool?.namespace ? `${tool.function.responseTool.namespace}.${local(tool)}` : undefined;
+  return unique(tools.filter(tool => tool.function.name === name))
+    ?? unique(tools.filter(tool => qualified(tool) === name))
+    ?? unique(tools.filter(tool => local(tool) === name));
+}
 function reportRecovery(policy: ChatCompletionRecoveryPolicy, event: Parameters<NonNullable<ChatCompletionRecoveryPolicy["onRecovery"]>>[0]): void {
   try { policy.onRecovery?.(event); } catch { /* Observability never changes an inference. */ }
 }
@@ -256,8 +273,12 @@ export class ChatCompletionsAPI implements Provider {
     choice: ReturnType<typeof responsesToChatRequest>["tool_choice"]): Generator<InferenceEvent> {
     const ids = new Set<string>();
     for (const call of calls.values()) {
-      const index = /^tool_\d+$/.test(call.name) ? Number(call.name.slice(5)) : -1; const definition = tools[index]?.function;
-      if (!call.id || ids.has(call.id) || !definition || choice === "none" || (typeof choice === "object" && choice.function.name !== definition.name)) throw new ProviderError("invalid_tool_call", "Chat API returned an invalid or unselected tool");
+      const definition = resolveChatTool(call.name, tools);
+      const shown = JSON.stringify(call.name.slice(0, 64));
+      if (!call.id) throw new ProviderError("invalid_tool_call", "Chat API returned a tool call without an ID");
+      if (ids.has(call.id)) throw new ProviderError("invalid_tool_call", "Chat API repeated a tool call ID");
+      if (!definition) throw new ProviderError("invalid_tool_call", `Chat API returned an unknown tool ${shown}`);
+      if (choice === "none" || (typeof choice === "object" && choice.function.name !== definition.name)) throw new ProviderError("invalid_tool_call", `Chat API returned an unselected tool ${shown}`);
       let input: unknown; try { input = JSON.parse(call.arguments); } catch { throw new ProviderError("invalid_tool_call", "Chat API returned invalid tool JSON"); }
       if (!input || typeof input !== "object" || Array.isArray(input) || (definition.responseTool?.type === "custom" && typeof (input as { input?: unknown }).input !== "string")) throw new ProviderError("invalid_tool_call", "Chat API returned invalid tool input");
       ids.add(call.id); yield { type: "tool", call: { id: call.id, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: call.arguments } } };
