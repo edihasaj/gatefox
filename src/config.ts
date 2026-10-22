@@ -88,6 +88,11 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
   effectiveContextWindowPercent?: number;
   autoCompactTokenLimit?: number;
   maxContextWindow?: number;
+  /**
+   * Operator ceiling for this alias's window. Discovery and the periodic refresh may report a larger server limit
+   * (vLLM's max_model_len); the saved and advertised contextWindow and maxContextWindow never exceed this value.
+   */
+  contextWindowCap?: number;
 }
 /** A second Codex account served by its own signed engine; an ID may equal a codex-subscription provider ID. */
 export interface AccountEngineConfig { id: string; label?: string; workspaceId?: string }
@@ -109,6 +114,17 @@ export interface GatewayConfig {
 }
 
 const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
+
+/** Apply an operator `contextWindowCap` to the window fields; metadata without a cap is returned unchanged. */
+export function capContextWindow<T extends ModelMetadata | undefined>(metadata: T): T {
+  const cap = metadata?.contextWindowCap;
+  if (!metadata || cap === undefined) return metadata;
+  return {
+    ...metadata,
+    ...(metadata.contextWindow !== undefined && metadata.contextWindow > cap ? { contextWindow: cap } : {}),
+    ...(metadata.maxContextWindow !== undefined && metadata.maxContextWindow > cap ? { maxContextWindow: cap } : {}),
+  };
+}
 
 export function validateConfig(value: unknown, directory = process.cwd()): GatewayConfig {
   if (!value || typeof value !== "object") throw new Error("Configuration must be an object");
@@ -138,6 +154,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     for (const [alias, metadata] of Object.entries(provider.modelMetadata || {})) {
       if (!Object.hasOwn(provider.models, alias) || !metadata || typeof metadata !== "object") throw new Error("Model metadata must refer to a configured alias");
       if (metadata.contextWindow !== undefined && (!Number.isInteger(metadata.contextWindow) || metadata.contextWindow < 1024)) throw new Error("contextWindow must be at least 1024 tokens");
+      if (metadata.contextWindowCap !== undefined && !integerIn(metadata.contextWindowCap, 1024)) throw new Error("contextWindowCap must be an integer of at least 1024 tokens");
       if (metadata.reasoningEfforts?.some(effort => !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(effort))) throw new Error("Unsupported reasoning effort in model metadata");
       if (metadata.defaultReasoningEffort !== undefined && !["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(metadata.defaultReasoningEffort)) throw new Error("Unsupported default reasoning effort in model metadata");
       if (metadata.priority !== undefined && !Number.isInteger(metadata.priority)) throw new Error("Model priority must be an integer");

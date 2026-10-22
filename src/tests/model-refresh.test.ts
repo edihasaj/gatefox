@@ -4,7 +4,8 @@ import { chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ObservedContextWindows, refreshModelMetadata } from "../model-refresh.js";
-import { writePrivateJson, type GatewayConfig } from "../config.js";
+import { capContextWindow, validateConfig, writePrivateJson, type GatewayConfig } from "../config.js";
+import { loadDiscoveredModels, modelCatalog } from "../catalog.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 
 async function fixture() {
@@ -38,6 +39,40 @@ test("refresh updates metadata of configured models only and prefers observed wi
     assert.equal((await stat(f.path)).mtimeMs, before, "an unchanged catalog is not rewritten");
     assert.deepEqual(await refreshModelMetadata(f.path, async () => { throw new Error("offline"); }), [], "a discovery failure keeps the saved metadata");
   } finally { await rm(f.directory, { recursive: true, force: true }); }
+});
+
+test("an operator contextWindowCap survives refresh, discovery and the catalog when the server reports a larger window", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-window-cap-"));
+  const path = join(directory, "gateway.json");
+  const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: directory, providers: [
+    { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: "GATEWAY_CAP_FIXTURE", models: { "qwen/flash": "qwen-flash", "qwen/open": "qwen-open" },
+      modelMetadata: { "qwen/flash": { displayName: "Flash", contextWindow: 262144, contextWindowCap: 262144 } } },
+  ] };
+  await writePrivateJson(path, config);
+  try {
+    const updated = await refreshModelMetadata(path, async () => [
+      { model: "qwen-flash", metadata: { contextWindow: 500000, maxContextWindow: 500000, reasoningEfforts: ["low", "high"] } },
+      { model: "qwen-open", metadata: { contextWindow: 500000 } },
+    ]);
+    assert.deepEqual(updated, ["qwen"]);
+    const saved = JSON.parse(await readFile(path, "utf8")) as GatewayConfig;
+    const flash = saved.providers[0].modelMetadata?.["qwen/flash"];
+    assert.equal(flash?.contextWindow, 262144, "the refresh never raises a capped window");
+    assert.equal(flash?.maxContextWindow, 262144);
+    assert.equal(flash?.contextWindowCap, 262144, "the cap itself is kept");
+    assert.deepEqual(flash?.reasoningEfforts, ["low", "high"], "other discovered metadata still updates");
+    assert.equal(saved.providers[0].modelMetadata?.["qwen/open"].contextWindow, 500000, "an alias without a cap is unchanged");
+    const row = modelCatalog({ ...saved, providers: [{ ...saved.providers[0], modelMetadata: { "qwen/flash": { contextWindow: 500000, contextWindowCap: 262144 } } }] })
+      .models.find(model => model.slug === "qwen/flash");
+    assert.equal(row?.context_window, 262144, "the catalog applies the cap even to an uncapped saved window");
+    assert.equal(row?.max_context_window, 262144);
+    const provider = structuredClone(saved.providers[0]);
+    loadDiscoveredModels(provider, [{ model: "qwen-flash", metadata: { contextWindow: 500000 } }]);
+    assert.equal(provider.modelMetadata?.["qwen/flash"].contextWindow, 262144, "explicit discovery respects the cap");
+    assert.throws(() => validateConfig({ ...saved, providers: [{ ...saved.providers[0], modelMetadata: { "qwen/flash": { contextWindowCap: 512 } } }] }, directory), /contextWindowCap must be an integer/);
+    assert.equal(capContextWindow(undefined), undefined);
+    assert.deepEqual(capContextWindow({ contextWindow: 1000000 }), { contextWindow: 1000000 });
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 test("Claude reports the context window the CLI used, without the 1M variant suffix", async () => {
