@@ -31,6 +31,33 @@ test("provider-specific conversation headers never reach a different origin or A
     { "User-Agent": "harness-gateway" });
 });
 
+test("an opted-in session-affinity provider receives the caller's thread ID as session-id, and nothing else does", () => {
+  const provider = { baseUrl: "http://dgx.example:4000/v1", sessionAffinity: true };
+  assert.deepEqual(apiRoutingHeaders(provider, { threadId: "thread_1", sessionId: "session_1" }), { "session-id": "thread_1" });
+  assert.deepEqual(apiRoutingHeaders(provider, { sessionId: "session_1" }), { "session-id": "session_1" });
+  assert.deepEqual(apiRoutingHeaders(provider, {}), {}, "no conversation ID is invented");
+  assert.deepEqual(apiRoutingHeaders(provider, { threadId: "line\nbreak", sessionId: "a".repeat(129) }), {});
+  for (const sessionAffinity of [false, undefined]) {
+    assert.deepEqual(apiRoutingHeaders({ baseUrl: "http://dgx.example:4000/v1", sessionAffinity }, { threadId: "thread_1" }), {});
+  }
+});
+
+test("the chat transport sends session-id to an opted-in provider and omits it otherwise", async t => {
+  const key = "GATEWAY_AFFINITY_ROUTING_FIXTURE"; const previous = process.env[key]; process.env[key] = "fixture-only";
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  const seen: Headers[] = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => { seen.push(new Headers(options.headers)); return chatStream(); });
+  const config: ProviderConfig = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: key,
+    models: { "qwen/flash": "fixture" } };
+  for (const sessionAffinity of [true, false]) {
+    for await (const _ of new ChatCompletionsAPI({ ...config, sessionAffinity }).infer(
+      { model: "fixture", input: "hello" }, new AbortController().signal, { threadId: "thread_1", sessionId: "session_1" })) {}
+  }
+  assert.equal(seen[0].get("session-id"), "thread_1");
+  assert.equal(seen[0].get("x-opencode-session"), null);
+  assert.equal(seen[1].get("session-id"), null);
+});
+
 const responsesStream = () => new Response(`data: ${JSON.stringify({
   type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
 })}\n\n`, { headers: { "Content-Type": "text/event-stream" } });

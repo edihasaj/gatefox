@@ -96,6 +96,36 @@ These headers are restricted to the official HTTPS OpenCode API routes; they are
 never added to xAI, OpenRouter or arbitrary custom origins. The gateway enables
 no provider-hosted search, shell or coding tools.
 
+## Self-hosted session affinity
+
+A self-hosted Chat Completions router that hashes requests by session, such as
+vllm-router with `consistent_hash`, can keep each conversation on the worker that
+holds its prefix cache. Opt in with `"sessionAffinity": true` on that
+`chat-completions-api` provider. The gateway then sends the caller's thread ID,
+falling back to its session ID, as a `session-id` header. Subagents have their
+own thread IDs, so they spread across workers while each keeps its own cache.
+
+Without this setting the router has no session key, hashes each request body,
+and sends every turn to an effectively random worker with a cold cache. The
+setting is off by default, accepted only on `chat-completions-api` providers,
+and never invents an ID for a request that has none.
+
+## Context window cap
+
+Discovery and the periodic metadata refresh copy each model's window from the
+server, such as vLLM's `max_model_len`. A self-hosted server can accept more
+than its clients should use, because a cold long prompt is slow to prefill.
+Set `"contextWindowCap"` in that alias's `modelMetadata` to keep a lower
+ceiling. The refresh, `gateway discover --load` and the Codex catalog then
+never advertise a `contextWindow` or `maxContextWindow` above the cap. Other
+discovered metadata still updates, and aliases without a cap are unchanged.
+
+```json
+"modelMetadata": {
+  "qwen/qwen3.8-flash-next": { "contextWindow": 262144, "contextWindowCap": 262144 }
+}
+```
+
 ## Sources and verification
 
 Checked on 19 October 2026:
