@@ -171,9 +171,10 @@ JS
   fi
 fi
 # Keep the current release, the previous one and the newest other one. Older
-# releases move to the Trash only after a complete local inspection. A current
-# launcher can run old JavaScript under an app-owned Node, so a process without
-# the immutable marker is a legacy holder and makes this whole cleanup a no-op.
+# releases are deleted only after a complete local inspection: every published
+# release can be downloaded again, so moving them to the Trash only filled it.
+# A current launcher can run old JavaScript under an app-owned Node, so a process
+# without the immutable marker is a legacy holder and makes this whole cleanup a no-op.
 keep_current=$(readlink "$root/current" | sed 's#^releases/##')
 keep_previous=$(sed 's#^releases/##' "$root/previous-release" 2>/dev/null || true)
 in_use=""
@@ -233,15 +234,18 @@ JS
   prune_safe=1
 fi
 kept_extra=0; pruned=0
-if [ -z "$transaction_nonce" ] && [ "$prune_safe" -eq 1 ] && [ -d "$HOME/.Trash" ]; then
+# A deletion interrupted earlier leaves only a `.retired-*` folder, never a half-deleted release under its own name.
+for leftover in "$root"/releases/.retired-*; do [ -d "$leftover" ] && /bin/rm -rf "$leftover"; done
+if [ -z "$transaction_nonce" ] && [ "$prune_safe" -eq 1 ]; then
   for name in $(ls -1 "$root/releases" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1nr -k2,2nr -k3,3nr); do
     [ "$name" = "$keep_current" ] || [ "$name" = "$keep_previous" ] && continue
     if [ "$kept_extra" -eq 0 ]; then kept_extra=1; continue; fi
     if printf '%s\n' "$in_use" | /usr/bin/grep -Fx "$name" >/dev/null; then continue; fi
     [ -f "$root/releases/$name/.gateway-release" ] || continue
-    mv "$root/releases/$name" "$HOME/.Trash/subscription-gateway-$name-$(date +%s)" && pruned=$((pruned + 1))
+    retired="$root/releases/.retired-$name-$$"
+    mv "$root/releases/$name" "$retired" && /bin/rm -rf "$retired" && pruned=$((pruned + 1))
   done
 fi
-[ "$pruned" -eq 0 ] || echo "Moved $pruned older releases to the Trash."
+[ "$pruned" -eq 0 ] || echo "Deleted $pruned older releases."
 echo "Installed gateway $version. Run gateway setup, gateway service install, or gateway desktop."
 echo "Command: $launcher (gateway is the same command)"

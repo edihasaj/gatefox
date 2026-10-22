@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Updates now delete retired gateway releases instead of moving them to the Trash.
+The installer still keeps the current release, the previous one and the newest
+other one, and still deletes nothing while a running process or LaunchAgent uses a
+release. Each retired release is renamed inside the gateway's own folder before it is
+removed, so an interrupted deletion is finished by the next install. Every published
+release can be downloaded again, so the Trash no longer fills with old versions.
+Thanks to @edihasaj for asking for cleanup that happens on its own during updates.
+
 Three search fixes from an independent review. With the tool search bridge on, a
 caller's own function named `tool_search` in the default `functions` namespace is
 no longer mistaken for the client's search: the bridge name avoids those names, and

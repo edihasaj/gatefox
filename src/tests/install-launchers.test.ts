@@ -233,6 +233,8 @@ test("an app-owned Node retains its old immutable release while current advances
     child.kill("SIGTERM"); await new Promise(resolve => child!.once("exit", resolve)); child = undefined;
     await l.publish("6.0.0"); const after = await l.install(); assert.equal(after.code, 0);
     assert.equal(await lstat(old).then(() => true, () => false), false, `a stopped release is eligible for cleanup: ${after.stdout} ${after.stderr}`);
+    assert.deepEqual((await readdir(join(l.home, ".Trash"))).filter(name => name.startsWith("subscription-gateway-")), [], "retired releases are deleted, not left in the Trash");
+    assert.match(after.stdout, /Deleted \d+ older releases?\./);
   } finally {
     if (child?.pid) child.kill("SIGKILL");
     await l.cleanup();
@@ -272,4 +274,15 @@ test("a legacy current CLI with only a runtime marker still blocks every prune",
     if (child?.pid) child.kill("SIGKILL");
     await l.cleanup();
   }
+});
+
+test("a release deletion interrupted earlier is finished by the next install", apple, async () => {
+  const l = await layout();
+  try {
+    await l.publish("1.0.0"); assert.equal((await l.install()).code, 0);
+    const leftover = join(l.prefix, "share/subscription-gateway/releases/.retired-0.9.0-123");
+    await mkdir(join(leftover, "package"), { recursive: true }); await writeFile(join(leftover, ".gateway-release"), "0.9.0\n");
+    await l.publish("1.0.1"); assert.equal((await l.install()).code, 0);
+    assert.equal(await lstat(leftover).then(() => true, () => false), false);
+  } finally { await l.cleanup(); }
 });
