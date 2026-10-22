@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+`gateway tool-search on`, `off` and `status` turn the tool search bridge on or off for every
+Codex subscription provider without editing `gateway.json` by hand. The command validates the
+file before saving it, changes no other setting, and the running service picks the change up
+without a restart. The bridge stays off by default. It now gives the `additional_tools` item it
+inserts after a search result the role the backend requires; without it, a Responses lite
+request that loaded tools would have failed with HTTP 400. `scripts/probe-tool-search-bridge.mjs`
+checks both search rounds offline with `--dry-run`, or against the real backend, where every
+bridged request shape passed the backend's request validation.
+Thanks to @edihasaj for asking for a dry run and an easy switch.
+
 Codex tool search can work through the gateway as an opt-in. With `"toolSearch": "bridge"`
 on a `codex-subscription` provider, the gateway sends Codex's `tool_search` as an ordinary
 function, which the shared-subscription backend accepts, and returns the model's search to

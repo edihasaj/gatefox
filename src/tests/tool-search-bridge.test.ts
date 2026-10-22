@@ -39,12 +39,15 @@ test("top-level search becomes a function, and a replayed search becomes a funct
 });
 
 test("on a Responses lite request the search stays where it was declared and the loaded tools follow the output", () => {
-  const request = { model: "m", input: [{ type: "additional_tools", tools: [exec, searchTool] }, user("find"), searchCall, searchOutput, user("use it")] } as unknown as ResponsesRequest;
+  const request = { model: "m", input: [{ type: "additional_tools", role: "developer", tools: [exec, searchTool] }, user("find"), searchCall, searchOutput, user("use it")] } as unknown as ResponsesRequest;
   const bridged = bridgeToolSearch(request);
-  const input = bridged.request.input as unknown as Array<{ type: string; tools?: Array<{ name: string }> }>;
+  const input = bridged.request.input as unknown as Array<{ type: string; role?: string; tools?: Array<{ name: string }> }>;
   assert.deepEqual(input.map(item => item.type), ["additional_tools", "message", "function_call", "function_call_output", "additional_tools", "message"]);
   assert.deepEqual(input[0].tools!.map(tool => tool.name), ["exec_command", "tool_search"]);
   assert.deepEqual(input[4].tools!.map(tool => tool.name), ["mcp__fixture__"], "everything before the output is unchanged, so the prompt prefix is too");
+  assert.equal(input[4].role, "developer", "the backend refuses an additional_tools item without a role (live 400 on input[0].role)");
+  const roleless = bridgeToolSearch({ ...request, input: [{ type: "additional_tools", tools: [searchTool] }, searchCall, searchOutput] } as unknown as ResponsesRequest);
+  assert.equal((roleless.request.input as unknown as Array<{ role?: string }>).at(-1)!.role, "developer", "Codex's role is the fallback");
   assert.deepEqual(bridged.request.tools, [], "no top-level tool is added");
   assert.ok(noSearchType(bridged.request));
 });

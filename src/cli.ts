@@ -39,6 +39,7 @@ import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
 import { rolloutCommand } from "./rollout.js";
 import { daemonConfigStatus } from "./config-rejection.js";
+import { toolSearchCommand } from "./tool-search-command.js";
 import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 import { providerCommand } from "./provider-tool-runtime.js";
 import { retainCliEntryPoint } from "./release-retention.js";
@@ -67,6 +68,7 @@ const help = `gateway — local subscription and API inference
   gateway providers [--config PATH] [--json]
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
+  gateway tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
@@ -108,8 +110,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || id !== "shared-native")) throw new Error("--on-restart is only valid for service shared-native");
@@ -182,6 +184,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (values.model) catalog.models = catalog.models.filter(model => model.slug === values.model);
     if (!catalog.models.length) throw new Error("No configured model matches the selection");
     process.stdout.write(JSON.stringify(catalog, null, 2) + "\n"); return;
+  }
+  if (command === "tool-search") {
+    const action = id ?? "status";
+    if (action !== "on" && action !== "off" && action !== "status") throw new Error("tool-search takes on, off or status");
+    const result = await toolSearchCommand(action, path, config);
+    if (result.daemon) process.stderr.write(result.daemon.rejection ? `Saved, but the daemon did not apply it (${result.daemon.rejection}); fix gateway.json or restart the service.\n`
+      : `Saved. ${result.daemon.reachable ? "The daemon has loaded it" : "The daemon loads it on the next request"}; chats Codex loads after this use the new catalog.\n`);
+    else if (action !== "status") process.stderr.write("Already set; nothing changed.\n");
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
   if (command === "discover") {
     const provider = config.providers.find(provider => provider.id === id);
