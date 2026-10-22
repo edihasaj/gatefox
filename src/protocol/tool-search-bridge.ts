@@ -36,7 +36,12 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
   const input = Array.isArray(request.input) ? request.input as unknown[] : undefined;
   const tools = Array.isArray(request.tools) ? request.tools as unknown[] : [];
   const taken = new Set<string>();
-  const note = (tool: unknown) => { const value = flatName(tool); if (value) taken.add(value); };
+  // Children of the Responses default namespace `functions` are called unqualified, exactly like top-level tools, so their
+  // names are taken too; any other namespace's children are called with their namespace and cannot collide.
+  const note = (tool: unknown) => {
+    if (data(tool) && tool.type === "namespace") { if (tool.name === "functions" && Array.isArray(tool.tools)) tool.tools.forEach(note); return; }
+    const value = flatName(tool); if (value) taken.add(value);
+  };
   tools.forEach(note);
   for (const item of input ?? []) if (data(item) && (item.type === "additional_tools" || item.type === "tool_search_output") && Array.isArray(item.tools)) item.tools.forEach(note);
   let name = "tool_search"; while (taken.has(name)) name += "_";
