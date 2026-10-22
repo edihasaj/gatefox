@@ -78,7 +78,7 @@ test("the Codex route drops a top-level tool_search, completes the turn, and str
     assert.deepEqual(done, [emitted]);
     assert.equal(JSON.stringify(done[0]), JSON.stringify(emitted));
     // Search is the only thing dropped: another unsupported tool still fails on the Codex route, and nothing else reaches upstream.
-    assert.equal((await failure(await h.post({ model: "codex/gpt-6.1-sol", input: [user("hi")], tools: [{ type: "web_search" }] }))).status, 400);
+    assert.equal((await failure(await h.post({ model: "codex/gpt-6.1-sol", input: [user("hi")], tools: [{ type: "file_search" }] }))).status, 400);
     assert.equal(h.upstream.length, 1);
   } finally { await h.close(); }
 });
@@ -115,26 +115,29 @@ test("the Codex route drops replayed tool_search_call and tool_search_output ite
   } finally { await h.close(); }
 });
 
-test("a generic Responses route, a chat-completions route, Claude and Copilot reject search and send nothing upstream", async t => {
+test("a generic Responses route, a chat-completions route, Claude and Copilot drop search, keep the tools it loaded, and send no search upstream", async t => {
   const h = await harness(t);
   try {
-    const cases: Array<[string, Record<string, unknown>, string]> = [
-      ["tool", { input: [user("hi")], tools: [searchTool] }, "unsupported_tool"],
-      ["lite additional_tools", { input: [lite, user("hi")], tool_choice: "required" }, "unsupported_tool"],
-      ["tool_search_call", { input: [user("hi"), searchCall] }, "unsupported_input_item"],
-      ["tool_search_output", { input: [user("hi"), searchCall, searchOutput] }, "unsupported_input_item"],
+    // A chat that switched here from a Codex route, possibly one that bridges search, must keep working.
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ["tool", { input: [user("hi")], tools: [exec, searchTool] }],
+      ["lite additional_tools", { input: [{ type: "additional_tools", tools: [exec, searchTool] }, user("hi")] }],
+      ["history", { input: [user("hi"), searchCall, searchOutput, user("use it")], tools: [exec] }],
     ];
-    const itemTypes: Record<string, string> = { tool: "tool_search", "lite additional_tools": "tool_search", tool_search_call: "tool_search_call", tool_search_output: "tool_search_call" };
+    const translation = new Set(["unsupported_tool", "unsupported_input_item", "unsupported_tool_choice"]);
     for (const [provider, model] of [["api", "api/upstream"], ["chat", "chat/upstream"], ["claude", "claude/upstream"], ["copilot", "copilot/upstream"]]) {
-      for (const [name, body, reason] of cases) {
-        const { status, body: error } = await failure(await h.post({ model, ...body }));
-        assert.equal(status, 400, `${model}: ${name}`);
-        assert.equal(error.code, "invalid_request", `${model}: ${name}`);
-        // The diagnostic carries the translation reason and the allowlisted item type, and never a tool name or query.
-        assert.deepEqual(h.failures.at(-1), { ...h.failures.at(-1), providerId: provider, reason, itemType: itemTypes[name] }, `${model}: ${name}`);
+      for (const [name, body] of cases) {
+        const before = h.upstream.length; const failed = h.failures.length;
+        await (await h.post({ model, ...body })).text();
+        assert.ok(!h.failures.slice(failed).some(entry => translation.has(String(entry.reason))), `${model}: ${name} translates`);
+        if (provider !== "api" && provider !== "chat") continue;
+        assert.equal(h.upstream.length, before + 1, `${model}: ${name} reached upstream`);
+        const sent = h.upstream.at(-1)!;
+        assert.equal(hasSearch(sent), false, `${model}: ${name} sends no search upstream`);
+        // A chat-completions route renames tools to its own native names, so it is checked by count: exec_command and the loaded lookup.
+        if (name === "history") assert.ok(provider === "chat" ? (sent.tools as unknown[]).length === 2 : JSON.stringify(sent).includes("lookup"), `${model}: the tool the search loaded stays declared`);
       }
     }
-    assert.equal(h.upstream.length, 0, "nothing was sent upstream");
-    assert.equal(h.stubbed(), 0, "no Claude or Copilot provider was invoked");
+    assert.equal(h.stubbed(), 6, "Claude and Copilot each ran all three requests");
   } finally { await h.close(); }
 });

@@ -25,12 +25,13 @@ import { BoundedIdSet } from "./bounded-id-set.js";
 import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
 import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
-import { executorOverrides, nativeEnvironment, newChatProvider } from "./executor-identity.js";
+import { executorOverrides, executorServesProvider, nativeEnvironment, newChatProvider } from "./executor-identity.js";
 import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
 import { AppServerChatList, type ChatListDiscovery, type ChatListSource } from "./app-server-chat-list.js";
 import { NativeRuntimeStatus } from "./native-runtime-status.js";
 import { AdapterRuntimeMetadata, type RuntimeMetadataSource } from "./adapter-runtime-metadata.js";
 import { requestedModel } from "./app-server-request-fields.js";
+import { executableRunsCodeMode } from "./codex-native-rows.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
@@ -488,12 +489,19 @@ export class AppServerBackends {
   private async gateway(): Promise<Engine> {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
-    const snapshot = this.catalog.current();
-    const priority = offersPriority(snapshot.models);
+    // Capture the request's catalog before awaiting the runtime. A concurrent start may refresh its own catalog while the
+    // first lookup waits, but it must not change the first generation's observed model rows.
+    const observed = this.catalog.current();
     const runtime = await this.resolveRuntime();
+    // An adapter can outlive its original package. The selected runtime, rather than the adapter's module path, decides whether
+    // this generation may advertise Code Mode: a gateway SDK only through its verified receipt, the desktop's Codex by its host.
+    const snapshot = (this.catalog as DesktopCatalog & { snapshotForExecutor?: (value: typeof observed, codeMode: boolean) => typeof observed })
+      .snapshotForExecutor?.(observed, runtime ? runtime.codeModeHost : executableRunsCodeMode(this.executable)) ?? observed;
+    const priority = offersPriority(snapshot.models);
     const provider = this.newChatProvider(runtime);
-    // The identity is fixed for the connection; an executor that can no longer serve it fails closed instead of reaching OpenAI.
-    if (provider !== newChatProvider(this.config, runtime)) throw Object.assign(new Error("The gateway executor changed while this desktop connection was open; reconnect to continue gateway chats"), { code: -32001 });
+    // The identity is fixed for the connection. A later verified SDK can still serve a legacy connection, but an openai
+    // connection never falls through to a stock executor that could send its saved history to OpenAI.
+    if (!executorServesProvider(provider, runtime)) throw Object.assign(new Error("The gateway executor changed while this desktop connection was open; reconnect to continue gateway chats"), { code: -32001 });
     const revision = createHash("sha256").update(snapshot.revision + (runtime?.binarySha256 || "") + provider).digest("hex");
     const pool = await this.pool();
     if (pool) {

@@ -1,5 +1,5 @@
-import { accessSync, constants, lstatSync } from "node:fs";
-import { resolve } from "node:path";
+import { accessSync, constants, lstatSync, readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { autoReviewModels } from "./auto-review.js";
@@ -13,24 +13,73 @@ const usageFlags = ["include_skills_usage_instructions", "include_plugin_usage_i
 
 const plain = (value: unknown): Row | undefined => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : undefined;
 const positive = (value: unknown, max = Number.MAX_SAFE_INTEGER): value is number => Number.isSafeInteger(value) && (value as number) > 0 && (value as number) <= max;
+const releaseVersion = (value: string) => /^\d+\.\d+\.\d+$/.test(value);
+const owned = (uid: number) => !process.getuid || uid === process.getuid();
+const safeDirectory = (path: string): boolean => {
+  const info = lstatSync(path);
+  return info.isDirectory() && !info.isSymbolicLink() && owned(Number(info.uid)) && !(Number(info.mode) & 0o022);
+};
+
+/** A missing package only means hostless when it is a verified managed release path; ordinary checkouts keep native Codex. */
+function missingManagedPackage(packageDirectory: string): boolean {
+  try {
+    const packagePath = resolve(packageDirectory); const release = dirname(packagePath); const releases = dirname(release); const root = dirname(releases);
+    if (basename(packagePath) !== "package" || basename(releases) !== "releases" || !releaseVersion(basename(release))
+      || packagePath !== join(root, "releases", basename(release), "package")) return false;
+    if (!safeDirectory(root) || !safeDirectory(releases)) return false;
+    const marker = join(root, ".gateway-installation"); const info = lstatSync(marker);
+    return info.isFile() && !info.isSymbolicLink() && owned(Number(info.uid)) && !(Number(info.mode) & 0o022)
+      && readFileSync(marker, "utf8") === "subscription-gateway\n";
+  } catch { return false; }
+}
+
+/** Code mode is available only when the selected executable has its companion host. */
+export function executableRunsCodeMode(executable: string): boolean {
+  try { accessSync(resolve(dirname(executable), "codex-code-mode-host"), constants.X_OK); return true; } catch { return false; }
+}
 
 /**
  * Codex runs code mode in a host it spawns from beside its own executable. Gateway executors run the
- * packaged gateway SDK when the package has one, and that package ships no host; without it they run
- * the desktop's own Codex, which does. A code-mode row on an executor without the host fails closed.
+ * packaged gateway SDK when the package has one, and that package carries the host only when its build
+ * receipt pins it; without one they run the desktop's own Codex, which does. A code-mode row on an
+ * executor without the host fails closed. The host's verified check in the execution host is
+ * authoritative; this is the adapter's synchronous catalog hint over the same package layout.
  */
 export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL("..", import.meta.url))): boolean {
+  try { lstatSync(packageDirectory); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return !missingManagedPackage(packageDirectory);
+    return false;
+  }
   const directory = resolve(packageDirectory, "gateway-sdk");
-  try { lstatSync(directory); } catch { return true; }
-  try { accessSync(resolve(directory, "codex-code-mode-host"), constants.X_OK); return true; } catch { return false; }
+  try { lstatSync(directory); }
+  catch (error) {
+    // A complete package without a gateway SDK launches the desktop's native Codex, which carries its own host.
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+  return packagedSdkRunsCodeMode(directory);
+}
+
+/** The receipt names the companion and that file is the executable it describes; anything else runs `direct`. */
+function packagedSdkRunsCodeMode(directory: string): boolean {
+  try {
+    const receipt = JSON.parse(readFileSync(resolve(directory, "build.json"), "utf8")) as { codeModeHostSha256?: unknown };
+    if (typeof receipt.codeModeHostSha256 !== "string" || !/^[a-f0-9]{64}$/.test(receipt.codeModeHostSha256)) return false;
+    const host = lstatSync(resolve(directory, "codex-code-mode-host"));
+    return host.isFile() && !host.isSymbolicLink() && (Number(host.mode) & 0o100) !== 0;
+  } catch { return false; }
 }
 
 /**
  * The client's own native row supplies a Codex 2 row's harness behaviour: its instructions and
  * messages with their usage flags, tool mode (a code mode only where the executor runs it),
  * defaults, window share and truncation. Account capabilities keep the upstream values: service
- * tiers, multi-agent fields, the window maximum and auto-compaction limit. Search stays off whatever the native
- * row says: the ChatGPT backend refuses a forwarded `tool_search`, so a Codex 2 row must not make Codex add one. comp_hash is never copied. The node_repl policy (both
+ * tiers, multi-agent fields, the window maximum and auto-compaction limit. Tool search is on only where both sides say
+ * so: the gateway row publishes it when the route bridges `tool_search`, and the native row has it on. Otherwise it stays
+ * off, because the ChatGPT backend refuses a forwarded `tool_search`. The hosted
+ * web search is the one exception: the backend accepts a `web_search` tool, so the row copies the native `web_search_tool_type`
+ * and Codex sends that tool on a Codex 2 chat exactly as it does natively. A row with no native counterpart loses the field:
+ * those routes cannot run hosted search and the gateway drops the tool. comp_hash is never copied. The node_repl policy (both
  * fields, see nodeReplPolicy) and the review fields (guardian, auto_review_model_override,
  * requires_sandboxed_review, model_specialty) follow the native row too; requires_sandboxed_review
  * is data only, because neither the pinned SDK nor ChatGPT 26.1007's codex reads it. Without a marker or a native
@@ -40,7 +89,9 @@ export function executorRunsCodeMode(packageDirectory = fileURLToPath(new URL(".
 export function withNativeRow(model: Row, native: readonly Row[], codeMode = true, reviewers: ReadonlySet<string> = noReviewers): Row {
   const { [upstreamSlugField]: upstream, ...row } = model;
   const source = typeof upstream === "string" ? native.find(entry => entry.slug === upstream) : undefined;
-  if (!source) return row;
+  // A row with no native counterpart (Claude, Copilot, or any other route) serves hosted web search nowhere, and nothing
+  // bridges search here: drop a published `web_search_tool_type`, and a search flag this row cannot honour.
+  if (!source) { delete row.web_search_tool_type; if (row.supports_search_tool !== false) row.supports_search_tool = false; return row; }
   // Both node_repl fields come from the native row's policy; the review fields shape the same review,
   // so they are copied with it. Only plainly typed values are copied.
   const copy: Row = { ...nodeReplPolicy(source, native, reviewers) };
@@ -56,9 +107,12 @@ export function withNativeRow(model: Row, native: readonly Row[], codeMode = tru
   if (typeof source.tool_mode === "string" && (codeMode || source.tool_mode === "direct")) copy.tool_mode = source.tool_mode;
   for (const key of ["apply_patch_tool_type", "default_verbosity"]) if (typeof source[key] === "string" || source[key] === null) copy[key] = source[key];
   if (typeof source.support_verbosity === "boolean") copy.support_verbosity = source.support_verbosity;
-  // Search stays off: the ChatGPT backend refuses `tool_search` when the gateway forwards it (HTTP 400, seen in
-  // production on 0.4.4), so a Codex 2 row must never make Codex add that tool.
-  copy.supports_search_tool = false;
+  // Tool search needs both: the gateway row publishes it only for a route that bridges `tool_search` (the ChatGPT backend
+  // refuses the tool itself, HTTP 400 seen in production on 0.4.4), and the native row says Codex can run the search here.
+  // Any other pair keeps it off, so Codex adds no tool this route cannot forward. Hosted web search is allowed either way,
+  // so the row keeps the native tool type and Codex sends `web_search` exactly as it does on the native row.
+  copy.supports_search_tool = row.supports_search_tool === true && source.supports_search_tool === true;
+  if (typeof source.web_search_tool_type === "string") copy.web_search_tool_type = source.web_search_tool_type;
   // The default must be a level this route offers; Codex would otherwise start chats at an unsupported effort.
   const levels = Array.isArray(row.supported_reasoning_levels) ? row.supported_reasoning_levels.map(level => plain(level)?.effort) : [];
   if (typeof source.default_reasoning_level === "string" && levels.includes(source.default_reasoning_level)) copy.default_reasoning_level = source.default_reasoning_level;
@@ -191,13 +245,14 @@ export function withFallback(model: Row, fallback: NodeReplFallback): Row {
 /**
  * A native row carried into the executor catalog keeps its own values apart from the two node_repl
  * fields, which follow nodeReplPolicy as the Codex 2 row for the same model does. Its
- * `supports_search_tool` is carried off, as a Codex 2 row has it: Codex would add its `tool_search` tool on a row
- * that says search is on, and the ChatGPT backend refuses that tool when the gateway forwards it (HTTP 400). A row
- * whose policy matches and that does not turn search on is returned unchanged. The native engine's own catalog is
- * unchanged.
+ * `supports_search_tool` is carried off whatever a provider's `toolSearch` says: this row serves a bare model name, and
+ * which route answers it (bridging search or dropping it) is only decided when the request runs, so a carried row must
+ * never make Codex add a tool that route may not forward (HTTP 400, see responses.md). A row whose policy matches and that
+ * does not turn search on is returned unchanged. The native engine's own catalog is unchanged.
  */
 export function executorNativeRow(model: Row, native: readonly Row[], reviewers: ReadonlySet<string> = noReviewers): Row {
   const policy = nodeReplPolicy(model, native, reviewers);
+  // Search stays off even on a bridged route: see the note above - a bare name has no provider to read `toolSearch` from.
   const search: Row | undefined = model.supports_search_tool === true ? { supports_search_tool: false } : undefined;
   return policy.node_repl_disabled === model.node_repl_disabled && policy.node_repl_auto_review_required === model.node_repl_auto_review_required && !search
     ? model : { ...model, ...policy, ...search };

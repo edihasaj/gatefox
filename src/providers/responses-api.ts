@@ -1,6 +1,7 @@
-import { apiCredential, type ProviderConfig } from "../config.js";
+import { apiCredential, bridgesToolSearch, type ProviderConfig } from "../config.js";
 import { accessToken, ChatGPTLoginRequired, ChatGPTRefreshFailed, type OAuthFailureDetail } from "../auth/chatgpt.js";
-import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools } from "../protocol/request.js";
+import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools, searchLoadedTools } from "../protocol/request.js";
+import { BridgeCallError, bridgeToolSearch, bridgedSearchCall, missingTools } from "../protocol/tool-search-bridge.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesInputItem, ResponsesNamespaceTool, ResponsesRequest, ResponsesTool, ResponsesToolSearchTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
@@ -31,7 +32,12 @@ export class ResponsesAPI implements Provider {
       const declared = metadata.filter(entry => entry?.serviceTiers !== undefined);
       if (declared.length && !declared.some(entry => entry?.serviceTiers?.some(option => option.id === tier))) throw new ProviderError("invalid_request", "Selected Codex model does not offer this service tier", 400);
     }
-    const normalized = { ...request };
+    let normalized = { ...request }; let bridgeName: string | undefined;
+    // An opted-in Codex route sends the client's search as a function (see tool-search-bridge.ts); once per request, not per retry.
+    if (this.config.type === "codex-subscription" && bridgesToolSearch(this.config)) {
+      const bridged = bridgeToolSearch(normalized); normalized = bridged.request; bridgeName = bridged.name;
+      if (bridged.counts.tools || bridged.counts.calls || bridged.counts.outputs) telemetry("tool_search_bridged", { provider: this.config.id, ...bridged.counts });
+    }
     if (tier === undefined || tier === null) delete normalized.service_tier;
     else normalized.service_tier = tier;
     // The turn-state is opaque and scoped to this account route; a value from another route is dropped.
@@ -39,7 +45,7 @@ export class ResponsesAPI implements Provider {
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
-        for await (const event of this.attempt(normalized, signal, context, turnState)) {
+        for await (const event of this.attempt(normalized, signal, context, turnState, bridgeName)) {
           // Response headers are not output, so they never prevent the retry. Only the first reaches the
           // caller, and a retry carries the turn-state it returned, as Codex does for the rest of a turn.
           if (event.type === "transport") { if (!transported) { transported = true; turnState ??= unwrapTurnState(event.turnState, this.scope); yield event; } continue; }
@@ -66,7 +72,7 @@ export class ResponsesAPI implements Provider {
       }
     }
   }
-  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined): AsyncGenerator<InferenceEvent> {
+  private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined, bridgeName?: string): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
@@ -88,6 +94,8 @@ export class ResponsesAPI implements Provider {
     // Responses wire values omit the summary to disable it. Codex's local
     // setting uses "none", which is not accepted by the upstream endpoint.
     if (hideSummary) { body.reasoning = { ...(body.reasoning as Record<string, unknown>) }; delete (body.reasoning as Record<string, unknown>).summary; }
+    const hosted = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "web_search";
+    const hostedItem = (item: unknown) => item !== null && typeof item === "object" && !Array.isArray(item) && (item as { type?: unknown }).type === "web_search_call";
     let defaultNamespace = "";
     if (plan) {
       if (body.previous_response_id) throw new ProviderError("invalid_request", "ChatGPT plan requires replayed history rather than previous_response_id", 400);
@@ -103,16 +111,19 @@ export class ResponsesAPI implements Provider {
       // The ChatGPT backend refuses a forwarded `tool_search` tool (HTTP 400, seen in production on 0.4.4), so the tool, in the
       // request or in a Responses lite `additional_tools` item, and any replayed search items are dropped; the rest of the turn
       // runs as it would without search. Codex rows keep search off, so only an engine that still holds an older catalog sends them.
+      // The hosted `web_search` tool is the one hosted tool this backend allows (its refusal names it: `subscription_sharing_
+      // unsupported_capability`), so it is forwarded unchanged: at the top level, never in the gateway namespace, kept inside
+      // `additional_tools` items, and its replayed `web_search_call` items go upstream as sent.
       const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
       const searchItem = (item: ResponsesInputItem) => "type" in item && (item.type === "tool_search_call" || item.type === "tool_search_output");
       let droppedTools = (request.tools || []).filter(search).length, droppedItems = 0;
-      const forwarded = (tool: ResponsesTool) => tool.type === "namespace";
+      const forwarded = (tool: ResponsesTool) => tool.type === "namespace" || hosted(tool);
       const flat = (request.tools?.filter(tool => !forwarded(tool) && !search(tool)) || []) as Exclude<ResponsesTool, ResponsesNamespaceTool | ResponsesToolSearchTool>[];
       if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
         if (searchItem(item)) { droppedItems++; return []; }
         const lite = item as unknown as { type?: unknown; tools?: unknown };
         if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
-        const kept = lite.tools.filter(tool => !search(tool));
+        const kept = lite.tools.filter(tool => !search(tool)); // hosted web_search inside the item is kept, as sent
         droppedTools += lite.tools.length - kept.length;
         return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
       });
@@ -123,13 +134,29 @@ export class ResponsesAPI implements Provider {
       const flatNames = new Set(flat.flatMap(tool => tool.type === "function" && "function" in tool ? [tool.function.name] : "name" in tool && typeof tool.name === "string" ? [tool.name] : []));
       if (Array.isArray(body.input)) body.input = body.input.map(item => "name" in item && item.name && !item.namespace && flatNames.has(String(item.name)) ? { ...item, namespace: defaultNamespace } : item);
       if (typeof body.tool_choice === "object" && "name" in body.tool_choice && !body.tool_choice.namespace) body.tool_choice = { ...body.tool_choice, namespace: defaultNamespace };
+    } else {
+      // A Responses endpoint the caller reached is not the Codex subscription backend: it gets no hosted web search it never
+      // declared. The server already dropped and counted it before translation (`web_search_dropped`); this keeps the wire clean.
+      // Nor does it get the client's tool_search or its replayed items (the server counted them as `tool_search_dropped`); the
+      // tools an earlier search loaded stay declared, so a chat that switched here from a bridged Codex route can call them.
+      const search = (tool: unknown) => typeof tool === "object" && tool !== null && (tool as { type?: unknown }).type === "tool_search";
+      const own = ((body.tools as unknown[] | undefined) ?? []).filter(tool => !hosted(tool) && !search(tool));
+      const loaded = missingTools(searchLoadedTools(request.input), own) as ResponsesTool[];
+      if (Array.isArray(body.tools) || loaded.length) body.tools = [...loaded, ...own] as ResponsesTool[];
+      if (Array.isArray(body.input)) body.input = (body.input as ResponsesInputItem[]).flatMap((item): ResponsesInputItem[] => {
+        if (hostedItem(item) || (item as { type?: unknown }).type === "tool_search_call" || (item as { type?: unknown }).type === "tool_search_output") return [];
+        const lite = item as unknown as { type?: unknown; tools?: unknown };
+        if (lite.type !== "additional_tools" || !Array.isArray(lite.tools)) return [item];
+        const kept = lite.tools.filter(tool => !hosted(tool) && !search(tool));
+        return kept.length === lite.tools.length ? [item] : kept.length ? [{ ...item, tools: kept } as ResponsesInputItem] : [];
+      });
     }
-    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan });
+    const definitions = normalizeResponsesTools(declaredResponsesTools(request), { toolSearch: plan, webSearch: plan });
     const identities = new Map(definitions.map(tool => [tool.function.name, tool.function.responseTool!]));
     // On the Codex route top-level tools go up inside the gateway namespace and `additional_tools` tools keep their own, so a
     // call is resolved against the list it was declared in first. A tool whose type changed between history and the current
     // list then keeps the type of the declaration the call belongs to; the merged catalog is the fallback.
-    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
+    const scoped = (scope: Partial<ResponsesRequest>) => new Map(normalizeResponsesTools(declaredResponsesTools({ ...request, ...scope }), { toolSearch: plan, webSearch: plan }).map(tool => [tool.function.name, tool.function.responseTool!]));
     const current = plan ? scoped({ input: [] }) : identities, history = plan ? scoped({ tools: [] }) : identities;
     const base = plan ? "https://api.openai.com/v1" : this.config.baseUrl!.replace(/\/$/, "");
     // The subscription endpoint keeps a conversation's prompt cache warm only
@@ -222,14 +249,22 @@ export class ResponsesAPI implements Provider {
       searchItems.add(key); output.toolBoundary();
       return [{ type: "native-item", item }];
     };
+    // The bridge function stands for the client's search: it goes back as the `tool_search_call` the client runs, never as a tool.
+    const isBridge = (item: Record<string, unknown> | undefined) => !!bridgeName && item?.type === "function_call" && item.name === bridgeName && (item.namespace === undefined || item.namespace === defaultNamespace);
+    const bridgedCall = (item: Record<string, unknown>) => {
+      try { return bridgedSearchCall(item, bridgeName, defaultNamespace)!; }
+      catch (error) { if (error instanceof BridgeCallError) throw new ProviderError("invalid_tool_call", "Provider returned an invalid or duplicate tool call"); throw error; }
+    };
     const itemDone = (item: Record<string, unknown>, snapshot = false, interrupted = false): InferenceEvent[] => {
       item = grokTools?.restoreItem(item) || item;
-      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output")) {
+      if (plan && (item.type === "tool_search_call" || item.type === "tool_search_output" || item.type === "web_search_call")) {
         // An interrupted final snapshot can hold a search item that never finished; like an unfinished function call, it is withheld.
         if (interrupted && item.status !== "completed") return [];
         return searchItem(item);
       }
       if (item.type === "message") return output.done(item, snapshot, interrupted || item.status === "incomplete");
+      // An unfinished bridge call is withheld like an unfinished function call; its arguments are parsed only once complete.
+      if (isBridge(item)) return (interrupted || item.status === "incomplete" || item.status === "in_progress") && item.status !== "completed" ? [] : searchItem(bridgedCall(item));
       if (item.type === "function_call" || item.type === "custom_tool_call") {
         // An interrupted final snapshot can contain an unfinished call. Only a
         // genuine item.done boundary or explicitly completed snapshot dispatches it.
@@ -255,7 +290,7 @@ export class ResponsesAPI implements Provider {
         // replace it with plaintext (or different opaque state). Ordinary early
         // calls omit enough fields on some upstreams that they must stay lax
         // until their completed boundary.
-        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args")) partialTool(item);
+        if ((item?.type === "function_call" || item?.type === "custom_tool_call") && Object.hasOwn(item, "encrypted_function_args") && !isBridge(item)) partialTool(item);
       }
       if (event.type === "response.output_text.delta") yield* output.delta(event);
       if (event.type === "response.output_item.done") {

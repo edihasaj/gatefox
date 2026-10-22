@@ -1,13 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { AppServerBackends } from "../app-server-backends.js";
 import type { DesktopCatalog } from "../desktop-catalog.js";
 import type { Message } from "../app-server-connection.js";
 import type { GatewayConfig } from "../config.js";
 import type { GatewaySdkRuntime } from "../gateway-sdk-runtime.js";
+import { gatewaySdkCapability, gatewaySdkPatchSha256, gatewaySdkRevision } from "../gateway-sdk-runtime.js";
+import pin from "../gateway-sdk-pin.json" with { type: "json" };
+import { gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "../gateway-sdk-build-pins.js";
 import { GatewayChatRegistry } from "../gateway-chat-registry.js";
 import { configureTelemetry, flushTelemetry } from "../telemetry.js";
 
@@ -52,7 +57,7 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
     nativeSlugs: new Set([nativeModel]) } as unknown as DesktopCatalog;
   const priorHome = process.env.CODEX_HOME; process.env.CODEX_HOME = nativeHome;
   // The fake SDK stands in for the verified gateway SDK artifact; `sdkServesIdentity` false is one built before patch v2.
-  const runtime = { executable: sdk, binarySha256: "c".repeat(64), selectedModelCompaction: true, ...(sdkServesIdentity ? { executorIdentity: true } : {}) } as GatewaySdkRuntime;
+  let runtime = { executable: sdk, binarySha256: "c".repeat(64), selectedModelCompaction: true, codeModeHost: false, ...(sdkServesIdentity ? { executorIdentity: true } : {}) } as GatewaySdkRuntime | undefined;
   const opened: AppServerBackends[] = [];
   const open = async (overrides: Message = {}) => {
     const backends = new AppServerBackends(sdk, ["app-server", "--listen", "stdio://", "--fixture-root", directory], config, {}, overrides, catalog, async () => {}, () => {});
@@ -66,12 +71,45 @@ createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line)
   const save = async (thread: Message) => { const all = await saved(); all[String(thread.id)] = thread; await writeFile(join(directory, "threads.json"), JSON.stringify(all)); };
   const launches = async () => Promise.all((await readdir(directory)).filter(name => name.startsWith("launch-")).map(async name => JSON.parse(await readFile(join(directory, name), "utf8")) as { gateway: boolean; args: string[]; marker: string | null }));
   const engineOf = async (backends: AppServerBackends, threadId: string) => (await backends.request("fixture/ledger", { threadId })).gateway ? "gateway" : "native";
-  return { directory, state, nativeHome, open, saved, save, launches, engineOf, registry: () => new GatewayChatRegistry(state, nativeHome),
+  return { directory, sdk, state, nativeHome, open, saved, save, launches, engineOf, setRuntime: (value: GatewaySdkRuntime | undefined) => { runtime = value; }, registry: () => new GatewayChatRegistry(state, nativeHome),
     async clean() {
       for (const backends of opened) await backends.stop();
       if (priorHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = priorHome;
       await flushTelemetry(); await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     } };
+}
+
+/**
+ * Loads the resolver from a managed old release, then leaves it resident while that exact release is pruned. The candidate
+ * SDK is the fixture executable, so an adapter exercise reaches the real resolver and a real child process without inference.
+ */
+async function prunedManagedResolver(t: { after(fn: () => Promise<void>): void }, executable: string) {
+  const root = await mkdtemp(join(tmpdir(), "gw-pruned-runtime-")); t.after(() => rm(root, { recursive: true, force: true }));
+  const oldVersion = "0.2.20", currentVersion = "0.2.21";
+  const packageFor = (version: string) => join(root, "releases", version, "package");
+  const prepare = async (version: string, modules = false) => {
+    const packageDirectory = packageFor(version); const sdkDirectory = join(packageDirectory, "gateway-sdk");
+    await mkdir(join(packageDirectory, "dist"), { recursive: true, mode: 0o700 }); await mkdir(sdkDirectory, { mode: 0o700 });
+    const binary = await readFile(executable); const gateway = join(sdkDirectory, "gateway-codex");
+    await writeFile(gateway, binary, { mode: 0o700 });
+    await writeFile(join(packageDirectory, "package.json"), JSON.stringify({ version, ...(modules ? { type: "module" } : {}) }), { mode: 0o600 });
+    await writeFile(join(sdkDirectory, "build.json"), JSON.stringify({
+      schemaVersion: 1, version, codexVersion: pin.version, revision: gatewaySdkRevision, archiveSha256: pin.archiveSha256,
+      patchSha256: gatewaySdkPatchSha256, lockfileSha256: pin.lockSha256, lockfileRepairSha256: gatewaySdkLockRepairSha256,
+      sourceSha256: gatewaySdkSourceSha256, binarySha256: createHash("sha256").update(binary).digest("hex"), profile: "release",
+      platform: process.platform, arch: process.arch, capabilities: [gatewaySdkCapability],
+    }), { mode: 0o600 });
+    await writeFile(join(root, "releases", version, ".gateway-release"), `${version}\n`, { mode: 0o600 });
+    return packageDirectory;
+  };
+  const old = await prepare(oldVersion, true); const current = await prepare(currentVersion);
+  for (const name of ["gateway-sdk-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
+    await writeFile(join(old, "dist", name), await readFile(new URL(`../${name}`, import.meta.url)), { mode: 0o600 });
+  }
+  await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+  await symlink(`releases/${currentVersion}`, join(root, "current"));
+  const loaded = await import(`${pathToFileURL(join(old, "dist", "gateway-sdk-runtime.js")).href}?pruned-managed-resolver`);
+  return { old, current, runtime: loaded.gatewaySdkRuntime as () => Promise<GatewaySdkRuntime | undefined>, prune: () => rm(join(root, "releases", oldVersion), { recursive: true, force: true }) };
 }
 
 test("an opted-in executor records new gateway chats as openai, registers the legacy provider and runs without analytics", { timeout: 20000 }, async () => {
@@ -134,6 +172,47 @@ test("the default, chatIdentity legacy, or a gateway SDK without patch v2, keeps
       assert.equal(await f.registry().has("legacy-start"), true);
     } finally { await f.clean(); }
   }
+});
+
+test("a connection keeps its legacy new-chat identity when its pruned release recovers a verified SDK", { timeout: 20000 }, async () => {
+  const f = await fixture("openai", false);
+  try {
+    const backends = await f.open();
+    await backends.request("thread/start", { fixtureId: "before-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    f.setRuntime({ executable: join(f.directory, "codex"), binarySha256: "d".repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
+    const after = await backends.request("thread/start", { fixtureId: "after-recovery", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    assert.equal(after.modelProvider, "subscription_gateway");
+    assert.equal((await f.saved())["after-recovery"].requested, "subscription_gateway");
+  } finally { await f.clean(); }
+});
+
+test("an openai connection still refuses a missing recovered SDK", { timeout: 20000 }, async () => {
+  const f = await fixture("openai");
+  try {
+    const backends = await f.open();
+    await backends.request("thread/start", { fixtureId: "before-loss", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    f.setRuntime(undefined);
+    await assert.rejects(backends.request("thread/start", { fixtureId: "after-loss", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" }),
+      /executor changed while this desktop connection was open/);
+  } finally { await f.clean(); }
+});
+
+test("an open adapter resumes saved legacy and openai chats after its managed release is pruned, then starts through the verified current SDK", { timeout: 30000 }, async t => {
+  const f = await fixture("openai");
+  try {
+    const managed = await prunedManagedResolver(t, f.sdk);
+    const backends = await f.open(); backends.resolveRuntime = managed.runtime;
+    assert.match((await managed.runtime())?.executable || "", /releases\/0\.2\.20\/package\/gateway-sdk\/gateway-codex$/);
+    await f.save({ id: "saved-legacy", model: alias, modelProvider: "subscription_gateway" });
+    await f.save({ id: "saved-openai", model: alias, modelProvider: "openai" });
+    await managed.prune();
+    assert.match((await managed.runtime())?.executable || "", /releases\/0\.2\.21\/package\/gateway-sdk\/gateway-codex$/);
+    await backends.request("thread/resume", { threadId: "saved-legacy" });
+    await backends.request("thread/resume", { threadId: "saved-openai" });
+    const started = await backends.request("thread/start", { fixtureId: "after-prune", model: alias, modelProvider: "subscription_gateway" }, { engine: "gateway" });
+    assert.equal(started.modelProvider, "openai");
+    assert.deepEqual(await Promise.all(["saved-legacy", "saved-openai", "after-prune"].map(id => f.engineOf(backends, id))), ["gateway", "gateway", "gateway"]);
+  } finally { await f.clean(); }
 });
 
 test("an openai gateway chat found through its parent or alias is written to the registry when it is routed; a native one never is", { timeout: 20000 }, async () => {

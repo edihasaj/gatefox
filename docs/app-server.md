@@ -611,6 +611,32 @@ alone; the replayed `config` drops the keys that would block that restore.
 Each re-attach is logged as `executor_reattached` or `executor_reattach_failed`
 ([diagnostics](diagnostics.md)).
 
+### A listener that outlives its release
+
+An adapter can stay open after the installer prunes the release directory it
+started from. When its complete original `package` directory is gone, it may load
+the SDK from the managed installation's `current` release and continue saved chats
+without reconnecting. That replacement is accepted only when the installation
+marker, `current` link, selected release marker, package version, SDK receipt,
+component hashes, capability and pinned SDK source all verify. The link must select
+a direct, user-owned release beneath that installation; a checkout, escaped link,
+partial old package, or present package whose SDK is missing or invalid never falls
+back.
+
+The connection keeps the provider it selected for new chats. A legacy
+`subscription_gateway` connection can use a newly verified SDK without changing its
+identity. A connection that selected `openai` continues only when the replacement
+proves the gateway executor capability; it never resumes gateway history on a stock
+executor.
+
+An already-loaded executor retains the catalog it loaded. Changing a catalog file
+cannot alter that generation, and a live owner continues serving its loaded chats.
+After an update, let the shared service adopt the release when it is quiet; do not
+force-kill it. To move one affected chat sooner, unsubscribe it from every frontend,
+wait for its `thread/closed` event (or for the host to report no owner), then resume
+it through an adapter on the fixed release. A resume before the old owner unloads
+returns to that owner.
+
 ## Native chats keep their model
 
 The adapter never changes a native chat's model or provider. When "Authenticated
@@ -651,8 +677,9 @@ native catalog slug such as `gpt-6.1-sol`. That child remains a gateway chat: it
 saved provider stays `subscription_gateway` or (on an opted-in Mac) `openai`, and
 the adapter routes reads, history, interrupts, turns and resumes to the executor
 that owns it. A resume with no model or reasoning override lets the SDK restore
-its saved state. Native web search stays disabled, as on gateway aliases, so opening
-saved history cannot enable tools the inference provider would execute.
+its saved state. The child's web search settings are forwarded as the caller saved them,
+as on gateway aliases: the adapter no longer forces `web_search` off, because the Codex
+route forwards the hosted tool and every other route drops it.
 If an explicit model/provider or a `config.model` or
 `config.model_reasoning_effort` key opens the SDK's restore gate without selecting a
 different child, the adapter repeats the child's saved native model and provider.
@@ -699,14 +726,17 @@ local native catalog it loaded at startup and copies these fields:
 
 Everything else keeps the upstream value: service tiers, multi-agent fields, the
 window maximum, the auto-compaction limit, input modalities and reasoning levels.
-`comp_hash` is never copied. `supports_search_tool` stays off on a Codex 2 row even
-when the native row has it on: the ChatGPT backend refuses a `tool_search` tool that the
-gateway forwards, so the gateway drops it on that route, and support returns once it is
-verified against the real backend
-([details](responses.md#tool-search-on-the-codex-subscription-route)). The adapter
-still keeps the hosted `web_search` tool disabled; that is a separate setting. A
-slug without a native row, and every Claude, Copilot or other row, stays as the
-gateway published it (search off), apart from the strictest native node_repl policy and the
+`comp_hash` is never copied. `supports_search_tool` is on for a Codex 2 row only when
+its provider bridges tool search (`"toolSearch": "bridge"`) and the native row has it on.
+Otherwise it stays off: the ChatGPT backend refuses a `tool_search` tool that the gateway
+forwards, so without the bridge the gateway drops it on that route
+([details](responses.md#tool-search-on-the-codex-subscription-route)). The hosted
+`web_search` tool is a separate setting and is on there: the adapter copies the native row's
+`web_search_tool_type`, so a Codex 2 chat sends that tool exactly as native Codex does and the
+Codex route forwards it. A slug without a native row, and every Claude, Copilot or other row,
+loses the field -- those routes cannot run hosted search and the gateway drops the tool
+([details](responses.md#hosted-web-search)). Every row otherwise stays as the
+gateway published it (tool search off unless bridged), apart from the strictest native node_repl policy and the
 native confirmation and classifier texts ([node_repl](#node_repl-browser-chrome-and-computer-use)).
 The rows the adapter builds drop `upstream_slug`. At each launch the native-catalog
 preflight first writes `desktop-models.json` with the plain gateway rows, marker
@@ -723,9 +753,13 @@ on every start, and a changed native row changes the catalog revision, which sta
 a new executor generation for new chats.
 
 Code mode runs in a separate `codex-code-mode-host` process that Codex starts from
-beside its own executable. The gateway SDK package does not ship that host yet, so
-code mode in its executors fails closed. When the installed package has a gateway
-SDK without the host, the adapter keeps the gateway's `direct` tool mode and still
+beside its own executable. The gateway SDK package ships that companion and records
+its digest in the build receipt as `codeModeHostSha256`; the execution host enables
+Code Mode only after that verified receipt. A host file the receipt does not name,
+or one whose bytes differ from it, fails the whole SDK's verification, as any other
+changed component does. When the installed package has a gateway SDK whose
+receipt names no host (a package built before the companion shipped), the adapter
+keeps the gateway's `direct` tool mode and still
 copies the other fields. Without a gateway SDK, executors run the desktop's own
 Codex and take the native code mode. The same rule covers the native rows that the
 executor catalog carries for sub-agents naming a model directly (a role's model,
@@ -738,6 +772,14 @@ model alias spelled exactly like a native slug is refused whenever the adapter l
 gateway catalog, at launch and at each refresh, against the native slugs it read at launch;
 a native model that appears later is checked at the next launch. (Before 0.4.4 every such sub-agent request failed with
 `unsupported_tool`.) The native engine keeps its own catalog unchanged.
+
+The executable selected for each new executor generation decides whether Code Mode
+is available; the adapter does not reuse that decision from the package that opened
+the desktop connection. A recovered SDK without the companion host gives every
+gateway and carried native row an explicit `tool_mode: "direct"`, including rows
+whose native metadata omitted or named an unknown mode. Direct mode overrides Code
+Mode feature flags. It preserves node_repl, permissions, review and instructions,
+and never changes the native engine's catalog.
 
 Every gateway row publishes `max_context_window`: the provider's own maximum when it
 reports one, otherwise the row's window. Without it a row inherited Codex's global

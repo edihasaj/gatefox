@@ -75,7 +75,7 @@ test("turns that run back to back with 50 ms gaps still let the urgent move happ
   const plan: ServicePlan = { version: 1, config: configPath, sharedExecutors: true, components: [inference, relay] };
   await writePrivateJson(servicePlanPath(directory), plan);
   // This release's gateway SDK is "a"; the installed release 0.4.5 carries "b".
-  const runtime = (digit: string): GatewaySdkRuntime => ({ executable: sdk, binarySha256: digit.repeat(64), selectedModelCompaction: true, executorIdentity: true });
+  const runtime = (digit: string): GatewaySdkRuntime => ({ executable: sdk, binarySha256: digit.repeat(64), selectedModelCompaction: true, executorIdentity: true, codeModeHost: false });
   const startHost: typeof startExecutionHost = options => startExecutionHost({ ...options, gatewayRuntime: async () => runtime("a"), pendingRelease: async () => ({ release: "0.4.5", gatewaySdkSha256: "b".repeat(64) }) });
   const service = new ServiceSupervisor(plan, directory, 5, startHost, unregistered, undefined, undefined,
     { watchKick: () => () => {}, hostProbeMs: 3_600_000, healthSchedule: () => () => {}, releaseState: () => ({ running: "0.4.4", installed: "0.4.5" }) });

@@ -31,14 +31,22 @@ import { stageLoginConsolidation } from "./mac-login-consolidate.js";
 import { runServiceDaemon } from "./service-daemon.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
+import { stageNativeSharing } from "./service-native-staging.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
 import { versionsCommand } from "./versions.js";
 import { healthCommand } from "./health.js";
+import { rolloutCommand } from "./rollout.js";
 import { daemonConfigStatus } from "./config-rejection.js";
+import { toolSearchCommand } from "./tool-search-command.js";
 import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 import { providerCommand } from "./provider-tool-runtime.js";
+import { retainCliEntryPoint } from "./release-retention.js";
+
+// This happens before command dispatch. A managed release remains visible to the
+// installer even when an app-owned Node executes this file through `current`.
+retainCliEntryPoint(import.meta.url);
 
 const help = `gateway — local subscription and API inference
 
@@ -55,14 +63,16 @@ const help = `gateway — local subscription and API inference
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service consolidate [--apply | --next-login] [--config PATH]
   gateway service shared-executors [--apply] [--disable] [--config PATH]
-  gateway service shared-native [--apply] [--disable] [--config PATH]
+  gateway service shared-native [--apply] [--disable] [--on-restart [--with-gateway]] [--config PATH]
   gateway executor-host --config PATH --codex PATH --native-home PATH
   gateway providers [--config PATH] [--json]
   gateway discover PROVIDER [--select ID,ID] [--load] [--config PATH]
   gateway catalog [--config PATH] [--model ALIAS]
+  gateway tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
+  gateway rollout [--json] [--verify] [--config PATH]   Release readiness from loaded process, service, inference, execution-host and tool-canary evidence.
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
@@ -88,6 +98,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
   if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
+  if (argv[0] === "rollout") { process.exitCode = await rolloutCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {
@@ -96,13 +107,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
-    apply: { type: "boolean" }, "next-login": { type: "boolean" },
+    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
+  if (values["on-restart"] && (command !== "service" || id !== "shared-native")) throw new Error("--on-restart is only valid for service shared-native");
+  if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");
+  if (values["with-gateway"] && !(command === "service" && id === "shared-native" && values["on-restart"])) throw new Error("--with-gateway is only valid with service shared-native --on-restart");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
@@ -154,6 +168,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "service") {
     const result = id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
       : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
+      : id === "shared-native" && values["on-restart"] ? await stageNativeSharing(path, values["with-gateway"])
       : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path);
     process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
@@ -169,6 +184,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (values.model) catalog.models = catalog.models.filter(model => model.slug === values.model);
     if (!catalog.models.length) throw new Error("No configured model matches the selection");
     process.stdout.write(JSON.stringify(catalog, null, 2) + "\n"); return;
+  }
+  if (command === "tool-search") {
+    const action = id ?? "status";
+    if (action !== "on" && action !== "off" && action !== "status") throw new Error("tool-search takes on, off or status");
+    const result = await toolSearchCommand(action, path, config);
+    if (result.daemon) process.stderr.write(result.daemon.rejection ? `Saved, but the daemon did not apply it (${result.daemon.rejection}); fix gateway.json or restart the service.\n`
+      : `Saved. ${result.daemon.reachable ? "The daemon has loaded it" : "The daemon loads it on the next request"}; chats Codex loads after this use the new catalog.\n`);
+    else if (action !== "status") process.stderr.write("Already set; nothing changed.\n");
+    process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
   if (command === "discover") {
     const provider = config.providers.find(provider => provider.id === id);

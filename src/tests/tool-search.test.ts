@@ -26,26 +26,32 @@ async function reasonOf(run: () => unknown): Promise<[string, string | undefined
 }
 async function drain(source: AsyncIterable<InferenceEvent>): Promise<InferenceEvent[]> { const events: InferenceEvent[] = []; for await (const event of source) events.push(event); return events; }
 
-test("tool_search and its items stay rejected unless the route opts in", async () => {
-  const tool = { model: "m", input: "hi", tools: [searchTool] } as unknown as ResponsesRequest;
-  assert.deepEqual(await reasonOf(() => responsesToChatRequest(tool)), ["unsupported_tool", "tool_search"]);
-  assert.deepEqual(await reasonOf(() => responsesToChatRequest(tool, { toolSearch: false })), ["unsupported_tool", "tool_search"]);
-  for (const item of [searchCall, searchOutput]) {
-    const items = { model: "m", input: [item] } as unknown as ResponsesRequest;
-    assert.deepEqual(await reasonOf(() => responsesToChatRequest(items)), ["unsupported_input_item", item.type]);
-  }
-  // A search tool declared in a Responses lite additional_tools item is rejected the same way.
-  const lifted = { model: "m", input: [{ type: "additional_tools", tools: [searchTool] }] } as unknown as ResponsesRequest;
-  assert.deepEqual(await reasonOf(() => responsesToChatRequest(lifted)), ["unsupported_tool", "tool_search"]);
+test("every route skips tool_search and its items, and a route without search keeps the tools a search loaded", () => {
+  // A chat that switched here from a Codex route that bridges search must still translate.
+  const chat = responsesToChatRequest(request());
+  assert.deepEqual(chat.tools?.map(tool => tool.function.name), ["mcp__fixture__.lookup", "exec_command"]);
+  assert.deepEqual(chat.messages.map(message => message.role), ["user", "user"], "search items never become conversation text");
+  assert.equal(JSON.stringify(chat).includes("defer_loading"), false, "a loaded tool is declared without its deferral flag");
+  for (const item of [searchCall, searchOutput]) assert.doesNotThrow(() => responsesToChatRequest({ model: "m", input: [item] } as unknown as ResponsesRequest));
+  const lifted = responsesToChatRequest({ model: "m", input: [{ type: "additional_tools", tools: [exec, searchTool] }] } as unknown as ResponsesRequest);
+  assert.deepEqual(lifted.tools?.map(tool => tool.function.name), ["exec_command"]);
+  // A tool the request declares itself wins over the copy a search loaded.
+  const own = { type: "namespace", name: "mcp__fixture__", description: "Own", tools: [{ type: "function", name: "lookup", description: "mine", parameters: { type: "object", properties: {} } }] };
+  const both = responsesToChatRequest({ ...request(), tools: [own] } as unknown as ResponsesRequest);
+  assert.equal(both.tools?.find(tool => tool.function.name === "mcp__fixture__.lookup")?.function.description, "Own\nmine");
+  // A forced call with only the search tool has nothing this route can call.
+  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tool_choice: "required", tools: [searchTool] } as unknown as ResponsesRequest), { reason: "unsupported_tool_choice" });
+  // Other hosted tools are still refused.
+  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tools: [{ type: "file_search" }] } as unknown as ResponsesRequest), { reason: "unsupported_tool" });
 });
 
 test("with the Codex route's option, search is skipped by translation and never becomes a message or function", () => {
   const chat = responsesToChatRequest(request(), { toolSearch: true });
   assert.deepEqual(chat.tools?.map(tool => tool.function.name), ["exec_command"]);
   assert.deepEqual(chat.messages.map(message => message.role), ["user", "user"]);
-  // Only search is accepted: another unsupported tool or item type still fails.
-  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tools: [{ type: "web_search" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool" });
-  assert.throws(() => responsesToChatRequest({ model: "m", input: [{ type: "web_search_call" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_input_item" });
+  // Only tool search is accepted here: another unsupported tool or item type still fails (hosted web search is skipped, never rejected; see web-search.test.ts).
+  assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tools: [{ type: "file_search" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool" });
+  assert.throws(() => responsesToChatRequest({ model: "m", input: [{ type: "file_search_call" }] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_input_item" });
   // A forced tool call is satisfied by a declared search tool, which the client executes.
   assert.doesNotThrow(() => responsesToChatRequest({ model: "m", input: "x", tool_choice: "required", tools: [searchTool] } as unknown as ResponsesRequest, { toolSearch: true }));
   assert.throws(() => responsesToChatRequest({ model: "m", input: "x", tool_choice: "required", tools: [] } as unknown as ResponsesRequest, { toolSearch: true }), { reason: "unsupported_tool_choice" });
@@ -156,20 +162,30 @@ test("an interrupted final snapshot withholds a search item that did not complet
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
-test("every other provider type rejects search exactly as before", async t => {
-  const { directory, credentialFile } = await fixture();
-  let reached = 0;
-  t.mock.method(globalThis, "fetch", async () => { reached++; return new Response(sse({ type: "response.completed", response: { id: "r", status: "completed", usage } }), { headers: { "Content-Type": "text/event-stream" } }); });
+test("every other provider type drops search, keeps the tools it loaded, and sends no search upstream", async t => {
+  const { directory, credentialFile: _unused } = await fixture();
+  const bodies: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => { bodies.push(JSON.parse(String(options.body)));
+    return new Response(sse({ type: "response.completed", response: { id: "r", status: "completed", usage } }), { headers: { "Content-Type": "text/event-stream" } }); });
   process.env.TOOL_SEARCH_TEST_KEY = "fixture-only";
   try {
     const generic = new ResponsesAPI({ id: "api", type: "responses-api", baseUrl: "https://example.invalid/v1", apiKeyEnv: "TOOL_SEARCH_TEST_KEY", models: { "api/upstream": "upstream" } } as ProviderConfig);
     const chat = new ChatCompletionsAPI({ id: "chat", type: "chat-completions-api", baseUrl: "https://example.invalid/v1", apiKeyEnv: "TOOL_SEARCH_TEST_KEY", models: { "chat/upstream": "upstream" } } as ProviderConfig);
-    const onlyTool = { model: "upstream", input: "hi", tools: [searchTool] } as unknown as ResponsesRequest;
-    const onlyItems = { model: "upstream", input: [searchCall] } as unknown as ResponsesRequest;
-    for (const provider of [generic, chat]) {
-      assert.deepEqual(await reasonOf(() => drain(provider.infer(onlyTool, new AbortController().signal))), ["unsupported_tool", "tool_search"]);
-    }
-    assert.deepEqual(await reasonOf(() => drain(chat.infer(onlyItems, new AbortController().signal))), ["unsupported_input_item", "tool_search_call"]);
-    assert.equal(reached, 0, "nothing was sent upstream");
+    await drain(generic.infer(request(), new AbortController().signal));
+    const sent = bodies[0] as { tools: Array<{ type: string; name?: string; tools?: Array<Record<string, unknown>> }>; input: Array<{ type: string }> };
+    assert.equal(JSON.stringify(sent).includes("tool_search"), false, "no search tool or item reaches a generic Responses endpoint");
+    assert.deepEqual(sent.input.map(item => item.type), ["message", "message"]);
+    const loaded = sent.tools.find(tool => tool.name === "mcp__fixture__");
+    assert.deepEqual(loaded?.tools?.map(tool => tool.name), ["lookup"], "the tool a search loaded stays declared");
+    assert.equal(JSON.stringify(sent.tools).includes("defer_loading"), false);
+    // A tool the request already declares is not sent a second time.
+    const own = { type: "namespace", name: "mcp__fixture__", description: "Own", tools: [{ type: "function", name: "lookup", description: "mine", parameters: { type: "object", properties: {} } }] };
+    await drain(generic.infer({ ...request(), tools: [exec, own] } as unknown as ResponsesRequest, new AbortController().signal));
+    const again = bodies.at(-1) as { tools: Array<{ name?: string; description?: string }> };
+    assert.deepEqual(again.tools.filter(tool => tool.name === "mcp__fixture__").map(tool => tool.description), ["Own"]);
+    await drain(chat.infer(request(), new AbortController().signal)).catch(() => []);
+    const chatBody = bodies.at(-1) as { tools: unknown[]; messages: unknown[] };
+    assert.equal(JSON.stringify(chatBody).includes("tool_search"), false);
+    assert.equal(chatBody.tools.length, 2, "exec_command and the loaded lookup");
   } finally { delete process.env.TOOL_SEARCH_TEST_KEY; await rm(directory, { recursive: true, force: true }); }
 });

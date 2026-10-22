@@ -42,12 +42,12 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   await writeApp("codex-cli 0.163.0-alpha.10.2");
   const config: GatewayConfig = { version: 1, port: 3457, stateDirectory: join(directory, "state"), providers: [], clientOnly: true };
   const binarySha256 = (await sdkIdentity(runtimeExecutable)).sdkSha256;
-  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true };
+  const runtime: GatewaySdkRuntime = { executable: runtimeExecutable, binarySha256, selectedModelCompaction: true, executorIdentity: true, codeModeHost: false };
   const gatewayRuntime = async () => runtime;
   const hostHome = executionHostHome(configPath, nativeHome);
   const options = { config, configPath, nativeHome, codex: appCodex, gatewayRuntime };
   const descriptor = (withRuntime = true, digit = "a"): ExecutionDescriptor => ({ revision: digit.repeat(64), args: ["app-server", "--listen", "stdio://", "--fixture-state", join(directory, `engine-${digit}.state`)],
-    settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture" }] }, aliases: ["fixture"], ...(withRuntime ? { gatewaySdkSha256: binarySha256 } : {}) });
+    settings: { model: "fixture" }, catalog: { models: [{ slug: "fixture", tool_mode: "direct" }] }, aliases: ["fixture"], ...(withRuntime ? { gatewaySdkSha256: binarySha256 } : {}) });
   const clean = async () => { await rm(directory, { recursive: true, force: true }); await rm(hostHome, { recursive: true, force: true }); await rm(dirname(nativeHomeOwnerPath(nativeHome)), { recursive: true, force: true }); };
   return { directory, config, options, hostHome, nativeHome, appCodex, writeApp, runtime, descriptor, clean };
 }
@@ -75,6 +75,31 @@ test("the host validates the gateway runtime it spawns, not a newer native codex
     assert.equal(record.selectedModelCompaction, true);
     assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "runtime");
     assert.equal((await readOwner(join(f.hostHome, "owner.json")))?.capabilities?.join(), "gateway");
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("a verified gateway runtime does not gain Code Mode from an adjacent added helper", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    await writeFile(join(dirname(f.runtime.executable), "codex-code-mode-host"), "#!/bin/sh\n", { mode: 0o700 });
+    host = await startExecutionHost(f.options); client = await control(join(f.hostHome, "host.sock"));
+    const descriptor = f.descriptor();
+    descriptor.catalog = { models: [{ slug: "fixture" }] };
+    const record = await client.request<ExecutionRecord>("execution/acquire", { descriptor });
+    assert.notEqual(record.revision, descriptor.revision);
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
+test("a gateway SDK repaired after host start cannot change that host's selected runtime", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client; let available = false;
+  try {
+    await f.writeApp(pinned); await writeFile(join(dirname(f.appCodex), "codex-code-mode-host"), "#!/bin/sh\n", { mode: 0o700 });
+    host = await startExecutionHost({ ...f.options, gatewayRuntime: async () => available ? f.runtime : undefined });
+    client = await control(join(f.hostHome, "host.sock")); available = true;
+    const descriptor = f.descriptor();
+    descriptor.catalog = { models: [{ slug: "fixture" }] };
+    await assert.rejects(client.request("execution/acquire", { descriptor }), /Execution operation failed/);
+    await assert.rejects(readFile(join(f.directory, "engine-a.state"), "utf8"), { code: "ENOENT" });
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
@@ -166,15 +191,10 @@ test("a host that pinned its runtime never spawns the unchecked app codex for a 
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
-test("a runtime that cannot be resolved falls back to pinning the app codex, as before 0.4.3", { timeout: 30000 }, async () => {
+test("a runtime that cannot be resolved fails closed instead of substituting the app codex", { timeout: 30000 }, async () => {
   const f = await fixture();
   try {
-    // A damaged runtime with a newer app codex: the host refuses to start, exactly like 0.4.2 did.
-    await assert.rejects(startExecutionHost({ ...f.options, gatewayRuntime: failing("damaged runtime") }), /pinned Codex SDK version/);
-    // With the pinned app codex the host starts and generations spawn it.
-    await f.writeApp(pinned);
-    const host = await startExecutionHost({ ...f.options, gatewayRuntime: failing("damaged runtime") });
-    await host.close();
+    await assert.rejects(startExecutionHost({ ...f.options, gatewayRuntime: failing("damaged runtime") }), /damaged runtime/);
   } finally { await f.clean(); }
 });
 

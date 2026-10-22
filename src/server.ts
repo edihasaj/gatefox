@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { gatewayToken, validBearer, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { ClaudeSubscription } from "./providers/claude.js";
 import { CopilotSubscription, retireUnconfiguredCopilotScopes } from "./providers/copilot.js";
+import { GrokSubscription } from "./providers/grok.js";
 import { sweepCopilotDirectories } from "./providers/copilot-directories.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
@@ -16,6 +17,7 @@ import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
 import { responsesToChatRequest } from "./protocol/request.js";
+import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
 import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
@@ -99,7 +101,7 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
 }
 
 export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
 }
 /** Whole-request cap: it bounds gateway memory while letting the upstream set its own large limit. */
 export const maxRequestBytes = 64 * 1024 * 1024;
@@ -329,10 +331,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
       if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
-      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, subtype: known.upstream?.subtype, ...translation });
+      const diagnostic = providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: Date.now() - startedAt, failure: known, abortCause, ...translation });
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, upstreamReason: diagnostic.upstreamReason, subtype: known.upstream?.subtype, ...translation });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
-      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: failure.durationMs, failure: known, abortCause, ...translation }))); } catch { /* Diagnostics never replace the request outcome. */ }
+      try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(diagnostic)); } catch { /* Diagnostics never replace the request outcome. */ }
       return known;
     };
     // A process that exits while this request runs records it as it stands: the stop it is about to suffer is the shutdown's doing.
@@ -376,9 +379,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
-      // Validate the supported protocol before invoking any provider. Only the Codex subscription route accepts tool_search
-      // (its provider drops it before forwarding); every other route rejects it here, and Messages requests carry only function tools.
-      responsesToChatRequest(request, { toolSearch: route.type === "codex-subscription", reportMerges: true });
+      // Validate the supported protocol before invoking any provider. Only the Codex subscription route forwards hosted web_search
+      // and drops or bridges tool_search; every other route drops both and their replayed items (keeping tools a search loaded),
+      // so a chat that switches from Codex 2 keeps working, and each drop is counted once per request.
+      const codexRoute = route.type === "codex-subscription";
+      responsesToChatRequest(request, { toolSearch: codexRoute, webSearch: codexRoute, reportMerges: true });
+      if (!codexRoute) reportDroppedSearch(request, route.id);
       if (countTokens) {
         throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
       }

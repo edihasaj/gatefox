@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { chmod, lstat, symlink, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -5,7 +6,7 @@ import { dirname, resolve } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { object, isId, type Id, type Message } from "./app-server-connection.js";
 import type { GatewayConfig } from "./config.js";
-import { ExecutionEngine, ReleaseSkewError, type SkewDirection, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
+import { ExecutionEngine, ReleaseSkewError, type SkewDirection, canonicalJson, executionDescriptor, validateExecutionSdk, descriptorFingerprint, type ExecutionRecord } from "./execution-host-engine.js";
 import { claimHost, executionCapabilities, executionHostHome, executionHostMarker, listenPrivate, privateDirectory, publishOwner, removeOwnedSocket, sdkIdentity, sdkSocketTarget, socketAnswers, socketIdentity, type ExecutionCapability, type HostOwner } from "./execution-host-storage.js";
 import { NativeExecutionEngine, compareNativeLaunch, nativeDescriptor, type NativeExecutionDescriptor, type NativeExecutionRecord } from "./native-execution-host-engine.js";
 import { claimNativeHome, nativeHomeOwnerPath, type NativeHomeLease } from "./native-execution-host-storage.js";
@@ -15,6 +16,10 @@ import { engineActivity } from "./execution-host-activity.js";
 import { engineBusy, skewWatch } from "./execution-host-skew.js";
 import { pendingGatewaySdkReader, type PendingGatewaySdk } from "./self-update.js";
 import { telemetry } from "./telemetry.js";
+import { executableRunsCodeMode } from "./codex-native-rows.js";
+import { normalizeExecutionTools } from "./execution-host-tools.js";
+import { executionHostIdentity, type ExecutionHostIdentity } from "./execution-host-attestation.js";
+import { ExecutionProbeManager, type ScrubbedExecutionProbeReport } from "./execution-probe.js";
 
 export { executionHostHome } from "./execution-host-storage.js";
 export type { ExecutionDescriptor, ExecutionRecord } from "./execution-host-engine.js";
@@ -34,6 +39,18 @@ export const defaultQuietMs = 5 * 60_000;
 export type QuietWait = "running" | "background_terminal" | "too_many" | "unreadable" | "ephemeral_settling" | "recent_turn";
 /** A quiet host that closed its gate (how many chats its engines still had loaded, a count only), or why it is not quiet. */
 export type QuietStop = { loadedChats: number } | { wait: QuietWait };
+export interface ExecutionHostAttestation {
+  hostPid: number;
+  startedAtMs: number;
+  runningRelease: string;
+  sourceCommit: string;
+  catalogFingerprint: string;
+  sdkSha256: string;
+  compatible: boolean;
+  activeGenerations: number;
+  compatibleGenerations: number;
+  incompatibleGenerations: number;
+}
 
 /** Why a host start failed, from a fixed vocabulary; the error's own text and paths are never part of it. */
 export type HostFailureReason = "live_owner" | "identity_changed" | "socket_occupied" | "sdk_invalid" | "sdk_dir_missing" | "receipt_invalid" | "io_error" | "other";
@@ -90,9 +107,22 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   if (Buffer.byteLength(socketPath) > 103) throw new Error("Execution host Unix socket path exceeds 103 bytes");
   const requested = executionCapabilities(options.capabilities); const resolveRuntime = options.gatewayRuntime ?? gatewaySdkRuntime;
   if (options.nativeRelayOwnsRegistration !== undefined && typeof options.nativeRelayOwnsRegistration !== "boolean" || options.nativeRelayOwnsRegistration && !requested.includes("native")) throw new Error("Execution host native relay ownership is invalid");
-  // Generations run this release's pinned gateway SDK, so that is the binary to pin. Without one (older layouts) they spawn the app's codex.
-  // A runtime that cannot be resolved (a damaged install) falls back to pinning the app's codex, as releases before 0.4.3 did.
-  const runtime = requested.includes("gateway") ? await resolveRuntime().catch(() => undefined) : undefined;
+  // Generations run this release's pinned gateway SDK, so that is the binary to pin. A release with no SDK component
+  // (an older layout) uses the app's Codex; an invalid present component fails closed.
+  // A present gateway SDK is a signed, checked component. Its verifier throws
+  // when that source is damaged; never substitute the app executable in that
+  // case, because that would silently change the generation's tool contract.
+  const runtime = requested.includes("gateway") ? await resolveRuntime() : undefined;
+  /**
+   * The host never adopts a runtime it did not select at start, but each spawn
+   * still makes the normal verifier hash and validate that selected artifact.
+   */
+  const selectedRuntime = async (): Promise<GatewaySdkRuntime | undefined> => {
+    if (!runtime) return;
+    const fresh = await resolveRuntime();
+    if (!fresh || resolve(fresh.executable) !== resolve(runtime.executable) || fresh.binarySha256 !== runtime.binarySha256) return;
+    return runtime;
+  };
   // A gateway-only host runs its own pinned runtime, so an app that was updated or uninstalled must not stop it from starting.
   // Its receipt then names that runtime instead of a binary nothing checks, and the runtime checksum below stays the guard.
   let sdk: { codex: string; sdkSha256: string };
@@ -101,7 +131,13 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!runtime || requested.includes("native")) throw error;
     sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
   }
-  await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
+  // Gateway and native engines have independent pins. A native-only host is
+  // verified by the signed native SDK verifier below, not the gateway SDK pin.
+  if (requested.includes("gateway")) await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
+  // The verified receipt now pins the companion, so only a verified host enables
+  // Code Mode; an adjacent file the receipt never recorded still never does.
+  // Legacy app-SDK launches retain their companion check on the selected executable.
+  const codeModeAvailable = runtime ? runtime.codeModeHost : executableRunsCodeMode(sdk.codex);
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
     try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }
@@ -115,12 +151,63 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const nativeRelayOwnsRegistration = options.nativeRelayOwnsRegistration === true && capabilities.includes("native");
   const owner: HostOwner = await claimHost(home, { version: 1, managed: executionHostMarker, configPath: resolve(options.configPath), nativeHome: resolve(options.nativeHome), ...sdk, socketPath,
     capabilities, ...nativeSdk, ...(capabilities.includes("native") ? { nativeRelayOwnsRegistration } : {}) });
+  // The release receipt and OS start stamp are read once. `current` must never
+  // make a long-running host claim it loaded a newer release.
+  const identity = await executionHostIdentity(owner.startedAtMs);
   let native: NativeExecutionEngine | undefined; let richestNative: NativeExecutionDescriptor | undefined; let nativeLease: NativeHomeLease | undefined;
   const engines = new Map<string, ExecutionEngine>(); const leases = new Map<WebSocket, Set<string>>(); let leaseEpoch = 0; let stopping = false; let quiescing = false; let closed: Promise<void> | undefined;
   const maintenanceIntervalMs = options.maintenance?.intervalMs ?? 60_000;
   const maintenanceCandidateLimit = options.maintenance?.candidateLimit ?? 8;
   const maintenanceProbeConcurrency = options.maintenance?.probeConcurrency ?? 2;
   let writes: Promise<void> = Promise.resolve(); let serial: Promise<unknown> = Promise.resolve(); let controlEpoch = 0; let pending = 0;
+  const runtimeSha256 = runtime?.binarySha256 ?? sdk.sdkSha256;
+  const attestation = (): ExecutionHostAttestation | undefined => {
+    if (!identity) return;
+    const generations = [...engines.values()].filter(engine => !engine.closed && engine.owner.pid > 0).map(engine => ({
+      revision: engine.record.revision,
+      fingerprint: engine.fingerprint,
+      toolModes: engine.descriptor.catalog.models.map(row => typeof row.tool_mode === "string" ? row.tool_mode : "unset"),
+      runtimeBinarySha256: engine.descriptor.gatewaySdkSha256 ? runtimeSha256 : sdk.sdkSha256,
+    })).sort((left, right) => left.revision.localeCompare(right.revision) || left.fingerprint.localeCompare(right.fingerprint));
+    const compatibleGenerations = codeModeAvailable ? generations.length : generations.filter(row => row.toolModes.every(mode => mode === "direct")).length;
+    return {
+      ...identity,
+      catalogFingerprint: createHash("sha256").update(canonicalJson(generations)).digest("hex"),
+      sdkSha256: runtimeSha256,
+      compatible: compatibleGenerations === generations.length,
+      activeGenerations: generations.length,
+      compatibleGenerations,
+      incompatibleGenerations: generations.length - compatibleGenerations,
+    };
+  };
+  let probe: ExecutionProbeManager | undefined; let probing: Promise<ScrubbedExecutionProbeReport> | undefined;
+  let lastProbe: ScrubbedExecutionProbeReport | undefined; let lastProbeAt = Number.NEGATIVE_INFINITY;
+  const probeMatches = (report: ScrubbedExecutionProbeReport, current: ExecutionHostAttestation | undefined): boolean => !!current
+    && report.hostPid === current.hostPid && report.startedAtMs === current.startedAtMs && report.runningRelease === current.runningRelease
+    && report.sourceCommit === current.sourceCommit && report.catalogFingerprint === current.catalogFingerprint && report.sdkSha256 === current.sdkSha256;
+  const executionProbe = (params: Message): Promise<ScrubbedExecutionProbeReport> => {
+    if (Object.keys(params).length) return Promise.reject(new Error("Invalid execution probe"));
+    if (stopping) return Promise.reject(new Error("Execution host is closing"));
+    if (quiescing) return Promise.reject(new Error("Execution host is quiescing for an idle restart"));
+    if (lastProbe && Date.now() - lastProbeAt < 30_000 && probeMatches(lastProbe, attestation())) return Promise.resolve(lastProbe);
+    lastProbe = undefined;
+    probe ??= new ExecutionProbeManager({
+      // Revalidate the runtime the host selected at startup, while refusing a
+      // repaired or replaced package as a new selection. A host that started
+      // on the legacy app SDK cannot prove a packaged-SDK canary and must be
+      // restarted before it adopts one.
+      runtime: selectedRuntime,
+      snapshot: (): ExecutionHostIdentity & { catalogFingerprint: string } => {
+        const value = attestation();
+        if (!value) throw new Error("Execution host identity is unavailable");
+        return value;
+      },
+    });
+    probing ??= probe.run().then(value => {
+      lastProbe = value; lastProbeAt = Date.now(); return value;
+    }).finally(() => { probing = undefined; });
+    return probing;
+  };
   // Release skew: a generation request that names another release's gateway SDK. The adapter is newer when its SDK is the
   // installed (pending) release's, and older otherwise. Each direction is recorded at most once per `skewEventGapMs`, with the
   // refusals since the last record; a newer adapter also marks its release urgent for the supervisor (see `skewRefused`).
@@ -209,7 +296,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   };
   const acquire = async (params: Message): Promise<ExecutionRecord> => {
     if (!capabilities.includes("gateway")) throw new Error("Execution host does not offer gateway ownership");
-    const descriptor = executionDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params);
+    const descriptor = normalizeExecutionTools(executionDescriptor(Object.hasOwn(params, "descriptor") ? params.descriptor : params), codeModeAvailable);
     const existing = engines.get(descriptor.revision);
     if (existing && !existing.closed) {
       if (existing.fingerprint !== descriptorFingerprint(descriptor)) throw new Error("A gateway generation cannot change its loaded settings");
@@ -219,7 +306,11 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (stopping) throw new Error("Execution host is closing");
     // Empty generations are retired by bounded background maintenance. Never probe an unrelated old SDK while this caller
     // is loading a new catalog: an old socket can be stopped or wedged while its saved chat remains recoverable.
-    const engine = new ExecutionEngine(descriptor, owner, home, resolveRuntime, !runtime); engines.set(descriptor.revision, engine);
+    // A host's selected SDK is immutable for its lifetime. A repaired or
+    // replaced package must arrive through a fresh host, never change an
+    // existing host's Code Mode contract between descriptor normalization and
+    // spawn.
+    const engine = new ExecutionEngine(descriptor, owner, home, selectedRuntime, !runtime); engines.set(descriptor.revision, engine);
     try { await engine.start(options.config, publish); await publish(); return engine.record; }
     catch (error) { await remove(engine); if (error instanceof ReleaseSkewError) throw new ReleaseSkewError(error.adapterSha256, await noteSkew(error.adapterSha256).catch(() => "adapter_older" as const)); throw error; }
   };
@@ -299,9 +390,15 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
       }
       return record ?? { found: false };
     }
-    if (method === "execution/status") return { version: 1, pid: process.pid, quiescing, capabilities,
+    if (method === "execution/probe") return executionProbe(params);
+    if (method === "execution/status") {
+      const currentAttestation = attestation();
+      return { version: 1, pid: process.pid, quiescing, capabilities, nativeHomeOwned: capabilities.includes("native") && nativeLease !== undefined,
+      ...(currentAttestation ? { attestation: currentAttestation } : {}),
+      ...(lastProbe ? { lastProbe } : {}),
       native: native ? { ...native.record, state: native.closed ? "exited" : "running" } : null,
       generations: [...engines.values()].map(engine => ({ ...engine.record, pid: engine.owner.pid, state: engine.closed ? "exited" : "running" })) };
+    }
     throw new Error("Unknown execution host method");
   };
   const server = createServer((_req, response) => { response.writeHead(404); response.end(); });
@@ -318,9 +415,12 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         if (!isId(message.id) || typeof message.method !== "string" || ids.has(message.id)) { client.close(1008, "Invalid control request"); return; }
         if (pending >= 64) { client.close(1013, "Execution control busy"); return; }
         const id = message.id; ids.add(id); pending++;
-        const status = message.method === "execution/status";
+        const status = message.method === "execution/status" || message.method === "execution/probe";
         const run = async () => {
           if (!status) controlEpoch++;
+          if (message.method === "execution/probe" && (!message.params || typeof message.params !== "object" || Array.isArray(message.params) || Object.keys(message.params).length)) {
+            throw new Error("Invalid execution probe");
+          }
           const result = await dispatch(message.method as string, object(message.params), held);
           if (["execution/acquire", "execution/find"].includes(message.method as string) && typeof object(result).revision === "string") { held.add((result as ExecutionRecord).revision); leaseEpoch++; }
           if (message.method === "native/acquire") { held.add(`native:${(result as NativeExecutionRecord).revision}`); leaseEpoch++; }
@@ -330,7 +430,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
         // in the queue: the service's 5 s probe must never read a busy host as a hung one.
         const operation = status ? Promise.resolve().then(run) : serial.then(run);
         if (!status) serial = operation.catch(() => undefined);
-        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
+        void operation.then(result => ({ id, result }), error => ({ id, error: { code: -32000, message: error instanceof Error && /^(Invalid execution(?: probe)?|Execution descriptor|A gateway generation|Four gateway generations|Execution host (is (closing|quiescing)|does not offer)|Invalid native execution|This (Mac's gateway service is moving to the newer release|app and this Mac's gateway service run different gateway releases)|Native execution (startup settings differ|SDK exited|launch (is unconfirmed|changed during replacement)|remote-control flag conflicts|ownership (is held by a live owner|changed))|Invalid loaded-chat|Multiple gateway generations|Unknown execution host)/.test(error.message) ? error.message : "Execution operation failed; managed chat ownership was preserved" } }))
           .then(reply => {
             if (client.readyState !== WebSocket.OPEN) return;
             const payload = JSON.stringify(reply);
@@ -404,7 +504,7 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     serial = operation.catch(() => undefined); return operation;
   };
   const close = (): Promise<void> => closed ||= (async () => {
-    stopping = true; skew.stop(); if (maintenanceTimer) clearInterval(maintenanceTimer); for (const socket of sockets.clients) socket.terminate();
+    stopping = true; skew.stop(); if (maintenanceTimer) clearInterval(maintenanceTimer); await probe?.close(); for (const socket of sockets.clients) socket.terminate();
     const stoppedServer = new Promise<void>(resolve => server.close(() => resolve()));
     server.closeAllConnections();
     const results = await Promise.allSettled([...engines.values()].map(engine => engine.stop()).concat(native ? [native.stop()] : []));

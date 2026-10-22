@@ -171,16 +171,73 @@ JS
   fi
 fi
 # Keep the current release, the previous one and the newest other one. Older
-# releases move to the Trash unless a running process still maps their files.
+# releases move to the Trash only after a complete local inspection. A current
+# launcher can run old JavaScript under an app-owned Node, so a process without
+# the immutable marker is a legacy holder and makes this whole cleanup a no-op.
 keep_current=$(readlink "$root/current" | sed 's#^releases/##')
 keep_previous=$(sed 's#^releases/##' "$root/previous-release" 2>/dev/null || true)
-in_use=$( { /usr/sbin/lsof -nP -Fn 2>/dev/null; cat "$HOME"/Library/LaunchAgents/com.edihasaj.subscription-gateway*.plist 2>/dev/null; } | grep -o "$root/releases/[^/<]*/" | sort -u || true)
+in_use=""
+prune_safe=0
+if in_use=$(./runtime/bin/node --input-type=module - "$root" <<'JS'
+import { spawnSync } from "node:child_process";
+import { lstatSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+const root=process.argv[2], releases=`${root}/releases/`, current=`${root}/current/package/dist/cli.js`;
+const options={encoding:"utf8",stdio:["ignore","pipe","ignore"],timeout:10000,maxBuffer:16*1024*1024};
+const lsof=spawnSync("/usr/sbin/lsof",["-nP","-u",String(process.getuid()),"-Fpn"],options);
+const processes=spawnSync("/bin/ps",["-x","-o","pid=","-o","command="],options);
+if(lsof.error||lsof.status!==0||processes.error||processes.status!==0)process.exit(1);
+const mapped=new Map(); let pid;
+for(const line of lsof.stdout.split("\n")) {
+  if(line.startsWith("p")) { pid=line.slice(1); mapped.set(pid,[]); }
+  else if(line.startsWith("n")&&pid) mapped.get(pid).push(line.slice(1));
+}
+const escape=value=>value.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+const immutable=new RegExp(`${escape(releases)}([^/]+)/package/dist/cli\\.js(?:\\s|$)`);
+const marker=path=>new RegExp(`^${escape(releases)}([^/]+)/\\.gateway-release$`).exec(path)?.[1];
+const entrypoint=path=>new RegExp(`^${escape(releases)}([^/]+)/package/dist/cli\\.js$`).exec(path)?.[1];
+const names=new Set();
+for(const line of processes.stdout.split("\n")) {
+  const match=/^\s*(\d+)\s+(.*)$/.exec(line);
+  if(!match)continue;
+  const paths=mapped.get(match[1])||[];
+  const held=new Set(paths.map(marker).filter(Boolean));
+  const bootstrapped=new Set(paths.map(entrypoint).filter(Boolean));
+  for(const path of paths) { const name=marker(path)??entrypoint(path); if(name) names.add(name); }
+  const legacy=immutable.exec(match[2])?.[1];
+  if(legacy&&!held.has(legacy))names.add(legacy);
+  // `current` does not identify the source release after it moves. A runtime
+  // marker from a newer hot swap is insufficient; only the immutable CLI file
+  // descriptor acquired at process startup proves which release bootstrapped it.
+  if(match[2].includes(current) && !bootstrapped.size)process.exit(1);
+}
+for(const paths of mapped.values())for(const path of paths) {
+  if(!path.startsWith(releases))continue;
+  const match=new RegExp(`^${escape(releases)}([^/]+)/`).exec(path);
+  if(match)names.add(match[1]);
+}
+const launchAgents=join(process.env.HOME||"", "Library", "LaunchAgents");
+try {
+  for(const file of readdirSync(launchAgents)) {
+    if(!/^com\.edihasaj\.subscription-gateway.*\.plist$/.test(file))continue;
+    const path=join(launchAgents,file), info=lstatSync(path);
+    if(!info.isFile()||info.isSymbolicLink()||info.size>1024*1024)process.exit(1);
+    for(const match of readFileSync(path,"utf8").matchAll(new RegExp(`${escape(releases)}([^/]+)/`,"g")))names.add(match[1]);
+  }
+} catch(error) {
+  if(error?.code!=="ENOENT")process.exit(1);
+}
+process.stdout.write([...names].sort().join("\n"));
+JS
+); then
+  prune_safe=1
+fi
 kept_extra=0; pruned=0
-if [ -z "$transaction_nonce" ] && [ -d "$HOME/.Trash" ]; then
+if [ -z "$transaction_nonce" ] && [ "$prune_safe" -eq 1 ] && [ -d "$HOME/.Trash" ]; then
   for name in $(ls -1 "$root/releases" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -t. -k1,1nr -k2,2nr -k3,3nr); do
     [ "$name" = "$keep_current" ] || [ "$name" = "$keep_previous" ] && continue
     if [ "$kept_extra" -eq 0 ]; then kept_extra=1; continue; fi
-    case "$in_use" in *"$root/releases/$name/"*) continue ;; esac
+    if printf '%s\n' "$in_use" | /usr/bin/grep -Fx "$name" >/dev/null; then continue; fi
     [ -f "$root/releases/$name/.gateway-release" ] || continue
     mv "$root/releases/$name" "$HOME/.Trash/subscription-gateway-$name-$(date +%s)" && pruned=$((pruned + 1))
   done

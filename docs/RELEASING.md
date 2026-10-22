@@ -213,7 +213,13 @@ JavaScript. Installing a CLI update preserves the registration. See
    file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
    Install exactly that asset on each device, then run `gateway versions --check`
-   there and require a zero exit before the device is treated as updated.
+   there and require a zero exit before the device is treated as updated. Run
+   `gateway rollout` after each install and require `ready` before declaring the
+   machine shipped. It ties immutable loaded process releases, the service's
+   PID-frozen release, the inference response header, execution-host identity,
+   and a current tool canary together; a moved `current` link or an HTTP 200
+   alone cannot pass it. Use `gateway rollout --verify` for a new isolated
+   no-provider canary when a cached proof is pending. See [rollout readiness](rollout.md).
    After every install, also run `gateway health` on every Mac; its verdict must
    be `ok` or `warn` (see [the watchdog](health.md)). A `fail` means this Mac is
    broken or half-moved, and the alert push is not configured until
@@ -267,8 +273,15 @@ skips the idle guard and cuts off whatever that process was holding. See
 prints.
 
 The installer keeps the current release, the previous one and the newest other
-release. Older releases move to the Trash unless a running process still maps
-their files (checked with `lsof`); nothing is deleted.
+release. Older releases move to the Trash, never delete in place. Each managed
+CLI opens its immutable `package/dist/cli.js` and release marker read-only at
+startup; each loaded server runtime shares one marker descriptor until that
+runtime's own in-flight requests finish. This keeps an app-owned Node that was
+launched through the movable `current` link visible to `lsof` after later
+installs. Before pruning, the installer checks same-user `lsof`, `ps`, and
+managed LaunchAgent references. If any inspection fails, or an older process
+has no immutable bootstrap proof, pruning is skipped for that install. A later
+install cleans up once the holder exits.
 
 The build refuses dirty source unless the preflight flag is explicit. It does not
 download credentials or publish automatically.
@@ -325,7 +338,17 @@ For a development-profile test run, the SDK's large test futures need a larger
 thread stack: `RUST_MIN_STACK=33554432 node scripts/build-gateway-sdk.mjs --test --dev`.
 
 The gateway SDK has its own executable, licenses, dependency inventory, and build
-receipt. The release builder verifies its version, SDK revision, archive and patch
+receipt, and it now also carries `codex-code-mode-host`, the Code Mode companion
+built from the same pinned source; app signing gives that file its own identifier and
+the two JIT entitlements V8 needs, and the companion statically links V8 through
+Codex's code-mode runtime, whose license is listed with the Cargo packages in
+`dependencies.json`. The SDK build downloads V8's pointer-compression sandbox library
+from OpenAI's `rusty-v8-v<version>` release, as Codex's `setup-rusty-v8` action does.
+It accepts the library only after its checksum manifest matches the digest pinned in the
+verified source (`third_party/v8/rusty_v8_<version>_release_manifests.sha256`), and
+records the version and archive digest as `rustyV8` in `build.json`. After a build, run
+`node scripts/e2e-code-mode-host.mjs --artifact .state/gateway-sdk-build/artifact
+--catalog ~/.codex/models_cache.json` to prove a Code Mode cell runs. The release builder verifies its version, SDK revision, archive and patch
 digests, source digest, binary checksum, and capability. It refuses modified cached
 SDK source or unexpected artifact files. The native signed Codex executable and
 desktop bundle remain unchanged. Only a verified gateway executable can enable

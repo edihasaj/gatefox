@@ -58,6 +58,18 @@ interface Run {
 }
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
+const credentialRecovery = (error: unknown): ProviderError | undefined =>
+  error instanceof ProviderError && error.upstream?.code === "authentication_failed" && error.upstream.reason === "upstream_rejected" ? error : undefined;
+/** Wait before one fresh CLI attempt without leaving an uncancellable timer behind. */
+async function credentialBackoff(signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return false;
+  return new Promise(resolve => {
+    const timer = setTimeout(() => done(true), 2000);
+    const abort = () => done(false);
+    const done = (value: boolean) => { clearTimeout(timer); signal.removeEventListener("abort", abort); resolve(value); };
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
 // Codex owns these requests' history shape, so they never join or seed a live session.
 const oneShotKinds = new Set<unknown>(["compaction", "prewarm", "memory"]);
 const liveModules = new Map<string, Promise<ClaudeLiveModule | undefined>>(); const unavailable = new Set<string>();
@@ -96,30 +108,82 @@ export class ClaudeSubscription implements Provider {
     const markCompleted = (event: InferenceEvent) => {
       if (event.type === "done" && !signal.aborted && event.interrupted !== true && completed) { const complete = completed; completed = undefined; complete(); }
     };
+    let recovery: ProviderError | undefined;
+    let recovering = false;
+    let recoveryReported = false;
+    let forcedRetried = false;
+    let current = run;
+    // Authentication recovery cannot repeat work the caller saw in any form. The older
+    // forced-tool recovery remains narrower: only already-visible text would duplicate.
+    let authVisible = false;
+    let streamedText = false;
+    const beginRecovery = async (error: unknown): Promise<boolean> => {
+      const eligible = credentialRecovery(error);
+      if (!eligible || recovery) return false;
+      recovery = eligible; recovering = true;
+      telemetry("claude_credential_recovery", { reason: eligible.upstream?.reason, attempt: 2, outcome: "attempted" });
+      if (await credentialBackoff(signal)) return true;
+      telemetry("claude_credential_recovery", { reason: eligible.upstream?.reason, attempt: 2, outcome: "cancelled" });
+      throw cancelled();
+    };
+    const markRecoveryDone = (event: InferenceEvent) => {
+      if (!recoveryReported && recovering && event.type === "done" && !signal.aborted && event.interrupted !== true) {
+        recoveryReported = true;
+        telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "recovered" });
+      }
+    };
     if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
       const live = await this.live(run, request, context, settings, signal);
       completed = live?.complete;
       if (live?.outcome.kind === "stream") {
-        let yielded = false;
-        try { for await (const event of live.outcome.events) { yielded = true; markCompleted(event); yield event; } return; }
+        try { for await (const event of live.outcome.events) {
+          authVisible = true; if (event.type === "text") streamedText = true;
+          markCompleted(event); yield event;
+        } return; }
         catch (error) {
+          if (!authVisible && await beginRecovery(error)) {
+            // A failed live session synchronously removes itself from the registry; the
+            // cancellable backoff also gives its killed CLI time to exit before this spawn.
+          } else {
           // A session that dies before its first event (the CLI or relay exits right after the seed)
           // falls back to one-shot. Limits, cancellation and caller errors would only repeat.
-          if (yielded || signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
+          if (authVisible || signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
           telemetry("claude_session", { outcome: "fallback", missReason: "stream_failed", threadKey: run.threadKey });
+          }
         }
       }
     }
-    let streamed = false;
-    try {
-      for await (const event of this.oneShot(run, signal)) { if (event.type === "text") streamed = true; markCompleted(event); yield event; }
-    } catch (error) {
-      if (!(error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") || typeof choice !== "object" || signal.aborted) throw error;
-      // Text already reached the caller, so a local retry would duplicate it. A caller retry would
-      // repeat the same full-catalog inference, so the failure is final (Codex: invalid_prompt).
-      if (streamed) throw new ProviderError("upstream_rejected", error.message, 502, error.upstream);
-      // One retry with only the forced tool: a single cache miss instead of a failed turn.
-      for await (const event of this.oneShot({ ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }, signal)) { markCompleted(event); yield event; }
+    for (;;) {
+      try {
+        for await (const event of this.oneShot(current, signal)) {
+          authVisible = true; if (event.type === "text") streamedText = true;
+          markCompleted(event); markRecoveryDone(event); yield event;
+        }
+        return;
+      } catch (error) {
+        if (signal.aborted || error instanceof ProviderError && error.code === "cancelled") {
+          if (recovering && !recoveryReported) {
+            recoveryReported = true;
+            telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "cancelled" });
+          }
+          throw cancelled();
+        }
+        if (!authVisible && !recovery && await beginRecovery(error)) continue;
+        if (!streamedText && !forcedRetried && error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch" && typeof choice === "object") {
+          // One retry with only the forced tool: a single cache miss instead of a failed turn.
+          forcedRetried = true; current = { ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }; continue;
+        }
+        if (recovering && !recoveryReported) {
+          recoveryReported = true;
+          telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "failed" });
+          // A second native 401 is the same final authentication failure that started recovery.
+          if (credentialRecovery(error)) throw recovery!;
+        }
+        // Text, reasoning, tools and accounting are all visible events. An auth retry after one
+        // would duplicate state at the caller. Forced-tool recovery retains its historic text-only guard.
+        if (streamedText && error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") throw new ProviderError("upstream_rejected", error.message, 502, error.upstream);
+        throw error;
+      }
     }
   }
 

@@ -1,6 +1,6 @@
 {
   "name": "@edihasaj/harness-gateway",
-  "version": "0.5.8",
+  "version": "0.6.7",
   "private": true,
   "type": "module",
   "description": "A local gateway that serves subscription and API providers to agent harnesses through Responses and Messages APIs.",
@@ -33,6 +33,7 @@
     "LICENSE",
     "scripts/codex-desktop-shim",
     "scripts/e2e-fast-mode.mjs",
+    "scripts/e2e-direct-tools.mjs",
     "README.md",
     "docs",
     "scripts/claude-desktop-adapter.mjs",

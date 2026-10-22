@@ -119,6 +119,35 @@ Nothing is written to `~/.claude`: sessions use `--no-session-persistence` and a
 private working directory under `$TMPDIR/gateway-claude`, which the next start sweeps
 after a crash. Live sessions set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
 
+## Authentication failures
+
+The CLI's `authentication_failed` code does not by itself prove that the user must
+sign in again. The gateway classifies bounded diagnostics from native failure
+envelopes into fixed reasons: `login_unavailable`, `session_expired`,
+`credential_revoked`, `upstream_rejected`, or `unknown`. It never saves the
+diagnostic text. Local `claude auth status` reports credential presence; it does
+not prove that an inference request will authenticate.
+An unclassified failure therefore suggests retrying and signing in if it
+persists, rather than asserting that the saved login has expired.
+
+An explicit generic upstream HTTP 401, identified by the CLI's native error
+prefix, gets one fresh one-shot attempt after a cancellable two-second wait.
+This recovery is allowed only before any inference event has reached the caller.
+The same model, instructions, history and tools are used, and a failed live
+session closes before the replacement starts. Text, reasoning or a dispatched
+tool makes the failure final for this request. Missing, expired, revoked and
+unclassified logins also remain final, as do billing and subscription limits.
+A second failure preserves its original error. Recovery never resumes a stopped
+goal, answers an approval, or replays an executed command.
+
+On October 21, 2026, five fresh one-shot requests failed with
+`authentication_failed` between 10:33 and 10:36 Europe/Belgrade, each before any
+inference event. Two original chats later continued without a recorded login
+change. Earlier telemetry did not retain a failure reason, so it cannot prove
+whether those failures involved credential access, expiry or upstream rejection.
+The guarded recovery addresses the explicit upstream-401 shape; it is not a
+demonstrated reproduction of that incident.
+
 ## Context management
 
 The CLI sends only `clear_thinking` with `keep: all`, which removes nothing. Version

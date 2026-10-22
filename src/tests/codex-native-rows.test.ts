@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelCatalog } from "../catalog.js";
@@ -43,7 +43,10 @@ test("a Codex 2 row copies the native harness fields and keeps the upstream acco
   assert.equal(published.supports_search_tool, false, "the gateway publishes search off");
   assert.equal(row.supports_search_tool, false, "a Codex 2 row keeps search off even though the native row has it on: the ChatGPT backend refuses a forwarded tool_search");
   for (const value of [false, undefined, "true", null]) assert.equal(withNativeRow(published, [{ ...nativeSol, supports_search_tool: value }]).supports_search_tool, false, `a native value of ${JSON.stringify(value)} is not copied`);
-  for (const key of ["comp_hash", "upstream_slug", "web_search_tool_type"]) assert.equal(Object.hasOwn(row, key), false, key);
+  for (const key of ["comp_hash", "upstream_slug"]) assert.equal(Object.hasOwn(row, key), false, key);
+  assert.equal(row.web_search_tool_type, "text_and_image", "the Codex 2 row keeps the native hosted web search tool, which the ChatGPT backend accepts alongside function tools");
+  assert.equal(Object.hasOwn(withNativeRow(published, [{ ...nativeSol, web_search_tool_type: 7 }]), "web_search_tool_type"), false, "a web search type that is not text is not copied");
+  assert.equal(Object.hasOwn(withNativeRow(published, [{ ...nativeSol, web_search_tool_type: undefined }]), "web_search_tool_type"), false, "a native row without the field adds none");
   (row.model_messages as typeof messages).approvals.on_request = "changed";
   assert.equal(messages.approvals.on_request, "native approvals", "the native row is copied, never shared");
 });
@@ -74,12 +77,26 @@ test("an executor without the code-mode host keeps the published tool mode and s
   const root = await mkdtemp(join(tmpdir(), "gateway-code-mode-"));
   try {
     assert.equal(executorRunsCodeMode(root), true, "without a packaged SDK the desktop's own Codex runs gateway chats");
+    const pruned = join(root, "releases", "0.2.20", "package");
+    await mkdir(join(root, "releases"), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });
+    assert.equal(executorRunsCodeMode(pruned), false, "a pruned managed package cannot imply the native host");
     await mkdir(join(root, "gateway-sdk")); await writeFile(join(root, "gateway-sdk", "gateway-codex"), "", { mode: 0o755 });
-    assert.equal(executorRunsCodeMode(root), false, "the packaged SDK has no code-mode host beside it");
-    await writeFile(join(root, "gateway-sdk", "codex-code-mode-host"), "", { mode: 0o644 });
+    assert.equal(executorRunsCodeMode(root), false, "a packaged SDK with no host beside it runs direct tools");
+    await writeFile(join(root, "gateway-sdk", "codex-code-mode-host"), "", { mode: 0o755 });
+    assert.equal(executorRunsCodeMode(root), false, "a host its build receipt never recorded does not count");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "a".repeat(64) }));
+    assert.equal(executorRunsCodeMode(root), true, "the receipt and the executable file together enable code mode");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "not-a-digest" }));
+    assert.equal(executorRunsCodeMode(root), false, "a receipt that names no digest does not count");
+    await writeFile(join(root, "gateway-sdk", "build.json"), JSON.stringify({ codeModeHostSha256: "a".repeat(64) }));
+    await chmod(join(root, "gateway-sdk", "codex-code-mode-host"), 0o644);
     assert.equal(executorRunsCodeMode(root), false, "a host that cannot be executed does not count");
     await chmod(join(root, "gateway-sdk", "codex-code-mode-host"), 0o755);
     assert.equal(executorRunsCodeMode(root), true);
+    await rm(join(root, "gateway-sdk", "codex-code-mode-host"));
+    await symlink(join(root, "gateway-sdk", "gateway-codex"), join(root, "gateway-sdk", "codex-code-mode-host"));
+    assert.equal(executorRunsCodeMode(root), false, "a symlinked host does not count");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -90,6 +107,9 @@ test("rows without a marker or a native row for their slug stay as published, wi
   assert.deepEqual(today.model_messages, { instructions_template: "" }); assert.equal(today.tool_mode, "direct");
   const [claude] = catalog({ id: "claude", type: "claude-subscription", models: { "gpt-6.1-sol": "claude-sonnet" } });
   assert.deepEqual(withNativeRow(claude, [nativeSol]), claude);
+  // Other routes cannot run hosted search and the gateway drops the tool, so a published row that carries the field loses it.
+  assert.deepEqual(Object.hasOwn(withNativeRow({ ...claude, web_search_tool_type: "text_and_image" }, [nativeSol]), "web_search_tool_type"), false);
+  assert.deepEqual(Object.hasOwn(withNativeRow({ ...missing, web_search_tool_type: "text" }, [nativeSol]), "web_search_tool_type"), false, "a Codex 2 row with no native row loses it too");
 });
 
 test("the desktop adapter publishes native copies in the combined catalog but caches only the host's public rows", async () => {

@@ -18,7 +18,7 @@ const publicFields = new Set([
   "slug", "display_name", "description", "priority", "visibility", "supported_in_api", "availability_nux", "upgrade",
   "default_reasoning_level", "default_reasoning_summary", "supports_reasoning_summary_parameter", "shell_type", "apply_patch_tool_type", "tool_mode",
   "include_skills_usage_instructions", "include_plugin_usage_instructions", "include_apps_usage_instructions", "support_verbosity", "default_verbosity",
-  "context_window", "effective_context_window_percent", "supports_search_tool", "supports_experimental_context", "node_repl_disabled", "node_repl_auto_review_required",
+  "context_window", "effective_context_window_percent", "supports_search_tool", "web_search_tool_type", "supports_experimental_context", "node_repl_disabled", "node_repl_auto_review_required",
   "multi_agent_version", "multi_agent_reasoning_effort", "use_responses_lite", "supports_reasoning_effort_updates",
   "max_context_window", "auto_compact_token_limit",
 ]);
@@ -79,17 +79,22 @@ export class DesktopCatalog {
   private initialized?: Promise<void>;
   private sourceIdentity?: string;
   private checkedAt = 0;
+  private published: Message[];
   // prepareNativeCatalog writes the gateway rows without native copies; replace that file once.
   private written = false;
   // The reviewer slugs the inference host advertised when each snapshot was built; combined() applies the same set to the native rows.
   private readonly reviewers = new WeakMap<DesktopCatalogSnapshot, ReadonlySet<string>>();
+  /** A gateway request keeps its observed public rows while another request refreshes the catalog. */
+  private readonly publishedBySnapshot = new WeakMap<DesktopCatalogSnapshot, Message[]>();
+  private readonly codeModeBySnapshot = new WeakMap<DesktopCatalogSnapshot, boolean>();
   /** The native catalog's slugs. A chat on one of these is native even when an alias of the same name existed. */
   readonly nativeSlugs: ReadonlySet<string>;
-  constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private readonly codeMode = executorRunsCodeMode()) {
+  constructor(private readonly config: GatewayConfig, private readonly native: Message[], readonly path: string, private codeMode = executorRunsCodeMode()) {
     this.nativeSlugs = new Set(native.map(model => model.slug).filter((slug): slug is string => typeof slug === "string"));
     validateAliasesAgainstNative(config, this.nativeSlugs);
     warnUnscopedAliases(config);
-    this.value = this.snapshot(modelCatalog(config).models);
+    this.published = modelCatalog(config).models;
+    this.value = this.snapshot(this.published);
   }
   initialize(): Promise<void> { return this.initialized ||= this.restore(); }
   private async restore(): Promise<void> {
@@ -105,6 +110,7 @@ export class DesktopCatalog {
       if (cache.version !== 1 || cache.source !== source || Object.keys(cache).some(key => !["version", "source", "models"].includes(key))) return;
       const models = publicModels(cache.models, this.native);
       if (JSON.stringify(models).includes(token)) return;
+      this.published = models;
       const next = this.snapshot(models);
       // prepareNativeCatalog can overwrite the combined file during every launch.
       await writePrivateJson(this.path, this.combined(next));
@@ -117,17 +123,22 @@ export class DesktopCatalog {
    * that a reviewer is reachable now, so a restored or reset snapshot has none and keeps node_repl off
    * wherever a row needs review until the next successful read.
    */
-  private snapshot(published: Message[], reviewers: ReadonlySet<string> = noReviewers): DesktopCatalogSnapshot {
+  private snapshot(published: Message[], reviewers: ReadonlySet<string> = noReviewers, codeMode = this.codeMode): DesktopCatalogSnapshot {
     // A row without a native counterpart takes the strictest node_repl policy and the shared review texts.
     const fallback = nodeReplFallback(this.native, reviewers);
     const models = published.map(model => {
-      const row = withNativeRow(model, this.native, this.codeMode, reviewers);
-      return typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : withFallback(row, fallback);
+      const row = withNativeRow(model, this.native, codeMode, reviewers);
+      const resolved = typeof model[upstreamSlugField] === "string" && this.native.some(entry => entry.slug === model[upstreamSlugField]) ? row : withFallback(row, fallback);
+      return !codeMode && resolved.tool_mode !== "direct" ? { ...resolved, tool_mode: "direct" } : resolved;
     });
     // The native rows carried for sub-agents change with the reviewers too, so a new generation starts when they do.
-    const revision = createHash("sha256").update(JSON.stringify([models, [...reviewers].sort()])).digest("hex");
+    // Native rows are added only in combined(), so the executor capability itself must participate: a private executor
+    // otherwise could reuse a generation whose gateway rows happen to be unchanged but whose native child rows were code-mode-only.
+    const revision = createHash("sha256").update(JSON.stringify([models, [...reviewers].sort(), codeMode])).digest("hex");
     const snapshot = { models, path: this.path, revision };
     this.reviewers.set(snapshot, reviewers);
+    this.publishedBySnapshot.set(snapshot, published);
+    this.codeModeBySnapshot.set(snapshot, codeMode);
     return snapshot;
   }
   /**
@@ -135,23 +146,28 @@ export class DesktopCatalog {
    * these rows, so an executor without Codex's code-mode host gives them direct tools instead of
    * failing every command, and they take the Codex 2 rows' node_repl rule: off where the reviewer
    * does not run here or no policy is stated. The reviewer row keeps its node_repl and review fields
-   * and its review text stays the SDK's own. A carried row has the tool search flag off, as a Codex 2 row does: a bare
-   * model name resolves to the Codex subscription route, which drops `tool_search` because the ChatGPT backend refuses
-   * it; an alias spelled like a native slug, which could take that name first, is refused at every gateway catalog load,
-   * checked against the native slugs read at launch.
+   * and its review text stays the SDK's own. A carried row has the tool search flag off whatever a provider sets, because a
+   * bare model name resolves to a route chosen at request time, which may drop `tool_search` (the ChatGPT backend refuses
+   * it) or bridge it; an alias spelled like a native slug, which could take that name first, is refused at every gateway
+   * catalog load, checked against the native slugs read at launch.
    * The native engine keeps its own catalog unchanged.
    */
-  private executorNative(reviewers: ReadonlySet<string>): Message[] {
+  private executorNative(reviewers: ReadonlySet<string>, codeMode: boolean): Message[] {
     return this.native.map(model => {
       const row = executorNativeRow(model, this.native, reviewers);
-      return !this.codeMode && typeof row.tool_mode === "string" && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
+      return !codeMode && row.tool_mode !== "direct" ? { ...row, tool_mode: "direct" } : row;
     });
+  }
+  /** Builds one generation's catalog from the exact public snapshot the request saw, with its selected runtime's capability. */
+  snapshotForExecutor(snapshot: DesktopCatalogSnapshot, codeMode: boolean): DesktopCatalogSnapshot {
+    if (this.codeModeBySnapshot.get(snapshot) === codeMode) return snapshot;
+    return this.snapshot(this.publishedBySnapshot.get(snapshot) ?? this.published, this.reviewers.get(snapshot) ?? noReviewers, codeMode);
   }
   current(): DesktopCatalogSnapshot { return this.value; }
   isNative(model: string): boolean { return this.native.some(entry => entry.slug === model); }
   combined(snapshot = this.value): { models: Message[] } {
     const highest = Math.max(0, ...this.native.map(model => Number(model.priority) || 0));
-    return { models: [...this.executorNative(this.reviewers.get(snapshot) ?? noReviewers), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
+    return { models: [...this.executorNative(this.reviewers.get(snapshot) ?? noReviewers, this.codeModeBySnapshot.get(snapshot) ?? this.codeMode), ...snapshot.models.map((model, index) => ({ ...model, priority: highest + index + 1 }))] };
   }
   refresh(strict = false): Promise<DesktopCatalogSnapshot> {
     return this.initialize().then(() => this.refreshInitialized(strict));
@@ -170,7 +186,7 @@ export class DesktopCatalog {
   private async read(): Promise<DesktopCatalogSnapshot> {
     const token = await readClientToken(resolve(this.config.stateDirectory, "client-token"));
     const source = sourceIdentity(this.config.port, token);
-    if (this.sourceIdentity && this.sourceIdentity !== source) { this.value = this.snapshot(modelCatalog(this.config).models); this.sourceIdentity = undefined; }
+    if (this.sourceIdentity && this.sourceIdentity !== source) { this.published = modelCatalog(this.config).models; this.value = this.snapshot(this.published); this.sourceIdentity = undefined; }
     const response = await fetch(`http://127.0.0.1:${this.config.port}/v1/model-catalog`, {
       headers: { Authorization: `Bearer ${token}` }, redirect: "error", signal: AbortSignal.timeout(5000),
     });
@@ -191,7 +207,8 @@ export class DesktopCatalog {
     const encoded = JSON.stringify(cache, null, 2) + "\n";
     if (Buffer.byteLength(encoded) > maxCatalogBytes || encoded.includes(token)) throw new Error("Gateway public metadata cannot be cached safely");
     // Only this live 200 response says which reviewers the host serves right now.
-    const next = this.snapshot(models, readAutoReviewAdvertisement(parsed.auto_review));
+    this.published = models;
+    const next = this.snapshot(this.published, readAutoReviewAdvertisement(parsed.auto_review));
     await writePrivateJson(resolve(this.config.stateDirectory, "desktop-public-models.json"), cache);
     if (next.revision !== this.value.revision || !this.written) await writePrivateJson(this.path, this.combined(next));
     this.value = next; this.sourceIdentity = source; this.checkedAt = Date.now(); this.written = true; return next;

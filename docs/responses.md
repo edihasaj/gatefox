@@ -217,7 +217,13 @@ The gateway retries a throttle once before output when its wait is at most 30
 seconds (one second when no wait is given); a longer wait returns at once and
 stays retryable for Codex. A 429 that names a quota, billing, spend or plan class
 (such as `insufficient_quota` or `usage_limit_reached`), and any other 429, is a
-final usage limit. Cancellation and the request deadline bound all backoff waits;
+final usage limit. ChatGPT reports a shared subscription that has used its
+allowance as `subscription_sharing_usage_limit_exceeded`, with the generic type
+`invalid_request_error`, either in a 429 body or in a stream `error` and
+`response.failed` event. That code is a final usage limit too, and the message
+says the ChatGPT account reached its usage limit. Earlier releases treated it as
+an unknown stream failure, so Codex retried five times and showed a stream
+disconnect. Cancellation and the request deadline bound all backoff waits;
 no quota or account switch is attempted.
 
 `timeoutMs` (ten minutes by default) bounds silence, not total length. It covers
@@ -389,36 +395,121 @@ repeated name no longer fails a request.
 
 Native Codex rows can enable `supports_search_tool`, so the client sends a `tool_search`
 tool, declares it either at the top level or inside a Responses lite `additional_tools`
-input item, and later replays `tool_search_call` and `tool_search_output` items.
-**Search is off on every gateway row.** The ChatGPT backend answers HTTP 400 when the
-gateway forwards a `tool_search` tool (seen in production on 0.4.4, where every Codex 2
-turn failed with "Provider returned HTTP 400"), so the gateway does not forward it.
-Support returns once forwarding is verified against the real backend.
+input item, and later replays `tool_search_call` and `tool_search_output` items. The
+search itself runs in the client (`execution: "client"`): Codex searches its deferred
+tools and replays the matching definitions in `tool_search_output`. The ChatGPT backend
+refuses the `tool_search` type through the gateway's shared-subscription login (HTTP 400
+`subscription_sharing_unsupported_capability`, quoted in [hosted web search](#hosted-web-search);
+first seen on 0.4.4, where every Codex 2 turn failed with "Provider returned HTTP 400").
+**Search is therefore off by default.** A `codex-subscription` provider can opt in to a
+bridge with `"toolSearch": "bridge"` in `gateway.json`; `"off"` is the default, and any
+other provider type refuses the setting. `gateway tool-search on`, `off` and `status` set,
+remove and show it for every `codex-subscription` provider; the command validates the edited
+file before saving it and changes no other field. The setting is capability metadata, so a change
+applies live, without a rebind; a chat started before the change keeps its catalog until
+Codex loads the new one.
 
-- **Codex subscription route.** Before sending upstream, the gateway drops any
+- **Codex subscription route, off.** Before sending upstream, the gateway drops any
   `tool_search` tool, at the top level or inside an `additional_tools` item (an item left
   with no tool is dropped too), and any `tool_search_call` or `tool_search_output` input
   item. This covers an engine that still holds an older catalog with search on. The rest
   of the request is unchanged and keeps its order, including `tool_choice`, so the turn
   runs as it would without search. When anything was dropped, the gateway records
   `tool_search_dropped` with the count of tools and items
-  ([diagnostics](diagnostics.md#local-telemetry)). If the
-  upstream ever produces a `tool_search_call` or `tool_search_output`, it still streams
-  back to the client as sent, once each; an interrupted final snapshot withholds a search
-  item whose status is not `completed`, as it does an unfinished function call.
-- **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic
-  Responses routes keep rejecting them before any provider runs: a `tool_search` tool
-  fails with `unsupported_tool`, and the two item types fail with
-  `unsupported_input_item`, both as a 400 `invalid_request`. The gateway does not
-  translate search for them. Anthropic Messages requests carry only function tools.
-- **Catalog.** `supports_search_tool` is off on every row: Codex 2 rows and the native
-  rows carried for sub-agents have it forced off, whatever the native row says, so Codex
-  does not add the tool
+  ([diagnostics](diagnostics.md#local-telemetry)).
+- **Codex subscription route, bridged.** The gateway sends search with tool types the
+  backend accepts (`src/protocol/tool-search-bridge.ts`). The `tool_search` tool becomes an
+  ordinary function with the same description and parameters, where it was declared: a
+  top-level one joins the gateway namespace, and one inside an `additional_tools` item stays
+  there. Its name is `tool_search`, or `tool_search_` and so on when a flat tool already
+  has that name. A replayed `tool_search_call` becomes a `function_call` of that function,
+  and its `tool_search_output` becomes a `function_call_output` that names the loaded
+  tools, followed by the loaded tools themselves: in a new `additional_tools` item right
+  after the output on a Responses lite request, so everything before that point (and the
+  prompt cache for it) is unchanged, and appended to the top-level tools otherwise. That item
+  carries the role of the request's own `additional_tools` item (Codex sends `developer`),
+  because the backend refuses one without a role. A tool
+  already declared is not declared again, `defer_loading` is removed because the bridge
+  loads the tool explicitly, and only function, custom and namespace tools are loaded.
+  When the model calls the function, the client receives a `tool_search_call` with the
+  parsed arguments and runs the search; it is never dispatched as a caller tool, an
+  interrupted unfinished one is withheld like an unfinished function call, and invalid
+  arguments fail as `invalid_tool_call`. Calls of loaded tools resolve like any caller
+  tool. Codex resends the whole history every turn, so the gateway keeps no state. The
+  gateway records `tool_search_bridged` with counts only.
+- **Verification.** `node scripts/probe-tool-search-bridge.mjs --dry-run` runs both rounds
+  (the model searches, then calls the tool the search loaded) through the gateway's own
+  provider code against a scripted backend, for a top-level and a Responses lite request, and
+  checks that nothing of the `tool_search` type or `defer_loading` reaches the wire. Without
+  `--dry-run` it makes the same four requests to the real backend. On 22 Oct 2026 all four
+  passed the backend's request validation and were refused only for the account's sharing
+  usage limit, exactly like a request with no tools; the backend validates a request before it
+  checks the allowance, which is how it refused the raw `tool_search` type with a 400. Whether
+  the model actually uses the search function is still to be observed once the limit resets.
+- **Bridge risks.** Loading tools on a request
+  that is not Responses lite changes the top-level tool list, which can lower prompt cache
+  hits from that point. The model sees a function rather than the tool type it was trained
+  with, so it may use search a little differently. In the seven days before the bridge was
+  built, no native Codex chat on the test Mac used tool search at all, so its benefit
+  depends on connecting many deferred MCP or connector tools.
+- **Upstream search items.** If the upstream ever produces a `tool_search_call` or
+  `tool_search_output`, it still streams back to the client as sent, once each; an
+  interrupted final snapshot withholds a search item whose status is not `completed`.
+- **Every other route.** Claude, Copilot, Grok, chat-completions, anthropic-api and generic
+  Responses routes drop the `tool_search` tool and both item types instead of rejecting
+  them, so a chat that switches away from a Codex route keeps working. The tools an earlier
+  search loaded stay declared (ranked below any tool the request declares itself), so the
+  new model can still call them. Each drop is recorded as `tool_search_dropped`. A forced
+  `tool_choice: "required"` with only the search tool has nothing to call there and still
+  fails with `unsupported_tool_choice`. Anthropic Messages requests carry only function tools.
+- **Catalog.** `supports_search_tool` is published on only for a bridged route's rows, and
+  a Codex 2 row keeps it on only when its native row has it on too. Every other row, and
+  every native row carried for sub-agents, has it off, because a bare model name resolves to
+  a route only when the request runs
   ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
-- **Ownership.** The client executes search and owns the deferred tool list. The
-  gateway never runs a search and never adds or removes deferred tools. Tool names,
-  queries and outputs are never logged; failures record only the fixed reason and the
-  allowlisted item type.
+- **Ownership.** The client executes search and owns the deferred tool list. The gateway
+  never runs a search; it only changes how search items travel. Tool names, queries and
+  outputs are never logged; failures record only the fixed reason and the allowlisted item
+  type.
+
+## Hosted web search
+
+Native Codex rows that carry `web_search_tool_type` send OpenAI's hosted `web_search`
+tool, and the ChatGPT backend accepts exactly that one hosted tool through a shared
+subscription: forwarding `tool_search` answers HTTP 400 `subscription_sharing_unsupported_capability`
+-- "User subscription sharing currently supports only 'web_search' and developer-defined
+'function' and 'custom' tools, including 'namespace'" -- which is why [tool search](#tool-search-on-the-codex-subscription-route)
+is not forwarded as such (it is off, or bridged as a function) while web search is forwarded.
+
+`scripts/probe-hosted-tools.mjs` asks the backend directly, one short request per case,
+and records only status codes and fixed error fields. On 21 Oct 2026 it showed the refusal
+above for `tool_search`, and showed that `web_search` passed the backend's tool check. The
+account had reached its sharing usage limit, so no search had completed yet; rerun the probe
+after the limit resets to observe a `web_search_call` result. The same run showed that
+`https://chatgpt.com/backend-api/codex`, which native Codex uses, answers 401 to the
+gateway's own login, so the gateway keeps `https://api.openai.com/v1`.
+
+- **Codex subscription route.** The `web_search` tool, declared at the top level or inside a
+  Responses lite `additional_tools` item, is forwarded upstream unchanged and never wrapped into
+  the gateway namespace, and replayed `web_search_call` input items go upstream as sent. A
+  `web_search_call` the backend produces streams back to the client as received, once each, and
+  an interrupted final snapshot withholds one whose status is not `completed`, as it does a
+  search item. `response.web_search_call.*` progress events are ignored. A forced
+  `tool_choice: "required"` counts a declared `web_search` as satisfying the call.
+- **Every other route.** Claude, Copilot, chat-completions, anthropic-api and generic Responses
+  routes drop the tool and its replayed items before anything is translated or sent, so a chat
+  that switches here from Codex 2 mid-turn keeps working; a `tool_choice` naming `web_search`
+  drops to `auto` on those routes. When anything was dropped, the gateway records
+  `web_search_dropped` with the count of tools and items
+  ([diagnostics](diagnostics.md#local-telemetry)) -- counts only, never a name, query or result.
+  Every other hosted tool type (`file_search`, `computer_use`, `image_generation`, ...) keeps
+  failing with `unsupported_tool` on every route, exactly as before.
+- **Catalog.** A Codex 2 row copies the native row's `web_search_tool_type`, so Codex sends the
+  tool on it exactly as it does natively; Claude, Copilot and other rows lose the field, and
+  `supports_search_tool` -- a different tool's flag -- stays off unless a route bridges tool search
+  ([details](app-server.md#codex-2-rows-and-the-native-catalog)).
+- **Ownership.** The backend runs the search and the client renders its items. The gateway never
+  runs a search itself and never logs a query or result.
 
 ## WebSocket refusals, internal fields, and control items
 

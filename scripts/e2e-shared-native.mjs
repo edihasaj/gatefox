@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { once } from 'node:events';
 import { createRequire } from 'node:module';
@@ -14,34 +14,55 @@ import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, package: { type: 'string' }, root: { type: 'string' },
+  'runtime-package': { type: 'string' },
+  'candidate-engine': { type: 'string', default: '0.162.0-alpha.17.2' },
   transports: { type: 'string', default: 'stdio,unix' },
   'host-capabilities': { type: 'string', default: 'native' },
   codex: { type: 'string', default: '/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex' } } });
 for (const key of ['gateway', 'package', 'root']) assert.ok(v[key], 'Missing --' + key);
-const gateway = resolve(v.gateway), packagePath = resolve(v.package), root = resolve(v.root), sdk = resolve(v.codex);
+const gateway = resolve(v.gateway), packagePath = resolve(v.package), runtimePackagePath = resolve(v['runtime-package'] ?? v.package),
+  root = resolve(v.root), sdk = resolve(v.codex), candidateEngine = v['candidate-engine'];
 assert.ok(root !== resolve(homedir(), '.codex') && !root.startsWith(resolve(homedir(), '.codex') + '/'));
+assert.match(candidateEngine, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, 'Candidate engine must be an exact version');
 const transports = v.transports.split(','); assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
 const capabilities = v['host-capabilities'].split(','); assert.ok(capabilities.includes('native') && capabilities.every(value => ['native', 'gateway'].includes(value)));
 const sharedGateway = capabilities.includes('gateway');
 if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify', '--strict', sdk], { stdio: 'pipe' });
-const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(); assert.equal(sdkVersion, 'codex-cli 0.162.0-alpha.17.2');
+const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(); assert.equal(sdkVersion, 'codex-cli ' + candidateEngine);
 const { WebSocket } = createRequire(join(packagePath, 'package.json'))('ws');
 const module = name => import(pathToFileURL(join(packagePath, 'dist', name + '.js')));
-const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }, { gatewaySdkRuntime }] = await Promise.all([
-  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses'), module('gateway-sdk-runtime')]);
-const gatewayRuntime = await gatewaySdkRuntime(packagePath);
-const runtime = await mkdtemp('/tmp/gw-native-'), home = join(runtime, 'native'), work = join(runtime, 'work'), state = join(runtime, 'state');
-await Promise.all([root, home, work, state].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
+const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }, { gatewaySdkRuntime }, { sdkIdentity }] = await Promise.all([
+  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses'), module('gateway-sdk-runtime'), module('execution-host-storage')]);
+const adapterGatewayRuntime = await gatewaySdkRuntime(packagePath), gatewayRuntime = await gatewaySdkRuntime(runtimePackagePath);
+const runtime = await mkdtemp('/tmp/gw-native-'), home = join(runtime, 'native'), work = join(runtime, 'work'), state = join(runtime, 'state'), privateHome = join(runtime, 'home');
+await Promise.all([root, home, work, state, privateHome].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key)));
-const results = [], requests = [], owned = new Set(), clients = new Set(), held = new Set(), sdkPids = new Set();
+env.HOME = privateHome;
+const results = [], requests = [], owned = new Set(), clients = new Set(), held = new Set(), sdkPids = new Set(), initializationCapabilities = {};
 const seed = 'NATIVE_SEED_' + randomUUID(), steer = 'STEER_' + randomUUID();
-let phase = 'setup', mode = 'seed', timerCount = 0, modelGets = 0, mockErrors = 0, host, control;
+let phase = 'setup', mode = 'seed', timerCount = 0, modelGets = 0, mockErrors = 0, host, control, commandCounter;
 const nativeCatalog = modelCatalog({ providers: [{ id: 'native', type: 'responses-api', models: { 'native-fixture': 'mock-native' },
   modelMetadata: { 'native-fixture': { contextWindow: 50000, reasoningEfforts: ['low'] } } }] });
-const save = async row => { results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion,
+const save = async row => { results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, candidateEngine,
   gateway, runtime, primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0,
-  gatewaySdkBundled: !!gatewayRuntime, gatewaySdkBinarySha256: gatewayRuntime?.binarySha256,
+  gatewaySdkBundled: !!gatewayRuntime, gatewaySdkBinarySha256: gatewayRuntime?.binarySha256, runtimePackage: runtimePackagePath,
+  adapterGatewaySdkBundled: !!adapterGatewayRuntime,
+  privateHome, childHomeIsPrivate: env.HOME === privateHome,
   modelGets, mockErrors, results, requests }, null, 2) + '\n', { mode: 0o600 }); console.log(JSON.stringify(row)); };
+const selectedSdk = await realpath(sdk);
+async function verifyCandidateNativeSdk(path) {
+  const executable = await realpath(path);
+  assert.equal(executable, selectedSdk, 'The host verified a different native SDK than the configured candidate');
+  assert.equal(process.platform, 'darwin', 'A signed native candidate can only be verified on macOS');
+  execFileSync('/usr/bin/codesign', ['--verify', '--strict', executable], { stdio: 'pipe' });
+  const signature = spawnSync('/usr/bin/codesign', ['-d', '--verbose=2', executable], { encoding: 'utf8' });
+  assert.equal(signature.status, 0, String(signature.stderr ?? signature.error ?? 'Native SDK signature inspection failed'));
+  assert.match(String(signature.stderr), /(?:^|\n)TeamIdentifier=2DC432GLL2(?:\r?\n|$)/, 'Native SDK is not signed by OpenAI');
+  assert.equal(execFileSync(executable, ['--version'], { encoding: 'utf8' }).trim(), 'codex-cli ' + candidateEngine);
+  const identity = await sdkIdentity(executable);
+  assert.equal(identity.codex, selectedSdk);
+  return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 };
+}
 async function assertMappedSdk(pid, executable) { const mappings = execFileSync('lsof', ['-p', String(pid), '-a', '-d', 'txt', '-Fn'], { encoding: 'utf8' }).split('\n');
   assert.ok(mappings.includes('n' + await realpath(executable)), 'Running SDK executable does not match its selected role'); }
 async function until(check, description, timeout = 15000) { const end = Date.now() + timeout;
@@ -68,9 +89,23 @@ const fake = createServer((req, res) => { void (async () => {
       responseTool: { type: 'function', name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}) } } });
     writer.accept({ type: 'done', usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 }, endTurn: false }); res.end(); return;
   }
+  if (mode === 'command' && body.model === 'native-fixture') {
+    const find = tools => { for (const tool of tools || []) {
+      if (tool.type === 'namespace') { const found = find(tool.tools); if (found) return { ...found, namespace: tool.name }; }
+      if (tool.type === 'function' && (tool.name || tool.function?.name) === 'exec_command') return { name: 'exec_command' };
+    } };
+    const tool = find(body.tools); assert.ok(tool, 'SDK did not offer its command tool');
+    mode = 'command-await-result';
+    writer.accept({ type: 'tool', call: { id: randomUUID(), type: 'function', function: { name: tool.name,
+      arguments: JSON.stringify({ cmd: '/bin/sh -c ' + JSON.stringify('printf x >> ' + commandCounter), sandbox_permissions: 'require_escalated',
+        justification: 'Owned fixture command replay counter', yield_time_ms: 1000, max_output_tokens: 20 }) },
+      responseTool: { type: 'function', name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}) } } });
+    writer.accept({ type: 'done', usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 }, endTurn: false }); res.end(); return;
+  }
   const complete = () => { if (res.destroyed) return; writer.accept({ type: 'text', text: mode === 'seed' ? seed : row.hasSteering ? 'STEERING_OK ' + seed : 'FOLLOWUP_OK ' + seed });
     writer.accept({ type: 'done', usage: { input_tokens: 10, output_tokens: 4, total_tokens: 14 }, serviceTier: row.serviceTier ?? 'default' }); res.end(); };
-  const shouldHold = mode === 'hold' && body.model === 'native-fixture' || mode === 'hold-gateway' && body.model === 'mock-gateway';
+  const shouldHold = mode === 'hold' && body.model === 'native-fixture' || mode === 'hold-gateway' && body.model === 'mock-gateway'
+    || mode === 'command-await-result' && body.model === 'native-fixture';
   if (!shouldHold) { complete(); return; }
   row.outcome = 'held'; timerCount++;
   const entry = { finish: () => { held.delete(entry); clearTimeout(timer); timerCount--; row.outcome = 'released'; complete(); } };
@@ -105,16 +140,18 @@ async function stop(child) { if (!child) return; const done = child.exitCode !==
   if (groupAlive(child)) { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH' && groupAlive(child)) throw error; }
     await until(() => !groupAlive(child), 'Owned process group cleanup', 3000); }
   await done; owned.delete(child); }
-function adapterClient(child, websocket) { const events = [], pending = new Map(), approvals = []; let sequence = 0;
+function adapterClient(child, websocket) { const events = [], pending = new Map(), approvals = [], commandEvents = []; let sequence = 0, current;
   const send = value => websocket ? websocket.send(JSON.stringify(value)) : child.stdin.write(JSON.stringify(value) + '\n');
   const receive = raw => { const message = JSON.parse(raw), entry = pending.get(message.id);
-    if (entry) { pending.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(Object.assign(Error('RPC rejected: ' + entry.method), { code: message.error.code })) : entry.resolve(message.result); }
-    else if (message.method === 'item/commandExecution/requestApproval' && message.id !== undefined) approvals.push({ id: message.id, method: message.method, threadId: message.params.threadId, turnId: message.params.turnId });
+    if (entry) { pending.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(Object.assign(Error('RPC rejected: ' + entry.method + ': ' + message.error.message), { code: message.error.code })) : entry.resolve(message.result); }
+    else if (message.method === 'item/commandExecution/requestApproval' && message.id !== undefined) approvals.push({ id: message.id, method: message.method,
+      threadId: message.params.threadId, turnId: message.params.turnId, params: message.params });
+    else if (message.method?.startsWith('item/commandExecution/')) commandEvents.push(message);
     else if (message.method && message.id !== undefined) send({ id: message.id, error: { code: -32601, message: 'Fixture has no tool handler' } });
     else if (message.method) events.push(message); };
   const lines = websocket ? undefined : createInterface({ input: child.stdout });
   if (websocket) websocket.on('message', data => receive(data.toString())); else lines.on('line', receive);
-  const current = { events, approvals, send, rpc: (method, params = {}) => new Promise((resolve, reject) => { const id = ++sequence,
+  current = { events, approvals, commandEvents, send, accept: approval => send({ id: approval.id, result: { decision: 'accept' } }), rpc: (method, params = {}) => new Promise((resolve, reject) => { const id = ++sequence,
     timer = setTimeout(() => { pending.delete(id); reject(Error(method + ' timed out')); }, 20000); pending.set(id, { resolve, reject, timer, method }); send({ id, method, params }); }),
     close: async () => { websocket?.terminate(); lines?.close(); child.stdin?.end(); for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(Error('Fixture adapter closed')); }
       pending.clear(); await stop(child); clients.delete(current); } }; clients.add(current); return current; }
@@ -128,8 +165,12 @@ async function open(transport, suffix) { let listener, client, backendPid;
     const child = spawn(sdk, ['app-server', 'proxy'], { env: { ...env, CODEX_HOME: proxyHome }, cwd: work, stdio: ['pipe', 'pipe', 'ignore'], detached: true }); owned.add(child);
     const pipe = Duplex.from({ readable: child.stdout, writable: child.stdin });
     const websocket = new WebSocket('ws://codex-app-server/rpc', { createConnection: () => pipe }); await once(websocket, 'open'); client = adapterClient(child, websocket); }
-  await client.rpc('initialize', { clientInfo: { name: 'gateway_shared_native_fixture', version: '1' }, capabilities: { experimentalApi: true } }); client.send({ method: 'initialized', params: {} });
-  return { client, backendPid, close: async () => { await client.close(); await stop(listener); } }; }
+  const initialized = await client.rpc('initialize', { clientInfo: { name: 'gateway_shared_native_fixture', version: '1' }, capabilities: { experimentalApi: true } }); client.send({ method: 'initialized', params: {} });
+  return { client, backendPid, initialized, close: async () => { await client.close(); await stop(listener); } }; }
+function initializeCapabilities(result) {
+  assert.ok(result && typeof result === 'object', 'Native initialize did not return a result');
+  return result.capabilities ?? null;
+}
 async function nativeStatus() { const status = await control.request('execution/status', {}); assert.deepEqual(new Set(status.capabilities), new Set(capabilities));
   assert.ok(status.native && status.native.kind === 'native' && status.native.state === 'running' && status.native.pid > 0);
   assert.match(status.native.revision, /^[a-f0-9]{64}$/); assert.equal(status.native.socketPath, join(executionHostHome(configPath, home), 'native.sock'));
@@ -138,6 +179,9 @@ async function nativeStatus() { const status = await control.request('execution/
 async function readActive(client, ids, provider = 'openai') { const { thread } = await client.rpc('thread/read', { threadId: ids.threadId, includeTurns: true });
   const turn = thread.turns.find(value => value.id === ids.turnId); assert.ok(turn); assert.equal(thread.status.type, 'active'); assert.equal(turn.status, 'inProgress');
   assert.equal(thread.modelProvider, provider); return { threadStatus: thread.status.type, turnStatus: turn.status }; }
+async function readCompleted(client, ids) { const { thread } = await client.rpc('thread/read', { threadId: ids.threadId, includeTurns: true });
+  const turn = thread.turns.find(value => value.id === ids.turnId); assert.ok(turn); assert.equal(turn.status, 'completed');
+  assert.notEqual(thread.status.type, 'active'); return { threadStatus: thread.status.type, turnStatus: turn.status, historyTurns: thread.turns.length }; }
 async function complete(client, id, model = 'native-fixture', extra = {}) { const at = client.events.length;
   const started = await client.rpc('turn/start', { threadId: id, model, effort: 'low', input: [{ type: 'text', text: 'Follow up from this fixture history.' }], ...extra });
   await until(() => client.events.slice(at).find(e => e.method === 'turn/completed' && e.params.turn.id === started.turn.id && e.params.turn.status === 'completed'), 'Completed fixture turn'); return started.turn.id; }
@@ -148,23 +192,32 @@ async function interrupt(actor, observer, ids) { const offset = observer.events.
   await until(() => observer.events.slice(offset).find(e => e.method === 'turn/completed' && e.params.turn.id === ids.turnId && e.params.turn.status === 'interrupted'), 'Real native interruption');
   await until(() => held.size === 0 && timerCount === 0, 'Held provider cleanup'); }
 const serving = command(['serve', '--config', configPath]);
-const protectedKey = key => /^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key) || key === 'SHARED_NATIVE_PROVIDER_KEY';
+const protectedKey = key => /^(CODEX|OPENAI|GATEWAY|SUBSCRIPTION_GATEWAY|ANTHROPIC|CLAUDE)/.test(key) || key === 'SHARED_NATIVE_PROVIDER_KEY' || key === 'HOME';
 const originalEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => protectedKey(key)));
 try {
   await until(() => fetch('http://127.0.0.1:' + port + '/health').then(res => res.ok).catch(() => false), 'Gateway HTTP fixture');
   for (const key of Object.keys(process.env)) if (protectedKey(key)) delete process.env[key];
   Object.assign(process.env, Object.fromEntries(Object.entries(env).filter(([key]) => protectedKey(key))));
-  host = await startExecutionHost({ config, configPath, nativeHome: home, codex: sdk, capabilities, nativeRelayOwnsRegistration: false });
+  host = await startExecutionHost({ config, configPath, nativeHome: home, codex: sdk, capabilities, nativeRelayOwnsRegistration: false,
+    nativeSdkVerifier: verifyCandidateNativeSdk, gatewayRuntime: async () => gatewayRuntime });
   control = new SocketAppServerConnection(join(executionHostHome(configPath, home), 'host.sock'), async () => {}); await control.ready;
   for (const transport of transports) {
-    phase = transport + '-two-native-adapters'; const owner = await open(transport, transport + '-a'), reader = await open(transport, transport + '-b');
+    phase = transport + '-two-native-adapters'; const owner = await open(transport, transport + '-a'); let reader = await open(transport, transport + '-b');
+    const initialized = initializeCapabilities(owner.initialized); assert.deepEqual(initializeCapabilities(reader.initialized), initialized,
+      'Two native frontends disagreed about their supported controls');
+    if (Object.hasOwn(initializationCapabilities, transport === 'stdio' ? 'unix' : 'stdio')) {
+      assert.deepEqual(initialized, initializationCapabilities[transport === 'stdio' ? 'unix' : 'stdio'],
+        'Shared Unix native mode changed the frontend capabilities advertised by the signed SDK');
+    }
+    initializationCapabilities[transport] = initialized;
     const native = await nativeStatus(); await assertMappedSdk(native.pid, sdk);
     const features = (await owner.client.rpc('config/read', { includeLayers: false })).config.features;
     assert.equal(features.fast_mode, false); assert.equal(features.step_model_switching, false);
     const chat = await owner.client.rpc('thread/start', { model: 'native-fixture', cwd: work, approvalPolicy: 'never', sandbox: 'read-only' }); assert.equal(chat.modelProvider, 'openai');
     mode = 'seed'; await complete(owner.client, chat.thread.id); await reader.client.rpc('thread/resume', { threadId: chat.thread.id });
     const ids = await heldTurn(owner.client, chat.thread.id), ownerView = await readActive(owner.client, ids), readerView = await readActive(reader.client, ids);
-    assert.deepEqual(await nativeStatus(), native); await save({ phase, passed: true, sameNativeIdentity: true, owner: ownerView, reader: readerView, originalNativeFlagsPreserved: true });
+    assert.deepEqual(await nativeStatus(), native); await save({ phase, passed: true, sameNativeIdentity: true, owner: ownerView, reader: readerView,
+      nativeInitializeCapabilities: initialized, originalNativeFlagsPreserved: true });
     phase = transport + '-reader-stop'; await interrupt(reader.client, owner.client, ids); assert.deepEqual(await nativeStatus(), native);
     await save({ phase, passed: true, readerInterruptedRealOwner: true, nativeSdkSurvived: true, providerTimers: 0 });
     phase = transport + '-disconnect-active-owner'; const ongoing = await heldTurn(owner.client, chat.thread.id), before = reader.client.events.length;
@@ -172,7 +225,7 @@ try {
     assert.equal((await control.request('native/death', { revision: native.revision, pid: native.pid, instanceId: native.instanceId })).confirmed, false);
     assert.ok(!reader.client.events.slice(before).some(e => e.method === 'turn/completed' && e.params.turn.id === ongoing.turnId));
     await save({ phase, passed: true, activeOwnerNotKilledByAdapterDisconnect: true, noFabricatedTerminal: true, sameNativeSdkPid: true });
-    phase = transport + '-reconnect-active'; const reconnected = await open(transport, transport + '-c'); await reconnected.client.rpc('thread/resume', { threadId: chat.thread.id });
+    phase = transport + '-reconnect-active'; let reconnected = await open(transport, transport + '-c'); await reconnected.client.rpc('thread/resume', { threadId: chat.thread.id });
     await readActive(reconnected.client, ongoing); assert.deepEqual(await nativeStatus(), native);
     const steering = await reconnected.client.rpc('turn/steer', { threadId: chat.thread.id, expectedTurnId: ongoing.turnId, input: [{ type: 'text', text: steer }] }); assert.equal(steering.turnId, ongoing.turnId);
     const steerAt = requests.length, terminalAt = reader.client.events.length; mode = 'follow-up'; for (const request of [...held]) request.finish();
@@ -194,12 +247,17 @@ try {
       } finally { inspection.stop(); await inspection.exited; }
     } else {
       assert.equal(status.generations.length, 0);
-      const children = execFileSync('ps', ['-axo', 'pid,ppid'], { encoding: 'utf8' }).split('\n').flatMap(line => {
-        const match = line.trim().match(/^(\d+)\s+(\d+)$/); return match && Number(match[2]) === reader.backendPid ? [Number(match[1])] : [];
-      }).map(pid => ({ pid, args: execFileSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' }).trim() }))
+      const processRows = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' }).split('\n').flatMap(line => {
+        const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/); return match ? [{ pid: Number(match[1]), parent: Number(match[2]), args: match[3] }] : [];
+      });
+      const descendants = new Set([reader.backendPid]);
+      for (let changed = true; changed;) {
+        changed = false; for (const row of processRows) if (descendants.has(row.parent) && !descendants.has(row.pid)) { descendants.add(row.pid); changed = true; }
+      }
+      const children = processRows.filter(row => descendants.has(row.pid) && row.pid !== reader.backendPid)
         .filter(row => row.args.includes('model_provider=') && row.args.includes('subscription_gateway'));
-      assert.equal(children.length, 1); assert.notEqual(children[0].pid, native.pid); sdkPids.add(children[0].pid);
-      await assertMappedSdk(children[0].pid, gatewayRuntime?.executable ?? sdk);
+      assert.equal(children.length, 1, 'The private gateway executor was not a descendant of its frontend adapter'); assert.notEqual(children[0].pid, native.pid); sdkPids.add(children[0].pid);
+      await assertMappedSdk(children[0].pid, adapterGatewayRuntime?.executable ?? sdk);
       assert.ok(children[0].args.includes('features.fast_mode=true') && children[0].args.includes('features.step_model_switching=true'));
     }
     const nativeAgain = (await reader.client.rpc('config/read', { includeLayers: false })).config.features;
@@ -221,6 +279,43 @@ try {
       await save({ phase, passed: true, unboundReaderFoundRealActiveOwner: true, noNativeInterruptedSnapshot: true,
         readerStoppedRealGatewayTurn: true, sameGatewaySdkPid: true, nativeOwnerUntouched: true });
     }
+    phase = transport + '-all-frontends-disconnect-active';
+    const detached = await heldTurn(reconnected.client, chat.thread.id), detachedProviderRequests = requests.length, fixtureHostPid = process.pid;
+    await reconnected.close(); await reader.close();
+    assert.equal(clients.size, 0, 'Every frontend adapter and listener must be gone before the service-owned turn completes');
+    assert.doesNotThrow(() => process.kill(fixtureHostPid, 0), 'The service host stopped when all frontends disconnected');
+    assert.deepEqual(await nativeStatus(), native); assert.equal(held.size, 1); assert.equal(requests.length, detachedProviderRequests);
+    for (const request of [...held]) request.finish();
+    await until(() => held.size === 0 && timerCount === 0, 'Detached native completion');
+    assert.equal(requests.length, detachedProviderRequests, 'Completing detached work made another provider request');
+    reconnected = await open(transport, transport + '-detached-completion');
+    await reconnected.client.rpc('thread/resume', { threadId: chat.thread.id });
+    const detachedHistory = await readCompleted(reconnected.client, detached);
+    assert.deepEqual(await nativeStatus(), native); assert.equal(requests.length, detachedProviderRequests);
+    await save({ phase, passed: true, allFrontendAdaptersClosed: true, serviceHostPidSurvived: fixtureHostPid,
+      providerRequestHeldAndCompleted: true, freshClientReadCompletionAndHistory: detachedHistory, sameNativeSdkPid: true,
+      noAdditionalProviderRequest: true });
+    phase = transport + '-all-frontends-disconnect-command';
+    commandCounter = join(work, 'command-counter-' + transport);
+    mode = 'command'; const commandChat = await reconnected.client.rpc('thread/start', { model: 'native-fixture', cwd: work, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'read-only' });
+    const commandRequestsAt = requests.length, commandTurn = await reconnected.client.rpc('turn/start', { threadId: commandChat.thread.id, effort: 'low', input: [{ type: 'text', text: 'Run the fixture-owned counter command, then wait.' }] });
+    const commandApproval = await until(() => reconnected.client.approvals.find(row => row.threadId === commandChat.thread.id && row.turnId === commandTurn.turn.id), 'Fixture command approval');
+    reconnected.client.accept(commandApproval);
+    await until(() => readFile(commandCounter, 'utf8').then(bytes => bytes === 'x', () => false), 'One fixture command execution');
+    await until(() => held.size === 1 && requests.length === commandRequestsAt + 2, 'Held inference after fixture command');
+    const commandProviderRequests = requests.length; await reconnected.close();
+    assert.equal(clients.size, 0, 'Every frontend adapter and listener must be gone while command work remains active');
+    assert.equal(await readFile(commandCounter, 'utf8'), 'x'); assert.deepEqual(await nativeStatus(), native);
+    for (const request of [...held]) request.finish();
+    await until(() => held.size === 0 && timerCount === 0, 'Detached command completion');
+    assert.equal(requests.length, commandProviderRequests, 'Completing command work made another provider request');
+    reconnected = await open(transport, transport + '-detached-command');
+    await reconnected.client.rpc('thread/resume', { threadId: commandChat.thread.id });
+    const commandHistory = await readCompleted(reconnected.client, { threadId: commandChat.thread.id, turnId: commandTurn.turn.id });
+    assert.equal(await readFile(commandCounter, 'utf8'), 'x', 'A resumed detached turn replayed its already-approved command');
+    assert.equal(requests.length, commandProviderRequests, 'Resuming command work made another provider request');
+    await save({ phase, passed: true, allFrontendAdaptersClosed: true, fixtureCommandExecutions: 1, providerRequestHeldAndCompleted: true,
+      freshClientReadCompletionAndHistory: commandHistory, noCommandReplay: true, noAdditionalProviderRequest: true, sameNativeSdkPid: true });
     phase = transport + '-pending-native-approval'; mode = 'approval';
     const approvalChat = await reconnected.client.rpc('thread/start', { model: 'native-fixture', cwd: work, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'read-only' });
     const approvalOffset = reconnected.client.events.length;
@@ -228,14 +323,22 @@ try {
     const pendingApproval = await until(() => reconnected.client.approvals.find(row => row.threadId === approvalChat.thread.id && row.turnId === approvalTurn.turn.id), 'Actual SDK user approval');
     await readActive(reconnected.client, { threadId: approvalChat.thread.id, turnId: approvalTurn.turn.id });
     assert.ok(!reconnected.client.events.slice(approvalOffset).some(e => e.method === 'turn/completed' && e.params.turn.id === approvalTurn.turn.id));
+    assert.equal(reconnected.client.commandEvents.length, 0, 'The pending approval ran a command before the user answered');
+    const approvalProviderRequests = requests.length; await reconnected.close();
+    assert.equal(clients.size, 0, 'Every frontend adapter and listener must be gone while approval is pending');
+    assert.doesNotThrow(() => process.kill(process.pid, 0), 'The service host stopped while approval was pending');
     const warm = await open(transport, transport + '-approval'); await warm.client.rpc('thread/resume', { threadId: approvalChat.thread.id });
     const replayed = await until(() => warm.client.approvals.find(row => row.threadId === pendingApproval.threadId && row.turnId === pendingApproval.turnId), 'Warm approval replay');
-    assert.equal(replayed.method, pendingApproval.method); await readActive(warm.client, { threadId: approvalChat.thread.id, turnId: approvalTurn.turn.id });
-    await save({ phase, passed: true, actualUserApprovalPending: true, adminDidNotAnswer: true, warmResumeReplayedApproval: true });
-    phase = transport + '-cancel-approval-follow-up'; await interrupt(warm.client, reconnected.client, { threadId: approvalChat.thread.id, turnId: approvalTurn.turn.id });
+    assert.equal(replayed.method, pendingApproval.method); assert.deepEqual(replayed.params, pendingApproval.params);
+    assert.equal(warm.client.commandEvents.length, 0, 'Resuming an approval ran or replayed its command');
+    assert.equal(requests.length, approvalProviderRequests, 'Resuming an approval made another provider request');
+    await readActive(warm.client, { threadId: approvalChat.thread.id, turnId: approvalTurn.turn.id });
+    await save({ phase, passed: true, actualUserApprovalPending: true, allFrontendAdaptersClosed: true, originalApprovalRequestAndSettingsReplayed: true,
+      noAutomaticApprovalOrCommand: true, warmResumeReplayedApproval: true });
+    phase = transport + '-cancel-approval-follow-up'; await interrupt(warm.client, warm.client, { threadId: approvalChat.thread.id, turnId: approvalTurn.turn.id });
     mode = 'follow-up'; await complete(warm.client, approvalChat.thread.id); assert.deepEqual(await nativeStatus(), native);
     await save({ phase, passed: true, pendingApprovalCancelledByReader: true, finalFollowUpCompleted: true, sameNativeIdentity: true }); await warm.close();
-    await reconnected.close(); await reader.close(); assert.deepEqual(await nativeStatus(), native);
+    await reader.close(); assert.deepEqual(await nativeStatus(), native);
   }
   assert.equal(createHash('sha256').update(await readFile(join(home, 'config.toml'))).digest('hex'), configSha);
   assert.equal(await access(join(home, 'auth.json')).then(() => true, () => false), false);
@@ -243,7 +346,7 @@ try {
   await save({ phase: 'verification', passed: true, transports, capabilities, sharedGateway, nativeFixtureConfigSha256: configSha, nativeConfigurationUnchanged: true,
     nativeAuthCopied: false, paidInferenceRequests: 0, renderedDesktopUiTested: false, builtInCloudTransportTested: false });
 } catch (error) { process.exitCode = 1; await save({ phase: 'verification', passed: false, failedDuring: phase, errorClass: error?.name, code: error?.code,
-  check: error?.name === 'AssertionError' ? 'Assertion failed' : error?.message });
+  check: error?.message });
 } finally {
   for (const request of [...held]) request.finish();
   const cleanup = await Promise.allSettled([...clients].map(client => client.close()));

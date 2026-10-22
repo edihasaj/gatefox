@@ -53,6 +53,17 @@ export function verifiedBackend(directory) {
         component === 'native' ? 'gateway-native-relay' : 'gateway-codex']) {
         if (!entries.has(`package/${component}/${name}`)) throw new Error('Incomplete backend component or licenses');
       }
+      // The gateway SDK's Code Mode companion is optional, but its receipt and its file always agree here.
+      if (component === 'gateway-sdk') {
+        let receipt;
+        try { receipt = JSON.parse(readFileSync(join(root, 'package/gateway-sdk/build.json'), 'utf8')); }
+        catch { throw new Error('Incomplete backend component or licenses'); }
+        const declared = receipt?.codeModeHostSha256;
+        const named = typeof declared === 'string' && /^[a-f0-9]{64}$/.test(declared);
+        if (('codeModeHostSha256' in Object(receipt)) !== named || named !== entries.has('package/gateway-sdk/codex-code-mode-host')) {
+          throw new Error('Incomplete backend component or licenses');
+        }
+      }
     }
   }
   return { root, files: [...entries.keys()], entries, version: pkg.version, node: release.node, manifest };

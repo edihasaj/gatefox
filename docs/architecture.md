@@ -88,6 +88,15 @@ LaunchAgent. See [service ownership and migration](services.md). Migration is
 explicit and requires a maintenance window; release installation preserves
 running chats.
 
+Native executor sharing may instead be staged for a subsequent primary service
+start. The staging receipt is separate from the active plan, so clients keep
+their existing ownership mode until activation. Activation verifies the same
+plan and signed SDK again, and defers while old adapters or unknown writers
+remain. Private native starts matching the existing native relay service plan
+reserve the home before spawning, which prevents a concurrent shared host from
+creating another owner. See
+[travel recovery](travel-recovery.md).
+
 `gateway service restart` asks the daemon to stop only while idle. The daemon
 checks all HTTP requests, including unfinished body uploads, before closing its
 listener. Active work refuses the restart and keeps its process. Older daemons
@@ -158,6 +167,16 @@ old executor. Existing per-connection executors must finish before migration.
 The execution host belongs to the unified service and owns its SDK children. There
 is no separate per-generation LaunchAgent. The native account connection and
 provider credentials keep their current ownership.
+
+Before a shared host creates or looks up a gateway generation, it verifies the
+selected SDK executable. If that executable's verified receipt names no adjacent Code
+Mode helper, the host changes every row in that generation's gateway catalog to
+`tool_mode: "direct"`. This includes missing and unknown modes, while preserving
+the row's instructions, model, provider, permissions, review policy and every
+other catalog field. A changed catalog receives a deterministic replacement
+revision derived from the adapter revision and normalized catalog. It therefore
+cannot reuse a persistent generation directory created for the incompatible
+catalog. A catalog already entirely in direct mode keeps its adapter revision.
 
 An owner is dead when nothing it names can still be running and nothing it
 advertised answers a connect. Its processes are gone when its receipt belongs to an

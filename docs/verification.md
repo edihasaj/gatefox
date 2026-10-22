@@ -7,6 +7,93 @@ read_when:
 
 # Verification
 
+## Disconnected native clients (0.6.2)
+
+The signed `codex-cli 0.163.0-alpha.10.2` passed
+`scripts/e2e-shared-native.mjs` with combined native and gateway ownership over
+both stdio and the real SDK's Unix proxy. The fixture verifies the exact OpenAI
+signature, executable, and engine version before accepting the candidate:
+
+```sh
+node scripts/e2e-shared-native.mjs \
+  --gateway /absolute/release/package/dist/cli.js \
+  --package /absolute/release/package \
+  --candidate-engine 0.163.0-alpha.10.2 \
+  --host-capabilities native,gateway \
+  --root /private/evidence
+```
+
+Every frontend disconnects while native inference is held. The same host and SDK
+finish that turn while detached, and a fresh frontend reads its real completed
+history without another provider request. A separate turn executes one approved
+command that appends a byte to a fixture counter, then disconnects during its
+next inference request. After detached completion and resume, the counter still
+contains one byte and no extra provider request was sent.
+
+Every frontend also disconnects during a pending user approval. Resume replays
+the original request and settings without answering it or executing its command;
+an explicit Stop then cancels it and a follow-up completes. Two-client Stop,
+steering, model and speed isolation, immutable SDK identity, native configuration
+preservation, and owned-process cleanup also pass. The fixture uses private
+homes, no copied authentication, and local mock inference. It does not prove
+rendered desktop controls or the built-in cloud transport.
+
+Staged-adoption regressions separately cover unchanged live plans, primary-daemon
+activation, legacy-writer deferral, changed plans, signature/runtime failures,
+post-commit recovery, and exact private receipt checks. Readiness remains pending
+until staged ownership is active and the host actually holds the native home.
+
+## Live adapter upgrade (0.6.1)
+
+Run `node scripts/e2e-live-upgrade.mjs --previous /absolute/0.6.0/package
+--package /absolute/0.6.1/package --code /absolute/compiled/0.6.1 --root
+/private/evidence`. The check copies both complete immutable packages into a
+private managed layout, starts the released adapter over a private Unix socket,
+and keeps that one frontend connection open while its 0.6.0 execution host is
+replaced by the candidate host. A mock provider makes no paid requests.
+
+Before replacement the old host performs a real direct tool command and local
+Git commit. A deliberately held second turn proves the host's quiet-stop guard
+refuses a busy upgrade. Once it finishes, the fixture stops only its host,
+fault-injects removal of its private old package, and starts the candidate host.
+The already-loaded old adapter must recover its verified SDK through
+`managed/current`, resume the same thread with its saved model, provider,
+workspace and permissions, and use the resumed connection to spawn a child
+agent that performs a second command and commit. The result independently
+checks that the original commit was not replayed, the host PID changed, both
+SDK packages passed receipt verification, native authentication was never
+copied, and all owned process groups and sockets stopped. It records only
+sanitized booleans and versions in a `live-upgrade-*.json` evidence file under
+the supplied root; active fixture state uses a short private `/tmp` path so its
+Unix sockets fit macOS's address limit.
+
+## Hostless direct tools (0.6.0)
+
+Run `node scripts/e2e-direct-tools.mjs --package /absolute/release/package
+--code /absolute/compiled/checkout --root /private/evidence`. It starts the real
+packaged gateway SDK through `DesktopCatalog`, `AppServerBackends`, and
+`AppServerRouter` with no `codex-code-mode-host`. Two gateway chats carry native
+rows that respectively declare `code_mode_only` and no tool mode at all. The
+selected runtime changes both to explicit `direct` rows, exposes `exec_command`
+(not Code Mode's `exec` or `wait`), then uses the SDK's real `spawn_agent` path
+to create bare-native child chats. The children edit two isolated workspace files
+and make local conventional Git commits. The fixture asks for `code_mode_only`
+and `code_mode_host` while only its disposable repository uses full access; the
+explicit direct rows take precedence. A local mock provider observes successful
+command-output continuations; the fixture independently verifies exact file bytes,
+Git history, clean status, completed child turns, saved provider identity, and
+untouched native config and authentication. It records only sanitized booleans and
+model/provider identifiers in `result.json`, copies no authentication, and sends
+no paid inference requests.
+
+The same script accepts an SDK whose verified receipt pins `codex-code-mode-host`
+(0.6.6 and later). Such an SDK keeps native tool modes, so the fixture gives both
+native rows an explicit `direct` mode and proves they still win over the caller's
+`code_mode_only` and `code_mode_host` settings. `hostlessSdk` in `result.json`
+records which shape ran. The script also checks that a host sits beside the
+executable exactly when the receipt names one. The rollout readiness probe runs
+this script, so every release package with either SDK shape must pass it.
+
 ## Loaded service release
 
 Run `node scripts/e2e-service-release.mjs --package /absolute/release/package`

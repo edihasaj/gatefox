@@ -1,11 +1,11 @@
 import { constants } from "node:fs";
 import { readFile, mkdir, open, rename, chmod, link, unlink, utimes } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
 import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-service-tiers.js";
 
-export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api";
+export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription";
 export interface ProviderConfig {
   id: string;
   type: ProviderKind;
@@ -20,6 +20,14 @@ export interface ProviderConfig {
   credentialFile?: string;
   agentName?: string;
   authDirectory?: string;
+  /** Grok subscription only: the private Grok home the gateway signs in once (default <stateDirectory>/grok-home). */
+  grokHome?: string;
+  /**
+   * Codex subscription only: how a client-run `tool_search` travels upstream. `off` (the default) drops the tool and its
+   * replayed items, because the ChatGPT backend refuses a forwarded `tool_search`; `bridge` sends the search as an ordinary
+   * function tool inside the gateway namespace, which the client still executes. Capability metadata, so it applies live.
+   */
+  toolSearch?: "off" | "bridge";
   label?: string;
   /** Per-provider admission cap; falls back to top-level maxConcurrent, then 4. */
   maxConcurrent?: number;
@@ -51,6 +59,10 @@ export function copilotSessionSettings(provider: Pick<ProviderConfig, "copilotSe
   const value = provider.copilotSessions || {};
   return { mode: value.mode === "oneshot" || value.mode === "replay" ? "oneshot" : "live", max: value.max ?? 4, parkMinutes: value.parkMinutes ?? 30, toolWaitMinutes: value.toolWaitMinutes ?? 25 };
 }
+/** Whether a provider bridges the client's `tool_search` instead of dropping it; `off` and any other value stay today's drop. */
+export const bridgesToolSearch = (provider: Pick<ProviderConfig, "type" | "toolSearch">): boolean =>
+  provider.type === "codex-subscription" && provider.toolSearch === "bridge";
+
 export interface ModelMetadata extends ModelServiceTierMetadata {
   inputModalities?: Array<"text" | "image">;
   displayName?: string;
@@ -104,11 +116,12 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const ids = new Set<string>(); const aliases = new Set<string>();
+  const stateDirectory = resolve(directory, config.stateDirectory || ".state");
   const providers = config.providers.map(provider => {
     if (!provider || !/^[a-z][a-z0-9_-]*$/.test(provider.id)) throw new Error("Provider IDs must use lowercase letters, digits, _ or -");
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
-    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
+    if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api", "grok-subscription"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
     if (provider.maxConcurrent !== undefined && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 16)) throw new Error(`${provider.id}: maxConcurrent must be 1 through 16`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
@@ -142,6 +155,12 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       const tailnetHttp = provider.tailnet === true && url.protocol === "http:";
       if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
+    if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
+    // An opt-in capability, not an account or a route: `bindings` leaves it out, so a change applies live, without a rebind.
+    if (provider.toolSearch !== undefined) {
+      if (provider.type !== "codex-subscription") throw new Error(`${provider.id}: toolSearch is only valid for codex-subscription providers`);
+      if (provider.toolSearch !== "off" && provider.toolSearch !== "bridge") throw new Error(`${provider.id}: toolSearch must be off or bridge`);
+    }
     if (provider.type === "codex-subscription" && !provider.credentialFile) throw new Error(`${provider.id}: credentialFile is required`);
     const sessions = provider.claudeSessions;
     if (sessions !== undefined) {
@@ -162,10 +181,11 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       // Copilot fails a pending tool call after 30 minutes and then calls the model on its own; the gateway closes the session first.
       if (copilot.toolWaitMinutes !== undefined && !integerIn(copilot.toolWaitMinutes, 1, 25)) throw new Error(`${provider.id}: copilotSessions toolWaitMinutes must be 1 through 25`);
     }
-    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}) };
+    return { ...provider, models: { ...provider.models }, ...(sessions ? { claudeSessions: { ...sessions } } : {}), ...(copilot ? { copilotSessions: { ...copilot } } : {}), ...(provider.credentialFile ? { credentialFile: resolve(directory, provider.credentialFile) } : {}), ...(provider.authDirectory ? { authDirectory: resolve(directory, provider.authDirectory) } : {}),
+      ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
-  return { version: 1, port: config.port, stateDirectory: resolve(directory, config.stateDirectory || ".state"), providers,
+  return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}) };
 }

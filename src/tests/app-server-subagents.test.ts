@@ -55,16 +55,19 @@ test("saved native-model gateway sub-agents resume on their owning executor with
   for (const [threadId, provider] of [["legacy-child", "subscription_gateway"], ["openai-child", "openai"]] as const) {
     const implicit = { threadId, model: null, modelProvider: null, config: { caller: "kept" }, effort: "high", permissions: { mode: "full" } };
     const first = await f.router.request("thread/resume", structuredClone(implicit));
-    assert.deepEqual(f.sent("thread/resume"), { ...implicit, config: { caller: "kept", web_search: "disabled" } },
-      `${threadId}: only the gateway transport restriction is added`);
+    assert.deepEqual(f.sent("thread/resume"), implicit,
+      `${threadId}: the caller's own settings pass through untouched, hosted web search included`);
     assert.deepEqual({ provider: first.modelProvider, model: first.model }, { provider, model: nativeChild });
     const explicit = { threadId, model: nativeChild, modelProvider: null, config: { caller: "kept" }, effort: "low", permissions: { mode: "read" } };
     const second = await f.router.request("thread/resume", structuredClone(explicit));
-    assert.deepEqual(f.sent("thread/resume"), { ...explicit, modelProvider: provider, config: { caller: "kept", web_search: "disabled" } },
+    assert.deepEqual(f.sent("thread/resume"), { ...explicit, modelProvider: provider },
       `${threadId}: exact saved native model keeps its provider and caller settings`);
     assert.deepEqual({ provider: second.modelProvider, model: second.model }, { provider, model: nativeChild });
     await f.router.request("thread/resume", { threadId });
-    assert.deepEqual(f.sent("thread/resume"), { threadId, config: { web_search: "disabled" } }, `${threadId}: metadata survives a reply that omits source`);
+    assert.deepEqual(f.sent("thread/resume"), { threadId }, `${threadId}: metadata survives a reply that omits source, with no config injected`);
+    const withSearch = { threadId, config: { web_search: "enabled" } };
+    await f.router.request("thread/resume", structuredClone(withSearch));
+    assert.deepEqual(f.sent("thread/resume"), withSearch, `${threadId}: a caller-provided web_search setting is kept as it was sent`);
     const turn = { threadId, model: nativeChild, input: [], effort: "high" };
     await f.router.request("turn/start", structuredClone(turn)); assert.deepEqual(f.sent("turn/start"), turn);
     const settings = { threadId, model: nativeChild, effort: "low" };

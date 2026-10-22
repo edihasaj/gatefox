@@ -117,11 +117,12 @@ export class ExecutionEngine {
   async start(config: GatewayConfig, changed: () => Promise<void>): Promise<void> {
     const descriptor = this.descriptor; const directory = resolve(config.stateDirectory, "desktop-generations", `shared-v1-${descriptor.revision}`);
     const runtime = descriptor.gatewaySdkSha256 ? await this.resolveRuntime() : undefined;
-    if (descriptor.gatewaySdkSha256 && runtime?.binarySha256 !== descriptor.gatewaySdkSha256) {
-      // Another release's SDK is the release skew of a service and an adapter that moved at different times (see docs/services.md).
-      // A host with no runtime of its own cannot tell which side is older, so that case keeps its masked refusal.
-      if (runtime) throw new ReleaseSkewError(descriptor.gatewaySdkSha256);
-      throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+    if (descriptor.gatewaySdkSha256) {
+      if (!runtime) throw new Error("Execution generation requires a matching installed gateway SDK; its ownership was preserved");
+      if (runtime.binarySha256 !== descriptor.gatewaySdkSha256) {
+        // Another release's SDK is the release skew of a service and an adapter that moved at different times (see docs/services.md).
+        throw new ReleaseSkewError(descriptor.gatewaySdkSha256);
+      }
     }
     if (runtime) this.record.selectedModelCompaction = true;
     await privateDirectory(directory);
