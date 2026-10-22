@@ -318,6 +318,18 @@ service re-registers the wrapper when it starts. It accepts `GATEWAY_CONFIG`,
 `GATEWAY_NODE_PATH`, and `GATEWAY_CODEX_PATH` when its defaults do not match the
 machine.
 
+For an `app-server` command, a newly generated wrapper passes the signed
+`CodexCLI.app/Contents/MacOS/codex` engine to the adapter. ChatGPT's ordinary
+`codex-cli/bin/codex` launcher stays in use for every other command. The shared host
+records its verified signed engine separately from the launcher's identity, so both
+paths identify the same native writer. Existing
+wrappers that still pass the first-party launcher remain compatible: the adapter
+resolves that known launcher to the signed engine before it checks ownership. It never
+accepts a different executable as the shared writer. This prevents the startup
+organization-settings error that a launcher-versus-engine mismatch could surface as.
+The [launcher verification checks](native-launcher-verification.md) cover generated
+wrappers, both host receipt forms, and startup after a service restart.
+
 The gateway no longer sets `CODEX_APP_SERVER_FORCE_CLI`. With `CODEX_CLI_PATH`
 alone, new local chats use the gateway catalog while durable chats and the
 desktop's SSH connection rows keep their native behavior: an SSH row runs Codex

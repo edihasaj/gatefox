@@ -9,7 +9,9 @@
  * shared-native end-to-end check (scripts/e2e-shared-native.mjs) passes against it, because a shared host depends on the
  * engine's unload and listener behaviour, not only on its protocol.
  *
+ * The relay keeps its linked 0.163.0-alpha.10.2 SDK while it accepts newer app engines only after their
+ * `app-server-transport` source and shared-native fixture results are verified.
  * Gateway chats are a separate pin: they run this release's gateway SDK (`gatewayEngineVersions`), whatever the app ships.
  */
-export const relayAcceptedAppEngines: readonly string[] = ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];
-export const hostVerifiedAppEngines: readonly string[] = ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];
+export const relayAcceptedAppEngines: readonly string[] = ["0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];
+export const hostVerifiedAppEngines: readonly string[] = ["0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"];

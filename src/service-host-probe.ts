@@ -1,5 +1,6 @@
 import { lstat, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
+import { nativeEngineExecutable, nativeOwnerEngineExecutable } from "./native-engine-path.js";
 import { readOwner, sameSocketIdentity, sdkIdentity, socketIdentity, type HostOwner } from "./execution-host-storage.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 
@@ -66,14 +67,21 @@ async function executionStatus(socketPath: string, timeoutMs: number): Promise<{
  * matching look, so an unchanged engine costs one hash per host start.
  */
 async function sdkChanged(codex: string, owner: HostOwner, baseline: SdkBaseline): Promise<boolean> {
-  const real = await realpath(codex).catch(() => undefined);
-  if (!real || real !== owner.codex) return true;
+  const native = owner.capabilities?.includes("native") === true;
+  const real = await (native ? nativeEngineExecutable(codex) : realpath(codex)).catch(() => undefined);
+  const expected = await (native ? nativeOwnerEngineExecutable(owner.codex, owner.nativeSdkExecutable) : Promise.resolve(owner.codex)).catch(() => undefined);
+  if (!real || !expected || real !== expected) return true;
   const info = await lstat(real, { bigint: true }).catch(() => undefined);
   if (!info?.isFile()) return true;
   const file = `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
-  if (baseline.file === file && baseline.sha256 === owner.sdkSha256) return false;
-  const identity = await sdkIdentity(codex).catch(() => undefined);
-  if (!identity || identity.codex !== owner.codex || identity.sdkSha256 !== owner.sdkSha256) return true;
-  baseline.file = file; baseline.sha256 = owner.sdkSha256;
+  // New native receipts pin the signed engine separately. Older receipts only have the host's own SDK identity,
+  // which may be the launcher, so retain that stored checksum and let the supervisor restart the old host if its
+  // caller has moved to the signed-engine spelling.
+  const sha256 = native ? owner.nativeSdkSha256 ?? owner.sdkSha256 : owner.sdkSha256;
+  if (!sha256) return true;
+  if (baseline.file === file && baseline.sha256 === sha256) return false;
+  const identity = await sdkIdentity(real).catch(() => undefined);
+  if (!identity || identity.codex !== expected || identity.sdkSha256 !== sha256) return true;
+  baseline.file = file; baseline.sha256 = sha256;
   return false;
 }
