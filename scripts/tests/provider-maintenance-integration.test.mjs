@@ -118,6 +118,41 @@ test('a late SDK build regression leaves generated pins byte-for-byte unchanged 
   assert.equal(f.git(['status', '--porcelain']), '');
 });
 
+test('latest maintenance state re-sanitizes injected validation metadata and never promotes a failed candidate', async t => {
+  const f = fixture(t); installArchiveFetch(t); const before = generatedBytes(f.root);
+  const run = validationRunner();
+  await assert.rejects(maintainProviders({
+    root: f.root,
+    discover,
+    validateCli,
+    run: async (command, args, options) => {
+      if (args.includes('scripts/sync-gateway-sdk-pins.mjs')) {
+        const injected = Object.assign(Error('PRIVATE_INJECTED_MESSAGE'), {
+          failureReason: 'nonzero_exit', exitCode: 9, signal: 'SIGSEGV',
+          failureFiles: ['scripts/tests/provider-fixture.test.mjs', '../PRIVATE_PATH'],
+          failureLocations: [{ file: 'scripts/tests/provider-fixture.test.mjs', line: 2, column: 3 }, { file: '../PRIVATE_PATH', line: 1, column: 1 }],
+          compilerCodes: ['TS1234', { toString: () => 'PRIVATE_CODE' }],
+          failureTypes: ['testCodeFailure', 'PRIVATE_FAILURE_TYPE'],
+          testTotals: { pass: 1, fail: -1, private: 99 }, token: 'PRIVATE_TOKEN',
+        });
+        Object.defineProperty(injected, 'failureTypes', { enumerable: true, get() { throw Error('PRIVATE_GETTER'); } });
+        throw injected;
+      }
+      return run(command, args, options);
+    },
+  }), /blocked at pins/);
+  const reportText = readFileSync(join(f.root, '.state/provider-maintenance/latest.json'), 'utf8');
+  const report = JSON.parse(reportText);
+  assert.deepEqual(report.failureFiles, ['scripts/tests/provider-fixture.test.mjs']);
+  assert.deepEqual(report.failureLocations, [{ file: 'scripts/tests/provider-fixture.test.mjs', line: 2, column: 3 }]);
+  assert.deepEqual(report.compilerCodes, ['TS1234']); assert.equal(report.failureTypes, undefined);
+  assert.deepEqual(report.testTotals, { pass: 1 }); assert.equal(report.failureReason, 'nonzero_exit');
+  assert.equal(report.signal, 'SIGSEGV');
+  for (const secret of ['PRIVATE_INJECTED_MESSAGE', 'PRIVATE_PATH', 'PRIVATE_CODE', 'PRIVATE_FAILURE_TYPE', 'PRIVATE_TOKEN', 'PRIVATE_GETTER']) assert.ok(!reportText.includes(secret));
+  for (const [path, bytes] of before) assert.deepEqual(readFileSync(join(f.root, path)), bytes, `${path} changed after a blocked candidate`);
+  assert.equal(f.git(['status', '--porcelain']), '');
+});
+
 test('a fully verified candidate promotes exactly the generated pin files', async t => {
   const f = fixture(t); installArchiveFetch(t);
   const result = await maintainProviders({

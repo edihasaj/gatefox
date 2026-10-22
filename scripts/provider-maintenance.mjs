@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { discoverProviderReleases, officialBytes } from './provider-release-discovery.mjs';
 import { sha256, writeSdkCandidate } from './provider-sdk-candidate.mjs';
 import { runValidation, validationEnvironment } from './provider-maintenance-process.mjs';
+import { safeValidationMetadata } from './provider-maintenance-diagnostics.mjs';
 import { validateProviderCli } from './validate-provider-cli.mjs';
 import { withPrivateFileLock } from '../dist/private-file-lock.js';
 import { promoteProviderTools } from './promote-provider-tools.mjs';
@@ -191,8 +192,7 @@ async function maintainLocked({ root, apply = false, allowDirty = false,
     return report;
   } catch (error) {
     recoverSourcePromotion(root);
-    if (Array.isArray(error.failureFiles)) report.failureFiles = error.failureFiles;
-    if (Array.isArray(error.compilerCodes)) report.compilerCodes = error.compilerCodes;
+    Object.assign(report, safeValidationMetadata(error, report.candidate));
     report.status = 'blocked'; save();
     throw Error(`Provider maintenance blocked at ${report.phase}; last verified pins and running processes were preserved`);
   }

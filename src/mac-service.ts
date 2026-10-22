@@ -1,18 +1,21 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { randomUUID } from "node:crypto";
 import { loadConfig, gatewayToken } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { readServicePlan, servicePlanPath } from "./service-plan.js";
 import { consolidatedStatus, requireMaintenanceWindow } from "./mac-consolidate.js";
 import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
-import { bootoutJob } from "./launchctl.js";
+import { bootoutJob, isNoSuchProcess } from "./launchctl.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { renameLaunchers } from "./mac-launcher-rename.js";
+import { processStartMs } from "./boot-identity.js";
+import { serviceStopTimeoutMs } from "./runtime-activity.js";
 
 const exec = promisify(execFile);
 const label = "com.edihasaj.subscription-gateway";
@@ -28,6 +31,138 @@ async function status(target: string): Promise<{ installed: boolean; state?: str
     const { stdout } = await exec("/bin/launchctl", ["print", target], { timeout: 5000 });
     return { installed: true, state: stdout.match(/^\s*state = ([a-zA-Z ]+)$/m)?.[1], pid: Number(stdout.match(/^\s*pid = (\d+)$/m)?.[1]) || undefined };
   } catch { return { installed: false }; }
+}
+type ServiceStatus = { installed: boolean; pid?: number };
+type ProcessIdentity = { pid: number; startedAtMs: number };
+type ProcessIdentityState = "alive" | "gone" | "reused" | "unknown";
+
+/** `status` deliberately keeps its old best-effort behaviour. Replacing a job needs a stricter answer. */
+async function strictStatus(target: string): Promise<ServiceStatus> {
+  try {
+    const { stdout } = await exec("/bin/launchctl", ["print", target], { timeout: 5000 });
+    return { installed: true, pid: Number(stdout.match(/^\s*pid = (\d+)$/m)?.[1]) || undefined };
+  } catch (error) {
+    if (isNoSuchProcess(error) || /Could not find service|service not found/i.test(String((error as Error).message))) return { installed: false };
+    throw new Error("Cannot confirm whether the managed service is unloaded", { cause: error });
+  }
+}
+
+async function inspectProcess(identity: ProcessIdentity): Promise<ProcessIdentityState> {
+  try { process.kill(identity.pid, 0); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ESRCH" ? "gone" : "unknown"; // EPERM is not proof that the old writer exited.
+  }
+  try {
+    const started = await processStartMs(identity.pid);
+    if (started === undefined) return "unknown";
+    return started === identity.startedAtMs ? "alive" : "reused";
+  } catch { return "unknown"; }
+}
+
+export interface LegacyReplacementTools {
+  status(): Promise<ServiceStatus>;
+  processStart(pid: number): Promise<number | undefined>;
+  processState(identity: ProcessIdentity): Promise<ProcessIdentityState>;
+  disable(): Promise<void>;
+  enable(): Promise<void>;
+  signalIdleExit(pid: number): void;
+  bootout(): Promise<unknown>;
+  write(contents: string): Promise<void>;
+  backup(contents: string): Promise<void>;
+  discardBackup(): Promise<void>;
+  bootstrap(): Promise<void>;
+  sleep(ms: number): Promise<void>;
+  now(): number;
+}
+
+async function captureProcess(status: ServiceStatus, tools: LegacyReplacementTools): Promise<ProcessIdentity | undefined> {
+  if (!status.pid) return;
+  const startedAtMs = await tools.processStart(status.pid).catch(() => undefined);
+  if (startedAtMs === undefined) throw new Error("Cannot identify the running managed service; its settings were not changed");
+  return { pid: status.pid, startedAtMs };
+}
+async function waitForAbsent(identity: ProcessIdentity | undefined, tools: LegacyReplacementTools): Promise<void> {
+  const deadline = tools.now() + serviceStopTimeoutMs;
+  do {
+    const current = await tools.status(); const state = identity ? await tools.processState(identity) : "gone";
+    if (state === "unknown") throw new Error("Cannot confirm the old managed service exited; its settings were not changed");
+    if (current.installed && current.pid && identity && (current.pid !== identity.pid || state === "reused")) throw new Error("Service restarted before migration; retry while idle");
+    if (!current.installed && (state === "gone" || state === "reused")) return;
+    await tools.sleep(100);
+  } while (tools.now() < deadline);
+  throw new Error("Cannot confirm the managed service is unloaded; its settings were not changed");
+}
+async function signalOwnedIdleService(identity: ProcessIdentity, tools: LegacyReplacementTools): Promise<void> {
+  const current = await tools.status(); const state = await tools.processState(identity);
+  if (state === "unknown") throw new Error("Cannot confirm the old managed service exited; its settings were not changed");
+  if ((state === "gone" || state === "reused") && !current.installed) return;
+  if (state !== "alive" || !current.installed || current.pid !== identity.pid) throw new Error("Service restarted before migration; retry while idle");
+  tools.signalIdleExit(identity.pid);
+}
+function rollbackFailure(original: unknown, rollback: unknown): Error {
+  const first = original instanceof Error ? original.message : String(original);
+  const second = rollback instanceof Error ? rollback.message : String(rollback);
+  return new Error(`${first}; rollback incomplete: ${second}. The previous managed service was not confirmed running.`, { cause: original });
+}
+async function originalStillRunning(identity: ProcessIdentity | undefined, tools: LegacyReplacementTools): Promise<boolean> {
+  if (!identity) return false;
+  const current = await tools.status();
+  return current.installed && current.pid === identity.pid && (await tools.processState(identity)) === "alive";
+}
+/**
+ * The legacy plist replacement transaction. Its fakes make the two teardown proofs testable without touching launchd.
+ * It never bootstraps either definition until launchd no longer has the old job and its recorded process identity is gone.
+ */
+export async function replaceLegacyService(existing: string | undefined, contents: string, tools: LegacyReplacementTools, expected?: ServiceStatus): Promise<void> {
+  let disabled = false; let teardownProven = false; let replacementAttempted = false;
+  let original: ProcessIdentity | undefined;
+  try {
+    const current = await tools.status();
+    if (expected && (current.installed !== expected.installed || (current.installed && current.pid !== expected.pid))) throw new Error("Service changed after its idle check; retry while idle");
+    if (current.installed) {
+      original = await captureProcess(current, tools);
+      await tools.disable(); disabled = true;
+      if (original) {
+        await signalOwnedIdleService(original, tools); await waitForAbsent(original, tools); teardownProven = true;
+      } else {
+        const afterDisable = await tools.status();
+        if (afterDisable.installed && afterDisable.pid) throw new Error("Service restarted before migration; retry while idle");
+        if (afterDisable.installed) await tools.bootout();
+        await waitForAbsent(undefined, tools); teardownProven = true;
+      }
+    }
+    else { await waitForAbsent(undefined, tools); teardownProven = true; }
+    if (existing !== undefined) await tools.backup(existing);
+    await waitForAbsent(original, tools);
+    await tools.write(contents);
+    await waitForAbsent(original, tools);
+    await tools.enable(); disabled = false; replacementAttempted = true; await tools.bootstrap();
+    if (existing !== undefined) await tools.discardBackup().catch(() => undefined);
+  } catch (error) {
+    if (existing === undefined) throw error;
+    if (!teardownProven) {
+      if (!disabled) throw error;
+      let restored = false;
+      try {
+        if (await originalStillRunning(original, tools)) { await tools.enable(); restored = true; }
+      } catch (rollback) { throw rollbackFailure(error, rollback); }
+      if (restored) throw error;
+      throw rollbackFailure(error, new Error("The original service could not be confirmed running, so it was left disabled"));
+    }
+    try {
+      if (original && (await tools.processState(original)) === "unknown") throw new Error("Cannot confirm the old managed service exited");
+      const current = await tools.status();
+      if (current.installed) {
+        throw new Error(replacementAttempted ? "The replacement service is still loaded" : "The replacement service appeared before it was started");
+      } else await waitForAbsent(original, tools);
+      await tools.write(existing);
+      await waitForAbsent(original, tools);
+      await tools.enable(); disabled = false; await tools.bootstrap();
+      await tools.discardBackup().catch(() => undefined);
+    } catch (rollback) { throw rollbackFailure(error, rollback); }
+    throw error;
+  }
 }
 export async function macService(action: string | undefined, configPath: string): Promise<Record<string, unknown>> {
   if (action === "status") return serviceOperation(action, configPath);
@@ -123,11 +258,10 @@ async function serviceOperation(action: string | undefined, configPath: string):
   const paths = [...new Set([dirname(process.execPath), resolve(homedir(), ".local/bin"), ...(process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin").split(":").filter(path => path.startsWith("/"))])].join(":");
   const command = gatewayCommand();
   const contents = servicePlist(process.execPath, fileURLToPath(new URL("./cli.js", import.meta.url)), configPath, resolve(config.stateDirectory, "service.log"), paths, command.args.length ? undefined : command.command);
-  const current = await status(target);
+  const legacyBackup = resolve(config.stateDirectory, "service-backups", `legacy-service.${process.pid}.${randomUUID()}.plist`);
+  const current = await strictStatus(target);
   if (current.installed && existing === undefined) throw new Error("An existing service has this label without a managed LaunchAgent; refusing to replace it");
   if (existing !== contents) {
-    let disabled = false; let unloaded = false;
-    try {
     if (current.installed && current.pid) {
       const { stdout } = await exec("/usr/bin/plutil", ["-extract", "ProgramArguments", "json", "-o", "-", path]);
       const args: unknown = JSON.parse(stdout);
@@ -136,27 +270,19 @@ async function serviceOperation(action: string | undefined, configPath: string):
       const health = await (await fetch(`http://127.0.0.1:${previous.port}/health`, { signal: AbortSignal.timeout(3000) })).json() as { active?: number; idleRestart?: boolean; idleUpgrade?: boolean };
       if (health.active !== 0 || health.idleRestart !== true) throw new Error("Finish active gateway work before upgrading the managed service");
       if (health.idleUpgrade !== true) throw new Error("Restart the gateway service once to load the installed idle-upgrade protocol, then repeat service install");
-      // Disabling keeps the current process running but prevents KeepAlive from
-      // starting the old command between its idle exit and plist replacement.
-      await exec("/bin/launchctl", ["disable", target], { timeout: 5000 }); disabled = true;
-      process.kill(current.pid, "SIGUSR1");
-      let stopped = false;
-      for (let attempt = 0; attempt < 30; attempt++) { await delay(100); const next = await status(target); if (!next.installed) { stopped = true; unloaded = true; break; } if (next.pid && next.pid !== current.pid) throw new Error("Service restarted before migration; retry while idle"); }
-      if (!stopped) throw new Error("New gateway work prevented the service upgrade; its settings were not changed");
     }
-    if ((await status(target)).installed) { await bootoutJob(target); unloaded = true; }
-    await mkdir(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`; await writeFile(temporary, contents, { mode: 0o600 }); await rename(temporary, path);
-    await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); disabled = false;
-    await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 });
-    } catch (error) {
-      if (unloaded && existing) {
-        const temporary = `${path}.${process.pid}.rollback`; await writeFile(temporary, existing, { mode: 0o600 }); await rename(temporary, path);
-        await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); disabled = false;
-        await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 });
-      }
-      throw error;
-    } finally { if (disabled) await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); }
+    await replaceLegacyService(existing, contents, {
+      status: () => strictStatus(target), processStart: processStartMs, processState: inspectProcess,
+      disable: () => exec("/bin/launchctl", ["disable", target], { timeout: 5000 }).then(() => undefined),
+      enable: () => exec("/bin/launchctl", ["enable", target], { timeout: 5000 }).then(() => undefined),
+      signalIdleExit: pid => process.kill(pid, "SIGUSR1"),
+      bootout: () => bootoutJob(target),
+      write: async value => { await mkdir(dirname(path), { recursive: true }); const temporary = `${path}.${process.pid}.tmp`; await writeFile(temporary, value, { mode: 0o600 }); await rename(temporary, path); },
+      backup: async value => { await mkdir(dirname(legacyBackup), { recursive: true, mode: 0o700 }); await writeFile(legacyBackup, value, { mode: 0o600 }); },
+      discardBackup: () => unlink(legacyBackup).catch(() => undefined),
+      bootstrap: () => exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }).then(() => undefined),
+      sleep: delay, now: performance.now,
+    }, current);
   }
   if (!current.installed && existing === contents) { await exec("/bin/launchctl", ["enable", target], { timeout: 5000 }); await exec("/bin/launchctl", ["bootstrap", domain, path], { timeout: 10000 }); }
   return { service: label, ...await status(target), port: config.port };
