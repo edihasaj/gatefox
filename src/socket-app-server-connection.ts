@@ -2,6 +2,8 @@ import { isAbsolute } from "node:path";
 import { connect } from "node:net";
 import WebSocket, { type RawData } from "ws";
 import { isId, object, type Id, type Message } from "./app-server-connection.js";
+import { telemetry } from "./telemetry.js";
+import { reportException } from "./error-report.js";
 
 const FRAME_LIMIT = 16 * 1024 * 1024;
 const PENDING_LIMIT = 256;
@@ -113,7 +115,16 @@ export class SocketAppServerConnection {
       if (this.incomingCount >= PENDING_LIMIT || this.incomingBytes + buffer.length > FRAME_LIMIT) { this.fail("Codex app-server message queue is full"); return; }
       this.incomingCount++; this.incomingBytes += buffer.length;
       this.dispatch = this.dispatch.then(async () => { if (!this.stopping && (!this.closed || this.options.drainOnClose)) await this.onMessage(message); })
-        .catch(() => this.fail("Codex app-server message handler failed"))
+        .catch(error => {
+          // A callback failure does not establish that the shared transport or engine failed.
+          reportException(error, "engine_message");
+          const method = message.method as string;
+          telemetry("engine_message_failed", { transport: "socket", ...(method.length <= 64 && /^[A-Za-z]+(\/[A-Za-z]+)*$/.test(method) ? { method } : {}) });
+          if (isId(message.id)) {
+            try { this.send({ id: message.id, error: { code: -32603, message: "The adapter could not deliver this request" } }); }
+            catch { this.fail("Codex app-server socket send failed"); }
+          }
+        })
         .finally(() => { this.incomingCount--; this.incomingBytes -= buffer.length; });
     } else if (isId(message.id)) {
       // Responses bypass notification dispatch: a handler may itself await an RPC request.
