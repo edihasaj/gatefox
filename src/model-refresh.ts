@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { ChatGPTRefreshDeferred } from "./auth/chatgpt.js";
 import { discoverModels, type DiscoveredModel } from "./catalog.js";
-import { loadConfig, validateConfig, writePrivateJson, type GatewayConfig, type ProviderConfig } from "./config.js";
+import { capContextWindow, loadConfig, validateConfig, writePrivateJson, type GatewayConfig, type ProviderConfig } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import type { TailnetSeams } from "./tailnet.js";
 import { telemetry } from "./telemetry.js";
@@ -63,7 +63,8 @@ export async function refreshModelMetadata(path: string, discover: (provider: Pr
     for (const [alias, model] of Object.entries(provider.models)) {
       const found = fresh.get(model); const window = observed[provider.id]?.[model];
       if (!found && window === undefined) continue;
-      metadata[alias] = { ...metadata[alias], ...found, ...(window !== undefined ? { contextWindow: window } : {}) };
+      // An operator cap survives every refresh: a server reporting a larger limit never raises the saved window.
+      metadata[alias] = capContextWindow({ ...metadata[alias], ...found, ...(window !== undefined ? { contextWindow: window } : {}) });
     }
     if (JSON.stringify(metadata) !== JSON.stringify(provider.modelMetadata || {})) updates.set(provider.id, metadata);
   }

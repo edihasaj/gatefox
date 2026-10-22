@@ -2,7 +2,7 @@ import { accessToken, type AccessTokenOptions } from "./auth/chatgpt.js";
 import { discoverClaudeModels } from "./providers/claude-models.js";
 import { discoverCopilotModels } from "./providers/copilot-models.js";
 import { tailnetFetch, type TailnetSeams } from "./tailnet.js";
-import { apiCredential, bridgesToolSearch, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
+import { apiCredential, bridgesToolSearch, capContextWindow, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
 
@@ -11,7 +11,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
   const groups = new Map<string, number>();
   const models = config.providers.flatMap((provider, providerIndex) => Object.keys(provider.models).map((alias, modelIndex) => {
     groups.set(alias, providerIndex);
-    const metadata = provider.modelMetadata?.[alias];
+    const metadata = capContextWindow(provider.modelMetadata?.[alias]);
     const efforts = metadata?.reasoningEfforts || [];
     // The provider's own default (Claude: the CLI's per-model level); otherwise medium.
     const preferred = metadata?.defaultReasoningEffort && efforts.includes(metadata.defaultReasoningEffort) ? metadata.defaultReasoningEffort : "medium";
@@ -110,7 +110,7 @@ export function loadDiscoveredModels(provider: ProviderConfig, discovered: Disco
   const existing = new Map<string, string[]>();
   for (const [alias, model] of Object.entries(provider.models)) existing.set(model, [...(existing.get(model) || []), alias]);
   const entries = discovered.flatMap(entry => (existing.get(entry.model) || [`${provider.id}/${entry.model}`]).map(alias => ({
-    alias, model: entry.model, metadata: { ...provider.modelMetadata?.[alias], ...entry.metadata },
+    alias, model: entry.model, metadata: capContextWindow({ ...provider.modelMetadata?.[alias], ...entry.metadata }),
   })));
   provider.models = Object.fromEntries(entries.map(entry => [entry.alias, entry.model]));
   provider.modelMetadata = Object.fromEntries(entries.map(entry => [entry.alias, entry.metadata]));
