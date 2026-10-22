@@ -60,7 +60,10 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
   };
   top.forEach(remember);
   for (const item of input ?? []) if (data(item) && item.type === "additional_tools" && Array.isArray(item.tools)) item.tools.forEach(remember);
-  const lite = (input ?? []).some(item => data(item) && item.type === "additional_tools");
+  // The backend requires a role on every `additional_tools` item (Codex sends `developer`); a new one copies the request's own.
+  const declaration = (input ?? []).find(item => data(item) && item.type === "additional_tools") as Data | undefined;
+  const lite = declaration !== undefined;
+  const role = typeof declaration?.role === "string" ? declaration.role : "developer";
   const plain = (tool: Data): Data => { const { defer_loading: _deferred, ...rest } = tool; return rest; };
   /** The newly loaded part of a search result, and the names of everything it returned. */
   const load = (returned: unknown): { fresh: Data[]; names: string[] } => {
@@ -101,7 +104,7 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
       const text = names.length ? `Loaded tools: ${names.join(", ")}` : "No matching tools were found.";
       const output = { type: "function_call_output", call_id: item.call_id, output: text.length > maxOutputText ? `${text.slice(0, maxOutputText - 3)}...` : text };
       if (!fresh.length) return [output];
-      if (lite) return [output, { type: "additional_tools", tools: fresh }];
+      if (lite) return [output, { type: "additional_tools", role, tools: fresh }];
       appended.push(...fresh); return [output];
     }
     return [item];

@@ -403,7 +403,9 @@ refuses the `tool_search` type through the gateway's shared-subscription login (
 first seen on 0.4.4, where every Codex 2 turn failed with "Provider returned HTTP 400").
 **Search is therefore off by default.** A `codex-subscription` provider can opt in to a
 bridge with `"toolSearch": "bridge"` in `gateway.json`; `"off"` is the default, and any
-other provider type refuses the setting. The setting is capability metadata, so a change
+other provider type refuses the setting. `gateway tool-search on`, `off` and `status` set,
+remove and show it for every `codex-subscription` provider; the command validates the edited
+file before saving it and changes no other field. The setting is capability metadata, so a change
 applies live, without a rebind; a chat started before the change keeps its catalog until
 Codex loads the new one.
 
@@ -424,7 +426,9 @@ Codex loads the new one.
   and its `tool_search_output` becomes a `function_call_output` that names the loaded
   tools, followed by the loaded tools themselves: in a new `additional_tools` item right
   after the output on a Responses lite request, so everything before that point (and the
-  prompt cache for it) is unchanged, and appended to the top-level tools otherwise. A tool
+  prompt cache for it) is unchanged, and appended to the top-level tools otherwise. That item
+  carries the role of the request's own `additional_tools` item (Codex sends `developer`),
+  because the backend refuses one without a role. A tool
   already declared is not declared again, `defer_loading` is removed because the bridge
   loads the tool explicitly, and only function, custom and namespace tools are loaded.
   When the model calls the function, the client receives a `tool_search_call` with the
@@ -433,8 +437,16 @@ Codex loads the new one.
   arguments fail as `invalid_tool_call`. Calls of loaded tools resolve like any caller
   tool. Codex resends the whole history every turn, so the gateway keeps no state. The
   gateway records `tool_search_bridged` with counts only.
-- **Bridge risks.** The bridge is not yet verified against the real backend, because the
-  account's sharing usage limit was reached when it was built. Loading tools on a request
+- **Verification.** `node scripts/probe-tool-search-bridge.mjs --dry-run` runs both rounds
+  (the model searches, then calls the tool the search loaded) through the gateway's own
+  provider code against a scripted backend, for a top-level and a Responses lite request, and
+  checks that nothing of the `tool_search` type or `defer_loading` reaches the wire. Without
+  `--dry-run` it makes the same four requests to the real backend. On 22 Oct 2026 all four
+  passed the backend's request validation and were refused only for the account's sharing
+  usage limit, exactly like a request with no tools; the backend validates a request before it
+  checks the allowance, which is how it refused the raw `tool_search` type with a 400. Whether
+  the model actually uses the search function is still to be observed once the limit resets.
+- **Bridge risks.** Loading tools on a request
   that is not Responses lite changes the top-level tool list, which can lower prompt cache
   hits from that point. The model sees a function rather than the tool type it was trained
   with, so it may use search a little differently. In the seven days before the bridge was

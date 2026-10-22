@@ -231,7 +231,8 @@ Its current gateway route supports text only.
 
 A `codex-subscription` provider may set `"toolSearch": "bridge"` to let Codex's tool search
 work through the gateway's login, which refuses the `tool_search` tool type. The default
-`"off"` drops it. See [tool search](docs/responses.md#tool-search-on-the-codex-subscription-route).
+`"off"` drops it. `gateway tool-search on`, `off` and `status` change or show the setting without a
+restart. See [tool search](docs/responses.md#tool-search-on-the-codex-subscription-route).
 
 The gateway translates subscription and API inference into the caller's Responses or Messages
 protocol. The client owns agent roles, delegation, model selection, permissions,
