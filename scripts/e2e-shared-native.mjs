@@ -15,6 +15,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, package: { type: 'string' }, root: { type: 'string' },
   'runtime-package': { type: 'string' },
+  'adapter-codex': { type: 'string' }, 'host-codex': { type: 'string' }, 'desktop-app': { type: 'string' },
   'candidate-engine': { type: 'string', default: '0.162.0-alpha.17.2' },
   transports: { type: 'string', default: 'stdio,unix' },
   'host-capabilities': { type: 'string', default: 'native' },
@@ -22,6 +23,8 @@ const { values: v } = parseArgs({ options: { gateway: { type: 'string' }, packag
 for (const key of ['gateway', 'package', 'root']) assert.ok(v[key], 'Missing --' + key);
 const gateway = resolve(v.gateway), packagePath = resolve(v.package), runtimePackagePath = resolve(v['runtime-package'] ?? v.package),
   root = resolve(v.root), sdk = resolve(v.codex), candidateEngine = v['candidate-engine'];
+const adapterSdk = resolve(v['adapter-codex'] ?? sdk);
+const hostSdk = resolve(v['host-codex'] ?? sdk);
 assert.ok(root !== resolve(homedir(), '.codex') && !root.startsWith(resolve(homedir(), '.codex') + '/'));
 assert.match(candidateEngine, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, 'Candidate engine must be an exact version');
 const transports = v.transports.split(','); assert.ok(transports.every(value => ['stdio', 'unix'].includes(value)));
@@ -31,8 +34,8 @@ if (process.platform === 'darwin') execFileSync('/usr/bin/codesign', ['--verify'
 const sdkVersion = execFileSync(sdk, ['--version'], { encoding: 'utf8' }).trim(); assert.equal(sdkVersion, 'codex-cli ' + candidateEngine);
 const { WebSocket } = createRequire(join(packagePath, 'package.json'))('ws');
 const module = name => import(pathToFileURL(join(packagePath, 'dist', name + '.js')));
-const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }, { gatewaySdkRuntime }, { sdkIdentity }] = await Promise.all([
-  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses'), module('gateway-sdk-runtime'), module('execution-host-storage')]);
+const [{ startExecutionHost, executionHostHome }, { SocketAppServerConnection }, { modelCatalog }, { ResponsesWriter }, { gatewaySdkRuntime }, { sdkIdentity }, { prepareDesktop }, { verifyNativeSdk }] = await Promise.all([
+  module('execution-host'), module('socket-app-server-connection'), module('catalog'), module('protocol/responses'), module('gateway-sdk-runtime'), module('execution-host-storage'), module('desktop-launch'), module('native-execution-host-sdk')]);
 const adapterGatewayRuntime = await gatewaySdkRuntime(packagePath), gatewayRuntime = await gatewaySdkRuntime(runtimePackagePath);
 const runtime = await mkdtemp('/tmp/gw-native-'), home = join(runtime, 'native'), work = join(runtime, 'work'), state = join(runtime, 'state'), privateHome = join(runtime, 'home');
 await Promise.all([root, home, work, state, privateHome].map(path => mkdir(path, { recursive: true, mode: 0o700 })));
@@ -40,13 +43,16 @@ const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^
 env.HOME = privateHome;
 const results = [], requests = [], owned = new Set(), clients = new Set(), held = new Set(), sdkPids = new Set(), initializationCapabilities = {};
 const seed = 'NATIVE_SEED_' + randomUUID(), steer = 'STEER_' + randomUUID();
-let phase = 'setup', mode = 'seed', timerCount = 0, modelGets = 0, mockErrors = 0, host, control, commandCounter;
+let phase = 'setup', mode = 'seed', timerCount = 0, modelGets = 0, mockErrors = 0, host, control, commandCounter, desktopWrapper, startupOwnershipMismatch = false;
 const nativeCatalog = modelCatalog({ providers: [{ id: 'native', type: 'responses-api', models: { 'native-fixture': 'mock-native' },
   modelMetadata: { 'native-fixture': { contextWindow: 50000, reasoningEfforts: ['low'] } } }] });
 const save = async row => { results.push(row); await writeFile(join(root, 'result.json'), JSON.stringify({ checkedAt: new Date().toISOString(), sdkVersion, candidateEngine,
   gateway, runtime, primaryConfigRead: false, primaryConfigWritten: false, nativeAuthCopied: false, paidInferenceRequests: 0,
   gatewaySdkBundled: !!gatewayRuntime, gatewaySdkBinarySha256: gatewayRuntime?.binarySha256, runtimePackage: runtimePackagePath,
   adapterGatewaySdkBundled: !!adapterGatewayRuntime,
+  desktopWrapperUsed: !!desktopWrapper, adapterUsesSeparateEnginePath: adapterSdk !== sdk,
+  hostUsesSeparateEnginePath: hostSdk !== sdk,
+  startupOwnershipMismatch,
   privateHome, childHomeIsPrivate: env.HOME === privateHome,
   modelGets, mockErrors, results, requests }, null, 2) + '\n', { mode: 0o600 }); console.log(JSON.stringify(row)); };
 const selectedSdk = await realpath(sdk);
@@ -129,7 +135,7 @@ const configPath = join(runtime, 'gateway.json'), config = { version: 1, port, s
 await writeFile(configPath, JSON.stringify(config), { mode: 0o600 });
 await writeFile(join(state, 'service-plan.json'), JSON.stringify({ version: 1, config: configPath, sharedExecutors: sharedGateway, sharedNativeExecutor: true,
   components: [{ id: 'native-fixture', kind: 'native', command: sdk,
-    args: ['--daemon', '--codex', sdk, '--native-home', home, '--relay-home', join(runtime, 'unused-relay')], log: join(runtime, 'unused-native.log') }] }), { mode: 0o600 });
+    args: ['--daemon', '--codex', hostSdk, '--native-home', home, '--relay-home', join(runtime, 'unused-relay')], log: join(runtime, 'unused-native.log') }] }), { mode: 0o600 });
 function command(args, options = {}) { const child = spawn(gateway.endsWith('.js') ? process.execPath : gateway, gateway.endsWith('.js') ? [gateway, ...args] : args,
   { env, cwd: work, stdio: ['ignore', 'ignore', 'ignore'], detached: true, ...options }); owned.add(child); return child; }
 function groupAlive(child) { try { process.kill(-child.pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false;
@@ -143,6 +149,7 @@ async function stop(child) { if (!child) return; const done = child.exitCode !==
 function adapterClient(child, websocket) { const events = [], pending = new Map(), approvals = [], commandEvents = []; let sequence = 0, current;
   const send = value => websocket ? websocket.send(JSON.stringify(value)) : child.stdin.write(JSON.stringify(value) + '\n');
   const receive = raw => { const message = JSON.parse(raw), entry = pending.get(message.id);
+    if (message.error?.message?.includes('Shared executor ownership does not match this adapter')) startupOwnershipMismatch = true;
     if (entry) { pending.delete(message.id); clearTimeout(entry.timer); message.error ? entry.reject(Object.assign(Error('RPC rejected: ' + entry.method + ': ' + message.error.message), { code: message.error.code })) : entry.resolve(message.result); }
     else if (message.method === 'item/commandExecution/requestApproval' && message.id !== undefined) approvals.push({ id: message.id, method: message.method,
       threadId: message.params.threadId, turnId: message.params.turnId, params: message.params });
@@ -156,10 +163,17 @@ function adapterClient(child, websocket) { const events = [], pending = new Map(
     close: async () => { websocket?.terminate(); lines?.close(); child.stdin?.end(); for (const entry of pending.values()) { clearTimeout(entry.timer); entry.reject(Error('Fixture adapter closed')); }
       pending.clear(); await stop(child); clients.delete(current); } }; clients.add(current); return current; }
 async function open(transport, suffix) { let listener, client, backendPid;
-  if (transport === 'stdio') { const child = command(['codex-shim', '--config', configPath, '--codex', sdk, '--', 'app-server', '--listen', 'stdio://'],
-    { env: { ...env, CODEX_HOME: home }, stdio: ['pipe', 'pipe', 'ignore'] }); backendPid = child.pid; client = adapterClient(child); }
+  if (transport === 'stdio') {
+    const options = { env: { ...env, CODEX_HOME: home }, cwd: work, stdio: ['pipe', 'pipe', 'pipe'], detached: true };
+    const child = desktopWrapper ? spawn(desktopWrapper, ['app-server', '--listen', 'stdio://'], options)
+      : command(['codex-shim', '--config', configPath, '--codex', adapterSdk, '--', 'app-server', '--listen', 'stdio://'], options);
+    let stderrTail = ''; child.stderr.on('data', bytes => {
+      stderrTail = (stderrTail + String(bytes)).slice(-512);
+      if (stderrTail.includes('Shared executor ownership does not match this adapter')) startupOwnershipMismatch = true;
+    });
+    owned.add(child); backendPid = child.pid; client = adapterClient(child); }
   else { const proxyHome = join(runtime, 'proxy-' + suffix);
-    listener = command(['codex-shim', '--ssh', '--ssh-home', proxyHome, '--config', configPath, '--codex', sdk, '--', 'app-server', '--listen', 'unix://'], { env: { ...env, CODEX_HOME: home } });
+    listener = command(['codex-shim', '--ssh', '--ssh-home', proxyHome, '--config', configPath, '--codex', adapterSdk, '--', 'app-server', '--listen', 'unix://'], { env: { ...env, CODEX_HOME: home } });
     backendPid = listener.pid;
     await until(() => access(join(proxyHome, 'app-server-control/app-server-control.sock')).then(() => true, () => false), 'Private adapter Unix listener');
     const child = spawn(sdk, ['app-server', 'proxy'], { env: { ...env, CODEX_HOME: proxyHome }, cwd: work, stdio: ['pipe', 'pipe', 'ignore'], detached: true }); owned.add(child);
@@ -198,8 +212,16 @@ try {
   await until(() => fetch('http://127.0.0.1:' + port + '/health').then(res => res.ok).catch(() => false), 'Gateway HTTP fixture');
   for (const key of Object.keys(process.env)) if (protectedKey(key)) delete process.env[key];
   Object.assign(process.env, Object.fromEntries(Object.entries(env).filter(([key]) => protectedKey(key))));
-  host = await startExecutionHost({ config, configPath, nativeHome: home, codex: sdk, capabilities, nativeRelayOwnsRegistration: false,
-    nativeSdkVerifier: verifyCandidateNativeSdk, gatewayRuntime: async () => gatewayRuntime });
+  const verifyHostSdk = v['host-codex'] ? async path => {
+    const identity = await verifyNativeSdk(path);
+    assert.equal(identity.nativeSdkExecutable, selectedSdk, 'The launcher selected a different signed engine'); return identity;
+  } : verifyCandidateNativeSdk;
+  host = await startExecutionHost({ config, configPath, nativeHome: home, codex: hostSdk, capabilities, nativeRelayOwnsRegistration: false,
+    nativeSdkVerifier: verifyHostSdk, gatewayRuntime: async () => gatewayRuntime });
+  if (v['desktop-app']) {
+    desktopWrapper = (await prepareDesktop(configPath, resolve(v['desktop-app']))).wrapper;
+    assert.ok(desktopWrapper.startsWith(state + '/'), 'The generated desktop wrapper escaped the isolated state');
+  }
   control = new SocketAppServerConnection(join(executionHostHome(configPath, home), 'host.sock'), async () => {}); await control.ready;
   for (const transport of transports) {
     phase = transport + '-two-native-adapters'; const owner = await open(transport, transport + '-a'); let reader = await open(transport, transport + '-b');

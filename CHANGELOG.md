@@ -9,6 +9,11 @@ passed the isolated shared-native checks for disconnect, reconnect, steering,
 Stop, pending approvals, and commands that run exactly once. Gateway chats keep
 using the gateway SDK pin. Thanks to Edi Hasaj for reporting the startup blocker.
 
+Desktop wrappers now pass ChatGPT's signed Codex engine to app-server sessions, and
+the shared-native ownership check recognizes the app's first-party launcher as that
+same engine. Older generated wrappers remain compatible, while a different executable
+still fails closed. Thanks to Edi Hasaj for identifying the launcher ownership mismatch.
+
 Updates now delete retired gateway releases instead of moving them to the Trash.
 The installer still keeps the current release, the previous one and the newest
 other one, and still deletes nothing while a running process or LaunchAgent uses a
