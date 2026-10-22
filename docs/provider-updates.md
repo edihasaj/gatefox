@@ -84,9 +84,26 @@ private-file lock, including dead-process recovery. Scheduling creates no
 GitHub Actions trigger. See the [CI cost policy](ci-cost-policy.md).
 
 The fixed outcome and phase are in `.state/provider-maintenance/latest.json`;
-the schedule prints only safe outcomes in `schedule.log`. Raw compiler, CLI and
-test diagnostics are not logged because upstream failures can print mock request
-bodies. Failed candidates stay under that directory for inspection. Validation
+the schedule prints only safe outcomes in `schedule.log`. A failed validator also
+records bounded structured facts when available:
+
+| Field | Saved information |
+| --- | --- |
+| `failureReason` | `nonzero_exit`, `timeout`, `output_limit`, `spawn_error`, or `cancelled`; the first cause is retained. |
+| `exitCode`, `signal` | Numeric exit status and an allowed operating-system signal name. |
+| `failureFiles`, `failureLocations` | Existing candidate-relative test files and their line numbers, with optional columns. |
+| `failureTypes`, `compilerCodes` | Allowed Node test failure classes and Rust or TypeScript compiler codes. |
+| `testTotals` | Numeric TAP or spec-reporter summary counts. |
+
+Locations are restricted to the candidate's `dist/tests/*.test.js` and
+`scripts/tests/provider-*.test.mjs` files. Absolute paths and file URLs are reduced
+to relative paths only after containment checks. Arrays, paths, line buffers, and
+counts are bounded. Metadata is validated again before it reaches the report,
+including errors supplied by test doubles.
+
+Raw messages, test titles, assertion values, stack traces, command arguments,
+environment values, and provider output are not retained. Failed candidates stay
+under that directory for inspection. Validation
 uses no subscription inference or copied authentication. Handshakes prove CLI
 interfaces, not model behavior or billing.
 Maintenance limits the source suite to four concurrent fixture files to avoid

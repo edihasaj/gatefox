@@ -348,7 +348,17 @@ test("warm native resume reuses pending approval ID and rejects inconsistent rep
     assert.equal(first.exits(), 0); assert.equal(first.events.filter(message => message.method === "item/commandExecution/requestApproval").length, 2);
     assert.equal(f.replies.length, 1);
     const second = await f.create(); await second.adapter.request("fixture/approval", { threadId: id });
-    await second.adapter.request("fixture/inconsistent", { threadId: id }); await until(() => second.exits() === 1);
+    await second.adapter.request("fixture/inconsistent", { threadId: id }); await until(() => f.replies.length === 2);
+    assert.deepEqual(f.replies[1], { id: 77, error: { code: -32603, message: "The adapter could not deliver this request" } });
+    assert.equal(second.exits(), 0);
+    const displayed = second.events.filter(message => message.method === "item/commandExecution/requestApproval");
+    assert.equal(displayed.length, 1); assert.equal(object(displayed[0].params).command, "fixture-only");
+    assert.equal(object((await second.adapter.request("account/read", {})).account).type, "chatgpt");
+    f.nativeMessages([{ method: "serverRequest/resolved", params: { requestId: 77 } }]);
+    await until(() => second.events.some(message => message.method === "serverRequest/resolved"));
+    assert.equal(object(second.events.find(message => message.method === "serverRequest/resolved")!.params).requestId, displayed[0].id);
+    assert.equal(second.adapter.reply({ id: displayed[0].id, result: { decision: "accept" } }), false);
+    assert.equal(f.replies.length, 2, "a late UI answer cannot execute the resolved callback");
     assert.equal(second.events.some(message => message.method === "turn/completed"), false); await f.noSpawn();
   } finally { await f.clean(); }
 });
