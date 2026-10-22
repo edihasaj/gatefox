@@ -2,11 +2,6 @@
 
 ## Unreleased
 
-Shared app-server connections now keep reading after a message handler fails,
-instead of rejecting unrelated pending requests and disconnecting the client.
-Failed server callbacks receive a fixed error and safe diagnostics identify the
-socket transport. Thanks to Edi Hasaj for reporting the submission failure.
-
 Legacy standalone service installation now confirms that the previous job and
 process have stopped before loading a replacement or a restored definition.
 Provider maintenance failures retain bounded, scrubbed diagnostic metadata so
@@ -217,6 +212,13 @@ the abandoned request before the fix and verifies the listener stays available
 after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
+
+## 0.7.6 — 2026-10-22
+
+Shared app-server connections now keep reading after a message handler fails,
+instead of rejecting unrelated pending requests and disconnecting the client.
+Failed server callbacks receive a fixed error and safe diagnostics identify the
+socket transport. Thanks to Edi Hasaj for reporting the submission failure.
 
 ## 0.5.4 — 2026-10-19
 
