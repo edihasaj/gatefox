@@ -52,6 +52,7 @@ test("a probe passes a healthy host and names each failure with a fixed reason",
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid }), undefined, "a gateway-only host is not checked against the app engine");
     await writeFile(healthy.codex, "engine two, after an app update\n");
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid, codex: healthy.codex }, baseline), "sdk_changed");
+    assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid, codex: healthy.codex }, {}), "sdk_changed", "a fresh baseline still compares a legacy direct-binary receipt with its recorded digest");
     await unlink(healthy.codex);
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid, codex: healthy.codex }, {}), "sdk_changed", "a missing engine has changed");
     assert.equal(await probeExecutionHost({ home: healthy.home, pid: process.pid + 1 }), "receipt_mismatch", "the receipt names another process");

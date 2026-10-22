@@ -1,5 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
+import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
+import { nativeEngineExecutable, nativeOwnerEngineExecutable } from "./native-engine-path.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { executionHostHome, executionCapabilities, readOwnerRecord, receiptPidAlive, socketIdentity, socketAnswers, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
@@ -106,7 +107,11 @@ export class ExecutionHostClient {
     if (owner.configPath !== resolve(configPath) || owner.nativeHome !== resolve(nativeHome) || owner.socketPath !== socketPath) return fail(new Error("Shared executor ownership does not match this adapter"));
     // Only native sharing runs the app's own engine. A gateway-only host runs its pinned runtime, guarded by that runtime's
     // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
-    try { if (capabilities.includes("native") && owner.codex !== await realpath(codex)) return fail(new Error("Shared executor ownership does not match this adapter")); }
+    try {
+      if (capabilities.includes("native") && await nativeOwnerEngineExecutable(owner.codex, owner.nativeSdkExecutable) !== await nativeEngineExecutable(codex)) {
+        return fail(new Error("Shared executor ownership does not match this adapter"));
+      }
+    }
     catch (error) { return fail(error as Error); }
     if (!live) return fail(unavailable("Shared executor host is unavailable; check gateway service status"));
     // A live host whose socket is gone or replaced, or that refuses the connection, is the host going away: wait for the next one.

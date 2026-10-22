@@ -7,15 +7,19 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
+import { nativeEngineExecutable } from "./native-engine-path.js";
 
 export async function prepareDesktop(configPath: string, app = "/Applications/ChatGPT.app"): Promise<{ binary: string; wrapper: string }> {
   if (process.platform !== "darwin") throw new Error("Desktop activation currently supports macOS");
   const config = await loadConfig(configPath); const binary = resolve(app, "Contents/MacOS/ChatGPT");
   const cli = fileURLToPath(new URL("./cli.js", import.meta.url)); const codex = resolve(app, "Contents/Resources/codex-cli/bin/codex");
   await access(binary); await access(cli); await access(codex);
+  // ChatGPT launches its shell launcher, but shared-native ownership is held by the signed engine it loads.
+  // Give app-server sessions that canonical engine while leaving every other command on the caller's original launcher.
+  const engine = await nativeEngineExecutable(codex);
   const quoted = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const helper = gatewayCommand();
-  const command = [helper.command, ...helper.args, "codex-shim", "--config", configPath, "--codex", codex, "--"].map(quoted).join(" ");
+  const command = [helper.command, ...helper.args, "codex-shim", "--config", configPath, "--codex", engine, "--"].map(quoted).join(" ");
   // Only app-server sessions need translation. Every other Codex command, such as
   // the desktop's exec-server, runs the original CLI with no adapter process.
   const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\nfor argument in "$@"; do\n  if [ "$argument" = app-server ]; then exec ' + command + ' "$@"; fi\ndone\nexec ' + quoted(codex) + ' "$@"\n';
