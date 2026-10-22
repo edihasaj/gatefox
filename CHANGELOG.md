@@ -7,7 +7,7 @@ The native relay and shared native host now accept ChatGPT engines
 `app-server-transport` source as the relay's linked `0.163.0-alpha.10.2` SDK and
 passed the isolated shared-native checks for disconnect, reconnect, steering,
 Stop, pending approvals, and commands that run exactly once. Gateway chats keep
-using the gateway SDK pin.
+using the gateway SDK pin. Thanks to Edi Hasaj for reporting the startup blocker.
 
 Updates now delete retired gateway releases instead of moving them to the Trash.
 The installer still keeps the current release, the previous one and the newest
