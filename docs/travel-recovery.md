@@ -23,6 +23,11 @@ source of truth. A missing connection alone is not proof that a command failed,
 and the adapter must not resend `turn/start` or repeat a tool command to make
 the interface look active.
 
+When a shared gateway executor loses only an adapter socket during an active
+turn, the adapter reattaches the chat and verifies the SDK's saved turn state.
+It never accepts a pending approval or repeats a caller action; unavailable or
+unverified state remains available through the ordinary explicit resume path.
+
 ## Native and gateway ownership
 
 Shared gateway executors already belong to the service. Shared native execution

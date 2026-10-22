@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Shared gateway executor connections now rejoin a known active chat after a
+client-socket drop. The adapter restores only SDK-recorded state and never
+replays prompts, steering requests, tool results or approval decisions. A genuine
+pending approval remains available for an explicit answer.
+Thanks to @edihasaj for reporting chats that required manual reconnection.
+
 The service now starts the native relay from the installed release even when its plan names an older release folder. A plan written by an older installer could pin `releases/0.5.0/package/native/gateway-native-relay`, so every update and every service restart kept starting that 0.5.0 relay and health kept reporting it as lagging. The supervisor now uses `current/package/native/gateway-native-relay` whenever that relay is installed, and it leaves the plan file unchanged so staged native-sharing receipts still match it.
 
 `gateway tool-search on`, `off` and `status` turn the tool search bridge on or off for every
