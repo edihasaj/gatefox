@@ -7,6 +7,27 @@ read_when:
 
 # Verification
 
+## Active gateway connection recovery
+
+Run the compiled candidate against a verified gateway SDK package:
+
+```sh
+node scripts/e2e-gateway-reconnect.mjs \
+  --package /absolute/release/package \
+  --code /absolute/compiled/checkout \
+  --root /private/evidence
+```
+
+The check drops only the adapter's shared gateway socket while the real SDK
+keeps its turn. It requires automatic reconnection without a frontend request,
+the same SDK process and turn, one genuine terminal event, and recovery of text
+emitted while disconnected through `item/completed`. A second case finishes the
+turn before reconnection. A pending approval case requires the original frontend
+callback ID, no execution before an explicit fixture approval, and one actual
+command execution afterward. All inference uses a local mock provider, and all
+homes and ownership records belong to the fixture. These checks exercise the
+adapter protocol; they do not prove rendered desktop behavior.
+
 ## Disconnected native clients (0.6.2)
 
 The signed `codex-cli 0.163.0-alpha.10.2` passed

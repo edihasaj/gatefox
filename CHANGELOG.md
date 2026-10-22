@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Shared gateway executor connections now rejoin a known active chat after a
+client-socket drop. The adapter restores only SDK-recorded state and never
+replays prompts, steering requests, tool results or approval decisions. A genuine
+pending approval remains available for an explicit answer.
+Thanks to @edihasaj for reporting chats that required manual reconnection.
+
 Codex 2 chats can use OpenAI's hosted web search. A Codex 2 row now copies the
 native model's `web_search_tool_type`, and the Codex subscription route forwards the
 `web_search` tool and its replayed `web_search_call` items exactly as native Codex

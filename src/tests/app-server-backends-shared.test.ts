@@ -226,14 +226,14 @@ test("a second adapter reads and stops a shared active gateway chat before consu
   } finally { await f.clean(); }
 });
 
-test("shared gateway socket loss leaves legacy native work alive and never invents gateway completion", { timeout: 20000 }, async () => {
+test("shared gateway socket loss with unreadable turn state keeps native work and reports the gateway fallback", { timeout: 20000 }, async () => {
   const f = await fixture();
   try {
     const started = await f.start("shared-loss-chat");
     await f.backends.request("turn/start", { threadId: "shared-loss-chat", fixtureActive: true });
     await assert.rejects(f.backends.request("fixture/disconnect", { threadId: "shared-loss-chat" }), /socket closed/);
     for (let attempt = 0; attempt < 100 && !f.events.some(message => message.method === "error"); attempt++) await delay(5);
-    assert.equal(f.events.some(message => message.method === "error"), true);
+    assert.equal(f.events.some(message => message.method === "error"), true, "missing turn evidence surfaces the explicit reconnect fallback");
     assert.equal(f.events.some(message => message.method === "turn/completed"), false);
     assert.equal(f.nativeExits(), 0); assert.equal(f.backends.native.closed, false);
     await f.backends.native.request("fixture/features", {});

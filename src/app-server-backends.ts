@@ -9,6 +9,7 @@ import { nothingToJoin, type PrivateNativeLease } from "./native-execution-host-
 import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./native-fallback.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
+import { sameSocketIdentity, socketIdentity, type SocketIdentity } from "./execution-host-storage.js";
 import { canonicalJson, isReleaseSkew } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
@@ -32,14 +33,16 @@ import { NativeRuntimeStatus } from "./native-runtime-status.js";
 import { AdapterRuntimeMetadata, type RuntimeMetadataSource } from "./adapter-runtime-metadata.js";
 import { requestedModel } from "./app-server-request-fields.js";
 import { executableRunsCodeMode } from "./codex-native-rows.js";
+import { replayCompletedDisplayItems } from "./executor-display-replay.js";
 
 type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpcConnection;
 /**
  * `creating` counts this connection's thread/start and thread/fork requests the engine has not finished answering. `provider` is
  * the provider id the engine was launched to record new chats with, when this connection launched or acquired it.
  */
-interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string }
+interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string; socket?: SocketIdentity }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
+type ActiveRecovery = "recovered" | "superseded" | "failed";
 
 /** Socket clients of host-owned engines ignore the reason: only a process the adapter spawned can say why it stopped. */
 function stopConnection(connection: RpcConnection, reason: EngineStopReason): void {
@@ -51,8 +54,10 @@ export class AppServerBackends {
   readonly native: NativeRpcConnection;
   private readonly engines: Engine[] = [];
   private readonly bindings = new Map<string, Engine>();
-  private readonly approvals = new Map<string, { connection: RpcConnection; id: Id; fingerprint: string }>();
+  private readonly approvals = new Map<string, { connection: RpcConnection; id: Id; fingerprint: string; socket?: SocketIdentity; threadId?: string }>();
   private readonly answered = new Map<string, string>();
+  /** A response can leave before the socket discovers it died; retain enough to expose the same approval on replay. */
+  private readonly uncertainApprovals = new Map<string, { connection: RpcConnection; id: Id; fingerprint: string; socket?: SocketIdentity; threadId?: string }>();
   private readonly reverse = new Map<RpcConnection, Map<Id, string>>();
   private serverSequence = 0;
   private initialized?: Message;
@@ -66,6 +71,12 @@ export class AppServerBackends {
   private readonly compaction: GatewayCompaction;
   // Throwaway chats (composer prediction forks): their turns never write to the on-disk compaction store.
   private readonly ephemeralThreads = new BoundedIdSet(4096);
+  /** Completed display items already delivered to this desktop connection. */
+  private readonly completedItems = new BoundedIdSet(8192);
+  /** Terminal turns forwarded to this desktop connection, keyed by chat and turn. */
+  private readonly completedTurns = new BoundedIdSet(4096);
+  /** One automatic recovery per turn/socket loss; a second loss reports normally instead of retrying in a loop. */
+  private readonly recoveringTurns = new BoundedIdSet(4096);
   private readonly nativeTurns = new NativeTurnTracker();
   private nativeExitPending?: Promise<void>;
   private leaseReleased?: Promise<void>;
@@ -218,9 +229,18 @@ export class AppServerBackends {
     }
     return result;
   }
-  private forgetConnection(connection: RpcConnection): void {
-    for (const [id, approval] of this.approvals) if (approval.connection === connection) this.approvals.delete(id);
-    for (const id of this.reverse.get(connection)?.values() || []) this.answered.delete(id);
+  private forgetConnection(connection: RpcConnection, preserveApprovals = false): void {
+    for (const [id, approval] of this.approvals) if (approval.connection === connection && !preserveApprovals) this.approvals.delete(id);
+    if (!preserveApprovals) for (const [id, approval] of this.uncertainApprovals) if (approval.connection === connection) this.uncertainApprovals.delete(id);
+    // A reply queued on a socket that just died is not proof the SDK received
+    // it. Let a warm resume expose that approval again instead of hiding it.
+    for (const id of this.reverse.get(connection)?.values() || []) {
+      if (preserveApprovals && this.answered.has(id)) {
+        const pending = this.uncertainApprovals.get(id);
+        if (pending?.connection === connection) this.approvals.set(id, pending);
+      }
+      this.answered.delete(id);
+    }
     this.reverse.delete(connection);
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
@@ -238,6 +258,23 @@ export class AppServerBackends {
     if (engine) {
       engine.compaction?.observe(message);
       const thread = object(params.thread); const threadId = typeof params.threadId === "string" ? params.threadId : typeof thread.id === "string" ? thread.id : undefined;
+      if (message.method === "turn/completed" && threadId && typeof object(params.turn).id === "string" && !isId(message.id)) {
+        const key = `${threadId}\0${String(object(params.turn).id)}`;
+        if (this.completedTurns.has(key)) return;
+        if (this.recoveringTurns.has(key)) {
+          await replayCompletedDisplayItems(
+            (method, input) => engine.connection.request(method, input, 10_000), notice => this.emit(notice, "gateway"),
+            () => !this.closing && this.bindings.get(threadId) === engine, threadId, String(object(params.turn).id), this.completedItems,
+          );
+          if (this.completedTurns.has(key) || this.closing || this.bindings.get(threadId) !== engine) return;
+        }
+        this.completedTurns.add(key); this.recoveringTurns.delete(key);
+        // A resolved notification can be lost with the old socket. Once this
+        // turn is terminal, no retained closed-socket callback can still be
+        // legitimately replayed, so release its bounded recovery state.
+        for (const [id, approval] of this.approvals) if (approval.threadId === threadId && approval.connection.closed) this.approvals.delete(id);
+        for (const [id, approval] of this.uncertainApprovals) if (approval.threadId === threadId && approval.connection.closed) this.uncertainApprovals.delete(id);
+      }
       if (message.method === "thread/started" && threadId && thread.ephemeral === true) this.ephemeralThreads.add(threadId);
       // Every chat a gateway engine announces, a sub-agent included, is in the registry before the announcement goes on.
       // A chat this connection is still creating is recorded by its request, which alone knows whether it is throwaway.
@@ -250,6 +287,9 @@ export class AppServerBackends {
       if (message.method === "thread/closed" && threadId) { engine.threads.delete(threadId); this.ephemeralThreads.delete(threadId); engine.compaction?.forget(threadId); if (this.bindings.get(threadId) === engine) { this.bindings.delete(threadId); this.loads.forget(threadId); } }
       if (message.method === "turn/started" && threadId && typeof object(params.turn).id === "string") engine.active.set(threadId, String(object(params.turn).id));
       if (message.method === "turn/completed" && threadId && engine.active.get(threadId) === object(params.turn).id) engine.active.delete(threadId);
+      if (message.method === "item/completed" && threadId && typeof params.turnId === "string" && typeof object(params.item).id === "string") {
+        this.completedItems.add(`${threadId}\0${params.turnId}\0${String(object(params.item).id)}`);
+      }
       // Executor account discovery is not the desktop's primary account state.
       if (!isId(message.id) && !threadId && message.method !== "serverRequest/resolved") return;
     }
@@ -265,19 +305,37 @@ export class AppServerBackends {
         if (!pending) return;
         await this.emit({ ...message, id: existing }); return;
       }
+      // A same-generation warm resume can replay an approval on a fresh socket
+      // before its resume RPC resolves. Retain the desktop id rather than asking
+      // the user twice; a different generation never reaches this branch with a
+      // closed predecessor because normal reattach drops its old callbacks.
+      const replay = [...this.approvals.entries()].find(([, approval]) => approval.connection.closed && approval.fingerprint === fingerprint
+        && approval.socket && engine?.socket && sameSocketIdentity(approval.socket, engine.socket));
+      if (replay && engine?.shared) {
+        const [id, approval] = replay;
+        const uncertain = this.uncertainApprovals.has(id);
+        approval.connection = connection; approval.id = message.id; ids.set(message.id, id);
+        // A normal pending prompt remains visible in the desktop, so a warm
+        // replay only restores the callback routing. An answer that may have
+        // been lost with the old socket has no pending UI any more: show the
+        // SDK's genuine replay under the original desktop request id.
+        if (uncertain) await this.emit({ ...message, id });
+        return;
+      }
       if (this.approvals.size + this.answered.size >= 256) throw new Error("Invalid or excessive pending Codex server requests");
       const id = `gateway-server-${++this.serverSequence}`;
-      ids.set(message.id, id); this.approvals.set(id, { connection, id: message.id, fingerprint }); await this.emit({ ...message, id });
+      ids.set(message.id, id); this.approvals.set(id, { connection, id: message.id, fingerprint, ...(engine?.socket ? { socket: engine.socket } : {}), ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}) }); await this.emit({ ...message, id });
     } else if (message.method === "serverRequest/resolved") {
       const original = params.requestId; const ids = this.reverse.get(connection); const id = isId(original) ? ids?.get(original) : undefined;
-      if (id) { ids!.delete(original as Id); this.approvals.delete(id); this.answered.delete(id); await this.emit({ ...message, params: { ...params, requestId: id } }); }
+      if (id) { ids!.delete(original as Id); this.approvals.delete(id); this.answered.delete(id); this.uncertainApprovals.delete(id); await this.emit({ ...message, params: { ...params, requestId: id } }); }
     // The engine's kind travels with its notification, so the router never has to read a provider id to place it.
     } else await this.emit(message, engine ? "gateway" : connection === this.native ? "native" : undefined);
   }
   reply(message: Message): boolean {
     if (typeof message.id !== "string") return false;
     const approval = this.approvals.get(message.id); if (!approval || approval.connection.closed) return false;
-    this.approvals.delete(message.id); this.answered.set(message.id, approval.fingerprint);
+    this.approvals.delete(message.id); this.answered.set(message.id, approval.fingerprint); this.uncertainApprovals.delete(message.id); this.uncertainApprovals.set(message.id, approval);
+    while (this.uncertainApprovals.size > 256) this.uncertainApprovals.delete(this.uncertainApprovals.keys().next().value as string);
     approval.connection.send({ ...message, id: approval.id }); return true;
   }
   notify(message: Message): void { this.native.send(message); }
@@ -455,14 +513,27 @@ export class AppServerBackends {
           if (old.shared && old.revision !== record.revision) await (await this.pool())?.release(old.revision);
         }
       }
-      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, ...(provider ? { provider } : {}) };
+      const socket = await socketIdentity(record.socketPath);
+      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, ...(socket ? { socket } : {}), ...(provider ? { provider } : {}) };
       const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
         engine.exitPending = (async () => {
           await Promise.race([connection.drained, this.nativeClosing]);
-          await engine.compaction?.close(); this.forgetConnection(connection);
-          // Losing a shared client's socket never establishes that its SDK turn
-          // failed. Frontend transport EOF requests normal ownership reconnect.
-          if (!this.closing && !engine.detaching && !this.native.shared) for (const [threadId, turnId] of engine.active) {
+          const active = [...engine.active];
+          const recoverable = !this.closing && !engine.detaching && !this.native.shared;
+          await engine.compaction?.close(); this.forgetConnection(connection, !engine.detaching && !this.closing && !this.native.shared);
+          // A shared socket is a client transport, not the executor. Rejoin every
+          // known turn before telling the desktop it was lost; reattach never
+          // repeats a turn or a tool result.
+          if (recoverable) for (const [threadId, turnId] of active) {
+            let failed = false;
+            if (!this.ephemeralThreads.has(threadId)) {
+              const outcome = await this.recoverActiveTurn(threadId, turnId, engine);
+              if (outcome !== "failed") continue;
+              failed = true;
+            }
+            // An unsubscribe, archive or a newer binding may have won while the
+            // recovery was waiting. Its old turn must not surface as an error.
+            if (this.closing || (!failed && this.bindings.get(threadId) !== engine) || this.completedTurns.has(`${threadId}\0${turnId}`)) continue;
             const error = { message: "Connection to the gateway executor was lost. Its turn may still be running. Resume this chat to reconnect.", codexErrorInfo: "internalServerError", additionalDetails: null };
             try { await Promise.race([this.emit({ method: "error", params: { threadId, turnId, error, willRetry: false } }), this.nativeClosing]); } catch { /* The client may already be gone. */ }
             if (this.closing) break;
@@ -584,7 +655,7 @@ export class AppServerBackends {
    * claimed before anything is awaited. The host's owner and generation rules still decide, so a chat never gets a second
    * writer.
    */
-  private async reattach(threadId: string, closed: Engine): Promise<void> {
+  private async reattach(threadId: string, closed: Engine, beforeResume?: (target: Engine) => void): Promise<void> {
     // Synchronous state only, and the flight check that follows is synchronous too: awaiting a host lookup here would let
     // a request that arrives mid-lookup miss the running flight and report a reason the host lookup has already changed.
     const host = this.nativeHost?.client ?? this.poolClient;
@@ -592,11 +663,68 @@ export class AppServerBackends {
     await this.reattacher.join(threadId, reason, async () => {
       // Only a failed host lookup (finding the host, or asking it) is "host_unavailable" and arms the fail-fast window; a
       // gateway() that refused for its own reasons (catalog, generation limit, a changed provider) is the chat's own failure.
-      try { const target = await this.owner(threadId).catch(markHostFailure) ?? await this.gateway(); target.requests--; }
+      let target: Engine;
+      try { target = await this.owner(threadId).catch(markHostFailure) ?? await this.gateway(); target.requests--; beforeResume?.(target); }
       catch (error) { throw isReleaseSkew(error) ? error : new ReattachError(isHostFailure(error) ? "host_unavailable" : "resume_failed"); }
       try { await this.request("thread/resume", this.loads.resumeParams(threadId)); }
       catch { throw new ReattachError("resume_failed"); }
     });
+  }
+  /**
+   * Rejoin a live shared executor after only this adapter's socket closed. The
+   * desktop has not sent another request yet, so the turn state is read from the
+   * owner before we decide whether it can remain active. A missing, changed or
+   * unreadable turn is deliberately not guessed at.
+   */
+  private async recoverActiveTurn(threadId: string, turnId: string, closed: Engine): Promise<ActiveRecovery> {
+    const key = `${threadId}\0${turnId}`;
+    if (this.closing || this.ephemeralThreads.has(threadId) || this.bindings.get(threadId) !== closed) return "superseded";
+    // A second loss of the same turn must not begin a retry storm, but it still
+    // needs the normal reconnect error instead of silently clearing the turn.
+    if (this.recoveringTurns.has(key)) return "failed";
+    this.recoveringTurns.add(key);
+    let expected: Engine | undefined;
+    const failedOrSuperseded = (): ActiveRecovery => {
+      const current = this.bindings.get(threadId);
+      if (this.closing || !current) return "superseded";
+      if (expected && current !== expected) return "superseded";
+      if (!expected && current !== closed) return "superseded";
+      if (current.active.get(threadId) !== undefined && current.active.get(threadId) !== turnId) return "superseded";
+      return "failed";
+    };
+    try {
+      await this.reattach(threadId, closed, target => { expected = target; });
+      const rebound = this.bindings.get(threadId);
+      if (this.closing) return "superseded";
+      // `join` can attach us to a foreground reattach that already owned the
+      // flight, so it never invokes this attempt's beforeResume hook. Its live
+      // binding is still the authoritative target; a distinct target after our
+      // own hook is an independent supersession.
+      if (!rebound || expected && rebound !== expected || rebound.connection.closed) return failedOrSuperseded();
+      const page = await rebound.connection.request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }, 10_000);
+      const turn = Array.isArray(page.data) ? page.data.map(object).find(value => value.id === turnId) : undefined;
+      if (this.completedTurns.has(key)) return "recovered"; // A live terminal frame won the race; it already reached the desktop.
+      if (!turn) return failedOrSuperseded();
+      if (this.bindings.get(threadId) !== rebound || rebound.connection.closed || this.closing) return failedOrSuperseded();
+    // Paginated histories retain exact item-completion timestamps. Replaying
+    // only completed display items repairs text delivered during the socket gap;
+    // unsupported legacy histories simply keep the normal resumed stream.
+      const replayed = await replayCompletedDisplayItems(
+        (method, params) => rebound.connection.request(method, params, 10_000), message => this.emit(message, "gateway"),
+        () => !this.closing && this.bindings.get(threadId) === rebound, threadId, turnId, this.completedItems,
+      );
+      if (turn.status === "inProgress") {
+        if (this.completedTurns.has(key)) return "recovered";
+        if (this.closing || this.bindings.get(threadId) !== rebound) return "superseded";
+        if (rebound.connection.closed || rebound.active.get(threadId) !== undefined && rebound.active.get(threadId) !== turnId) return failedOrSuperseded();
+        rebound.active.set(threadId, turnId); return "recovered";
+      }
+      if (!["completed", "failed", "interrupted"].includes(String(turn.status)) || !replayed) return failedOrSuperseded();
+    // The saved SDK turn is authoritative. Forwarding it uses the same active
+    // table as a live notification, so a raced terminal frame is emitted once.
+      await this.forward(rebound.connection, { method: "turn/completed", params: { threadId, turn } });
+      return "recovered";
+    } catch { return this.completedTurns.has(key) ? "recovered" : failedOrSuperseded(); }
   }
   /** Gateway aliases this connection knows: the current catalog and every generation it still has loaded. */
   private gatewayAliases(): ReadonlySet<string> {
