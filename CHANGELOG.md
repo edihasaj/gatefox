@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+The service now starts the native relay from the installed release even when its plan names an older release folder. A plan written by an older installer could pin `releases/0.5.0/package/native/gateway-native-relay`, so every update and every service restart kept starting that 0.5.0 relay and health kept reporting it as lagging. The supervisor now uses `current/package/native/gateway-native-relay` whenever that relay is installed, and it leaves the plan file unchanged so staged native-sharing receipts still match it.
+
 Codex tool search can work through the gateway as an opt-in. With `"toolSearch": "bridge"`
 on a `codex-subscription` provider, the gateway sends Codex's `tool_search` as an ordinary
 function, which the shared-subscription backend accepts, and returns the model's search to
