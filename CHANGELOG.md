@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+Legacy standalone service installation now confirms that the previous job and
+process have stopped before loading a replacement or a restored definition.
+Provider maintenance failures retain bounded, scrubbed diagnostic metadata so
+failed checks can be investigated without saving private output. Thanks to Edi
+Hasaj for identifying the recovery and diagnostic gaps.
+
 The native relay and shared native host now accept ChatGPT engines
 `0.163.0-alpha.11` and `0.163.0-alpha.11.1`. Both engines use the same
 `app-server-transport` source as the relay's linked `0.163.0-alpha.10.2` SDK and
