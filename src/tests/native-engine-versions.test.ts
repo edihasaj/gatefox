@@ -17,7 +17,7 @@ import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
-const app163 = "codex-cli 0.163.0-alpha.10.2", app162 = "codex-cli 0.162.0-alpha.17.2";
+const app16311_1 = "codex-cli 0.163.0-alpha.11.1", app16311 = "codex-cli 0.163.0-alpha.11", app163 = "codex-cli 0.163.0-alpha.10.2", app162 = "codex-cli 0.162.0-alpha.17.2";
 const repository = (path: string) => new URL(`../../${path}`, import.meta.url);
 const installedApp = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
 
@@ -28,21 +28,20 @@ async function engine(directory: string, version: string): Promise<string> {
 }
 const refusalOf = (work: Promise<unknown>): Promise<Error | undefined> => work.then(() => undefined, error => error as Error);
 
-test("the relay and native host accept the verified 0.163 and 0.162 app engines while gateway chats keep the gateway SDK pin", { timeout: 30000 }, async () => {
+test("the relay and native host accept each verified app engine while gateway chats keep the gateway SDK pin", { timeout: 30000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gw-engine-versions-"));
   try {
-    assert.deepEqual([...relayAcceptedAppEngines], ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
-    assert.deepEqual([...hostVerifiedAppEngines], ["0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
+    assert.deepEqual([...relayAcceptedAppEngines], ["0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
+    assert.deepEqual([...hostVerifiedAppEngines], ["0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.equal(gatewayEngineVersions.includes("0.162.0-alpha.17.2"), true);
-    await validateNativeEngine(await engine(directory, app163));
-    await validateNativeEngine(await engine(directory, app162));
+    for (const version of [app16311_1, app16311, app163, app162]) await validateNativeEngine(await engine(directory, version));
     await validateExecutionSdk(await engine(directory, app162));
-    for (const version of ["codex-cli 0.164.0", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
+    for (const version of ["codex-cli 0.164.0", "codex-cli 0.163.0-alpha.11.2", "codex-cli 0.163.0-alpha.11-dirty", "codex-cli 0.163.0-alpha.11.1-dirty", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
       const refusal = await refusalOf(validateNativeEngine(await engine(directory, version)));
       assert.ok(refusal, `the host accepted ${JSON.stringify(version)}`);
       assert.equal(nativeUnavailableReason(refusal), "sdk_version");
     }
-    await assert.rejects(validateExecutionSdk(await engine(directory, app163)), /requires the pinned Codex SDK version/);
+    for (const version of [app16311_1, app16311, app163]) await assert.rejects(validateExecutionSdk(await engine(directory, version)), /requires the pinned Codex SDK version/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -53,7 +52,7 @@ test("a native-only host shares each verified app engine without requiring the g
   const home = executionHostHome(configPath, nativeHome);
   const options = (codex: string) => ({ config, configPath, nativeHome, codex, capabilities: ["native" as const], nativeSdkVerifier });
   try {
-    for (const version of [app163, app162]) {
+    for (const version of [app16311_1, app16311, app163, app162]) {
       const host = await startExecutionHost(options(await engine(directory, version)));
       try { assert.deepEqual((await readOwner(join(home, "owner.json")))?.capabilities, ["native"]); }
       finally { await host.close(); }
@@ -105,9 +104,9 @@ test("the relay's own list is the relay-accepted list, entry for entry", async (
   assert.equal(entries.length, Number(block[1]));
   assert.ok(entries.every(entry => entry.startsWith("codex-cli ")), "every relay entry is a full `codex --version` line");
   assert.deepEqual(entries.map(entry => entry.slice("codex-cli ".length)), [...relayAcceptedAppEngines]);
-  // The relay links the newest accepted engine's SDK, and its receipt says so.
+  // The relay is linked to a fixed, separately verified SDK; that SDK must remain accepted.
   const sdk = await import(repository("scripts/native-relay-sdk.mjs").href) as { sdkCodexVersion: string; sdkRevision: string };
-  assert.equal(sdk.sdkCodexVersion, relayAcceptedAppEngines[0]);
+  assert.ok(relayAcceptedAppEngines.includes(sdk.sdkCodexVersion), "the relay links an accepted app SDK");
   const notice = await readFile(repository("native-relay/NOTICE"), "utf8");
   assert.ok(notice.includes(sdk.sdkRevision) && notice.includes(`rust-v${sdk.sdkCodexVersion}`), "the relay NOTICE names the linked SDK");
 });

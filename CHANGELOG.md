@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+The native relay and shared native host now accept ChatGPT engines
+`0.163.0-alpha.11` and `0.163.0-alpha.11.1`. Both engines use the same
+`app-server-transport` source as the relay's linked `0.163.0-alpha.10.2` SDK and
+passed the isolated shared-native checks for disconnect, reconnect, steering,
+Stop, pending approvals, and commands that run exactly once. Gateway chats keep
+using the gateway SDK pin.
+
 Updates now delete retired gateway releases instead of moving them to the Trash.
 The installer still keeps the current release, the previous one and the newest
 other one, and still deletes nothing while a running process or LaunchAgent uses a

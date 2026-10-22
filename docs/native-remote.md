@@ -32,19 +32,23 @@ build blocks creating replacement enrollments.
 
 ## Verified app engines
 
-The relay links the Codex SDK released as rust-v0.163.0-alpha.10.2, the engine
-ChatGPT ships from 16 October 2026. The relay and the shared native host keep
+The relay remains linked to the Codex SDK released as rust-v0.163.0-alpha.10.2.
+The newer accepted engines have byte-identical `app-server-transport` source, so
+the relay can keep that linked SDK. The relay and the shared native host keep
 separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.163.0-alpha.11.1` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, command, and approval checks |
+| `codex-cli 0.163.0-alpha.11` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the same checks |
 | `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, and approval checks |
 | `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
 | Anything else | Exits with status 1 before it connects | Not shared; a combined host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version` |
 
-The two SDK releases ship a byte-identical `app-server-transport` crate, so the
+The 0.163.0-alpha.11.1, 0.163.0-alpha.11, 0.163.0-alpha.10.2, and 0.162.0-alpha.17.2
+releases ship a byte-identical `app-server-transport` crate, so the
 remote-control protocol, the patched stream-end hooks, the existing-registration
-guard and the `remoteControl/*` methods are the same for both apps. The 0.163 state
+guard and the `remoteControl/*` methods are the same for these app engines. The 0.163 state
 database adds two migrations, and the SDK opens a database that a newer release
 migrated, so a rollback to a 0.162 relay still opens the relay home.
 
