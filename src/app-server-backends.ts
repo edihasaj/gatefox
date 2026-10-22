@@ -701,6 +701,7 @@ export class AppServerBackends {
       // binding is still the authoritative target; a distinct target after our
       // own hook is an independent supersession.
       if (!rebound || expected && rebound !== expected || rebound.connection.closed) return failedOrSuperseded();
+      expected ??= rebound;
       const page = await rebound.connection.request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" }, 10_000);
       const turn = Array.isArray(page.data) ? page.data.map(object).find(value => value.id === turnId) : undefined;
       if (this.completedTurns.has(key)) return "recovered"; // A live terminal frame won the race; it already reached the desktop.
