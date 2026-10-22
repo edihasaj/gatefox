@@ -14,15 +14,23 @@ exit is recorded once with its cause.
 
 ## Stream faults that keep the engine running
 
-Raised by `AppServerConnection` (the spawned native engine and each spawned
-gateway generation). They never apply to the adapter's client-facing input
-stream, which keeps its 16 MiB hard limit.
+Frame recovery is provided by `AppServerConnection` (the spawned native engine
+and each spawned gateway generation). Handler recovery also applies to
+`SocketAppServerConnection`, which attaches to shared engines. The adapter's
+client-facing input stream keeps its 16 MiB hard limit.
 
 | Event | Fields | Meaning |
 | --- | --- | --- |
 | `engine_frame_dropped` | `engine`, `sizeMiB` | One JSON line exceeded the 64 MiB engine frame limit. Its bytes were discarded up to the next newline and reading continued. `sizeMiB` is the frame's size band: `"64"` (up to 128 MiB), `"128"` (up to 256 MiB), `"256"` (up to 512 MiB), or `"more"`. When the dropped line was the answer to a request the adapter had sent, that request fails at once instead of waiting for its 120-second timeout. |
 | `engine_frame_invalid` | `engine` | One line was not valid JSON. It was skipped; the engine's replies for it (if any) time out like any lost response. |
 | `engine_message_failed` | `engine`, `method`? | The handler for one engine message threw. The message was dropped, the exception was reported to the scrubbed error reporter as `engine_message`, and reading continued. This handler runs for notifications and for the engine's own server requests (an approval, for example); a server request that could not be passed on is answered with a fixed `-32603` failure so the engine stops waiting for it. `method` appears only when it is a plain slash-separated name of at most 64 characters. |
+
+For a shared socket, `engine_message_failed` carries `transport: "socket"`
+instead of `engine`, because the transport does not identify the engine's kind.
+A callback failure preserves pending RPC requests, subsequent messages, and
+other clients. If sending the fixed error itself fails, normal transport failure
+handling still closes that client connection. Invalid JSON, oversized frames,
+binary frames, and queue floods retain their existing connection limits.
 
 Stdin `error` (EPIPE) and real stream errors stop the engine only when the
 process is still running: the adapter waits 500 ms for the engine to finish

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+Shared app-server connections now keep reading after a message handler fails,
+instead of rejecting unrelated pending requests and disconnecting the client.
+Failed server callbacks receive a fixed error and safe diagnostics identify the
+socket transport. Thanks to Edi Hasaj for reporting the submission failure.
+
 Legacy standalone service installation now confirms that the previous job and
 process have stopped before loading a replacement or a restored definition.
 Provider maintenance failures retain bounded, scrubbed diagnostic metadata so

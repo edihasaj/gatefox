@@ -9,6 +9,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 import type { Message } from "../app-server-connection.js";
 import { shortFolder } from "./short-folder.js";
+import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 
 type Received = { socket: WebSocket; number: number; message: Message };
 async function fixture(onRequest: (value: Received) => void = ({ socket, number, message }) => {
@@ -123,21 +124,71 @@ test("Unix RPC connection failures, remote closes and invalid frames settle read
     await assert.rejects(Promise.all([client.ready, pending]), /socket failed/);
     await client.exited; assert.equal(client.closed, true);
   });
-  for (const action of ["close", "malformed", "oversized", "binary", "handler"] as const) await t.test(action, async () => {
+  for (const action of ["close", "malformed", "oversized", "binary"] as const) await t.test(action, async () => {
     const f = await fixture(() => {});
     const client = new SocketAppServerConnection(f.path, async () => { throw new Error("secret callback detail"); });
     try {
       await client.ready;
       const pending = client.request("held", {});
-      const rejection = assert.rejects(pending, /socket closed|invalid JSON|socket failed|invalid frame|handler failed/);
+      const rejection = assert.rejects(pending, /socket closed|invalid JSON|socket failed|invalid frame/);
       if (action === "close") f.sockets[0].close(1000);
       if (action === "malformed") f.sockets[0].send("not JSON: secret request content");
       if (action === "oversized") f.sockets[0].send("x".repeat(16 * 1024 * 1024 + 1));
       if (action === "binary") f.sockets[0].send(Buffer.from("{}"));
-      if (action === "handler") f.sockets[0].send(JSON.stringify({ method: "handler" }));
       await rejection; await client.exited; assert.equal(client.closed, true);
     } finally { client.stop(); await client.exited; await f.close(); }
   });
+});
+
+test("Unix RPC callback failures preserve pending requests, subsequent messages and sibling clients", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture(({ socket, number, message }) => {
+    if (message.method === "model/list") socket.send(JSON.stringify({ id: message.id, result: { client: number } }));
+  });
+  const notices: string[] = [];
+  const client = new SocketAppServerConnection(f.path, async message => {
+    if (message.method === "broken/notice") throw new Error("private callback detail");
+    notices.push(String(message.method));
+  });
+  const sibling = new SocketAppServerConnection(f.path, async () => {});
+  try {
+    await Promise.all([client.ready, sibling.ready]);
+    const held = client.request("held", {});
+    // Install a rejection listener immediately so a regression cannot leak an unhandled rejection.
+    const outcome = held.then(value => ({ value }), error => ({ error }));
+    await until(() => f.received.some(value => value.message.method === "held"));
+    const socket = f.received.find(value => value.message.method === "held")!.socket;
+    socket.send(JSON.stringify({ method: "broken/notice" }));
+    socket.send(JSON.stringify({ method: "turn/completed" }));
+    await until(() => notices.includes("turn/completed"));
+    socket.send(JSON.stringify({ id: f.received.find(value => value.message.method === "held")!.message.id, result: { done: true } }));
+    assert.deepEqual(await outcome, { value: { done: true } });
+    assert.equal(client.closed, false); assert.equal(sibling.closed, false);
+    assert.ok(await client.request("model/list", {}));
+    assert.ok(await sibling.request("model/list", {}));
+  } finally { client.stop(); sibling.stop(); await Promise.all([client.exited, sibling.exited]); await f.close(); }
+});
+
+test("Unix RPC failed callbacks return fixed server errors with original IDs and scrubbed telemetry", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await fixture(); const state = await shortFolder("gw-ws-telemetry-");
+  configureTelemetry(state.directory, "socket-test");
+  const client = new SocketAppServerConnection(f.path, async () => { throw new Error("private callback detail"); });
+  try {
+    await client.ready;
+    for (const [id, method] of [[7, "approval/request"], ["request-2", "private path /Users/person/secret"], [0, "a".repeat(65)]] as const) {
+      f.sockets[0].send(JSON.stringify({ id, method, params: { secret: "private params" } }));
+      await until(() => f.received.some(value => value.message.id === id && value.message.error !== undefined));
+      assert.deepEqual(f.received.find(value => value.message.id === id && value.message.error !== undefined)!.message,
+        { id, error: { code: -32603, message: "The adapter could not deliver this request" } });
+    }
+    assert.equal(client.closed, false);
+    assert.equal((await client.request("model/list", {})).method, "model/list");
+    await flushTelemetry();
+    const events = (await readTelemetry(state.directory, 0)).filter(event => event.event === "engine_message_failed");
+    assert.equal(events.length, 3);
+    assert.deepEqual(events.map(event => ({ transport: event.transport, method: event.method })),
+      [{ transport: "socket", method: "approval/request" }, { transport: "socket", method: undefined }, { transport: "socket", method: undefined }]);
+    assert.doesNotMatch(JSON.stringify(events), /private|secret|person/);
+  } finally { client.stop(); await client.exited; await flushTelemetry(); await f.close(); await state.remove(); }
 });
 
 test("Unix RPC rejects a notification flood while a handler is blocked", { skip: process.platform === "win32", timeout: 30000 }, async () => {
