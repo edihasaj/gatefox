@@ -16,6 +16,12 @@ export interface ProviderConfig {
    * (100.64.0.0/10 or fd7a:115c:a1e0::/48). The address is checked on each connection, before any byte is sent.
    */
   tailnet?: boolean;
+  /**
+   * chat-completions-api only: send the caller's thread ID (falling back to its session ID) as `session-id`, so a
+   * self-hosted router that hashes by session keeps each conversation on the worker that holds its prefix cache.
+   * Opt-in: the identifier never goes to a provider that has not asked for it.
+   */
+  sessionAffinity?: boolean;
   apiKeyEnv?: string;
   credentialFile?: string;
   agentName?: string;
@@ -147,6 +153,10 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     }
     // Only the chat adapter (and its discovery) connects through the address check; another adapter would send its key over plain HTTP unchecked.
     if (provider.tailnet !== undefined && provider.type !== "chat-completions-api") throw new Error(`${provider.id}: tailnet is only valid for chat-completions-api providers`);
+    if (provider.sessionAffinity !== undefined) {
+      if (provider.type !== "chat-completions-api") throw new Error(`${provider.id}: sessionAffinity is only valid for chat-completions-api providers`);
+      if (typeof provider.sessionAffinity !== "boolean") throw new Error(`${provider.id}: sessionAffinity must be boolean`);
+    }
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
       if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);
       const url = new URL(provider.baseUrl);

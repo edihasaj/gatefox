@@ -53,6 +53,17 @@ test("accountEngines validates IDs, labels, workspaces and provider collisions, 
   assert.equal(config([codex()], { accountEngines: [{ id: "a".repeat(32), label: "é".repeat(64) }] }).accountEngines?.length, 1);
 });
 
+test("sessionAffinity is an opt-in boolean accepted only on chat-completions-api providers", () => {
+  const chat = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "qwen", type: "chat-completions-api", baseUrl: "http://dgx.example:4000/v1", credentialFile: "qwen.token", models: { "qwen/flash": "qwen" }, tailnet: true, ...extra });
+  assert.equal(config([chat()]).providers[0].sessionAffinity, undefined, "off unless configured");
+  assert.equal(config([chat({ sessionAffinity: true })]).providers[0].sessionAffinity, true);
+  assert.equal(config([chat({ sessionAffinity: false })]).providers[0].sessionAffinity, false);
+  assert.throws(() => config([chat({ sessionAffinity: "yes" as unknown as boolean })]), /sessionAffinity must be boolean/);
+  for (const type of ["responses-api", "anthropic-api", "claude-subscription", "codex-subscription", "copilot-subscription"] as const) {
+    for (const sessionAffinity of [true, false]) assert.throws(() => config([chat({ type, tailnet: undefined, baseUrl: "https://api.example/v1", sessionAffinity, credentialFile: "x.token" })]), /sessionAffinity is only valid for chat-completions-api/, `${type} ${sessionAffinity}`);
+  }
+});
+
 test("plain HTTP is accepted only on loopback or for a tailnet chat provider, and the other URL rules still apply", () => {
   const chat = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "qwen", type: "chat-completions-api", baseUrl: "http://dgx.example:4000/v1", credentialFile: "qwen.token", models: { "qwen/flash": "qwen" }, ...extra });
   assert.throws(() => config([chat()]), /API providers require HTTPS except on loopback/);
