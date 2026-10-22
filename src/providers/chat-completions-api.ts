@@ -196,12 +196,16 @@ export class ChatCompletionsAPI implements Provider {
         }
         if (event.model !== undefined && event.model !== request.model) throw new ProviderError("model_route", "Chat API returned a different model", 502);
         if (strictEmpty && event.usage != null && (typeof event.usage !== "object" || Array.isArray(event.usage))) throw incomplete("Chat API returned invalid usage");
-        const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | null | undefined;
+        const wireUsage = event.usage as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; prompt_tokens_details?: { cached_tokens?: unknown } | null } | null | undefined;
         if (wireUsage) {
           if (strictEmpty && [wireUsage.prompt_tokens, wireUsage.completion_tokens, wireUsage.total_tokens].some(value => value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < 0))) {
             throw incomplete("Chat API returned invalid usage");
           }
-          usage = { input_tokens: wireUsage.prompt_tokens || 0, output_tokens: wireUsage.completion_tokens || 0, total_tokens: wireUsage.total_tokens || 0 };
+          // vLLM and OpenAI report prefix-cache reuse as prompt_tokens_details.cached_tokens; carry it so cache hits are visible.
+          const wireCached = wireUsage.prompt_tokens_details?.cached_tokens;
+          const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached > 0 ? Math.min(Math.floor(wireCached), wireUsage.prompt_tokens || 0) : 0;
+          usage = { input_tokens: wireUsage.prompt_tokens || 0, output_tokens: wireUsage.completion_tokens || 0, total_tokens: wireUsage.total_tokens || 0,
+            ...(cached ? { input_tokens_details: { cached_tokens: cached } } : {}) };
           if (reportUsage) yield { type: "usage", usage };
         }
         const choices = event.choices as Array<{ index: number; delta?: { role?: unknown; content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>;
