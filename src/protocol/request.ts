@@ -312,8 +312,10 @@ export function responsesToChatRequest(request: ResponsesRequest, options: Trans
   // A route that does not forward hosted search cannot run a tool_choice naming web_search: it drops to auto, like the tool itself.
   const choice = request.tool_choice;
   const namedSearch = typeof choice === "object" && choice !== null && !Array.isArray(choice) && (choice as Data).type === "web_search";
-  const tool_choice = !options.webSearch && namedSearch ? "auto" : normalizeResponsesToolChoice(choice);
   const forced = (tool: ResponsesTool) => (options.toolSearch && tool.type === "tool_search") || (options.webSearch && (tool as Data).type === "web_search");
+  // On the Codex route a choice naming web_search is forwarded upstream as sent; it is valid when the request declares the tool.
+  if (options.webSearch && namedSearch && !declared.some(tool => (tool as Data).type === "web_search")) reject("Required tool is not in the catalog", "unsupported_tool_choice");
+  const tool_choice = namedSearch ? (options.webSearch ? "required" : "auto") : normalizeResponsesToolChoice(choice);
   if (tool_choice === "required" && !tools.length && !declared.some(forced)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   if (typeof tool_choice === "object" && !tools.find(tool => tool.function.name === tool_choice.function.name)) reject("Required tool is not in the catalog", "unsupported_tool_choice");
   const messages = responsesInputToMessages(request.input, options);

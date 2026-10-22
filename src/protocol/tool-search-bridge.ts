@@ -13,6 +13,8 @@ const flatName = (tool: unknown): string | undefined => {
   return data(tool.function) && typeof tool.function.name === "string" ? tool.function.name : undefined;
 };
 const maxOutputText = 4000;
+/** One tool's identity: children of the default `functions` namespace are called unqualified, like top-level tools. */
+const childKey = (namespace: unknown, name: unknown): string => namespace === "functions" ? String(name) : `${namespace}.${name}`;
 
 /** How many search declarations, replayed calls and outputs a bridged request carried, and how many tools it loaded. */
 export interface ToolSearchBridgeCounts { tools: number; calls: number; outputs: number; loaded: number }
@@ -36,7 +38,12 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
   const input = Array.isArray(request.input) ? request.input as unknown[] : undefined;
   const tools = Array.isArray(request.tools) ? request.tools as unknown[] : [];
   const taken = new Set<string>();
-  const note = (tool: unknown) => { const value = flatName(tool); if (value) taken.add(value); };
+  // Children of the Responses default namespace `functions` are called unqualified, exactly like top-level tools, so their
+  // names are taken too; any other namespace's children are called with their namespace and cannot collide.
+  const note = (tool: unknown) => {
+    if (data(tool) && tool.type === "namespace") { if (tool.name === "functions" && Array.isArray(tool.tools)) tool.tools.forEach(note); return; }
+    const value = flatName(tool); if (value) taken.add(value);
+  };
   tools.forEach(note);
   for (const item of input ?? []) if (data(item) && (item.type === "additional_tools" || item.type === "tool_search_output") && Array.isArray(item.tools)) item.tools.forEach(note);
   let name = "tool_search"; while (taken.has(name)) name += "_";
@@ -55,7 +62,7 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
   const keys = new Set<string>([name]);
   const remember = (tool: unknown) => {
     if (!data(tool)) return;
-    if (tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) { for (const child of tool.tools) { const child_ = flatName(child); if (child_) keys.add(`${tool.name}.${child_}`); } return; }
+    if (tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) { for (const child of tool.tools) { const child_ = flatName(child); if (child_) keys.add(childKey(tool.name, child_)); } return; }
     const value = flatName(tool); if (value) keys.add(value);
   };
   top.forEach(remember);
@@ -74,8 +81,8 @@ export function bridgeToolSearch(request: ResponsesRequest): ToolSearchBridge {
         if (typeof tool.name !== "string" || !Array.isArray(tool.tools)) continue;
         const children = (tool.tools as unknown[]).filter(child => data(child) && loadable.has(String(child.type)) && child.type !== "namespace" && flatName(child));
         for (const child of children) names.push(`${tool.name}.${flatName(child)}`);
-        const kept = children.filter(child => !keys.has(`${tool.name}.${flatName(child)}`)).map(child => plain(child as Data));
-        kept.forEach(child => keys.add(`${tool.name}.${flatName(child)}`));
+        const kept = children.filter(child => !keys.has(childKey(tool.name, flatName(child)))).map(child => plain(child as Data));
+        kept.forEach(child => keys.add(childKey(tool.name, flatName(child))));
         if (kept.length) fresh.push({ ...plain(tool), tools: kept });
         continue;
       }
@@ -135,14 +142,14 @@ export class BridgeCallError extends Error { constructor() { super("Provider ret
 export function missingTools(loaded: unknown[], declared: unknown[]): unknown[] {
   const keys = new Set<string>();
   for (const tool of declared) {
-    if (data(tool) && tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) { for (const child of tool.tools) { const value = flatName(child); if (value) keys.add(`${tool.name}.${value}`); } continue; }
+    if (data(tool) && tool.type === "namespace" && typeof tool.name === "string" && Array.isArray(tool.tools)) { for (const child of tool.tools) { const value = flatName(child); if (value) keys.add(childKey(tool.name, value)); } continue; }
     const value = flatName(tool); if (value) keys.add(value);
   }
   return loaded.flatMap(tool => {
     if (!data(tool)) return [];
     if (tool.type !== "namespace") { const value = flatName(tool); if (!value || keys.has(value)) return []; keys.add(value); return [tool]; }
     if (typeof tool.name !== "string" || !Array.isArray(tool.tools)) return [];
-    const kept = (tool.tools as unknown[]).filter(child => { const value = flatName(child); if (!value || keys.has(`${tool.name}.${value}`)) return false; keys.add(`${tool.name}.${value}`); return true; });
+    const kept = (tool.tools as unknown[]).filter(child => { const value = flatName(child); if (!value || keys.has(childKey(tool.name, value))) return false; keys.add(childKey(tool.name, value)); return true; });
     return kept.length ? [{ ...tool, tools: kept }] : [];
   });
 }

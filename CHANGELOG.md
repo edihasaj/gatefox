@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Three search fixes from an independent review. With the tool search bridge on, a
+caller's own function named `tool_search` in the default `functions` namespace is
+no longer mistaken for the client's search: the bridge name avoids those names, and
+calls are intercepted only when the request declares search. On a generic Responses
+route, a tool declared in an `additional_tools` item, including one inside the default
+`functions` namespace, now wins over an older copy that an earlier search loaded. A `tool_choice` naming `web_search` is accepted on the Codex
+route when the request declares the tool, and becomes `auto` on routes that cannot run
+hosted search. The bridge, hosted web search and a Claude-to-Codex goal switch also
+passed live checks on 22 October 2026.
+Thanks to @edihasaj for asking for the live checks and review.
+
 Shared gateway executor connections now rejoin a known active chat after a
 client-socket drop. The adapter restores only SDK-recorded state and never
 replays prompts, steering requests, tool results or approval decisions. A genuine
