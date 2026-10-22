@@ -8,6 +8,35 @@ replays prompts, steering requests, tool results or approval decisions. A genuin
 pending approval remains available for an explicit answer.
 Thanks to @edihasaj for reporting chats that required manual reconnection.
 
+The service now starts the native relay from the installed release even when its plan names an older release folder. A plan written by an older installer could pin `releases/0.5.0/package/native/gateway-native-relay`, so every update and every service restart kept starting that 0.5.0 relay and health kept reporting it as lagging. The supervisor now uses `current/package/native/gateway-native-relay` whenever that relay is installed, and it leaves the plan file unchanged so staged native-sharing receipts still match it.
+
+`gateway tool-search on`, `off` and `status` turn the tool search bridge on or off for every
+Codex subscription provider without editing `gateway.json` by hand. The command validates the
+file before saving it, changes no other setting, and the running service picks the change up
+without a restart. The bridge stays off by default. It now gives the `additional_tools` item it
+inserts after a search result the role the backend requires; without it, a Responses lite
+request that loaded tools would have failed with HTTP 400. `scripts/probe-tool-search-bridge.mjs`
+checks both search rounds offline with `--dry-run`, or against the real backend, where every
+bridged request shape passed the backend's request validation.
+Thanks to @edihasaj for asking for a dry run and an easy switch.
+
+Codex tool search can work through the gateway as an opt-in. With `"toolSearch": "bridge"`
+on a `codex-subscription` provider, the gateway sends Codex's `tool_search` as an ordinary
+function, which the shared-subscription backend accepts, and returns the model's search to
+Codex, which still runs it. Loaded tools are declared again where the search returned them,
+so a Responses lite chat keeps its prompt prefix. The default stays off, and every other
+route now drops search items instead of refusing the request, keeping the tools a search
+loaded, so a chat can switch away from Codex 2. The Claude session ledger also no longer
+counts search and hosted web search items as conversation messages. The bridge has not yet
+been checked against the real backend, because the account's sharing usage limit was reached.
+Thanks to @edihasaj for asking to keep tool search available even before it is needed.
+
+The rollout readiness probe accepts gateway SDKs that ship the Code Mode host.
+Its direct-tools canary previously required a hostless SDK, so every package
+carrying the new host failed readiness before it could be installed. The canary
+now gives a hosted SDK explicit direct native rows and still proves that child
+chats edit files and make commits through direct tools.
+
 Codex 2 chats can use OpenAI's hosted web search. A Codex 2 row now copies the
 native model's `web_search_tool_type`, and the Codex subscription route forwards the
 `web_search` tool and its replayed `web_search_call` items exactly as native Codex

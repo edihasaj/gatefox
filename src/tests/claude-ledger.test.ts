@@ -93,3 +93,14 @@ test("after an interrupt the next history may include or omit the partial run", 
   assert.deepEqual(decide(ledger, changed.entries, changed.messages, "turn_done", []), { kind: "reseed", reason: "unexpected_tail", divergedAt: 1 }, "other assistant text never enters as user input");
   assert.equal(partialDigest(""), undefined);
 });
+
+test("search items and hosted web search count as no conversation message, exactly as translation skips them", () => {
+  // A chat that switched to Claude from a Codex route can carry these; a miscount would shift every later ledger index.
+  const input = [{ type: "message", role: "user", content: "find" }, { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } },
+    { type: "tool_search_call", call_id: "call_s1", execution: "client", arguments: { query: "q" } },
+    { type: "tool_search_output", call_id: "call_s1", execution: "client", status: "completed", tools: [] },
+    { type: "message", role: "user", content: "next" }] as unknown as ResponsesInputItem[];
+  const { entries: list, messages } = ledgerEntries(request(input), tools);
+  assert.equal(messages, responsesToChatRequest(request(input)).messages.length);
+  assert.deepEqual(list.map(entry => [entry.kind, entry.first]), [["m", 0], ["m", 1]]);
+});

@@ -16,7 +16,8 @@ import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
 import { messagesToResponses } from "./protocol/messages-request.js";
 import { messagesProviderRequest } from "./protocol/messages-routing.js";
-import { responsesToChatRequest, webSearchPresence } from "./protocol/request.js";
+import { responsesToChatRequest } from "./protocol/request.js";
+import { reportDroppedSearch } from "./protocol/tool-search-bridge.js";
 import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
@@ -378,16 +379,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
-      // Validate the supported protocol before invoking any provider. Only the Codex subscription route accepts tool_search
-      // (its provider drops it before forwarding); every other route rejects it here, and Messages requests carry only function tools.
-      // That same route is the only one that forwards the hosted web_search tool; every other route drops it and its replayed
-      // items here, so a chat that switches from Codex 2 keeps working, and the drop is counted once per request.
+      // Validate the supported protocol before invoking any provider. Only the Codex subscription route forwards hosted web_search
+      // and drops or bridges tool_search; every other route drops both and their replayed items (keeping tools a search loaded),
+      // so a chat that switches from Codex 2 keeps working, and each drop is counted once per request.
       const codexRoute = route.type === "codex-subscription";
       responsesToChatRequest(request, { toolSearch: codexRoute, webSearch: codexRoute, reportMerges: true });
-      if (!codexRoute) {
-        const dropped = webSearchPresence(request);
-        if (dropped.tools || dropped.items) telemetry("web_search_dropped", { provider: route.id, tools: dropped.tools, items: dropped.items });
-      }
+      if (!codexRoute) reportDroppedSearch(request, route.id);
       if (countTokens) {
         throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
       }

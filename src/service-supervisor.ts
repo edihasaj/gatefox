@@ -16,6 +16,7 @@ import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 import { chatGptAppRunning, nativeRegistrationClaimed, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
 import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, upgradeGraceMs, upgradeQuietMs, type SupervisorHealing } from "./service-heal.js";
 import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js";
+import { followCurrentRelease } from "./service-relay-path.js";
 import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
@@ -94,7 +95,7 @@ export class ServiceSupervisor {
       registered: () => (this.probes.claimed ?? this.probes.registered)(this.state),
       stopping: () => this.stopping, restarting: () => this.restarting, publish: () => this.publish(),
       restartWhenIdle: () => this.restartWhenIdle() });
-    this.slots = plan.components.map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, quickExits: 0, pausedAt: 0, resumedOnce: false }));
+    this.slots = plan.components.map(component => followCurrentRelease(component)).map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, quickExits: 0, pausedAt: 0, resumedOnce: false }));
   }
   /**
    * Writes the status file. It is advisory: a write that fails (a full disk, a folder that turned read-only) never stops
