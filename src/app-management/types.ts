@@ -2,7 +2,7 @@ import type { DiscoveredModel } from "../catalog.js";
 import type { AccessTokenOptions } from "../auth/chatgpt.js";
 import type { ProviderConfig, ProviderKind } from "../config.js";
 
-export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "remove" | "discard";
+export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "reorder" | "remove" | "discard";
 
 export interface ProviderInput {
   id?: string;
@@ -24,6 +24,7 @@ export interface ManagementRequest {
   manualModels?: string[];
   revision?: string;
   label?: string;
+  providerIds?: string[];
 }
 
 export interface ManagedModel { id: string; alias?: string; label: string; enabled: boolean }

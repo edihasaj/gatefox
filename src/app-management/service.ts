@@ -4,12 +4,12 @@ import { mutateConfig, readSnapshot, type ConfigSnapshot } from "./storage.js";
 import { ManagementError, safeFailure, throwIfCancelled } from "./errors.js";
 import { discoverManagementModels, isManagementUnavailable } from "./runtime.js";
 import { catalogEntry, checkedConfigPath, checkedDraftId, draftView, loadDraft, prepareDraft, saveDraft, writeCredential } from "./drafts.js";
-import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, replaceGatewayCredential, saveCachedCatalog, updateModels, withConfiguredCatalog } from "./mutations.js";
+import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, reorderProviders, replaceGatewayCredential, saveCachedCatalog, updateModels, withConfiguredCatalog } from "./mutations.js";
 import { sharedGatewayCatalog } from "./shared-gateway.js";
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
-const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "remove", "discard"]);
+const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "remove", "discard"]);
 
 function request(value: unknown): ManagementRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ManagementError("invalid_request");
@@ -49,6 +49,7 @@ export class ManagementService {
       case "commit": return this.commit(value);
       case "models": return this.models(value);
       case "rename": return this.rename(value);
+      case "reorder": return this.reorder(value);
       case "remove": return this.remove(value);
       case "discard": return this.discard(value);
     }
@@ -138,6 +139,10 @@ export class ManagementService {
   }
   private async rename(value: ManagementRequest): Promise<ManagementResult> {
     const result = await renameProvider(value.configPath, id(value.providerId), value.revision, value.label, this.deps.signal);
+    return { ...(await this.projectAt(value.configPath, result.snapshot)), changed: result.changed };
+  }
+  private async reorder(value: ManagementRequest): Promise<ManagementResult> {
+    const result = await reorderProviders(value.configPath, value.providerIds, value.revision, this.deps.signal);
     return { ...(await this.projectAt(value.configPath, result.snapshot)), changed: result.changed };
   }
   private async remove(value: ManagementRequest): Promise<ManagementResult> {

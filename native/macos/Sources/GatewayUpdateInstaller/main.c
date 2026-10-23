@@ -53,8 +53,10 @@ static bool applications_parent(const char *path, const struct stat *info) {
 }
 
 static bool sticky_temp_parent(const char *path, const struct stat *info) {
+  /* The sticky bit lives in 07000, so a 0777 mask would strip it and never match.
+   * Require exactly sticky + rwx for everyone: no setuid/setgid, no missing bits. */
   return (strcmp(path, "/tmp") == 0 || strcmp(path, "/private/tmp") == 0) &&
-      info->st_uid == 0 && (info->st_mode & 0777) == 01777;
+      info->st_uid == 0 && (info->st_mode & 07777) == 01777;
 }
 
 static bool protected_directory(const char *path, const struct stat *info) {

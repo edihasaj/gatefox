@@ -101,6 +101,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
     let manualModels: [String]?
     let revision: String?
     let label: String?
+    let providerIds: [String]?
 
     init(
         operation: String,
@@ -111,7 +112,8 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         selectedModels: [String]? = nil,
         manualModels: [String]? = nil,
         revision: String? = nil,
-        label: String? = nil
+        label: String? = nil,
+        providerIds: [String]? = nil
     ) {
         self.operation = operation
         self.configPath = configPath
@@ -122,6 +124,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         self.manualModels = manualModels
         self.revision = revision
         self.label = label
+        self.providerIds = providerIds
     }
 }
 

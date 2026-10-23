@@ -286,6 +286,38 @@ final class GatewayConnectionsModel: ObservableObject {
         return true
     }
 
+    /// Moves one connection to `index` and saves the whole order. Nothing is reordered locally; the list changes
+    /// only from the saved response, so a refused or stale save leaves the displayed order intact.
+    @discardableResult
+    func move(providerID: String, to index: Int) async -> Bool {
+        guard !isBusy, !gateway.clientOnly else { return fail("invalid_request") }
+        var order = connections.map(\.id)
+        guard let from = order.firstIndex(of: providerID), order.indices.contains(index) else { return fail("invalid_request") }
+        guard from != index else { return true }
+        order.insert(order.remove(at: from), at: index)
+        return await reorder(providerIDs: order)
+    }
+
+    func reorder(providerIDs: [String]) async -> Bool {
+        guard !isBusy, !gateway.clientOnly, let revision,
+              Set(providerIDs) == Set(connections.map(\.id)), providerIDs.count == connections.count else { return fail("invalid_request") }
+        let path = gateway.configPath
+        let outcome = await performOutcome(
+            ManagementRequest(operation: "reorder", configPath: path, revision: revision, providerIds: providerIDs),
+            path: path
+        )
+        // An obsolete completion (configuration switched, cancelled, or superseded) must not touch the new state or message.
+        guard outcome.isCurrent else { return false }
+        guard let result = outcome.result, result.configPath == path, let providers = result.providers, result.revision != nil,
+              providers.map(\.id) == providerIDs else {
+            reportInvalidResponseIfNeeded()
+            return false
+        }
+        applyInspection(result, providers: providers, prerequisites: result.prerequisites)
+        await gateway.refresh()
+        return true
+    }
+
     func remove(providerID: String) async -> Bool {
         guard !isBusy, let revision else { return fail("invalid_request") }
         let path = gateway.configPath

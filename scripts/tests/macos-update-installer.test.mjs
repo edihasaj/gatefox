@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 const root = new URL('../..', import.meta.url).pathname;
 const bin = execFileSync('swift', ['build', '--package-path', 'native/macos', '--show-bin-path'], {
@@ -11,8 +11,8 @@ const bin = execFileSync('swift', ['build', '--package-path', 'native/macos', '-
 }).trim();
 const installer = join(bin, 'GatewayUpdateInstaller');
 
-function apps() {
-  const parent = mkdtempSync(join(tmpdir(), 'gateway-update-installer-'));
+function apps(base = tmpdir()) {
+  const parent = mkdtempSync(join(base, 'gateway-update-installer-'));
   const target = join(parent, 'Harness Gateway.app');
   const stage = join(parent, 'Harness Gateway Update.app');
   for (const [app, marker] of [[target, 'old'], [stage, 'new']]) {
@@ -67,4 +67,40 @@ test('rejects an unsafe ancestor even when the immediate app parent is protected
   assert.notEqual(result.status, 0);
   assert.equal(readFileSync(join(target, 'Contents/marker'), 'utf8'), 'old');
   assert.equal(readFileSync(join(stage, 'Contents/marker'), 'utf8'), 'new');
+});
+
+// Root's sticky temporary directory is the one safe shared ancestor, under both its alias and canonical path.
+// Every fixture lives in one task-owned root under /tmp that is removed afterwards; /tmp itself stays the trusted ancestor.
+const taskRoot = mkdtempSync('/tmp/gateway-update-installer-tests-');
+after(() => rmSync(taskRoot, { recursive: true, force: true }));
+const canonicalRoot = taskRoot.replace(/^\/tmp\//, '/private/tmp/');
+assert.notEqual(canonicalRoot, taskRoot);
+
+for (const [name, base] of [['/tmp', taskRoot], ['/private/tmp', canonicalRoot]]) {
+  test(`swaps sibling app bundles under ${name}, a root-owned sticky directory`, () => {
+    const { target, stage } = apps(base);
+    assert(target.startsWith(`${name}/`));
+    execFileSync(installer, [target, stage]);
+    assert.equal(readFileSync(join(target, 'Contents/marker'), 'utf8'), 'new');
+    assert.equal(readFileSync(join(stage, 'Contents/marker'), 'utf8'), 'old');
+  });
+}
+
+test('still rejects a writable user-owned ancestor under /tmp, sticky or not', () => {
+  for (const mode of [0o777, 0o1777]) {
+    const unsafe = mkdtempSync(join(taskRoot, 'writable-'));
+    const parent = join(unsafe, 'protected');
+    mkdirSync(parent, { mode: 0o700 });
+    const target = join(parent, 'Harness Gateway.app');
+    const stage = join(parent, 'Harness Gateway Update.app');
+    for (const [app, marker] of [[target, 'old'], [stage, 'new']]) {
+      mkdirSync(join(app, 'Contents/MacOS'), { recursive: true });
+      writeFileSync(join(app, 'Contents/marker'), marker);
+    }
+    chmodSync(unsafe, mode);
+    const result = spawnSync(installer, [target, stage]);
+    assert.notEqual(result.status, 0, `mode ${mode.toString(8)} must stay rejected`);
+    assert.equal(readFileSync(join(target, 'Contents/marker'), 'utf8'), 'old');
+    assert.equal(readFileSync(join(stage, 'Contents/marker'), 'utf8'), 'new');
+  }
 });

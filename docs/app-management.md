@@ -74,6 +74,15 @@ it, reconnect an account, or replace an app-managed API key. Externally managed
 credentials remain outside these editing controls. Removing a connection keeps
 its credentials and requires confirmation; the last provider cannot be removed.
 
+Use **Move up** and **Move down** on a connection to save a custom order, or
+choose **Move to top** from its menu. The first connection appears first in the
+app and among gateway provider groups in the model catalog. Native model rows
+retain their separate position. Ordering
+does not change the selected model, account routing, or the designated account
+for bare subagent model names. It applies on that gateway host, so reorder each
+host separately when using several Macs. Shared clients display their host's
+order without local editing controls.
+
 Refreshing a catalog does not change enabled routes. Applying a selection keeps
 every existing alias and its metadata for retained upstream models. A private
 alias ledger reserves retired route identities, so another model or account
@@ -131,7 +140,11 @@ output. API keys are never command arguments or environment values. Child
 output and raw exceptions are not displayed or logged.
 
 The operations are `inspect`, `prepare`, `authenticate`, `discover`, `commit`,
-`models`, `rename`, `remove`, and `discard`. The TypeScript types in
+`models`, `rename`, `reorder`, `remove`, and `discard`. Reordering sends
+`providerIds`, an exact permutation of all local connection IDs, together with
+the reviewed configuration revision. Duplicate, missing, or unknown IDs and
+outdated revisions are refused. An unchanged order does not rewrite the file.
+The TypeScript types in
 `src/app-management/types.ts` and Swift types in `GatewayManagementTypes.swift`
 define the protocol. Requests are limited to 128 KiB and responses to 2 MiB.
 Ordinary operations have a thirty-second deadline; interactive authentication

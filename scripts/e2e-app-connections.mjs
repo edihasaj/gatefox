@@ -81,6 +81,38 @@ try {
   assert.equal(restored.ok, true, restored.error?.code);
   const raw = JSON.parse(await readFile(hostPath, 'utf8'));
   assert.deepEqual(raw.providers.find(provider => provider.id === 'grok'), config.providers.find(provider => provider.id === 'grok'));
+  // Ordering: the saved host order drives the host list and the catalog a shared client reads; nothing else moves.
+  const ordered = await inspect(hostPath); const order = ['codex', 'grok', 'claude', 'local'];
+  const reordered = await handleManagement({ operation: 'reorder', configPath: hostPath, providerIds: order, revision: ordered.revision });
+  assert.equal(reordered.ok, true, reordered.error?.code); assert.equal(reordered.result.changed, true);
+  assert.deepEqual(reordered.result.providers.map(provider => provider.id), order);
+  const afterOrder = JSON.parse(await readFile(hostPath, 'utf8'));
+  assert.deepEqual(afterOrder.providers.map(provider => provider.id), order);
+  for (const provider of config.providers) assert.deepEqual(afterOrder.providers.find(item => item.id === provider.id), provider, 'Reordering preserves every provider object');
+  assert.equal(afterOrder.providers.filter(provider => provider.defaultForBareModels === true).map(provider => provider.id).join(), 'codex');
+  const staleOrder = await handleManagement({ operation: 'reorder', configPath: hostPath, providerIds: config.providers.map(provider => provider.id), revision: ordered.revision });
+  assert.equal(staleOrder.ok, false); assert.equal(staleOrder.error.code, 'configuration_changed');
+  const unchangedOrder = await handleManagement({ operation: 'reorder', configPath: hostPath, providerIds: order, revision: reordered.result.revision });
+  assert.equal(unchangedOrder.ok, true); assert.equal(unchangedOrder.result.changed, false); assert.equal(unchangedOrder.result.revision, reordered.result.revision);
+  let sharedOrder = [];
+  for (let attempt = 0; attempt < 40; attempt++) {
+    sharedOrder = (await inspect(clientPath)).sharedGateway?.providers.map(provider => provider.id) ?? [];
+    if (sharedOrder.join() === order.join()) break; await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.deepEqual(sharedOrder, order, 'A shared client sees its host order');
+  // The live HTTP catalog (what a desktop client reads) follows the same saved order; no inference is sent.
+  const expectedSlugs = ['codex/fixture', 'grok/one', 'grok/two', 'claude/fixture', 'local/fixture']; let slugs = [];
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const catalogResponse = await fetch(`http://127.0.0.1:${port}/v1/model-catalog`, { headers: { Authorization: `Bearer ${token}` } });
+    assert.equal(catalogResponse.status, 200); slugs = (await catalogResponse.json()).models.map(model => model.slug);
+    if (slugs.join() === expectedSlugs.join()) break; await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.deepEqual(slugs, expectedSlugs, 'The live model catalog follows the saved connection order');
+  assert.deepEqual(slugs.map(slug => slug.split('/')[0]), ['codex', 'grok', 'grok', 'claude', 'local']);
+  assert.equal(inferenceCalls, 0, 'Ordering and catalog reads never send model inference');
+  client = await inspect(clientPath);
+  const clientReorder = await handleManagement({ operation: 'reorder', configPath: clientPath, providerIds: [], revision: client.revision });
+  assert.equal(clientReorder.ok, false, 'A consumer cannot reorder another host');
   const noEdit = await handleManagement({ operation: 'models', configPath: clientPath, providerId: 'grok', revision: client.revision,
     selectedModels: ['grok-fixture-one'] });
   assert.equal(noEdit.ok, false, 'A consumer cannot edit another host through local management');
@@ -100,7 +132,7 @@ try {
     assert.equal(unavailable.sharedGateway.status, 'unavailable');
     assert.deepEqual(unavailable.sharedGateway.providers, []);
     assert.equal(createHash('sha256').update(await readFile(hostPath)).digest('hex'), digest);
-    console.log(JSON.stringify({ status: 'passed', ...fixtures, grokSelectionRoundtrip: true, sharedCatalog: true,
+    console.log(JSON.stringify({ status: 'passed', ...fixtures, grokSelectionRoundtrip: true, connectionOrder: true, liveCatalogOrder: true, sharedCatalog: true,
       readOnlyClient: true, unavailableClearsCatalog: true, realGateway: true, paidInferenceRequests: 0 }));
   }
 } finally { await close(); }

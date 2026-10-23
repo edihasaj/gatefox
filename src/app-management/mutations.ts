@@ -151,6 +151,23 @@ export async function renameProvider(configPath: string, providerId: string, rev
   }, signal); return { snapshot, changed };
 }
 
+/** Reorders raw provider objects only; ids must be an exact permutation of the local providers. */
+export async function reorderProviders(configPath: string, providerIds: unknown, revision: unknown, signal?: AbortSignal): Promise<{ snapshot: ConfigSnapshot; changed: boolean }> {
+  if (typeof revision !== "string" || !revision || !Array.isArray(providerIds) || providerIds.some(item => typeof item !== "string" || !item)) throw new ManagementError("invalid_request");
+  const wanted = providerIds as string[]; if (new Set(wanted).size !== wanted.length) throw new ManagementError("invalid_request");
+  let changed = false;
+  const snapshot = await mutateConfig(configPath, revision, async current => {
+    throwIfCancelled(signal);
+    if (!current) throw new ManagementError("not_found"); if (current.config.clientOnly) throw new ManagementError("invalid_configuration");
+    const providers = rawProviders(current.raw); const byId = new Map(providers.map(item => [item.id, item]));
+    if (byId.size !== providers.length || wanted.length !== providers.length || wanted.some(id => !byId.has(id))) throw new ManagementError("invalid_request");
+    if (wanted.every((id, index) => providers[index]!.id === id)) return current.raw;
+    changed = true; const raw = structuredClone(current.raw); const copies = new Map(rawProviders(raw).map(item => [item.id, item]));
+    raw.providers = wanted.map(id => copies.get(id)!); await validateRaw(raw, configPath); return raw;
+  }, signal);
+  return { snapshot, changed };
+}
+
 export async function removeProvider(configPath: string, providerId: string, revision: unknown, signal?: AbortSignal): Promise<ConfigSnapshot> {
   if (typeof revision !== "string" || !revision) throw new ManagementError("invalid_request");
   return mutateConfig(configPath, revision, async current => {

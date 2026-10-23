@@ -185,6 +185,9 @@ struct ConnectionsView: View {
                     Text("\(modelCount) \(modelCount == 1 ? "model" : "models")")
                         .font(GatewayTheme.body(13, weight: .semibold))
                         .foregroundStyle(GatewayTheme.moss)
+                    if !gateway.clientOnly, connections.connections.count > 1 {
+                        reorderControls(provider)
+                    }
                 }
                 HStack(spacing: 8) {
                     Image(systemName: authSymbol(provider.authState))
@@ -229,6 +232,10 @@ struct ConnectionsView: View {
                     }
                     Menu {
                         Button("Rename") { renameLabel = provider.label; renamingProvider = provider }
+                        if !gateway.clientOnly, connections.connections.count > 1 {
+                            Button("Move to top") { Task { await connections.move(providerID: provider.id, to: 0) } }
+                                .disabled(connections.connections.first?.id == provider.id)
+                        }
                         if !isSubscription(provider), !provider.canReconnect {
                             Text("API credentials are managed outside Harness Gateway.")
                         }
@@ -250,6 +257,30 @@ struct ConnectionsView: View {
                 }
             }
             .accessibilityElement(children: .contain)
+        }
+    }
+
+    /// Compact order controls. The list only changes from the saved response, never optimistically.
+    private func reorderControls(_ provider: ManagedProvider) -> some View {
+        let index = connections.connections.firstIndex(where: { $0.id == provider.id }) ?? 0
+        let last = connections.connections.count - 1
+        return HStack(spacing: 2) {
+            Button { Task { await connections.move(providerID: provider.id, to: index - 1) } } label: {
+                Image(systemName: "chevron.up").frame(width: 26, height: 26)
+            }
+            .buttonStyle(.borderless)
+            .disabled(connections.isBusy || index <= 0)
+            .help("Move up")
+            .accessibilityLabel("Move \(provider.label) up")
+            .accessibilityIdentifier("connections.move-up.\(provider.id)")
+            Button { Task { await connections.move(providerID: provider.id, to: index + 1) } } label: {
+                Image(systemName: "chevron.down").frame(width: 26, height: 26)
+            }
+            .buttonStyle(.borderless)
+            .disabled(connections.isBusy || index >= last)
+            .help("Move down")
+            .accessibilityLabel("Move \(provider.label) down")
+            .accessibilityIdentifier("connections.move-down.\(provider.id)")
         }
     }
 
