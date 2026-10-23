@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { once } from "node:events";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -297,4 +297,37 @@ test("a plain file at another home's native socket never keeps a dead receipt", 
     assert.equal((await readNativeHomeOwner(f.nativeHome))?.hostPid, process.pid);
     assert.equal(await readFile(join(other, "native.sock"), "utf8"), "not a socket"); // Another home's file is never touched.
   } finally { await rm(other, { recursive: true, force: true }); await f.clean(); }
+});
+
+// A reboot renumbers the device of the same filesystem and clears the SDK folder: the native link dangles and names the old device.
+async function driftedNativeReceipt(f: Awaited<ReturnType<typeof fixture>>, bootId: string) {
+  const link = join(f.hostHome, "native.sock"); const target = await sdkSocketTarget(link);
+  await mkdir(dirname(target), { recursive: true, mode: 0o700 }).catch(() => {});
+  await symlink(target, link);
+  const info = await lstat(link);
+  await f.receipt(bootId === current.id ? { hostPid: await f.exitedPid(), pid: 0, socket: { inode: String(info.ino), device: String(info.dev + 1), targetPath: target } }
+    : { bootId, hostPid: await f.exitedPid(), pid: 0, socket: { inode: String(info.ino), device: String(info.dev + 1), targetPath: target } });
+  return link;
+}
+
+test("a native home from a previous boot is reclaimed although its link names another device number", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    setBootIdentityForTests(current);
+    const link = await driftedNativeReceipt(f, earlier);
+    await claimNativeHome(f.identity, f.hostHome);
+    await assert.rejects(lstat(link), { code: "ENOENT" });
+    assert.deepEqual((await f.reclaims()).map(event => event.reason), ["previous_boot"]);
+  } finally { await f.clean(); }
+});
+
+test("the same device mismatch within the current boot keeps the native link and receipt", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    setBootIdentityForTests(current);
+    const link = await driftedNativeReceipt(f, current.id);
+    await assert.rejects(claimNativeHome(f.identity, f.hostHome), /another listener/);
+    assert.ok((await lstat(link)).isSymbolicLink());
+    assert.deepEqual(await f.reclaims(), []);
+  } finally { await f.clean(); }
 });

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, readFile, readdir, lstat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile, readFile, readdir, lstat, link, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { once } from "node:events";
@@ -10,6 +10,8 @@ import { WebSocket } from "ws";
 import { reuseSshSocket, sshControlHome } from "../ssh-socket.js";
 import { serveUnix } from "../unix-transport.js";
 import { writePrivateJson } from "../config.js";
+import { setBootIdentityForTests, setProcessStartReaderForTests } from "../boot-identity.js";
+import { setSocketProbeForTests } from "../execution-host-storage.js";
 import { shimFiles } from "./shim-fixture.js";
 import { shortFolder } from "./short-folder.js";
 
@@ -197,4 +199,173 @@ test("SSH recovery refuses an unrecorded socket path", { skip: process.platform 
     await writeFile(path, "keep-this");
     await assert.rejects(reuseSshSocket(path)); assert.equal(await readFile(path, "utf8"), "keep-this");
   } finally { await folder.remove(); }
+});
+
+const thisBoot = "11111111-1111-4111-8111-111111111111";
+const earlierBoot = "22222222-2222-4222-8222-222222222222";
+const bindScript = "const fs=require('node:fs');require('node:net').createServer().listen(process.argv[1],()=>{fs.chmodSync(process.argv[1],0o600);console.log('ready')})";
+
+/** What a reboot leaves behind: a bound socket nobody serves, its alias, and a record naming another device number. */
+async function driftedAlias(fields: Record<string, unknown>, boot: { id: string; bootedAtMs: number }) {
+  const folder = await shortFolder("gw-ssh-drift-");
+  const directory = join(folder.directory, "app-server-control"); await mkdir(directory, { mode: 0o700 });
+  const path = join(directory, "app-server-control.sock"); const boundPath = join(directory, ".gw-0123456789ab");
+  const child = spawn(process.execPath, ["-e", bindScript, boundPath], { stdio: ["ignore", "pipe", "ignore"] });
+  const exited = once(child, "exit"); await once(child.stdout!, "data"); child.kill("SIGKILL"); await exited;
+  await link(boundPath, path);
+  const info = await lstat(path, { bigint: true });
+  await writePrivateJson(path + ".gateway-lease", { inode: String(info.ino), device: String(info.dev + 1n), boundPath, ...fields });
+  setBootIdentityForTests(boot);
+  const gone = async (name: string) => lstat(name).then(() => false, error => error.code === "ENOENT");
+  return { path, boundPath, gone, clean: async () => { setBootIdentityForTests(); await folder.remove(); } };
+}
+const rebootedLongAgo = () => ({ id: thisBoot, bootedAtMs: Date.now() + 120_000 }); // Every file time observed now predates this boot.
+const bootedAnHourAgo = () => ({ id: thisBoot, bootedAtMs: Date.now() - 3_600_000 });
+
+test("a reboot's new device number does not block a legacy record whose files predate the boot", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedAlias({}, rebootedLongAgo());
+  try {
+    assert.equal((await reuseSshSocket(f.path)).reused, false);
+    assert.equal(await f.gone(f.path), true); assert.equal(await f.gone(f.boundPath), true);
+  } finally { await f.clean(); }
+});
+
+test("a stamped record from an earlier boot is recovered despite a changed device number", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedAlias({ bootId: earlierBoot, pid: 1, startedAtMs: 1 }, bootedAnHourAgo());
+  try {
+    assert.equal((await reuseSshSocket(f.path)).reused, false);
+    assert.equal(await f.gone(f.path), true); assert.equal(await f.gone(f.boundPath), true);
+  } finally { await f.clean(); }
+});
+
+test("a device mismatch within the current boot is still refused", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  for (const [name, fields, boot] of [["stamped this boot", { bootId: thisBoot }, bootedAnHourAgo()], ["legacy and recent", {}, bootedAnHourAgo()]] as const) {
+    const f = await driftedAlias(fields, boot);
+    try {
+      await assert.rejects(reuseSshSocket(f.path), /belongs to another listener/, name);
+      assert.equal(await f.gone(f.path), false, name); assert.equal(await f.gone(f.boundPath), false, name);
+    } finally { await f.clean(); }
+  }
+});
+
+test("a legacy record whose writer pid still runs keeps its alias", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const sleeper = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });
+  const f = await driftedAlias({ pid: sleeper.pid }, rebootedLongAgo());
+  try {
+    await assert.rejects(reuseSshSocket(f.path), /belongs to another listener/);
+    assert.equal(await f.gone(f.path), false);
+  } finally { sleeper.kill("SIGKILL"); await f.clean(); }
+});
+
+test("a live listener behind a drifted record is preserved", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const listener = await ownedListener(null);
+  try {
+    const lease = JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8"));
+    await writePrivateJson(listener.path + ".gateway-lease", { ...lease, device: String(BigInt(lease.device) + 1n), bootId: earlierBoot });
+    setBootIdentityForTests(bootedAnHourAgo());
+    await assert.rejects(reuseSshSocket(listener.path), /live listener/);
+    const client = new WebSocket(`ws+unix://${listener.path}:/rpc`);
+    await once(client, "open"); client.close(); await once(client, "close");
+  } finally { setBootIdentityForTests(); await listener.stop(); await listener.folder.remove(); }
+});
+
+test("a drifted record whose bound socket is another socket is refused", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedAlias({ bootId: earlierBoot }, bootedAnHourAgo());
+  try {
+    await unlink(f.boundPath);
+    const child = spawn(process.execPath, ["-e", bindScript, f.boundPath], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit"); await once(child.stdout!, "data"); child.kill("SIGKILL"); await exited;
+    await assert.rejects(reuseSshSocket(f.path), /belongs to another listener/);
+    assert.equal(await f.gone(f.path), false); assert.equal(await f.gone(f.boundPath), false);
+  } finally { await f.clean(); }
+});
+
+test("new listeners stamp their record with the boot and the writer", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const started = Date.now() - 5_000;
+  setBootIdentityForTests(bootedAnHourAgo()); setProcessStartReaderForTests(async () => started);
+  const listener = await ownedListener("0.7.7");
+  try {
+    const lease = JSON.parse(await readFile(listener.path + ".gateway-lease", "utf8"));
+    assert.equal(lease.bootId, thisBoot); assert.equal(lease.pid, process.pid); assert.equal(lease.startedAtMs, started);
+    assert.equal((await reuseSshSocket(listener.path)).reused, true);
+  } finally { setBootIdentityForTests(); setProcessStartReaderForTests(); await listener.stop(); await listener.folder.remove(); }
+});
+
+/** An interrupted swap, then a reboot: the alias is still the previous listener's, the staged link is the new one's, both dead and renumbered. */
+async function driftedSwap(bootId: string, boot: { id: string; bootedAtMs: number }) {
+  const folder = await shortFolder("gw-ssh-swap-");
+  const directory = join(folder.directory, "app-server-control"); await mkdir(directory, { mode: 0o700 });
+  const path = join(directory, "app-server-control.sock");
+  const dead = async (name: string) => {
+    const child = spawn(process.execPath, ["-e", bindScript, name], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit"); await once(child.stdout!, "data"); child.kill("SIGKILL"); await exited;
+  };
+  const oldBound = join(directory, ".gw-aaaaaaaaaaaa"); const newBound = join(directory, ".gw-bbbbbbbbbbbb");
+  await dead(oldBound); await dead(newBound);
+  await link(oldBound, path); await link(newBound, newBound + ".alias");
+  const previous = await lstat(path, { bigint: true }); const fresh = await lstat(newBound, { bigint: true });
+  const recorded = String(previous.dev + 1n);
+  await writePrivateJson(path + ".gateway-lease", { inode: String(fresh.ino), device: recorded, boundPath: newBound, bootId,
+    previous: { inode: String(previous.ino), device: recorded, boundPath: oldBound, bootId } });
+  setBootIdentityForTests(boot);
+  const gone = async (name: string) => lstat(name).then(() => false, error => error.code === "ENOENT");
+  return { path, oldBound, newBound, gone, clean: async () => { setBootIdentityForTests(); await folder.remove(); } };
+}
+
+test("an interrupted swap left before a reboot is repaired and recovered despite the new device number", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedSwap(earlierBoot, bootedAnHourAgo());
+  try {
+    assert.equal((await reuseSshSocket(f.path)).reused, false);
+    for (const name of [f.path, f.oldBound, f.newBound, f.newBound + ".alias"]) assert.equal(await f.gone(name), true, name);
+    const record = JSON.parse(await readFile(f.path + ".gateway-lease", "utf8"));
+    assert.equal(record.bootId, earlierBoot, "the restored record keeps the previous owner's boot stamp");
+    assert.equal(record.boundPath, f.oldBound);
+  } finally { await f.clean(); }
+});
+
+test("an interrupted swap whose record belongs to the current boot keeps everything", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedSwap(thisBoot, bootedAnHourAgo());
+  try {
+    await assert.rejects(reuseSshSocket(f.path), /belongs to another listener/);
+    for (const name of [f.path, f.oldBound, f.newBound, f.newBound + ".alias"]) assert.equal(await f.gone(name), false, name);
+    assert.equal(JSON.parse(await readFile(f.path + ".gateway-lease", "utf8")).boundPath, f.newBound, "the record was not rewritten");
+  } finally { await f.clean(); }
+});
+
+test("a drifted record keeps its alias when the first probe is refused and the second answers", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedAlias({ bootId: earlierBoot }, bootedAnHourAgo()); const seen: string[] = [];
+  const answers = ["refused", "answered"] as const;
+  try {
+    setSocketProbeForTests({ retryMs: 1, probe: async path => { seen.push(path); return answers[seen.length - 1] ?? "answered"; } });
+    await assert.rejects(reuseSshSocket(f.path), /live listener/);
+    assert.equal(seen.length, 2, "a refusal is asked again before it counts");
+    assert.equal(await f.gone(f.path), false); assert.equal(await f.gone(f.boundPath), false);
+  } finally { setSocketProbeForTests(); await f.clean(); }
+});
+
+test("a drifted alias replaced while the probe waited is never removed", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedAlias({ bootId: earlierBoot }, bootedAnHourAgo());
+  const other = join(dirname(f.path), "other.sock"); let swapped = false;
+  try {
+    const child = spawn(process.execPath, ["-e", bindScript, other], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit"); await once(child.stdout!, "data"); child.kill("SIGKILL"); await exited;
+    setSocketProbeForTests({ retryMs: 1, probe: async () => { if (!swapped) { swapped = true; await unlink(f.path); await link(other, f.path); } return "refused"; } });
+    await assert.rejects(reuseSshSocket(f.path), /changed during recovery/);
+    assert.equal(swapped, true);
+    assert.equal(String((await lstat(f.path, { bigint: true })).ino), String((await lstat(other, { bigint: true })).ino), "the replacement is untouched");
+    assert.equal(await f.gone(f.boundPath), false);
+  } finally { setSocketProbeForTests(); await f.clean(); }
+});
+
+test("a bound socket replaced while the repair probe waits is never removed", { skip: process.platform === "win32", timeout: 15000 }, async () => {
+  const f = await driftedSwap(earlierBoot, bootedAnHourAgo());
+  const other = join(dirname(f.path), "other.sock"); let swapped = false;
+  try {
+    const child = spawn(process.execPath, ["-e", bindScript, other], { stdio: ["ignore", "pipe", "ignore"] });
+    const exited = once(child, "exit"); await once(child.stdout!, "data"); child.kill("SIGKILL"); await exited;
+    setSocketProbeForTests({ retryMs: 1, probe: async () => { if (!swapped) { swapped = true; await unlink(f.newBound); await link(other, f.newBound); } return "refused"; } });
+    await reuseSshSocket(f.path);
+    assert.equal(swapped, true);
+    assert.equal(String((await lstat(f.newBound, { bigint: true })).ino), String((await lstat(other, { bigint: true })).ino), "the replacement is untouched");
+  } finally { setSocketProbeForTests(); await f.clean(); }
 });

@@ -43,13 +43,15 @@ export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity
     for (const key of keys) if (owner[key] !== identity[key]) throw new Error("Execution rollback ownership does not match this migration; it was preserved");
     // A dead owner is cleared the way its claim clears it (see claimHost): a recorded socket with no identity is judged as found,
     // and the links its home holds that it never recorded go too, when nothing answers them.
-    const deadRunning = owner.state === "running" && await hostOwnerLiveness(home, owner, stored.mtimeMs) !== "live";
+    const hostVerdict = owner.state === "running" ? await hostOwnerLiveness(home, owner, stored.mtimeMs) : undefined;
+    const deadRunning = hostVerdict !== undefined && hostVerdict !== "live";
+    const priorBoot = hostVerdict === "previous_boot";
     if (owner.socketPath !== resolve(home, "host.sock") || (!deadRunning && (owner.state !== "stopped" || owner.pid !== 0))) throw new Error("Execution host must be fully stopped before restoring legacy writers");
     const recorded = new Set<string>([owner.socketPath]);
     for (const engine of owner.generations) {
       if (!engine || !/^[a-f0-9]{64}$/.test(engine.revision) || !Number.isSafeInteger(engine.pid) || engine.pid < 0 || engine.socketPath !== resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) throw new Error("Execution rollback generation identity is invalid; it was preserved");
       if (await receiptPidAlive(engine, stored.mtimeMs)) throw new Error("A managed execution writer is still live; rollback preserved it");
-      recorded.add(engine.socketPath); await removeOwnedSocket(engine.socketPath, engine.socket, deadRunning);
+      recorded.add(engine.socketPath); await removeOwnedSocket(engine.socketPath, engine.socket, deadRunning, priorBoot);
     }
     const archiveNative = async () => {
       const current = await readNativeHomeOwnerRecord(identity.nativeHome);
@@ -68,13 +70,13 @@ export async function archiveStoppedExecutionReceipt(identity: Omit<HostIdentity
       const bothDead = deadRunning && verdict === "dead";
       if (owner.native) {
         if (await receiptPidAlive(owner.native, stored.mtimeMs) || owner.native.socketPath !== lease.socketPath || (!bothDead && lease.revision !== owner.native.revision)) throw new Error("A native SDK writer is still live or unconfirmed; rollback preserved it");
-        await removeOwnedSocket(owner.native.socketPath, owner.native.socket, deadRunning);
+        await removeOwnedSocket(owner.native.socketPath, owner.native.socket, deadRunning, priorBoot);
       } else if (!bothDead && lease.revision !== undefined) throw new Error("Native execution rollback revision is unconfirmed; it was preserved");
       const target = resolve(backup, "native-execution-owner.json");
       if (await lstat(target).catch(error => { if (error.code === "ENOENT") return; throw error; })) throw new Error("Native ownership backup already exists; its receipt was preserved");
       await rename(nativeHomeOwnerPath(identity.nativeHome), target);
     };
-    await removeOwnedSocket(owner.socketPath, owner.socket, deadRunning);
+    await removeOwnedSocket(owner.socketPath, owner.socket, deadRunning, priorBoot);
     // Swept before anything is archived, so a listener nobody recorded refuses the rollback with both receipts in place.
     if (owner.native?.socketPath === resolve(home, "native.sock")) recorded.add(owner.native.socketPath);
     if (deadRunning) await removeUnrecordedLinks(home, recorded, owner.socketPath);
