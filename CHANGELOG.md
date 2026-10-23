@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Subscription accounts can designate a default for bare subagent model names. Account-qualified aliases keep their own routing, and automatic review uses the same designated Codex account. Adding a second account no longer makes these names ambiguous when a default is configured.
+
 - Codex subscription routes can report provider-supplied quota windows alongside Claude observations without changing native account usage. Missing counters remain unavailable, and replacing a credential file invalidates its old observations.
 
 - The gateway now distinguishes unsupported subscription capabilities and policy refusals carried in an error type from generic inference failures. HTTP quota failures retain their safe diagnostic class, and sharing-limit messages identify gateway subscription sharing without claiming the native account is exhausted.

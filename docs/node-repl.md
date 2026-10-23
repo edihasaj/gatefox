@@ -111,9 +111,11 @@ The gateway serves exactly one reviewer slug, `codex-auto-review`
 (`src/auto-review.ts`), through the Codex subscription provider, and never
 `gpt-5.6-luna`.
 
-- Resolution is: an alias with that exact name, then the existing bare-model alias
-  rule (`nativeModelAlias`), then the only `codex-subscription` provider. With no
-  Codex provider or with two or more, and no alias, the request gets 404
+- Resolution is: an alias with that exact name, then the bare-model alias rule
+  (`nativeModelAlias`), then the Codex provider designated with
+  `"defaultForBareModels": true`, or the sole Codex subscription when none is
+  designated. With no Codex provider, or several without an alias or a designated
+  default, the request gets 404
   `model_not_found` and no other provider is called.
 - The request reaches the same adapter instance as that provider's own rows, so the
   credential, turn state and reasoning scope match. The body is passed on unchanged
@@ -220,7 +222,7 @@ Any one of these turns node_repl off for the rows that need review, and for
 fallback rows:
 
 - no live catalog read yet, or a gateway too old to send the field;
-- no Codex subscription route, or two or more without an alias;
+- no Codex subscription route, or several without an alias or a designated default;
 - no ChatGPT plan login on the reviewer provider;
 - the reviewer row missing from the native catalog, or `supported_in_api` not exactly `true`;
 - an override that names a slug the gateway does not advertise, or is not a string;

@@ -129,11 +129,18 @@ See "Speed controls" for the full rule.
 Sub-agents that Codex spawns from a gateway chat (delegation, Ultra, or agent
 roles in the native configuration) inherit the gateway provider but take their
 model from the role, often a bare name such as `gpt-5.6-terra`. The server serves
-such a name through its vendor's subscription route when exactly one alias there
-has that upstream model: `gpt-…`, `o…` and `codex-…` names use the Codex
-subscription, `claude-…` names the Claude subscription. Other routes serving the
-same model, such as Copilot, are not used for a bare name. An unknown or ambiguous
-name still fails with `model_not_found`. Each resolution is logged as
+such a name through its vendor's subscription route: `gpt-…`, `o…` and `codex-…`
+names use a Codex subscription, and `claude-…` names a Claude subscription.
+With several accounts, set `"defaultForBareModels": true` on one provider per
+vendor. Bare names then use only that account; a model it does not offer fails
+instead of falling back to another account. Account-qualified aliases still
+select their own routes. This is an operator-selected default, not automatic
+inheritance of the parent account; the SDK sends no parent account selector.
+
+Without a designation, exactly one account must offer the upstream model.
+Multiple aliases in that account resolve to the lexically first alias. Other
+routes serving the same model, such as Copilot, are not used for a bare name.
+An unknown or ambiguous name still fails with `model_not_found`. Each resolution is logged as
 `model_alias_resolved`. Before this, such sub-agents failed silently: Codex retried
 the 404 five times and ended the turn with nothing.
 

@@ -55,6 +55,28 @@ test("by default, with one Codex route and a plan login, the reviewer is adverti
   } finally { await g.close(); }
 }));
 
+test("two accounts advertise and serve the same designated reviewer without borrowing another account's alias", () => withDirectory(async directory => {
+  const credentialFile = join(directory, "login.json"); await writeFile(credentialFile, JSON.stringify(login), { mode: 0o600 });
+  const selected = { ...codex("selected", { "selected/sol": "gpt-6.1-sol" }, credentialFile), defaultForBareModels: true };
+  const other = codex("other", { "other/review": "codex-auto-review" }, credentialFile);
+  for (const providers of [[other, selected], [selected, other]]) {
+    const g = await gateway(directory, providers);
+    try {
+      assert.deepEqual(((await (await g.get("/v1/model-catalog")).json()) as { auto_review: unknown }).auto_review, { models: ["codex-auto-review"] });
+      assert.equal(await (await g.post(reviewRequest("codex-auto-review"))).status, 200);
+      assert.deepEqual([...g.seen.keys()], ["selected"]);
+      assert.equal(g.seen.get("selected")![0].model, "codex-auto-review");
+    } finally { await g.close(); }
+  }
+  const explicit = { ...other, models: { "codex-auto-review": "codex-auto-review" } };
+  const g = await gateway(directory, [selected, explicit]);
+  try {
+    assert.deepEqual(((await (await g.get("/v1/model-catalog")).json()) as { auto_review: unknown }).auto_review, { models: ["codex-auto-review"] });
+    assert.equal((await g.post(reviewRequest("codex-auto-review"))).status, 200);
+    assert.deepEqual([...g.seen.keys()], ["other"], "an explicit alias overrides the unnamed reviewer's default");
+  } finally { await g.close(); }
+}));
+
 test("the reviewer slug is served through the one Codex route with the request unchanged apart from the model", () => withDirectory(async directory => {
   const g = await gateway(directory, [claude, codex("codex", { "codex/sol": "gpt-6.1-sol" })]);
   try {
