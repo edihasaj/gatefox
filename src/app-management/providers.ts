@@ -10,6 +10,8 @@ import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js"
 
 const apiKinds = new Set<ProviderKind>(["responses-api", "anthropic-api", "chat-completions-api"]);
 const cliFor: Partial<Record<ProviderKind, string>> = { "claude-subscription": "claude", "copilot-subscription": "copilot" };
+/** Grok signs in through its own CLI and has no verified catalog route: it is listed, never probed or signed in here. */
+const existingCliFor: Partial<Record<ProviderKind, string>> = { "grok-subscription": "grok" };
 const modelId = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 export const isApiKind = (type: ProviderKind): boolean => apiKinds.has(type);
@@ -78,7 +80,11 @@ export function managedModels(provider: ProviderConfig, catalog: CatalogEntry[] 
     if (seen.has(entry.id)) continue; seen.add(entry.id); const aliases = configured.get(entry.id) || [];
     models.push({ id: entry.id, ...(aliases[0] ? { alias: aliases[0] } : {}), label: entry.label || entry.id, enabled: newDraft || aliases.length > 0 });
   }
-  for (const [id, aliases] of configured) if (!seen.has(id)) models.push({ id, ...(aliases[0] ? { alias: aliases[0] } : {}), label: id, enabled: true });
+  // A route with no catalog row still shows its saved display name, so a connection without discovery is not blank.
+  for (const [id, aliases] of configured) if (!seen.has(id)) {
+    const named = aliases.map(alias => provider.modelMetadata?.[alias]?.displayName).find(Boolean);
+    models.push({ id, ...(aliases[0] ? { alias: aliases[0] } : {}), label: named || id, enabled: true });
+  }
   return models;
 }
 
@@ -88,11 +94,16 @@ export async function managedProvider(provider: ProviderConfig, lookup: Manageme
   const managed = provider.credentialFile && state ? await managedCredentialFile(state, provider.credentialFile) : false;
   const external = isApiKind(provider.type) && (Boolean(provider.apiKeyEnv) || Boolean(provider.credentialFile) && !managed);
   const saved = provider.type === "codex-subscription" ? managed && await hasPlanLogin(provider.credentialFile!) : isApiKind(provider.type) ? managed : false;
+  const existing = existingCliFor[provider.type];
   const unchecked = Boolean(cli && available && !newDraft);
-  const authState = external ? "external-credential" : !available && cli ? "missing-cli" : saved ? "saved" : unchecked ? "unchecked" : "needs-sign-in";
-  const authDetail = external ? "Credential is managed outside Harness Gateway." : !available && cli ? `${cli} is not installed.` : saved ? "Saved credentials have not been checked." : unchecked ? "Provider sign-in has not been checked. Check connection to verify." : "Sign in is required.";
+  const authState = external ? "external-credential" : !available && cli ? "missing-cli" : saved ? "saved" : existing || unchecked ? "unchecked" : "needs-sign-in";
+  const authDetail = external ? "Credential is managed outside Harness Gateway." : !available && cli ? `${cli} is not installed.`
+    : saved ? "Saved credentials have not been checked."
+    : existing ? "Grok sign-in has not been checked. Manage it with the Grok CLI in this gateway's private home."
+    : unchecked ? "Provider sign-in has not been checked. Check connection to verify." : "Sign in is required.";
   return { id: provider.id, label: provider.label || provider.id, type: provider.type, ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}), authState, authDetail,
-    models: managedModels(provider, catalog, newDraft), canDiscover: true, canReconnect: !external && (isApiKind(provider.type) || provider.type === "codex-subscription" ? managed : Boolean(cli && available)) };
+    models: managedModels(provider, catalog, newDraft), canDiscover: existing === undefined,
+    canReconnect: existing !== undefined ? false : !external && (isApiKind(provider.type) || provider.type === "codex-subscription" ? managed : Boolean(cli && available)) };
 }
 
 function loginEnvironment(type: ProviderKind, authDirectory?: string): NodeJS.ProcessEnv {

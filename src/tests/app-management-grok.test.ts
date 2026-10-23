@@ -1,0 +1,111 @@
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import test from "node:test";
+import { handleManagement } from "../app-management.js";
+import { providerRoute } from "../app-management/aliases.js";
+import type { ManagementResult } from "../app-management/types.js";
+
+const dependencies = { lookupCli: async () => true };
+type Models = Record<string, string>; type Metadata = Record<string, Record<string, unknown>>;
+
+async function fixture(home = "home-a", models: Models = { "grok/one": "grok-one", "grok/two": "grok-two" }, modelMetadata: Metadata = { "grok/one": { displayName: "One", contextWindow: 4096 }, "grok/two": { displayName: "Two", contextWindow: 4096 } }) {
+  const root = await mkdtemp(join(tmpdir(), "gateway-grok-management-")); const path = join(root, "gateway.json"); const state = join(root, "state"); await mkdir(state, { recursive: true });
+  const write = (config: object) => writeFile(path, JSON.stringify(config), { mode: 0o600 });
+  const config = (grokHome: string, providerModels: Models, metadata: Metadata) => ({ version: 1, port: 3457, stateDirectory: state, providers: [{ id: "grok", label: "Grok", type: "grok-subscription", grokHome: join(root, grokHome), models: providerModels, modelMetadata: metadata }] });
+  await write(config(home, models, modelMetadata));
+  return { root, path, state, write, config, raw: async () => JSON.parse(await readFile(path, "utf8")), ledger: async () => JSON.parse(await readFile(join(dirname(path), "app-aliases.json"), "utf8")) };
+}
+async function inspect(path: string): Promise<ManagementResult> {
+  const result = await handleManagement({ operation: "inspect", configPath: path }, dependencies); assert.equal(result.ok, true); if (!result.ok) throw new Error("inspect"); return result.result;
+}
+async function select(path: string, selectedModels: string[]) {
+  const current = await inspect(path);
+  return handleManagement({ operation: "models", configPath: path, providerId: "grok", revision: current.revision, selectedModels }, dependencies);
+}
+
+test("a Grok connection is listed unchecked, with no discovery or reconnect, and nothing is written", async () => {
+  const f = await fixture(); const before = await readFile(f.path, "utf8");
+  const result = await inspect(f.path); const provider = result.providers![0];
+  assert.equal(provider.authState, "unchecked"); assert.equal(provider.canDiscover, false); assert.equal(provider.canReconnect, false);
+  assert.deepEqual(provider.models.map(model => [model.id, model.label, model.enabled]), [["grok-one", "One", true], ["grok-two", "Two", true]]);
+  assert.match(provider.authDetail, /private home/); assert.equal(await readFile(f.path, "utf8"), before);
+  for (const operation of ["discover", "authenticate"]) {
+    const refused = await handleManagement({ operation, configPath: f.path, providerId: "grok", revision: result.revision }, dependencies);
+    assert.deepEqual(refused.ok ? undefined : refused.error.code, "invalid_request"); assert.equal(await readFile(f.path, "utf8"), before);
+  }
+});
+
+test("deselecting a Grok model and enabling it again restores its exact alias and metadata", async () => {
+  const f = await fixture(); const original = (await f.raw()).providers[0];
+  assert.equal((await select(f.path, ["grok-one"])).ok, true);
+  let provider = (await f.raw()).providers[0]; assert.deepEqual(provider.models, { "grok/one": "grok-one" });
+  const listed = (await inspect(f.path)).providers![0].models; assert.deepEqual(listed.map(model => [model.id, model.enabled, model.label]), [["grok-one", true, "One"], ["grok-two", false, "Two"]]);
+  assert.equal((await select(f.path, ["grok-one", "grok-two"])).ok, true);
+  provider = (await f.raw()).providers[0]; assert.deepEqual(provider.models, original.models); assert.deepEqual(provider.modelMetadata, original.modelMetadata);
+});
+
+test("a re-enabled Grok model uses configured metadata edited after it was cached", async () => {
+  const f = await fixture();
+  assert.equal((await select(f.path, ["grok-one"])).ok, true);
+  const edited = await f.raw(); edited.providers[0].modelMetadata["grok/one"] = { displayName: "One Edited", contextWindow: 5000 }; await f.write(edited);
+  // Removing a different model than the one edited must not resurrect the stale copy of the edited one.
+  const added = await f.raw(); added.providers[0].models["grok/two"] = "grok-two"; added.providers[0].modelMetadata["grok/two"] = { displayName: "Two", contextWindow: 2000 }; await f.write(added);
+  assert.equal((await select(f.path, ["grok-two"])).ok, true);
+  assert.equal((await select(f.path, ["grok-one", "grok-two"])).ok, true);
+  const provider = (await f.raw()).providers[0]; assert.deepEqual(provider.modelMetadata["grok/one"], { displayName: "One Edited", contextWindow: 5000 });
+  assert.equal((await inspect(f.path)).providers![0].models.find(model => model.id === "grok-one")?.label, "One Edited");
+});
+
+test("an upstream model with several aliases and distinct metadata returns whole after being disabled", async () => {
+  const f = await fixture("home-a", { "grok/one": "grok-one", "grok/two": "grok-two", "grok/two-fast": "grok-two" },
+    { "grok/one": { displayName: "One" }, "grok/two": { displayName: "Two", contextWindow: 2000 }, "grok/two-fast": { displayName: "Two Fast", contextWindow: 3000 } });
+  const original = (await f.raw()).providers[0];
+  assert.equal((await select(f.path, ["grok-one"])).ok, true); assert.deepEqual((await f.raw()).providers[0].models, { "grok/one": "grok-one" });
+  assert.equal((await select(f.path, ["grok-one", "grok-two"])).ok, true);
+  const provider = (await f.raw()).providers[0];
+  assert.deepEqual(Object.entries(provider.models).sort(), Object.entries(original.models).sort());
+  assert.deepEqual(provider.modelMetadata, original.modelMetadata);
+});
+
+test("a Grok alias preserves accepted metadata beyond the old ledger cap", async () => {
+  const metadata = { displayName: "One", contextWindow: 4096, providerNote: "x".repeat(17 * 1024) };
+  const f = await fixture("home-a", { "grok/one": "grok-one", "grok/two": "grok-two" }, { "grok/one": metadata, "grok/two": { displayName: "Two", contextWindow: 4096 } });
+  assert.equal((await select(f.path, ["grok-two"])).ok, true);
+  assert.equal((await select(f.path, ["grok-one", "grok-two"])).ok, true);
+  assert.deepEqual((await f.raw()).providers[0].modelMetadata["grok/one"], metadata);
+});
+
+test("a changed Grok home never reclaims or reuses another home's catalog or aliases", async () => {
+  const f = await fixture();
+  assert.equal((await select(f.path, ["grok-one"])).ok, true);
+  assert.equal((await f.ledger()).aliases["grok/two"].model, "grok-two");
+  // The same provider now points at a different private home with a different model.
+  await f.write(f.config("home-b", { "grok/three": "grok-three" }, { "grok/three": { displayName: "Three" } }));
+  const refused = await select(f.path, ["grok-one", "grok-three"]); assert.equal(refused.ok, false); assert.equal(refused.ok ? "" : refused.error.code, "invalid_request");
+  await f.write(f.config("home-b", { "grok/one": "grok-one", "grok/three": "grok-three" }, { "grok/one": { displayName: "B One" }, "grok/three": { displayName: "Three" } }));
+  assert.equal((await select(f.path, ["grok-three"])).ok, true);
+  assert.equal((await select(f.path, ["grok-three", "grok-two"])).ok, false);
+  const ledger = await f.ledger(); const homeA = JSON.parse(ledger.aliases["grok/two"].route).grokHome; assert.equal(homeA, resolve(f.root, "home-a"));
+  assert.equal(JSON.parse(ledger.aliases["grok/one"].route).grokHome, resolve(f.root, "home-b"));
+  assert.equal((await select(f.path, ["grok-three", "grok-one"])).ok, true);
+  const models = (await f.raw()).providers[0].models; assert.deepEqual(models, { "grok/three": "grok-three", "grok/one": "grok-one" });
+});
+
+test("only Grok route fingerprints carry the Grok home", () => {
+  const api = { id: "a", type: "responses-api", baseUrl: "https://x.example/v1", models: {} } as never;
+  assert.equal(providerRoute(api), JSON.stringify({ type: "responses-api", id: "a", baseUrl: "https://x.example/v1" }));
+  assert.notEqual(providerRoute({ id: "g", type: "grok-subscription", grokHome: "/a", models: {} } as never), providerRoute({ id: "g", type: "grok-subscription", grokHome: "/b", models: {} } as never));
+});
+
+test("client-only configurations cannot be edited through connection mutations", async () => {
+  const root = await mkdtemp(join(tmpdir(), "gateway-client-management-")); const path = join(root, "gateway.json"); const state = join(root, "state"); await mkdir(state, { recursive: true });
+  await writeFile(path, JSON.stringify({ version: 1, port: 1, stateDirectory: state, providers: [], clientOnly: true }), { mode: 0o600 }); const before = await readFile(path, "utf8");
+  const revision = (await inspect(path)).revision;
+  for (const request of [{ operation: "rename", providerId: "grok", label: "X" }, { operation: "remove", providerId: "grok" }, { operation: "models", providerId: "grok", selectedModels: ["m"] },
+    { operation: "prepare", provider: { label: "X", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1" } }]) {
+    const result = await handleManagement({ ...request, configPath: path, revision }, dependencies); assert.equal(result.ok, false);
+    assert.equal(await readFile(path, "utf8"), before);
+  }
+});

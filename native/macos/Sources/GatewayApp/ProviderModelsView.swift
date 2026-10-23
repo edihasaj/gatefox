@@ -23,10 +23,12 @@ struct ProviderModelsView: View {
                         .foregroundStyle(GatewayTheme.charcoal.opacity(0.6))
                 }
                 Spacer()
-                Button("Refresh catalog") { Task { _ = await connections.discover(providerID: provider.id) } }
-                    .buttonStyle(GatewaySecondaryButtonStyle())
-                    .disabled(connections.isBusy)
-                    .accessibilityIdentifier("connections.refresh-models.\(provider.id)")
+                if provider.canDiscover {
+                    Button("Refresh catalog") { Task { _ = await connections.discover(providerID: provider.id) } }
+                        .buttonStyle(GatewaySecondaryButtonStyle())
+                        .disabled(connections.isBusy)
+                        .accessibilityIdentifier("connections.refresh-models.\(provider.id)")
+                }
             }
             .padding(28)
             Divider().overlay(GatewayTheme.line)
@@ -71,7 +73,9 @@ struct ProviderModelsView: View {
             guard !didLoad else { return }
             didLoad = true
             connections.beginEditing(provider)
-            _ = await connections.discover(providerID: provider.id)
+            if provider.canDiscover {
+                _ = await connections.discover(providerID: provider.id)
+            }
         }
         .onExitCommand { if !connections.isBusy { isPresented = false } }
     }
@@ -80,7 +84,9 @@ struct ProviderModelsView: View {
         VStack(alignment: .leading, spacing: 10) {
             if connections.availableModels.isEmpty {
                 GatewayPanel {
-                    Text("No models are available yet. Refresh the catalog or add a model ID below if this is an API server.")
+                    Text(provider.canDiscover
+                        ? "No models are available yet. Refresh the catalog or add a model ID below if this is an API server."
+                        : "No models were configured for this connection yet. Choose the models to enable, then apply them.")
                         .font(GatewayTheme.body(14))
                         .foregroundStyle(GatewayTheme.charcoal.opacity(0.68))
                 }
@@ -123,7 +129,7 @@ struct ProviderModelsView: View {
     }
 
     private var supportsManualModels: Bool {
-        !["claude-subscription", "codex-subscription", "copilot-subscription"].contains(provider.type)
+        provider.type.isAPIProviderType
     }
 
     private func modelBinding(_ id: String) -> Binding<Bool> {

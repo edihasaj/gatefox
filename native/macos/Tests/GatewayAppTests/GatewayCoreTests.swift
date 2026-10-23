@@ -166,6 +166,34 @@ final class GatewayCoreTests: XCTestCase {
         XCTAssertFalse(mutations.contains("service install"))
     }
 
+    func testGrokSubscriptionConfigurationIsAcceptedAndProjected() async throws {
+        let home = try temporaryHome()
+        let config = home.appending(path: "gateway.json")
+        try #"{"version":1,"port":3457,"stateDirectory":"/fixture/state","providers":[{"id":"grok","type":"grok-subscription","label":"Grok","models":{"grok/grok-4":"grok-4"}}]}"#.write(to: config, atomically: true, encoding: .utf8)
+        let model = GatewayModel(command: readyRunner(), health: MockHealth(value: true), homeDirectory: home, defaults: testDefaults())
+
+        model.configPath = config.path
+        await model.refresh()
+
+        XCTAssertTrue(model.hasConfig)
+        XCTAssertNil(model.message)
+        XCTAssertEqual(model.providers, [GatewayProvider(id: "grok", label: "Grok", kind: "Grok subscription", modelCount: 1)])
+    }
+
+    func testGrokSubscriptionProviderSurvivesStatusRefreshRoundtrip() async throws {
+        let home = try temporaryHome()
+        let config = home.appending(path: "gateway.json")
+        try #"{"version":1,"port":3457,"stateDirectory":"/fixture/state","providers":[{"id":"grok","type":"grok-subscription","models":{"grok/grok-4":"grok-4"}}]}"#.write(to: config, atomically: true, encoding: .utf8)
+        let model = GatewayModel(command: readyRunner(), health: MockHealth(value: true), homeDirectory: home, defaults: testDefaults())
+        model.configPath = config.path
+        await model.refresh()
+        XCTAssertTrue(model.hasConfig)
+
+        await model.refresh()
+        XCTAssertTrue(model.hasConfig)
+        XCTAssertEqual(model.modelCount, 1)
+    }
+
     private func temporaryHome() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

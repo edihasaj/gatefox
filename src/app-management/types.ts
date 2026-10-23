@@ -40,6 +40,15 @@ export interface ManagedProvider {
 }
 export interface Prerequisite { id: string; label: string; available: boolean; downloadURL?: string }
 export interface ManagedDraft { id: string; provider: ManagedProvider; revision?: string; configPath: string; isNewConfiguration: boolean }
+/** One model the serving host routes: its configured alias and catalog label, nothing else. */
+export interface SharedGatewayModel { id: string; label: string }
+export interface SharedGatewayProvider { id: string; label: string; type: string; models: SharedGatewayModel[] }
+/** The read-only view of the shared gateway a remote client configuration points at. A failed read carries no data. */
+export interface SharedGateway {
+  status: "available" | "unavailable";
+  hostname?: string;
+  providers: SharedGatewayProvider[];
+}
 export interface ManagementResult {
   configPath?: string;
   revision?: string;
@@ -49,6 +58,7 @@ export interface ManagementResult {
   models?: ManagedModel[];
   changed?: boolean;
   removed?: boolean;
+  sharedGateway?: SharedGateway;
 }
 export type ManagementResponse = { ok: true; result: ManagementResult } | { ok: false; error: { code: string; message: string } };
 

@@ -22,6 +22,12 @@ its models. An unconfigured Mac opens this wizard automatically. Existing
 configurations open directly in the dashboard. See
 [setup and connection management](app-management.md) for account and model behavior.
 
+Connections identifies whether this Mac hosts its own providers or consumes a
+shared gateway. Hosts edit their local connections and selected models. Pure
+shared clients show the serving hostname and a read-only catalog, with retry
+when the gateway cannot be reached. SSH chats use their remote Mac's gateway;
+installing the control panel does not copy connections between Macs.
+
 The wizard and connection editors share the same field styling, with matching
 text and secure-entry insets, a visible focus border, and a minimum height aligned
 with the action buttons. Manual model fields expand to fit multiple lines.

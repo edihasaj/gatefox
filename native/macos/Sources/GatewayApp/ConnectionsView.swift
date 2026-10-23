@@ -20,23 +20,11 @@ struct ConnectionsView: View {
                     connectionMessage(message)
                 }
                 if gateway.clientOnly {
-                    GatewayPanel {
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Connected to a shared gateway.")
-                                .font(GatewayTheme.display(27))
-                            Text("Accounts and model choices are managed on the gateway host. This Mac keeps its existing forwarded connection.")
-                                .font(GatewayTheme.body(14))
-                                .foregroundStyle(GatewayTheme.charcoal.opacity(0.68))
-                        }
-                    }
+                    SharedGatewayView(connections: connections)
                 } else if connections.connections.isEmpty {
                     emptyState
                 } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(connections.connections) { provider in
-                            providerCard(provider)
-                        }
-                    }
+                    providerList
                 }
             }
             .padding(.horizontal, 42)
@@ -44,6 +32,9 @@ struct ConnectionsView: View {
             .frame(maxWidth: 900, alignment: .leading)
         }
         .background(GatewayTheme.parchment)
+        .onChange(of: gateway.configPath) { _, _ in
+            dismissAllSheets()
+        }
         .task { await connections.refresh() }
         .sheet(item: $modelsProvider) { provider in
             ProviderModelsView(connections: connections, provider: provider, isPresented: sheetBinding(for: provider, state: $modelsProvider))
@@ -73,12 +64,30 @@ struct ConnectionsView: View {
                 Text("Accounts, kept clear.")
                     .font(GatewayTheme.display(38))
                     .foregroundStyle(GatewayTheme.charcoal)
-                Text("Check each connection, choose its models, or add another account.")
-                    .font(GatewayTheme.body(14))
-                    .foregroundStyle(GatewayTheme.charcoal.opacity(0.64))
+                if gateway.clientOnly {
+                    Text("This Mac uses a gateway managed elsewhere. Its connections and models are listed read-only below.")
+                        .font(GatewayTheme.body(14))
+                        .foregroundStyle(GatewayTheme.charcoal.opacity(0.64))
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Check each connection, choose its models, or add another account.")
+                        .font(GatewayTheme.body(14))
+                        .foregroundStyle(GatewayTheme.charcoal.opacity(0.64))
+                }
             }
             Spacer()
             VStack(alignment: .trailing, spacing: 10) {
+                if gateway.clientOnly {
+                    Text("Shared gateway")
+                        .font(GatewayTheme.body(12, weight: .semibold))
+                        .foregroundStyle(GatewayTheme.moss)
+                        .accessibilityIdentifier("connections.scope")
+                } else {
+                    Text("This Mac · \(GatewayConnectionScope.localHostName())")
+                        .font(GatewayTheme.body(12, weight: .semibold))
+                        .foregroundStyle(GatewayTheme.charcoal.opacity(0.6))
+                        .accessibilityIdentifier("connections.scope")
+                }
                 if connections.isBusy {
                     Button("Cancel active task") { connections.cancel() }
                         .buttonStyle(GatewaySecondaryButtonStyle())
@@ -88,10 +97,12 @@ struct ConnectionsView: View {
                     .buttonStyle(GatewaySecondaryButtonStyle())
                     .disabled(connections.isBusy)
                     .accessibilityIdentifier("connections.refresh")
-                Button("Add connection", action: onAddConnection)
-                    .buttonStyle(GatewayPrimaryButtonStyle())
-                    .disabled(connections.isBusy || gateway.clientOnly)
-                    .accessibilityIdentifier("connections.add")
+                if !gateway.clientOnly {
+                    Button("Add connection", action: onAddConnection)
+                        .buttonStyle(GatewayPrimaryButtonStyle())
+                        .disabled(connections.isBusy)
+                        .accessibilityIdentifier("connections.add")
+                }
             }
         }
     }
@@ -111,6 +122,47 @@ struct ConnectionsView: View {
                     .accessibilityIdentifier("connections.add")
             }
         }
+    }
+
+    @ViewBuilder
+    private var providerList: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            hostScopeNote
+            LazyVStack(spacing: 14) {
+                ForEach(connections.connections) { provider in
+                    providerCard(provider)
+                }
+            }
+        }
+    }
+
+    private var hostScopeNote: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "desktopcomputer")
+                .foregroundStyle(GatewayTheme.moss)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This Mac · \(GatewayConnectionScope.localHostName())")
+                    .font(GatewayTheme.body(13, weight: .semibold))
+                    .foregroundStyle(GatewayTheme.charcoal)
+                Text("Connections and model choices here apply to chats running on this Mac. Chats opened over SSH use the gateway on that remote Mac instead.")
+                    .font(GatewayTheme.body(12))
+                    .foregroundStyle(GatewayTheme.charcoal.opacity(0.6))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+        }
+        .padding(13)
+        .background(GatewayTheme.moss.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .accessibilityIdentifier("connections.host-scope")
+    }
+
+    private func dismissAllSheets() {
+        modelsProvider = nil
+        renamingProvider = nil
+        credentialProvider = nil
+        removalCandidate = nil
+        renameLabel = ""
+        replacementAPIKey = ""
     }
 
     private func providerCard(_ provider: ManagedProvider) -> some View {
@@ -294,7 +346,7 @@ struct ConnectionsView: View {
     }
 
     private func isSubscription(_ provider: ManagedProvider) -> Bool {
-        ["claude-subscription", "codex-subscription", "copilot-subscription"].contains(provider.type)
+        provider.type.isSubscriptionProviderType
     }
 
     private func providerKind(_ provider: ManagedProvider) -> String {
@@ -302,6 +354,7 @@ struct ConnectionsView: View {
         case "claude-subscription": "Claude subscription"
         case "codex-subscription": "Codex subscription"
         case "copilot-subscription": "GitHub Copilot subscription"
+        case "grok-subscription": "Grok subscription"
         case "responses-api": "Responses API"
         case "anthropic-api": "Anthropic API"
         case "chat-completions-api": "OpenAI-compatible server"

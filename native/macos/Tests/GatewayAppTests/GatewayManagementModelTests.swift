@@ -178,6 +178,164 @@ final class GatewayManagementModelTests: XCTestCase {
         let firstSaveResult = await firstSave.value
         XCTAssertTrue(firstSaveResult)
     }
+
+    func testValidInspectStoresSharedSnapshotAndFailureClearsIt() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let snapshot = SharedGatewaySnapshot(status: "available", hostname: "Studio", providers: [
+            SharedGatewayProvider(id: "grok", label: "Grok", type: "grok-subscription", models: [SharedGatewayModel(id: "grok/grok-4", label: "Grok 4")])
+        ])
+        let bridge = ManagementBridge(responses: [
+            .success(configPath: fixture.config.path, revision: "base", providers: [], prerequisites: [], sharedGateway: snapshot),
+            .failure("timed_out", message: "ignored"),
+        ])
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+
+        await model.refresh()
+        XCTAssertEqual(model.sharedGateway, snapshot)
+
+        await model.refresh()
+        XCTAssertNil(model.sharedGateway)
+    }
+
+    func testSharedSnapshotFollowsConfigurationSwitchWithoutLeaking() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let snapshotA = SharedGatewaySnapshot(status: "available", hostname: "A", providers: [])
+        let bridge = DelayedManagementBridge()
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+        await bridge.enqueue(.success(configPath: fixture.config.path, revision: "a", providers: [fixture.provider()], prerequisites: [], sharedGateway: snapshotA))
+        await model.refresh()
+        XCTAssertEqual(model.sharedGateway, snapshotA)
+
+        fixture.gateway.configPath = fixture.otherConfig.path
+        let changed = Task { await model.configurationDidChange() }
+        await bridge.waitForRequest(count: 2)
+        // The queued inspect for configuration B only starts after the switch
+        // cleared every A-scoped value, so snapshot A must already be gone.
+        XCTAssertNil(model.sharedGateway)
+        await bridge.finishNext(.success(configPath: fixture.otherConfig.path, revision: "b", providers: [fixture.provider()], prerequisites: []))
+        await changed.value
+
+        XCTAssertNil(model.sharedGateway)
+        XCTAssertEqual(model.revision, "b")
+    }
+
+    func testObsoleteFailedInspectCannotClearNewerSharedSnapshot() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let snapshotB = SharedGatewaySnapshot(status: "available", hostname: "B", providers: [])
+        let bridge = DelayedManagementBridge()
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+        let staleRefresh = Task { await model.refresh() }
+        await bridge.waitForRequest(count: 1)
+
+        fixture.gateway.configPath = fixture.otherConfig.path
+        let changed = Task { await model.configurationDidChange() }
+        await bridge.waitForRequest(count: 2)
+        await bridge.finishNext(.success(configPath: fixture.otherConfig.path, revision: "b", providers: [fixture.provider()], prerequisites: [], sharedGateway: snapshotB))
+        await changed.value
+        await staleRefresh.value
+
+        XCTAssertEqual(model.sharedGateway, snapshotB)
+    }
+
+    func testGrokProviderEditsUseConfiguredModelsOnly() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let grok = ManagedProvider(
+            id: "grok", label: "Grok", type: "grok-subscription", authState: "saved", authDetail: "Saved",
+            models: [ManagedModel(id: "grok/grok-4", label: "Grok 4", enabled: true)], canDiscover: false, canReconnect: false
+        )
+        let bridge = ManagementBridge(responses: [
+            .success(configPath: fixture.config.path, revision: "base", providers: [grok], prerequisites: []),
+            .success(configPath: fixture.config.path, revision: "next", providers: [grok]),
+        ])
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+        await model.refresh()
+
+        model.beginEditing(grok)
+        model.manualModelsText = "injected-manual-model"
+        XCTAssertTrue(model.validManualModelIDs.isEmpty)
+        XCTAssertEqual(model.effectiveSelection, ["grok/grok-4"])
+
+        let saved = await model.saveModels(providerID: grok.id)
+        XCTAssertTrue(saved)
+        let requests = await bridge.requests()
+        let request = try XCTUnwrap(requests.last)
+        XCTAssertEqual(request.operation, "models")
+        XCTAssertEqual(request.selectedModels, ["grok/grok-4"])
+        XCTAssertEqual(request.manualModels, [])
+    }
+
+    func testLateCancelledInspectCannotClearSamePathRetrySnapshotOrMessage() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let snapshot = SharedGatewaySnapshot(status: "available", hostname: "Alpha", providers: [])
+        let bridge = StagedManagementBridge()
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+
+        let cancelledRefresh = Task { await model.refresh() }
+        await bridge.waitForRequest(count: 1)
+        model.cancel()
+        while model.isBusy { await Task.yield() }
+
+        let retry = Task { await model.refresh() }
+        await bridge.waitForRequest(count: 2)
+        await bridge.complete(
+            .success(configPath: fixture.config.path, revision: "retry", providers: [fixture.provider()], prerequisites: [], sharedGateway: snapshot),
+            request: 1
+        )
+        await retry.value
+        XCTAssertEqual(model.sharedGateway, snapshot)
+        XCTAssertNil(model.message)
+
+        // The cancelled inspect answers late, after the retry installed its
+        // snapshot on the same path. It must touch neither the snapshot nor
+        // the message even though path and configuration generation match.
+        await bridge.complete(.failure("timed_out", message: "ignored"), request: 0)
+        await cancelledRefresh.value
+        XCTAssertEqual(model.sharedGateway, snapshot)
+        XCTAssertEqual(model.revision, "retry")
+        XCTAssertNil(model.message)
+    }
+
+    func testStaleInspectAfterConfigurationReturnCannotClearNewerSnapshot() async throws {
+        let fixture = try ModelFixture()
+        defer { fixture.remove() }
+        let snapshot = SharedGatewaySnapshot(status: "available", hostname: "Alpha", providers: [])
+        let bridge = StagedManagementBridge()
+        let model = GatewayConnectionsModel(gateway: fixture.gateway, bridge: bridge)
+
+        let firstInspect = Task { await model.refresh() }
+        await bridge.waitForRequest(count: 1)
+
+        fixture.gateway.configPath = fixture.otherConfig.path
+        let switchToB = Task { await model.configurationDidChange() }
+        await bridge.waitForRequest(count: 2)
+
+        fixture.gateway.configPath = fixture.config.path
+        let switchBackToA = Task { await model.configurationDidChange() }
+        await bridge.waitForRequest(count: 3)
+
+        await bridge.complete(
+            .success(configPath: fixture.config.path, revision: "a2", providers: [fixture.provider()], prerequisites: [], sharedGateway: snapshot),
+            request: 2
+        )
+        await switchBackToA.value
+        XCTAssertEqual(model.sharedGateway, snapshot)
+
+        // The cancelled B inspect and the original A inspect answer late,
+        // after the newer A snapshot is installed. Path equality alone must
+        // not let the old A failure erase the newer result.
+        await bridge.complete(.failure("cancelled", message: "ignored"), request: 1)
+        await bridge.complete(.failure("timed_out", message: "ignored"), request: 0)
+        await switchToB.value
+        await firstInspect.value
+        XCTAssertEqual(model.sharedGateway, snapshot)
+        XCTAssertEqual(model.revision, "a2")
+        XCTAssertNil(model.message)
+    }
 }
 
 private actor ManagementBridge: GatewayManagementRunning {
@@ -216,6 +374,30 @@ private actor DelayedManagementBridge: GatewayManagementRunning {
 
     func waitForRequest(count: Int) async {
         while captured.count < count { await Task.yield() }
+    }
+}
+
+/// Records every request and suspends it until the test releases a specific
+/// slot, so obsolete responses can be delivered strictly after newer results.
+private actor StagedManagementBridge: GatewayManagementRunning {
+    private var captured: [ManagementRequest] = []
+    private var continuations: [CheckedContinuation<ManagementResponse, Never>] = []
+
+    func request(_ request: ManagementRequest, timeoutSeconds: Double) async -> ManagementResponse {
+        captured.append(request)
+        return await withCheckedContinuation { continuations.append($0) }
+    }
+
+    /// Cancellation is deliberately inert: the pending request finishes only
+    /// when the test chooses, modelling a late bridge answer.
+    func cancel() async {}
+
+    func waitForRequest(count: Int) async {
+        while captured.count < count { await Task.yield() }
+    }
+
+    func complete(_ response: ManagementResponse, request index: Int) {
+        continuations[index].resume(returning: response)
     }
 }
 
@@ -271,8 +453,9 @@ private extension ManagementResponse {
         providers: [ManagedProvider]? = nil,
         prerequisites: [ManagementPrerequisite]? = nil,
         draft: ManagedDraft? = nil,
-        models: [ManagedModel]? = nil
+        models: [ManagedModel]? = nil,
+        sharedGateway: SharedGatewaySnapshot? = nil
     ) -> ManagementResponse {
-        .init(ok: true, result: .init(configPath: configPath, revision: revision, providers: providers, prerequisites: prerequisites, draft: draft, models: models, changed: nil, removed: nil), error: nil)
+        .init(ok: true, result: .init(configPath: configPath, revision: revision, providers: providers, prerequisites: prerequisites, draft: draft, models: models, changed: nil, removed: nil, sharedGateway: sharedGateway), error: nil)
     }
 }
