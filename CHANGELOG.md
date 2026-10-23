@@ -222,7 +222,7 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
-## 0.8.3 — 2026-10-23
+## 0.8.4 — 2026-10-23
 
 The macOS app can place native GPT fallback models first, last, or hide them from
 the picker. This local execution-host preference preserves the selected native
