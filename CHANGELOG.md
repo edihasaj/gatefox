@@ -219,6 +219,17 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.0 — 2026-10-23
+
+Completed native callbacks no longer fill the unanswered-request limit and block
+later tools. Bounded completed-ID tracking prevents old callbacks from becoming
+new tool executions, while shared-socket approvals and dynamic tools retain
+their original IDs after ambiguous delivery. Native file-read and process-start
+diagnostics distinguish verified missing-path and permission causes without
+changing requests or hiding failures. The signed Codex 0.163.0-alpha.11.2 engine
+passed the shared-native checks and is accepted by the rebuilt relay. Thanks to
+@edihasaj for requesting the runtime and cache audit.
+
 ## 0.7.9 — 2026-10-23
 
 The macOS app recognizes existing Grok subscription connections instead of hiding

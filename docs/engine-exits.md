@@ -38,6 +38,34 @@ exiting, and an exit inside that window stays recorded as engine-initiated and
 its remaining output is allowed to drain, because the engine was already on its
 way out. A missing executable is stopped at once.
 
+## Server callback bookkeeping
+
+Answered server callbacks do not count toward the 256 unanswered-request limit.
+Ordinary native callbacks, including attestations, do not necessarily produce a
+`serverRequest/resolved` notification. Counting their completed replies as
+pending could eventually block later tool and approval requests.
+
+Each engine connection keeps bounded recent fingerprints and exact completed-ID
+membership. Numeric IDs are compressed into adjacent ranges of actually seen
+IDs; an unseen lower ID is not treated as completed just because a higher one
+arrived first. A completed ID whose fingerprint aged out is refused rather than
+exposed as a new tool call. Completed-history capacity also fails closed.
+The bounds are 256 unanswered requests, 256 recent fingerprints per connection,
+4096 disjoint completed numeric-ID ranges, and 1024 completed string IDs. IDs
+from different engine connections never share a history. Delivery order is not
+assumed to match numeric allocation order.
+
+Threaded callbacks on shared sockets, including dynamic tool calls, retain
+protected uncertainty records when their replies might have been lost. Ordinary
+attestation traffic cannot evict those records. A matching warm replay keeps its
+original desktop request ID; the adapter never automatically approves a request
+or replays a tool result. Genuine resolution or terminal-turn cleanup releases
+protected records. A full protected set refuses a new callback before exposing
+it to the client instead of discarding an older uncertain request.
+That protected set has a separate 256-entry limit across pending and
+answered-but-unconfirmed threaded callbacks. The limits remain deliberate
+fail-closed safeguards, not a promise to accept unbounded unresolved work.
+
 ## Native turn tracking
 
 `src/native-turns.ts` tracks which native threads have a turn in progress.

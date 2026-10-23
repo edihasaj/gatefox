@@ -117,7 +117,20 @@ test("a prediction fork skips the legacy hooks correction its parent already rec
 test("rejection names come only from the fixed list", () => {
   const cases: Array<[string, unknown, string]> = [
     ["process/spawn", { code: -32600, message: "Invalid request: AbsolutePathBuf deserialized without a base path" }, "relative_path"],
-    ["process/spawn", { code: -32603, message: "failed to spawn process: No such file or directory (os error 2)" }, "spawn_failed"],
+    ["process/spawn", { code: -32603, message: "failed to spawn process: No such file or directory (os error 2)" }, "spawn_path_missing"],
+    ["process/spawn", { code: -32603, message: "failed to spawn process: Permission denied (os error 13)" }, "spawn_permission_denied"],
+    ["process/spawn", { code: -32603, message: "failed to spawn process: out of memory" }, "spawn_failed"],
+    // The pinned SDK answers the file APIs' -32603 with the bare OS text (verified against the binary).
+    ["fs/getMetadata", { code: -32603, message: "No such file or directory (os error 2)" }, "file_not_found"],
+    ["fs/getMetadata", { code: -32603, message: "Permission denied (os error 13)" }, "path_permission_denied"],
+    // The same OS text on any other method or code is not an expected file miss and stays unclassified.
+    ["thread/read", { code: -32603, message: "No such file or directory (os error 2)" }, "other"],
+    ["turn/start", { code: -32603, message: "Permission denied (os error 13)" }, "other"],
+    ["fs/getMetadata", { code: -32600, message: "No such file or directory (os error 2)" }, "other"],
+    ["fs/copy", { code: -32603, message: "No such file or directory (os error 2)" }, "other"],
+    ["fs/writeFile", { code: -32603, message: "Permission denied (os error 13)" }, "other"],
+    ["fs/futureRead", { code: -32603, message: "No such file or directory (os error 2)" }, "other"],
+    ["process/spawn", { code: -32603, message: "No such file or directory (os error 2)" }, "other"],
     ["process/spawn", { code: -32600, message: "process/spawn requires experimentalApi capability" }, "experimental_api"],
     ["process/spawn", { code: -32600, message: "Invalid request: unknown variant `process/spawn`, expected one of `initialize`" }, "unknown_method"],
     ["thread/example", { code: -32601, message: "Method not found" }, "unknown_method"],

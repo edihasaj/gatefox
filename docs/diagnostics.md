@@ -46,6 +46,15 @@ diagnostics` groups non-routing RPC errors by `rejection` when it is more specif
 than `other` (and by `errorClass` otherwise); adapter routing errors stay grouped by
 their fixed `reason`.
 
+Verified native file-read failures distinguish `file_not_found` from
+`path_permission_denied`. Native process startup distinguishes
+`spawn_path_missing` from `spawn_permission_denied`; a missing program and a
+missing working directory share the same native error, so the gateway does not
+guess which one was absent. Classification is restricted to exact known method,
+code and message combinations. Replies and caller paths remain unchanged, every
+failure remains in diagnostics, and permission failures are not treated as benign
+misses. These names do not alter the watchdog's separate session-refusal rules.
+
 A request whose Codex login refresh was answered with an HTTP error status (400, 401 or 403
 for a rejected login; any other HTTP error status, for example 429 or 5xx, for a temporary
 failure) records `request_failed` with `upstreamEvent` `oauth_refresh` and `upstreamCode` set to the OAuth error code the token

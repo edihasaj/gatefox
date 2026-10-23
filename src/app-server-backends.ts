@@ -10,6 +10,7 @@ import { privateNativeOwnership, refusedFallback, underPrivateLease } from "./na
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import type { ExecutionRecord } from "./execution-host-engine.js";
 import { sameSocketIdentity, socketIdentity, type SocketIdentity } from "./execution-host-storage.js";
+import { CallbackHistoryFull, CallbackLedger, CallbackReplayed, PROTECTED_CALLBACKS } from "./callback-state.js";
 import { canonicalJson, isReleaseSkew } from "./execution-host-engine.js";
 import { homedir } from "node:os";
 import { normalizeCodexFeatureArgs, normalizeCodexFeatureConfig } from "./codex-feature-compat.js";
@@ -41,6 +42,8 @@ type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpc
  * the provider id the engine was launched to record new chats with, when this connection launched or acquired it.
  */
 interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string; socket?: SocketIdentity }
+/** A server request awaiting (or recently given) an answer. `replayable` marks a threaded callback (approval or dynamic tool call) a warm resume may replay. */
+interface Approval { connection: RpcConnection; id: Id; fingerprint: string; replayable: boolean; socket?: SocketIdentity; threadId?: string }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
 type ActiveRecovery = "recovered" | "superseded" | "failed";
 
@@ -54,11 +57,11 @@ export class AppServerBackends {
   readonly native: NativeRpcConnection;
   private readonly engines: Engine[] = [];
   private readonly bindings = new Map<string, Engine>();
-  private readonly approvals = new Map<string, { connection: RpcConnection; id: Id; fingerprint: string; socket?: SocketIdentity; threadId?: string }>();
-  private readonly answered = new Map<string, string>();
-  /** A response can leave before the socket discovers it died; retain enough to expose the same approval on replay. */
-  private readonly uncertainApprovals = new Map<string, { connection: RpcConnection; id: Id; fingerprint: string; socket?: SocketIdentity; threadId?: string }>();
-  private readonly reverse = new Map<RpcConnection, Map<Id, string>>();
+  private readonly approvals = new Map<string, Approval>();
+  /** A response can leave before the socket discovers it died; retain enough to expose the same approval on replay. Replayable approvals only. */
+  private readonly uncertainApprovals = new Map<string, Approval>();
+  /** Each connection's server-request ids: pending ones, bounded answered fingerprints and exact completed ids. */
+  private readonly ledgers = new Map<RpcConnection, CallbackLedger>();
   private serverSequence = 0;
   private initialized?: Message;
   private closing = false;
@@ -231,17 +234,12 @@ export class AppServerBackends {
   }
   private forgetConnection(connection: RpcConnection, preserveApprovals = false): void {
     for (const [id, approval] of this.approvals) if (approval.connection === connection && !preserveApprovals) this.approvals.delete(id);
-    if (!preserveApprovals) for (const [id, approval] of this.uncertainApprovals) if (approval.connection === connection) this.uncertainApprovals.delete(id);
-    // A reply queued on a socket that just died is not proof the SDK received
-    // it. Let a warm resume expose that approval again instead of hiding it.
-    for (const id of this.reverse.get(connection)?.values() || []) {
-      if (preserveApprovals && this.answered.has(id)) {
-        const pending = this.uncertainApprovals.get(id);
-        if (pending?.connection === connection) this.approvals.set(id, pending);
-      }
-      this.answered.delete(id);
+    for (const [id, approval] of this.uncertainApprovals) if (approval.connection === connection) {
+      // A reply queued on a socket that just died is not proof the SDK received
+      // it. Let a warm resume expose that approval again instead of hiding it.
+      if (preserveApprovals) this.approvals.set(id, approval); else this.uncertainApprovals.delete(id);
     }
-    this.reverse.delete(connection);
+    this.ledgers.delete(connection);
   }
   private async forward(connection: RpcConnection, message: Message): Promise<void> {
     const engine = this.engines.find(value => value.connection === connection);
@@ -273,7 +271,8 @@ export class AppServerBackends {
         // turn is terminal, no retained closed-socket callback can still be
         // legitimately replayed, so release its bounded recovery state.
         for (const [id, approval] of this.approvals) if (approval.threadId === threadId && approval.connection.closed) this.approvals.delete(id);
-        for (const [id, approval] of this.uncertainApprovals) if (approval.threadId === threadId && approval.connection.closed) this.uncertainApprovals.delete(id);
+        // A terminal turn can no longer have a callback replayed, whatever its socket, so its answered entries are released too.
+        for (const [id, approval] of this.uncertainApprovals) if (approval.threadId === threadId) this.uncertainApprovals.delete(id);
       }
       if (message.method === "thread/started" && threadId && thread.ephemeral === true) this.ephemeralThreads.add(threadId);
       // Every chat a gateway engine announces, a sub-agent included, is in the registry before the announcement goes on.
@@ -294,17 +293,21 @@ export class AppServerBackends {
       if (!isId(message.id) && !threadId && message.method !== "serverRequest/resolved") return;
     }
     if (isId(message.id)) {
-      let ids = this.reverse.get(connection); if (!ids) { ids = new Map(); this.reverse.set(connection, ids); }
+      let ledger = this.ledgers.get(connection); if (!ledger) { ledger = new CallbackLedger(); this.ledgers.set(connection, ledger); }
       const fingerprint = createHash("sha256").update(canonicalJson(message)).digest("hex");
-      const existing = ids.get(message.id);
-      if (existing) {
-        const pending = this.approvals.get(existing);
-        if ((pending?.fingerprint || this.answered.get(existing)) !== fingerprint) throw new Error("Inconsistent pending Codex server request replay");
-        // SDK resume can snapshot a callback just before its answer is applied.
-        // Keep its fingerprint until the real resolved notification arrives.
-        if (!pending) return;
-        await this.emit({ ...message, id: existing }); return;
+      const known = ledger.pendingId(message.id);
+      if (known !== undefined) {
+        if (this.approvals.get(known)?.fingerprint !== fingerprint) throw new Error("Inconsistent pending Codex server request replay");
+        await this.emit({ ...message, id: known }); return;
       }
+      const answered = ledger.answered(message.id);
+      if (answered) {
+        if (answered.fingerprint !== fingerprint) throw new Error("Inconsistent pending Codex server request replay");
+        // SDK resume can snapshot a callback just before its answer is applied. Its answer is already on the way: show nothing.
+        return;
+      }
+      // A finished callback whose fingerprint has aged out is refused, not run again: no prompt and no tool call.
+      if (ledger.completed(message.id)) throw new CallbackReplayed();
       // A same-generation warm resume can replay an approval on a fresh socket
       // before its resume RPC resolves. Retain the desktop id rather than asking
       // the user twice; a different generation never reaches this branch with a
@@ -314,7 +317,7 @@ export class AppServerBackends {
       if (replay && engine?.shared) {
         const [id, approval] = replay;
         const uncertain = this.uncertainApprovals.has(id);
-        approval.connection = connection; approval.id = message.id; ids.set(message.id, id);
+        approval.connection = connection; approval.id = message.id; ledger.track(message.id, id);
         // A normal pending prompt remains visible in the desktop, so a warm
         // replay only restores the callback routing. An answer that may have
         // been lost with the old socket has no pending UI any more: show the
@@ -322,20 +325,44 @@ export class AppServerBackends {
         if (uncertain) await this.emit({ ...message, id });
         return;
       }
-      if (this.approvals.size + this.answered.size >= 256) throw new Error("Invalid or excessive pending Codex server requests");
+      // Only unanswered callbacks count here; answered ones live in the ledger's own bounded history.
+      if (this.approvals.size >= 256) throw new Error("Invalid or excessive pending Codex server requests");
+      ledger.admit(message.id);
+      const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+      const replayable = Boolean(engine?.socket && threadId);
+      // Replayable callbacks (threaded approvals and dynamic tool calls) keep a protected slot until their turn ends, because an
+      // answer lost with its socket must come back under its own desktop id. When every slot is taken the new callback is refused;
+      // pushing an old one out could let its replay run twice.
+      if (replayable && this.protectedCallbacks() >= PROTECTED_CALLBACKS) throw new CallbackHistoryFull();
       const id = `gateway-server-${++this.serverSequence}`;
-      ids.set(message.id, id); this.approvals.set(id, { connection, id: message.id, fingerprint, ...(engine?.socket ? { socket: engine.socket } : {}), ...(typeof params.threadId === "string" ? { threadId: params.threadId } : {}) }); await this.emit({ ...message, id });
+      ledger.track(message.id, id);
+      this.approvals.set(id, { connection, id: message.id, fingerprint, replayable,
+        ...(engine?.socket ? { socket: engine.socket } : {}), ...(threadId ? { threadId } : {}) });
+      await this.emit({ ...message, id });
     } else if (message.method === "serverRequest/resolved") {
-      const original = params.requestId; const ids = this.reverse.get(connection); const id = isId(original) ? ids?.get(original) : undefined;
-      if (id) { ids!.delete(original as Id); this.approvals.delete(id); this.answered.delete(id); this.uncertainApprovals.delete(id); await this.emit({ ...message, params: { ...params, requestId: id } }); }
+      const original = params.requestId; const ledger = this.ledgers.get(connection);
+      const pendingId = isId(original) ? ledger?.pendingId(original) : undefined;
+      let id = isId(original) ? ledger?.resolve(original, pendingId !== undefined ? this.approvals.get(pendingId)?.fingerprint ?? "" : "") : undefined;
+      // A protected answered callback outlives the ledger's bounded fingerprints; its slot is retired here, once, by connection and id.
+      if (!id && isId(original)) for (const [key, approval] of this.uncertainApprovals) if (approval.connection === connection && approval.id === original) { id = key; break; }
+      if (id) { this.approvals.delete(id); this.uncertainApprovals.delete(id); await this.emit({ ...message, params: { ...params, requestId: id } }); }
     // The engine's kind travels with its notification, so the router never has to read a provider id to place it.
     } else await this.emit(message, engine ? "gateway" : connection === this.native ? "native" : undefined);
+  }
+  /** Threaded callbacks that are unanswered or answered-but-unconfirmed: each holds one protected slot until its turn ends or it resolves. */
+  private protectedCallbacks(): number {
+    let count = this.uncertainApprovals.size;
+    for (const [id, approval] of this.approvals) if (approval.replayable && !this.uncertainApprovals.has(id)) count++;
+    return count;
   }
   reply(message: Message): boolean {
     if (typeof message.id !== "string") return false;
     const approval = this.approvals.get(message.id); if (!approval || approval.connection.closed) return false;
-    this.approvals.delete(message.id); this.answered.set(message.id, approval.fingerprint); this.uncertainApprovals.delete(message.id); this.uncertainApprovals.set(message.id, approval);
-    while (this.uncertainApprovals.size > 256) this.uncertainApprovals.delete(this.uncertainApprovals.keys().next().value as string);
+    this.approvals.delete(message.id); this.uncertainApprovals.delete(message.id);
+    this.ledgers.get(approval.connection)?.complete(approval.id, message.id, approval.fingerprint);
+    // An answer that dies with its socket must be routed again on a warm resume, under the same desktop id, never as a new callback.
+    // Admission reserved this slot (see protectedCallbacks), so nothing is ever pushed out to make room for it.
+    if (approval.replayable) this.uncertainApprovals.set(message.id, approval);
     approval.connection.send({ ...message, id: approval.id }); return true;
   }
   notify(message: Message): void { this.native.send(message); }

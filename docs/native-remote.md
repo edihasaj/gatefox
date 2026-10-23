@@ -39,18 +39,26 @@ separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.163.0-alpha.11.2` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed M5 SDK passed both stdio and Unix native/gateway disconnect, reconnect, steering, Stop, once-only command, and pending-approval checks |
 | `codex-cli 0.163.0-alpha.11.1` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, command, and approval checks |
 | `codex-cli 0.163.0-alpha.11` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the same checks |
 | `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, and approval checks |
 | `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
 | Anything else | Exits with status 1 before it connects | Not shared; a combined host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version` |
 
-The 0.163.0-alpha.11.1, 0.163.0-alpha.11, 0.163.0-alpha.10.2, and 0.162.0-alpha.17.2
+The 0.163.0-alpha.11.2, 0.163.0-alpha.11.1, 0.163.0-alpha.11, 0.163.0-alpha.10.2, and 0.162.0-alpha.17.2
 releases ship a byte-identical `app-server-transport` crate, so the
 remote-control protocol, the patched stream-end hooks, the existing-registration
 guard and the `remoteControl/*` methods are the same for these app engines. The 0.163 state
 database adds two migrations, and the SDK opens a database that a newer release
 migrated, so a rollback to a 0.162 relay still opens the relay home.
+
+The 11.2 comparison covered all 36 `app-server-transport` files, which matched
+11.1 and the linked 10.2 source byte for byte. Its signature and reported version
+were checked on the M5 before the isolated shared-native fixture ran. The fixture
+used no copied authentication or paid inference and left no owned SDK process
+behind. This compatibility admission requires a newly built relay; changing the
+TypeScript list alone cannot update an older installed relay binary.
 
 Shared-engine verification covers more than the protocol. In 0.163,
 pending unloads became a map with a wake-up
