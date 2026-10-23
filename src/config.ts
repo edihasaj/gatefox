@@ -124,7 +124,15 @@ export interface GatewayConfig {
    * and gateway rows are never filtered here. See docs/app-server.md.
    */
   nativeModelPicker?: string[];
+  /**
+   * Where the allowlisted native rows sit in the desktop picker: `first` (the default when absent), `last` (after the
+   * gateway groups), or `hidden` (left out of the normal list; `includeHidden` still returns them marked hidden). Presentation
+   * only. See docs/app-server.md.
+   */
+  nativeModelPickerPlacement?: NativeModelPickerPlacement;
 }
+
+export type NativeModelPickerPlacement = "first" | "last" | "hidden";
 
 const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
 
@@ -151,6 +159,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const nativeModelPicker = config.nativeModelPicker === undefined ? undefined : validateNativeModelPicker(config.nativeModelPicker);
+  if (config.nativeModelPickerPlacement !== undefined && config.nativeModelPickerPlacement !== "first" && config.nativeModelPickerPlacement !== "last" && config.nativeModelPickerPlacement !== "hidden") throw new Error("nativeModelPickerPlacement must be first, last or hidden");
   const ids = new Set<string>(); const aliases = new Set<string>();
   const stateDirectory = resolve(directory, config.stateDirectory || ".state");
   const providers = config.providers.map(provider => {
@@ -236,7 +245,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   }
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
-    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}) };
+    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),
+    ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}) };
 }
 
 /**

@@ -19,6 +19,9 @@ struct ConnectionsView: View {
                 if let message = connections.message, !message.isEmpty {
                     connectionMessage(message)
                 }
+                if gateway.hasConfig || connections.revision != nil {
+                    NativeModelPickerSettingsView(gateway: gateway, connections: connections)
+                }
                 if gateway.clientOnly {
                     SharedGatewayView(connections: connections)
                 } else if connections.connections.isEmpty {

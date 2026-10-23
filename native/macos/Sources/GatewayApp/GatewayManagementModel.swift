@@ -15,6 +15,9 @@ final class GatewayConnectionsModel: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var message: String?
     @Published private(set) var revision: String?
+    /// Where this Mac's native GPT models sit in the model picker, from the last reviewed snapshot.
+    /// `nil` until an inspection reports it; it changes only from a saved response.
+    @Published private(set) var nativePlacement: NativeModelPickerPlacement?
     @Published private(set) var modelEditingProviderID: String?
     @Published var selectedModels: Set<String> = []
     @Published var manualModelsText = ""
@@ -286,38 +289,6 @@ final class GatewayConnectionsModel: ObservableObject {
         return true
     }
 
-    /// Moves one connection to `index` and saves the whole order. Nothing is reordered locally; the list changes
-    /// only from the saved response, so a refused or stale save leaves the displayed order intact.
-    @discardableResult
-    func move(providerID: String, to index: Int) async -> Bool {
-        guard !isBusy, !gateway.clientOnly else { return fail("invalid_request") }
-        var order = connections.map(\.id)
-        guard let from = order.firstIndex(of: providerID), order.indices.contains(index) else { return fail("invalid_request") }
-        guard from != index else { return true }
-        order.insert(order.remove(at: from), at: index)
-        return await reorder(providerIDs: order)
-    }
-
-    func reorder(providerIDs: [String]) async -> Bool {
-        guard !isBusy, !gateway.clientOnly, let revision,
-              Set(providerIDs) == Set(connections.map(\.id)), providerIDs.count == connections.count else { return fail("invalid_request") }
-        let path = gateway.configPath
-        let outcome = await performOutcome(
-            ManagementRequest(operation: "reorder", configPath: path, revision: revision, providerIds: providerIDs),
-            path: path
-        )
-        // An obsolete completion (configuration switched, cancelled, or superseded) must not touch the new state or message.
-        guard outcome.isCurrent else { return false }
-        guard let result = outcome.result, result.configPath == path, let providers = result.providers, result.revision != nil,
-              providers.map(\.id) == providerIDs else {
-            reportInvalidResponseIfNeeded()
-            return false
-        }
-        applyInspection(result, providers: providers, prerequisites: result.prerequisites)
-        await gateway.refresh()
-        return true
-    }
-
     func remove(providerID: String) async -> Bool {
         guard !isBusy, let revision else { return fail("invalid_request") }
         let path = gateway.configPath
@@ -412,6 +383,28 @@ final class GatewayConnectionsModel: ObservableObject {
         return (result, true)
     }
 
+    /// Sends one configuration mutation against the reviewed revision and applies only a saved response that
+    /// `accepts`. Used by ordering and the native picker setting. An obsolete completion (configuration switched,
+    /// cancelled, or superseded) returns false without touching the new state or message.
+    func saveReviewed(
+        _ makeRequest: (_ path: String, _ revision: String) -> ManagementRequest,
+        keepSharedCatalog: Bool = false,
+        accepts: (ManagementResult, [ManagedProvider]) -> Bool
+    ) async -> Bool {
+        guard !isBusy, let revision else { return fail("invalid_request") }
+        let path = gateway.configPath
+        let outcome = await performOutcome(makeRequest(path, revision), path: path)
+        guard outcome.isCurrent else { return false }
+        guard let result = outcome.result, result.configPath == path, let providers = result.providers, result.revision != nil,
+              accepts(result, providers) else {
+            reportInvalidResponseIfNeeded()
+            return false
+        }
+        applyInspection(result, providers: providers, prerequisites: result.prerequisites, keepSharedGateway: keepSharedCatalog)
+        await gateway.refresh()
+        return true
+    }
+
     private func cancelActiveOperation(messageOnCancel: Bool) async {
         guard operationID != nil, !cancellationInProgress else { return }
         cancellationInProgress = true
@@ -447,11 +440,14 @@ final class GatewayConnectionsModel: ObservableObject {
     private func applyInspection(
         _ result: ManagementResult,
         providers: [ManagedProvider],
-        prerequisites: [ManagementPrerequisite]? = nil
+        prerequisites: [ManagementPrerequisite]? = nil,
+        keepSharedGateway: Bool = false
     ) {
         connections = providers
         revision = result.revision
-        sharedGateway = result.sharedGateway
+        // A local-only save (native picker) carries no remote read; it must not erase a good shared catalog.
+        if !keepSharedGateway { sharedGateway = result.sharedGateway }
+        nativePlacement = result.nativeModelPickerPlacement.flatMap(NativeModelPickerPlacement.init(rawValue:))
         if let prerequisites { self.prerequisites = prerequisites }
     }
 
@@ -460,6 +456,7 @@ final class GatewayConnectionsModel: ObservableObject {
         prerequisites = []
         sharedGateway = nil
         revision = nil
+        nativePlacement = nil
         clearDraftState()
     }
 
@@ -482,7 +479,7 @@ final class GatewayConnectionsModel: ObservableObject {
         return provider.type.isAPIProviderType
     }
 
-    private func fail(_ code: String) -> Bool {
+    func fail(_ code: String) -> Bool {
         message = Self.safeMessage(for: code)
         return false
     }

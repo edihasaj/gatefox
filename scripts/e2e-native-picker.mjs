@@ -76,10 +76,33 @@ try {
     const projected = hidden.data.find(value => value.model === row.model); assert.ok(projected);
     assert.equal(projected.hidden, selected.includes(row.model) ? row.hidden : true);
   }
+  // Placement: first (default), last and hidden against the same signed SDK catalog; presentation only.
+  const gatewayRow = row => row.model === 'fixture/gateway';
+  const placements = {};
+  for (const placement of ['first', 'last', 'hidden']) {
+    const placed = new AppServerRouter({ ...config, nativeModelPickerPlacement: placement }, rpc, undefined, undefined, native);
+    await placed.initialize();
+    const normal = (await placed.request('model/list', { limit: 100 })).data;
+    const names = normal.map(row => row.model);
+    const chosenNames = names.filter(name => name !== 'fixture/gateway');
+    if (placement === 'hidden') assert.deepEqual(names, ['fixture/gateway'], 'Hidden placement leaves only gateway rows');
+    else {
+      assert.deepEqual([...chosenNames].sort(), [...selected].sort());
+      assert.equal(names.indexOf('fixture/gateway'), placement === 'last' ? 0 : names.length - 1, `${placement} places the gateway row ${placement === 'last' ? 'before' : 'after'} the native rows`);
+    }
+    const all = (await placed.request('model/list', { includeHidden: true, limit: 100 })).data;
+    assert.equal(all.filter(gatewayRow).length, 1);
+    for (const row of baseline.data) {
+      const projected = all.find(value => value.model === row.model); assert.ok(projected, 'Every native row stays listed under includeHidden');
+      assert.equal(projected.hidden, placement === 'hidden' ? true : selected.includes(row.model) ? row.hidden : true);
+    }
+    assert.equal(all.find(gatewayRow).hidden, false);
+    placements[placement] = true;
+  }
   assert.equal(await readFile(catalog, 'utf8'), catalogBefore);
   await assert.rejects(access(join(native, 'auth.json')));
   const result = { passed: true, sdkVersion, nativePicker: selected, gatewayRowsPreserved: true,
-    hiddenRowsPreserved: true, nativeCatalogUnchanged: true, nativeAuthCopied: false, inferenceRequests: 0 };
+    hiddenRowsPreserved: true, placements: Object.keys(placements), nativeCatalogUnchanged: true, nativeAuthCopied: false, inferenceRequests: 0 };
   await writeFile(join(root, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
   console.log(JSON.stringify(result));
 } finally {

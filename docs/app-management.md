@@ -83,6 +83,18 @@ for bare subagent model names. It applies on that gateway host, so reorder each
 host separately when using several Macs. Shared clients display their host's
 order without local editing controls.
 
+**Native GPT fallback models** separately controls the local adapter's native fallback
+rows: First, Last, or Hidden. Last keeps them visible below the gateway groups.
+Hidden removes them only from the normal picker; it does not disable native
+chats, explicit model requests, or account authentication. The existing native
+model selection stays unchanged. Reconnect the adapter for a saved change to
+take effect; the app never restarts active chats to apply this preference.
+
+Shared clients may edit this local native picker preference even though their
+remote provider catalog is read-only. It belongs to the execution host's own
+configuration, not to the shared inference host. SSH chats use the remote Mac's
+preference. See [native picker placement](app-server.md#native-picker-selection).
+
 Refreshing a catalog does not change enabled routes. Applying a selection keeps
 every existing alias and its metadata for retained upstream models. A private
 alias ledger reserves retired route identities, so another model or account
@@ -140,10 +152,14 @@ output. API keys are never command arguments or environment values. Child
 output and raw exceptions are not displayed or logged.
 
 The operations are `inspect`, `prepare`, `authenticate`, `discover`, `commit`,
-`models`, `rename`, `reorder`, `remove`, and `discard`. Reordering sends
+`models`, `rename`, `reorder`, `native-picker`, `remove`, and `discard`. Reordering sends
 `providerIds`, an exact permutation of all local connection IDs, together with
 the reviewed configuration revision. Duplicate, missing, or unknown IDs and
 outdated revisions are refused. An unchanged order does not rewrite the file.
+`native-picker` saves `nativeModelPickerPlacement` with the reviewed revision,
+using the same private backup and atomic save. It preserves all other fields
+and providers. Saving the effective default `first` to an unchanged implicit
+default does not rewrite the configuration.
 The TypeScript types in
 `src/app-management/types.ts` and Swift types in `GatewayManagementTypes.swift`
 define the protocol. Requests are limited to 128 KiB and responses to 2 MiB.

@@ -8,8 +8,9 @@ read_when:
 # Codex app-server adapter
 
 The experimental adapter keeps the original Codex executable and native login.
-It adds configured gateway models after the native models and routes every chat by its
-kind, not by its provider id. The adapter classifies a chat with the first rule that
+By default it adds configured gateway models after the native models; native picker
+placement is configurable below. It routes every chat by its kind, not by its
+provider id. The adapter classifies a chat with the first rule that
 answers, in this order: the legacy provider id `subscription_gateway`; the registry of
 gateway chats; a gateway ancestor of a sub-agent, read from its saved record when this
 connection has not seen it; and a model alias that is not a native model slug. Any other chat is native and keeps its provider. The registry is the file
@@ -54,7 +55,32 @@ native model IDs offered in the desktop picker:
 }
 ```
 
-Omitting the field retains every native row. The list must contain 1–256 unique
+`nativeModelPickerPlacement` controls where those native rows appear. The app's
+**Connections → Native GPT fallback models** control offers the same choices:
+
+| Value | Picker behavior |
+| --- | --- |
+| `first` | Native rows before gateway groups; the default when omitted. |
+| `last` | Native rows after gateway groups, keeping fallback visible. |
+| `hidden` | Native rows omitted from the normal picker, not disabled. |
+
+For example, add `"nativeModelPickerPlacement": "last"` alongside the existing
+model selection. Neither placement nor hiding changes the allowlist itself.
+With `includeHidden: true`, hidden native rows are still returned with
+`hidden: true`; gateway aliases and their relative order are unchanged.
+Pagination applies after selection and placement. Existing native chats,
+explicit native model requests, account defaults and native classification
+continue to use the full native catalog. No automatic model or account failover
+is introduced. Use `last` rather than `hidden` to keep fallback easy to reach.
+
+This preference belongs to the local execution host's adapter, including a
+client-only Mac using a shared inference gateway. It does not edit that shared
+gateway's provider order or credentials. SSH chats use the remote execution
+host's preference. When running without the gateway adapter, these picker
+preferences have no effect on the stock native catalog.
+
+Omitting `nativeModelPicker` retains every native row before placement is
+applied. Its list must contain 1–256 unique
 model IDs. Selection applies only to native rows returned by `model/list`, before
 combined pagination; gateway aliases are unaffected. With `includeHidden: true`,
 excluded native rows remain available with `hidden: true`. Vendor-hidden rows

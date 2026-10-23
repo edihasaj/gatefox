@@ -102,6 +102,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
     let revision: String?
     let label: String?
     let providerIds: [String]?
+    let nativeModelPickerPlacement: String?
 
     init(
         operation: String,
@@ -113,7 +114,8 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         manualModels: [String]? = nil,
         revision: String? = nil,
         label: String? = nil,
-        providerIds: [String]? = nil
+        providerIds: [String]? = nil,
+        nativeModelPickerPlacement: String? = nil
     ) {
         self.operation = operation
         self.configPath = configPath
@@ -125,6 +127,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         self.revision = revision
         self.label = label
         self.providerIds = providerIds
+        self.nativeModelPickerPlacement = nativeModelPickerPlacement
     }
 }
 
@@ -138,6 +141,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
     let changed: Bool?
     let removed: Bool?
     let sharedGateway: SharedGatewaySnapshot?
+    let nativeModelPickerPlacement: String?
 
     init(
         configPath: String? = nil,
@@ -148,7 +152,8 @@ struct ManagementResult: Codable, Sendable, Equatable {
         models: [ManagedModel]? = nil,
         changed: Bool? = nil,
         removed: Bool? = nil,
-        sharedGateway: SharedGatewaySnapshot? = nil
+        sharedGateway: SharedGatewaySnapshot? = nil,
+        nativeModelPickerPlacement: String? = nil
     ) {
         self.configPath = configPath
         self.revision = revision
@@ -159,6 +164,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
         self.changed = changed
         self.removed = removed
         self.sharedGateway = sharedGateway
+        self.nativeModelPickerPlacement = nativeModelPickerPlacement
     }
 }
 

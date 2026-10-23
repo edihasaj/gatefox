@@ -1,4 +1,5 @@
 import { AppServerRoutingError } from "./app-server-routing-error.js";
+import type { NativeModelPickerPlacement } from "./config.js";
 
 type ObjectValue = Record<string, unknown>;
 /** The most native rows, and the most native pages, one `model/list` will read from the engine. */
@@ -18,10 +19,15 @@ const object = (value: unknown): ObjectValue => value && typeof value === "objec
  * out of this response alone, never removed from the catalog: a chat already saved with it still resumes. When the caller
  * asked for hidden rows, an unchosen native row still arrives, as a copy with `hidden` set, so nothing of the engine's
  * row is rewritten.
+ *
+ * `placement` (config `nativeModelPickerPlacement`) only decides where the selected native rows sit: `first` (the default)
+ * keeps them before the gateway rows, `last` puts them after, and `hidden` leaves them out of a normal list. A request that
+ * asked for hidden rows still receives every native row under `hidden`, each as a copy marked `hidden: true`. The engine is
+ * always scanned and bounded the same way, whatever the placement, and a vendor-hidden row is never made visible.
  */
 export async function gatewayModelList(params: ObjectValue, backend: (method: string, params: ObjectValue) => Promise<ObjectValue>,
   aliases: ReadonlySet<string>, extraModels: readonly ObjectValue[], preferred: unknown,
-  nativeModelPicker?: readonly string[]): Promise<ObjectValue> {
+  nativeModelPicker?: readonly string[], placement: NativeModelPickerPlacement = "first"): Promise<ObjectValue> {
   const cursor = params.cursor;
   if (cursor !== undefined && cursor !== null && (typeof cursor !== "string" || !/^gateway-models:\d+$/.test(cursor))) throw new AppServerRoutingError("Invalid gateway model cursor");
   const limit = params.limit ?? 100;
@@ -39,14 +45,16 @@ export async function gatewayModelList(params: ObjectValue, backend: (method: st
     scanned += page.data.length;
     if (scanned > MAX_NATIVE_ROWS) throw new AppServerRoutingError("Native catalog exceeds the gateway model limit");
     native.push(...page.data.map(object).filter(model => !aliases.has(String(model.model))
-      && (!chosen || chosen.has(String(model.model)) || params.includeHidden === true))); nextCursor = page.nextCursor;
+      && (placement === "hidden" ? params.includeHidden === true
+        : !chosen || chosen.has(String(model.model)) || params.includeHidden === true))); nextCursor = page.nextCursor;
     if (typeof nextCursor === "string" && nextCursor) {
       if (seenCursors.has(nextCursor)) throw new AppServerRoutingError("Native engine repeated a model list cursor");
       seenCursors.add(nextCursor);
     }
   } while (typeof nextCursor === "string" && nextCursor);
   // Marking, not filtering: an unchosen row survives only a request that already asked for hidden rows, and only as a copy.
-  const picked = !chosen || params.includeHidden !== true ? native : native.map(model => chosen.has(String(model.model)) ? model : { ...model, hidden: true });
+  const picked = params.includeHidden !== true || (!chosen && placement !== "hidden") ? native
+    : native.map(model => placement !== "hidden" && chosen!.has(String(model.model)) ? model : { ...model, hidden: true });
   const extra = extraModels.map(model => ({
     id: model.slug, model: model.slug, displayName: model.display_name, description: model.description,
     upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
@@ -54,7 +62,7 @@ export async function gatewayModelList(params: ObjectValue, backend: (method: st
     defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
     multiAgentVersion: null, additionalSpeedTiers: model.additional_speed_tiers || [], serviceTiers: model.service_tiers || [], defaultServiceTier: model.default_service_tier ?? null, availableAccessPrograms: null, isDefault: false,
   }));
-  let models: ObjectValue[] = [...picked, ...extra];
+  let models: ObjectValue[] = placement === "last" ? [...extra, ...picked] : [...picked, ...extra];
   if (typeof preferred === "string" && models.some(model => model.model === preferred)) {
     models = models.map(model => ({ ...model, isDefault: model.model === preferred }));
   }

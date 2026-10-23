@@ -222,6 +222,15 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.3 — 2026-10-23
+
+The macOS app can place native GPT fallback models first, last, or hide them from
+the picker. This local execution-host preference preserves the selected native
+models, existing chats, explicit native requests, authentication and account
+routing. Shared clients can change their own native picker placement without
+editing the serving host's providers. Hidden-model discovery remains available.
+Thanks to @edihasaj for requesting native fallback picker controls.
+
 ## 0.8.2 — 2026-10-23
 
 Connections can be moved up or down in the macOS app or moved directly to the top.

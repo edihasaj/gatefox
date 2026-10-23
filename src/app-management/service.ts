@@ -6,10 +6,11 @@ import { discoverManagementModels, isManagementUnavailable } from "./runtime.js"
 import { catalogEntry, checkedConfigPath, checkedDraftId, draftView, loadDraft, prepareDraft, saveDraft, writeCredential } from "./drafts.js";
 import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, reorderProviders, replaceGatewayCredential, saveCachedCatalog, updateModels, withConfiguredCatalog } from "./mutations.js";
 import { sharedGatewayCatalog } from "./shared-gateway.js";
+import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js";
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
-const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "remove", "discard"]);
+const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard"]);
 
 function request(value: unknown): ManagementRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ManagementError("invalid_request");
@@ -50,6 +51,7 @@ export class ManagementService {
       case "models": return this.models(value);
       case "rename": return this.rename(value);
       case "reorder": return this.reorder(value);
+      case "native-picker": return this.nativePicker(value);
       case "remove": return this.remove(value);
       case "discard": return this.discard(value);
     }
@@ -65,7 +67,7 @@ export class ManagementService {
   private async projectAt(configPath: string, snapshot: ConfigSnapshot): Promise<ManagementResult> {
     const providers = await Promise.all(snapshot.config.providers.map(async provider => managedProvider(provider, this.deps.lookupCli,
       withConfiguredCatalog(provider, await loadCachedCatalog(configPath, provider.id, provider)), false, snapshot.config.stateDirectory)));
-    return { configPath, revision: snapshot.revision, providers, prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
+    return { configPath, revision: snapshot.revision, providers, nativeModelPickerPlacement: effectivePlacement(snapshot.raw), prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
   }
 
   private async prepare(configPath: string, provider: ProviderInput): Promise<ManagementResult> {
@@ -148,6 +150,10 @@ export class ManagementService {
   private async remove(value: ManagementRequest): Promise<ManagementResult> {
     const snapshot = await removeProvider(value.configPath, id(value.providerId), value.revision, this.deps.signal);
     return { ...(await this.projectAt(value.configPath, snapshot)), changed: true, removed: true };
+  }
+  private async nativePicker(value: ManagementRequest): Promise<ManagementResult> {
+    const result = await setNativePickerPlacement(value.configPath, value.nativeModelPickerPlacement, value.revision, this.deps.signal);
+    return { ...(await this.projectAt(value.configPath, result.snapshot)), changed: result.changed };
   }
   private async discard(value: ManagementRequest): Promise<ManagementResult> {
     const draft = await loadDraft(value.configPath, checkedDraftId(value.draftId)); if (draft.committed) throw new ManagementError("invalid_request"); throwIfCancelled(this.deps.signal); draft.cancelled = true; await saveDraft(draft, this.deps.signal); return { configPath: value.configPath, draft: await draftView(draft, this.deps), changed: false };
