@@ -171,6 +171,14 @@ not establish the phone's unread rendering.
 
 ### What the phone does
 
+Phone continuation through the relay is implemented. On 23 Oct 2026 the isolated
+`scripts/e2e-native-relay.mjs --expect-unfiltered-gateway-listing` check passed with
+the real signed 0.163.0-alpha.11.1 app engine: it listed native and gateway chats,
+ran both, and continued the gateway chat with its history on a second stream.
+It also confirmed that a private engine refuses a second writer while the app
+holds a chat, then permits continuation after the app releases it. This tests the
+relay protocol with a mock phone and mock inference, not the phone's rendered UI.
+
 | | Without the relay | With the relay |
 |---|---|---|
 | List, default setting | The app's own engine answers: no gateway chat is listed | The adapter answers: every gateway chat is listed |

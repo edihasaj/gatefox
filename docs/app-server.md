@@ -27,20 +27,53 @@ phone and rollback. A gateway model
 alias that equals a native model slug is refused when the catalog loads, because the
 native slug would otherwise take over the alias's chats.
 
-Claude subscription usage observations are available at the authenticated
-`GET /v1/provider-usage` endpoint. They contain only provider route IDs, recognized
-window/status enums, reset seconds, and observation seconds. Private error prose,
-credentials, and account identities are excluded. The daemon saves these
-observations privately across restart; a changed authentication-directory route
-or removed provider does not inherit an old row.
+Provider usage observations are available at the authenticated
+`GET /v1/provider-usage` endpoint. Its `data` array holds two kinds of row. Claude rows
+contain only provider route IDs, recognized window/status enums, reset seconds, and
+observation seconds. Codex rows (`kind: "codex"`) contain the provider route ID, the
+observation seconds, and a `primary` and/or `secondary` window, each with the exact
+`usedPercent`, `windowMinutes` and `resetsAt` the provider reported. Private error prose,
+credentials, and account identities are excluded. The daemon saves these observations
+privately across restart. A changed authentication-directory route (Claude), a removed
+provider, or a changed credential (Codex) does not inherit an old row. Clients that only
+know Claude rows ignore the Codex rows.
+
+## Codex subscription counters
+
+The gateway records Codex counters only when the Codex subscription backend itself sends
+them: the default numeric headers `x-codex-primary-*` and `x-codex-secondary-*`
+(`used-percent`, `window-minutes`, `reset-at`), read on successful and failed (for example
+429) replies, and `codex.rate_limits` stream events for the default `codex` family. Events
+that name another limit are ignored so they are never mislabelled. A window is kept only
+when all three of its values are valid (`used-percent` finite from 0 to 100,
+`window-minutes` a positive integer, `reset-at` an epoch second in a sensible range);
+nothing is inferred, filled in or coerced from `null`, booleans, or text. Other Responses
+API providers never produce Codex rows. A failure of the observer cannot fail or retry
+the request.
+
+**No percentages are available when the backend omits them.** At the time of writing the
+live backend answers a request with HTTP 200 and `response.completed` but sends no numeric
+quota headers or rate events, so a live gateway currently shows no Codex row. This
+feature does not add a backend endpoint and does not claim parity with the native Codex
+quota; it only shows counters the backend has reported.
+
+A counter belongs to the credential file the request ran with. Each request records the
+file's identity (device, inode, size, modification and change times, mode, and that it is
+readable; never its content or a token) before and after its token is read, and the write
+checks it again. A different path, a replaced or rewritten file, a permissions change, or a
+file the gateway cannot read leaves no counters, including after a restart. A credential
+refresh during a request also drops that request's counters; the next request records them.
 
 When the desktop reads `account/rateLimits/read`, the adapter adds known rejected
 Claude windows to `rateLimitsByLimitId` with separate `gateway:` IDs. A rejected
 window establishes 100% usage. Allowed events do not establish a percentage and
-are not rendered as invented zero usage. Expired or day-old observations are
-omitted until new provider data arrives. Native `rateLimits`, account identity,
-usage permission, credits, upsell fields, and native map entries retain their
-values. A gateway outage leaves the native response usable. The installed app's
+are not rendered as invented zero usage. A Codex row is added as
+`gateway:<providerId>:codex`, labelled `Codex · <providerId>`, with `primary` and
+`secondary` exactly as observed. A window that has already reset is shown as `null`, and
+a row with no live window is omitted. Observations older than 24 hours or more than five
+minutes in the future are omitted until new provider data arrives. Native `rateLimits`,
+account identity, usage permission, credits, upsell fields, and native map entries retain
+their values. A gateway outage leaves the native response usable. The installed app's
 rendering of additional usage rows still requires a desktop check. Usage updates
 never modify the model catalog or create another executor generation.
 

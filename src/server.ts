@@ -32,6 +32,7 @@ import { flushRecords, gatewayMarkedId, recordUsage, usageLedgerMarks, type Ledg
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
+import type { CodexUsageObserver } from "./providers/codex-usage.js";
 import { runShutdownHooks, runtimeBusy, shutdownDrainMs } from "./runtime-activity.js";
 import { autoReviewModels, isAutoReviewModel } from "./auto-review.js";
 import { hasPlanLogin } from "./auth/chatgpt.js";
@@ -100,8 +101,8 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
   } catch { return []; }
 }
 
-export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void, onCodexUsage?: CodexUsageObserver): Provider {
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config, config.type === "codex-subscription" ? onCodexUsage : undefined);
 }
 /** Whole-request cap: it bounds gateway memory while letting the upstream set its own large limit. */
 export const maxRequestBytes = 64 * 1024 * 1024;
@@ -235,7 +236,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const admissions = options.admissionRegistry ?? new AdmissionRegistry();
   const buildRoutes = (current: GatewayConfig) => {
     admissions.configure(current);
-    const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window))] as const));
+    const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
     const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
     // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and reasoning scope match.
     const reviewers = new Map(autoReviewModels.flatMap(slug => {

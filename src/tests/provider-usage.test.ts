@@ -4,7 +4,7 @@ import { mkdtemp, readFile, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatewayToken, type GatewayConfig } from "../config.js";
-import { ProviderUsageStore, gatewayUsage, mergeGatewayUsage } from "../provider-usage.js";
+import { ProviderUsageStore, gatewayUsage, isCodexUsage, mergeGatewayUsage, type ProviderUsage } from "../provider-usage.js";
 import { startGateway } from "../server.js";
 import { AppServerRouter } from "../app-server-router.js";
 import { ProviderError } from "../providers/provider.js";
@@ -25,7 +25,7 @@ test("provider usage survives restart, follows its configured route, and preserv
     const failed = await fetch(base + "/v1/responses", { method: "POST", headers, body: JSON.stringify({ model: "alias", input: "fixture" }) });
     assert.equal(failed.status, 429); await failed.json();
     const response = await fetch(base + "/v1/provider-usage", { headers }); assert.equal(response.headers.get("cache-control"), "no-store");
-    const observations = await gatewayUsage(client);
+    const observations = (await gatewayUsage(client)).filter((row): row is ProviderUsage => !isCodexUsage(row));
     assert.equal(observations.length, 1); assert.equal(observations[0].resetsAt, limit.resetsAt);
     assert.ok(!JSON.stringify(observations).includes("own-auth"));
     const store = new ProviderUsageStore(directory); await store.restore(config.providers);

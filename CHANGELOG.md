@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Codex subscription routes can report provider-supplied quota windows alongside Claude observations without changing native account usage. Missing counters remain unavailable, and replacing a credential file invalidates its old observations.
+
+- The gateway now distinguishes unsupported subscription capabilities and policy refusals carried in an error type from generic inference failures. HTTP quota failures retain their safe diagnostic class, and sharing-limit messages identify gateway subscription sharing without claiming the native account is exhausted.
+
 Legacy standalone service installation now confirms that the previous job and
 process have stopped before loading a replacement or a restored definition.
 Provider maintenance failures retain bounded, scrubbed diagnostic metadata so

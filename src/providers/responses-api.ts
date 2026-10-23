@@ -16,12 +16,14 @@ import { unwrapTurnState, wrapTurnState } from "../protocol/turn-state.js";
 import { plaintextCollaborationTransport, subscriptionCollaborationTransport } from "../protocol/collaboration-transport.js";
 import { apiRoutingHeaders } from "./api-routing.js";
 import { grokToolBridge } from "./grok-tools.js";
+import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
   readonly emitsTransport: boolean;
   private readonly scope: string;
-  constructor(private readonly config: ProviderConfig) { this.emitsTransport = config.type === "codex-subscription"; this.scope = reasoningScope(config); }
+  /** `onCodexUsage` only ever sees what the Codex subscription backend itself reported; it cannot affect a request. */
+  constructor(private readonly config: ProviderConfig, private readonly onCodexUsage?: CodexUsageObserver) { this.emitsTransport = config.type === "codex-subscription"; this.scope = reasoningScope(config); }
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const requestedTier = request.service_tier;
     if (requestedTier !== undefined && requestedTier !== null && !publicServiceTier(requestedTier)) throw new ProviderError("invalid_request", "Invalid Responses service tier", 400);
@@ -76,6 +78,9 @@ export class ResponsesAPI implements Provider {
   private async *attempt(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext, turnState: string | undefined, bridgeName?: string): AsyncGenerator<InferenceEvent> {
     const plan = this.config.type === "codex-subscription";
     let credential: string | undefined;
+    // The credential file as it was before and after the token was read. If it changed in between (a refresh or a replacement),
+    // the account this request ran as is unknown, so no counter from it is attributed to any account.
+    const revisionBefore = plan && this.onCodexUsage ? credentialRevision(this.config.credentialFile) : undefined;
     try { credential = plan ? await accessToken(this.config.credentialFile!) : await apiCredential(this.config); }
     catch (error) {
       // Only a login that needs the user is final. A refresh that failed on the network (for
@@ -88,6 +93,7 @@ export class ResponsesAPI implements Provider {
       throw new ProviderError("upstream_unavailable", `ChatGPT login refresh failed temporarily${named ? ` (${named})` : ""}; retry shortly`, 503, upstream);
     }
     if (!credential) throw new ProviderError("authentication", "API provider credential is missing", 401);
+    const revision = revisionBefore !== undefined && credentialRevision(this.config.credentialFile) === revisionBefore ? revisionBefore : undefined;
     const body: ResponsesRequest = { ...request, stream: true };
     // Public Responses endpoints reject agent_message items; send their text as a user message instead.
     if (Array.isArray(request.input)) body.input = request.input.flatMap((item): ResponsesInputItem[] => { if ((item as { type?: string }).type !== "agent_message") return [item]; const message = agentMessageInput(item as unknown as Record<string, unknown>); return message ? [message] : []; });
@@ -174,6 +180,9 @@ export class ResponsesAPI implements Provider {
     const outgoing = grokTools?.body || collaborationTransport.body;
     const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context) : {}), ...routing }, body: JSON.stringify(outgoing) });
+    // When the backend sends them, quota headers are read on success and on failure alike. The live backend may omit them, and
+    // then nothing is observed.
+    if (plan) try { observeCodexUsage(this.onCodexUsage, codexUsageFromHeaders(response.headers), revision); } catch { /* Observation never fails inference. */ }
     if (!response.ok) throw await responsesHttpError(response);
     if (!response.body) throw new ProviderError("incomplete", "Provider returned no stream");
     // Always announce the response head, so the caller's headers never wait for a turn-state that may not come.
@@ -286,6 +295,7 @@ export class ResponsesAPI implements Provider {
     };
     for await (const event of readEvents(response.body)) {
       observeResponsesStream(stream, event);
+      if (plan && event.type === "codex.rate_limits") try { observeCodexUsage(this.onCodexUsage, codexUsageFromEvent(event), revision); } catch { /* Observation never fails inference. */ }
       if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
       if (event.type === "response.output_item.added") {
         const item = grokTools?.restoreItem(event.item as Record<string, unknown>) || event.item as Record<string, unknown>;
