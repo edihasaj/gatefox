@@ -12,6 +12,8 @@ import { gatewaySdkArchiveSha256, gatewaySdkCapability, gatewaySdkCodexVersion,
 import { gatewaySdkLockRepairDigest, gatewaySdkLockSha256, gatewaySdkTestRunnerDigest } from './gateway-sdk-source.mjs';
 import { assertFreeSpace, releaseDiskSpaceRequirements } from './disk-space.mjs';
 import { withReleaseTempStorage } from './release-temp-storage.mjs';
+import { packReleasePackage } from './release-package.mjs';
+import { verifiedBackend } from './macos-app-backend.mjs';
 
 const { values } = parseArgs({ options: { 'allow-dirty': { type: 'boolean' }, 'with-native': { type: 'boolean' },
   'with-gateway-sdk': { type: 'boolean' }, 'reuse-components-from': { type: 'string' }, 'components-sha256': { type: 'string' },
@@ -38,7 +40,7 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
   const runtimeDigest = createHash('sha256').update(readFileSync(runtimeArchive)).digest('hex');
   if (runtimeDigest !== '89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7') throw new Error('Official Node runtime checksum mismatch');
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', root], { encoding: 'utf8' }))[0];
+  const packed = packReleasePackage(root, { allowDirty: values['allow-dirty'] });
   execFileSync('tar', ['-xzf', join(root, packed.filename), '-C', directory]);
   mkdirSync(join(directory, 'runtime/bin'), { recursive: true });
   const runtime = resolve('.state/release-runtime/node-v24.22.1-darwin-arm64');
@@ -83,6 +85,7 @@ const result = withReleaseTempStorage({ outputDir: values['output-dir'] }, stora
   function walk(path, relative = '') { for (const name of readdirSync(path).sort()) { const child = join(path, name); const entry = relative ? `${relative}/${name}` : name; if (statSync(child).isDirectory()) walk(child, entry); else if (entry !== 'checksums.txt') files.push(entry); } }
   walk(directory);
   writeFileSync(join(directory, 'checksums.txt'), files.map(file => `${createHash('sha256').update(readFileSync(join(directory, file))).digest('hex')}  ${file}`).join('\n') + '\n');
+  verifiedBackend(directory);
   const assetName = `${name}.tar.gz`; const asset = join(storage.output, assetName);
   execFileSync('tar', ['--format=ustar', '-czf', asset, '-C', root, name],
     { env: { ...process.env, COPYFILE_DISABLE: '1' } });

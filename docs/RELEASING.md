@@ -208,7 +208,9 @@ JavaScript. Installing a CLI update preserves the registration. See
    model and effort. It uses isolated homes and a localhost mock upstream, with no
    authentication or paid inference.
 5. Commit and push the final source. Wait for green CI.
-6. Run `node scripts/build-release.mjs` from the clean release commit. Its final
+6. Run `node scripts/build-release.mjs` from the clean release commit. It always
+   compiles before packing, refuses generated source drift or missing package
+   entry points, and verifies the complete backend manifest before archiving. Its final
    JSON line gives absolute `asset` and `checksum` paths; inspect the archive's
    file list and verify `SHA256SUMS`.
 7. Publish the versioned archive and checksums to the private GitHub release.
