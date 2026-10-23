@@ -176,9 +176,22 @@ async function listening(path: string): Promise<boolean> {
   await new Promise(resolve => setTimeout(resolve, refusedRetryMs));
   return await probeConnect(path) === "answered";
 }
-/** Recovery never removes a live or unrecorded listener. */
-export async function removeOwnedSocket(path: string, expected?: SocketIdentity, staleOwner = false): Promise<void> {
+/** The only names a host home gives its links: the control link, the native link and one link per engine generation. */
+const managedLinkName = /^(?:host|native|e-[0-9a-f]{16})\.sock$/;
+/**
+ * Recovery never removes a live or unrecorded listener. `priorBoot` is the claim's explicit proof that the recorded owner
+ * belongs to an earlier boot (see `ownerLiveness`). It relaxes one thing only: macOS can number the same filesystem
+ * differently after a reboot, so a recorded device number is not compared. The inode, the SDK target and its inode must
+ * still match, the link must carry a managed name inside a private user-owned folder, and a recorded identity is required.
+ * Otherwise the strict comparison applies, so a foreign device within the current boot is still refused.
+ */
+export async function removeOwnedSocket(path: string, expected?: SocketIdentity, staleOwner = false, priorBoot = false): Promise<void> {
   const actual = await inspectSocket(path, true);
+  let relax = false;
+  if (priorBoot && expected && managedLinkName.test(basename(path))) {
+    const parent = await lstat(dirname(path)).catch(() => undefined);
+    relax = !!parent && parent.isDirectory() && !parent.isSymbolicLink() && parent.uid === process.getuid?.() && !(parent.mode & 0o077);
+  }
   // A proven-dead owner's own rendezvous inside a private host home is named by its path alone:
   // what is observed after the validation below is what recovery is allowed to remove. A direct
   // socket nobody recorded is not that link, so an unrecorded listener stays exactly where it is.
@@ -194,18 +207,19 @@ export async function removeOwnedSocket(path: string, expected?: SocketIdentity,
     if (!parent) return;
     if (!parent.isDirectory() || parent.isSymbolicLink() || parent.uid !== process.getuid?.() || (parent.mode & 0o777) !== 0o700) throw new Error("Execution SDK socket directory must be private and user-owned");
     const physical = await socketIdentity(owned.targetPath); if (!physical) return;
-    if (physical.targetPath || physical.inode !== owned.targetInode || physical.device !== owned.targetDevice) throw new Error("Execution socket belongs to another listener; it was preserved");
+    if (physical.targetPath || physical.inode !== owned.targetInode || (!relax && physical.device !== owned.targetDevice)) throw new Error("Execution socket belongs to another listener; it was preserved");
     if (await listening(owned.targetPath)) throw new Error("A live execution listener was preserved");
     const current = await socketIdentity(owned.targetPath);
     if (!current || !sameSocketIdentity(physical, current)) throw new Error("Execution socket changed during recovery; it was preserved");
     await unlink(owned.targetPath); return;
   }
-  const matches = (value: SocketIdentity) => owned && owned.inode === value.inode && owned.device === value.device && owned.targetPath === value.targetPath
-    && (!value.targetInode || (owned.targetInode === value.targetInode && owned.targetDevice === value.targetDevice));
+  const matches = (value: SocketIdentity) => owned && owned.inode === value.inode && (relax || owned.device === value.device) && owned.targetPath === value.targetPath
+    && (!value.targetInode || (owned.targetInode === value.targetInode && (relax || owned.targetDevice === value.targetDevice)));
   if (!matches(actual)) throw new Error("Execution socket belongs to another listener; it was preserved");
   if (await listening(path)) throw new Error("A live execution listener was preserved");
   const current = await inspectSocket(path, true);
-  if (!current || !matches(current)) throw new Error("Execution socket changed during recovery; it was preserved");
+  // What was observed before the probe is frozen: a path replaced while the probe waited is never removed.
+  if (!current || !matches(current) || !sameSocketIdentity(actual, current)) throw new Error("Execution socket changed during recovery; it was preserved");
   await unlink(path);
   if (current.targetPath && current.targetInode) {
     const physical = await lstat(current.targetPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
@@ -345,6 +359,7 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
     } else if (stored.owner) {
       const previous = stored.owner;
       const dead = await ownerLiveness(home, ownerRecords(previous), ownerLinks(home, previous), previous.bootId, stored.mtimeMs);
+      const priorBoot = dead === "previous_boot";
       if (dead === "live") {
         for (const key of ["configPath", "nativeHome", "codex", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
         if (await receiptPidAlive(previous, stored.mtimeMs)) throw new Error("An execution host already owns this configuration");
@@ -366,9 +381,9 @@ export async function claimHost(home: string, identity: HostIdentity): Promise<H
       // the app's SDK path and checksum move with an update, and the generations below were proven gone.
       for (const key of ["configPath", "nativeHome", "socketPath"] as const) if (previous[key] !== identity[key]) throw new Error("Execution host identity changed; existing ownership was preserved");
       const recorded = new Set<string>();
-      for (const engine of previous.generations) if (engine && /^[a-f0-9]{64}$/.test(engine.revision) && engine.socketPath === resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) { recorded.add(engine.socketPath); await removeOwnedSocket(engine.socketPath, engine.socket, true); }
-      if (previous.native?.socketPath === resolve(home, "native.sock")) { recorded.add(previous.native.socketPath); await removeOwnedSocket(previous.native.socketPath, previous.native.socket, true); }
-      await removeOwnedSocket(identity.socketPath, previous.socket, true); recorded.add(identity.socketPath);
+      for (const engine of previous.generations) if (engine && /^[a-f0-9]{64}$/.test(engine.revision) && engine.socketPath === resolve(home, `e-${engine.revision.slice(0, 16)}.sock`)) { recorded.add(engine.socketPath); await removeOwnedSocket(engine.socketPath, engine.socket, true, priorBoot); }
+      if (previous.native?.socketPath === resolve(home, "native.sock")) { recorded.add(previous.native.socketPath); await removeOwnedSocket(previous.native.socketPath, previous.native.socket, true, priorBoot); }
+      await removeOwnedSocket(identity.socketPath, previous.socket, true, priorBoot); recorded.add(identity.socketPath);
       // A generation the dead owner never got to record still left its link behind: it would block that revision for ever.
       await removeUnrecordedLinks(home, recorded, identity.socketPath);
       // A receipt that never claimed a process is an ordinary handover, so it is not worth a reclaim record.

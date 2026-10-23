@@ -14,6 +14,7 @@ import { withPrivateFileLock } from "../private-file-lock.js";
 import { reuseSshSocket } from "../ssh-socket.js";
 import { configureTelemetry, flushTelemetry, readTelemetry, telemetry } from "../telemetry.js";
 import { releaseState, watchForUpgrade } from "../self-update.js";
+import { setBootIdentityForTests, setProcessStartReaderForTests } from "../boot-identity.js";
 
 test("Unix addresses exclude network listeners, relative paths, and oversized socket names", () => {
   assert.throws(() => unixSocketPath("ws://0.0.0.0:80"));
@@ -52,12 +53,17 @@ test("serveUnix records the release it runs, or none when told to", { skip: proc
       return JSON.parse(await readFile(path + ".gateway-lease", "utf8"));
     } finally { controller.abort(); await serving; await folder.remove(); }
   };
+  const boot = { id: "11111111-1111-4111-8111-111111111111", bootedAtMs: Date.now() - 3_600_000 }; const started = Date.now() - 5_000;
+  setBootIdentityForTests(boot); setProcessStartReaderForTests(async () => started);
+  try {
   const given = await leaseFor("0.4.2");
   assert.equal(given.release, "0.4.2");
-  assert.deepEqual(Object.keys(given).sort(), ["boundPath", "device", "inode", "release"]);
+  assert.deepEqual(Object.keys(given).sort(), ["bootId", "boundPath", "device", "inode", "pid", "release", "startedAtMs"]);
+  assert.deepEqual([given.bootId, given.pid, given.startedAtMs], [boot.id, process.pid, started], "the record names the boot and the writer that wrote it");
   assert.ok(Buffer.byteLength(JSON.stringify(given, null, 2) + "\n") <= 4096, "the ownership record stays within the size readers allow");
   assert.equal("release" in await leaseFor(null), false, "a checkout run records no release");
   assert.equal((await leaseFor(undefined)).release, releaseState()?.running, "omitting it derives the running release");
+  } finally { setBootIdentityForTests(); setProcessStartReaderForTests(); }
 });
 
 /**

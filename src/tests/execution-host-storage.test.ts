@@ -6,7 +6,7 @@ import { once } from "node:events";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn, type ChildProcess } from "node:child_process";
-import { linkAnswers, listenPrivate, removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, socketAnswers, socketIdentity } from "../execution-host-storage.js";
+import { linkAnswers, listenPrivate, removeOwnedSocket, sameSocketIdentity, sdkSocketTarget, setSdkSocketRootForTests, setSocketProbeForTests, socketAnswers, socketIdentity } from "../execution-host-storage.js";
 import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 
 const roots = isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
@@ -126,4 +126,75 @@ test("a socket is private from its first instant, whatever the process umask, an
     await listenPrivate(server, f.target); // No chmod follows: this is the mode a host killed right after its listen leaves behind.
     assert.equal((await lstat(f.target)).mode & 0o077, 0, "no group or other access"); assert.equal(process.umask(), 0o000);
   } finally { process.umask(before); await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
+});
+
+// A reboot renumbers the device of the same filesystem: the recorded link keeps its inode but names another device.
+const drift = (identity: NonNullable<Awaited<ReturnType<typeof socketIdentity>>>) => ({ ...identity, device: String(BigInt(identity.device) + 1n),
+  ...(identity.targetDevice ? { targetDevice: String(BigInt(identity.targetDevice) + 1n) } : {}) });
+
+test("previous-boot proof lets a dangling SDK alias with a drifted device be removed, and nothing else does", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); const server = createServer(); const path = join(f.directory, "host.sock");
+  try {
+    const target = await sdkSocketTarget(path);
+    server.listen(target); await once(server, "listening"); await chmod(target, 0o600); await symlink(target, path);
+    const drifted = drift((await socketIdentity(path))!);
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await assert.rejects(removeOwnedSocket(path, drifted, true), /another listener/);
+    await assert.rejects(removeOwnedSocket(path, drifted, true, false), /another listener/);
+    assert.ok((await lstat(path)).isSymbolicLink(), "the current boot's foreign device is preserved");
+    await removeOwnedSocket(path, drifted, true, true); await assert.rejects(lstat(path), { code: "ENOENT" });
+  } finally { if (server.listening) await new Promise<void>(resolve => server.close(() => resolve())); await f.clean(); }
+});
+
+test("previous-boot proof removes a dead SDK target with a drifted device and keeps a live one", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); let child; const path = join(f.directory, "e-0123456789abcdef.sock");
+  try {
+    const target = await sdkSocketTarget(path);
+    child = await childSocket(target); await symlink(target, path);
+    const drifted = drift((await socketIdentity(path))!);
+    await assert.rejects(removeOwnedSocket(path, drifted, true, true), /live execution listener/);
+    assert.ok((await lstat(target)).isSocket());
+    await kill(child); child = undefined;
+    await assert.rejects(removeOwnedSocket(path, drifted, true), /another listener/);
+    await removeOwnedSocket(path, drifted, true, true);
+    await assert.rejects(lstat(path), { code: "ENOENT" }); await assert.rejects(lstat(target), { code: "ENOENT" });
+  } finally { await kill(child); await f.clean(); }
+});
+
+test("previous-boot proof does not relax the inode, the name or a missing record", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); const path = join(f.directory, "host.sock"); const other = join(f.directory, "engine.sock");
+  try {
+    for (const link of [path, other]) await symlink(await sdkSocketTarget(link), link);
+    const drifted = drift({ inode: String((await lstat(path)).ino), device: String((await lstat(path)).dev), targetPath: await sdkSocketTarget(path) });
+    await assert.rejects(removeOwnedSocket(path, { ...drifted, inode: String(BigInt(drifted.inode) + 1n) }, true, true), /another listener/);
+    const unmanaged = drift({ inode: String((await lstat(other)).ino), device: String((await lstat(other)).dev), targetPath: await sdkSocketTarget(other) });
+    await assert.rejects(removeOwnedSocket(other, unmanaged, true, true), /another listener/);
+    await assert.rejects(removeOwnedSocket(path, undefined, false, true), /./);
+    assert.ok((await lstat(path)).isSymbolicLink()); assert.ok((await lstat(other)).isSymbolicLink());
+  } finally { await f.clean(); }
+});
+
+test("previous-boot proof with the alias already gone removes only a dead drifted target and keeps a live one", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); let child; const path = join(f.directory, "native.sock");
+  try {
+    const target = await sdkSocketTarget(path);
+    child = await childSocket(target); await symlink(target, path);
+    const drifted = drift((await socketIdentity(path))!); await unlink(path);
+    await assert.rejects(removeOwnedSocket(path, drifted, true, true), /live execution listener/);
+    await kill(child); child = undefined;
+    await assert.rejects(removeOwnedSocket(path, drifted, true), /another listener/);
+    assert.ok((await lstat(target)).isSocket());
+    await removeOwnedSocket(path, drifted, true, true); await assert.rejects(lstat(target), { code: "ENOENT" });
+  } finally { await kill(child); await f.clean(); }
+});
+
+test("an SDK target that appears while the recovery probe waits is preserved", { skip: process.platform === "win32", timeout: 10000 }, async () => {
+  const f = await fixture(); const server = createServer(); const path = join(f.directory, "host.sock");
+  try {
+    const target = await sdkSocketTarget(path); await symlink(target, path);
+    const recorded = { inode: String((await lstat(path)).ino), device: String((await lstat(path)).dev + 1), targetPath: target };
+    setSocketProbeForTests({ retryMs: 1, probe: async () => { if (!server.listening) { server.listen(target); await once(server, "listening"); await chmod(target, 0o600); } return "absent"; } });
+    await assert.rejects(removeOwnedSocket(path, recorded, true, true), /changed during recovery/);
+    assert.ok((await lstat(path)).isSymbolicLink()); assert.ok((await lstat(target)).isSocket());
+  } finally { setSocketProbeForTests(); await new Promise<void>(resolve => server.listening ? server.close(() => resolve()) : resolve()); await f.clean(); }
 });

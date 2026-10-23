@@ -114,6 +114,9 @@ remote Mac, so the gateway models available in them come from that Mac's own
 The gateway listener on that Mac follows installs by itself: the first
 connection made after an update starts a listener on the new release, and any
 session already running finishes on the old one.
+After a reboot, it also recovers its own dead socket when macOS has changed the
+filesystem device number. See [automatic reboot recovery](reboot-recovery.md)
+for ownership checks and the separate desktop-startup boundary.
 The app's Unix socket and native proxy must reach the gateway adapter on that
 machine; the built-in Control other devices connection currently bypasses it. See
 [the adapter setup](app-server.md) for command protection and removal.

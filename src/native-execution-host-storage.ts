@@ -318,7 +318,7 @@ export async function claimNativeHome(identity: HostIdentity, hostHome: string):
       if (claimed) {
         // An app update can move or relink its engine: only the native home itself has to match a dead owner.
         for (const key of ["configPath", "nativeHome", "socketPath"] as const) if (previous[key] !== owner[key]) throw new Error("Native execution ownership changed; existing ownership was preserved");
-        await removeOwnedSocket(previous.socketPath, previous.socket, true);
+        await removeOwnedSocket(previous.socketPath, previous.socket, true, dead === "previous_boot");
         reclaim = dead;
       } else for (const key of ["configPath", "socketPath"] as const) if (previous[key] !== owner[key]) throw new Error("Native execution ownership changed; existing ownership was preserved");
     }
