@@ -219,6 +219,10 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.1 — 2026-10-23
+
+- Native desktop model lists can be limited to explicit model IDs with `nativeModelPicker`. Older native models remain usable by saved chats and explicit requests, and hidden-model discovery, gateway aliases, authentication and routing remain unchanged. Thanks to @edihasaj for requesting a focused native picker.
+
 ## 0.8.0 — 2026-10-23
 
 Completed native callbacks no longer fill the unanswered-request limit and block

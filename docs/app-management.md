@@ -32,6 +32,17 @@ the new registration to that account, and reconnecting a stored account retains
 its verified identity restriction. Codex authentication and catalog discovery
 use HTTP; they do not require a separate Codex CLI installation.
 
+To add an account that is also used natively, add a separate Codex connection and
+sign in with that account's email. Each Mac gets its own gateway registration;
+native credentials and rotating refresh tokens are not copied between machines.
+The account-qualified gateway aliases remain distinct from the native models.
+When adding a second Codex account, preserve the previous bare-model route by
+explicitly designating the existing account with `defaultForBareModels: true`
+unless the operator requests a different default. Otherwise a formerly unique
+bare subagent model can become ambiguous. See [account routing](architecture.md).
+Native picker selection is separate from each gateway connection's enabled
+models; see [native picker selection](app-server.md#native-picker-selection).
+
 Responses, Anthropic, and OpenAI-compatible servers accept a server URL and an
 API key. HTTP is limited to loopback. An unauthenticated local server can leave
 the key empty; the app stores an unused local credential to satisfy the existing

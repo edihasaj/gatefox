@@ -38,6 +38,48 @@ privately across restart. A changed authentication-directory route (Claude), a r
 provider, or a changed credential (Codex) does not inherit an old row. Clients that only
 know Claude rows ignore the Codex rows.
 
+## Native picker selection
+
+`nativeModelPicker` in the gateway configuration optionally lists the exact
+native model IDs offered in the desktop picker:
+
+```json
+{
+  "nativeModelPicker": [
+    "gpt-6-astra",
+    "gpt-6.1-sol",
+    "gpt-5.6-terra",
+    "gpt-6-luna"
+  ]
+}
+```
+
+Omitting the field retains every native row. The list must contain 1–256 unique
+model IDs. Selection applies only to native rows returned by `model/list`, before
+combined pagination; gateway aliases are unaffected. With `includeHidden: true`,
+excluded native rows remain available with `hidden: true`. Vendor-hidden rows
+are never made visible. This is a picker preference, not permission to use or
+rebind a model: existing native chats, explicit model requests, subagents and
+native/gateway classification retain the full catalog and their saved choices.
+The adapter does not edit native authentication, configuration or model-cache
+files. A newly launched adapter reads the setting; an already-running adapter
+keeps its original configuration until normal idle adoption or reconnection.
+
+The example lists the four models available during the October 23 check. It
+does not automatically select a newer release or invent a missing family. Update
+the IDs after checking that account's current catalog.
+
+Verify the picker against the signed native SDK without copying authentication
+or sending inference:
+
+```sh
+node scripts/e2e-native-picker.mjs --code /absolute/package \
+  --catalog "$HOME/.codex/models_cache.json" --root /tmp/fresh-picker-check
+```
+
+The fixture uses an isolated home, verifies the four selected rows plus a gateway
+row and hidden discovery, and checks that the public catalog remains unchanged.
+
 ## Codex subscription counters
 
 The gateway records Codex counters only when the Codex subscription backend itself sends

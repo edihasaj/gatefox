@@ -280,9 +280,11 @@ test("a release that failed is retried by the lease's own timer until it succeed
     // Another process holds the receipt's lock past the five seconds a release waits.
     const lock = `${f.receipt}.lock`; await writeFile(lock, String(holder.pid), { mode: 0o600 });
     await assert.rejects(lease.release(), /busy/); assert.equal((await f.holderFiles()).length, 1);
-    // Nobody calls release again: the timer does, once the lock is free.
+    // Nobody calls release again: the timer does, once the lock is free. A completed release is observable only when the
+    // receipt is gone and the marker has been synced away too; the receipt's unlink is just the first of its steps, and
+    // the marker is read here without the lock, so waiting for the receipt alone can see the step in between.
     await rm(lock);
-    for (const deadline = Date.now() + 10_000; (await f.holderFiles()).length;) { assert.ok(Date.now() < deadline, "the timer never released the lease"); await new Promise(done => setTimeout(done, 50)); }
-    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
+    for (const deadline = Date.now() + 10_000; (await f.holderFiles()).length || await readNativeHomeOwner(f.nativeHome);) { assert.ok(Date.now() < deadline, "the timer never released the lease"); await new Promise(done => setTimeout(done, 50)); }
+    assert.equal(await readNativeHomeOwner(f.nativeHome), undefined); assert.deepEqual(await f.holderFiles(), []);
   } finally { setPrivateMarkerRefreshForTests(); holder.kill("SIGKILL"); await f.clean(); }
 });

@@ -502,7 +502,7 @@ export class AppServerRouter {
       if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
     }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
-    if (method === "model/list") return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model);
+    if (method === "model/list") return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model, this.config.nativeModelPicker);
     if (method === "thread/list") return this.backend(method, await this.listRequest(params));
     if (method === "config/value/write" || method === "config/batchWrite") return this.writeConfig(method, params);
     let forwarded = params;

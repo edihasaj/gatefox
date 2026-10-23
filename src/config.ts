@@ -118,6 +118,12 @@ export interface GatewayConfig {
    * saved with either way. See docs/harness-identity.md.
    */
   chatIdentity?: "openai" | "legacy";
+  /**
+   * The native model IDs the desktop picker offers, exactly as the user chose them: the adapter shows only the `model/list`
+   * rows whose model equals one of these. An absent value changes nothing; an entry is never matched by family or prefix,
+   * and gateway rows are never filtered here. See docs/app-server.md.
+   */
+  nativeModelPicker?: string[];
 }
 
 const integerIn = (value: unknown, min: number, max = Number.MAX_SAFE_INTEGER): boolean => Number.isInteger(value) && (value as number) >= min && (value as number) <= max;
@@ -144,6 +150,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
+  const nativeModelPicker = config.nativeModelPicker === undefined ? undefined : validateNativeModelPicker(config.nativeModelPicker);
   const ids = new Set<string>(); const aliases = new Set<string>();
   const stateDirectory = resolve(directory, config.stateDirectory || ".state");
   const providers = config.providers.map(provider => {
@@ -229,7 +236,23 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   }
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
-    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}) };
+    ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}) };
+}
+
+/**
+ * The picker names native model IDs the user chose. Each entry is one canonical ASCII model ID: a letter or digit, then
+ * at most 127 of the characters those IDs actually use. Nothing is coerced, trimmed, folded, or widened to a family, so a
+ * shorter prefix can never stand in for an ID the user did not name, and the error text never repeats user content back.
+ */
+function validateNativeModelPicker(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length || value.length > 256) throw new Error("nativeModelPicker must be a list of 1 to 256 model IDs");
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/.test(entry)) throw new Error("nativeModelPicker entries must be canonical model IDs of 1 to 128 letters, digits, dot, underscore, slash, colon or hyphen");
+    if (seen.has(entry)) throw new Error("nativeModelPicker must not list the same model ID twice");
+    seen.add(entry);
+  }
+  return [...seen];
 }
 
 function validateAccountEngines(value: unknown, providers: ProviderConfig[]): AccountEngineConfig[] {
