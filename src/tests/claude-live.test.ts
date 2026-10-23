@@ -10,6 +10,7 @@ import { ProviderError, type InferenceContext } from "../providers/provider.js";
 import { ResponsesWriter } from "../protocol/responses.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { responsesToChatRequest } from "../protocol/request.js";
+import { claudeMcpCatalog, claudeSystemPrompt } from "../providers/claude-control.js";
 import { runShutdownHooks, runtimeBusy } from "../runtime-activity.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
@@ -40,7 +41,7 @@ async function turn(provider: ClaudeSubscription, input: ResponsesInputItem[], o
   const request: ResponsesRequest = { model: "fixture", input, tools, ...(options.effort ? { reasoning: { effort: options.effort } } : {}) };
   const events: InferenceEvent[] = []; const writer = new ResponsesWriter("fixture", () => {});
   const controller = options.controller ?? new AbortController();
-  for await (const event of provider.infer(restoreReasoning(request, "scope"), controller.signal, options.context ?? thread)) {
+  for await (const event of provider.infer(restoreReasoning(request, "scope", { preserveSummaries: true }), controller.signal, options.context ?? thread)) {
     events.push(event); writer.accept(event);
     if (options.abortAfterTexts && events.filter(entry => entry.type === "text").length === options.abortAfterTexts) controller.abort();
   }
@@ -101,11 +102,32 @@ test("the next user turn sends only its new items, even after restored reasoning
     const third = [...second, ...b.output, user("Next question")];
     const c = await turn(provider, third);
     assert.equal(c.text, "Second");
-    const messages = responsesToChatRequest(restoreReasoning({ model: "fixture", input: third }, "scope")).messages;
-    assert.ok(messages.filter(message => message.role === "assistant" && typeof message.content === "string" && !message.tool_calls).length >= 2);
+    const messages = responsesToChatRequest(restoreReasoning({ model: "fixture", input: third }, "scope", { preserveSummaries: true }), { reasoningSummaryMetadata: true }).messages;
+    assert.ok(messages.filter(message => message.reasoningSummary).length >= 2);
     const users = (await f.capture()).filter(entry => entry.user !== undefined);
     assert.equal(users.length, 2); assert.equal((await pids(f)).length, 1);
     assert.deepEqual(users[1].heads, [`<<item ${messages.length} user>>`], "only the new user message, numbered in the conversation");
+  } finally { await teardown(f); }
+});
+
+test("an adopted pre-replay-contract fingerprint reseeds once without a replay hold", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "First" }, { text: "After reseed" }] });
+  try {
+    const provider = adapter(); const first = [user("one")]; const seed = await turn(provider, first);
+    const normalized = responsesToChatRequest({ model: "fixture", input: first, tools });
+    const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+    // This is the exact pre-revision contract, as an adopted session from the prior runtime stored it.
+    const oldFingerprint = sha(JSON.stringify({ model: "fixture", thinking: false, fast: false,
+      instructions: sha(claudeSystemPrompt([])), tools: sha(JSON.stringify(claudeMcpCatalog(normalized.tools!))) }));
+    const [session] = claudeLive({ max: 6, parkMinutes: 60 }).sessions();
+    assert.ok(session); assert.notEqual(session.fingerprint, oldFingerprint);
+    Object.defineProperty(session, "fingerprint", { value: oldFingerprint });
+    const next = await turn(provider, [...first, ...seed.output, user("two")]);
+    assert.equal(next.text, "After reseed");
+    assert.equal((await f.capture()).filter(entry => entry.start === "live").length, 2);
+    const outcomes = await sessions();
+    assert.ok(outcomes.some(entry => entry.outcome === "reseeded" && entry.missReason === "fingerprint_changed"));
+    assert.equal(outcomes.some(entry => entry.outcome === "fallback" && entry.missReason === "fingerprint_changed"), false);
   } finally { await teardown(f); }
 });
 
@@ -157,7 +179,7 @@ test("cancelling text interrupts and keeps the session; the next history may kee
     assert.equal(b.text, "After drop");
     const third = [...second, ...b.output, user("long again")];
     let partial = "";
-    await assert.rejects((async () => { const controller = new AbortController(); for await (const event of provider.infer(restoreReasoning({ model: "fixture", input: third, tools }, "scope"), controller.signal, thread)) { if (event.type === "text") partial += event.text; if (partial.length >= 10) controller.abort(); } })(), { code: "cancelled" });
+    await assert.rejects((async () => { const controller = new AbortController(); for await (const event of provider.infer(restoreReasoning({ model: "fixture", input: third, tools }, "scope", { preserveSummaries: true }), controller.signal, thread)) { if (event.type === "text") partial += event.text; if (partial.length >= 10) controller.abort(); } })(), { code: "cancelled" });
     const d = await turn(provider, [...third, { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] }, user("go on")]);
     assert.equal(d.text, "After keep");
     assert.equal((await pids(f)).length, 1, "interrupts keep the process");
@@ -368,7 +390,7 @@ test("a kept partial whose text resumed after thinking continues the session", {
   const { f, sessions } = await setup({ replies: [{ slow: true, text: "Intro", thinking: "pause" }, { text: "After keep" }] });
   try {
     const provider = adapter(); const first = [user("long")]; let partial = "";
-    await assert.rejects((async () => { const controller = new AbortController(); for await (const event of provider.infer(restoreReasoning({ model: "fixture", input: first, tools }, "scope"), controller.signal, thread)) { if (event.type === "text") partial += event.text; if (partial.includes("more more")) controller.abort(); } })(), { code: "cancelled" });
+    await assert.rejects((async () => { const controller = new AbortController(); for await (const event of provider.infer(restoreReasoning({ model: "fixture", input: first, tools }, "scope", { preserveSummaries: true }), controller.signal, thread)) { if (event.type === "text") partial += event.text; if (partial.includes("more more")) controller.abort(); } })(), { code: "cancelled" });
     const b = await turn(provider, [...first, { type: "message", role: "assistant", content: [{ type: "output_text", text: partial }] }, user("go on")]);
     assert.equal(b.text, "After keep");
     assert.deepEqual((await sessions()).map(entry => entry.outcome), ["interrupted", "continued"]);

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Claude replay now preserves public reasoning-summary identity instead of presenting summaries as ordinary assistant speech. The session ledger retains genuine string assistant messages, and adopted sessions safely reseed once. Saved chats and public history stay intact. Thanks to Edi Hasaj for reporting the replay failure.
+
+
 - Claude request rejections now stop retrying and preserve a safe, specific explanation when Claude refuses a chat under its private-reasoning protection policy. Caller history and model choices remain unchanged. Thanks to Edi Hasaj for reporting the failed chat.
 
 

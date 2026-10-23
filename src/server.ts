@@ -421,7 +421,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
       const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
-      const source = route.adapter.infer({ ...restoreReasoning(providerRequest, route.reasoningScope), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
+      const source = route.adapter.infer({ ...restoreReasoning(providerRequest, route.reasoningScope,
+        route.type === "claude-subscription" ? { preserveSummaries: true } : undefined), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
       // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
       const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
       let stopped = false;

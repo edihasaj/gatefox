@@ -18,6 +18,8 @@ export type OpenAIToolCall = {
 };
 export type OpenAIChatMessage = {
   content: string | null;
+  /** Internal replay metadata. It never reaches an OpenAI-compatible Chat Completions API. */
+  reasoningSummary?: true;
   parts?: MessagePart[];
   role: MessageRole | "tool";
   name?: string;

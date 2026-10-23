@@ -11,7 +11,7 @@ import { readEvents } from "../protocol/sse.js";
 import { ResponsesWriter } from "../protocol/responses.js";
 import { nativeClaudeCalls, nativeClaudeReasoning } from "../providers/claude-calls.js";
 import { claudeNativeToolName } from "../providers/claude-tool-names.js";
-import { responsesToChatRequest } from "../protocol/request.js";
+import { responsesToChatRequest, ResponsesTranslationError } from "../protocol/request.js";
 import { remoteCodexSettings, readClientToken, endpointURL } from "../codex-config.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "../protocol/reasoning-state.js";
 import type { WireEvent, InferenceEvent } from "../protocol/types.js";
@@ -187,6 +187,48 @@ test("opaque reasoning replays only to its source account and foreign summaries 
   assert.deepEqual(restoreReasoning(request, second).input, [{ type: "message", role: "assistant", content: "A short summary" }]);
   assert.equal(original.encrypted_content, "opaque-upstream");
   assert.throws(() => restoreReasoning({ model: "m", input: [{ type: "reasoning", encrypted_content: `gws1:${first}:!` }] }, first), /Malformed/);
+});
+
+test("Claude restoration keeps only validated public reasoning summaries without mutating caller history", () => {
+  const scope = reasoningScope({ id: "claude", type: "claude-subscription", authDirectory: "/private/claude", models: { a: "m" } });
+  const input = { model: "m", input: [
+    { type: "message" as const, role: "assistant" as const, content: "ordinary assistant text" },
+    { type: "reasoning" as const, id: "rs_native", encrypted_content: `gws1:${scope}:${Buffer.from("opaque").toString("base64url")}`,
+      summary: [{ type: "summary_text" as const, text: "public plan" }] },
+    { type: "message" as const, role: "user" as const, content: "continue" },
+  ] };
+  const original = structuredClone(input);
+  const restored = restoreReasoning(input, scope, { preserveSummaries: true });
+  assert.deepEqual(restored.input, [input.input[0], { type: "reasoning", summary: [{ type: "summary_text", text: "public plan" }] }, input.input[2]]);
+  assert.deepEqual(input, original, "restoration is copy-on-write");
+  const messages = responsesToChatRequest(restored, { reasoningSummaryMetadata: true }).messages;
+  assert.deepEqual(messages.map(message => [message.role, message.content, message.reasoningSummary]), [
+    ["assistant", "ordinary assistant text", undefined], ["assistant", "public plan", true], ["user", "continue", undefined],
+  ]);
+  for (const malformed of [{ summary: "not-a-list" }, { summary: [{ type: "summary_text" }] }, { summary: [{ type: "other", text: "no" }] }]) {
+    assert.throws(() => restoreReasoning({ model: "m", input: [{ type: "reasoning", encrypted_content: "opaque", ...malformed }] as never }, scope, { preserveSummaries: true }),
+      error => error instanceof ResponsesTranslationError && error.reason === "invalid_reasoning_state");
+  }
+});
+
+test("the Claude server route preserves typed summaries and rejects malformed ones before inference", async () => {
+  let received: Record<string, unknown> | undefined;
+  const gateway = await setup(() => ({ async *infer(request) {
+    received = request as unknown as Record<string, unknown>;
+    yield { type: "done", usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } };
+  } }));
+  const payload = { model: "alias", input: [{ type: "reasoning", id: "rs", encrypted_content: "opaque", summary: [{ type: "summary_text", text: "public plan" }] }, { type: "message", role: "user", content: "continue" }] };
+  const original = structuredClone(payload);
+  try {
+    const response = await fetch(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers, body: JSON.stringify(payload) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(received?.input, [{ type: "reasoning", summary: [{ type: "summary_text", text: "public plan" }] }, payload.input[1]]);
+    assert.deepEqual(payload, original);
+    received = undefined;
+    const malformed = await fetch(`${gateway.url}/v1/responses`, { method: "POST", headers: gateway.headers,
+      body: JSON.stringify({ model: "alias", input: [{ type: "reasoning", summary: "bad" }] }) });
+    assert.equal(malformed.status, 400); assert.equal(received, undefined);
+  } finally { await gateway.close(); }
 });
 
 test("configuration rejects duplicate routes and credential-bearing or insecure upstream URLs", () => {

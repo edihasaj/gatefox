@@ -61,6 +61,28 @@ own parked sessions on its next request, so they do not wait out the park timer.
   thread id; a second request for a thread that is still generating; and any failure
   before the first event, including a CLI that exits right after the seed.
 
+## Reasoning-summary replay
+
+The Claude route preserves readable reasoning summaries as typed metadata at the
+Responses restoration boundary. Text replay gives them a `reasoning_summary`
+item header; JSON replay retains `reasoningSummary: true`. Their text stays
+unchanged. Ordinary assistant messages remain ordinary assistant messages,
+including valid string-content messages. The session ledger skips typed
+reasoning metadata while counting the messages the renderer emits, so a genuine
+assistant answer cannot disappear from history matching because of its string
+encoding. Other providers retain their previous restoration behavior, including
+account-scoped Codex encrypted-state round trips.
+
+A public summary has no native Claude thinking signature. The gateway never
+fabricates one or reconstructs an unsigned thinking block from the summary.
+The caller's instructions, saved chat ID, archive, answers, calls and tool
+outputs remain intact. A replay-contract revision makes an adopted idle session
+reseed once through the existing fingerprint-change path. Requests already in
+flight finish on their original runtime.
+
+This corrects a representation error; it does not establish which passage a
+provider classifier rejected or override a provider refusal.
+
 ## Admission
 
 A session is evicted only after it has been idle for 60 minutes, the length of the 1 h
