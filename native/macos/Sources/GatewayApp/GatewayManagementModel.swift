@@ -5,6 +5,10 @@ import Foundation
 final class GatewayConnectionsModel: ObservableObject {
     @Published private(set) var connections: [ManagedProvider] = []
     @Published private(set) var prerequisites: [ManagementPrerequisite] = []
+    /// Catalog from the remote gateway for client-only configurations. It is
+    /// replaced by every valid inspection of the active configuration and
+    /// cleared whenever that configuration changes or stops answering.
+    @Published private(set) var sharedGateway: SharedGatewaySnapshot?
     @Published private(set) var draft: ManagedDraft?
     @Published private(set) var availableModels: [ManagedModel] = []
     @Published private(set) var isBusy = false
@@ -42,11 +46,19 @@ final class GatewayConnectionsModel: ObservableObject {
     func refresh() async {
         guard !isBusy else { return }
         let path = gateway.configPath
-        guard let result = await perform(ManagementRequest(operation: "inspect", configPath: path), path: path),
+        let outcome = await performOutcome(ManagementRequest(operation: "inspect", configPath: path), path: path)
+        guard let result = outcome.result,
               let providers = result.providers,
               let prerequisites = result.prerequisites,
               result.configPath == path else {
-            reportInvalidResponseIfNeeded()
+            // A completion that is cancelled, superseded, or scoped to a
+            // previous configuration must not clear a newer snapshot nor
+            // overwrite the active operation's message. Path equality alone
+            // is insufficient after an A→B→A switch or a cancel-and-retry.
+            if outcome.isCurrent, path == gateway.configPath {
+                sharedGateway = nil
+                reportInvalidResponseIfNeeded()
+            }
             return
         }
         applyInspection(result, providers: providers, prerequisites: prerequisites)
@@ -331,7 +343,23 @@ final class GatewayConnectionsModel: ObservableObject {
         timeout: Double = 30,
         holdBusy: Bool = false
     ) async -> ManagementResult? {
-        guard !isBusy else { return nil }
+        await performOutcome(request, path: path, timeout: timeout, holdBusy: holdBusy).result
+    }
+
+    /// `isCurrent` reports whether the completion still describes the active
+    /// configuration generation, path, and operation identity. The operation
+    /// UUID is a per-request monotonic identity: `operationGeneration` mirrors
+    /// the configuration generation only, so a cancel-and-retry on the same
+    /// path changes the UUID while the generation stays equal. Callers must not
+    /// apply failure side effects (messages, snapshot clearing) for obsolete
+    /// work; they return early instead.
+    private func performOutcome(
+        _ request: ManagementRequest,
+        path: String,
+        timeout: Double = 30,
+        holdBusy: Bool = false
+    ) async -> (result: ManagementResult?, isCurrent: Bool) {
+        guard !isBusy else { return (nil, false) }
         let id = UUID()
         let generation = configurationGeneration
         operationID = id
@@ -341,15 +369,15 @@ final class GatewayConnectionsModel: ObservableObject {
         let response = await bridge.request(request, timeoutSeconds: timeout)
         guard operationID == id,
               operationGeneration == generation,
-              !cancellationInProgress else { return nil }
+              !cancellationInProgress else { return (nil, false) }
         operationID = nil
         if !holdBusy { finishBusyState() }
-        guard generation == configurationGeneration, path == gateway.configPath else { return nil }
+        guard generation == configurationGeneration, path == gateway.configPath else { return (nil, false) }
         guard response.ok, let result = response.result else {
             message = Self.safeMessage(for: response.error?.code ?? "invalid_request")
-            return nil
+            return (nil, true)
         }
-        return result
+        return (result, true)
     }
 
     private func cancelActiveOperation(messageOnCancel: Bool) async {
@@ -391,12 +419,14 @@ final class GatewayConnectionsModel: ObservableObject {
     ) {
         connections = providers
         revision = result.revision
+        sharedGateway = result.sharedGateway
         if let prerequisites { self.prerequisites = prerequisites }
     }
 
     private func clearConfigurationState() {
         connections = []
         prerequisites = []
+        sharedGateway = nil
         revision = nil
         clearDraftState()
     }
@@ -416,8 +446,8 @@ final class GatewayConnectionsModel: ObservableObject {
 
     private var editingProviderSupportsManualModels: Bool {
         guard let providerID = modelEditingProviderID,
-              let provider = connections.first(where: { $0.id == providerID }) else { return draft?.provider.type.isAPIProvider ?? false }
-        return provider.type.isAPIProvider
+              let provider = connections.first(where: { $0.id == providerID }) else { return draft?.provider.type.isAPIProviderType ?? false }
+        return provider.type.isAPIProviderType
     }
 
     private func fail(_ code: String) -> Bool {
@@ -452,8 +482,4 @@ final class GatewayConnectionsModel: ObservableObject {
     }
 }
 
-private extension String {
-    var isAPIProvider: Bool {
-        ["responses-api", "anthropic-api", "chat-completions-api"].contains(self)
-    }
-}
+// Provider-type predicates live in GatewayConnectionScope.swift.

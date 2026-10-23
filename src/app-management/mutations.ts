@@ -5,20 +5,24 @@ import { ManagementError, throwIfCancelled } from "./errors.js";
 import { catalogEntry, isManagedCredential, validateRaw, writeCredential } from "./drafts.js";
 import { isApiKind, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord } from "./types.js";
-import { loadAliases, rememberCurrentAliases, rememberProviderAliases, reservedAliases, retiredAlias, saveAliases, type AliasIdentity } from "./aliases.js";
+import { loadAliases, providerRoute, rememberCurrentAliases, rememberProviderAliases, reservedAliases, retiredAlias, retiredAliases, saveAliases, type AliasIdentity } from "./aliases.js";
 import { chooseLoopbackPort } from "./ports.js";
 
 const stringArray = (value: unknown): string[] => Array.isArray(value) && value.every(validModelId) && new Set(value).size === value.length ? value : (() => { throw new ManagementError("invalid_request"); })();
 const cachePath = (configPath: string, id: string): string => resolve(dirname(configPath), "app-catalog", `${id}.json`);
 
-export async function loadCachedCatalog(configPath: string, id: string): Promise<CatalogEntry[]> {
+/** A Grok catalog is only valid for the private Grok home it was recorded under; other kinds are not route-bound. */
+const routeBound = (provider?: ProviderConfig): provider is ProviderConfig => provider?.type === "grok-subscription";
+
+export async function loadCachedCatalog(configPath: string, id: string, provider?: ProviderConfig): Promise<CatalogEntry[]> {
   try {
-    const value = await readOwnedJson<{ version: 1; models: CatalogEntry[] }>(cachePath(configPath, id));
+    const value = await readOwnedJson<{ version: 1; models: CatalogEntry[]; route?: string }>(cachePath(configPath, id));
+    if (routeBound(provider) && value?.route !== providerRoute(provider)) return [];
     return Array.isArray(value?.models) ? value.models.filter(entry => entry && validModelId(entry.id)).map(entry => catalogEntry(entry.id, entry.label, entry.metadata)) : [];
   } catch { return []; }
 }
-export async function saveCachedCatalog(configPath: string, id: string, models: CatalogEntry[], signal?: AbortSignal): Promise<void> {
-  await writeOwnedJson(cachePath(configPath, id), { version: 1, models }, false, signal);
+export async function saveCachedCatalog(configPath: string, id: string, models: CatalogEntry[], signal?: AbortSignal, provider?: ProviderConfig): Promise<void> {
+  await writeOwnedJson(cachePath(configPath, id), { version: 1, models, ...(routeBound(provider) ? { route: providerRoute(provider) } : {}) }, false, signal);
 }
 
 export function mergeCatalog(configured: ProviderConfig, fresh: CatalogEntry[], manual: string[] = []): CatalogEntry[] {
@@ -26,7 +30,29 @@ export function mergeCatalog(configured: ProviderConfig, fresh: CatalogEntry[], 
   for (const item of fresh) if (validModelId(item.id)) result.set(item.id, item);
   // Manual values are a fallback for unavailable listings, never a way to erase verified metadata.
   for (const id of manual) if (!result.has(id)) result.set(id, catalogEntry(id));
-  for (const id of Object.values(configured.models)) if (!result.has(id)) result.set(id, catalogEntry(id));
+  // A configured route keeps its saved display name and metadata, so deselecting and re-enabling it restores the original.
+  for (const [alias, id] of Object.entries(configured.models)) {
+    const metadata = configured.modelMetadata?.[alias] as Record<string, unknown> | undefined; const current = result.get(id);
+    if (current && (current.metadata || !metadata)) continue;
+    const named = (metadata as { displayName?: unknown } | undefined)?.displayName;
+    result.set(id, catalogEntry(id, typeof named === "string" && named ? named : current?.label ?? id, metadata));
+  }
+  return [...result.values()];
+}
+
+/**
+ * Grok has no discovery, so its saved configuration is the newest truth about every model it lists. Configured metadata
+ * replaces a stale cached copy; models only the same-route cache still knows (disabled earlier) are kept as they were.
+ */
+export function withConfiguredCatalog(provider: ProviderConfig, cached: CatalogEntry[]): CatalogEntry[] {
+  if (!routeBound(provider)) return cached;
+  const result = new Map(cached.map(entry => [entry.id, entry])); const done = new Set<string>();
+  for (const [alias, id] of Object.entries(provider.models)) {
+    const metadata = provider.modelMetadata?.[alias] as Record<string, unknown> | undefined;
+    if (done.has(id) || !validModelId(id)) continue;
+    done.add(id); const named = (metadata as { displayName?: unknown } | undefined)?.displayName;
+    result.set(id, catalogEntry(id, typeof named === "string" && named ? named : id, metadata));
+  }
   return [...result.values()];
 }
 
@@ -58,6 +84,14 @@ function modelsFor(provider: ProviderConfig, selected: string[], catalog: Catalo
   }
   for (const id of selected) {
     if (Object.values(models).includes(id)) continue;
+    if (routeBound(provider)) {
+      // Grok restores every exact-route retired alias with its own recorded metadata; an unknown route falls through to a new alias.
+      const retired = retiredAliases(provider, id, new Set(Object.keys(models)), { version: 1, aliases: ledger });
+      if (retired.length) {
+        for (const [alias, entry] of retired) { models[alias] = id; aliases.add(alias); if (entry.metadata) modelMetadata[alias] = entry.metadata; }
+        continue;
+      }
+    }
     const alias = aliasFor(provider, id, aliases, new Set(Object.keys(models)), ledger); models[alias] = id;
     const fresh = metadata.get(id); if (fresh) modelMetadata[alias] = fresh;
   }
@@ -94,13 +128,15 @@ export async function updateModels(configPath: string, providerId: string, revis
   const snapshot = await mutateConfig(configPath, revision, async current => {
     throwIfCancelled(signal);
     if (!current) throw new ManagementError("not_found"); const provider = current.config.providers.find(item => item.id === providerId); if (!provider) throw new ManagementError("not_found");
-    const choice = allowedSelection(provider, await loadCachedCatalog(configPath, providerId), selected, manual);
+    const choice = allowedSelection(provider, withConfiguredCatalog(provider, await loadCachedCatalog(configPath, providerId, provider)), selected, manual);
     const ledger = await loadAliases(configPath); rememberCurrentAliases(ledger, current.config);
     const aliases = reservedAliases(current.config, ledger); const models = modelsFor(provider, choice.selected, choice.catalog, aliases, ledger.aliases);
     if (JSON.stringify(provider.models) === JSON.stringify(models.models) && JSON.stringify(provider.modelMetadata || {}) === JSON.stringify(models.modelMetadata || {})) return current.raw;
     changed = true; const raw = structuredClone(current.raw); const target = rawProviders(raw).find(item => item.id === providerId); if (!target) throw new ManagementError("not_found");
     target.models = models.models; if (models.modelMetadata) target.modelMetadata = models.modelMetadata; else delete target.modelMetadata;
-    await validateRaw(raw, configPath); rememberProviderAliases(ledger, { ...provider, ...models }); await saveAliases(configPath, ledger); return raw;
+    await validateRaw(raw, configPath); rememberProviderAliases(ledger, { ...provider, ...models }); await saveAliases(configPath, ledger);
+    // Cache the catalog with the original configured entries before any are removed, so they can be re-enabled exactly.
+    await saveCachedCatalog(configPath, providerId, choice.catalog, signal, provider); return raw;
   }, signal);
   return { snapshot, changed };
 }

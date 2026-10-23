@@ -64,16 +64,18 @@ struct GatewayView: View {
 
             Spacer(minLength: 16)
 
-            Button {
-                navigation.showSetup = true
-            } label: {
-                Label("Add connection", systemImage: "plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            if !model.clientOnly {
+                Button {
+                    navigation.showSetup = true
+                } label: {
+                    Label("Add connection", systemImage: "plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(GatewaySecondaryButtonStyle())
+                .disabled(connections.isBusy || model.isBusy)
+                .accessibilityIdentifier("sidebar.add-connection")
+                .padding(.horizontal, 16)
             }
-            .buttonStyle(GatewaySecondaryButtonStyle())
-            .disabled(connections.isBusy || model.isBusy || model.clientOnly)
-            .accessibilityIdentifier("sidebar.add-connection")
-            .padding(.horizontal, 16)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("HARNESS GATEWAY")

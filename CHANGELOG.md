@@ -219,6 +219,17 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.7.9 — 2026-10-23
+
+The macOS app recognizes existing Grok subscription connections instead of hiding
+every connection when one is present. Disabling and re-enabling a Grok model
+preserves every alias and its metadata without borrowing another account's
+catalog. Hosts identify their local connection scope, while shared clients show
+an authenticated, read-only catalog from the serving host and clear it when
+unavailable. Obsolete refreshes cannot clear a newer catalog. Thanks to
+@edihasaj for reporting the missing connections and asking for clearer
+host/client behavior.
+
 ## 0.7.8 — 2026-10-23
 
 Subscription accounts can designate a default for bare subagent model names,

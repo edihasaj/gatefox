@@ -50,6 +50,10 @@ Creating a connection does not restart an existing service.
 
 ## Existing connections
 
+The host view identifies **This Mac** and its computer name. Its connections and
+model selections belong to that Mac. A Codex SSH chat uses the gateway on the
+remote execution host, not the gateway on the Mac displaying the chat.
+
 Connections shows each provider's label, configured model count, and available
 authentication evidence. Saved credentials are distinguished from a successful
 model-catalog check. Catalog checks do not send inference prompts.
@@ -63,6 +67,29 @@ Refreshing a catalog does not change enabled routes. Applying a selection keeps
 every existing alias and its metadata for retained upstream models. A private
 alias ledger reserves retired route identities, so another model or account
 cannot silently take an alias referenced by saved chats.
+
+Existing Grok subscription connections are supported without a new login or
+catalog-discovery flow. Their configured models can be disabled and re-enabled
+without losing their aliases or metadata. Refresh and reconnect are unavailable;
+the app does not infer successful authentication from saved routes.
+
+## Shared-gateway clients
+
+A configuration with `clientOnly: true` shows a read-only shared catalog instead
+of local connection editors. The source name comes from the serving gateway,
+not the client's computer name or a cached catalog. Provider credentials and
+model-selection changes remain on that host.
+
+Inspection uses the existing private `stateDirectory/client-token` to request
+`GET /v1/gateway-info` through the configured loopback port or SSH forward. This
+authenticated endpoint returns only protocol version, serving hostname, provider
+IDs/labels/types, and selected model IDs/labels. It exposes no credentials,
+configuration paths, or authentication evidence and sends no inference request.
+An unavailable, incompatible, or invalid response clears the shared catalog and
+offers a retry; it never displays a previous host's catalog as current.
+The read has a three-second network deadline and a 1 MiB body limit, with at most
+32 providers and 256 models per provider. A catalog exceeding those protocol
+bounds is refused whole, not silently truncated.
 
 ## Configuration and credential ownership
 
@@ -118,12 +145,18 @@ npm run check
 npm test
 npm run app:test
 npm run app:e2e -- --output /tmp/harness-wizard-verification
+npm run app:e2e:connections -- --output /tmp/harness-connections-verification
 ```
 
 The end-to-end runner uses a real isolated gateway and a loopback model server.
 It checks creation, discovery, selected-model persistence, actual Responses
 translation, API-key replacement, concurrent-edit refusal, and unchanged native
 account sentinels. No paid provider inference is used.
+
+The connections runner checks all four subscription/API provider fixtures,
+Grok model-selection roundtrips, an authenticated shared catalog, read-only
+client behavior, and clearing the catalog when its gateway becomes unavailable.
+It also supports `--serve-fixture` for host/client GUI verification.
 
 For rendered first-run verification, start the same fixture with
 `--serve-fixture`. Its JSON metadata identifies the new private home, target
@@ -145,6 +178,22 @@ service command starts the real gateway against the configuration saved by the
 wizard. It does not register a LaunchAgent or change the live desktop adapter.
 After testing, quit the fixture app and stop the fixture coordinator, then
 reopen the normal installed app.
+
+## Verified on October 23, 2026
+
+The real native Connections screen displayed the four-provider host fixture,
+including Grok, and identified the local Mac and SSH execution scope. The Grok
+model sheet offered configured checkboxes without discovery or manual model
+inputs. Disabling, applying, reopening, and re-enabling a model restored the
+configuration's exact original SHA-256 digest.
+
+The client-only fixture displayed the actual serving hostname and all four
+providers without credential controls. Stopping only the fixture gateway and
+refreshing removed the old provider rows and displayed the unavailable/retry
+state. These checks used local mocks, not paid inference or live service changes.
+Automated coverage also checks duplicate Grok aliases with distinct metadata,
+private-home isolation, bounded hostile shared responses, and obsolete refreshes
+after same-path cancellation or an A-to-B-to-A configuration switch.
 
 ## Verified on October 18, 2026
 

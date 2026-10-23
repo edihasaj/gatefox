@@ -134,6 +134,57 @@ struct ManagementResult: Codable, Sendable, Equatable {
     let models: [ManagedModel]?
     let changed: Bool?
     let removed: Bool?
+    let sharedGateway: SharedGatewaySnapshot?
+
+    init(
+        configPath: String? = nil,
+        revision: String? = nil,
+        providers: [ManagedProvider]? = nil,
+        prerequisites: [ManagementPrerequisite]? = nil,
+        draft: ManagedDraft? = nil,
+        models: [ManagedModel]? = nil,
+        changed: Bool? = nil,
+        removed: Bool? = nil,
+        sharedGateway: SharedGatewaySnapshot? = nil
+    ) {
+        self.configPath = configPath
+        self.revision = revision
+        self.providers = providers
+        self.prerequisites = prerequisites
+        self.draft = draft
+        self.models = models
+        self.changed = changed
+        self.removed = removed
+        self.sharedGateway = sharedGateway
+    }
+}
+
+/// Catalog projected by a gateway running on another Mac for client-only
+/// configurations. It carries no credential or authentication state.
+struct SharedGatewaySnapshot: Codable, Sendable, Equatable {
+    let status: String
+    let hostname: String?
+    let providers: [SharedGatewayProvider]?
+
+    init(status: String, hostname: String? = nil, providers: [SharedGatewayProvider]? = nil) {
+        self.status = status
+        self.hostname = hostname
+        self.providers = providers
+    }
+
+    var isAvailable: Bool { status == "available" }
+}
+
+struct SharedGatewayProvider: Codable, Identifiable, Sendable, Equatable {
+    let id: String
+    let label: String
+    let type: String
+    let models: [SharedGatewayModel]
+}
+
+struct SharedGatewayModel: Codable, Identifiable, Sendable, Equatable {
+    let id: String
+    let label: String
 }
 
 struct ManagementError: Codable, Sendable, Equatable {

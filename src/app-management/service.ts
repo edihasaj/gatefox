@@ -4,7 +4,8 @@ import { mutateConfig, readSnapshot, type ConfigSnapshot } from "./storage.js";
 import { ManagementError, safeFailure, throwIfCancelled } from "./errors.js";
 import { discoverManagementModels, isManagementUnavailable } from "./runtime.js";
 import { catalogEntry, checkedConfigPath, checkedDraftId, draftView, loadDraft, prepareDraft, saveDraft, writeCredential } from "./drafts.js";
-import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, replaceGatewayCredential, saveCachedCatalog, updateModels } from "./mutations.js";
+import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, replaceGatewayCredential, saveCachedCatalog, updateModels, withConfiguredCatalog } from "./mutations.js";
+import { sharedGatewayCatalog } from "./shared-gateway.js";
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
@@ -56,10 +57,13 @@ export class ManagementService {
   private async inspect(configPath: string): Promise<ManagementResult> {
     const snapshot = await readSnapshot(configPath);
     if (!snapshot) return { configPath, providers: [], prerequisites: [] };
-    return this.projectAt(configPath, snapshot);
+    const result = await this.projectAt(configPath, snapshot);
+    // A client-only configuration has no local providers; its catalog is the serving host's, read once and never kept.
+    return snapshot.config.clientOnly ? { ...result, sharedGateway: await sharedGatewayCatalog(snapshot.config, this.deps.signal) } : result;
   }
   private async projectAt(configPath: string, snapshot: ConfigSnapshot): Promise<ManagementResult> {
-    const providers = await Promise.all(snapshot.config.providers.map(async provider => managedProvider(provider, this.deps.lookupCli, await loadCachedCatalog(configPath, provider.id), false, snapshot.config.stateDirectory)));
+    const providers = await Promise.all(snapshot.config.providers.map(async provider => managedProvider(provider, this.deps.lookupCli,
+      withConfiguredCatalog(provider, await loadCachedCatalog(configPath, provider.id, provider)), false, snapshot.config.stateDirectory)));
     return { configPath, revision: snapshot.revision, providers, prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
   }
 
@@ -76,6 +80,7 @@ export class ManagementService {
     const providerId = id(value.providerId); const snapshot = await readSnapshot(value.configPath); if (!snapshot) throw new ManagementError("not_found");
     if (value.revision !== undefined && value.revision !== snapshot.revision) throw new ManagementError("configuration_changed");
     const provider = snapshot.config.providers.find(item => item.id === providerId); if (!provider) throw new ManagementError("not_found");
+    if (provider.type === "grok-subscription") throw new ManagementError("invalid_request");
     if (isApiKind(provider.type)) {
       const supplied = input(value.provider); const key = supplied.apiKey;
       if (typeof key !== "string" || !key.trim() || key.length > 4096 || /[\r\n]/.test(key)) throw new ManagementError("key_required");
@@ -108,7 +113,7 @@ export class ManagementService {
     }
     const catalog = mergeCatalog(target.provider, fresh, supplied);
     if (target.draft) { target.draft.catalog = catalog; await saveDraft(target.draft, this.deps.signal); }
-    else await saveCachedCatalog(value.configPath, target.provider.id, catalog, this.deps.signal);
+    else await saveCachedCatalog(value.configPath, target.provider.id, catalog, this.deps.signal, target.provider);
     const models = managedModels(target.provider, catalog, Boolean(target.draft));
     if (target.draft) {
       const draft = await draftView(target.draft, this.deps); if (verified) markChecked(draft.provider); return { configPath: value.configPath, draft, models };
@@ -119,7 +124,7 @@ export class ManagementService {
 
   private async discoveryTarget(value: ManagementRequest): Promise<{ provider: ProviderConfig; draft?: DraftRecord; snapshot?: ConfigSnapshot }> {
     if (value.draftId !== undefined) { const draft = await loadDraft(value.configPath, checkedDraftId(value.draftId)); if (draft.committed || draft.cancelled) throw new ManagementError("invalid_request"); return { provider: draft.provider, draft }; }
-    const providerId = id(value.providerId); const snapshot = await readSnapshot(value.configPath); const provider = snapshot?.config.providers.find(item => item.id === providerId); if (!snapshot || !provider) throw new ManagementError("not_found"); return { provider, snapshot };
+    const providerId = id(value.providerId); const snapshot = await readSnapshot(value.configPath); const provider = snapshot?.config.providers.find(item => item.id === providerId); if (!snapshot || !provider) throw new ManagementError("not_found"); if (provider.type === "grok-subscription") throw new ManagementError("invalid_request"); return { provider, snapshot };
   }
 
   private async commit(value: ManagementRequest): Promise<ManagementResult> {

@@ -47,7 +47,7 @@ private struct GatewayConfiguration: Decodable {
     }
 
     static let supportedProviderTypes: Set<String> = [
-        "claude-subscription", "codex-subscription", "copilot-subscription",
+        "claude-subscription", "codex-subscription", "copilot-subscription", "grok-subscription",
         "responses-api", "anthropic-api", "chat-completions-api"
     ]
 
@@ -404,6 +404,7 @@ final class GatewayModel: ObservableObject {
         case "claude-subscription": return "Claude subscription"
         case "codex-subscription": return "Codex subscription"
         case "copilot-subscription": return "Copilot subscription"
+        case "grok-subscription": return "Grok subscription"
         case "chat-completions-api": return "Local / API"
         default: return "API"
         }

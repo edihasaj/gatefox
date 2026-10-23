@@ -102,6 +102,11 @@ gateway desktop register
 Copy the client token through authenticated SSH with owner-only permissions.
 `gateway doctor` verifies the forwarded public catalog. Each device needs its own
 desktop registration; syncing a chat does not register its model provider.
+The native control panel shows this client-only configuration as a read-only
+shared catalog and identifies the serving host through authenticated
+`GET /v1/gateway-info`. An older host without that endpoint must be updated to
+show its catalog in the control panel; inference and the existing model endpoint
+are unchanged. Connection and model-selection editing stays on the host.
 Register the backend that owns the chat's workspace. Sharing the catalog does
 not transfer local workspace files or automatically configure an SSH execution
 backend that bypasses the desktop adapter.

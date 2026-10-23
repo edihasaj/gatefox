@@ -123,6 +123,30 @@ for (const [index, provider] of [
   }
 }
 if (!acceptedPolicies) throw new Error('Bundled engine did not accept a baseline app configuration');
+// Grok subscription routes have no app discovery/login flow. Verify the shipped
+// engine accepts one and the separately packed management module projects it,
+// rather than relying on source fixtures or starting paid inference.
+const grokFixture = { version: 1, port: 3457, stateDirectory: join(stage, 'grok-state'), providers: [{
+  id: 'grok', label: 'Grok', type: 'grok-subscription', models: { 'grok/build-fast': 'grok-4.7-build-fast' },
+  modelMetadata: { 'grok/build-fast': { displayName: 'Grok Build Fast', contextWindow: 4096 } },
+}] };
+const grokAccepted = execFileSync(runtime, ['--input-type=module', '-e', validateWithEngine,
+  join(stagedBackend, 'package/dist/config.js')], {
+  cwd: stage, env: policyEnvironment, encoding: 'utf8', timeout: 15000, input: JSON.stringify(grokFixture),
+}).trim() === 'accepted';
+if (!grokAccepted) throw new Error('Bundled engine rejected the Grok subscription configuration');
+const grokPath = join(stage, 'grok-policy.json');
+writeFileSync(grokPath, JSON.stringify(grokFixture), { mode: 0o600 });
+const grokResult = JSON.parse(execFileSync(runtime, [join(management, 'dist/app-management.js')], {
+  cwd: stage, env: policyEnvironment, encoding: 'utf8', timeout: 15000,
+  input: JSON.stringify({ operation: 'inspect', configPath: grokPath }),
+}));
+const grokProvider = grokResult.result?.providers?.[0];
+if (grokResult.ok !== true || grokResult.result?.providers?.length !== 1 || grokProvider?.type !== 'grok-subscription' ||
+    grokProvider?.canDiscover !== false || grokProvider?.canReconnect !== false ||
+    grokProvider?.models?.[0]?.id !== 'grok-4.7-build-fast' || grokProvider?.models?.[0]?.label !== 'Grok Build Fast') {
+  throw new Error('Bundled connection management failed its Grok projection check');
+}
 run('/usr/bin/ditto', [join(root, 'docs'), join(resources, 'guide')]);
 const xml = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 writeFileSync(join(app, 'Contents/Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
