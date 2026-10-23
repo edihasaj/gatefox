@@ -25,6 +25,8 @@ type Settings = { max: number; parkMinutes: number; warmup: number };
 type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
+// Bump when rendered replay semantics change so adopted sessions reseed safely once.
+const replayContractRevision = 2;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const forced = (choice: ChatToolSelection | undefined) => choice === "required" || typeof choice === "object";
 /**
@@ -92,7 +94,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   if (session?.state === "generating" || session?.state === "interrupting") return { kind: "fallback", reason: "concurrent" };
   if (signal.aborted) throw cancelled();
   const { entries, messages } = ledgerEntries(input.request, input.tools, input.leading);
-  const fingerprint = sha(JSON.stringify({ model: input.model, thinking: input.effort !== undefined, fast: input.fast, instructions: input.instructionsDigest, tools: input.toolsDigest }));
+  const fingerprint = sha(JSON.stringify({ replayContractRevision, model: input.model, thinking: input.effort !== undefined, fast: input.fast, instructions: input.instructionsDigest, tools: input.toolsDigest }));
   const window = input.windowId ?? "";
   let reason: ReseedReason | undefined; let divergedAt: number | undefined; let plan: Plan | undefined; let parkedMs: number | undefined;
   if (session && session.state !== "closed") {

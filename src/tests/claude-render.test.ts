@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { responsesToChatRequest } from "../protocol/request.js";
+import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { imageConversation } from "../protocol/images.js";
 import { claudeToolHistory, claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { choiceBlock, markCustomCalls, renderConversation, renderItems, type ContentBlock } from "../providers/claude-render.js";
@@ -82,6 +83,18 @@ test("JSON replay keeps the previous item encoding exactly", () => {
   const legacy: ContentBlock[] = [{ type: "text", text: "Conversation items follow, oldest first, one JSON item per block." }];
   plain.forEach((item, index) => { legacy.push({ type: "text", text: JSON.stringify(item) }, ...(attached.get(index) || [])); });
   assert.deepEqual(renderConversation(conversation, images, "json"), legacy);
+});
+
+test("public reasoning summaries have a distinct replay identity in both formats", () => {
+  const source: ResponsesRequest = { model: "fixture", input: [{ type: "reasoning", encrypted_content: "opaque", summary: [{ type: "summary_text", text: "plan\nthen act" }] }, { type: "message", role: "assistant", content: "ordinary answer" }] };
+  const restored = restoreReasoning(source, "scope", { preserveSummaries: true });
+  const messages = responsesToChatRequest(restored, { reasoningSummaryMetadata: true }).messages;
+  const { conversation, images } = imageConversation(messages);
+  const text = texts(renderConversation(conversation, images, "text"));
+  assert.deepEqual(text.slice(1), ["<<item 1 reasoning_summary>>\nplan\nthen act\n<</item>>", "<<item 2 assistant>>\nordinary answer\n<</item>>"]);
+  const json = texts(renderConversation(conversation, images, "json"));
+  assert.deepEqual(JSON.parse(json[1]), { role: "assistant", content: "plan\nthen act", reasoningSummary: true });
+  assert.deepEqual(JSON.parse(json[2]), { role: "assistant", content: "ordinary answer" });
 });
 
 test("forced and required choices name the tool to use", () => {

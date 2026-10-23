@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ProviderConfig } from "../config.js";
 import { ResponsesTranslationError } from "./request.js";
-import type { ResponsesRequest, ResponsesInputItem } from "./types.js";
+import type { ResponsesRequest, ResponsesInputItem, ResponsesReasoningItem } from "./types.js";
 
 /** Opaque upstream state belongs to an explicit account route, across restarts. */
 export function reasoningScope(provider: ProviderConfig): string {
@@ -13,10 +13,32 @@ export function wrapReasoning(item: Record<string, unknown>, scope: string): Rec
   return typeof encrypted === "string" && encrypted ? { ...item, encrypted_content: `gws1:${scope}:${Buffer.from(encrypted).toString("base64url")}` } : item;
 }
 
-export function restoreReasoning(request: ResponsesRequest, scope: string): ResponsesRequest {
+export interface RestoreReasoningOptions {
+  /** Claude replays only public summaries; it cannot safely resume opaque native thinking. */
+  preserveSummaries?: boolean;
+}
+
+function publicSummary(item: ResponsesReasoningItem): { text: string; type: "summary_text" }[] | undefined {
+  if (item.summary === undefined) return;
+  if (!Array.isArray(item.summary)) throw new ResponsesTranslationError("Reasoning summary must be a list", "invalid_reasoning_state");
+  const summary = item.summary.map(part => {
+    if (part === null || typeof part !== "object" || Array.isArray(part) || part.type !== "summary_text" || typeof part.text !== "string") {
+      throw new ResponsesTranslationError("Reasoning summary must contain summary text", "invalid_reasoning_state");
+    }
+    return { type: "summary_text" as const, text: part.text };
+  });
+  return summary.map(part => part.text).join("\n") ? summary : undefined;
+}
+
+export function restoreReasoning(request: ResponsesRequest, scope: string, options: RestoreReasoningOptions = {}): ResponsesRequest {
   if (!Array.isArray(request.input)) return request;
   const input = request.input.flatMap<ResponsesInputItem>(item => {
     if (item.type !== "reasoning") return [item];
+    if (options.preserveSummaries) {
+      // Never carry opaque Codex state into Claude: it has no compatible signature or thinking block.
+      const summary = publicSummary(item);
+      return summary ? [{ type: "reasoning", summary }] : [];
+    }
     const encrypted = item.encrypted_content;
     if (typeof encrypted === "string" && encrypted.startsWith(`gws1:${scope}:`)) {
       const payload = encrypted.slice(scope.length + 6);

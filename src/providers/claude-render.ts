@@ -90,7 +90,7 @@ function callInput(call: OpenAIToolCall): string {
 }
 function textBlocks(item: Item, number: number): ContentBlock[] {
   if (item.role === "tool") return [block(`${number} tool_result ${field(item.tool_call_id)}`, body(item))];
-  if (!item.tool_calls?.length) return [block(`${number} ${item.role}`, body(item))];
+  if (!item.tool_calls?.length) return [block(`${number} ${item.reasoningSummary ? "reasoning_summary" : item.role}`, body(item))];
   return [...(item.content || item.parts ? [block(`${number} ${item.role}`, body(item))] : []),
     ...item.tool_calls.map(call => block(`${number} tool_call ${field(call.function.name)} ${field(call.id)}`, callInput(call)))];
 }

@@ -90,8 +90,10 @@ and reset timestamp. A rate-limit failure includes that provider-reported time
 in the inference host's local timezone and UTC. Missing metadata remains unknown;
 the gateway does not guess a reset or retry across a subscription limit.
 
-Replayed reasoning summaries are treated as text. Encrypted reasoning transport
-state is not exposed to the Claude model. Hosted tools are outside
+Claude replays public reasoning summaries as explicitly identified historical
+summary items, separate from ordinary assistant messages. Their readable text
+is preserved; the gateway does not invent thinking blocks or native signatures.
+Encrypted reasoning transport state is not exposed to the Claude model. Hosted tools are outside
 the current Claude adapter's scope. Unsupported item and tool types return a
 client error instead of an internal crash.
 
@@ -170,8 +172,10 @@ does not guarantee that a provider emits reasoning on every request. The gateway
 does not invent reasoning. Claude's native thinking signatures are not replayed;
 Codex's opaque encrypted reasoning state is wrapped with its account route and
 restored only on that route. Switching providers or accounts retains readable
-summaries as assistant history and drops incompatible opaque state. Untagged
-reasoning imported from another client also retains only its readable summary.
+summaries and drops incompatible opaque state. Claude CLI replay preserves their
+reasoning-summary identity instead of relabeling them as ordinary assistant
+speech; other translating routes retain their existing text representation.
+Untagged reasoning imported from another client also retains only its readable summary.
 Use a new provider ID and credential file for a new account.
 Generated Codex settings explicitly request `model_reasoning_summary = "auto"`.
 The client can set it to `none` to hide provider reasoning.

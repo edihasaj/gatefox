@@ -6,9 +6,8 @@ import { claudeToolBindings } from "./claude-tool-names.js";
 /**
  * The history a live CLI session holds, as digests of canonical items. Canonical
  * items come from the restored Responses input and skip what the CLI's native
- * history keeps in another form: reasoning items, assistant messages with string
- * content (restored reasoning summaries; Codex always sends content arrays) and
- * additional_tools. Every entry also records the translated conversation messages
+ * history keeps in another form: typed reasoning items and additional_tools.
+ * Every entry also records the translated conversation messages
  * it renders as, so the ledger and the renderer share one item space.
  */
 export interface LedgerEntry {
@@ -83,8 +82,6 @@ export function ledgerEntries(request: ResponsesRequest, tools: OpenAITool[], le
     const type = item.type ?? "message";
     if (type === "reasoning" || type === "additional_tools" || count === 0 || first < 0) continue;
     if (type === "message" && item.role === "assistant") {
-      // Restored reasoning summaries are strings; the CLI holds native thinking instead.
-      if (typeof item.content === "string") continue;
       // Consecutive assistant text merges into one run, the way the CLI streamed it.
       if (run) { run.value += text(parts(item.content)); run.count += count; } else run = { value: text(parts(item.content)), first, count };
       continue;

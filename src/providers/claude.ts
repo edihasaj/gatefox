@@ -87,7 +87,7 @@ export class ClaudeSubscription implements Provider {
   constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
     private readonly onContextWindow?: (model: string, contextWindow: number) => void, private readonly liveModule = "./claude-live.js") {}
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
-    const normalized = responsesToChatRequest(request);
+    const normalized = responsesToChatRequest(request, { reasoningSummaryMetadata: true });
     const choice = normalized.tool_choice;
     // The catalog stays whole for forced choices: a changed tool list breaks the prompt cache.
     const tools = choice === "none" ? [] : normalized.tools || [];

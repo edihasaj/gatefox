@@ -37,6 +37,8 @@ export function translationItemType(value: unknown): TranslationItemType {
 export interface TranslationOptions { toolSearch?: boolean;
   /** Set only for the Codex subscription route, where a declared `web_search` may satisfy a forced tool call. */
   webSearch?: boolean;
+  /** Preserve the internal identity of public reasoning summaries for a provider that can render it safely. */
+  reasoningSummaryMetadata?: boolean;
   /** Record `tool_declarations_merged` for this translation. The server sets it on its one validation pass, so a request is reported once. */
   reportMerges?: boolean }
 export class ResponsesTranslationError extends Error {
@@ -112,7 +114,7 @@ export function responsesInputToMessages(input: ResponsesRequest["input"], optio
           if (part.type !== "summary_text" || typeof part.text !== "string") reject("Reasoning summary must contain summary text", "invalid_reasoning_state");
           return part.text;
         }).join("\n");
-        if (summary) replay.push({ content: summary, role: "assistant" });
+        if (summary) replay.push({ content: summary, role: "assistant", ...(options.reasoningSummaryMetadata ? { reasoningSummary: true } : {}) });
         break;
       }
       // Responses lite declares tools inside the input; they join the tool catalog, not the transcript.

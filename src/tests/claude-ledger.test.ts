@@ -39,13 +39,24 @@ test("consecutive assistant text merges into one run, across skipped reasoning, 
   assert.equal(split.messages, 4);
 });
 
-test("restored reasoning summaries are string assistant messages, which the ledger skips but the conversation keeps", () => {
-  const replayed = restoreReasoning(request([user("go"), { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }] } as ResponsesInputItem, assistant("Done"), user("next")]), "scope");
-  const restored = (replayed.input as ResponsesInputItem[])[1] as { role?: string; content?: unknown };
-  assert.deepEqual([restored.role, typeof restored.content], ["assistant", "string"], "restoreReasoning output this ledger relies on");
+test("typed restored reasoning summaries count as rendered history but are the only skipped ledger entries", () => {
+  const replayed = restoreReasoning(request([user("go"), { type: "reasoning", encrypted_content: "opaque", summary: [{ type: "summary_text", text: "plan" }] } as ResponsesInputItem, assistant("Done"), user("next")]), "scope", { preserveSummaries: true });
+  const restored = (replayed.input as ResponsesInputItem[])[1];
+  assert.deepEqual(restored, { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }] });
   const { entries: list, messages } = ledgerEntries(replayed, tools);
-  assert.equal(messages, responsesToChatRequest(replayed).messages.length);
+  assert.equal(messages, responsesToChatRequest(replayed, { reasoningSummaryMetadata: true }).messages.length);
   assert.deepEqual(list.map(entry => entry.first), [0, 2, 3], "entries keep their conversation positions around the skipped summary");
+});
+
+test("ordinary assistant strings are ledgered exactly like content arrays and edits reseed", () => {
+  const stringAssistant = { type: "message", role: "assistant", content: "ordinary answer" } as ResponsesInputItem;
+  const arrayAssistant = assistant("ordinary answer");
+  const stringEntry = entries([user("go"), stringAssistant]).entries[1];
+  const arrayEntry = entries([user("go"), arrayAssistant]).entries[1];
+  assert.equal(stringEntry.digest, arrayEntry.digest);
+  const ledger = { items: entries([user("go"), stringAssistant]).entries.map(entry => entry.digest) };
+  const edited = entries([user("go"), { type: "message", role: "assistant", content: "edited answer" } as ResponsesInputItem]).entries;
+  assert.deepEqual(decide(ledger, edited, 2, "turn_done", []), { kind: "reseed", reason: "prefix_diverged", divergedAt: 1 });
 });
 
 test("instructions, agent messages and additional tools count in the conversation the way the translator counts them", () => {
@@ -78,9 +89,9 @@ test("decide continues outputs, continues user turns and names each reseed", () 
   assert.deepEqual(run([user("go"), assistant("Hi"), user("a"), { type: "message", role: "developer", content: "b" }], "turn_done", [], done), { kind: "continue_user", from: 2, items: 2 });
   assert.deepEqual(run([user("go"), assistant("Hi")], "turn_done", [], done), { kind: "reseed", reason: "unexpected_tail", divergedAt: 2 }, "nothing new to send");
   assert.deepEqual(run([user("go"), assistant("Hi"), output("x")], "turn_done", [], done), { kind: "reseed", reason: "unexpected_tail", divergedAt: 2 });
-  const summary = { type: "message", role: "assistant", content: "restored summary" } as ResponsesInputItem;
-  assert.deepEqual(run([user("go"), assistant("Hi"), summary, user("a")], "turn_done", [], done), { kind: "continue_user", from: 3, items: 1 }, "a skipped item before the tail is not sent");
-  assert.deepEqual(run([user("go"), assistant("Hi"), user("a"), summary, user("b")], "turn_done", [], done), { kind: "reseed", reason: "unexpected_tail", divergedAt: 2 }, "a skipped item inside the tail");
+  const summary = { type: "reasoning", summary: [{ type: "summary_text", text: "restored summary" }] } as ResponsesInputItem;
+  assert.deepEqual(run([user("go"), assistant("Hi"), summary, user("a")], "turn_done", [], done), { kind: "continue_user", from: 3, items: 1 }, "a typed summary before the tail is not sent");
+  assert.deepEqual(run([user("go"), assistant("Hi"), user("a"), summary, user("b")], "turn_done", [], done), { kind: "reseed", reason: "unexpected_tail", divergedAt: 2 }, "a typed summary inside the tail is not sent");
 });
 
 test("after an interrupt the next history may include or omit the partial run", () => {
