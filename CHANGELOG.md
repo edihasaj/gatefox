@@ -219,6 +219,17 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.7.8 — 2026-10-23
+
+Subscription accounts can designate a default for bare subagent model names,
+including automatic review. Explicit account aliases retain their routes, and
+missing models never fall back to another account. The release also improves
+subscription refusal diagnostics and records Codex quota counters when the
+provider supplies them. Native account usage remains unchanged. Real SDK tests
+verified child tools, saved history, queued messages, and follow-up work with
+two configured Codex accounts. Thanks to @edihasaj for identifying the account
+routing gap and testing phone continuation.
+
 ## 0.7.7 — 2026-10-23
 
 SSH listeners and shared executor hosts now recover their managed stale sockets
