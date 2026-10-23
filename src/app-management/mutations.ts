@@ -7,6 +7,14 @@ import { isApiKind, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord } from "./types.js";
 import { loadAliases, providerRoute, rememberCurrentAliases, rememberProviderAliases, reservedAliases, retiredAlias, retiredAliases, saveAliases, type AliasIdentity } from "./aliases.js";
 import { chooseLoopbackPort } from "./ports.js";
+import { pickerHidden } from "../model-auto-latest/metadata.js";
+import { dropRawProvider, reseedRawProvider } from "../model-auto-latest/scopes.js";
+
+/** Only automatic upkeep may set pickerHidden, so it never travels through a catalog or a re-added alias. */
+function stripHidden<T extends object | undefined>(metadata: T): T {
+  if (!metadata || !Object.hasOwn(metadata, "pickerHidden")) return metadata;
+  const { pickerHidden: _hidden, ...rest } = metadata as Record<string, unknown>; return rest as T;
+}
 
 const stringArray = (value: unknown): string[] => Array.isArray(value) && value.every(validModelId) && new Set(value).size === value.length ? value : (() => { throw new ManagementError("invalid_request"); })();
 const cachePath = (configPath: string, id: string): string => resolve(dirname(configPath), "app-catalog", `${id}.json`);
@@ -37,7 +45,7 @@ export function mergeCatalog(configured: ProviderConfig, fresh: CatalogEntry[], 
     const named = (metadata as { displayName?: unknown } | undefined)?.displayName;
     result.set(id, catalogEntry(id, typeof named === "string" && named ? named : current?.label ?? id, metadata));
   }
-  return [...result.values()];
+  return [...result.values()].map(entry => entry.metadata ? { ...entry, metadata: stripHidden(entry.metadata) } : entry);
 }
 
 /**
@@ -65,7 +73,7 @@ export function allowedSelection(provider: ProviderConfig, catalog: CatalogEntry
   return { selected: choices, catalog: mergeCatalog(provider, catalog, manualIds) };
 }
 
-function aliasFor(provider: ProviderConfig, model: string, aliases: Set<string>, claimed: Set<string>, ledger: Record<string, AliasIdentity>): string {
+export function aliasFor(provider: ProviderConfig, model: string, aliases: Set<string>, claimed: Set<string>, ledger: Record<string, AliasIdentity>): string {
   const resumed = retiredAlias(provider, model, claimed, { version: 1, aliases: ledger });
   if (resumed) { aliases.add(resumed); return resumed; }
   const providerId = provider.id;
@@ -78,9 +86,18 @@ function modelsFor(provider: ProviderConfig, selected: string[], catalog: Catalo
   const selectedIds = new Set(selected); const metadata = new Map(catalog.map(item => [item.id, item.metadata]));
   const models: Record<string, string> = Object.create(null); const modelMetadata: Record<string, unknown> = Object.create(null);
   // Keep every existing alias for each retained upstream model, in its exact existing order.
-  for (const [alias, model] of Object.entries(provider.models)) if (selectedIds.has(model)) {
+  // A route automatic upkeep hid stays configured for saved chats even when unchecked; checking its model again unhides it.
+  const hiddenOf = (alias: string): boolean => pickerHidden(provider.modelMetadata?.[alias]);
+  const visibleIds = new Set<string>();
+  for (const [alias, model] of Object.entries(provider.models)) if (!hiddenOf(alias)) visibleIds.add(model);
+  for (const [alias, model] of Object.entries(provider.models)) {
+    const hidden = hiddenOf(alias);
+    if (!selectedIds.has(model) && !hidden) continue;
     models[alias] = model; aliases.add(alias);
-    if (Object.hasOwn(provider.modelMetadata || {}, alias)) modelMetadata[alias] = provider.modelMetadata![alias]!;
+    if (Object.hasOwn(provider.modelMetadata || {}, alias)) {
+      const saved = provider.modelMetadata![alias]!;
+      modelMetadata[alias] = hidden && selectedIds.has(model) && !visibleIds.has(model) ? stripHidden(saved) : saved;
+    }
   }
   for (const id of selected) {
     if (Object.values(models).includes(id)) continue;
@@ -93,7 +110,7 @@ function modelsFor(provider: ProviderConfig, selected: string[], catalog: Catalo
       }
     }
     const alias = aliasFor(provider, id, aliases, new Set(Object.keys(models)), ledger); models[alias] = id;
-    const fresh = metadata.get(id); if (fresh) modelMetadata[alias] = fresh;
+    const fresh = metadata.get(id); if (fresh) modelMetadata[alias] = stripHidden(fresh);
   }
   return { models, ...(Object.keys(modelMetadata).length ? { modelMetadata: modelMetadata as ProviderConfig["modelMetadata"] } : {}) };
 }
@@ -118,7 +135,7 @@ export async function commitDraft(configPath: string, draft: DraftRecord, select
     const aliases = snapshot ? reservedAliases(snapshot.config, ledger) : new Set(Object.keys(ledger.aliases));
     const models = modelsFor(draft.provider, choice.selected, choice.catalog, aliases, ledger.aliases);
     const committed = { ...draft.provider, ...models }; rememberProviderAliases(ledger, committed);
-    const next = rawConfigWithProvider(raw, draft.provider, models); await validateRaw(next, configPath); await saveAliases(configPath, ledger); return next;
+    const next = rawConfigWithProvider(raw, draft.provider, models); reseedRawProvider(next, committed, choice.catalog.map(entry => entry.id), !draft.catalog?.length); await validateRaw(next, configPath); await saveAliases(configPath, ledger); return next;
   }, signal);
 }
 
@@ -134,6 +151,7 @@ export async function updateModels(configPath: string, providerId: string, revis
     if (JSON.stringify(provider.models) === JSON.stringify(models.models) && JSON.stringify(provider.modelMetadata || {}) === JSON.stringify(models.modelMetadata || {})) return current.raw;
     changed = true; const raw = structuredClone(current.raw); const target = rawProviders(raw).find(item => item.id === providerId); if (!target) throw new ManagementError("not_found");
     target.models = models.models; if (models.modelMetadata) target.modelMetadata = models.modelMetadata; else delete target.modelMetadata;
+    reseedRawProvider(raw, { id: provider.id, type: provider.type, models: models.models, ...(models.modelMetadata ? { modelMetadata: models.modelMetadata } : {}) }, choice.catalog.map(entry => entry.id));
     await validateRaw(raw, configPath); rememberProviderAliases(ledger, { ...provider, ...models }); await saveAliases(configPath, ledger);
     // Cache the catalog with the original configured entries before any are removed, so they can be re-enabled exactly.
     await saveCachedCatalog(configPath, providerId, choice.catalog, signal, provider); return raw;
@@ -174,7 +192,7 @@ export async function removeProvider(configPath: string, providerId: string, rev
     throwIfCancelled(signal);
     if (!current) throw new ManagementError("not_found"); const providers = rawProviders(current.raw); if (!providers.some(item => item.id === providerId)) throw new ManagementError("not_found");
     if (providers.length < 2) throw new ManagementError("invalid_configuration"); const ledger = await loadAliases(configPath); rememberCurrentAliases(ledger, current.config);
-    const raw = structuredClone(current.raw); raw.providers = rawProviders(raw).filter(item => item.id !== providerId); await validateRaw(raw, configPath); await saveAliases(configPath, ledger); return raw;
+    const raw = structuredClone(current.raw); raw.providers = rawProviders(raw).filter(item => item.id !== providerId); dropRawProvider(raw, providerId); await validateRaw(raw, configPath); await saveAliases(configPath, ledger); return raw;
   }, signal);
 }
 

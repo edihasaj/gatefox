@@ -5,6 +5,7 @@ import { AppServerBackends } from "./app-server-backends.js";
 import { DesktopCatalog } from "./desktop-catalog.js";
 import { isId, jsonLines, object, type Message } from "./app-server-connection.js";
 import { NativeControl } from "./native-control.js";
+import { readNativePickerPreferences } from "./native-picker-preferences.js";
 import { TurnTelemetry, errorClass } from "./turn-telemetry.js";
 import { AnnouncedThreads, describeChat } from "./announced-threads.js";
 import { telemetry } from "./telemetry.js";
@@ -71,7 +72,9 @@ export async function shimSession(executable: string, args: string[], config: Ga
     // app retries; only an unexpected start failure is reported as an exception.
     if (!operationalStartFailure(error)) reportException(error, "adapter_start");
     telemetry("adapter_start_failed", { errorClass: errorClass((error as Error).message), code: (error as { code?: number }).code }); throw error; }
-  router = new AppServerRouter(config, (method, params, hint) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params, hint), prepared.path, source, undefined, backends.identity);
+  router = new AppServerRouter(config, (method, params, hint) => control && method.startsWith("remoteControl/") ? control.request(method, params) : backends.request(method, params, hint), prepared.path, source, undefined, backends.identity,
+    // Only the same configuration file the adapter started from, and only its two picker fields.
+    configPath ? () => readNativePickerPreferences(configPath) : undefined);
   const compatible = async (method: string, params: Message): Promise<Message> => {
     // The parent already runs with corrected hooks; the SDK refuses any override on this fork.
     if (inheritsParentSettings(method, params)) return params;

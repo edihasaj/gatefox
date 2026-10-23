@@ -24,6 +24,9 @@ const object = (value: unknown): ObjectValue => value && typeof value === "objec
  * keeps them before the gateway rows, `last` puts them after, and `hidden` leaves them out of a normal list. A request that
  * asked for hidden rows still receives every native row under `hidden`, each as a copy marked `hidden: true`. The engine is
  * always scanned and bounded the same way, whatever the placement, and a vendor-hidden row is never made visible.
+ *
+ * A gateway row whose catalog `visibility` is `hide` follows the same rule: omitted from a normal list, returned with `hidden: true`
+ * under `includeHidden`. The route is unaffected, so a chat saved with it still resumes.
  */
 export async function gatewayModelList(params: ObjectValue, backend: (method: string, params: ObjectValue) => Promise<ObjectValue>,
   aliases: ReadonlySet<string>, extraModels: readonly ObjectValue[], preferred: unknown,
@@ -55,9 +58,11 @@ export async function gatewayModelList(params: ObjectValue, backend: (method: st
   // Marking, not filtering: an unchosen row survives only a request that already asked for hidden rows, and only as a copy.
   const picked = params.includeHidden !== true || (!chosen && placement !== "hidden") ? native
     : native.map(model => placement !== "hidden" && chosen!.has(String(model.model)) ? model : { ...model, hidden: true });
-  const extra = extraModels.map(model => ({
+  // A gateway row the catalog marks `hide` (a superseded automatic model) is left out of a normal list and returned, marked
+  // hidden, only when the caller asked for hidden rows. Filtering precedes combining and paging, so cursors stay consistent.
+  const extra = extraModels.filter(model => model.visibility !== "hide" || params.includeHidden === true).map(model => ({
     id: model.slug, model: model.slug, displayName: model.display_name, description: model.description,
-    upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: false,
+    upgrade: null, upgradeInfo: null, availabilityNux: null, modelSpecialty: null, hidden: model.visibility === "hide",
     supportedReasoningEfforts: (model.supported_reasoning_levels as Array<{ effort: string; description: string }>).map(level => ({ reasoningEffort: level.effort, description: level.description })),
     defaultReasoningEffort: model.default_reasoning_level || "none", inputModalities: model.input_modalities || ["text"], supportsPersonality: false,
     multiAgentVersion: null, additionalSpeedTiers: model.additional_speed_tiers || [], serviceTiers: model.service_tiers || [], defaultServiceTier: model.default_service_tier ?? null, availableAccessPrograms: null, isDefault: false,

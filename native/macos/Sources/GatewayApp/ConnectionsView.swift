@@ -21,6 +21,7 @@ struct ConnectionsView: View {
                 }
                 if gateway.hasConfig || connections.revision != nil {
                     NativeModelPickerSettingsView(gateway: gateway, connections: connections)
+                    AutoLatestModelsSettingsView(gateway: gateway, connections: connections)
                 }
                 if gateway.clientOnly {
                     SharedGatewayView(connections: connections)

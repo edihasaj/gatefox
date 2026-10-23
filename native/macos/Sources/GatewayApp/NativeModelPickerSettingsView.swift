@@ -68,7 +68,7 @@ struct NativeModelPickerSettingsView: View {
 
     private var scopeText: String {
         let host = GatewayConnectionScope.localHostName()
-        let reconnect = " Applies after reconnecting the Codex adapter; active chats are not restarted."
+        let reconnect = " Applies when the model picker refreshes. Older adapters may need reconnection; active chats are not restarted."
         if gateway.clientOnly {
             return "Saved on this Mac (\(host)). It governs chats that run here; the shared gateway's connections stay read-only and are not changed." + reconnect
         }

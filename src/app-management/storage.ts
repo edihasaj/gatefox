@@ -116,7 +116,8 @@ export async function ensurePrivateDirectory(path: string): Promise<void> {
 async function openOwned(path: string, privateMode: boolean): Promise<ReturnType<typeof open>> {
   let file: Awaited<ReturnType<typeof open>>;
   try {
-    file = await open(path, constants.O_RDONLY | noFollow);
+    // O_NONBLOCK: a FIFO planted at a private path must fail the type check below instead of blocking the open.
+    file = await open(path, constants.O_RDONLY | noFollow | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw error;
     throw unsafePath();
@@ -166,6 +167,18 @@ export async function readSnapshot(configPathValue: string): Promise<ConfigSnaps
   }
 }
 
+/** Reads at most the file's stated size plus one byte, so a file growing during the read cannot exceed the bound. */
+async function readBounded(file: Awaited<ReturnType<typeof open>>): Promise<Buffer> {
+  const size = (await file.stat()).size; if (size > maximumFileSize) throw unsafePath();
+  const buffer = Buffer.alloc(size + 1); let length = 0;
+  while (length < buffer.length) {
+    const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+    if (!bytesRead) break; length += bytesRead;
+  }
+  if (length > size) throw unsafePath();
+  return buffer.subarray(0, length);
+}
+
 export async function readOwnedJson<T>(path: string): Promise<T> {
   const checked = await normalizedPath(path);
   await directoryTree(dirname(checked), false, true);
@@ -173,7 +186,7 @@ export async function readOwnedJson<T>(path: string): Promise<T> {
   try { file = await openOwned(checked, true); }
   catch { throw unsafePath(); }
   try {
-    try { return JSON.parse((await file.readFile()).toString("utf8")) as T; }
+    try { return JSON.parse((await readBounded(file)).toString("utf8")) as T; }
     catch { throw invalidConfiguration(); }
   } finally {
     await file.close();

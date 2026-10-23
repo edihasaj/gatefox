@@ -33,12 +33,15 @@ struct ManagedModel: Codable, Identifiable, Sendable, Equatable {
     let alias: String?
     let label: String
     let enabled: Bool
+    /// Explicit provider release date, in epoch seconds or milliseconds. Creation and first-seen dates are not used.
+    let releasedAt: Double?
 
-    init(id: String, alias: String? = nil, label: String, enabled: Bool) {
+    init(id: String, alias: String? = nil, label: String, enabled: Bool, releasedAt: Double? = nil) {
         self.id = id
         self.alias = alias
         self.label = label
         self.enabled = enabled
+        self.releasedAt = releasedAt
     }
 }
 
@@ -103,6 +106,8 @@ struct ManagementRequest: Codable, Sendable, Equatable {
     let label: String?
     let providerIds: [String]?
     let nativeModelPickerPlacement: String?
+    /// Requested state for the `auto-latest` operation.
+    let enabled: Bool?
 
     init(
         operation: String,
@@ -115,7 +120,8 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         revision: String? = nil,
         label: String? = nil,
         providerIds: [String]? = nil,
-        nativeModelPickerPlacement: String? = nil
+        nativeModelPickerPlacement: String? = nil,
+        enabled: Bool? = nil
     ) {
         self.operation = operation
         self.configPath = configPath
@@ -128,6 +134,45 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         self.label = label
         self.providerIds = providerIds
         self.nativeModelPickerPlacement = nativeModelPickerPlacement
+        self.enabled = enabled
+    }
+}
+
+/// Public family names one connection contributes to automatic latest models.
+struct AutoLatestFamilyGroup: Codable, Identifiable, Sendable, Equatable {
+    let providerId: String
+    let label: String
+    let families: [String]
+
+    var id: String { providerId }
+}
+
+/// Automatic latest models state from the reviewed configuration. Families are for display only.
+struct AutoLatestStatus: Codable, Sendable, Equatable {
+    let enabled: Bool
+    let intervalMinutes: Int
+    let families: [AutoLatestFamilyGroup]
+    let nativeFamilies: [String]
+    /// Only the toggle response reports scheduling. Inspect responses omit it.
+    let scheduled: Bool?
+    /// Fixed reason slug accompanying `scheduled == false`.
+    let scheduleReason: String?
+    /// UTC epoch seconds of the last completed check.
+    let lastCheckedAt: Double?
+    let lastOutcome: String?
+
+    init(
+        enabled: Bool, intervalMinutes: Int, families: [AutoLatestFamilyGroup], nativeFamilies: [String],
+        scheduled: Bool? = nil, scheduleReason: String? = nil, lastCheckedAt: Double? = nil, lastOutcome: String? = nil
+    ) {
+        self.enabled = enabled
+        self.intervalMinutes = intervalMinutes
+        self.families = families
+        self.nativeFamilies = nativeFamilies
+        self.scheduled = scheduled
+        self.scheduleReason = scheduleReason
+        self.lastCheckedAt = lastCheckedAt
+        self.lastOutcome = lastOutcome
     }
 }
 
@@ -142,6 +187,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
     let removed: Bool?
     let sharedGateway: SharedGatewaySnapshot?
     let nativeModelPickerPlacement: String?
+    let autoLatest: AutoLatestStatus?
 
     init(
         configPath: String? = nil,
@@ -153,7 +199,8 @@ struct ManagementResult: Codable, Sendable, Equatable {
         changed: Bool? = nil,
         removed: Bool? = nil,
         sharedGateway: SharedGatewaySnapshot? = nil,
-        nativeModelPickerPlacement: String? = nil
+        nativeModelPickerPlacement: String? = nil,
+        autoLatest: AutoLatestStatus? = nil
     ) {
         self.configPath = configPath
         self.revision = revision
@@ -165,6 +212,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
         self.removed = removed
         self.sharedGateway = sharedGateway
         self.nativeModelPickerPlacement = nativeModelPickerPlacement
+        self.autoLatest = autoLatest
     }
 }
 

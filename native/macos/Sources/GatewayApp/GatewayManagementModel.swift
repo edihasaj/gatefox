@@ -18,6 +18,9 @@ final class GatewayConnectionsModel: ObservableObject {
     /// Where this Mac's native GPT models sit in the model picker, from the last reviewed snapshot.
     /// `nil` until an inspection reports it; it changes only from a saved response.
     @Published private(set) var nativePlacement: NativeModelPickerPlacement?
+    /// Automatic latest models state from the last reviewed snapshot. `nil` (unavailable) until a valid response
+    /// reports it; never inherited from another configuration and changed only from a saved response.
+    @Published private(set) var autoLatest: AutoLatestStatus?
     @Published private(set) var modelEditingProviderID: String?
     @Published var selectedModels: Set<String> = []
     @Published var manualModelsText = ""
@@ -448,6 +451,7 @@ final class GatewayConnectionsModel: ObservableObject {
         // A local-only save (native picker) carries no remote read; it must not erase a good shared catalog.
         if !keepSharedGateway { sharedGateway = result.sharedGateway }
         nativePlacement = result.nativeModelPickerPlacement.flatMap(NativeModelPickerPlacement.init(rawValue:))
+        autoLatest = result.validAutoLatest?.carryingScheduleFailure(from: autoLatest)
         if let prerequisites { self.prerequisites = prerequisites }
     }
 
@@ -457,6 +461,7 @@ final class GatewayConnectionsModel: ObservableObject {
         sharedGateway = nil
         revision = nil
         nativePlacement = nil
+        autoLatest = nil
         clearDraftState()
     }
 

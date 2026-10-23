@@ -1,8 +1,9 @@
 import type { DiscoveredModel } from "../catalog.js";
 import type { AccessTokenOptions } from "../auth/chatgpt.js";
 import type { ProviderConfig, ProviderKind } from "../config.js";
+import type { AutoLatestStatus } from "../model-auto-latest/types.js";
 
-export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "reorder" | "native-picker" | "remove" | "discard";
+export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "reorder" | "native-picker" | "remove" | "discard" | "auto-latest" | "auto-latest-check";
 
 export interface ProviderInput {
   id?: string;
@@ -27,9 +28,12 @@ export interface ManagementRequest {
   providerIds?: string[];
   /** Validated at the operation: only "first", "last" or "hidden" are accepted. */
   nativeModelPickerPlacement?: string;
+  /** The `auto-latest` operation: whether automatic newest-model upkeep is on. Requires `revision`. */
+  enabled?: boolean;
 }
 
-export interface ManagedModel { id: string; alias?: string; label: string; enabled: boolean }
+/** `releasedAt` is the vendor release time in UTC seconds, present only when the catalog states one. */
+export interface ManagedModel { id: string; alias?: string; label: string; enabled: boolean; releasedAt?: number }
 export interface ManagedProvider {
   id: string;
   label: string;
@@ -64,6 +68,8 @@ export interface ManagementResult {
   sharedGateway?: SharedGateway;
   /** Normalised placement of the local native GPT models in the picker; "first" when the configuration has no setting. */
   nativeModelPickerPlacement?: "first" | "last" | "hidden";
+  /** The automatic newest-model setting, present on every result that projects a configuration. */
+  autoLatest?: AutoLatestStatus;
 }
 export type ManagementResponse = { ok: true; result: ManagementResult } | { ok: false; error: { code: string; message: string } };
 
@@ -74,6 +80,17 @@ export interface ManagementDependencies {
   lookupCli?: (command: string) => Promise<boolean>;
   openBrowser?: (url: string) => Promise<void>;
   signal?: AbortSignal;
+  /** Test seams for automatic upkeep: the native Codex home, the clock (ms), and discovery deadlines. */
+  nativeHome?: string;
+  now?: () => number;
+  perProviderMs?: number;
+  totalMs?: number;
+  /** Installs or removes the background job; its failure is reported, never hidden. */
+  /** Test seam: observes whether the background job is loaded; only asked while the setting is on. */
+  observeAutoLatestSchedule?: (configPath: string) => Promise<{ scheduled: boolean; reason?: string }>;
+  /** Test seam: how long a toggle waits for the schedule lock. */
+  scheduleLockMs?: number;
+  syncAutoLatestSchedule?: (configPath: string, enabled: boolean) => Promise<{ scheduled: boolean; reason?: string }>;
 }
 
 export interface CatalogEntry { id: string; label: string; metadata?: Record<string, unknown> }

@@ -87,3 +87,33 @@ test("Claude reports the context window the CLI used, without the 1M variant suf
     assert.deepEqual(seen, [["claude-opus-4-6", 1000000]]);
   } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; await rm(directory, { recursive: true, force: true }); }
 });
+
+test("refresh never applies a patch to a provider whose account or endpoint changed since the snapshot, nor unhides a retired model", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "gateway-refresh-route-"));
+  const path = join(directory, "gateway.json");
+  const config = { version: 1, port: 3457, stateDirectory: directory, providers: [
+    { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: "GATEWAY_ROUTE_A", models: { "qwen/a": "qwen-a", "qwen/b": "qwen-b" }, modelMetadata: { "qwen/a": { displayName: "A" } } },
+  ] };
+  await writePrivateJson(path, config);
+  try {
+    // Another writer changes the account (and retires a model) while discovery runs.
+    const updated = await refreshModelMetadata(path, async () => {
+      const current = JSON.parse(await readFile(path, "utf8"));
+      current.providers[0].apiKeyEnv = "GATEWAY_ROUTE_B";
+      current.providers[0].modelMetadata["qwen/a"].pickerHidden = true;
+      await writePrivateJson(path, current);
+      return [{ model: "qwen-a", metadata: { displayName: "A new", pickerHidden: false } as never }, { model: "qwen-b", metadata: { displayName: "B" } }];
+    });
+    assert.deepEqual(updated, [], "a changed route skips the stale account's metadata");
+    const saved = JSON.parse(await readFile(path, "utf8")) as { providers: Array<{ apiKeyEnv: string; modelMetadata: Record<string, Record<string, unknown>> }> };
+    assert.equal(saved.providers[0].apiKeyEnv, "GATEWAY_ROUTE_B");
+    assert.equal(saved.providers[0].modelMetadata["qwen/a"].displayName, "A");
+    assert.equal(saved.providers[0].modelMetadata["qwen/b"], undefined);
+    // Unchanged route: the patch applies, a retired model stays hidden and vendor data cannot unhide it.
+    const next = await refreshModelMetadata(path, async () => [{ model: "qwen-a", metadata: { displayName: "A new", pickerHidden: false } as never }]);
+    assert.deepEqual(next, ["qwen"]);
+    const after = JSON.parse(await readFile(path, "utf8")) as { providers: Array<{ modelMetadata: Record<string, Record<string, unknown>> }> };
+    assert.equal(after.providers[0].modelMetadata["qwen/a"].displayName, "A new");
+    assert.equal(after.providers[0].modelMetadata["qwen/a"].pickerHidden, true);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

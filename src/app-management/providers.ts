@@ -7,6 +7,7 @@ import type { ProviderConfig, ProviderKind } from "../config.js";
 import type { CatalogEntry, ManagementDependencies, ManagedModel, ManagedProvider, Prerequisite } from "./types.js";
 import { ManagementError } from "./errors.js";
 import { providerCommand, type ProviderTool } from "../provider-tool-runtime.js";
+import { pickerHidden } from "../model-auto-latest/metadata.js";
 
 const apiKinds = new Set<ProviderKind>(["responses-api", "anthropic-api", "chat-completions-api"]);
 const cliFor: Partial<Record<ProviderKind, string>> = { "claude-subscription": "claude", "copilot-subscription": "copilot" };
@@ -72,18 +73,30 @@ export async function cliAvailable(command: string): Promise<boolean> {
   return false;
 }
 
+const releasedSeconds = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+
 export function managedModels(provider: ProviderConfig, catalog: CatalogEntry[] = [], newDraft = false): ManagedModel[] {
-  const configured = new Map<string, string[]>();
-  for (const [alias, id] of Object.entries(provider.models || {})) configured.set(id, [...(configured.get(id) || []), alias]);
+  const configured = new Map<string, string[]>(); const visible = new Map<string, string[]>();
+  for (const [alias, id] of Object.entries(provider.models || {})) {
+    configured.set(id, [...(configured.get(id) || []), alias]);
+    // A model whose every alias automatic upkeep hid is listed, but not enabled: the picker no longer offers it.
+    if (!pickerHidden(provider.modelMetadata?.[alias])) visible.set(id, [...(visible.get(id) || []), alias]);
+  }
+  const dated = (id: string, entry?: CatalogEntry): { releasedAt?: number } => {
+    const at = releasedSeconds(entry?.metadata?.releasedAt) ?? (configured.get(id) || []).map(alias => releasedSeconds(provider.modelMetadata?.[alias]?.releasedAt)).find(value => value !== undefined);
+    return at === undefined ? {} : { releasedAt: at };
+  };
   const seen = new Set<string>(); const models: ManagedModel[] = [];
   for (const entry of catalog) {
-    if (seen.has(entry.id)) continue; seen.add(entry.id); const aliases = configured.get(entry.id) || [];
-    models.push({ id: entry.id, ...(aliases[0] ? { alias: aliases[0] } : {}), label: entry.label || entry.id, enabled: newDraft || aliases.length > 0 });
+    if (seen.has(entry.id)) continue; seen.add(entry.id); const aliases = configured.get(entry.id) || []; const shown = visible.get(entry.id) || [];
+    const alias = shown[0] ?? aliases[0];
+    models.push({ id: entry.id, ...(alias ? { alias } : {}), label: entry.label || entry.id, enabled: newDraft || shown.length > 0, ...dated(entry.id, entry) });
   }
   // A route with no catalog row still shows its saved display name, so a connection without discovery is not blank.
   for (const [id, aliases] of configured) if (!seen.has(id)) {
-    const named = aliases.map(alias => provider.modelMetadata?.[alias]?.displayName).find(Boolean);
-    models.push({ id, ...(aliases[0] ? { alias: aliases[0] } : {}), label: named || id, enabled: true });
+    const named = aliases.map(alias => provider.modelMetadata?.[alias]?.displayName).find(Boolean); const shown = visible.get(id) || [];
+    const alias = shown[0] ?? aliases[0];
+    models.push({ id, ...(alias ? { alias } : {}), label: named || id, enabled: shown.length > 0, ...dated(id) });
   }
   return models;
 }

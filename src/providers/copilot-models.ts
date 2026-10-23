@@ -2,6 +2,7 @@ import type { ProviderConfig } from "../config.js";
 import type { DiscoveredModel } from "../catalog.js";
 import { openCopilot } from "./copilot-client.js";
 import { record } from "./copilot-rpc.js";
+import { releasedAtMetadata } from "../model-auto-latest/metadata.js";
 
 /** Keep explicitly selectable models; never advertise automatic account routing. */
 export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
@@ -24,7 +25,7 @@ export function nativeCopilotModels(value: unknown): DiscoveredModel[] {
     const vision = record(record(model.capabilities).supports).vision === true;
     // CLI 1.0.91 has no selected-model priority tier. Its integrator-only Auto
     // profile is different routing, not faster execution of the selected model.
-    const entry: DiscoveredModel = { model: model.id, metadata: { displayName: model.name, inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[], serviceTiers: [], additionalSpeedTiers: [], defaultServiceTier: null } };
+    const entry: DiscoveredModel = { model: model.id, metadata: { displayName: model.name, ...releasedAtMetadata(model), inputModalities: vision ? ["text", "image"] : ["text"], ...(Number.isFinite(context) ? { contextWindow: context } : {}), reasoningEfforts: supported as string[], serviceTiers: [], additionalSpeedTiers: [], defaultServiceTier: null } };
     const signature = JSON.stringify(entry);
     if (ids.has(model.id)) { if (ids.get(model.id) !== signature) throw new Error("Copilot returned conflicting duplicate model metadata"); return []; }
     ids.set(model.id, signature); return [entry];

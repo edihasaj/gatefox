@@ -6,11 +6,18 @@ import { discoverManagementModels, isManagementUnavailable } from "./runtime.js"
 import { catalogEntry, checkedConfigPath, checkedDraftId, draftView, loadDraft, prepareDraft, saveDraft, writeCredential } from "./drafts.js";
 import { commitDraft, gatewayOwnedCredential, loadCachedCatalog, mergeCatalog, removeProvider, renameProvider, reorderProviders, replaceGatewayCredential, saveCachedCatalog, updateModels, withConfiguredCatalog } from "./mutations.js";
 import { sharedGatewayCatalog } from "./shared-gateway.js";
+import { reconcileAutoLatest } from "../model-auto-latest/reconcile.js";
+import { setAutoLatest } from "../model-auto-latest/toggle.js";
+import { autoLatestStatus } from "../model-auto-latest/status.js";
+import { emptyStatus, schedulePath } from "../model-auto-latest/state.js";
+import { rawAutoLatest } from "../model-auto-latest/settings.js";
+import { lockBusyCode, withPrivateFileLock } from "../private-file-lock.js";
+import type { AutoLatestDependencies } from "../model-auto-latest/types.js";
 import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js";
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
-const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard"]);
+const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check"]);
 
 function request(value: unknown): ManagementRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ManagementError("invalid_request");
@@ -54,12 +61,14 @@ export class ManagementService {
       case "native-picker": return this.nativePicker(value);
       case "remove": return this.remove(value);
       case "discard": return this.discard(value);
+      case "auto-latest": return this.autoLatest(value);
+      case "auto-latest-check": return this.autoLatestCheck(value);
     }
   }
 
   private async inspect(configPath: string): Promise<ManagementResult> {
     const snapshot = await readSnapshot(configPath);
-    if (!snapshot) return { configPath, providers: [], prerequisites: [] };
+    if (!snapshot) return { configPath, providers: [], prerequisites: [], autoLatest: { ...emptyStatus, families: [], nativeFamilies: [] } };
     const result = await this.projectAt(configPath, snapshot);
     // A client-only configuration has no local providers; its catalog is the serving host's, read once and never kept.
     return snapshot.config.clientOnly ? { ...result, sharedGateway: await sharedGatewayCatalog(snapshot.config, this.deps.signal) } : result;
@@ -67,7 +76,7 @@ export class ManagementService {
   private async projectAt(configPath: string, snapshot: ConfigSnapshot): Promise<ManagementResult> {
     const providers = await Promise.all(snapshot.config.providers.map(async provider => managedProvider(provider, this.deps.lookupCli,
       withConfiguredCatalog(provider, await loadCachedCatalog(configPath, provider.id, provider)), false, snapshot.config.stateDirectory)));
-    return { configPath, revision: snapshot.revision, providers, nativeModelPickerPlacement: effectivePlacement(snapshot.raw), prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
+    return { configPath, revision: snapshot.revision, providers, nativeModelPickerPlacement: effectivePlacement(snapshot.raw), autoLatest: await autoLatestStatus(configPath, snapshot, this.deps.observeAutoLatestSchedule), prerequisites: await providerPrerequisites(this.deps.lookupCli, snapshot.config.providers.map(provider => provider.type)) };
   }
 
   private async prepare(configPath: string, provider: ProviderInput): Promise<ManagementResult> {
@@ -155,9 +164,64 @@ export class ManagementService {
     const result = await setNativePickerPlacement(value.configPath, value.nativeModelPickerPlacement, value.revision, this.deps.signal);
     return { ...(await this.projectAt(value.configPath, result.snapshot)), changed: result.changed };
   }
+  private autoDeps(): AutoLatestDependencies {
+    return { discoverModels: this.deps.discoverModels!, ...(this.deps.signal ? { signal: this.deps.signal } : {}), ...(this.deps.now ? { now: this.deps.now } : {}),
+      ...(this.deps.nativeHome ? { nativeHome: this.deps.nativeHome } : {}), ...(this.deps.perProviderMs !== undefined ? { perProviderMs: this.deps.perProviderMs } : {}), ...(this.deps.totalMs !== undefined ? { totalMs: this.deps.totalMs } : {}) };
+  }
+  /** Toggles automatic upkeep, then syncs its background job. A failed job is reported as not scheduled, never as success. */
+  private async autoLatest(value: ManagementRequest): Promise<ManagementResult> {
+    if (typeof value.enabled !== "boolean") throw new ManagementError("invalid_request");
+    const result = await setAutoLatest(value.configPath, value.enabled, value.revision as string, this.autoDeps());
+    const { schedule, snapshot } = await this.syncSchedule(value.configPath, result.snapshot);
+    const projected = await this.projectAt(value.configPath, snapshot);
+    const reason = typeof schedule?.reason === "string" && /^[a-z][a-z_]{0,40}$/.test(schedule.reason) ? schedule.reason : undefined;
+    return { ...projected, changed: result.changed, autoLatest: { ...projected.autoLatest!, scheduled: schedule?.scheduled === true, ...(reason ? { scheduleReason: reason } : {}) } };
+  }
+  /**
+   * Installs or removes the background job for what the configuration says now. Concurrent toggles queue on one lock and
+   * each rereads the setting under it, so a slow "on" can never install the job after a later "off". The snapshot returned
+   * is the one read under the guard.
+   */
+  private async syncSchedule(configPath: string, committed: ConfigSnapshot): Promise<{ schedule: { scheduled: boolean; reason?: string }; snapshot: ConfigSnapshot }> {
+    try {
+      return await withPrivateFileLock(await schedulePath(configPath), async () => {
+        // The sync can outlast another toggle's lock wait, so the setting is reread after each sync and the job is brought
+        // in line again until it matches what the configuration says, before the lock is released. At most three rounds.
+        let snapshot = (await readSnapshot(configPath)) ?? committed; let schedule: { scheduled: boolean; reason?: string } = { scheduled: false, reason: "schedule_failed" };
+        for (let round = 0; round < 3; round++) {
+          // An aborted request never starts or repeats an install.
+          if (this.deps.signal?.aborted) return { schedule: { scheduled: false, reason: "cancelled" }, snapshot };
+          const enabled = rawAutoLatest(snapshot.raw)?.enabled === true;
+          try { schedule = await (this.deps.syncAutoLatestSchedule ?? defaultScheduleSync)(configPath, enabled); }
+          catch { return { schedule: { scheduled: false, reason: "schedule_failed" }, snapshot }; }
+          const latest = (await readSnapshot(configPath).catch(() => undefined)) ?? snapshot;
+          const changed = (rawAutoLatest(latest.raw)?.enabled === true) !== enabled;
+          snapshot = latest;
+          if (!changed) return { schedule, snapshot };
+        }
+        return { schedule: { scheduled: false, reason: "schedule_failed" }, snapshot };
+      }, this.deps.scheduleLockMs ?? 10_000);
+    } catch (error) {
+      const busy = (error as { code?: string } | undefined)?.code === lockBusyCode;
+      return { schedule: { scheduled: false, reason: busy ? "schedule_busy" : "schedule_failed" }, snapshot: (await readSnapshot(configPath).catch(() => undefined)) ?? committed };
+    }
+  }
+  /** A manual check: metadata only, allowed to refresh a login the user is looking at, refused if the screen is out of date. */
+  private async autoLatestCheck(value: ManagementRequest): Promise<ManagementResult> {
+    if (typeof value.revision !== "string" || !value.revision) throw new ManagementError("invalid_request");
+    const outcome = await reconcileAutoLatest(value.configPath, { ...this.autoDeps(), refresh: true, expectedRevision: value.revision });
+    const snapshot = await readSnapshot(value.configPath); if (!snapshot) throw new ManagementError("not_found");
+    const projected = await this.projectAt(value.configPath, snapshot);
+    const ran = outcome.outcome !== "busy" && outcome.outcome !== "disabled";
+    return { ...projected, changed: outcome.changed, autoLatest: { ...projected.autoLatest!, ...(ran ? { lastCheckedAt: outcome.checkedAt, lastOutcome: outcome.outcome } : {}) } };
+  }
   private async discard(value: ManagementRequest): Promise<ManagementResult> {
     const draft = await loadDraft(value.configPath, checkedDraftId(value.draftId)); if (draft.committed) throw new ManagementError("invalid_request"); throwIfCancelled(this.deps.signal); draft.cancelled = true; await saveDraft(draft, this.deps.signal); return { configPath: value.configPath, draft: await draftView(draft, this.deps), changed: false };
   }
+}
+
+async function defaultScheduleSync(configPath: string, enabled: boolean): Promise<{ scheduled: boolean; reason?: string }> {
+  return (await import("../model-auto-latest/schedule.js")).syncAutoLatestSchedule(configPath, enabled);
 }
 
 function rawProvider(snapshot: ConfigSnapshot, id: string): Record<string, unknown> {

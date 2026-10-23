@@ -1,3 +1,4 @@
+import type { NativePickerPreferences } from "./native-picker-preferences.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -61,16 +62,21 @@ export class AppServerRouter {
   private readonly preferencesPath: string;
   readonly catalogPath: string;
   private extraModels: ObjectValue[];
+  /** The picker allowlist and placement in force: the connect-time config, replaced only by a valid re-read. */
+  private picker: NativePickerPreferences;
   private readonly identity: ChatIdentity;
   private readonly catalogs: IdentityCatalogs = { aliases: () => this.aliases, nativeSlugs: () => this.source?.nativeSlugs ?? noSlugs };
   /** The native engine's default provider, read once per connection for chat lists and read again after a configuration write. */
   private nativeDefault?: Promise<string>;
   /** `identity` is the connection's, shared with its backends so both classify from one registry read and one set of seen chats. */
   constructor(private readonly config: GatewayConfig, private readonly backend: BackendRequest, catalogPath?: string, private readonly source?: DesktopCatalog,
-    private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex"), identity?: ChatIdentity) {
+    private readonly nativeHome = resolve(process.env.CODEX_HOME || homedir() + "/.codex"), identity?: ChatIdentity,
+    /** Re-reads the native picker allowlist and placement on every `model/list`; without it the connect-time values stay. */
+    private readonly pickerPreferences?: () => Promise<NativePickerPreferences>) {
     this.identity = identity ?? new ChatIdentity(config.stateDirectory, nativeHome);
     this.aliases = new Set(config.providers.flatMap(provider => Object.keys(provider.models)));
     this.extraModels = modelCatalog(config).models;
+    this.picker = { nativeModelPicker: config.nativeModelPicker, nativeModelPickerPlacement: config.nativeModelPickerPlacement };
     this.preferencesPath = resolve(config.stateDirectory, "desktop-preferences.json");
     this.catalogPath = catalogPath || resolve(config.stateDirectory, "codex-models.json");
     this.threadTiers = new ThreadServiceTiers(config.stateDirectory, nativeHome);
@@ -502,7 +508,13 @@ export class AppServerRouter {
       if (typeof requested === "string" && !this.source.isNative(requested) && !this.aliases.has(requested)) throw new AppServerRoutingError("This model is absent from both the native and gateway catalogs; select an offered model");
     }
     if (method === "config/write") throw new AppServerRoutingError("Native Codex configuration is managed separately and cannot be changed by this adapter");
-    if (method === "model/list") return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model, this.config.nativeModelPicker, this.config.nativeModelPickerPlacement);
+    if (method === "model/list") {
+      // Only presentation is refreshed, after the gateway catalog and before composing the list. An unreadable or invalid file keeps the last valid values.
+      if (this.pickerPreferences) {
+        try { const next = await this.pickerPreferences(); this.picker = { nativeModelPicker: next.nativeModelPicker, nativeModelPickerPlacement: next.nativeModelPickerPlacement }; } catch { /* Keep the last valid preferences. */ }
+      }
+      return gatewayModelList(params, this.backend, this.aliases, this.extraModels, this.preferences.model, this.picker.nativeModelPicker, this.picker.nativeModelPickerPlacement);
+    }
     if (method === "thread/list") return this.backend(method, await this.listRequest(params));
     if (method === "config/value/write" || method === "config/batchWrite") return this.writeConfig(method, params);
     let forwarded = params;

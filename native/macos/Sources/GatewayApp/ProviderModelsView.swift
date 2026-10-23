@@ -34,6 +34,7 @@ struct ProviderModelsView: View {
             Divider().overlay(GatewayTheme.line)
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    AutoLatestSelectionNote(connections: connections)
                     if connections.isBusy && !didLoad {
                         ProgressView("Looking for models…")
                             .font(GatewayTheme.body(14))
@@ -99,6 +100,10 @@ struct ProviderModelsView: View {
                                     Text(model.label).font(GatewayTheme.body(14, weight: .semibold))
                                     if let alias = model.alias, alias != model.label {
                                         Text(alias).font(GatewayTheme.body(12)).foregroundStyle(GatewayTheme.charcoal.opacity(0.55))
+                                    }
+                                    if let providerDate = model.providerDate {
+                                        Text("Provider date \(providerDate.formatted(date: .abbreviated, time: .omitted))")
+                                            .font(GatewayTheme.body(11)).foregroundStyle(GatewayTheme.charcoal.opacity(0.48))
                                     }
                                 }
                             }

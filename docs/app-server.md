@@ -88,8 +88,10 @@ are never made visible. This is a picker preference, not permission to use or
 rebind a model: existing native chats, explicit model requests, subagents and
 native/gateway classification retain the full catalog and their saved choices.
 The adapter does not edit native authentication, configuration or model-cache
-files. A newly launched adapter reads the setting; an already-running adapter
-keeps its original configuration until normal idle adoption or reconnection.
+files. Registered adapters re-read only these native presentation settings when
+the picker requests its list; invalid or unreadable changes retain the last
+valid presentation. Older adapters need normal idle adoption or reconnection
+to load this reader. Loaded chats keep their own model and account.
 
 The example lists the four models available during the October 23 check. It
 does not automatically select a newer release or invent a missing family. Update

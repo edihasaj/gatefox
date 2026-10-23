@@ -5,6 +5,7 @@ import { tailnetFetch, type TailnetSeams } from "./tailnet.js";
 import { apiCredential, bridgesToolSearch, capContextWindow, type GatewayConfig, type ProviderConfig, type ModelMetadata } from "./config.js";
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
+import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -22,7 +23,8 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       description: `${provider.type}; account route ${provider.id}`, priority: metadata?.priority ?? modelIndex,
       // The desktop adapter copies the native row for this slug; Codex ignores the extra key.
       ...(codex ? { [upstreamSlugField]: provider.models[alias] } : {}),
-      visibility: "list", supported_in_api: true, availability_nux: null, upgrade: null,
+      // A superseded automatic model stays routable and in the full catalog, only marked `hide` for the picker.
+      visibility: pickerHidden(metadata) ? "hide" : "list", supported_in_api: true, availability_nux: null, upgrade: null,
       ...publicServiceTierFields(readServiceTierMetadata(metadata)),
       supported_reasoning_levels: efforts.map(effort => ({ effort, description: `${effort} reasoning effort` })),
       default_reasoning_level: efforts.includes(preferred) ? preferred : efforts[0] || null,
@@ -78,6 +80,7 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
     return { model: id, metadata: {
       ...readPublicServiceTierMetadata(model),
       ...(typeof model.display_name === "string" ? { displayName: model.display_name } : {}),
+      ...releasedAtMetadata(model),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),
       ...(Array.isArray(levels) ? { reasoningEfforts: levels.map(level => level.effort) } : {}),

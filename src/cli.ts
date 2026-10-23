@@ -43,6 +43,7 @@ import { toolSearchCommand } from "./tool-search-command.js";
 import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 import { providerCommand } from "./provider-tool-runtime.js";
 import { retainCliEntryPoint } from "./release-retention.js";
+import { runAutoLatestCli } from "./auto-latest-cli.js";
 
 // This happens before command dispatch. A managed release remains visible to the
 // installer even when an app-owned Node executes this file through `current`.
@@ -98,6 +99,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "claude-desktop") return runClaudeDesktopCommand(argv.slice(1));
   if (argv[0] === "versions") { process.exitCode = await versionsCommand(argv.slice(1)); return; }
   if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
+  if (argv[0] === "auto-latest") { process.exitCode = await runAutoLatestCli(argv.slice(1)); return; }
   if (argv[0] === "rollout") { process.exitCode = await rolloutCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }

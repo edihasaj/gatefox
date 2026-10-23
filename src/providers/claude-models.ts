@@ -7,6 +7,7 @@ import type { ProviderConfig } from "../config.js";
 import type { DiscoveredModel } from "../catalog.js";
 import { claudeEnvironment } from "./claude-environment.js";
 import { providerCommand } from "../provider-tool-runtime.js";
+import { releasedAtMetadata } from "../model-auto-latest/metadata.js";
 
 // Context windows the Claude CLI reports (result modelUsage.contextWindow) on a
 // subscription, measured 2026-10-13. These run with 1M under their plain IDs.
@@ -35,6 +36,7 @@ export function nativeClaudeModels(value: unknown): DiscoveredModel[] {
     if (efforts !== undefined && (!Array.isArray(efforts) || efforts.some(effort => !["low", "medium", "high", "xhigh", "max"].includes(effort)))) throw new Error("Claude returned invalid reasoning levels");
     const levels: string[] = item.supportsEffort === true && Array.isArray(efforts) ? efforts : [];
     models.push({ model, metadata: { displayName: item.displayName,
+      ...releasedAtMetadata(item),
       inputModalities: item.supportsVision === false ? ["text"] : ["text", "image"],
       // Every current Claude model has at least a 200K window; unknown rows
       // otherwise fall back to 32K and compact almost every turn.

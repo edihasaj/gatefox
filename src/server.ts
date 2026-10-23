@@ -39,6 +39,7 @@ export { autoReviewProvider, autoReviewTarget, nativeModelAlias } from "./model-
 import { autoReviewTarget, nativeModelAlias } from "./model-routing.js";
 import { hasPlanLogin } from "./auth/chatgpt.js";
 import { gatewayInfoPath, gatewayInfoPayload } from "./gateway-info.js";
+import { pickerHiddenAliases } from "./model-auto-latest/metadata.js";
 import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -283,7 +284,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         if (info) send(res, 200, info); else fail(503, "catalog_unavailable", "The gateway catalog does not fit the shared-catalog protocol");
       } finally { state.release(); } return;
     }
-    if (req.method === "GET" && path === "/v1/models") { try { send(res, 200, { object: "list", data: [...state.routes].map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
     if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { try { fail(404, "not_found", "Unknown endpoint"); } finally { state.release(); } return; }

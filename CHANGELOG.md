@@ -225,6 +225,16 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.6 — 2026-10-24
+
+The macOS app can automatically follow new versions of selected model families.
+Enabling the switch preserves the current selection and known disabled models;
+metadata checks run every five minutes, unrelated models remain unchecked, and
+older picker entries retain their original routes for saved chats. Provider
+dates complement numeric versions without inventing release times or switching
+accounts. Native picker preferences refresh without restarting active chats.
+Thanks to @edihasaj for requesting selected-family automatic updates.
+
 ## 0.8.4 — 2026-10-23
 
 The macOS app can place native GPT fallback models first, last, or hide them from

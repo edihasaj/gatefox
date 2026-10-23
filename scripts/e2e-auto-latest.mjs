@@ -1,0 +1,66 @@
+#!/usr/bin/env node
+// Real configuration, catalog and HTTP routing with local model metadata and inference mocks only.
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import { pathToFileURL } from 'node:url';
+const {values}=parseArgs({options:{root:{type:'string'},code:{type:'string'}}});
+const root=values.root?resolve(values.root):await mkdtemp('/tmp/hg-auto-latest-e2e-');
+if(values.root)await mkdir(root,{mode:0o700});
+const code=resolve(values.code||new URL('..',import.meta.url).pathname),load=name=>import(pathToFileURL(join(code,'dist',`${name}.js`)));
+const {setAutoLatest,reconcileAutoLatest}=await load('model-auto-latest/engine');
+const {loadConfig,readClientToken}=await load('config');
+const {modelCatalog}=await load('catalog');
+const {startGateway}=await load('server');
+const {LiveConfig}=await load('live-config');
+const {handleManagement}=await load('app-management');
+const nativeHome=join(root,'native'),state=join(root,'state'),path=join(root,'gateway.json');
+await mkdir(nativeHome,{mode:0o700});await mkdir(state,{mode:0o700});
+const nativeIds=['gpt-6-astra','gpt-6.1-sol','gpt-5.6-terra','gpt-6-luna'];
+const nativeCache=ids=>({models:ids.map(slug=>({slug,visibility:'list'})),fetched_at:new Date().toISOString()});
+await writeFile(join(nativeHome,'models_cache.json'),JSON.stringify(nativeCache(nativeIds)),{mode:0o600});
+await writeFile(join(nativeHome,'auth.json'),'native-auth-sentinel\n',{mode:0o600});
+await writeFile(join(nativeHome,'config.toml'),'model = "gpt-6-astra"\n',{mode:0o600});
+const sentinels=await Promise.all(['auth.json','config.toml'].map(f=>readFile(join(nativeHome,f),'utf8')));
+const rows=ids=>ids.map(model=>({model,metadata:{displayName:model,contextWindow:32768,reasoningEfforts:['low','high']}}));
+const codexIds=[...nativeIds,'gpt-daybreak-blue-latest'];
+const claudeIds=['claude-opus-5-5','claude-sonnet-5-5','claude-fable-5-1','claude-haiku-5-5'];
+const provider=(id,type,ids)=>({id,label:id,type,...(type==='codex-subscription'?{credentialFile:join(state,`${id}.json`),defaultForBareModels:true}:{}),models:Object.fromEntries(ids.map(model=>[`${id}/${model}`,model])),modelMetadata:Object.fromEntries(rows(ids).map(r=>[`${id}/${r.model}`,r.metadata]))});
+const original={version:1,port:0,stateDirectory:state,nativeModelPicker:nativeIds,nativeModelPickerPlacement:'last',unknownRoot:{preserve:true},providers:[provider('codex','codex-subscription',codexIds),provider('claude','claude-subscription',claudeIds)]};
+await writeFile(path,JSON.stringify(original)+'\n',{mode:0o600});
+let stage=0,discoveries=0,inferenceRequests=0;
+const catalogs=()=>({codex:rows(stage===0?[...codexIds,'gpt-7-luna','gpt-5.6-sol']:[...codexIds,'gpt-7-luna','gpt-5.6-sol','gpt-6.2-sol','gpt-8-luna','gpt-reserve-99']),claude:rows(stage===0?[...claudeIds,'claude-opus-4-8']:[...claudeIds,'claude-opus-4-8','claude-opus-5-6','claude-sonnet-5-6','claude-fable-5-2','claude-haiku-5-6','claude-unrelated-99'])});
+const discoverModels=async p=>{discoveries++;return catalogs()[p.id]||[];};
+const revision=async()=>createHash('sha256').update(await readFile(path)).digest('hex');
+const raw=async()=>JSON.parse(await readFile(path,'utf8'));
+let server;
+try{
+ const armed=await setAutoLatest(path,true,await revision(),{discoverModels,nativeHome});
+ assert.equal(armed.snapshot.config.autoLatestModels.enabled,true);
+ let current=await raw();assert.deepEqual(current.providers,original.providers,'Enabling must preserve all current routes and metadata');assert.deepEqual(current.nativeModelPicker,nativeIds);
+ const initial=await loadConfig(path);let live;
+ server=await startGateway(initial,p=>({async *infer(request){inferenceRequests++;yield{type:'text',text:'AUTO_LATEST_LOCAL_OK'};yield{type:'done',usage:{input_tokens:1,output_tokens:1,total_tokens:2}};}}),()=>live?live.current():Promise.resolve(initial));
+ const port=server.address().port;current.port=port;await writeFile(path,JSON.stringify(current)+'\n',{mode:0o600});live=new LiveConfig(path,await loadConfig(path));
+ const token=await readClientToken(join(state,'client-token'));
+ const get=async endpoint=>{const r=await fetch(`http://127.0.0.1:${port}${endpoint}`,{headers:{Authorization:`Bearer ${token}`}});assert.equal(r.status,200);return r.json();};
+ const baseline=await reconcileAutoLatest(path,{discoverModels,nativeHome});assert.equal(baseline.activated,0);
+ stage=1;await writeFile(join(nativeHome,'models_cache.json'),JSON.stringify(nativeCache([...nativeIds,'gpt-6.2-sol'])),{mode:0o600});
+ const promoted=await reconcileAutoLatest(path,{discoverModels,nativeHome});assert.equal(promoted.changed,true);assert.ok(promoted.activated>=6);current=await raw();
+ const codex=current.providers.find(p=>p.id==='codex');assert.equal(codex.models['codex/gpt-6.1-sol'],'gpt-6.1-sol');assert.equal(codex.modelMetadata['codex/gpt-6.1-sol'].pickerHidden,true);assert.equal(codex.models['codex/gpt-6.2-sol'],'gpt-6.2-sol');
+ assert.equal(codex.models['codex/gpt-6-luna'],'gpt-6-luna');assert.equal(codex.models['codex/gpt-8-luna'],'gpt-8-luna');assert.equal(Object.values(codex.models).includes('gpt-7-luna'),false,'Previously disabled baseline model must stay off');
+ assert.equal(Object.values(codex.models).includes('gpt-reserve-99'),false);assert.equal(current.providers.find(p=>p.id==='claude').models['claude/claude-unrelated-99'],undefined);
+ assert.ok(current.nativeModelPicker.includes('gpt-6.2-sol'));assert.ok(!current.nativeModelPicker.includes('gpt-6.1-sol'));assert.equal(current.nativeModelPickerPlacement,'last');
+ assert.equal(codex.defaultForBareModels,true);assert.deepEqual(current.unknownRoot,{preserve:true});
+ const catalog=await get('/v1/model-catalog');assert.equal(catalog.models.find(m=>m.slug==='codex/gpt-6.1-sol').visibility,'hide');assert.equal(catalog.models.find(m=>m.slug==='codex/gpt-6.2-sol').visibility,'list');
+ const listed=await get('/v1/models');assert.ok(!listed.data.some(m=>m.id==='codex/gpt-6.1-sol'));assert.ok(listed.data.some(m=>m.id==='codex/gpt-6.2-sol'));
+ const info=await get('/v1/gateway-info');assert.ok(!info.providers.find(p=>p.id==='codex').models.some(m=>m.id==='codex/gpt-6.1-sol'));
+ for(const model of ['codex/gpt-6.1-sol','codex/gpt-6.2-sol']){const r=await fetch(`http://127.0.0.1:${port}/v1/responses`,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({model,input:'Local fixture only'})});assert.equal(r.status,200,'Old and new explicit routes must both remain usable');}
+ const inspected=await handleManagement({operation:'inspect',configPath:path},{lookupCli:async()=>true});assert.equal(inspected.ok,true);
+ const models=inspected.result.providers.find(p=>p.id==='codex').models;assert.equal(models.find(m=>m.id==='gpt-6.1-sol').enabled,false);assert.equal(models.find(m=>m.id==='gpt-6.2-sol').enabled,true);assert.equal(models.find(m=>m.id==='gpt-reserve-99').enabled,false,'Unrelated discovery must be visible but unchecked');
+ assert.equal((await get('/health')).configRejected||null,null);
+ await setAutoLatest(path,false,await revision(),{discoverModels,nativeHome});const beforeDisabled=discoveries;assert.equal((await reconcileAutoLatest(path,{discoverModels,nativeHome})).outcome,'disabled');assert.equal(discoveries,beforeDisabled);
+ assert.deepEqual(await Promise.all(['auth.json','config.toml'].map(f=>readFile(join(nativeHome,f),'utf8'))),sentinels);
+ console.log(JSON.stringify({passed:true,preservedSelectionAtEnable:true,baselineDisabledKeptOff:true,selectedFamiliesPromoted:true,unrelatedModelsVisibleOff:true,oldRoutesHiddenButRoutable:true,nativePickerUpdated:true,nativeAuthAndConfigUnchanged:true,disabledDoesNotDiscover:true,realGateway:true,localMockInferenceRequests:inferenceRequests,paidInferenceRequests:0,root}));
+}finally{if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}}

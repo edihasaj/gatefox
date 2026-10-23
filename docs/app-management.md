@@ -61,6 +61,11 @@ Creating a connection does not restart an existing service.
 
 ## Existing connections
 
+For opt-in updates of only the families already selected, use **Automatic latest
+models**. New unrelated models stay visible but unchecked, and older chat routes
+remain usable after leaving the picker. See [automatic latest models](auto-latest-models.md)
+for the five-minute schedule, provider dates, baseline and safety rules.
+
 The host view identifies **This Mac** and its computer name. Its connections and
 model selections belong to that Mac. A Codex SSH chat uses the gateway on the
 remote execution host, not the gateway on the Mac displaying the chat.
@@ -87,8 +92,9 @@ order without local editing controls.
 rows: First, Last, or Hidden. Last keeps them visible below the gateway groups.
 Hidden removes them only from the normal picker; it does not disable native
 chats, explicit model requests, or account authentication. The existing native
-model selection stays unchanged. Reconnect the adapter for a saved change to
-take effect; the app never restarts active chats to apply this preference.
+model selection stays unchanged. Current registered adapters apply a saved
+change on the next picker refresh; older adapters first need normal reconnection
+to load this behavior. The app never restarts active chats to apply a preference.
 
 Shared clients may edit this local native picker preference even though their
 remote provider catalog is read-only. It belongs to the execution host's own
@@ -152,7 +158,12 @@ output. API keys are never command arguments or environment values. Child
 output and raw exceptions are not displayed or logged.
 
 The operations are `inspect`, `prepare`, `authenticate`, `discover`, `commit`,
-`models`, `rename`, `reorder`, `native-picker`, `remove`, and `discard`. Reordering sends
+`models`, `rename`, `reorder`, `native-picker`, `auto-latest`, `auto-latest-check`,
+`remove`, and `discard`. `auto-latest` saves a boolean `enabled` with the reviewed
+revision, capturing today's selected families without changing model selection.
+`auto-latest-check` uses the reviewed revision to run one metadata-only check.
+Both report the effective policy and bounded check/scheduling status.
+Reordering sends
 `providerIds`, an exact permutation of all local connection IDs, together with
 the reviewed configuration revision. Duplicate, missing, or unknown IDs and
 outdated revisions are refused. An unchanged order does not rewrite the file.

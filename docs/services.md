@@ -824,3 +824,13 @@ The pinned SDK's Unix transport lacks its local-stdio biometric capability.
 Clients receive the SDK's actual capabilities, and the adapter does not bypass
 that restriction. Unix ownership tests do not establish every rendered desktop
 control or the built-in cloud connection.
+
+## Automatic model selection maintenance
+
+The optional [automatic latest models](auto-latest-models.md) setting owns a
+separate configuration-specific LaunchAgent, named
+`com.edihasaj.harness-gateway.models-<path-hash>`. It checks model metadata every
+five minutes through the installed managed launcher. It is not an inference
+service and never restarts one. Disabling the setting removes only its owned
+maintenance job. Install a release supporting `auto-latest probe` before enabling
+the setting; the app reports a scheduling failure if that command is unavailable.

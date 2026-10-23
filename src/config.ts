@@ -4,6 +4,9 @@ import { dirname, join, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
 import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-service-tiers.js";
+import { validateAutoLatestSettings } from "./model-auto-latest/settings.js";
+import type { AutoLatestSettings } from "./model-auto-latest/types.js";
+import { maximumReleasedAt, minimumReleasedAt } from "./model-auto-latest/metadata.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription";
 export interface ProviderConfig {
@@ -100,6 +103,10 @@ export interface ModelMetadata extends ModelServiceTierMetadata {
    * (vLLM's max_model_len); the saved and advertised contextWindow and maxContextWindow never exceed this value.
    */
   contextWindowCap?: number;
+  /** Set by automatic model upkeep once a newer version replaced this model in the picker. The route stays configured for saved chats. */
+  pickerHidden?: boolean;
+  /** The vendor's release time, UTC seconds. Never the time the gateway first saw the model. */
+  releasedAt?: number;
 }
 /** A second Codex account served by its own signed engine; an ID may equal a codex-subscription provider ID. */
 export interface AccountEngineConfig { id: string; label?: string; workspaceId?: string }
@@ -130,6 +137,8 @@ export interface GatewayConfig {
    * only. See docs/app-server.md.
    */
   nativeModelPickerPlacement?: NativeModelPickerPlacement;
+  /** Opt-in automatic newest-model upkeep. See docs/app-management.md. */
+  autoLatestModels?: AutoLatestSettings;
 }
 
 export type NativeModelPickerPlacement = "first" | "last" | "hidden";
@@ -159,6 +168,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const nativeModelPicker = config.nativeModelPicker === undefined ? undefined : validateNativeModelPicker(config.nativeModelPicker);
+  const autoLatestModels = config.autoLatestModels === undefined ? undefined : validateAutoLatestSettings(config.autoLatestModels);
   if (config.nativeModelPickerPlacement !== undefined && config.nativeModelPickerPlacement !== "first" && config.nativeModelPickerPlacement !== "last" && config.nativeModelPickerPlacement !== "hidden") throw new Error("nativeModelPickerPlacement must be first, last or hidden");
   const ids = new Set<string>(); const aliases = new Set<string>();
   const stateDirectory = resolve(directory, config.stateDirectory || ".state");
@@ -190,6 +200,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (metadata.effectiveContextWindowPercent !== undefined && !integerIn(metadata.effectiveContextWindowPercent, 50, 100)) throw new Error("effectiveContextWindowPercent must be an integer from 50 through 100");
       if ((metadata.autoCompactTokenLimit !== undefined && !integerIn(metadata.autoCompactTokenLimit, 1024)) || (metadata.maxContextWindow !== undefined && !integerIn(metadata.maxContextWindow, 1024))) throw new Error("autoCompactTokenLimit and maxContextWindow must be at least 1024 tokens");
       readServiceTierMetadata(metadata);
+      if (metadata.pickerHidden !== undefined && typeof metadata.pickerHidden !== "boolean") throw new Error("pickerHidden must be boolean");
+      if (metadata.releasedAt !== undefined && (!Number.isSafeInteger(metadata.releasedAt) || metadata.releasedAt < minimumReleasedAt || metadata.releasedAt >= maximumReleasedAt)) throw new Error("releasedAt must be UTC seconds within a plausible range");
     }
     // Only the chat adapter (and its discovery) connects through the address check; another adapter would send its key over plain HTTP unchecked.
     if (provider.tailnet !== undefined && provider.type !== "chat-completions-api") throw new Error(`${provider.id}: tailnet is only valid for chat-completions-api providers`);
@@ -246,7 +258,8 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),
-    ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}) };
+    ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}),
+    ...(autoLatestModels ? { autoLatestModels } : {}) };
 }
 
 /**
@@ -254,7 +267,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
  * at most 127 of the characters those IDs actually use. Nothing is coerced, trimmed, folded, or widened to a family, so a
  * shorter prefix can never stand in for an ID the user did not name, and the error text never repeats user content back.
  */
-function validateNativeModelPicker(value: unknown): string[] {
+export function validateNativeModelPicker(value: unknown): string[] {
   if (!Array.isArray(value) || !value.length || value.length > 256) throw new Error("nativeModelPicker must be a list of 1 to 256 model IDs");
   const seen = new Set<string>();
   for (const entry of value) {
