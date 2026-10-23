@@ -21,7 +21,7 @@ const upstreamCodes = new Set([
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",
   "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing",
   "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
-  "usage_limit_reached", "subscription_sharing_usage_limit_exceeded", "billing_hard_limit_reached", "billing_not_active",
+  "usage_limit_reached", "subscription_sharing_usage_limit_exceeded", "subscription_sharing_unsupported_capability", "billing_hard_limit_reached", "billing_not_active",
 ]);
 const claudeCredentialReasons = new Set(["login_unavailable", "session_expired", "credential_revoked", "upstream_rejected", "unknown"]);
 const streamEvents = new Set([

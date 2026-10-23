@@ -36,3 +36,26 @@ test("a sub-agent request with a bare model name is served instead of failing wi
     assert.equal((await fetch(url, { method: "POST", headers, body: JSON.stringify({ model: "gpt-9", input: "hi" }) })).status, 404);
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("a designated account wins independent of provider order and duplicate aliases within that account", () => {
+  const original = config(); original.providers[0].defaultForBareModels = true;
+  original.providers[0].models["aaa/sol"] = "gpt-6.1-sol";
+  original.providers.push({ id: "personal", type: "codex-subscription", credentialFile: "other", models: { "personal/sol": "gpt-6.1-sol" } });
+  assert.equal(nativeModelAlias(original, "gpt-6.1-sol"), "aaa/sol");
+  assert.equal(nativeModelAlias({ ...original, providers: [...original.providers].reverse() }, "gpt-6.1-sol"), "aaa/sol");
+  delete original.providers[0].defaultForBareModels;
+  assert.equal(nativeModelAlias(original, "gpt-6.1-sol"), undefined);
+  original.providers.pop();
+  assert.equal(nativeModelAlias(original, "gpt-6.1-sol"), "aaa/sol", "two aliases in one account are not two accounts");
+});
+
+test("Claude and Codex defaults are independent and a missing model never falls back across accounts", () => {
+  const value = config(); value.providers[0].defaultForBareModels = true;
+  value.providers.push({ id: "claude2", type: "claude-subscription", defaultForBareModels: true,
+    models: { "claude2/opus": "claude-opus-5-5" } });
+  assert.equal(nativeModelAlias(value, "claude-opus-5-5"), "claude2/opus");
+  assert.equal(nativeModelAlias(value, "gpt-6.1-sol"), "codex/gpt-6.1-sol");
+  value.providers[0].models = { "codex/terra": "gpt-5.6-terra" };
+  value.providers.push({ id: "personal", type: "codex-subscription", credentialFile: "other", models: { "personal/sol": "gpt-6.1-sol" } });
+  assert.equal(nativeModelAlias(value, "gpt-6.1-sol"), undefined);
+});

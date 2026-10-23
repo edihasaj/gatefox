@@ -94,6 +94,23 @@ network, MCP and permissions), so `gateway diagnostics` counts them together in 
 `autoReview` bucket: `completed`, `empty` and `failed:<code>`
 ([node_repl](node-repl.md#scope-data-and-decision)).
 
+## Subagent startup checks
+
+An agent's `pending_init` status alone does not establish a model startup failure.
+On 23 October 2026, a Qwen child reported that status even though its saved turn
+contained model output and 16 executed tool calls. Another child had no model
+output and no terminal error, so those records do not establish its failure cause.
+A fresh Qwen role check subsequently executed a command and returned its result.
+Check actual turn events and tool results before attributing a failure to login,
+model routing, or the provider. Delays and missing terminal events need separate
+investigation; do not turn a status observation into a claimed authentication error.
+
+`scripts/e2e-subagent-sidebar.mjs --v2 --openai` verifies real SDK delegation,
+child tool execution, readable history, queued messages, and follow-up work with
+mock inference. Add `--accounts` to require every bare-model child request to use
+the designated account while two Codex accounts offer the same model. This does
+not test real provider latency or the desktop's rendering.
+
 ## Gateway-rule refusals and dropped control items
 
 Two fixed fields describe how the gateway treated a Responses request before any provider ran

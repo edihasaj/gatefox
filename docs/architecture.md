@@ -47,6 +47,18 @@ alongside the requests it already accepted.
 
 ### Live configuration
 
+Bare subagent model names can use an explicit account default. Set
+`"defaultForBareModels": true` on one `codex-subscription` provider and/or one
+`claude-subscription` provider. The default serves only models it offers; failure
+or a missing model never selects another account. Explicit configured aliases
+always retain precedence. Without a default, a bare name requires exactly one
+matching subscription account; duplicate aliases within that account resolve
+deterministically. The unnamed automatic reviewer uses the designated Codex
+account too, and its catalog advertisement and request route use the same rule.
+This setting does not infer the parent chat's account or select an agent model.
+Changes apply to later requests, while in-flight requests keep their original
+configuration and account.
+
 An inference keeps the configuration snapshot with which it began. New requests
 load atomically replaced configuration. A change that cannot be applied live is
 refused, not served as an error: the last good configuration keeps serving and the

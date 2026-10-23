@@ -29,6 +29,13 @@ export interface ProviderConfig {
   /** Grok subscription only: the private Grok home the gateway signs in once (default <stateDirectory>/grok-home). */
   grokHome?: string;
   /**
+   * Codex or Claude subscription only: the operator designates this account as the one that serves its vendor's bare model
+   * names (a sub-agent's `gpt-5.6-terra` or `claude-opus-5-5`, and an unnamed reviewer). At most one provider per type may
+   * set it true; `false` designates nothing. A bare name never falls back onto a non-designated account. This is an
+   * operator-selected default, not an inherited parent account: the SDK sends no parent account with a sub-agent request.
+   */
+  defaultForBareModels?: boolean;
+  /**
    * Codex subscription only: how a client-run `tool_search` travels upstream. `off` (the default) drops the tool and its
    * replayed items, because the ChatGPT backend refuses a forwarded `tool_search`; `bridge` sends the search as an ordinary
    * function tool inside the gateway namespace, which the client still executes. Capability metadata, so it applies live.
@@ -183,6 +190,10 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
+    if (provider.defaultForBareModels !== undefined) {
+      if (provider.type !== "codex-subscription" && provider.type !== "claude-subscription") throw new Error(`${provider.id}: defaultForBareModels is only valid for codex-subscription or claude-subscription providers`);
+      if (typeof provider.defaultForBareModels !== "boolean") throw new Error(`${provider.id}: defaultForBareModels must be boolean`);
+    }
     // An opt-in capability, not an account or a route: `bindings` leaves it out, so a change applies live, without a rebind.
     if (provider.toolSearch !== undefined) {
       if (provider.type !== "codex-subscription") throw new Error(`${provider.id}: toolSearch is only valid for codex-subscription providers`);
@@ -212,6 +223,10 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       ...(provider.type === "grok-subscription" ? { grokHome: resolve(directory, provider.grokHome ?? join(stateDirectory, "grok-home")) } : {}) };
   });
   const accountEngines = config.accountEngines === undefined ? undefined : validateAccountEngines(config.accountEngines, providers);
+  // Two defaults of the same type would make a bare name depend on configuration order, so one designation per vendor is the rule.
+  for (const type of ["codex-subscription", "claude-subscription"] as const) {
+    if (providers.filter(provider => provider.type === type && provider.defaultForBareModels === true).length > 1) throw new Error(`Only one ${type} provider may set defaultForBareModels`);
+  }
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}) };

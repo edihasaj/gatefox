@@ -253,13 +253,20 @@ rejected `rate_limit_event`, and a Copilot error that names a rate limit without
 usage-limit or quota wording, are retryable throttles too.
 Responses streams recognize explicit usage, credit, quota, and billing classes
 in either the upstream error's `code` or `type`. A named quota takes precedence
-over a temporary rate-limit class. Exhausted credits report
+over a temporary rate-limit class. HTTP quota failures retain the allowlisted class,
+HTTP status, and validated request ID for diagnostics too. Exhausted credits report
 "Provider credits or quota are exhausted"; a subscription usage limit reports
 "Provider usage limit reached". Private upstream error prose is never shown.
 Upstream rejections that would repeat identically (`invalid_prompt`,
 `invalid_encrypted_content`, `cyber_policy`, `bio_policy`,
 `misalignment_policy_violation`, `usage_not_included`), from a stream or an HTTP
-body, become `upstream_rejected` with a fixed message per class. Diagnostics keep
+body, become `upstream_rejected` with a fixed message per class. A recognized refusal
+in `error.type` is retained even beside a generic `error.code`. The
+`subscription_sharing_unsupported_capability` refusal also becomes final, with guidance
+to use a supported gateway tool or native Codex instead of retrying the same request.
+These classifications do not bypass provider policy, grant capabilities, or change
+subscription allowances. The sharing-limit message names gateway subscription sharing;
+it does not establish the native account's remaining allowance. Diagnostics keep
 the exact upstream code and HTTP status. `content_filter`, `max_output_tokens` and
 unknown stream codes stay retryable, as they are in native Codex. A body code such
 as `server_is_overloaded` marks a transient failure only in a stream; an HTTP 4xx
@@ -441,11 +448,11 @@ Codex loads the new one.
   (the model searches, then calls the tool the search loaded) through the gateway's own
   provider code against a scripted backend, for a top-level and a Responses lite request, and
   checks that nothing of the `tool_search` type or `defer_loading` reaches the wire. Without
-  `--dry-run` it makes the same four requests to the real backend. On 22 Oct 2026 all four
-  passed the backend's request validation and were refused only for the account's sharing
-  usage limit, exactly like a request with no tools; the backend validates a request before it
-  checks the allowance, which is how it refused the raw `tool_search` type with a 400. Whether
-  the model actually uses the search function is still to be observed once the limit resets.
+  `--dry-run` it makes the same four requests to the real backend. On 23 Oct 2026 all four
+  completed: for both shapes the model called the search bridge, then called the fixture
+  tool returned by that search. The dry run passed too. This establishes the bridge's
+  real inference and replay behavior; it does not make the raw `tool_search` type supported
+  by the subscription endpoint. The installed setting remains off until explicitly enabled.
 - **Bridge risks.** Loading tools on a request
   that is not Responses lite changes the top-level tool list, which can lower prompt cache
   hits from that point. The model sees a function rather than the tool type it was trained
@@ -483,9 +490,9 @@ is not forwarded as such (it is off, or bridged as a function) while web search 
 
 `scripts/probe-hosted-tools.mjs` asks the backend directly, one short request per case,
 and records only status codes and fixed error fields. On 21 Oct 2026 it showed the refusal
-above for `tool_search`, and showed that `web_search` passed the backend's tool check. The
-account had reached its sharing usage limit, so no search had completed yet; rerun the probe
-after the limit resets to observe a `web_search_call` result. The same run showed that
+above for `tool_search`, and showed that `web_search` passed the backend's tool check.
+On 23 Oct 2026 a real request through `ResponsesAPI` completed with a completed
+`web_search_call`, establishing actual hosted search execution too. The earlier run showed that
 `https://chatgpt.com/backend-api/codex`, which native Codex uses, answers 401 to the
 gateway's own login, so the gateway keeps `https://api.openai.com/v1`.
 

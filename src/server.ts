@@ -32,8 +32,11 @@ import { flushRecords, gatewayMarkedId, recordUsage, usageLedgerMarks, type Ledg
 import { releaseState } from "./self-update.js";
 import { reportException } from "./error-report.js";
 import type { ClaudeLimit } from "./providers/claude-usage.js";
+import type { CodexUsageObserver } from "./providers/codex-usage.js";
 import { runShutdownHooks, runtimeBusy, shutdownDrainMs } from "./runtime-activity.js";
 import { autoReviewModels, isAutoReviewModel } from "./auto-review.js";
+export { autoReviewProvider, autoReviewTarget, nativeModelAlias } from "./model-routing.js";
+import { autoReviewTarget, nativeModelAlias } from "./model-routing.js";
 import { hasPlanLogin } from "./auth/chatgpt.js";
 import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
 
@@ -64,26 +67,6 @@ async function drainUsage(source: AsyncIterator<InferenceEvent>, take: (event: I
   } catch { /* A stopped provider ends by throwing; the usage it reported is already taken. */ }
   finally { clearTimeout(timer); }
 }
-/** The one subscription alias that serves a bare vendor model name, if unambiguous. */
-export function nativeModelAlias(config: GatewayConfig, model: string): string | undefined {
-  const vendor = /^claude-/.test(model) ? "claude-subscription" : /^(gpt-|o\d|codex-)/.test(model) ? "codex-subscription" : undefined;
-  if (!vendor) return;
-  const matches = config.providers.filter(provider => provider.type === vendor).flatMap(provider => Object.entries(provider.models).filter(([, upstream]) => upstream === model).map(([alias]) => alias));
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
-/** The only Codex subscription provider serves an unnamed reviewer; ambiguity fails closed. */
-export function autoReviewProvider(config: GatewayConfig, slug: string): ProviderConfig | undefined {
-  if (!isAutoReviewModel(slug)) return;
-  const codex = config.providers.filter(provider => provider.type === "codex-subscription");
-  return codex.length === 1 ? codex[0] : undefined;
-}
-/** Where a reviewer slug goes: an alias for it keeps its precedence, as for any bare model name, and otherwise the one Codex subscription. */
-export function autoReviewTarget(config: GatewayConfig, slug: string): ProviderConfig | undefined {
-  if (!isAutoReviewModel(slug)) return;
-  const alias = config.providers.some(provider => Object.hasOwn(provider.models, slug)) ? slug : nativeModelAlias(config, slug);
-  return (alias ? config.providers.find(provider => Object.hasOwn(provider.models, alias)) : undefined) ?? autoReviewProvider(config, slug);
-}
 /** The reviewer slugs this gateway can serve to a Codex login right now; any failure advertises nothing. */
 async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
   try {
@@ -100,8 +83,8 @@ async function advertisedReviewers(config: GatewayConfig): Promise<string[]> {
   } catch { return []; }
 }
 
-export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void): Provider {
-  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config);
+export function createProvider(config: ProviderConfig, onUsage?: (limit: ClaudeLimit) => Promise<void>, onContextWindow?: (model: string, contextWindow: number) => void, onCodexUsage?: CodexUsageObserver): Provider {
+  return config.type === "claude-subscription" ? new ClaudeSubscription(config, onUsage, onContextWindow) : config.type === "copilot-subscription" ? new CopilotSubscription(config) : config.type === "grok-subscription" ? new GrokSubscription(config, onContextWindow) : config.type === "anthropic-api" ? new AnthropicAPI(config) : config.type === "chat-completions-api" ? new ChatCompletionsAPI(config) : new ResponsesAPI(config, config.type === "codex-subscription" ? onCodexUsage : undefined);
 }
 /** Whole-request cap: it bounds gateway memory while letting the upstream set its own large limit. */
 export const maxRequestBytes = 64 * 1024 * 1024;
@@ -235,11 +218,13 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const admissions = options.admissionRegistry ?? new AdmissionRegistry();
   const buildRoutes = (current: GatewayConfig) => {
     admissions.configure(current);
-    const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window))] as const));
+    const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
     const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
-    // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and reasoning scope match.
+    // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and
+    // reasoning scope match. Resolution follows autoReviewTarget, the same account rule /v1/model-catalog advertises under,
+    // so the gateway never advertises a reviewer a request would resolve differently.
     const reviewers = new Map(autoReviewModels.flatMap(slug => {
-      const provider = autoReviewProvider(current, slug);
+      const provider = autoReviewTarget(current, slug);
       return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
     }));
     return { routes, reviewers, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };

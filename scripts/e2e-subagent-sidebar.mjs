@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
-  v2: { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
+  v2: { type: 'boolean' }, accounts: { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
 const pkg = resolve(values.package), root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-child-');
@@ -51,7 +51,10 @@ const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
     modelMetadata: { [alias]: { contextWindow: 100_000, reasoningEfforts: ['low', 'ultra'],
       multiAgentVersion: values.v2 ? 'v2' : 'v1', multiAgentReasoningEffort: 'low' } } }] };
 const serverConfig = structuredClone(config);
-serverConfig.providers[0].models[childModel] = 'mock-child';
+if (values.accounts) {
+  for (const id of ['other', 'selected']) serverConfig.providers.push({ id, type: 'codex-subscription',
+    credentialFile: join(state, id + '.json'), defaultForBareModels: id === 'selected', models: { [id + '/' + childModel]: childModel } });
+} else serverConfig.providers[0].models[childModel] = 'mock-child';
 const until = async (check, label, ms = 30_000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { const result = await check(); if (result) return result; await delay(25); }
@@ -60,7 +63,8 @@ const until = async (check, label, ms = 30_000) => {
 let calls = 0, childCalls = 0, spawned = false, gateway, host, phase = 'setup', parentOperation;
 const clients = [];
 const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'subscription_gateway',
-  realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1', passed: false };
+  realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1',
+  ...(values.accounts ? { codexAccounts: 2, childAccount: 'selected' } : {}), passed: false };
 const taskProof = 'TASK_' + randomUUID(), fileProof = 'FILE_' + randomUUID();
 let requiredProof = taskProof, childCallId = 'fixture_child_read', queuedProof;
 const taskFile = join(work, 'delegation-proof.txt');
@@ -75,11 +79,14 @@ const callFor = (tool, id, args) => ({ type: 'tool', call: { type: 'function', i
   responseTool: { type: 'function', name: tool.name, ...(tool.namespace ? { namespace: tool.namespace } : {}) },
   function: { name: tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name, arguments: JSON.stringify(args) } } });
 try {
-  gateway = await startGateway(serverConfig, () => ({
+  gateway = await startGateway(serverConfig, provider => ({
     async *infer(request) {
       calls++;
-      const childRequest = request.model === 'mock-child';
-      if (childRequest) childCalls++;
+      const childRequest = request.model === (values.accounts ? childModel : 'mock-child');
+      if (childRequest) {
+        childCalls++;
+        if (values.accounts) assert.equal(provider.id, 'selected', 'Every bare-model child inference uses the designated account');
+      }
       if (request.model === 'mock-parent' && parentOperation) {
         const operation = parentOperation; parentOperation = undefined;
         const tool = toolsFor(request).find(tool => tool.name === operation.name);
@@ -108,7 +115,8 @@ try {
             yield callFor(tool, childCallId, { cmd: `cat ${taskFile}` });
           } else {
             assert.ok(output.content.includes(fileProof), 'The real child command must return the file proof');
-            evidence.childToolExecuted = true;
+            if (requiredProof === taskProof) evidence.childToolExecuted = true;
+            else evidence.followupToolExecuted = true;
             yield { type: 'text', text: 'SIDEBAR_FIXTURE_COMPLETE ' + requiredProof + ' ' + fileProof };
           }
         }
@@ -247,11 +255,18 @@ try {
       evidence.queuedMessageDidNotWakeChild = true;
       const previous = calls;
       requiredProof = 'FOLLOWUP_' + randomUUID(); childCallId = 'fixture_child_followup_read';
-      evidence.childInferenceFinished = false;
+      evidence.childInferenceFinished = false; evidence.followupToolExecuted = false;
       parentOperation = { name: 'followup_task', args: { target: 'sidebar_fixture', message: 'Read the proof file again and return ' + requiredProof } };
       await controller.router.request('turn/start', { threadId: parent.thread.id,
         input: [{ type: 'text', text: 'Send the next child task.' }] });
-      await until(() => calls > previous && evidence.childInferenceFinished, 'Child followup');
+      await until(async () => {
+        if (calls <= previous || !evidence.childInferenceFinished) return false;
+        if (!values['expect-payload-loss'] && !evidence.followupToolExecuted) return false;
+        const { thread } = await controller.router.request('thread/read', { threadId: id, includeTurns: true });
+        const last = thread.turns.at(-1);
+        return last?.status === 'completed' && (values['expect-payload-loss'] || last.items.some(item =>
+          item.type === 'agentMessage' && item.text?.includes(requiredProof) && item.text?.includes(fileProof)));
+      }, 'Child followup');
       assert.equal(evidence.followupPayloadDelivered, !values['expect-payload-loss'], 'The parent followup must reach its child');
       assert.equal(evidence.queuedMessagePayloadDelivered, !values['expect-payload-loss'], 'The queued message must accompany the followup');
       evidence.childContinued = !values['expect-payload-loss'];
@@ -269,6 +284,10 @@ try {
   } else assert.ok(evidence.baselineRejection, 'Baseline must reproduce the original rejection');
   assert.equal(await readFile(join(native, 'config.toml'), 'utf8'),
     `model = "${childModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`);
+  if (values.accounts) {
+    assert.ok(childCalls >= 2, 'The real SDK child must infer and execute its tool through the selected account');
+    evidence.childAccountVerified = true;
+  }
 } catch (error) {
   evidence.phase = phase;
   evidence.error = error.message;

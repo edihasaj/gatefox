@@ -6,6 +6,21 @@ const claude = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "
 const codex = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", credentialFile: "codex.json", models: { "codex/sol": "sol" }, ...extra });
 const config = (providers: unknown[], extra: Record<string, unknown> = {}) => validateConfig({ version: 1, port: 1, stateDirectory: "/tmp/state", providers, ...extra }, "/tmp");
 
+test("bare-model defaults require subscription accounts and one boolean designation per vendor", () => {
+  const first = codex({ defaultForBareModels: true });
+  const second = codex({ id: "personal", models: { "personal/sol": "sol" }, defaultForBareModels: false });
+  const configured = config([first, second, claude({ defaultForBareModels: true })]);
+  assert.equal(configured.providers[0].defaultForBareModels, true);
+  assert.equal(configured.providers[1].defaultForBareModels, false);
+  assert.equal(configured.providers[2].defaultForBareModels, true);
+  assert.throws(() => config([first, { ...second, defaultForBareModels: true }]), /Only one codex-subscription/);
+  assert.throws(() => config([claude({ defaultForBareModels: true }), claude({ id: "claude2", models: { other: "other" }, defaultForBareModels: true })]), /Only one claude-subscription/);
+  for (const value of [null, 0, 1, "true", [], {}]) assert.throws(() => config([{ ...first, defaultForBareModels: value }]), /must be boolean/);
+  for (const type of ["responses-api", "anthropic-api", "chat-completions-api"] as const) {
+    for (const value of [false, true]) assert.throws(() => config([{ ...first, type, baseUrl: "https://example.test/v1", defaultForBareModels: value }]), /only valid for codex-subscription or claude-subscription/);
+  }
+});
+
 test("claudeSessions is optional, defaulted, limited and only valid on Claude subscriptions", () => {
   const gib = 1024 ** 3;
   // The default cap is a tenth of RAM in 300 MB slots, clamped to 6..32: small Macs keep today's 6.

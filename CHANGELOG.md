@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Subscription accounts can designate a default for bare subagent model names. Account-qualified aliases keep their own routing, and automatic review uses the same designated Codex account. Adding a second account no longer makes these names ambiguous when a default is configured.
+
+- Codex subscription routes can report provider-supplied quota windows alongside Claude observations without changing native account usage. Missing counters remain unavailable, and replacing a credential file invalidates its old observations.
+
+- The gateway now distinguishes unsupported subscription capabilities and policy refusals carried in an error type from generic inference failures. HTTP quota failures retain their safe diagnostic class, and sharing-limit messages identify gateway subscription sharing without claiming the native account is exhausted.
+
 Legacy standalone service installation now confirms that the previous job and
 process have stopped before loading a replacement or a restored definition.
 Provider maintenance failures retain bounded, scrubbed diagnostic metadata so
@@ -212,6 +218,17 @@ the abandoned request before the fix and verifies the listener stays available
 after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
+
+## 0.7.8 — 2026-10-23
+
+Subscription accounts can designate a default for bare subagent model names,
+including automatic review. Explicit account aliases retain their routes, and
+missing models never fall back to another account. The release also improves
+subscription refusal diagnostics and records Codex quota counters when the
+provider supplies them. Native account usage remains unchanged. Real SDK tests
+verified child tools, saved history, queued messages, and follow-up work with
+two configured Codex accounts. Thanks to @edihasaj for identifying the account
+routing gap and testing phone continuation.
 
 ## 0.7.7 — 2026-10-23
 
