@@ -141,6 +141,7 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
       const reason = allowlisted(own(upstream, "reason"), claudeCredentialReasons);
       if (reason) result.upstreamReason = reason;
     }
+    if (upstreamCode === "invalid_request" && (event === "claude.assistant" || event === "claude.result") && own(upstream, "reason") === "reasoning_extraction") result.upstreamReason = "reasoning_extraction";
     if (typeof subtype === "string" && ["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries", "unknown"].includes(subtype)) result.upstreamSubtype = subtype;
     if (typeof upstreamRequestId === "string" && /^[a-z0-9_-]{1,128}$/i.test(upstreamRequestId)) result.upstreamRequestId = upstreamRequestId;
     const stream = own(upstream, "stream");

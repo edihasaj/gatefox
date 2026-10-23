@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Claude request rejections now stop retrying and preserve a safe, specific explanation when Claude refuses a chat under its private-reasoning protection policy. Caller history and model choices remain unchanged. Thanks to Edi Hasaj for reporting the failed chat.
+
+
 - Subscription accounts can designate a default for bare subagent model names. Account-qualified aliases keep their own routing, and automatic review uses the same designated Codex account. Adding a second account no longer makes these names ambiguous when a default is configured.
 
 - Codex subscription routes can report provider-supplied quota windows alongside Claude observations without changing native account usage. Missing counters remain unavailable, and replacing a credential file invalidates its old observations.

@@ -1,6 +1,7 @@
 import { ProviderError } from "./provider.js";
 import { claudeLimitMessage, type ClaudeLimit } from "./claude-usage.js";
 import { claudeAuthenticationFailure } from "./claude-auth.js";
+import { claudeRequestRejection } from "./claude-request-rejection.js";
 
 const codes = new Set(["rate_limit", "authentication_failed", "billing_error", "server_error", "invalid_request", "unknown"]);
 const subtypes = new Set(["success", "error_during_execution", "error_max_turns", "error_max_budget_usd", "error_max_structured_output_retries"]);
@@ -55,6 +56,8 @@ export function claudeFailure(message: Record<string, unknown>, limit?: ClaudeLi
   if (code === "billing_error") return new ProviderError("insufficient_quota", billingMessage, 429, upstream);
   if (code === "server_error") return new ProviderError("upstream_unavailable", "Claude service is temporarily unavailable", 503, upstream);
   if (creditRefusal(message)) return new ProviderError("insufficient_quota", billingMessage, 429, upstream);
+  const rejection = claudeRequestRejection(message); if (rejection) return rejection;
+  if (code === "invalid_request") return new ProviderError("invalid_request", "Claude rejected this request. Review the request and chat history before trying again.", 400, upstream);
   const subtype = typeof message.subtype === "string" && subtypes.has(message.subtype) ? message.subtype : "unknown";
   return new ProviderError("inference_failed", "Claude inference did not complete", 502,
     { ...upstream, ...(result ? { subtype } : {}) });

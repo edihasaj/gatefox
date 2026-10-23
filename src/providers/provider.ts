@@ -1,6 +1,6 @@
 import type { ResponsesRequest, InferenceEvent } from "../protocol/types.js";
 export interface ProviderStreamDiagnostic { events: number; lastEvent?: string; reasoningItems: number; textDeltas: number; toolCalls: number }
-export type ProviderUpstreamReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "unknown";
+export type ProviderUpstreamReason = "login_unavailable" | "session_expired" | "credential_revoked" | "upstream_rejected" | "reasoning_extraction" | "unknown";
 export class ProviderError extends Error {
   constructor(readonly code: string, message: string, readonly status = 502,
     readonly upstream?: { code?: string; event?: string; requestId?: string; retryAfterMs?: number; subtype?: string; httpStatus?: number; stream?: ProviderStreamDiagnostic;

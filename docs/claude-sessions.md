@@ -119,6 +119,16 @@ Nothing is written to `~/.claude`: sessions use `--no-session-persistence` and a
 private working directory under `$TMPDIR/gateway-claude`, which the next start sweeps
 after a crash. Live sessions set `DISABLE_AUTO_COMPACT=1`; Codex owns compaction.
 
+## Request rejections
+
+Claude `invalid_request` failures are final HTTP 400 errors. Responses streams
+use `invalid_prompt`, so the desktop stops retrying an unchanged rejected request.
+A recognized credit refusal still takes billing precedence, and context overflow
+still permits the caller's normal compaction recovery. The native
+`reasoning_extraction` refusal gets a fixed explanation of Claude's protection
+policy; the gateway preserves caller history, instructions and model choice.
+See [request rejection diagnostics](diagnostics.md#claude-request-rejections).
+
 ## Authentication failures
 
 The CLI's `authentication_failed` code does not by itself prove that the user must

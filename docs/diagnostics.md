@@ -234,6 +234,22 @@ fixed outcome (`attempted`, `recovered`, `failed`, or `cancelled`). These record
 distinguish a bounded recovery from a final login failure without treating local
 credential presence as proof of working authentication.
 
+## Claude request rejections
+
+Native Claude `invalid_request` failures are final request errors. JSON clients
+receive HTTP 400; Responses streams receive `invalid_prompt`, and Messages
+streams receive `invalid_request_error`. Clients must not repeat the unchanged
+request as a transient disconnect. Context overflow still uses its separate
+`context_length_exceeded` classification so the client can compact normally.
+
+When a bounded native failure diagnostic begins with `API Error:` and carries
+the fixed `reasoning_extraction` details marker line, the gateway returns a fixed
+explanation of Claude's private-reasoning refusal. Telemetry stores only
+`upstreamReason: reasoning_extraction`. It never stores the diagnostic prose,
+provider request/message IDs from that prose, caller content or credentials.
+The gateway does not rewrite the chat, remove caller instructions, switch
+models, or try to bypass the provider's refusal.
+
 ## Grok CLI records
 
 Each Grok subscription request writes one `grok_cli` event: `model`, `effort`,
