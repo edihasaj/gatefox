@@ -10,6 +10,7 @@ import type { Message } from "./app-server-connection.js";
 import { writePrivateJson } from "./config.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState } from "./self-update.js";
+import { ownerStamp } from "./boot-identity.js";
 import { isManagedSshSocket, previousLease, repairSshLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
 
 /** What the process owning a listener uses to retire it after an install. */
@@ -131,6 +132,8 @@ export async function serveUnix(path: string, signal: AbortSignal,
     server.listen(boundPath); await once(server, "listening"); await chmod(boundPath, 0o600);
     const bound = await lstat(boundPath, { bigint: true }); inode = String(bound.ino); device = String(bound.dev);
     let replaced = false;
+    // Asked before the lock is taken: it may run `ps`. A machine that cannot answer records fewer fields, never a guess.
+    const stamp = await ownerStamp();
     await withPrivateFileLock(path + ".gateway-lease", async () => {
       // The atomic swap: the retired listener's alias is replaced here, never before this lock, so
       // a bind that fails for any other reason leaves the old listener published and serving.
@@ -162,7 +165,7 @@ export async function serveUnix(path: string, signal: AbortSignal,
       await link(boundPath, staged);
       try {
         await writePrivateJson(leasePath,
-          { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}), ...(displaced ? { previous: displaced } : {}) });
+          { inode, device, boundPath, ...(typeof release === "string" && releasePattern.test(release) ? { release } : {}), ...stamp, pid: process.pid, ...(displaced ? { previous: displaced } : {}) });
         await rename(staged, path);
       } catch (error) {
         await abandonPublish(leasePath, staged, before);

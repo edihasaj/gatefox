@@ -304,3 +304,33 @@ test("a receipt that is a link or a pipe is moved aside as it is, and what it na
     assert.equal(pipes.length, 1);
   } finally { await f.clean(); }
 });
+
+// What the reported reboot left: the advertised link, a recorded device number the machine no longer uses, and the SDK folder gone.
+async function driftedLinkReceipt(f: Awaited<ReturnType<typeof fixture>>, bootId: string) {
+  await f.danglingLink(f.socketPath);
+  const info = await lstat(f.socketPath);
+  await f.receipt({ bootId, socket: { inode: String(info.ino), device: String(info.dev + 1), targetPath: await sdkSocketTarget(f.socketPath) } });
+}
+
+test("a rebooted machine reclaims a dangling SDK link whose recorded device number changed", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    setBootIdentityForTests(current);
+    await driftedLinkReceipt(f, earlier); await f.dropRoot();
+    const owner = await claimHost(f.home, f.identity);
+    assert.equal(owner.pid, process.pid); assert.equal(owner.bootId, current.id);
+    await assert.rejects(lstat(f.socketPath), { code: "ENOENT" });
+    assert.deepEqual((await f.reclaims()).map(event => event.reason), ["previous_boot"]);
+  } finally { await f.clean(); }
+});
+
+test("the same device mismatch within the current boot is refused and preserved", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    setBootIdentityForTests(current);
+    await driftedLinkReceipt(f, current.id);
+    await assert.rejects(claimHost(f.home, f.identity), /another listener/);
+    assert.ok((await lstat(f.socketPath)).isSymbolicLink());
+    assert.deepEqual(await f.reclaims(), []);
+  } finally { await f.clean(); }
+});

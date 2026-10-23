@@ -454,6 +454,10 @@ fix (another live owner, a changed identity, an invalid engine or receipt) gets 
 kicked start per backoff step. Adapters that need the host fail closed until a retry
 succeeds.
 
+Previous-boot socket receipts also recover when macOS assigns a new filesystem
+device number. The host reclaims only validated dead runtime entries, preserving
+live listeners and uncertain ownership. See [reboot recovery](reboot-recovery.md).
+
 The first host start after an install is the first run of that release's engine
 binary, and macOS checks a newly written executable before its first run prints
 anything: about 3 seconds for the 335 MB gateway SDK on an M5 Pro, 0.01 seconds

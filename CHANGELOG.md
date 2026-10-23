@@ -219,6 +219,15 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.7.7 — 2026-10-23
+
+SSH listeners and shared executor hosts now recover their managed stale sockets
+when a reboot changes the filesystem device number. Recovery recognizes prior
+boot ownership, including legacy records, rechecks the current socket identity,
+and preserves live listeners and uncertain ownership. Each machine recreates its
+own runtime endpoints through the existing connection and service retry paths.
+Thanks to @edihasaj for reporting the Studio reconnect failure.
+
 ## 0.7.6 — 2026-10-22
 
 Shared app-server connections now keep reading after a message handler fails,
