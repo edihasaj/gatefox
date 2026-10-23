@@ -49,6 +49,22 @@ test("native billing failures and result-only credit refusals explain the accoun
   assert.equal(failure.code, "insufficient_quota", "billing precedes unstructured auth and usage-limit heuristics");
 });
 
+test("a Claude assistant invalid_request is a safe non-retryable request failure", () => {
+  const privateText = "private account and request details";
+  const failure = claudeFailure({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: privateText }] } })!;
+  assert.equal(failure.code, "invalid_request"); assert.equal(failure.status, 400);
+  assert.equal(streamFailureCode(failure), "invalid_prompt");
+  assert.ok(!JSON.stringify(failure).includes(privateText));
+});
+
+test("a Claude result invalid_request is a safe non-retryable request failure", () => {
+  const privateText = "private account and request details";
+  const failure = claudeFailure({ type: "result", is_error: true, error_code: "invalid_request", result: privateText })!;
+  assert.equal(failure.code, "invalid_request"); assert.equal(failure.status, 400);
+  assert.equal(streamFailureCode(failure), "invalid_prompt");
+  assert.ok(!JSON.stringify(failure).includes(privateText));
+});
+
 test("credit diagnosis ignores successful prose, unknown errors, tool data and unbounded diagnostics", () => {
   const credit = "Credit balance is too low";
   assert.equal(claudeFailure({ type: "assistant", message: { content: [{ type: "text", text: credit }] } }), undefined);

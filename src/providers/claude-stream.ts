@@ -45,8 +45,8 @@ export function claudeResultFailure(result: Record<string, unknown>, limit?: Cla
   const authentication = claudeAuthenticationFailure(result); if (authentication) return authentication;
   const failure = claudeFailure({ ...result, is_error: true }, limit)!;
   // A structured provider classification wins over explanatory result prose.
-  if (typeof result.error_code === "string" && ["rate_limit", "authentication_failed", "billing_error", "server_error"].includes(result.error_code)) return failure;
-  if (failure.code === "insufficient_quota") return failure;
+  if (typeof result.error_code === "string" && ["rate_limit", "authentication_failed", "billing_error", "server_error", "invalid_request"].includes(result.error_code)) return failure;
+  if (failure.code === "insufficient_quota" || failure.upstream?.reason === "reasoning_extraction") return failure;
   const diagnosis = typeof result.result === "string" ? result.result : "";
   // "Server is temporarily limiting requests (not your usage limit)" is the CLI's transient
   // subscriber 429; it stays a throttle even after a rejected event for another window.
