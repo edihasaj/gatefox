@@ -143,32 +143,39 @@ the model catalog and individual model detail required by the native picker.
 An optional private audit records only configured route identity and status,
 never prompts, tool arguments, headers, or credentials.
 
-## Explicit thinking and speed selections
+## One row per model, native thinking controls
 
 Claude Desktop obtains its native effort controls from Anthropic's signed model
-catalog. Opaque gateway aliases cannot supply that catalog metadata. The gateway
-profile therefore also offers explicit model variants for discovered thinking
-levels and speed tiers. Primary Claude models keep their native Standard effort
-control and gain explicit Fast entries at each supported effort. GPT, Qwen and
-secondary accounts gain explicit effort entries; transports that support speed
-also gain the effort × speed combinations. Selecting a variant selects its
-effort and speed for the same provider, account and model. Standard uses the
-`default` service tier; Fast appears only when discovery advertises it.
-Thinking effort and speed remain separate controls in the underlying request.
-These entries do not add Codex's Ultra agent orchestration to Claude Desktop.
+catalog. The profile lists exactly one picker row per model and never lists
+effort or speed variants as separate rows. Recognized Claude IDs show the app's
+native effort control; the profile writes an accurate `maxEffort` for them (the
+model's highest supported effort, bounded by any cap already in the profile, so
+a user's lower cap is kept). Opaque GPT, Qwen and secondary-account aliases
+carry no Claude family identity and expose no native effort control, because the
+app cannot learn their effort levels from its signed catalog. Their existing
+`maxEffort` of `high` is unchanged and does not add controls.
+These rows do not add Codex's Ultra agent orchestration to Claude Desktop.
+
+The adapter still accepts the deterministic explicit effort and speed aliases
+that earlier profiles listed, so chats saved against them keep working. They are
+backend-only: never written to the profile and never shown in the picker. Each
+carries an explicit effort and, where the transport honors it, a service tier
+(`default` for Standard). The generated count is bounded at 1000. Configuration
+fails with the required count when a catalog would exceed it and never evicts an
+alias, because a dropped alias would break a saved chat. Remove models or service
+tiers to get back under the bound.
 
 Re-run `claude-desktop configure` to prepare the updated profile, then apply it
 after finishing Claude work and quitting its GUI. Existing base route IDs remain
-available for saved chats. The app's native effort control can still appear for
-recognized Claude IDs; an explicit variant's label is authoritative for that
-variant, including tool continuations.
+available for saved chats. An explicit alias's effort is authoritative for that
+alias, including tool continuations.
 An explicit effort variant enables adaptive thinking when the app sends its
 unknown-model disabled default. Existing adaptive display preferences are kept;
 fixed token budgets remain unsupported.
 Native auxiliary Auto reviews keep their original generation controls.
-The profile must fit Claude Desktop's 200-entry limit. Configuration reports
-the required counts and fails when the full selection would exceed that limit;
-it never silently drops models or choices.
+The visible profile rows must fit Claude Desktop's 200-entry limit. Hidden
+aliases do not count. Configuration reports the required count and fails when
+the models alone would exceed the limit; it never silently drops a model.
 
 ## Tools and subagents
 

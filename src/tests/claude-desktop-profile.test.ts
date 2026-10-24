@@ -84,15 +84,20 @@ const variantCatalog = {
 };
 type Row = { id: string; upstream: string; displayName: string; reasoningEffort?: string; serviceTier?: string };
 
-test("adds opaque effort and speed variants for Claude, GPT and Qwen after the original rows", () => {
+test("lists one picker row per model and keeps effort and speed variants as hidden adapter routes", () => {
   const base = buildClaudeDesktopProfile(variantSource, { models: variantCatalog.models.map(({ supported_reasoning_levels, service_tiers, ...row }) => row) }, {}, options);
   const built = buildClaudeDesktopProfile(variantSource, variantCatalog, {}, options);
   const originals = base.adapterConfig.models.length;
   assert.deepEqual(built.adapterConfig.models.slice(0, originals), base.adapterConfig.models);
-  // Original rows keep their names and labels; primary rows now also carry an accurate maxEffort.
-  const keyed = (rows: unknown) => (rows as Array<Record<string, unknown>>).slice(0, originals).map(row => [row.name, row.labelOverride]);
-  assert.deepEqual(keyed(built.profile.inferenceModels), keyed(base.profile.inferenceModels));
+  // The profile has exactly the original rows (primary rows also carry an accurate maxEffort) and no variant.
+  const profileRows = built.profile.inferenceModels as Array<Record<string, unknown>>;
+  const keyed = (rows: unknown) => (rows as Array<Record<string, unknown>>).map(row => [row.name, row.labelOverride]);
+  assert.equal(profileRows.length, originals);
+  assert.deepEqual(keyed(profileRows), keyed(base.profile.inferenceModels));
+  assert.deepEqual(profileRows.map(row => row.name), built.adapterConfig.models.slice(0, originals).map(row => row.id));
   const variants = built.adapterConfig.models.slice(originals) as Row[];
+  const visible = new Set(profileRows.map(row => row.name));
+  assert.ok(variants.length > 0 && variants.every(row => !visible.has(row.id)));
   const labelsFor = (alias: string) => variants.filter(row => row.upstream === alias).map(row => row.displayName);
   // Primary Claude keeps its native controls for Standard: only Fast x the five supported efforts
   // (ultra, none and minimal ignored), and no explicit Standard variant.
@@ -114,9 +119,10 @@ test("adds opaque effort and speed variants for Claude, GPT and Qwen after the o
   const quick = variants.find(row => row.displayName === "Claude · Opus · High · Fast")!;
   assert.deepEqual([quick.reasoningEffort, quick.serviceTier], ["high", "priority"]);
   assert.ok(variants.every(row => /^claude-hg-route-\d+$/.test(row.id)));
-  const profileVariants = (built.profile.inferenceModels as Array<Record<string, unknown>>).slice(originals);
-  assert.deepEqual(profileVariants.map(row => [row.name, row.labelOverride]), variants.map(row => [row.id, row.displayName]));
-  assert.ok(profileVariants.every(row => Object.keys(row).sort().join() === "labelOverride,name"));
+  // Opaque GPT and Qwen rows get no Claude-family identity or effort metadata beyond the existing high cap.
+  const opaque = profileRows.filter(row => ["codex/gpt", "codex/gpt-2", "qwen/flash"].includes(String(built.adapterConfig.models.find(model => model.id === row.name)!.upstream)));
+  assert.equal(opaque.length, 3);
+  assert.ok(opaque.every(row => !("anthropicFamilyTier" in row) && !("isFamilyDefault" in row) && (row.maxEffort === undefined || row.maxEffort === "high")));
   assert.equal(new Set(built.adapterConfig.models.map(row => row.id)).size, built.adapterConfig.models.length);
 });
 
@@ -158,7 +164,7 @@ test("primary Claude native rows keep an accurate maxEffort bounded by an existi
   assert.equal(above.find(row => row.name === "claude-fable-5-1")!.maxEffort, "high");
 });
 
-function bulkBuild(tiered: number, plain: number) {
+function bulkBuild(tiered: number, plain: number, savedTail = false) {
   const codex: Record<string, string> = {};
   const rows: Array<Record<string, unknown>> = [{ slug: "claude/claude-fable-5-1", display_name: "Claude Fable 5.1" }];
   const add = (name: string, extra: Record<string, unknown>) => {
@@ -167,6 +173,8 @@ function bulkBuild(tiered: number, plain: number) {
   };
   for (let index = 0; index < tiered; index++) add(`t${String(index).padStart(2, "0")}`, { supported_reasoning_levels: [...variantEfforts], service_tiers: [fast] });
   for (let index = 0; index < plain; index++) add(`p${String(index).padStart(2, "0")}`, {});
+  // Sorts after every generated model, so a cap that evicted late models would lose its saved aliases.
+  if (savedTail) add("z-old", { supported_reasoning_levels: [...variantEfforts], service_tiers: [fast] });
   const bulk: ClaudeDesktopGatewaySource = {
     port: 3457, stateDirectory: "/private/gateway",
     providers: [
@@ -177,15 +185,34 @@ function bulkBuild(tiered: number, plain: number) {
   return buildClaudeDesktopProfile(bulk, { models: rows as never }, {}, options);
 }
 
-test("allows exactly 200 rows and refuses more instead of dropping choices", () => {
-  // One primary row + 18 tiered models x (1 + 5 efforts x Standard/Fast) + one plain model = 200.
-  const built = bulkBuild(18, 1);
-  assert.equal(built.adapterConfig.models.length, 200);
+test("counts only visible picker rows against the 200 limit", () => {
+  // Hidden variants do not count: 18 tiered models plus 2 others stay 20 visible rows however many aliases they add.
+  const small = bulkBuild(18, 1);
+  assert.equal((small.profile.inferenceModels as unknown[]).length, 20);
+  assert.equal(small.adapterConfig.models.length, 20 + 18 * 10);
+  // One primary row + 199 models without tiers or efforts = exactly 200 visible rows and no hidden alias.
+  const built = bulkBuild(0, 199);
+  const adapter = built.adapterConfig.models;
   assert.equal((built.profile.inferenceModels as unknown[]).length, 200);
-  assert.equal(new Set(built.adapterConfig.models.map(row => row.id)).size, 200);
-  assert.deepEqual(bulkBuild(18, 1).adapterConfig, built.adapterConfig);
-  assert.throws(() => bulkBuild(18, 2), /at most 200 model rows.*needs 201/);
-  assert.throws(() => bulkBuild(40, 0), /remove models or service tiers/);
+  assert.equal(adapter.length, 200);
+  assert.equal(new Set(adapter.map(row => row.id)).size, adapter.length);
+  assert.deepEqual((built.profile.inferenceModels as Array<Record<string, unknown>>).map(row => row.name), adapter.slice(0, 200).map(row => row.id));
+  assert.deepEqual(bulkBuild(0, 199).adapterConfig, built.adapterConfig);
+  assert.throws(() => bulkBuild(0, 200), /at most 200 model rows.*needs 201/);
+  assert.throws(() => bulkBuild(200, 0), /remove models from the gateway configuration/);
+});
+
+test("hidden compatibility aliases pass at 1000, fail above it, and never evict a saved route", () => {
+  // Each tiered model has 5 efforts x (Standard + Fast) = 10 hidden aliases.
+  const atLimit = bulkBuild(100, 0);
+  assert.equal(atLimit.adapterConfig.models.length - (atLimit.profile.inferenceModels as unknown[]).length, 1000);
+  assert.throws(() => bulkBuild(101, 0), /1010 hidden.*limit of 1000.*remove models or service tiers/);
+  // A saved alias that sorts after 99 newer tiered models keeps all its routes at exactly 1000...
+  const kept = bulkBuild(99, 0, true);
+  assert.equal(kept.adapterConfig.models.filter(row => row.upstream === "codex/z-old" && row.reasoningEffort !== undefined).length, 10);
+  assert.equal(kept.adapterConfig.models.length - (kept.profile.inferenceModels as unknown[]).length, 1000);
+  // ...and one more earlier model makes the build fail instead of dropping the saved routes.
+  assert.throws(() => bulkBuild(100, 0, true), /1010 hidden.*limit of 1000/);
 });
 
 const variantEfforts = ["low", "medium", "high", "xhigh", "max"] as const;

@@ -5,8 +5,10 @@ export const claudeDesktopProfileName = "Harness Gateway";
 const primaryProviderType = "claude-subscription";
 const defaultModelName = "claude-fable-5-1";
 const defaultAdapterPort = 3467;
-/** Claude Desktop accepts at most this many rows in the profile's model list. */
+/** Claude Desktop accepts at most this many rows in the profile's model list (visible picker rows only). */
 const maxProfileModelRows = 200;
+/** Fail-closed bound on hidden compatibility aliases in the adapter configuration; they never appear in the picker. */
+const maxHiddenVariantAliases = 1000;
 /** Only these efforts are offered as variants; ultra, none and minimal have no Claude request equivalent. */
 const variantEffortOrder = ["low", "medium", "high", "xhigh", "max"] as const;
 type VariantEffort = typeof variantEffortOrder[number];
@@ -213,11 +215,15 @@ function variantSpecs(base: VariantBase): VariantSpec[] {
   return result;
 }
 
-/** Never truncates: a profile that would exceed the row limit is refused with the counts that explain it. */
-function selectVariants(bases: VariantBase[], originalRows: number): Array<{ base: VariantBase; spec: VariantSpec }> {
+/**
+ * Hidden compatibility aliases for chats saved while explicit variants were offered. They are
+ * adapter-only. Exceeding the bound is refused with the count; no alias is ever evicted, because
+ * a dropped alias would silently break a saved chat.
+ */
+function selectVariants(bases: VariantBase[]): Array<{ base: VariantBase; spec: VariantSpec }> {
   const result = bases.flatMap(base => variantSpecs(base).map(spec => ({ base, spec })));
-  if (originalRows + result.length > maxProfileModelRows) {
-    fail(`Claude Desktop allows at most ${maxProfileModelRows} model rows, but this gateway needs ${originalRows + result.length} (${originalRows} models + ${result.length} effort/speed variants); remove models or service tiers from the gateway configuration`);
+  if (result.length > maxHiddenVariantAliases) {
+    fail(`Claude Desktop adapter would need ${result.length} hidden effort/speed compatibility aliases, above the limit of ${maxHiddenVariantAliases}; remove models or service tiers from the gateway configuration`);
   }
   return result;
 }
@@ -350,15 +356,18 @@ export function buildClaudeDesktopProfile(
     variantBases.push({ alias, row, keepOptionalToolArguments: keepOptional, primary: false, efforts: variantEfforts(row), tiers: variantTiers(row, owner.providerType) });
   }
 
-  // Variants follow every original row. Each carries an explicit effort and/or tier and
-  // no family identity, so selecting one never changes which model family the client assumes.
-  const variantEntries: Record<string, unknown>[] = [];
-  for (const { base, spec } of selectVariants(variantBases, usedIds.size)) {
+  // The picker lists one row per model, so only these rows count toward Claude Desktop's limit.
+  if (usedIds.size > maxProfileModelRows) {
+    fail(`Claude Desktop allows at most ${maxProfileModelRows} model rows, but this gateway needs ${usedIds.size}; remove models from the gateway configuration`);
+  }
+
+  // Backend-only aliases, appended after every original adapter route and never written to the
+  // profile. Each carries an explicit effort and/or tier and no family identity.
+  for (const { base, spec } of selectVariants(variantBases)) {
     const routeId = variantRouteId(base.alias, spec.effort, spec.tier?.id);
     if (usedIds.has(routeId)) fail(`Variant route ID collision for ${base.alias}: ${routeId}`);
     usedIds.add(routeId);
     const label = [base.row.display_name, spec.effort === undefined ? undefined : effortLabels[spec.effort], spec.tier?.name].filter(part => part !== undefined).join(" · ");
-    variantEntries.push({ name: routeId, labelOverride: label });
     adapterModels.push({
       ...adapterModel(routeId, base.alias, base.row, base.keepOptionalToolArguments), displayName: label,
       ...(spec.effort === undefined ? {} : { reasoningEffort: spec.effort }),
@@ -370,7 +379,7 @@ export function buildClaudeDesktopProfile(
   profile.inferenceGatewayBaseUrl = `http://127.0.0.1:${adapterPort}`;
   profile.modelDiscoveryEnabled = false;
   profile.alwaysStartWithDefaultModel = true;
-  profile.inferenceModels = [...primaryEntries, ...extras, ...variantEntries];
+  profile.inferenceModels = [...primaryEntries, ...extras];
   if (options.credentialHelper) {
     if (!nonEmptyString(options.credentialHelper.command) || !Array.isArray(options.credentialHelper.args) || options.credentialHelper.args.some(argument => typeof argument !== "string")) fail("credentialHelper must contain a command and string args");
     profile.inferenceCredentialHelper = options.credentialHelper.command;
