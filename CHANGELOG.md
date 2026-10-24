@@ -10,6 +10,8 @@
 
 - Metadata maintenance settles stalled policy reads on shutdown while retaining the bounded cleanup wait for reconciliation work.
 
+- Installed desktop-wrapper verification now uses the selected launcher's authentication helper consistently across stdio and Unix clients. Native ownership checks remain strict. Thanks to Edi Hasaj for requiring verification through the normal installed connector.
+
 - Claude replay now preserves public reasoning-summary identity instead of presenting summaries as ordinary assistant speech. The session ledger retains genuine string assistant messages, and adopted sessions safely reseed once. Saved chats and public history stay intact. Thanks to Edi Hasaj for reporting the replay failure.
 
 
