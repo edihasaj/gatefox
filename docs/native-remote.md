@@ -33,18 +33,23 @@ build blocks creating replacement enrollments.
 ## Verified app engines
 
 The relay remains linked to the Codex SDK released as rust-v0.163.0-alpha.10.2.
-The newer accepted engines have byte-identical `app-server-transport` source, so
-the relay can keep that linked SDK. The relay and the shared native host keep
+The accepted engines retain the remote-control wire contract, so the relay can
+keep that linked SDK. Earlier accepted 0.162/0.163 engines have byte-identical
+`app-server-transport` source. The relay and the shared native host keep
 separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.164.0-alpha.11.1` | Runs with the linked transport after separate wire-contract review and relay tests | Shared after the signed SDK passed stdio and Unix reconnect, steering, Stop, once-only command and pending-approval checks |
 | `codex-cli 0.163.0-alpha.11.2` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed M5 SDK passed both stdio and Unix native/gateway disconnect, reconnect, steering, Stop, once-only command, and pending-approval checks |
 | `codex-cli 0.163.0-alpha.11.1` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, command, and approval checks |
 | `codex-cli 0.163.0-alpha.11` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the same checks |
 | `codex-cli 0.163.0-alpha.10.2` | Runs; this is the SDK it links | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, and approval checks |
 | `codex-cli 0.162.0-alpha.17.2` | Runs, so a Mac whose app has not updated keeps its relay | Shares the engine |
 | Anything else | Exits with status 1 before it connects | Not shared; a combined host serves gateway chats only and logs `native_sharing_unavailable` with `reason: sdk_version` |
+
+See [desktop update compatibility](desktop-update-compatibility.md) for startup
+diagnostic passthrough, app-bundle replacement isolation and the 0.164 review.
 
 The 0.163.0-alpha.11.2, 0.163.0-alpha.11.1, 0.163.0-alpha.11, 0.163.0-alpha.10.2, and 0.162.0-alpha.17.2
 releases ship a byte-identical `app-server-transport` crate, so the

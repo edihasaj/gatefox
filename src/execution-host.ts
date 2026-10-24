@@ -123,14 +123,13 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
     if (!fresh || resolve(fresh.executable) !== resolve(runtime.executable) || fresh.binarySha256 !== runtime.binarySha256) return;
     return runtime;
   };
-  // A gateway-only host runs its own pinned runtime, so an app that was updated or uninstalled must not stop it from starting.
-  // Its receipt then names that runtime instead of a binary nothing checks, and the runtime checksum below stays the guard.
-  let sdk: { codex: string; sdkSha256: string };
-  try { sdk = await sdkCheck(() => sdkIdentity(options.codex)); }
-  catch (error) {
-    if (!runtime || requested.includes("native")) throw error;
-    sdk = { codex: runtime.executable, sdkSha256: runtime.binarySha256 };
-  }
+  // Gateway generations run the checked runtime, independently of the app's
+  // native SDK.  This also lets a combined host retain its gateway identity
+  // while ChatGPT atomically replaces (or temporarily removes) its bundle.
+  // Native sharing is checked separately below against the app executable.
+  const sdk = runtime
+    ? { codex: runtime.executable, sdkSha256: runtime.binarySha256 }
+    : await sdkCheck(() => sdkIdentity(options.codex));
   // Gateway and native engines have independent pins. A native-only host is
   // verified by the signed native SDK verifier below, not the gateway SDK pin.
   if (requested.includes("gateway")) await sdkCheck(() => validateExecutionSdk(runtime ? runtime.executable : sdk.codex));
@@ -140,7 +139,9 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const codeModeAvailable = runtime ? runtime.codeModeHost : executableRunsCodeMode(sdk.codex);
   let capabilities = requested; let nativeSdk: Awaited<ReturnType<NativeSdkVerifier>> | Record<string, never> = {};
   if (requested.includes("native")) {
-    try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(sdk.codex)); }
+    // Never use the gateway runtime as a native SDK: only the app's own,
+    // separately signed executable may grant native-sharing capability.
+    try { nativeSdk = await sdkCheck(() => (options.nativeSdkVerifier ?? verifyNativeSdk)(options.codex)); }
     catch (error) {
       // An app whose engine differs from the verified one cannot be shared, but must not take gateway chats down with it.
       if (!requested.includes("gateway")) throw error;

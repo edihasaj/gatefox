@@ -18,16 +18,9 @@ import { liveNativeRelay, registeredNativeRelay } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { ListenerActivity } from "./ssh-listener-activity.js";
 import { runtimeBusy } from "./runtime-activity.js";
+import { appServerIndex, isAppServerSession } from "./codex-invocation.js";
 
-export function appServerIndex(args: string[]): number {
-  const values = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile", "-m", "--model", "-s", "--sandbox", "-a", "--ask-for-approval", "-C", "--cd", "--add-dir", "-i", "--image", "--remote", "--remote-auth-token-env", "--local-provider", "--linux-sandbox-pid-namespace"]);
-  for (let index = 0; index < args.length; index++) {
-    if (values.has(args[index])) { index++; continue; }
-    if (args[index].startsWith("-")) continue;
-    return args[index] === "app-server" ? index : -1;
-  }
-  return -1;
-}
+export { appServerIndex } from "./codex-invocation.js";
 
 /**
  * Keep a listener running. Another bootstrap can bind the socket while this process prepares
@@ -62,7 +55,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (executable === fileURLToPath(import.meta.url)) throw new Error("--codex must point to the original Codex executable");
   const appIndex = appServerIndex(forwarded);
   const command = appIndex >= 0 ? forwarded[appIndex + 1] : undefined;
-  const decorate = appIndex >= 0 && (!command || command.startsWith("-"));
+  const decorate = isAppServerSession(forwarded);
   if (!decorate) {
     const child = spawn(executable, forwarded, { stdio: "inherit", ...(command === "proxy" && controlHome ? { env: { ...process.env, CODEX_HOME: controlHome } } : {}) });
     child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });

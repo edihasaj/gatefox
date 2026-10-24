@@ -37,6 +37,25 @@ authentication or edits the primary native configuration. Its output records
 which path variants were used, whether an ownership mismatch occurred, and
 whether all owned processes were cleaned up.
 
+## Startup diagnostics
+
+Recent ChatGPT builds call `app-server --print-startup-config` before they open
+their normal RPC session. The registered wrapper recognizes app-server help and
+version requests, the `--print-*` diagnostic family, and every app-server
+subcommand expressed as an unconsumed positional token.
+Those invocations go straight to the original CLI with their argv, standard
+streams, environment, and exit status unchanged; they do not read gateway
+configuration, state, credentials, catalog, relay, or start an adapter.
+
+The boundary is deliberately narrow. An unknown app-server option, a value after
+an option that takes one (including `-c`/`--config`), and arguments after `--`
+remain normal adapter sessions. A positional token that has not been consumed by
+one of those options is the original CLI's subcommand, including hidden, future,
+and invalid commands. This prevents future session flags or literal configuration
+text from silently changing providers while leaving CLI command ownership with
+the native engine. `--print-*` is the reserved diagnostic namespace, so future
+startup probes do not need another wrapper change.
+
 ## Installed startup and restart
 
 `scripts/probe-desktop-wrapper.mjs` performs read-only startup checks through the

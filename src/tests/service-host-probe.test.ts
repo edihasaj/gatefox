@@ -24,7 +24,7 @@ hostRunsInThisProcess(); // The supervisor's host runs inside the test process: 
 killFixturesAfterTests();
 
 /** A stand-in control socket with a receipt naming it, and an app engine file the receipt was verified against. */
-async function standIn(options: { answerPid?: number; silent?: boolean; receiptPid?: number } = {}) {
+async function standIn(options: { answerPid?: number; silent?: boolean; receiptPid?: number; gatewayOnly?: boolean } = {}) {
   const made = await shortFolder("gwp-"); const home = join(made.directory, "home"); await mkdir(home, { mode: 0o700 });
   const socketPath = join(home, "host.sock");
   const server = createServer(); const sockets = new WebSocketServer({ server });
@@ -37,7 +37,7 @@ async function standIn(options: { answerPid?: number; silent?: boolean; receiptP
   const codex = join(made.directory, "codex"); await writeFile(codex, "engine one\n", { mode: 0o700 });
   const identity = await sdkIdentity(codex);
   await writePrivateJson(join(home, "owner.json"), { version: 1, managed: executionHostMarker, configPath: join(made.directory, "gateway.json"), nativeHome: join(made.directory, "native"),
-    ...identity, socketPath, capabilities: ["native"], pid: options.receiptPid ?? process.pid, state: "running", generations: [], socket: await socketIdentity(socketPath) });
+    ...identity, socketPath, capabilities: [options.gatewayOnly ? "gateway" : "native"], pid: options.receiptPid ?? process.pid, state: "running", generations: [], socket: await socketIdentity(socketPath) });
   const close = async () => { for (const client of sockets.clients) client.terminate(); sockets.close(); await new Promise(resolve => server.close(resolve)); };
   return { home, codex, socketPath, server, close, remove: async () => { await close().catch(() => {}); await made.remove(); } };
 }
@@ -72,6 +72,21 @@ test("a probe passes a healthy host and names each failure with a fixed reason",
   const imposter = await standIn({ answerPid: process.pid + 1 });
   try { assert.equal(await probeExecutionHost({ home: imposter.home, pid: process.pid }), "status_failed", "an answer for another process"); }
   finally { await imposter.remove(); }
+});
+
+test("a degraded gateway-only host stays healthy while the planned app executable changes or disappears", async () => {
+  const host = await standIn({ gatewayOnly: true });
+  try {
+    const plannedApp = join(host.home, "replacing-app-engine");
+    const target = { home: host.home, pid: process.pid, codex: plannedApp };
+    assert.equal(await probeExecutionHost(target), undefined, "a missing app does not invalidate the pinned gateway host");
+    await writeFile(plannedApp, "new app engine\n", { mode: 0o700 });
+    assert.equal(await probeExecutionHost(target), undefined);
+    await writeFile(plannedApp, "another app version\n");
+    assert.equal(await probeExecutionHost(target), undefined);
+    await unlink(plannedApp);
+    assert.equal(await probeExecutionHost(target), undefined);
+  } finally { await host.remove(); }
 });
 
 test("a host whose SDK socket was cleaned out of /tmp is found by its probe and restarted while idle", { skip: process.platform === "win32", timeout: 30000 }, async () => {
