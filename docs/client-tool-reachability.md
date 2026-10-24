@@ -64,6 +64,18 @@ scheduler declaration, bypass a client allow-list, or add a second background jo
 Tool availability also does not prove a schedule will execute while its owning
 client or host is unavailable.
 
+### Independent background coding jobs
+
+A client can separately register an existing Mission Runtime companion as an
+MCP server. `mission_submit`, `mission_status`, `mission_cancel`, and
+`mission_overview` address durable coding work owned by that authority, rather
+than by the inference gateway or the submitting chat connection. This is an
+explicit client integration, not something the gateway installs automatically.
+It must preserve the client's permissions and the runtime's configured project,
+provider, node and verification policy. Immediate background delivery is not
+native scheduled-task parity: these tools do not add cron, reminders, recurring
+follow-ups, or automatic wakeups of a Codex chat.
+
 ## Verification
 
 Build first, then run the real SDK against a loopback mock with private homes:
