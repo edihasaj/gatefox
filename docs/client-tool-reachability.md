@@ -84,6 +84,25 @@ refuses what it refused before. Native chats and other methods are untouched.
 The scheduler itself, its schedule store, run history and inbox remain the
 app's; the gateway adds no scheduler or background job.
 
+Verify with the real gateway SDK and a mock provider, once with the shared
+executor and once with `--private`:
+
+```sh
+npm run build
+node scripts/e2e-scheduler-roots.mjs --package INSTALLED_PACKAGE \
+  --root /tmp/FRESH_EVIDENCE_DIRECTORY [--private]
+```
+
+It starts a gateway chat with the scheduler's projectless shape, sends the raw
+`~` turn straight to the SDK and requires a refusal, then sends the same turn
+through the router and requires a completed turn with the fixture answer. It
+uses no account, schedule or paid inference. On 2026-10-24 both modes passed with
+the checkout's adapter against the installed 0.9.1 SDK. Because the unreleased
+dynamic-tool patch changes the SDK patch digest, that run used a temporary copy
+of `dist` carrying 0.9.1's `gateway-sdk-build-pins.js`; the patch does not touch
+root validation. This proves the adapter fix, not a live scheduled run in the
+desktop app; that still needs the release installed and the QA automation rerun.
+
 ### Independent background coding jobs
 
 A client can separately register an existing Mission Runtime companion as an
