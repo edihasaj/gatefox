@@ -19,7 +19,7 @@ import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js"
 import { followCurrentRelease } from "./service-relay-path.js";
 import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
-import { isClaudeComponent, establishedTcpClaudeIdle, type ClaudeIdle } from "./service-claude-activity.js";
+import { isClaudeComponent } from "./service-claude-activity.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
 /** Why a quiet upgrade waited: the host's reason, inference that refused its idle guard, or Claude sockets that were still established. */
@@ -51,6 +51,10 @@ const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nat
 const nativeRegistrationPollMs = 2000;
 const canonicalRelease = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
 const execFileAsync = promisify(execFile);
+type StaleForwardCleaner = (component: ServiceComponent, args: string[]) => Promise<number>;
+const clearStaleForward: StaleForwardCleaner = async (component, args) =>
+  await execFileAsync(component.command, serviceTunnelArguments(args), { timeout: 15000, env: { ...process.env, ...component.environment } })
+    .then(result => Number(result.stdout.trim()) || 0, () => 0);
 interface Slot { definition: ServiceComponent; state: ComponentState; child?: ChildProcess; exited?: Promise<void>; timer?: NodeJS.Timeout; starting?: boolean; failures: number; startedAt: number; quickFailures: number; quickExits: number; fingerprint?: string; pausedAt: number; resumedOnce: boolean }
 /** Waits for `done` at most `ms`; the timer never outlives the wait, so a stopped service exits at once. */
 function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown> {
@@ -89,7 +93,7 @@ export class ServiceSupervisor {
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs,
-    private readonly claudeIdle: ClaudeIdle = establishedTcpClaudeIdle) {
+    private readonly cleanStaleForward: StaleForwardCleaner = clearStaleForward) {
     this.heal = { ...defaultHealing, ...healing };
     const running = this.heal.releaseState()?.running;
     if (running && canonicalRelease.test(running)) this.runningRelease = running;
@@ -164,7 +168,9 @@ export class ServiceSupervisor {
     if (this.stopping || gap < 30000) return;
     telemetry("system_wake", { sleptSeconds: Math.round(gap / 1000) });
     for (const slot of this.slots) {
-      if (slot.definition.kind !== "tunnel") continue;
+      // The adopted Claude forwards can carry a request even when the app is closed. Their pinned runtime has no
+      // quiesce protocol, so wake healing must leave them intact; ordinary gateway tunnels still reconnect promptly.
+      if (slot.definition.kind !== "tunnel" || isClaudeComponent(slot.definition)) continue;
       slot.failures = 0; slot.quickExits = 0;
       if (slot.child) slot.child.kill("SIGTERM");
       else if (slot.timer && !slot.starting) { clearTimeout(slot.timer); slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }
@@ -280,9 +286,11 @@ export class ServiceSupervisor {
       if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077)) throw new Error("Service component log must be private");
       if (this.stopping) return;
       const args = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? serviceTunnelArguments(component.args) : component.args;
-      const cleanup = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? staleForwardCleanup(component.args) : undefined;
+      // The adopted `-R` Claude forward must not run the generic listener cleanup: it can kill any same-user sshd
+      // listener on its port, without proving that listener belongs to this component.
+      const cleanup = component.kind === "tunnel" && !isClaudeComponent(component) && component.command === "/usr/bin/ssh" ? staleForwardCleanup(component.args) : undefined;
       if (cleanup) {
-        const freed = await execFileAsync(component.command, serviceTunnelArguments(cleanup), { timeout: 15000, env: { ...process.env, ...component.environment } }).then(result => Number(result.stdout.trim()) || 0, () => 0);
+        const freed = await this.cleanStaleForward(component, cleanup);
         if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
         if (this.stopping) return;
       }
@@ -365,13 +373,17 @@ export class ServiceSupervisor {
   }
   /**
    * One restart at a time, never while stopping: `hostReady` closes the host's gate (an idle or quiet check, returning the
-   * loaded-chat count, or why it refused), then the sockets guard clears any running Claude component, then inference must
-   * accept SIGUSR2 and exit, and the service stops for launchd to start it again. Any refusal reopens the host and leaves
-   * everything running. An explicitly requested stop never comes through here, so it is not subject to the sockets guard.
+   * loaded-chat count, or why it refused), then inference must accept SIGUSR2 and exit, and the service stops for launchd
+   * to start it again. A configured Claude component makes every automatic restart refuse before it quiesces the host: its
+   * pinned runtime has no atomic admission close, so an idle socket snapshot cannot make this safe. An explicitly requested
+   * stop never comes through here and remains available for an authorized cutover.
    */
   private async restartAfter(hostReady: (host: ExecutionHost) => Promise<RestartResult>): Promise<RestartResult> {
     // A host-only restart in progress is finished first; the service restart is asked again later.
     if (this.stopping || this.restarting || this.host.hostRestarting) return {};
+    // This checks definitions rather than process state. A Claude child that is spawning, retrying, or has no pid can still
+    // admit work before a later stop, and neither lsof nor a second pid check closes that race.
+    if (this.slots.some(slot => isClaudeComponent(slot.definition))) return { wait: "claude_busy" };
     const inference = this.slots.find(slot => slot.definition.kind === "inference");
     if (inference && !inference.child) return {};
     this.restarting = true;
@@ -385,15 +397,6 @@ export class ServiceSupervisor {
         loadedChats = ready.loadedChats;
       }
     } catch { executionHost?.resume(); this.restarting = false; return {}; }
-    // Every automatic restart (idle, quiet, skew) ends in the stop below, so the guard sits at this single choke point. The
-    // pids are the supervisor's own live children, so a recycled pid is never asked about, and a probe that throws is a probe
-    // that did not answer: the host reopens and every child, inference included, keeps running.
-    const claudePids = this.slots.flatMap(slot => isClaudeComponent(slot.definition) && typeof slot.child?.pid === "number" ? [slot.child.pid] : []);
-    if (claudePids.length) {
-      let idle = false;
-      try { idle = await this.claudeIdle(claudePids); } catch (error) { reportException(error, "service_claude_idle"); }
-      if (!idle) { executionHost?.resume(); this.restarting = false; return { wait: "claude_busy" }; }
-    }
     if (!inference) { await this.stop(); return { loadedChats }; }
     if (!inference.child) { executionHost?.resume(); this.restarting = false; return {}; }
     inference.child.kill("SIGUSR2");

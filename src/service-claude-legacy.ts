@@ -98,7 +98,9 @@ export function parseLegacyJob(spec: LegacySpec, bytes: Buffer, plist: Plist, co
   const args = plist.ProgramArguments;
   if (!Array.isArray(args) || args.length < 2 || args.length > 40 || !args.every(text)) throw shape("arguments");
   const log = plist.StandardOutPath;
-  if (!normal(log) || log !== plist.StandardErrorPath || !log.startsWith(join(context.home, "Library", "Logs") + sep)) throw shape("log path");
+  const privateInferenceLogs = join(context.home, "Library", "Application Support", "Claude-3p", "inference") + sep;
+  if (!normal(log) || log !== plist.StandardErrorPath || !(log.startsWith(join(context.home, "Library", "Logs") + sep)
+    || spec.kind === "inference" && log.startsWith(privateInferenceLogs))) throw shape("log path");
   // Legacy logs are often world-readable, which the supervisor refuses. They are kept untouched; the component writes a new private log.
   const output = claudeLogPath(context.state, spec.componentId);
   const path = launchPath(plist.EnvironmentVariables);

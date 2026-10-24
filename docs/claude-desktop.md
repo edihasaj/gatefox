@@ -104,12 +104,27 @@ gateway service claude-desktop --on-restart --config /absolute/main-gateway.json
 
 Staging leaves the live plan, jobs and listeners alone. The next primary service
 start revalidates the saved ownership receipts and adopts the Claude components
-only when it can retire their exact legacy registrations safely. Changed,
-foreign or busy jobs remain pending. The signed app's Node runs the existing
+only when every exact legacy registration is unloaded. A loaded adapter,
+inference process, or tunnel remains pending even when its sockets look idle:
+the pinned private runtime has no atomic drain. Changed or foreign jobs also
+remain pending. The signed app's Node runs the existing
 private runtime with its original arguments, working directory and configuration.
 Inference isolation, account ownership, models, permissions and client endpoints
 remain unchanged. Installation or staging is not proof of activation; check the
 live service tree and both authenticated loopback endpoints afterward.
+
+During an approved maintenance window, an operator may stage one explicit
+interruption authorization:
+
+```sh
+gateway service claude-desktop --on-restart --force --config /absolute/main-gateway.json
+```
+
+`--force` is accepted only with this command. It is stored in that one pending
+receipt, still rechecks the exact signed app, plist hashes, argv and process
+identity, and can retire the owned loaded jobs despite active connections. The
+cutover may interrupt Claude work. Restaging without `--force` creates a normal
+safe receipt again; it is not a permanent service preference.
 
 New component logs live under the main gateway state's `services/` directory
 with private permissions. Existing launchd logs are retained unchanged rather

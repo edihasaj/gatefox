@@ -33,8 +33,12 @@ gateway rollout --verify
    catalog fingerprint.
 
 A pending Claude consolidation cannot earn `ready`, even when the old service's
-canary passes. The gate checks the staged receipt before and after verification.
-Once adopted, each Claude component must have its own running PID, matching OS
+canary passes. A normal pending receipt waits until every legacy Claude job is
+unloaded; an idle socket snapshot does not make an automatic cutover safe. A
+receipt explicitly staged with `gateway service claude-desktop --on-restart --force`
+may interrupt its exact owned jobs and must be treated as a maintenance-window
+cutover, not normal automatic migration. The gate checks the staged receipt before
+and after verification. Once adopted, each Claude component must have its own running PID, matching OS
 start and expected executable. Its deliberately pinned private JavaScript is not
 relabeled as the main installed release; its authenticated endpoints require
 separate post-migration checks.

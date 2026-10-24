@@ -19,7 +19,7 @@ async function underPlanThenLoginLock<T>(state: string, action: () => Promise<T>
 
 const adopted = (receipt: PendingClaudeConsolidation) => receipt.candidatePlan.components.filter(component => receipt.jobs.some(job => job.componentId === component.id)).map(({ id, kind }) => ({ id, kind }));
 const summary = (receipt: PendingClaudeConsolidation): Record<string, unknown> => ({
-  service: serviceLabel, staged: true, activates: "next primary service start", activeChatsPreserved: true, backup: receipt.backup,
+  service: serviceLabel, staged: true, activates: "next primary service start", cutoverMayInterrupt: receipt.allowInterruption === true, backup: receipt.backup,
   retires: receipt.jobs.map(job => job.label), components: adopted(receipt),
 });
 
@@ -39,18 +39,18 @@ export async function previewClaudeConsolidation(configPath: string, overrides: 
   }
 }
 
-async function createReceipt(state: string, config: string, ready: ReadyAssessment): Promise<PendingClaudeConsolidation> {
+async function createReceipt(state: string, config: string, ready: ReadyAssessment, allowInterruption: boolean): Promise<PendingClaudeConsolidation> {
   const root = resolve(state, "service-backups"); await ensurePrivateDirectory(root);
   const backup = resolve(root, `claude-${randomId()}`); await ensurePrivateDirectory(backup, true);
   await atomicWrite(resolve(backup, "service-plan.json"), ready.originalText, 0o600, true);
   for (const job of ready.jobs) await atomicWrite(resolve(backup, `${job.label}.plist`), job.bytes, 0o600, true);
   const jobs: ReceiptJob[] = ready.jobs.map(job => ({ label: job.label, kind: job.kind, componentId: job.componentId, plistBase64: job.plistBase64, plistSha256: job.plistSha256, mode: job.mode, argv: job.argv }));
-  return { version: 1, phase: "staged", config, app: ready.app, mainPlistSha256: ready.mainPlistSha256, originalPlanSha256: ready.originalPlanSha256,
+  return { version: 1, phase: "staged", ...(allowInterruption ? { allowInterruption: true } : {}), config, app: ready.app, mainPlistSha256: ready.mainPlistSha256, originalPlanSha256: ready.originalPlanSha256,
     candidatePlanSha256: ready.candidatePlanSha256, candidatePlan: ready.candidate, backup, jobs };
 }
 
 /** Stages the request only. The live plan, jobs, processes and plists are not changed. */
-export async function stageClaudeConsolidation(configPath: string, overrides: ClaudeDependencies = {}): Promise<Record<string, unknown>> {
+export async function stageClaudeConsolidation(configPath: string, overrides: ClaudeDependencies = {}, allowInterruption = false): Promise<Record<string, unknown>> {
   const host = claudeHost(overrides); const path = resolve(configPath);
   if (host.platform !== "darwin") throw new Error("Claude consolidation supports macOS");
   const state = (await loadConfig(path)).stateDirectory;
@@ -62,8 +62,9 @@ export async function stageClaudeConsolidation(configPath: string, overrides: Cl
     catch (error) { throw error instanceof ClaudeRefusal ? new Error(`Claude consolidation was not staged (${error.reason}): ${error.message}`) : error; }
     if (result.status === "none") return { service: serviceLabel, staged: false, reason: "no_legacy_jobs" };
     if (result.status === "consolidated") return { service: serviceLabel, staged: false, alreadyConsolidated: true };
-    if (existing && matchesReceipt(result, existing)) return summary(existing);
-    const receipt = await createReceipt(state, path, result);
+    // A prior receipt's opt-in is never inherited by a restage with different intent.
+    if (existing && matchesReceipt(result, existing) && existing.allowInterruption === (allowInterruption ? true : undefined)) return summary(existing);
+    const receipt = await createReceipt(state, path, result, allowInterruption);
     await writePendingClaudeConsolidation(state, receipt);
     host.notice("claude_consolidation_staged", { jobs: receipt.jobs.length });
     return summary(receipt);
@@ -125,7 +126,9 @@ async function activate(host: ClaudeHost, path: string, state: string, plan: Ser
     // The disk plist is not the loaded definition: bind the live pid, its start and its exact command line to the frozen argv.
     let live;
     try { live = await liveIdentity(host, frozen); } catch (error) { return defer(host, error instanceof ClaudeRefusal ? error.reason : "launchd_unknown", plan); }
-    if (live.loaded && job.kind !== "tunnel") { try { if (await host.processes.established(live.pid!)) return defer(host, "busy", plan); } catch { return defer(host, "connection_census", plan); } }
+    // Pinned legacy runtimes do not offer atomic quiescence. Socket-idle is only a snapshot, so a normal activation
+    // must leave every loaded job alone. An explicit receipt is the only authority to interrupt a loaded job.
+    if (live.loaded && receipt.allowInterruption !== true) return defer(host, "loaded_legacy_job", plan);
     jobs.push({ ...frozen, loaded: live.loaded, ...(live.loaded ? { pid: live.pid, startedAtMs: live.startedAtMs } : {}) });
   }
   const retiring: PendingClaudeConsolidation = { ...receipt, phase: "retiring", jobs };

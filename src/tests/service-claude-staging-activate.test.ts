@@ -10,7 +10,8 @@ import { activatePendingClaudeConsolidation, readPendingClaudeConsolidation, sta
 import type { ServicePlan } from "../service-plan.js";
 import { allLabels, labels, legacyObjects, rewrite, rewriteMain, snapshot, withFixture, type Fixture } from "./service-claude-staging-support.js";
 
-const stage = (f: Fixture) => stageClaudeConsolidation(f.config, f.deps());
+/** Existing cutover tests deliberately authorize the interruption they exercise. */
+const stage = (f: Fixture, force = true) => stageClaudeConsolidation(f.config, f.deps(), force);
 const activate = (f: Fixture, plan: ServicePlan = f.plan, extra: ClaudeDependencies = {}) => activatePendingClaudeConsolidation(f.config, plan, f.deps(extra));
 const onDisk = async (f: Fixture): Promise<ServicePlan> => JSON.parse(await readFile(f.planPath, "utf8"));
 const rejectsRetirement = (promise: Promise<unknown>, pattern: RegExp) => assert.rejects(promise, error => error instanceof ClaudeRetirementError && pattern.test(error.message));
@@ -57,11 +58,59 @@ test("activation retires the exact legacy jobs, commits the merged plan atomical
   });
 });
 
+test("a normal receipt defers for every loaded legacy kind without bootout or plan commit", async () => {
+  for (const target of [labels.adapter, labels.inference, labels.tunnel]) {
+    await withFixture(async f => {
+      for (const label of allLabels) {
+        if (label === target) continue;
+        const pid = f.world.loaded.get(label)!; f.world.loaded.delete(label); f.world.processes.delete(pid);
+      }
+      await stage(f, false); const before = await snapshot(f);
+      assert.deepEqual(await activate(f), f.plan);
+      assert.ok(deferred(f, "loaded_legacy_job")); assert.deepEqual(f.world.ops("bootout"), []); assert.deepEqual(f.world.ops("commit"), []);
+      assert.deepEqual(await snapshot(f), before);
+    });
+  }
+});
+
+test("a normal receipt can adopt exact legacy registrations after every job is unloaded", async () => {
+  await withFixture(async f => {
+    for (const label of allLabels) { const pid = f.world.loaded.get(label)!; f.world.loaded.delete(label); f.world.processes.delete(pid); }
+    await stage(f, false); const receipt = (await readPendingClaudeConsolidation(f.state))!;
+    assert.equal(receipt.allowInterruption, undefined);
+    assert.deepEqual(await activate(f), receipt.candidatePlan);
+    assert.deepEqual(f.world.ops("bootout"), []); assert.equal(f.world.calls.filter(call => call === "commit").length, 1);
+  });
+});
+
+test("an old receipt without allowInterruption remains non-forcing", async () => {
+  await withFixture(async f => {
+    await stage(f, true); const raw = JSON.parse(await readFile(f.receiptPath, "utf8")); delete raw.allowInterruption;
+    await writeFile(f.receiptPath, JSON.stringify(raw)); await chmod(f.receiptPath, 0o600);
+    assert.deepEqual(await activate(f), f.plan);
+    assert.ok(deferred(f, "loaded_legacy_job")); assert.deepEqual(f.world.mutating(), []);
+  });
+});
+
+test("a forced receipt still refuses changed signature, plist, process argv, or process identity", async () => {
+  const checks: Array<(f: Fixture) => Promise<ClaudeDependencies | void>> = [
+    async () => ({ verifySignature: async () => false }),
+    async f => { await rewrite(f, labels.adapter, object => { object.ThrottleInterval = 20; }); },
+    async f => { f.world.processes.get(f.world.loaded.get(labels.adapter)!)!.args = "node /foreign.js"; },
+    async () => ({ processes: { startMs: async () => undefined } }),
+  ];
+  for (const setup of checks) {
+    await withFixture(async f => {
+      await stage(f, true); const extra = await setup(f); const before = await snapshot(f);
+      assert.deepEqual(await activate(f, f.plan, extra ?? {}), f.plan);
+      assert.deepEqual(f.world.mutating(), []); assert.deepEqual(await snapshot(f), before);
+    });
+  }
+});
+
 interface Deferral { name: string; reason: string; setup(f: Fixture): Promise<ClaudeDependencies | void> }
 const deferrals: Deferral[] = [
-  { name: "a busy adapter", reason: "busy", setup: async f => { f.world.busy.add(f.world.loaded.get(labels.adapter)!); } },
   { name: "an open Claude window", reason: "claude_gui_open", setup: async f => { f.world.extraRows.push("/Applications/Claude.app/Contents/MacOS/Claude"); } },
-  { name: "an unanswered connection census", reason: "connection_census", setup: async f => { f.world.lsofFails = true; } },
   { name: "an unanswered process census", reason: "process_census", setup: async f => { f.world.censusFails = true; } },
   { name: "a modified legacy plist", reason: "changed", setup: f => rewrite(f, labels.inference, object => { object.ThrottleInterval = 20; }) },
   { name: "a legacy plist with a rejected shape", reason: "legacy_shape", setup: f => rewrite(f, labels.adapter, object => { object.Program = "/bin/sh"; }) },
@@ -263,7 +312,7 @@ for (const item of malformed) {
 
 test("the plan on disk is untouched by an activation that was only deferred", async () => {
   await withFixture(async f => {
-    await stage(f); f.world.busy.add(f.world.loaded.get(labels.inference)!);
+    await stage(f, false);
     const text = await readFile(f.planPath, "utf8"); await activate(f);
     assert.equal(await readFile(f.planPath, "utf8"), text); await unlink(f.receiptPath);
     assert.deepEqual(await activate(f), f.plan);

@@ -27,6 +27,8 @@ export interface ReceiptJob {
 /** Frozen intent: original plan digest, exact legacy bytes and the candidate plan. `phase` records how far activation got. */
 export interface PendingClaudeConsolidation {
   version: 1; phase: "staged" | "retiring" | "committed";
+  /** Present only for the one staged transaction explicitly authorized to interrupt loaded legacy jobs. */
+  allowInterruption?: true;
   config: string; app: string; mainPlistSha256: string;
   originalPlanSha256: string; candidatePlanSha256: string; candidatePlan: ServicePlan;
   backup: string; jobs: ReceiptJob[];
@@ -58,7 +60,8 @@ function validJob(value: unknown, phase: PendingClaudeConsolidation["phase"]): R
 export function validateReceipt(value: unknown, state: string): PendingClaudeConsolidation {
   const receipt = value as Partial<PendingClaudeConsolidation> | null;
   if (!receipt || typeof receipt !== "object" || receipt.version !== 1 || !["staged", "retiring", "committed"].includes(receipt.phase as string)
-    || !onlyKeys(receipt, ["version", "phase", "config", "app", "mainPlistSha256", "originalPlanSha256", "candidatePlanSha256", "candidatePlan", "backup", "jobs"])) throw invalid();
+    || !onlyKeys(receipt, ["version", "phase", "allowInterruption", "config", "app", "mainPlistSha256", "originalPlanSha256", "candidatePlanSha256", "candidatePlan", "backup", "jobs"])
+    || (receipt.allowInterruption !== undefined && receipt.allowInterruption !== true)) throw invalid();
   for (const path of [receipt.config, receipt.app]) if (typeof path !== "string" || /[\0\r\n]/.test(path) || !isAbsolute(path) || resolve(path) !== path) throw invalid();
   if (!hex(receipt.mainPlistSha256) || !hex(receipt.originalPlanSha256) || !hex(receipt.candidatePlanSha256)) throw invalid();
   if (typeof receipt.backup !== "string" || dirname(receipt.backup) !== resolve(state, "service-backups") || !/^claude-[a-f0-9]{16}$/.test(basename(receipt.backup))) throw invalid();

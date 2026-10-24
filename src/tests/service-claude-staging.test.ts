@@ -18,6 +18,7 @@ test("preview is read-only and staging writes only the private receipt", async (
     assert.deepEqual(await backups(f), []); assert.deepEqual(f.world.mutating(), []);
     const staged = await stageClaudeConsolidation(f.config, f.deps());
     assert.equal(staged.staged, true);
+    assert.equal(staged.cutoverMayInterrupt, false);
     assert.deepEqual(await snapshot(f), before, "staging changes neither the plan nor any legacy plist");
     assert.deepEqual(f.world.mutating(), []); assert.equal(f.world.loaded.size, 4);
     const receipt = (await readPendingClaudeConsolidation(f.state))!;
@@ -50,6 +51,16 @@ test("restaging is idempotent for identical inputs and refreshes when a legacy j
     const second = await readPendingClaudeConsolidation(f.state);
     assert.notEqual(second?.backup, first?.backup);
     assert.notEqual(second?.jobs.find(job => job.label === labels.inference)?.plistSha256, first?.jobs.find(job => job.label === labels.inference)?.plistSha256);
+  });
+});
+
+test("restaging never reuses an authorization with different interruption intent", async () => {
+  await withFixture(async f => {
+    await stageClaudeConsolidation(f.config, f.deps()); const safe = (await readPendingClaudeConsolidation(f.state))!;
+    await stageClaudeConsolidation(f.config, f.deps(), true); const forced = (await readPendingClaudeConsolidation(f.state))!;
+    assert.equal(forced.allowInterruption, true); assert.notEqual(forced.backup, safe.backup);
+    await stageClaudeConsolidation(f.config, f.deps()); const safeAgain = (await readPendingClaudeConsolidation(f.state))!;
+    assert.equal(safeAgain.allowInterruption, undefined); assert.notEqual(safeAgain.backup, forced.backup);
   });
 });
 
@@ -119,6 +130,8 @@ const tampers: Array<{ name: string; change(receipt: Record<string, any>): void 
   { name: "foreign backup path", change: receipt => { receipt.backup = "/tmp/claude-0123456789abcdef"; } },
   { name: "foreign label", change: receipt => { receipt.jobs[0].label = "com.example.other"; } },
   { name: "phase", change: receipt => { receipt.phase = "done"; } },
+  { name: "false interruption authorization", change: receipt => { receipt.allowInterruption = false; } },
+  { name: "non-boolean interruption authorization", change: receipt => { receipt.allowInterruption = "true"; } },
 ];
 for (const item of tampers) {
   test(`a tampered receipt is rejected: ${item.name}`, async () => {

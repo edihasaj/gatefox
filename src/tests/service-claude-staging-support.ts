@@ -21,12 +21,11 @@ export class World {
   processes = new Map<number, { args: string; start: number }>();
   extraRows: string[] = [];
   disabled = new Set<string>();
-  busy = new Set<number>();
   stuck = new Set<string>();
   failBootout = new Set<string>();
   failBootstrap = new Set<string>();
   calls: string[] = [];
-  primary = true; printFails = false; censusFails = false; lsofFails = false;
+  primary = true; printFails = false; censusFails = false;
   commitHook?: (path: string, text: string) => Promise<void>;
   onBootout?: (label: string) => void;
   private next = 5000;
@@ -64,7 +63,6 @@ export class World {
           return [...[...this.processes].map(([pid, row]) => ({ pid, args: row.args })), ...this.extraRows.map((args, index) => ({ pid: 9000 + index, args }))];
         },
         alive: pid => this.processes.has(pid), startMs: async pid => this.processes.get(pid)?.start,
-        established: async pid => { if (this.lsofFails) throw new Error("lsof"); return this.busy.has(pid); },
       },
     };
   }

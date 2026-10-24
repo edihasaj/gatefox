@@ -4,6 +4,7 @@ import { mkdir, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { ServiceSupervisor, type NativeProbes, type SupervisorHealing } from "../service-supervisor.js";
+import { isClaudeComponent } from "../service-claude-activity.js";
 import { serviceStatusPath, validateServicePlan, type ServiceComponent, type ServicePlan } from "../service-plan.js";
 import { writePrivateJson } from "../config.js";
 import { configureTelemetry, flushTelemetry } from "../telemetry.js";
@@ -86,17 +87,28 @@ test("a crashing Claude adapter backs off exponentially while its sibling and an
   } finally { await supervisor.stop(); await f.remove(); }
 });
 
-test("waking from sleep restarts the SSH tunnel only: Claude children keep their processes", { timeout: 30000 }, async () => {
+test("only the two adopted Claude tunnel ids are Claude components", () => {
+  const component = (id: string, kind: ServiceComponent["kind"] = "tunnel"): ServiceComponent => ({ id, kind, command: "/bin/true", args: [], log: "/tmp/component.log" });
+  assert.equal(isClaudeComponent(component("claude-inference-tunnel")), true);
+  assert.equal(isClaudeComponent(component("claude-inference-studio")), true);
+  assert.equal(isClaudeComponent(component("claude-inference-tunnel-copy")), false);
+  assert.equal(isClaudeComponent(component("claude-adapter", "claude-adapter")), true);
+});
+
+test("waking from sleep heals ordinary gateway tunnels but preserves adopted Claude forwards", { timeout: 30000 }, async () => {
   const f = await folder("gwc-wake-");
-  const supervisor = new ServiceSupervisor({ version: 1, config: f.config, components: [fixtureComponent(f.directory, "tunnel", "tunnel", alive), ...claude(f.directory)] }, f.directory, 25);
+  const adopted = ["claude-inference-tunnel", "claude-inference-studio"].map(id => fixtureComponent(f.directory, id, "tunnel", alive));
+  const supervisor = new ServiceSupervisor({ version: 1, config: f.config, components: [fixtureComponent(f.directory, "tunnel", "tunnel", alive), ...adopted, ...claude(f.directory)] }, f.directory, 25);
   try {
-    await supervisor.start(); await f.ready(["tunnel", "claude-adapter", "claude-inference"]);
+    await supervisor.start(); await f.ready(["tunnel", "claude-inference-tunnel", "claude-inference-studio", "claude-adapter", "claude-inference"]);
     const before = await f.pids();
     supervisor.checkWake(Date.now() + 600_000);
     await until(async () => { const now = await f.pids(); return !!now.tunnel && now.tunnel !== before.tunnel; }, "the tunnel restarted");
     const after = await f.pids();
+    assert.equal(after["claude-inference-tunnel"], before["claude-inference-tunnel"]);
+    assert.equal(after["claude-inference-studio"], before["claude-inference-studio"]);
     assert.equal(after["claude-adapter"], before["claude-adapter"]); assert.equal(after["claude-inference"], before["claude-inference"]);
-    assert.ok(running(before["claude-adapter"]!) && running(before["claude-inference"]!));
+    assert.ok(running(before["claude-inference-tunnel"]!) && running(before["claude-inference-studio"]!));
   } finally { await supervisor.stop(); await f.remove(); }
 });
 
@@ -117,40 +129,60 @@ function host() {
   return { calls, start: start as never };
 }
 
-test("a busy or throwing Claude probe leaves inference and every other child running and the host reopened; an idle one restarts", { timeout: 30000 }, async () => {
-  const f = await folder("gwc-guard-"); const stand = host(); const asked: number[][] = [];
-  const answers: Array<() => boolean> = [() => false, () => { throw new Error("probe failed"); }, () => true];
-  const supervisor = new ServiceSupervisor(sharedPlan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing, undefined,
-    async pids => { asked.push(pids); return answers.shift()!(); });
+test("a configured Claude component refuses automatic restart before host or inference side effects, including before spawn and while retrying", { timeout: 30000 }, async () => {
+  const f = await folder("gwc-guard-"); const stand = host();
+  const spawning = new ServiceSupervisor(sharedPlan(f), f.directory, 5, stand.start, unregistered, undefined, undefined, healing);
   try {
-    await supervisor.start(); await f.ready(["inference", "claude-adapter", "claude-inference"]);
+    const starting = spawning.start();
+    assert.equal(await spawning.restartWhenIdle(), false, "the configured but not-yet-spawned Claude component refuses");
+    assert.equal(stand.calls.strict, 0, "the host idle gate was never closed");
+    assert.equal(await signals(f.directory), 0, "inference was never asked to drain");
+    await starting; await f.ready(["inference", "claude-adapter", "claude-inference"]);
+    await spawning.stop(); await spawning.stopped;
+
+    const retryPlan = sharedPlan(f);
+    const index = retryPlan.components.findIndex(component => component.id === "claude-adapter");
+    retryPlan.components[index] = fixtureComponent(f.directory, "claude-adapter", "claude-adapter", "process.exit(1)");
+    const retrying = new ServiceSupervisor(retryPlan, f.directory, 300, stand.start, unregistered, undefined, undefined, healing);
+    await retrying.start(); await f.ready(["inference", "claude-inference"]);
+    await until(async () => { const adapter = (await f.status()).find(value => value.id === "claude-adapter"); return adapter?.state === "waiting" && adapter.pid === undefined; }, "a Claude retry without a pid");
     const before = await f.pids();
+    assert.equal(await retrying.restartWhenIdle(), false, "a retrying Claude component with no pid still refuses");
+    assert.equal(stand.calls.strict, 0, "no automatic attempt quiesced the host");
+    assert.equal(await signals(f.directory), 0, "no automatic attempt signalled inference");
+    assert.deepEqual(await f.pids(), before, "the refusal did not replay inference or other children");
 
-    assert.equal(await supervisor.restartWhenIdle(), false, "a busy probe refuses the restart");
-    assert.equal(stand.calls.strict, 1); assert.equal(stand.calls.resumes, 1, "the host gate reopened");
-    assert.equal(await signals(f.directory), 0, "inference was never asked to exit");
-    assert.deepEqual(asked[0].sort(), [before["claude-adapter"]!, before["claude-inference"]!].sort(), "only the Claude children were asked about");
-
-    assert.equal(await supervisor.restartWhenIdle(), false, "a probe that throws refuses it too, and does not reject");
-    assert.equal(stand.calls.strict, 2); assert.equal(stand.calls.resumes, 2, "the host was not left quiesced");
-    assert.equal(await signals(f.directory), 0);
-    assert.deepEqual(await f.pids(), before, "no child was restarted by either refusal");
-    assert.ok(Object.values(before).every(pid => pid === undefined || running(pid)));
-
-    assert.equal(await supervisor.restartWhenIdle(), true, "an idle probe lets the restart through; restarting had been reset");
-    assert.equal(await signals(f.directory), 1, "inference is asked once, through its own idle guard");
-    await supervisor.stopped;
-    assert.equal(stand.calls.closes, 1);
-  } finally { await supervisor.stop(); await f.remove(); }
+    await retrying.stop(); await retrying.stopped;
+    assert.ok(!running(before.inference!), "an explicit operator stop still stops the owned inference");
+  } finally { await spawning.stop(); await f.remove(); }
 });
 
-test("without a Claude child the Claude probe is never consulted", { timeout: 30000 }, async () => {
-  const f = await folder("gwc-none-"); const stand = host(); let asked = 0;
+test("without a Claude component, an automatic restart still proceeds", { timeout: 30000 }, async () => {
+  const f = await folder("gwc-none-"); const stand = host();
   const plan = sharedPlan(f); plan.components = plan.components.filter(component => !component.kind.startsWith("claude-"));
-  const supervisor = new ServiceSupervisor(plan, f.directory, 5, stand.start, unregistered, undefined, undefined, healing, undefined, async () => { asked++; return false; });
+  const supervisor = new ServiceSupervisor(plan, f.directory, 5, stand.start, unregistered, undefined, undefined, healing);
   try {
     await supervisor.start(); await f.ready(["inference"]);
     assert.equal(await supervisor.restartWhenIdle(), true);
-    assert.equal(asked, 0);
+  } finally { await supervisor.stop(); await f.remove(); }
+});
+
+test("an adopted reverse Claude forward skips generic cleanup and retries with its saved argv", { timeout: 30000 }, async () => {
+  const f = await folder("gwc-claude-reverse-"); let cleanupCalls = 0;
+  const inference = fixtureComponent(f.directory, "inference", "inference", alive);
+  const forward: ServiceComponent = {
+    id: "claude-inference-studio", kind: "tunnel", command: "/usr/bin/ssh",
+    args: ["-G", "-N", "-T", "-R", "127.0.0.1:3468:127.0.0.1:3468", "localhost"], log: join(f.directory, "claude-inference-studio.log"),
+  };
+  const plan: ServicePlan = { version: 1, config: f.config, components: [inference, forward] };
+  const saved = JSON.stringify(plan);
+  const supervisor = new ServiceSupervisor(plan, f.directory, 25, undefined, undefined, undefined, undefined, {}, undefined, async () => { cleanupCalls++; return 0; });
+  try {
+    await supervisor.start(); await f.ready(["inference"]);
+    await until(async () => ((await f.status()).find(value => value.id === forward.id)?.restarts ?? 0) >= 1, "the adopted reverse forward to retry after exit");
+    const pids = await f.pids();
+    assert.equal(cleanupCalls, 0, "the adopted forward never ran a generic remote listener cleanup command");
+    assert.equal(JSON.stringify(plan), saved, "retries use the exact saved forward arguments");
+    assert.equal(pids.inference, (await f.status()).find(value => value.id === "inference")?.pid, "a forward retry did not replay inference");
   } finally { await supervisor.stop(); await f.remove(); }
 });

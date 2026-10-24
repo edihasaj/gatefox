@@ -2,8 +2,13 @@ import { execFile } from "node:child_process";
 import { processStartMs } from "./boot-identity.js";
 import type { ServiceComponent } from "./service-plan.js";
 
-/** Claude components the supervisor runs but must not restart around a live request: the loopback adapter and its private inference. */
-export const isClaudeComponent = (component: ServiceComponent): boolean => component.kind === "claude-adapter" || component.kind === "claude-inference";
+/** The two tunnel ids are adopted from the pinned Claude Desktop migration, not a namespace for arbitrary SSH children. */
+const claudeTunnelIds = new Set(["claude-inference-tunnel", "claude-inference-studio"]);
+
+/** Claude components are the loopback adapter, private inference, and precisely the two adopted Claude forwards. */
+export const isClaudeComponent = (component: ServiceComponent): boolean =>
+  component.kind === "claude-adapter" || component.kind === "claude-inference" ||
+  component.kind === "tunnel" && claudeTunnelIds.has(component.id);
 
 /** Answers whether it is safe to restart while these process ids run. Anything the check cannot prove must answer false. */
 export type ClaudeIdle = (pids: number[]) => Promise<boolean>;

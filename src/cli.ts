@@ -64,7 +64,7 @@ const help = `gateway — local subscription and API inference
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service consolidate [--apply | --next-login] [--config PATH]
-  gateway service claude-desktop [--on-restart] [--config PATH]
+  gateway service claude-desktop [--on-restart [--force]] [--config PATH]
   gateway service shared-executors [--apply] [--disable] [--config PATH]
   gateway service shared-native [--apply] [--disable] [--on-restart [--with-gateway]] [--config PATH]
   gateway executor-host --config PATH --codex PATH --native-home PATH
@@ -111,7 +111,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
     client: { type: "boolean" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
-    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" },
+    apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
   if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
@@ -120,6 +120,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
   if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");
+  if (values.force && !(command === "service" && id === "claude-desktop" && values["on-restart"])) throw new Error("--force is only valid with service claude-desktop --on-restart");
   if (values["with-gateway"] && !(command === "service" && id === "shared-native" && values["on-restart"])) throw new Error("--with-gateway is only valid with service shared-native --on-restart");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
@@ -170,7 +171,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   if (command === "service") {
-    const result = id === "claude-desktop" ? values["on-restart"] ? await stageClaudeConsolidation(path) : await previewClaudeConsolidation(path)
+    const result = id === "claude-desktop" ? values["on-restart"] ? await stageClaudeConsolidation(path, {}, values.force) : await previewClaudeConsolidation(path)
       : id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
       : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
       : id === "shared-native" && values["on-restart"] ? await stageNativeSharing(path, values["with-gateway"])

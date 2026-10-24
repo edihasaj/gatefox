@@ -30,8 +30,6 @@ export interface Processes {
   census(): Promise<Array<{ pid: number; args: string }>>;
   alive(pid: number): boolean;
   startMs(pid: number): Promise<number | undefined>;
-  /** Whether the process holds an established TCP connection (`lsof -a`); rejects when that cannot be answered. */
-  established(pid: number): Promise<boolean>;
 }
 export interface ClaudeHost {
   platform: string; home: string; uid: number;
@@ -78,17 +76,6 @@ const systemProcesses: Processes = {
   },
   alive(pid) { try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code !== "ESRCH"; } },
   startMs: pid => processStartMs(pid).catch(() => undefined),
-  async established(pid) {
-    try {
-      const { stdout } = await exec("/usr/sbin/lsof", ["-a", "-nP", "-iTCP", "-sTCP:ESTABLISHED", "-p", String(pid)], { timeout: 5000, maxBuffer: 1 << 20 });
-      return String(stdout).trim() !== "";
-    } catch (error) {
-      const failure = error as { code?: unknown; killed?: unknown; signal?: unknown; stdout?: unknown; stderr?: unknown };
-      // lsof exits 1 with no output when nothing matches; a timeout kill, a signal or any other failure leaves the question unanswered.
-      if (failure.code === 1 && !failure.killed && !failure.signal && String(failure.stdout ?? "").trim() === "" && String(failure.stderr ?? "").trim() === "") return false;
-      throw new Error("Cannot determine process connections");
-    }
-  },
 };
 
 export function claudeHost(overrides: ClaudeDependencies = {}): ClaudeHost {
