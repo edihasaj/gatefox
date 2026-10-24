@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Chats saved under a retired connection alias open again. After the `claude` connection was split into `claude-primary` and `claude-secondary`, chats saved as `claude/<model>` failed with "This model alias is no longer offered by the gateway". A resume now maps a retired alias to the `-primary` replacement, or to the only matching replacement, before the chat is classified and routed. Offered aliases are unchanged. Thanks to Edi Hasaj for reporting the unopenable chats.
+
 - Client tools that a caller declares as deferred stay reachable on gateway models that lack tool search. The gateway engine now exposes them directly while preserving their schemas, namespaces, permissions and search behavior on models that support it. Thanks to Edi Hasaj for reporting the missing tools.
 
 - Codex scheduled tasks can now run on gateway models. Projectless automations send the home folder as the exact `~` workspace root, which the gateway engine refused as a relative path, so the run never started. Gateway chats now receive the user's home directory for that exact entry; every other path, permission and model choice is forwarded unchanged. Thanks to Edi Hasaj for asking for native scheduling parity.

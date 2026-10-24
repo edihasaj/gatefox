@@ -161,6 +161,8 @@ export class AppServerRouter {
       catch (error) { if (nativeThreadAbsent(error, threadId)) return undefined; throw error; }
       const thread = object(probe.thread);
       if (typeof thread.modelProvider !== "string") throw new AppServerRoutingError("Cannot determine this chat's provider");
+      // A retired alias is read as its replacement, so the chat is still classified as a gateway chat.
+      if (typeof thread.model === "string") thread.model = this.currentAlias(thread.model);
       this.identity.learnReply("thread/read", probe);
       // The saved record decides, never the request: a native chat resumed with no model stays native.
       const kind = await this.classify({ ...threadFacts(thread), id: threadId }, method);
@@ -339,6 +341,19 @@ export class AppServerRouter {
    * `provider` is the provider id the request names: the gateway's own id asks for a new gateway chat, which the backends record
    * with the connection's identity, and a resumed chat names the id it was saved with.
    */
+  /**
+   * Maps a retired `connection/model` alias to the alias that replaced it after the connection was
+   * split or renamed (`claude/x` -> `claude-primary/x`). The `-primary` connection wins; otherwise the
+   * single matching replacement does. An offered or unmatched alias is returned unchanged.
+   */
+  private currentAlias(model: string): string {
+    if (this.aliases.has(model)) return model;
+    const slash = model.indexOf("/");
+    if (slash <= 0) return model;
+    const connection = model.slice(0, slash), rest = model.slice(slash);
+    const candidates = [...this.aliases].filter(alias => alias.startsWith(`${connection}-`) && alias.endsWith(rest) && alias.indexOf("/") === alias.length - rest.length);
+    return candidates.find(alias => alias === `${connection}-primary${rest}`) ?? (candidates.length === 1 ? candidates[0] : model);
+  }
   private modelRequest(params: ObjectValue, model: string, newChat = false, restored?: ReasoningChoice | null, provider = gatewayProvider): ObjectValue {
     const metadata = this.extraModels.find(entry => entry.slug === model);
     if (!metadata) throw new AppServerRoutingError("This model alias is no longer offered by the gateway; select a current gateway model");
@@ -358,6 +373,7 @@ export class AppServerRouter {
       config: { ...reasoning, ...object(params.config), model_catalog_json: this.catalogPath } };
   }
   private assertSameProvider(route: ThreadRoute, model: unknown): void {
+    if (typeof model === "string") model = this.currentAlias(model);
     if (typeof model !== "string") return;
     if ((route.kind === "gateway") !== this.aliases.has(model) && !this.allowsSavedNativeChild(route, model)) {
       throw new AppServerRoutingError("This Codex version cannot change a loaded chat between native and gateway providers. Start a new chat with the selected model. Reset to default selects a model; it does not reload the model list. Your account and existing chat are unchanged.", -32002);
@@ -475,6 +491,9 @@ export class AppServerRouter {
         const saved = object((await this.backend("thread/read", { threadId: params.threadId, includeTurns: false })).thread).modelProvider;
         if (typeof saved === "string") route.provider = saved;
       }
+      // A chat saved under a retired alias (for example `claude/x` after the connection became
+      // `claude-primary`) resumes on its current replacement instead of failing to open.
+      if (typeof route.model === "string") route.model = this.currentAlias(route.model);
       const model = requestedModel(params) ?? route.model;
       const sameModel = model === route.model;
       // The desktop records sub-agents on native catalog rows. Their own saved metadata
