@@ -225,6 +225,14 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.9 — 2026-10-24
+
+Successful app updates now clean up their verified download and extraction
+staging folder after the installation transaction finishes. Pending updates,
+rollback app bundles, installed releases and foreign or changed files are
+preserved. Cleanup failures do not roll back a completed update. Thanks to
+@edihasaj for requesting the remaining cleanup.
+
 ## 0.8.8 — 2026-10-24
 
 Automatic model updates now run inside the existing signed app-owned gateway

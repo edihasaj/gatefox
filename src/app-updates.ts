@@ -9,6 +9,7 @@ import { managedInstallationForCommand, type ManagedInstallation } from "./app-r
 import { readServicePlan, type ServicePlan } from "./service-plan.js";
 import { withPrivateFileLock } from "./private-file-lock.js";
 import { extractArchive, verifyChecksummedTree } from "./app-updates/archive.js";
+import { cleanupUpdateStage } from "./app-updates/cleanup.js";
 import { githubDownload, githubReleases, runCommand } from "./app-updates/github.js";
 import { beginInstallationTransaction, committedInstallationTransaction, finalizeCommittedInstallationTransaction, finalizeRecoveredCommittedInstallationTransaction, recoverInstallationTransaction, resumeInstallationTransaction, runCanonicalInstall, swapAndCommitInstallationTransaction, type TransactionCommand } from "./app-updates/transaction.js";
 import { contained, fileDigest, newer, privateDirectory, readAppResourceJson, readJson, readProtectedJson, safeName, safeVersion, versionNumber, writePrivate } from "./app-updates/private-fs.js";
@@ -33,6 +34,8 @@ export interface AppUpdateDependencies {
   appPath?: () => Promise<string | undefined>;
   servicePlan?: (state: string) => Promise<ServicePlan | undefined>;
   serviceBinding?: (configPath: string, appPath: string, expectedCommand: string) => Promise<boolean>;
+  /** Deletes the finished download stage after a committed update; tests substitute it. */
+  removeStage?: (path: string) => Promise<void>;
   signal?: AbortSignal;
 }
 interface Context { snapshot: ConfigSnapshot; installation: ManagedInstallation; app: string; version: string; installedVersion?: string; production: boolean; team: string; statePath: string; state: UpdateState }
@@ -275,6 +278,17 @@ async function install(ctx: Context, release: Release, latest: string, deps: App
   } finally { if (!recorded) await rm(stage, { recursive: true, force: true }).catch(() => undefined); }
 }
 
+/**
+ * Removes only the download and extraction stage of an update that is already installed and acknowledged. It runs after the
+ * pending record and journal are finalized, never throws, and never changes the result: a refused or failed cleanup leaves the
+ * folder for a later sweep. The live app and the retained rollback bundle are named as protected.
+ */
+async function discardUpdateStage(ctx: Context, pending: NonNullable<UpdateState["pending"]>, deps: AppUpdateDependencies): Promise<void> {
+  try {
+    await cleanupUpdateStage(ctx.installation.root, pending, { protect: [ctx.app, pending.appStage], ...(deps.removeStage ? { remove: deps.removeStage } : {}) });
+  } catch { /* The installation is complete whatever happens here. */ }
+}
+
 /** Called by the service scheduler after the app has exited. It never kills an app or service. */
 export async function installPending(ctx: Context, deps: AppUpdateDependencies = {}): Promise<AppUpdateResponse> {
   const pending = ctx.state.pending; if (!pending || !contained(dirname(ctx.app), pending.appStage) || !pending.appStage.endsWith(".app") ||
@@ -292,6 +306,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
     await finalizeCommittedInstallationTransaction(await committedInstallationTransaction({
       installation: ctx.installation, app: ctx.app, version: pending.version, team: ctx.team,
     }));
+    await discardUpdateStage(ctx, pending, deps);
     return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
   }
   if (recovered === "rolled_back") {
@@ -329,6 +344,7 @@ export async function installPending(ctx: Context, deps: AppUpdateDependencies =
     delete ctx.state.pending; await writePrivate(ctx.statePath, ctx.state);
     await finalizeCommittedInstallationTransaction(tx);
   } finally { await rm(activation, { recursive: true, force: true }).catch(() => undefined); }
+  await discardUpdateStage(ctx, pending, deps);
   return success(output(ctx, { latestVersion: pending.version, phase: "installed", message: "Update installed. Reopen Harness Gateway to use it." }));
 }
 

@@ -39,6 +39,14 @@ installation transaction restores that retained bundle; it does not claim to
 detect or roll back a later launch failure. The gateway configuration remains
 unchanged.
 
+After a successful installation is acknowledged and its transaction journal is
+finalized, the updater removes that update's downloaded ZIP, backend archive and
+extracted staging files. It only cleans the exact owned `app-update-<uuid>` folder
+whose manifest, archive digest and tree match the completed update. Pending,
+foreign, changed, linked or in-use installation paths are never guessed at.
+The retained rollback app bundle and installed current/previous releases stay.
+Cleanup failure does not undo or misreport an otherwise successful update.
+
 Recovery restores only files that still match the transaction's publication
 receipts. It preserves concurrent changes. A forced termination can leave an
 unknown installation lock, which the updater will not break automatically.
