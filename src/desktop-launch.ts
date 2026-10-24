@@ -8,6 +8,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { nativeEngineExecutable } from "./native-engine-path.js";
+import { appServerSessionShellGuard } from "./codex-invocation.js";
 
 export async function prepareDesktop(configPath: string, app = "/Applications/ChatGPT.app"): Promise<{ binary: string; wrapper: string }> {
   if (process.platform !== "darwin") throw new Error("Desktop activation currently supports macOS");
@@ -20,9 +21,9 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   const quoted = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const helper = gatewayCommand();
   const command = [helper.command, ...helper.args, "codex-shim", "--config", configPath, "--codex", engine, "--"].map(quoted).join(" ");
-  // Only app-server sessions need translation. Every other Codex command, such as
-  // the desktop's exec-server, runs the original CLI with no adapter process.
-  const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\nfor argument in "$@"; do\n  if [ "$argument" = app-server ]; then exec ' + command + ' "$@"; fi\ndone\nexec ' + quoted(codex) + ' "$@"\n';
+  // Only long-lived app-server sessions need translation. Startup diagnostics,
+  // help/version and tooling run the original CLI before gateway state is read.
+  const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\n' + appServerSessionShellGuard() + 'if gateway_app_server_session "$@"; then exec ' + command + ' "$@"; fi\nexec ' + quoted(codex) + ' "$@"\n';
   const wrapper = resolve(config.stateDirectory, `desktop-wrapper-${createHash("sha256").update(content).digest("hex").slice(0, 16)}`);
   try { const file = await open(wrapper, "wx", 0o700); try { await file.writeFile(content); await file.sync(); } finally { await file.close(); } }
   catch (error) {

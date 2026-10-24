@@ -1,21 +1,43 @@
 // Read-only startup checks through the exact desktop wrapper. Never starts a chat or performs inference.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createInterface } from 'node:readline';
 import { writeFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import { parseArgs } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 
-const { values } = parseArgs({ options: { wrapper: { type: 'string' }, output: { type: 'string' }, 'native-home': { type: 'string' } } });
+const { values } = parseArgs({ options: { wrapper: { type: 'string' }, output: { type: 'string' }, 'native-home': { type: 'string' }, 'startup-config': { type: 'boolean' } } });
 assert.ok(values.wrapper && isAbsolute(values.wrapper), 'Use --wrapper with an absolute path');
 assert.ok(values.output && isAbsolute(values.output), 'Use --output with an absolute path');
+const checks = [];
+const environment = { ...process.env, ...(values['native-home'] ? { CODEX_HOME: values['native-home'] } : {}) };
+// New desktop builds ask this before opening their RPC connection. Inspect in
+// memory only: the resolved configuration is never stored in the probe receipt.
+if (values['startup-config']) {
+  try {
+    const reply = await promisify(execFile)(values.wrapper, ['app-server', '--print-startup-config'], {
+      env: environment, timeout: 45000, maxBuffer: 1024 * 1024,
+    });
+    const lines = reply.stdout.trim().split(/\r?\n/);
+    assert.equal(lines.length, 1);
+    const config = JSON.parse(lines[0]);
+    assert.ok(config && typeof config === 'object' && !Array.isArray(config));
+    checks.push({ method: 'app-server --print-startup-config', passed: true });
+  } catch {
+    const failure = { checkedAt: new Date().toISOString(), passed: false, readOnly: true, inferenceRequests: 0,
+      checks: [{ method: 'app-server --print-startup-config', passed: false }] };
+    await writeFile(values.output, JSON.stringify(failure, null, 2) + '\n', { mode: 0o600 });
+    console.log(JSON.stringify(failure)); process.exit(1);
+  }
+}
 const child = spawn(values.wrapper, ['app-server', '--listen', 'stdio://'], {
-  env: { ...process.env, ...(values['native-home'] ? { CODEX_HOME: values['native-home'] } : {}) },
+  env: environment,
   stdio: ['pipe', 'pipe', 'ignore'], detached: true,
 });
 const pending = new Map(), lines = createInterface({ input: child.stdout });
-const result = { checkedAt: new Date().toISOString(), passed: false, readOnly: true, inferenceRequests: 0, checks: [] };
+const result = { checkedAt: new Date().toISOString(), passed: false, readOnly: true, inferenceRequests: 0, checks };
 let sequence = 0, closed = false, phase = 'initialize';
 const failAll = () => { for (const request of pending.values()) { clearTimeout(request.timer); request.reject(Error('adapter_closed')); } pending.clear(); };
 const exited = new Promise(resolve => child.once('close', () => { closed = true; failAll(); resolve(); }));

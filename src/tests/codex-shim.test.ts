@@ -15,6 +15,7 @@ import { reuseSshSocket, type SshSocketReuse } from "../ssh-socket.js";
 import { shortFolder } from "./short-folder.js";
 import { releaseState } from "../self-update.js";
 import { codexShim, serveWithRecovery } from "../codex-shim.js";
+import { isAppServerSession } from "../codex-invocation.js";
 
 import { shimFiles as files } from "./shim-fixture.js";
 
@@ -22,6 +23,57 @@ test("shim passes native non-server commands through without reading gateway cre
   const { backend, cli } = await files();
   const result = await promisify(execFile)(process.execPath, [cli, "codex-shim", "--config", "/absent.json", "--codex", backend, "--", "--version"]);
   assert.equal(result.stdout.trim(), "native-codex-test-version");
+});
+
+test("shim runs app-server diagnostics on the original CLI before gateway setup", { skip: process.platform === "win32" }, async () => {
+  const f = await files({ serve: false });
+  const original = join(f.directory, "one-shot-original"); const missingConfig = join(f.directory, "missing-gateway.json");
+  const missingState = join(f.directory, "state-must-not-exist");
+  await writeFile(original, "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)) + '\\n'); process.exit(47);\n", { mode: 0o700 });
+  try {
+    for (const args of [
+      ["-c", '{"literal":"app-server --print-not-a-command"}', "app-server", "--startup-sign-out", "--startup-client-info", '{"name":"ChatGPT"}', "--cloud-skills-snapshot=--print-not-a-diagnostic", "--print-startup-config"],
+      ["app-server", "--startup-client-info={\"name\":\"ChatGPT\"}", "--cloud-skills-snapshot", "--print-not-a-diagnostic", "--strict-config", "--stdio", "--analytics-default-enabled", "--remote-control", "--managed-daemon", "--print-startup-config"],
+      ["app-server", "--config=features.example=true", "generate-ts"],
+      ["app-server", "generate-internal-json-schema"],
+      ["app-server", "future-tooling-command"],
+    ]) {
+      let failure: { code?: number; stdout?: string; stderr?: string } | undefined;
+      try { await promisify(execFile)(process.execPath, [f.cli, "codex-shim", "--config", missingConfig, "--codex", original, "--", ...args], { env: { ...f.env, CODEX_HOME: missingState } }); }
+      catch (error) { failure = error as typeof failure; }
+      assert.equal(failure?.code, 47, args.join(" "));
+      assert.equal(failure?.stdout, JSON.stringify(args) + "\n", "the original CLI receives the exact one-shot argv once");
+      assert.equal(failure?.stderr, "");
+    }
+    await assert.rejects(lstat(missingConfig), { code: "ENOENT" });
+    await assert.rejects(lstat(missingState), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("app-server routing reserves only explicit one-shots", () => {
+  for (const args of [
+    ["app-server", "--listen", "stdio://"],
+    ["-c", '{"literal":"app-server --print-startup-config"}', "app-server", "--listen", "stdio://"],
+    ["app-server", "--config", '{"literal":"--print-startup-config"}', "--listen", "stdio://"],
+    ["app-server", "--startup-client-info", "--print-not-a-diagnostic", "--cloud-skills-snapshot", "--print-not-a-diagnostic", "--listen", "stdio://"],
+    ["app-server", "--stdio", "--strict-config", "--analytics-default-enabled"],
+    ["app-server", "--", "--print-startup-config"],
+    ["app-server", "--future-session-option", "--print-startup-config"],
+  ]) assert.equal(isAppServerSession(args), true, args.join(" "));
+  for (const args of [
+    ["app-server", "--startup-sign-out", "--startup-client-info", '{"name":"ChatGPT"}', "--print-startup-config"],
+    ["app-server", "--startup-client-info={\"name\":\"ChatGPT\"}", "--cloud-skills-snapshot=--print-not-a-diagnostic", "--print-startup-config"],
+    ["app-server", "--print-future-diagnostic"],
+    ["app-server", "--help"],
+    ["app-server", "--version"],
+    ["app-server", "proxy"],
+    ["app-server", "generate-ts"],
+    ["app-server", "generate-json-schema"],
+    ["app-server", "generate-internal-json-schema"],
+    ["app-server", "--config=features.example=true", "generate-ts"],
+    ["app-server", "future-tooling-command"],
+    ["app-server", "daemon"],
+  ]) assert.equal(isAppServerSession(args), false, args.join(" "));
 });
 
 test("shim preserves approval correlation while native IDs overlap with its RPC IDs", { skip: process.platform === "win32", timeout: 15000 }, async () => {

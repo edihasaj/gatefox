@@ -42,7 +42,9 @@ export async function probeExecutionHost(target: HostProbeTarget, baseline: SdkB
   const answer = await executionStatus(socketPath, target.timeoutMs ?? 5000);
   if (answer === "timeout") return "status_timeout";
   if (!answer || answer.pid !== target.pid || answer.version !== 1) return "status_failed";
-  if (target.codex && await sdkChanged(target.codex, owner, baseline)) return "sdk_changed";
+  // A combined plan may have degraded to its verified gateway runtime while
+  // ChatGPT replaces its app bundle. Compare only an actually shared native SDK.
+  if (target.codex && owner.capabilities?.includes("native") && await sdkChanged(target.codex, owner, baseline)) return "sdk_changed";
   return undefined;
 }
 

@@ -65,6 +65,15 @@ async function control(path: string) {
 }
 const failing = (message: string) => async (): Promise<never> => { throw new Error(message); };
 const sameNative = async (codex: string) => { const identity = await sdkIdentity(codex); return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 }; };
+/** A fixture-scale stand-in for a signature pin: it accepts exactly the app engine verified before the update. */
+async function pinnedNative(codex: string) {
+  const expected = await sdkIdentity(codex);
+  return async (candidate: string) => {
+    const identity = await sdkIdentity(candidate);
+    if (identity.sdkSha256 !== expected.sdkSha256) throw new Error("Native execution requires the pinned Codex SDK version");
+    return { nativeSdkExecutable: identity.codex, nativeSdkSha256: identity.sdkSha256 };
+  };
+}
 
 test("the host validates the gateway runtime it spawns, not a newer native codex from the app", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client;
@@ -128,21 +137,23 @@ test("without a gateway runtime the native codex is still pinned and checked for
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
-test("a native SDK that fails verification leaves the host gateway-only and records only a fixed reason", { timeout: 30000 }, async () => {
+test("a combined host survives a missing app SDK by retaining its verified gateway runtime", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client; const started = Date.now() - 1000;
   configureTelemetry(f.config.stateDirectory, "test");
   try {
-    const options = { ...f.options, capabilities: ["native" as const, "gateway" as const], nativeRelayOwnsRegistration: true, nativeSdkVerifier: failing("Execution host requires the pinned Codex SDK version") };
+    await rm(f.appCodex); // ChatGPT's atomic bundle replacement has removed the old engine.
+    const options = { ...f.options, capabilities: ["native" as const, "gateway" as const], nativeRelayOwnsRegistration: true, nativeSdkVerifier: sameNative };
     host = await startExecutionHost(options); client = await control(join(f.hostHome, "host.sock"));
     assert.deepEqual((await client.request<{ capabilities: string[] }>("execution/status")).capabilities, ["gateway"]);
     const owner = await readOwner(join(f.hostHome, "owner.json"));
-    assert.deepEqual(owner?.capabilities, ["gateway"]); assert.equal(owner?.nativeRelayOwnsRegistration, undefined); assert.equal(owner?.nativeSdkSha256, undefined);
+    assert.deepEqual(owner?.capabilities, ["gateway"]); assert.equal(owner?.codex, f.runtime.executable); assert.equal(owner?.sdkSha256, f.runtime.binarySha256);
+    assert.equal(owner?.nativeRelayOwnsRegistration, undefined); assert.equal(owner?.nativeSdkSha256, undefined);
     assert.equal(await readNativeHomeOwner(f.nativeHome), undefined);
     await assert.rejects(client.request("native/acquire", { args: ["app-server"], cwd: f.directory }), /does not offer native ownership/);
     assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor() })).revision, "a".repeat(64));
     await flushTelemetry();
     const events = (await readTelemetry(f.config.stateDirectory, started)).filter(event => event.event === "native_sharing_unavailable");
-    assert.equal(events.length, 1); assert.equal(events[0].reason, "sdk_version");
+    assert.equal(events.length, 1); assert.equal(events[0].reason, "other");
     assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "reason"]);
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
@@ -156,7 +167,8 @@ test("native reasons are a fixed set and a native-only host still fails closed",
     for (const message of ["Native execution SDK signature verification failed", "Execution host SDK is unavailable"]) {
       const host = await startExecutionHost({ ...both, nativeSdkVerifier: failing(message) }); await host.close();
     }
-    await assert.rejects(startExecutionHost({ ...f.options, capabilities: ["native"], nativeRelayOwnsRegistration: true, nativeSdkVerifier: failing("Native execution requires the original signed Codex SDK") }), /original signed/);
+    await rm(f.appCodex); // A native-only request has no independently verified runtime to retain.
+    await assert.rejects(startExecutionHost({ ...f.options, capabilities: ["native"], nativeRelayOwnsRegistration: true, nativeSdkVerifier: sameNative }), { code: "ENOENT" });
     await assert.rejects(startExecutionHost({ ...f.options, nativeRelayOwnsRegistration: true }), /native relay ownership is invalid/);
     await flushTelemetry();
     const reasons = (await readTelemetry(f.config.stateDirectory, started)).filter(event => event.event === "native_sharing_unavailable").map(event => event.reason);
@@ -224,12 +236,14 @@ test("a gateway-only host and its adapters do not depend on the app's codex bein
   } finally { for (const client of clients) client.close(); await host?.close(); await f.clean(); }
 });
 
-test("a host that shares native execution still has to match the app's codex", { timeout: 30000 }, async () => {
-  const f = await fixture(); let host;
+test("a native identity mismatch is isolated from gateway discovery", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let gateway;
   try {
-    await f.writeApp(pinned);
-    host = await startExecutionHost({ ...f.options, capabilities: ["native", "gateway"], nativeSdkVerifier: sameNative });
+    const nativeSdkVerifier = await pinnedNative(f.appCodex);
+    host = await startExecutionHost({ ...f.options, capabilities: ["native", "gateway"], nativeSdkVerifier });
     const other = join(f.directory, "other-codex"); await writeFile(other, "#!/bin/sh\n", { mode: 0o700 });
-    await assert.rejects(ExecutionHostClient.discover(f.options.configPath, f.nativeHome, other, "gateway", true), /ownership does not match/);
-  } finally { await host?.close(); await f.clean(); }
+    gateway = await ExecutionHostClient.discover(f.options.configPath, f.nativeHome, other, "gateway", true);
+    assert.ok(gateway, "a Gateway request keeps the verified pinned runtime despite the app update");
+    await assert.rejects(ExecutionHostClient.discover(f.options.configPath, f.nativeHome, other, "native", true), /ownership does not match/);
+  } finally { gateway?.close(); await host?.close(); await f.clean(); }
 });

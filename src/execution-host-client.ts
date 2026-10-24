@@ -108,7 +108,7 @@ export class ExecutionHostClient {
     // Only native sharing runs the app's own engine. A gateway-only host runs its pinned runtime, guarded by that runtime's
     // checksum, so an app update that moves, relinks or removes the app's codex must not make its host look foreign.
     try {
-      if (capabilities.includes("native") && await nativeOwnerEngineExecutable(owner.codex, owner.nativeSdkExecutable) !== await nativeEngineExecutable(codex)) {
+      if (capability === "native" && capabilities.includes("native") && await nativeOwnerEngineExecutable(owner.codex, owner.nativeSdkExecutable) !== await nativeEngineExecutable(codex)) {
         return fail(new Error("Shared executor ownership does not match this adapter"));
       }
     }
