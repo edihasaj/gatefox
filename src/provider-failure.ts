@@ -1,13 +1,10 @@
 import { oauthErrorCodes } from "./auth/chatgpt.js";
 import { ProviderError } from "./providers/provider.js";
+import { classifyNetworkFailure, diagnosticNetworkCodes, transientNetworkCodes } from "./provider-network.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
 export type ProviderAbortCause = "timeout" | "cancelled" | "shutdown" | undefined;
-const networkCodes = new Set([
-  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ENETDOWN", "ENETUNREACH", "EHOSTUNREACH", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE",
-  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
-  "CERT_HAS_EXPIRED", "DEPTH_ZERO_SELF_SIGNED_CERT", "ERR_TLS_CERT_ALTNAME_INVALID", "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-]);
+const networkCodes: ReadonlySet<string> = new Set([...transientNetworkCodes, ...diagnosticNetworkCodes]);
 const diagnosticCodes = new Set([
   "timeout", "cancelled", "authentication", "invalid_request", "invalid_json", "request_too_large", "model_not_found", "busy", "usage_limit",
   "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
@@ -42,17 +39,6 @@ function recordObject(value: unknown): boolean {
 function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | undefined {
   return typeof value === "string" && allowed.has(value) ? value : undefined;
 }
-function networkFailure(error: unknown): boolean {
-  // Node fetch uses a static outer message even when its cause is unfamiliar.
-  if (error instanceof TypeError && own(error, "message") === "fetch failed") return true;
-  let current = error; const seen = new Set<unknown>();
-  for (let depth = 0; depth < 4 && current && !seen.has(current); depth++) {
-    seen.add(current); const code = own(current, "code");
-    if (typeof code === "string" && networkCodes.has(code)) return true;
-    current = own(current, "cause");
-  }
-  return false;
-}
 
 // Codex retries a failed stream up to five times unless its code is one Codex treats
 // as final. These failures repeat identically, so the stream reports such a code and
@@ -74,9 +60,12 @@ export function classifyProviderFailure(error: unknown, cause: ProviderAbortCaus
   if (cause === "timeout") return new ProviderError("timeout", "Provider request exceeded the gateway deadline", 504);
   if (cause === "cancelled") return new ProviderError("cancelled", "Provider request was cancelled", 499);
   if (cause === "shutdown") return new ProviderError("upstream_unavailable", "Gateway is restarting; retry shortly", 503);
-  if (error instanceof ProviderError) return error;
-  if (error instanceof ResponsesTranslationError) return new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400);
-  if (networkFailure(error)) return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503);
+  try { if (error instanceof ProviderError) return error; } catch { /* A hostile Proxy is an unknown failure. */ }
+  try { if (error instanceof ResponsesTranslationError) return new ProviderError("invalid_request", "Responses request contains invalid or unsupported data", 400); } catch { /* fall through */ }
+  // A bare Node fetch wrapper remains compatible. Detailed raw transport
+  // normalization belongs only to ResponsesAPI's post-credential boundaries.
+  const network = classifyNetworkFailure(error);
+  if (network.kind === "transient" || network.kind === "diagnostic") return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503);
   return new ProviderError("provider_failed", "Provider transport or protocol failed before completion", 502);
 }
 
@@ -135,8 +124,10 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   const upstream = own(failure, "upstream");
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
-    if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
-    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || networkCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
+    const stage = own(upstream, "stage");
+    if (event === "network" && (stage === "connect" || stage === "stream" || stage === "unknown")) result.upstreamStage = stage;
     if (upstreamCode === "authentication_failed" && (event === "claude.assistant" || event === "claude.result")) {
       const reason = allowlisted(own(upstream, "reason"), claudeCredentialReasons);
       if (reason) result.upstreamReason = reason;

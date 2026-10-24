@@ -223,6 +223,21 @@ read this log for the last 15 minutes, using only the fields `at`, `event`, `com
 with `rejection` `other`, `gateway_features_trimmed` with `site` `retry` followed by such a
 refusal, and `native_sharing_unavailable` and `native_sharing_fallback`.
 
+## Provider connection diagnostics
+
+Responses transport failures retain only an allowlisted low-level network code
+(`upstreamCode`) and a fixed `upstreamStage` of `connect`, `stream`, or `unknown`. Raw
+exception messages, socket addresses, URLs, certificate details, stacks,
+credentials, and request content are excluded. Unknown faults remain unknown;
+the gateway does not infer a DNS or TLS cause from message text.
+
+Known transient Responses connection failures may use the existing single
+pre-output recovery attempt. Mixed HTTP and connection failures cannot acquire
+separate retry budgets. Any inference output makes the failure final for this
+provider call so recovery cannot duplicate visible text or caller tool calls.
+Certificate, permanent DNS, connection-refused, unknown, cancellation, and OAuth
+refresh faults are excluded from this additional internal retry.
+
 ## Claude credential failures
 
 Claude authentication failures carry `upstreamReason` only when a native

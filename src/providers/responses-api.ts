@@ -17,6 +17,17 @@ import { plaintextCollaborationTransport, subscriptionCollaborationTransport } f
 import { apiRoutingHeaders } from "./api-routing.js";
 import { grokToolBridge } from "./grok-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
+import { classifyNetworkFailure, type ProviderNetworkStage } from "../provider-network.js";
+
+/** Convert only a recognized raw transport error at a fetch/body boundary. */
+function networkProviderError(error: unknown, stage: ProviderNetworkStage): ProviderError | undefined {
+  try { if (error instanceof ProviderError) return; } catch { return; }
+  const failure = classifyNetworkFailure(error);
+  if (failure.kind === "unknown" || failure.kind === "abort") return;
+  return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503, {
+    event: "network", stage, ...(failure.code ? { code: failure.code } : {}), ...(failure.kind === "transient" ? { retryableNetwork: true as const } : {}),
+  });
+}
 
 export class ResponsesAPI implements Provider {
   /** The subscription endpoint's sticky-routing token reaches the caller as a transport event. */
@@ -58,19 +69,24 @@ export class ResponsesAPI implements Provider {
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
         // failure before publishing any output, keeping partial turns intact.
-        if (attempt || published || signal.aborted || !(error instanceof ProviderError)) throw error;
+        let typed = false; try { typed = error instanceof ProviderError; } catch { /* Hostile errors are never retryable. */ }
+        if (attempt || published || signal.aborted || !typed) throw error;
+        const failure = error as ProviderError;
         // A failed login refresh is never retried here: the refresh token is single-use, so a second
         // token request in the same turn could spend or reuse it. Codex reconnects on the 503 instead.
-        if (error.upstream?.event === "oauth_refresh") throw error;
+        if (failure.upstream?.event === "oauth_refresh") throw failure;
         // Body codes mark a transient failure only in the stream; HTTP 5xx is covered below.
-        const temporary = (error.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(error.upstream?.code || "")) ||
-          (error.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(error.code)) ||
-          (error.code === "inference_failed" && ["error", "response.failed"].includes(error.upstream?.event || "") && error.upstream?.code === "unknown") ||
-          (error.code === "incomplete" && error.upstream?.code === "missing_terminal" && error.upstream.event === "eof");
-        const backoff = error.upstream?.retryAfterMs ?? 1000;
-        if (!temporary || backoff > 30000) throw error;
-        console.error(JSON.stringify({ event: "provider_retry", attempt: 2, upstreamCode: error.upstream?.code }));
-        telemetry("provider_retry", { provider: this.config.id, attempt: 2, code: error.code, upstreamCode: error.upstream?.code, backoffMs: backoff });
+        const temporary = failure.upstream?.event === "network" && failure.upstream.retryableNetwork === true ||
+          (failure.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(failure.upstream?.code || "")) ||
+          (failure.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(failure.code)) ||
+          (failure.code === "inference_failed" && ["error", "response.failed"].includes(failure.upstream?.event || "") && failure.upstream?.code === "unknown") ||
+          (failure.code === "incomplete" && failure.upstream?.code === "missing_terminal" && failure.upstream.event === "eof");
+        const backoff = failure.upstream?.retryAfterMs ?? 1000;
+        if (!temporary || backoff > 30000) throw failure;
+        const upstreamCode = failure.upstream?.code;
+        const networkStage = failure.upstream?.event === "network" ? failure.upstream.stage : undefined;
+        console.error(JSON.stringify({ event: "provider_retry", attempt: 2, ...(upstreamCode ? { upstreamCode } : {}) }));
+        telemetry("provider_retry", { provider: this.config.id, attempt: 2, code: failure.code, ...(upstreamCode ? { upstreamCode } : {}), ...(networkStage ? { upstreamStage: networkStage } : {}), backoffMs: backoff });
         await delay(backoff, undefined, { signal });
       }
     }
@@ -178,8 +194,13 @@ export class ResponsesAPI implements Provider {
     const collaborationTransport = plan ? subscriptionCollaborationTransport(body) : { body: plaintextCollaborationTransport(body) };
     const grokTools = !plan ? grokToolBridge(this.config, request, collaborationTransport.body) : undefined;
     const outgoing = grokTools?.body || collaborationTransport.body;
-    const response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context) : {}), ...routing }, body: JSON.stringify(outgoing) });
+    let response: Response;
+    try {
+      response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context) : {}), ...routing }, body: JSON.stringify(outgoing) });
+    } catch (error) {
+      throw networkProviderError(error, "connect") ?? error;
+    }
     // When the backend sends them, quota headers are read on success and on failure alike. The live backend may omit them, and
     // then nothing is observed.
     if (plan) try { observeCodexUsage(this.onCodexUsage, codexUsageFromHeaders(response.headers), revision); } catch { /* Observation never fails inference. */ }
@@ -293,7 +314,7 @@ export class ResponsesAPI implements Provider {
       if (item.type === "reasoning") return [{ type: "reasoning-state", item: hideSummary ? { ...item, summary: [] } : item }];
       throw new ProviderError("invalid_output", "Provider returned unsupported response output");
     };
-    for await (const event of readEvents(response.body)) {
+    try { for await (const event of readEvents(response.body)) {
       observeResponsesStream(stream, event);
       if (plan && event.type === "codex.rate_limits") try { observeCodexUsage(this.onCodexUsage, codexUsageFromEvent(event), revision); } catch { /* Observation never fails inference. */ }
       if (!hideSummary && event.type === "response.reasoning_summary_text.delta" && typeof event.delta === "string") yield { type: "reasoning", text: event.delta, id: String(event.item_id), summaryIndex: Number(event.summary_index) || 0 };
@@ -355,6 +376,8 @@ export class ResponsesAPI implements Provider {
           ...(interrupted ? { interrupted: true, endTurn: false } : completed.end_turn === undefined ? {} : { endTurn: completed.end_turn }) };
         break;
       }
+    } } catch (error) {
+      throw networkProviderError(error, "stream") ?? error;
     }
     if (!done) throw responsesEOFError(stream, response.headers.get("x-request-id") || undefined);
   }
