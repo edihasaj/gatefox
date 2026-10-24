@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { startNativePickerFixture, fixtureModels } from './fixture.mjs';
 import { prepareNativeTrial } from './prepare.mjs';
 import { signNativeTrial } from './sign.mjs';
+import { nativeTrialLaunch } from './launch.mjs';
 
 const task = resolve(process.argv[2] ?? '');
 const flags = process.argv.slice(3);
@@ -22,6 +23,10 @@ if (!taskInfo.isDirectory() || taskInfo.isSymbolicLink() || taskInfo.uid !== pro
 }
 const trial = join(task, 'trial');
 await mkdir(trial, { mode: 0o700 }); // Exclusive: no pre-existing state or symlink tree is accepted.
+await mkdir(join(trial, 'workspace'), { mode: 0o700 });
+await mkdir(join(trial, 'cli'), { mode: 0o700 });
+// User opt-in only; managed disableWorkflows and native policy still take precedence.
+await writeFile(join(trial, 'cli/settings.json'), JSON.stringify({ enableWorkflows: true }), { flag: 'wx', mode: 0o600 });
 const fixture = await startNativePickerFixture(join(task, 'fixture'));
 const profileId = randomUUID();
 const library = join(trial, 'profile-3p', 'configLibrary');
@@ -33,6 +38,7 @@ const profile = {
   inferenceCredentialHelperArgs: ['token', '--file', fixture.tokenFile],
   modelDiscoveryEnabled: false, alwaysStartWithDefaultModel: true, defaultModelEffort: 'medium',
   isClaudeCodeForDesktopEnabled: true, coworkTabEnabled: false,
+  disableAutoUpdates: true,
   inferenceModels: fixtureModels.map(model => ({ name: model.slug, labelOverride: model.display_name,
     maxEffort: model.supported_reasoning_levels.at(-1).effort })),
 };
@@ -46,12 +52,8 @@ if (signing) {
   prepared.resigningPerformed = true;
 }
 await writeFile(join(task, 'prepared.json'), JSON.stringify(prepared, null, 2), { flag: 'wx', mode: 0o600 });
-const env = {};
-for (const key of ['HOME', 'USER', 'LOGNAME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'SHELL', 'DISPLAY', '__CF_USER_TEXT_ENCODING']) {
-  if (process.env[key] !== undefined) env[key] = process.env[key];
-}
-env.TMPDIR = task;
-const child = spawn(join(prepared.copyApp, 'Contents/MacOS/Claude'), [`--user-data-dir=${join(trial, 'profile')}`], { env, stdio: ['ignore', 'ignore', 'ignore'] });
+const launch = nativeTrialLaunch(task, prepared.copyApp);
+const child = spawn(launch.executable, launch.args, launch.options);
 let stopped = false;
 const save = () => writeFile(join(task, 'requests.json'), JSON.stringify(fixture.requests), { mode: 0o600 });
 const timer = setInterval(() => { void save(); }, 500);

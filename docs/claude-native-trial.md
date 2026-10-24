@@ -13,13 +13,64 @@ The experiment changes a disposable copy of Claude Desktop 2.42304.2 to teach
 its existing picker about explicitly declared opaque gateway models. It keeps
 one row per model and does not impersonate a Claude model family.
 
-The native picker reads reasoning options and a Fast descriptor from its own
-model catalog. The trial appends gateway metadata at that lookup boundary,
-preserves existing native entries, and leaves unadvertised capabilities off.
-The synthetic catalog has two models with different reasoning options; only
-one advertises priority service. Displaying a control is not proof that the
-bundled Claude Code transport honors it. Reasoning and Fast each require
-separate wire-level verification before use with real inference.
+The native picker reads reasoning options from main-process model rows. Claude
+already generates a row for every configured gateway alias, but without
+thinking metadata for unknown IDs. Appending renderer rows does not fix that:
+the same-ID placeholders win. The trial fills only that main-process gap, before
+Claude's unchanged effort cap/default function. Explicit hybrid and signed
+catalog rows, existing thinking options, labels, permissions and capabilities
+are preserved. The renderer assets stay pristine.
+
+The synthetic catalog has two models with different reasoning options. Fast is
+not enabled: this build explicitly marks `claude_code_fast_mode` as
+`blocked_by_platform` for third-party profiles. The experiment does not bypass
+that policy, even when a gateway model advertises priority service.
+
+## Native Ultracode
+
+Eligible gateway routes can explicitly declare `supports_ultracode: true` in
+the trial catalog, together with `xhigh` reasoning. This adds Claude's special
+`ultracode` selector stop, not another model row and not an alias for ordinary
+Extra high reasoning. Routes without that opt-in or without `xhigh` do not
+receive the mode.
+
+The native cap/default function is unchanged. Its result must still contain
+`xhigh` before the connector adds the separate Ultracode mode stop. Therefore
+a Low, Medium or High cap cannot expose Ultracode. Existing native, bundled,
+hybrid and verified catalog thinking descriptors remain authoritative.
+
+The private trial CLI settings opt into `enableWorkflows: true`. Managed
+workflow restrictions and native availability checks still take precedence.
+The gateway does not execute agents or add orchestration policy: Claude's CLI
+owns Ultracode and tool execution.
+
+The offline CLI smoke sends the same native control request used by the app:
+`apply_flag_settings` with `effortLevel: "xhigh"` and `ultracode: true`. It checks
+the `get_settings.applied` state, not just requested/effective configuration,
+then completes a synthetic Messages turn. Run it with an explicit native CLI:
+
+```sh
+node scripts/claude-native-trial/ultracode-smoke.mjs /absolute/path/to/native/claude
+```
+
+The test uses an empty private home and workspace, a generated fixture token,
+disabled nonessential traffic, and text-only synthetic model output. It denies
+tool permission requests and records only typed control/availability flags and
+reasoning metadata. It does not prove a real model's multi-agent fan-out quality.
+
+The October 24, 2026 native CLI 2.1.299 run passed. Initialize, flag application
+and settings requests succeeded; `applied` reported `effort: "xhigh"`,
+`ultracode: true`, `ultracodeRequested: true` and `ultracodeAvailable: true` for
+the opaque fixture route. The Messages request carried `xhigh`, and the CLI
+completed a successful result matching the synthetic marker. The
+[sanitized Ultracode receipt](evidence/claude-native-picker-2026-10-24/ultracode-verification.json)
+records those checks without request or response content. A completed response
+is required: accepted configuration alone does not pass this smoke.
+
+The native Ultracode menu click still needs an unlocked desktop. Neither this
+run nor the catalog tests claim that a real provider executed agent fan-out.
+This remains an isolated trial, not a change to the installed Claude app or
+the live MacBook profile.
 
 ## Safety boundary
 
@@ -53,6 +104,13 @@ uses an ephemeral loopback listener, a private generated credential, and
 synthetic text responses. Receipts contain only model IDs and sanitized
 reasoning/tier controls, never prompts, tools, or credentials. No provider
 subscription is used.
+The runner also disables app auto-updates in the trial profile, sets its working
+directory to the private empty workspace, and uses Chromium's
+`--use-mock-keychain` for synthetic Electron OSCrypt storage only. The mock key
+is not suitable for real credentials, does not isolate direct native Security
+framework integrations, and must never be used with a real profile. Do not
+connect Office365, sign in to provider accounts, or relaunch the trial without
+that flag. No real Keychain access should be approved for this experiment.
 
 ## Run and verify
 
@@ -87,11 +145,39 @@ bundles, allowed the trial process to stay running and create its own Electron
 and CLI state directories. Hardened runtime and library validation remain
 enabled. Both the original and trial app pass strict deep signature verification.
 
-The workstation remained at the lock screen and the app had no visible window.
-Native control rendering, actual effort forwarding, Fast transport, and
-descendant CLI isolation remain unverified. An unlocked desktop is required to
-continue. The latest core suite reported 3,304 passes, no failures and one skip;
-the latest desktop suite reported 73 passes, no failures and one skip.
+After the workstation was unlocked, the original launch was found waiting in
+an Electron Keychain read. It was stopped without approving access; the
+synthetic mock-Keychain launch opened the UI. An updater attempt had also used
+Claude's shared ShipIt cache before auto-updates were disabled in the trial.
+The installed app was not changed. A Finder automation request during folder
+selection was denied, not granted.
+
+The corrected main-process hook displays Claude's own native Effort popover
+with its Faster-to-Smarter slider. A synthetic turn selected through that
+slider reached `/v1/messages` with `output_config.effort: "low"` and returned
+`NATIVE_PICKER_OK`. The bundled CLI executable ran under the private trial
+profile, and the selected project was the empty trial workspace. Native model
+menus contain exactly one row per fixture model. Defaults were separately
+observed as medium before the main hook; auxiliary requests can use high and
+are not evidence of a manual high-effort selection.
+
+The [cropped UI capture](evidence/claude-native-picker-2026-10-24/native-effort.png)
+and [sanitized receipt](evidence/claude-native-picker-2026-10-24/verification.json)
+exclude unrelated desktop windows, credentials and prompts.
+
+The workstation subsequently re-locked. Manual high/max forwarding,
+model-switch persistence and continued-session/relaunch checks are pending.
+This is not a deployed default or a MacBook rollout. A prior core run passed,
+but the latest full gate reported 3,303 passes, one failure and one skip: the
+untouched real-`lsof` idle-child test in `service-claude-activity.test.ts` failed.
+It also failed alone: this host's CoreDevice DeviceFS mount emits a `can't
+stat()` warning on `lsof` stderr. The service activity checker intentionally
+fails closed on incomplete process information. That check was not weakened.
+The final separate desktop suite, including Ultracode configuration and smoke
+regressions, reported 93 passes, no failures and one skip. Do not report the
+full gate as green.
+The synthetic runner and fixture were stopped after the workstation re-locked;
+the signed candidate and sanitized receipts remain for the pending tests.
 
 Run `npm run check`, `npm run build`, and `npm test` before handoff. Focused
 tests are in `scripts/claude-desktop-tests/claude-native-*.test.mjs`. Preserve

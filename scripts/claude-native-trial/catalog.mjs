@@ -10,6 +10,7 @@ const MAX_LABEL = 80;
 const MAX_CONTEXT = 10_000_000;
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const EFFORTS = new Map([['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']]);
+const ULTRACODE = { id: 'ultracode', name: 'Ultracode', description: 'Standing dynamic-workflow orchestration' };
 const PATCH_MARKER = '__hgNativeCatalog';
 
 export class CatalogError extends Error {
@@ -34,14 +35,16 @@ function effortId(level) {
   return EFFORTS.has(id) ? id : undefined;
 }
 
-function effortOptions(levels) {
+function effortOptions(levels, supportsUltracode) {
   if (!Array.isArray(levels)) return [];
   const seen = new Set();
   for (const level of levels.slice(0, MAX_SCANNED)) {
     const id = effortId(level);
     if (id) seen.add(id);
   }
-  return [...EFFORTS].filter(([id]) => seen.has(id)).map(([id, name]) => ({ id, name, description: `${name} reasoning effort` }));
+  const options = [...EFFORTS].filter(([id]) => seen.has(id)).map(([id, name]) => ({ id, name, description: `${name} reasoning effort` }));
+  if (supportsUltracode === true && seen.has('xhigh')) options.push({ ...ULTRACODE });
+  return options;
 }
 
 const hasPriorityTier = tiers => Array.isArray(tiers) && tiers.slice(0, MAX_SCANNED).some(tier => isObject(tier) && tier.id === 'priority');
@@ -59,7 +62,7 @@ export function buildNativeCatalog(input) {
     if (seen.has(model.slug)) throw new CatalogError(`duplicate model id ${model.slug}`);
     seen.add(model.slug);
     const entry = { id: model.slug, name: label(model.display_name, `${model.slug} display_name`) };
-    const options = effortOptions(model.supported_reasoning_levels);
+    const options = effortOptions(model.supported_reasoning_levels, model.supports_ultracode);
     if (options.length) entry.thinking = { type: 'effort', always_on: true, effort_options: options };
     if (Number.isSafeInteger(model.context_window) && model.context_window > 0 && model.context_window <= MAX_CONTEXT) entry.context_window = model.context_window;
     if (hasPriorityTier(model.service_tiers)) entry.fast_mode = { type: 'toggle', options: [{ id: 'off', name: 'Standard' }, { id: 'fast', name: 'Fast' }] };
@@ -85,16 +88,19 @@ function validateBuilt(entries) {
     if (label(entry.name, 'entry name') !== entry.name) throw new CatalogError('entry name must be trimmed');
     if (entry.thinking !== undefined) {
       exactKeys(entry.thinking, ['type', 'always_on', 'effort_options'], 'thinking');
-      if (entry.thinking.type !== 'effort' || entry.thinking.always_on !== true || !Array.isArray(entry.thinking.effort_options) || !entry.thinking.effort_options.length || entry.thinking.effort_options.length > EFFORTS.size) {
+      if (entry.thinking.type !== 'effort' || entry.thinking.always_on !== true || !Array.isArray(entry.thinking.effort_options) || !entry.thinking.effort_options.length || entry.thinking.effort_options.length > EFFORTS.size + 1) {
         throw new CatalogError('thinking is not a valid effort control');
       }
       const ids = new Set();
       for (const option of entry.thinking.effort_options) {
         exactKeys(option, ['id', 'name', 'description'], 'effort option');
-        if (!EFFORTS.has(option.id) || ids.has(option.id)) throw new CatalogError('effort option is unknown or repeated');
+        if ((!EFFORTS.has(option.id) && option.id !== ULTRACODE.id) || ids.has(option.id)) throw new CatalogError('effort option is unknown or repeated');
         ids.add(option.id);
-        if (option.name !== EFFORTS.get(option.id) || option.description !== `${option.name} reasoning effort`) throw new CatalogError('effort option labels are not the canonical ones');
+        if (option.id === ULTRACODE.id) {
+          if (option.name !== ULTRACODE.name || option.description !== ULTRACODE.description) throw new CatalogError('ultracode option is not canonical');
+        } else if (option.name !== EFFORTS.get(option.id) || option.description !== `${option.name} reasoning effort`) throw new CatalogError('effort option labels are not the canonical ones');
       }
+      if (ids.has(ULTRACODE.id) && !ids.has('xhigh')) throw new CatalogError('ultracode requires xhigh');
     }
     if (entry.context_window !== undefined && !(Number.isSafeInteger(entry.context_window) && entry.context_window > 0 && entry.context_window <= MAX_CONTEXT)) {
       throw new CatalogError('context_window is out of range');
@@ -158,4 +164,46 @@ export function patchNativeCatalogAsset(source, catalog) {
   let next = replaceOnce(source, MERGE_ANCHOR, MERGE_REPLACEMENT, 'model-list');
   next = replaceOnce(next, CAPABILITY_ANCHOR, CAPABILITY_REPLACEMENT, 'capability');
   return helperSource(entries) + next;
+}
+
+// Main-process chunk (CommonJS): the picker rows and the session effort validation both read `thinking` through `hw`. The
+// signed-catalog path knows no opaque route id, so `hw` yields nothing for it. The helper fills that gap only, and the
+// unchanged `Q6t` cap/default still runs on the result, so display, persistence checks and clamping see the same options.
+const THINKING_ANCHOR = 'function hw(e,t,n){return Q6t(u7t(e,t,n),f7t(t,n))}';
+const THINKING_REPLACEMENT = 'function hw(e,t,n){let o=u7t(e,t,n),r=__hgThinkingFor(e,t,n,o);return __hgFinalizeThinking(t,r,Q6t(r,f7t(t,n)))}';
+const THINKING_PREFIX = '"use strict";';
+const THINKING_MARKER = '__hgThinkingRoutes';
+const THINKING_DEPENDENCIES = ['function kC(e){', 'function DC(e){', 'function r8t(e,t,n){', 'function Q6t(e,t){', 'function u7t(e,t,n){'];
+
+function thinkingHelperSource(routes) {
+  return `/*${THINKING_MARKER}*/const ${THINKING_MARKER}=Object.assign(Object.create(null),JSON.parse(${jsLiteral(JSON.stringify(routes))}));`
+    + 'function __hgThinkingFor(e,t,n,o){'
+    + 'if(typeof t!=="string"||n?.provider!=="gateway"||!Array.isArray(n.models)||e!=="code"&&e!=="chat"&&e!=="cowork")return o;'
+    + 'if(o!==void 0)return o;'
+    + 'const i=t.trim().replace(/\\[1m\\]$/i,""),d=__hgThinkingRoutes[i];'
+    + 'if(d===void 0||!n.models.some(m=>m&&m.id===i))return o;'
+    + 'const r=kC(t);if(n.hybridModelSelector?.[e]?.[DC(r)]!==void 0)return o;'
+    + 'const a=n.modelCatalog?.[e];if(Array.isArray(a)&&r8t(r,a,n.provider)!==-1)return o;'
+    + 'return d}'
+    + 'function __hgFinalizeThinking(t,r,o){const i=typeof t==="string"?t.trim().replace(/\\[1m\\]$/i,""):"",d=__hgThinkingRoutes[i];'
+    + 'if(r!==d||!o?.effort_options?.some(x=>x.id==="xhigh"))return o;const a=d.effort_options?.find(x=>x.id==="ultracode");'
+    + 'if(!a||o.effort_options.some(x=>x.id==="ultracode"))return o;return{...o,effort_options:[...o.effort_options,a]}}\n';
+}
+
+/**
+ * Patch the main-process chunk so configured gateway routes (`claude-hg-route-N`) get their declared effort options. A
+ * hybrid selector row or a matched signed-catalog row, including an explicit none, and any existing effort or mode options
+ * always win. Only the `hw` anchor changes; permissions, capabilities, names and the Fast gate are untouched.
+ */
+export function patchNativeThinkingMain(source, catalog) {
+  if (typeof source !== 'string' || !source.startsWith(THINKING_PREFIX)) throw new CatalogError('main chunk must start with the "use strict" directive');
+  if (source.includes('__hgThinking')) throw new CatalogError('main chunk already contains native thinking helper names');
+  const routes = Object.fromEntries(resolveEntries(catalog).filter(entry => entry.thinking).map(entry => [entry.id, entry.thinking]));
+  if (!Object.keys(routes).length) throw new CatalogError('no eligible route declares effort options');
+  for (const needed of THINKING_DEPENDENCIES) {
+    const found = countOf(source, needed);
+    if (found !== 1) throw new CatalogError(`${JSON.stringify(needed)} must appear exactly once in the main chunk (found ${found})`);
+  }
+  const next = replaceOnce(source, THINKING_ANCHOR, THINKING_REPLACEMENT, 'thinking');
+  return THINKING_PREFIX + thinkingHelperSource(routes) + next.slice(THINKING_PREFIX.length);
 }

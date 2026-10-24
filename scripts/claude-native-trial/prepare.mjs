@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { join, resolve, relative, sep } from 'node:path';
 import { readAsarFile, replaceAsarFile } from './asar.mjs';
 import { isolationPrelude } from './isolation.mjs';
-import { patchNativeCatalogAsset } from './catalog.mjs';
+import { patchNativeThinkingMain } from './catalog.mjs';
 
 export const supportedClaudeTrial = Object.freeze({
   version: '2.42304.2',
@@ -12,6 +12,7 @@ export const supportedClaudeTrial = Object.freeze({
   assetSha256: '7814525a829b7fc39e64971ce985ba374146c53f7f0bcceddcbe153b7409bc01',
   asset: 'Contents/Resources/ion-dist/assets/v1/shared-182-DmmFG2g-.js',
   main: '.vite/build/index.pre.js',
+  thinkingMain: '.vite/build/index.chunk-BkhOOUzl.js',
 });
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const run = (file, args, input) => execFileSync(file, args, { encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 });
@@ -48,13 +49,14 @@ export async function prepareNativeTrial({ sourceApp, copyApp, stateRoot, catalo
   if (currentHeader?.algorithm !== 'SHA256') throw Error('Unsupported Claude archive integrity metadata');
   const main = readAsarFile(originalAsar, supportedClaudeTrial.main).toString('utf8');
   const replacement = Buffer.from(`"use strict";\n${isolationPrelude(resolve(stateRoot))}${main}`);
-  const patched = replaceAsarFile(originalAsar, supportedClaudeTrial.main, replacement);
-  const asset = patchNativeCatalogAsset(originalAsset.toString('utf8'), catalog);
+  const isolated = replaceAsarFile(originalAsar, supportedClaudeTrial.main, replacement);
+  const thinkingSource = readAsarFile(originalAsar, supportedClaudeTrial.thinkingMain).toString('utf8');
+  const thinking = patchNativeThinkingMain(thinkingSource, catalog);
+  const patched = replaceAsarFile(isolated.archive, supportedClaudeTrial.thinkingMain, Buffer.from(thinking));
   currentHeader.hash = patched.headerSha256;
   const nextInfo = run('/usr/bin/plutil', ['-convert', 'xml1', '-o', '-', '-'], JSON.stringify(plist));
   try {
     await writeFile(asarPath(copy), patched.archive);
-    await writeFile(join(copy, supportedClaudeTrial.asset), asset);
     await writeFile(join(copy, 'Contents/Info.plist'), nextInfo);
   } catch (error) {
     await writeFile(asarPath(copy), originalAsar);
@@ -66,5 +68,6 @@ export async function prepareNativeTrial({ sourceApp, copyApp, stateRoot, catalo
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', source]);
   return { experimental: true, sourceVersion: version, copyApp: copy, stateRoot: resolve(stateRoot),
     originalSignatureVerified: true, resigningPerformed: false, bundleIdentifierChanged: false,
-    archiveSha256: digest(patched.archive), assetSha256: digest(Buffer.from(asset)), headerSha256: patched.headerSha256 };
+    archiveSha256: digest(patched.archive), assetSha256: digest(originalAsset), headerSha256: patched.headerSha256,
+    thinkingMetadataSource: 'main-process-before-native-effort-cap', rendererAssetModified: false };
 }

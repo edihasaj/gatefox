@@ -7,6 +7,7 @@ export const fixtureModels = [
   { slug: 'claude-hg-route-107001', display_name: 'Gateway trial · Reasoning',
     supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ effort, description: `${effort} reasoning` })),
     default_reasoning_level: 'medium', service_tiers: [{ id: 'priority', name: 'Fast', description: 'Fixture priority transport' }],
+    supports_ultracode: true,
     default_service_tier: null, context_window: 200000 },
   { slug: 'claude-hg-route-107002', display_name: 'Gateway trial · Standard only',
     supported_reasoning_levels: ['low', 'high'].map(effort => ({ effort, description: `${effort} reasoning` })),
@@ -28,6 +29,13 @@ export async function startNativePickerFixture(root) {
     const route = new URL(req.url, 'http://127.0.0.1').pathname;
     if (req.method === 'GET' && route === '/health') return send(200, { status: 'ok' });
     if (req.method === 'GET' && route === '/v1/model-catalog') return send(200, { models: fixtureModels });
+    if (req.method === 'GET' && /^\/api\/model_selector\/(cc|ccd|ccr|code)$/.test(route)) {
+      const surface = route.split('/').at(-1);
+      return send(200, { model_selector_config: [{ id: surface, models: fixtureModels.map(model => ({
+        id: model.slug, name: model.display_name, context_window: model.context_window,
+        runtime: { effort_levels: model.supported_reasoning_levels.map(level => level.effort), default_effort: model.default_reasoning_level },
+      })) }] });
+    }
     if (req.method === 'GET' && route === '/v1/models') return send(200, { data: fixtureModels.map(m => ({ id: m.slug, display_name: m.display_name, type: 'model', created_at: '2026-10-24T00:00:00Z' })), has_more: false });
     if (req.method !== 'POST' || route !== '/v1/messages') return send(404, { type: 'error', error: { type: 'not_found_error', message: 'Unknown fixture route' } });
     const chunks = []; let bytes = 0;

@@ -1,0 +1,27 @@
+{
+  "experimental": true,
+  "nativeCliVersion": "2.1.299",
+  "opaqueModel": "claude-hg-route-107001",
+  "syntheticInferenceOnly": true,
+  "initializeAccepted": true,
+  "applyFlagSettingsAccepted": true,
+  "getSettingsAccepted": true,
+  "applied": {
+    "effort": "xhigh",
+    "ultracode": true,
+    "ultracodeRequested": true,
+    "ultracodeAvailable": true
+  },
+  "wire": {
+    "effort": "xhigh",
+    "thinking": "adaptive",
+    "stream": true
+  },
+  "completedSuccessfulResult": true,
+  "fixtureMarkerMatchedWithoutLoggingText": true,
+  "toolPermissionRequests": 0,
+  "nativeUiUltracodeSelectionVerified": false,
+  "realProviderAgentFanOutVerified": false,
+  "organizationPolicyOverridden": false,
+  "productionDeployed": false
+}

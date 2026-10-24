@@ -1,0 +1,29 @@
+{
+  "experimental": true,
+  "claudeVersion": "2.42304.2",
+  "sourceAppModified": false,
+  "rendererAssetModified": false,
+  "bundleIdentifierChanged": false,
+  "signatureVerification": "original-and-copy-deep-strict-passed",
+  "libraryValidationDisabled": false,
+  "syntheticInferenceOnly": true,
+  "mockElectronKeychain": true,
+  "trialAutoUpdatesDisabled": true,
+  "nativeEffortControlVisible": true,
+  "oneRowPerModelObserved": true,
+  "manualLowEffortWireVerified": true,
+  "manualHighEffortWireVerified": false,
+  "manualMaxEffortWireVerified": false,
+  "lowRequest": {
+    "model": "claude-hg-route-107001",
+    "effort": "low",
+    "tier": null,
+    "thinking": "adaptive",
+    "stream": true
+  },
+  "fixtureReply": "NATIVE_PICKER_OK",
+  "fastMode": "blocked_by_platform-policy-preserved",
+  "modelSwitchPersistenceVerified": false,
+  "productionDeployed": false,
+  "remainingBlocker": "workstation-relocked"
+}

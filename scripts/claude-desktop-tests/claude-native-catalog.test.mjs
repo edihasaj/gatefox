@@ -75,6 +75,20 @@ test("effort options come from the declared levels only, as strings or { effort 
   assert.equal(options({ effort: "high" }), undefined);
 });
 
+test("ultracode is an explicit xhigh-only native option", () => {
+  const options = supports_ultracode => buildNativeCatalog({ models: [route(1, { supports_ultracode })] })[0].thinking?.effort_options;
+  assert.deepEqual(options(true).at(-1), {
+    id: "ultracode",
+    name: "Ultracode",
+    description: "Standing dynamic-workflow orchestration",
+  });
+  for (const value of [false, 1, "true", null, undefined, new Boolean(true)]) {
+    assert.equal(options(value).some(option => option.id === "ultracode"), false, `${String(value)} is not an opt-in`);
+  }
+  const withoutXhigh = buildNativeCatalog({ models: [route(1, { supports_ultracode: true, supported_reasoning_levels: ["low", "high"] })] })[0];
+  assert.equal(withoutXhigh.thinking.effort_options.some(option => option.id === "ultracode"), false);
+});
+
 test("fast mode needs the priority tier and nothing else", () => {
   const fast = tiers => buildNativeCatalog({ models: [route(1, { service_tiers: tiers })] })[0].fast_mode;
   assert.equal(fast([{ id: "priority", name: "Whatever" }]).type, "toggle");
@@ -149,6 +163,21 @@ test("patching an already built list re-validates it and rejects anything buildN
   refuses({ ...entry, fast_mode: { type: "toggle", options: [{ id: "off", name: "Standard" }, { id: "fast", name: "Fast", badge: {} }] } });
   assert.throws(() => patchNativeCatalogAsset(good, [entry, entry]), /duplicate/);
   assert.equal(typeof patchNativeCatalogAsset(good, [entry]), "string");
+});
+
+test("a built ultracode option stays canonical, unique, xhigh-bound, and visible to the native picker", async () => {
+  const good = synthetic();
+  const [entry] = buildNativeCatalog({ models: [route(1, { supports_ultracode: true })] });
+  const source = patchNativeCatalogAsset(good, [entry]);
+  assert.equal(typeof source, "string");
+  const options = entry.thinking.effort_options;
+  const ultracode = options.at(-1);
+  const { pick } = await load(source);
+  assert.deepEqual(pick({ models: [] }).raw[0].thinking.effort_options.at(-1), ultracode);
+  const refuses = candidate => assert.throws(() => patchNativeCatalogAsset(good, [candidate]), CatalogError);
+  refuses({ ...entry, thinking: { ...entry.thinking, effort_options: options.map(option => option.id === "ultracode" ? { ...option, name: "Ultra" } : option) } });
+  refuses({ ...entry, thinking: { ...entry.thinking, effort_options: [...options, ultracode] } });
+  refuses({ ...entry, thinking: { ...entry.thinking, effort_options: options.filter(option => option.id !== "xhigh") } });
 });
 
 test("patched module merges local routes before native normalization and keeps identity stable", async () => {
