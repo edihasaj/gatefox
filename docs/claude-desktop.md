@@ -145,6 +145,10 @@ never prompts, tool arguments, headers, or credentials.
 
 ## One row per model, native thinking controls
 
+An isolated, version-pinned [native-picker experiment](claude-native-trial.md)
+is available for developer testing. It is not part of the normal adapter or a
+deployment, and its native control transport still requires GUI verification.
+
 Claude Desktop obtains its native effort controls from Anthropic's signed model
 catalog. The profile lists exactly one picker row per model and never lists
 effort or speed variants as separate rows. Recognized Claude IDs show the app's
