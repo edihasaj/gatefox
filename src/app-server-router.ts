@@ -23,6 +23,7 @@ import { configEffort, enumEffort, object, requestedEffort, requestedModel, save
 import { gatewayModelList } from "./app-server-model-list.js";
 import { AppServerRoutingError } from "./app-server-routing-error.js";
 import { gatewayProviderIds, nativeIdentityProvider, savedChatProvider } from "./executor-identity.js";
+import { translateGatewaySchedulerRoots } from "./app-server-scheduler-roots.js";
 
 export { AppServerRoutingError };
 type ObjectValue = Record<string, unknown>;
@@ -535,6 +536,7 @@ export class AppServerRouter {
       if (threadRoute) forwarded = await this.routedRequest(method, params, threadRoute, drops);
       routed = threadRoute?.kind;
     } else if (inherited && typeof params.threadId === "string") routed = this.routes.get(params.threadId)?.kind;
+    if (routed === "gateway") forwarded = translateGatewaySchedulerRoots(method, forwarded);
     // Settled before the engine call: a close or cap eviction during the call must not make the chat durable.
     const wasEphemeral = typeof params.threadId === "string" && this.ephemeralThreads.has(params.threadId);
     const expectedTier = typeof params.threadId === "string" ? this.tierRecords.get(params.threadId) : undefined;

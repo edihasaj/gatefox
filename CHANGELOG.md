@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Codex scheduled tasks can now run on gateway models. Projectless automations send the home folder as the exact `~` workspace root, which the gateway engine refused as a relative path, so the run never started. Gateway chats now receive the user's home directory for that exact entry; every other path, permission and model choice is forwarded unchanged. Thanks to Edi Hasaj for asking for native scheduling parity.
+
 - ChatGPT startup diagnostics now reach the app's own engine without adapter preflight. App-bundle replacement and native path changes no longer take the independent gateway executor offline, and the verified 0.164.0-alpha.11.1 engine is supported for native sharing and relay transport. Thanks to Edi Hasaj for reporting the update failures.
 
 - Claude Desktop profiles list one picker row per gateway model. Recognized Claude models use the app's native effort control with an accurate `maxEffort` that keeps any lower cap already set, and opaque GPT and Qwen rows gain no Claude identity or invented controls. Explicit effort and speed aliases remain adapter-only so saved chats keep working; configuration fails above 1000 of them instead of dropping any, and also refuses catalogs whose visible rows exceed the app's 200-entry limit.

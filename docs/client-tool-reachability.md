@@ -64,6 +64,26 @@ scheduler declaration, bypass a client allow-list, or add a second background jo
 Tool availability also does not prove a schedule will execute while its owning
 client or host is unavailable.
 
+### Native scheduled runs on gateway models
+
+The desktop scheduler runs a saved automation through the same adapter. A
+projectless automation saves `cwds = ["~"]` and sends the exact `~` sentinel in
+`runtimeWorkspaceRoots` and `sandboxPolicy.writableRoots` on `thread/start` and
+`turn/start`. The native engine expands that sentinel to the user's home. The
+pinned gateway SDK accepts only absolute roots, so on 2026-10-24 a gateway-model
+QA automation created its thread and then failed `turn/start` with
+`rpc_error` `-32600` (`rejection: "relative_path"`), and its run stayed
+`IN_PROGRESS`. A native-model control run in the same minute completed.
+
+For gateway chats only, `src/app-server-scheduler-roots.ts` replaces an entry
+that is exactly `~` with the user's home directory (`os.homedir()`, not
+`CODEX_HOME`) in those two lists on `thread/start` and `turn/start`. Every other
+entry, including `~/child` and relative paths, `cwd`, the sandbox type, network
+access, approvals and the model choice are forwarded unchanged, so the SDK still
+refuses what it refused before. Native chats and other methods are untouched.
+The scheduler itself, its schedule store, run history and inbox remain the
+app's; the gateway adds no scheduler or background job.
+
 ### Independent background coding jobs
 
 A client can separately register an existing Mission Runtime companion as an
