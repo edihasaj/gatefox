@@ -5,6 +5,10 @@ import type { ResponsesRequest } from "./types.js";
 /** Apply only the explicitly documented Messages ingress compatibility rules. */
 export function messagesProviderRequest(request: ResponsesRequest, kind: ProviderKind): ResponsesRequest {
   const result = { ...request };
+  if (!["claude-subscription", "codex-subscription", "responses-api", "copilot-subscription"].includes(kind)
+      && result.service_tier !== undefined && result.service_tier !== "default") {
+    throw new ProviderError("invalid_request", "The selected provider does not support Messages service tiers", 400);
+  }
   const subscription = ["codex-subscription", "claude-subscription", "copilot-subscription"].includes(kind);
   // Messages requires this field. Subscription harnesses own their generation
   // limit; the HTTP response advertises that limitation and never claims a cap.

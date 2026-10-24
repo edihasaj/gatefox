@@ -143,6 +143,33 @@ the model catalog and individual model detail required by the native picker.
 An optional private audit records only configured route identity and status,
 never prompts, tool arguments, headers, or credentials.
 
+## Explicit thinking and speed selections
+
+Claude Desktop obtains its native effort controls from Anthropic's signed model
+catalog. Opaque gateway aliases cannot supply that catalog metadata. The gateway
+profile therefore also offers explicit model variants for discovered thinking
+levels and speed tiers. Primary Claude models keep their native Standard effort
+control and gain explicit Fast entries at each supported effort. GPT, Qwen and
+secondary accounts gain explicit effort entries; transports that support speed
+also gain the effort × speed combinations. Selecting a variant selects its
+effort and speed for the same provider, account and model. Standard uses the
+`default` service tier; Fast appears only when discovery advertises it.
+Thinking effort and speed remain separate controls in the underlying request.
+These entries do not add Codex's Ultra agent orchestration to Claude Desktop.
+
+Re-run `claude-desktop configure` to prepare the updated profile, then apply it
+after finishing Claude work and quitting its GUI. Existing base route IDs remain
+available for saved chats. The app's native effort control can still appear for
+recognized Claude IDs; an explicit variant's label is authoritative for that
+variant, including tool continuations.
+An explicit effort variant enables adaptive thinking when the app sends its
+unknown-model disabled default. Existing adaptive display preferences are kept;
+fixed token budgets remain unsupported.
+Native auxiliary Auto reviews keep their original generation controls.
+The profile must fit Claude Desktop's 200-entry limit. Configuration reports
+the required counts and fails when the full selection would exceed that limit;
+it never silently drops models or choices.
+
 ## Tools and subagents
 
 The Claude harness executes tools and manages agents. The gateway continues to

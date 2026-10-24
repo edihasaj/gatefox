@@ -91,6 +91,42 @@ test("serves Anthropic model catalog and model detail", async () => {
   assert.equal(missing.status, 404);
 });
 
+test("explicit picker variants select effort and speed through tool continuation history", async () => {
+  let received;
+  const started = await adapter((req, res) => {
+    const chunks = [];
+    req.on("data", chunk => chunks.push(chunk));
+    req.on("end", () => {
+      received = JSON.parse(Buffer.concat(chunks));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ model: "claude/opus", content: [] }));
+    });
+  }, { models: [{ id: "claude-variant", upstream: "claude/opus", displayName: "Opus · Max · Fast", reasoningEffort: "max", serviceTier: "priority" }] });
+  const system = { role: "system", content: "Keep the instruction", output_config: { effort: "low" } };
+  const reply = await request(started.port, { path: "/v1/messages", method: "POST", headers: credentials(), body: JSON.stringify({
+    model: "claude-variant", output_config: { effort: "medium" }, service_tier: "default", thinking: { type: "adaptive", display: "omitted" },
+    messages: [system, { role: "user", content: "Hello" }],
+  }) });
+  assert.equal(reply.status, 200);
+  assert.equal(received.model, "claude/opus");
+  assert.deepEqual(received.output_config, { effort: "max" });
+  assert.equal(received.service_tier, "priority");
+  assert.deepEqual(received.messages[0], { ...system, output_config: { effort: "max" } });
+  assert.deepEqual(received.thinking, { type: "adaptive", display: "omitted" });
+  assert.equal(JSON.parse(reply.body).model, "claude-variant");
+  const thinking = await request(started.port, { path: "/v1/messages", method: "POST", headers: credentials(), body: JSON.stringify({
+    model: "claude-variant", max_tokens: 1024, thinking: { type: "disabled" }, messages: [{ role: "user", content: "Think about this" }],
+  }) });
+  assert.equal(thinking.status, 200);
+  assert.deepEqual(received.thinking, { type: "adaptive" });
+  assert.deepEqual(received.output_config, { effort: "max" });
+  const review = { model: "claude-variant", max_tokens: 64, thinking: { type: "disabled" },
+    stop_sequences: ["</severity>"], messages: [{ role: "user", content: "Review the action" }] };
+  const reviewed = await request(started.port, { path: "/v1/messages", method: "POST", headers: credentials(), body: JSON.stringify(review) });
+  assert.equal(reviewed.status, 200);
+  assert.deepEqual(received, { ...review, model: "claude/opus" });
+});
+
 test("forwards only the top-level model and preserves the query and all other JSON", async () => {
   let received;
   const started = await adapter((req, res) => {

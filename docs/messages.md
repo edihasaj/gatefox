@@ -155,6 +155,12 @@ are not preserved. Unsupported output controls and native `safeguards` return
 an explicit request error. The settings generator does not change permission
 mode or allow rules.
 
+The optional `service_tier` field forwards the caller's speed selection to the
+provider independently of reasoning effort on Claude and Codex subscriptions
+and Responses API routes. Tier IDs must be lowercase and at most 128 characters;
+provider capability checks still apply. Transports without speed support reject
+nonstandard tiers instead of silently discarding the selection.
+
 Adaptive thinking and its display preference are accepted. Explicitly disabling
 thinking and fixed thinking-token budgets return an unsupported request error
 because the current bridge cannot enforce those controls across providers.

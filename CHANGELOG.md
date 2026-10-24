@@ -4,6 +4,8 @@
 
 - ChatGPT startup diagnostics now reach the app's own engine without adapter preflight. App-bundle replacement and native path changes no longer take the independent gateway executor offline, and the verified 0.164.0-alpha.11.1 engine is supported for native sharing and relay transport. Thanks to Edi Hasaj for reporting the update failures.
 
+- Claude Desktop profiles now offer explicit thinking and supported speed choices for gateway models. Primary Claude models retain native Standard effort controls and gain Fast variants, while GPT and Qwen receive explicit effort choices. Selections reach the same provider and account, and configuration refuses catalogs that exceed the app's 200-entry limit.
+
 - Responses providers now recover known transient connection failures through the existing single pre-output retry and retain safe network diagnostics. Partial output, authentication refresh, and permanent connection faults are not replayed. Thanks to Edi Hasaj for reporting the Studio disconnects.
 
 - Existing Claude Desktop adapters, private inference and SSH forwards can move under the single signed app-owned gateway service without changing their isolated settings. Loaded legacy jobs require explicit transaction-scoped force authorization; automatic restarts and wake handling preserve Claude components. Standalone adapter installation no longer creates another background job. Thanks to Edi Hasaj for identifying the extra jobs.

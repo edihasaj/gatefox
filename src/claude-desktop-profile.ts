@@ -5,6 +5,15 @@ export const claudeDesktopProfileName = "Harness Gateway";
 const primaryProviderType = "claude-subscription";
 const defaultModelName = "claude-fable-5-1";
 const defaultAdapterPort = 3467;
+/** Claude Desktop accepts at most this many rows in the profile's model list. */
+const maxProfileModelRows = 200;
+/** Only these efforts are offered as variants; ultra, none and minimal have no Claude request equivalent. */
+const variantEffortOrder = ["low", "medium", "high", "xhigh", "max"] as const;
+type VariantEffort = typeof variantEffortOrder[number];
+const effortLabels: Record<VariantEffort, string> = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max" };
+/** Transports that honor an explicit service tier. */
+const tierProviderTypes = new Set(["claude-subscription", "codex-subscription", "responses-api"]);
+const standardTier: VariantTier = { id: "default", name: "Standard" };
 
 export interface ClaudeDesktopProvider {
   id: string;
@@ -24,6 +33,7 @@ export interface ClaudeDesktopCatalogModel {
   display_name: string;
   context_window?: number;
   supported_reasoning_levels?: Array<string | { effort?: string }>;
+  service_tiers?: Array<{ id?: string; name?: string }>;
 }
 
 export interface ClaudeDesktopCatalog {
@@ -50,6 +60,8 @@ export interface ClaudeDesktopAdapterModel {
   upstream: string;
   displayName: string;
   contextWindow?: number;
+  reasoningEffort?: VariantEffort;
+  serviceTier?: string;
   preserveOptionalToolArguments?: true;
 }
 
@@ -68,6 +80,17 @@ export interface ClaudeDesktopProfileBuild {
 }
 
 type AliasOwner = { providerId: string; providerType: string; native: string };
+type VariantTier = { id: string; name: string };
+type VariantSpec = { effort?: VariantEffort; tier?: VariantTier };
+interface VariantBase {
+  alias: string;
+  row: ClaudeDesktopCatalogModel;
+  keepOptionalToolArguments: boolean;
+  /** A primary Claude native route: Standard uses Claude Desktop's own effort control. */
+  primary: boolean;
+  efforts: VariantEffort[];
+  tiers: VariantTier[];
+}
 
 function fail(message: string): never { throw new Error(message); }
 
@@ -142,6 +165,77 @@ function primaryRoutes(primary: Map<string, string>): Array<{ native: string; al
 
 function supportsHigh(row: ClaudeDesktopCatalogModel): boolean {
   return Array.isArray(row.supported_reasoning_levels) && row.supported_reasoning_levels.some(level => level === "high" || (typeof level === "object" && level !== null && level.effort === "high"));
+}
+
+function variantRouteId(alias: string, effort: string | undefined, tier: string | undefined): string {
+  const number = createHash("sha256").update(JSON.stringify(["variant", alias, effort ?? null, tier ?? null]), "utf8").digest().readBigUInt64BE(0);
+  return `claude-hg-route-${number}`;
+}
+
+function variantEfforts(row: ClaudeDesktopCatalogModel): VariantEffort[] {
+  if (!Array.isArray(row.supported_reasoning_levels)) return [];
+  const present = new Set<string>();
+  for (const level of row.supported_reasoning_levels) {
+    const effort = typeof level === "string" ? level : level && typeof level === "object" ? level.effort : undefined;
+    if (typeof effort === "string") present.add(effort);
+  }
+  return variantEffortOrder.filter(effort => present.has(effort));
+}
+
+/** Advertised non-standard tiers of a transport that honors them; Standard is added explicitly as `default`. */
+function variantTiers(row: ClaudeDesktopCatalogModel, providerType: string): VariantTier[] {
+  if (!tierProviderTypes.has(providerType) || !Array.isArray(row.service_tiers)) return [];
+  const seen = new Set<string>();
+  const result: VariantTier[] = [];
+  for (const tier of row.service_tiers) {
+    if (!tier || typeof tier.id !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(tier.id) || tier.id === "default" || seen.has(tier.id)) continue;
+    if (!nonEmptyString(tier.name) || tier.name.length > 1024 || tier.name.includes("\0")) continue;
+    seen.add(tier.id);
+    result.push({ id: tier.id, name: tier.name });
+  }
+  return result;
+}
+
+/**
+ * A primary Claude native route keeps Claude Desktop's own effort control for Standard, so
+ * it only gets explicit variants for each advertised non-standard tier (Fast) x each effort.
+ * Every other route gets the effort x speed cross product with Standard explicit as `default`.
+ */
+function variantSpecs(base: VariantBase): VariantSpec[] {
+  const efforts: Array<VariantEffort | undefined> = base.efforts.length ? base.efforts : [undefined];
+  if (base.primary) return base.tiers.flatMap(tier => efforts.map(effort => ({ ...(effort === undefined ? {} : { effort }), tier })));
+  const speeds: Array<VariantTier | undefined> = base.tiers.length ? [standardTier, ...base.tiers] : [undefined];
+  const result: VariantSpec[] = [];
+  for (const effort of efforts) for (const tier of speeds) {
+    if (effort === undefined && tier === undefined) continue;
+    result.push({ ...(effort === undefined ? {} : { effort }), ...(tier === undefined ? {} : { tier }) });
+  }
+  return result;
+}
+
+/** Never truncates: a profile that would exceed the row limit is refused with the counts that explain it. */
+function selectVariants(bases: VariantBase[], originalRows: number): Array<{ base: VariantBase; spec: VariantSpec }> {
+  const result = bases.flatMap(base => variantSpecs(base).map(spec => ({ base, spec })));
+  if (originalRows + result.length > maxProfileModelRows) {
+    fail(`Claude Desktop allows at most ${maxProfileModelRows} model rows, but this gateway needs ${originalRows + result.length} (${originalRows} models + ${result.length} effort/speed variants); remove models or service tiers from the gateway configuration`);
+  }
+  return result;
+}
+
+/** The highest effort the model supports, bounded by a cap already in the profile. */
+function boundedMaxEffort(prior: unknown, efforts: VariantEffort[]): unknown {
+  const top = efforts[efforts.length - 1];
+  if (top === undefined) return prior;
+  if (prior === undefined) return top;
+  const priorRank = variantEffortOrder.indexOf(prior as VariantEffort);
+  if (priorRank < 0) return prior;
+  return priorRank < variantEffortOrder.indexOf(top) ? prior : top;
+}
+
+/** Efforts at or below the native row's bounded cap, so a Fast variant cannot exceed what Standard allows. */
+function effortsWithin(cap: unknown, efforts: VariantEffort[]): VariantEffort[] {
+  const rank = variantEffortOrder.indexOf(cap as VariantEffort);
+  return rank < 0 ? efforts : efforts.filter(effort => variantEffortOrder.indexOf(effort) <= rank);
 }
 
 function adapterModel(id: string, upstream: string, row: ClaudeDesktopCatalogModel, keepOptionalToolArguments: boolean): ClaudeDesktopAdapterModel {
@@ -227,11 +321,19 @@ export function buildClaudeDesktopProfile(
   const primaryEntries = orderedRoutes.map(route => {
     const prior = oldMetadata.get(route.native);
     const entry: Record<string, unknown> = { name: route.native, labelOverride: catalogModels.get(route.alias)!.display_name };
-    for (const key of ["anthropicFamilyTier", "isFamilyDefault", "maxEffort"]) if (prior && Object.hasOwn(prior, key)) entry[key] = prior[key];
+    for (const key of ["anthropicFamilyTier", "isFamilyDefault"]) if (prior && Object.hasOwn(prior, key)) entry[key] = prior[key];
+    const maxEffort = boundedMaxEffort(prior && Object.hasOwn(prior, "maxEffort") ? prior.maxEffort : undefined, variantEfforts(catalogModels.get(route.alias)!));
+    if (maxEffort !== undefined) entry.maxEffort = maxEffort;
     return entry;
   });
 
   const adapterModels: ClaudeDesktopAdapterModel[] = orderedRoutes.map(route => adapterModel(route.native, route.alias, catalogModels.get(route.alias)!, false));
+  const variantBases: VariantBase[] = orderedRoutes.map((route, index) => {
+    const row = catalogModels.get(route.alias)!;
+    // The native row's bounded cap also bounds its explicit Fast variants.
+    const efforts = effortsWithin(primaryEntries[index]!.maxEffort, variantEfforts(row));
+    return { alias: route.alias, row, keepOptionalToolArguments: false, primary: true, efforts, tiers: variantTiers(row, aliases.get(route.alias)!.providerType) };
+  });
   const usedIds = new Set(primaryEntries.map(entry => String(entry.name)));
   const extras: Record<string, unknown>[] = [];
   for (const alias of [...aliases.keys()].filter(alias => !primary.has(alias)).sort()) {
@@ -243,14 +345,32 @@ export function buildClaudeDesktopProfile(
     if (supportsHigh(row)) entry.maxEffort = "high";
     extras.push(entry);
     const owner = aliases.get(alias)!;
-    adapterModels.push(adapterModel(routeId, alias, row, owner.providerType === "codex-subscription" || owner.providerType === "responses-api"));
+    const keepOptional = owner.providerType === "codex-subscription" || owner.providerType === "responses-api";
+    adapterModels.push(adapterModel(routeId, alias, row, keepOptional));
+    variantBases.push({ alias, row, keepOptionalToolArguments: keepOptional, primary: false, efforts: variantEfforts(row), tiers: variantTiers(row, owner.providerType) });
+  }
+
+  // Variants follow every original row. Each carries an explicit effort and/or tier and
+  // no family identity, so selecting one never changes which model family the client assumes.
+  const variantEntries: Record<string, unknown>[] = [];
+  for (const { base, spec } of selectVariants(variantBases, usedIds.size)) {
+    const routeId = variantRouteId(base.alias, spec.effort, spec.tier?.id);
+    if (usedIds.has(routeId)) fail(`Variant route ID collision for ${base.alias}: ${routeId}`);
+    usedIds.add(routeId);
+    const label = [base.row.display_name, spec.effort === undefined ? undefined : effortLabels[spec.effort], spec.tier?.name].filter(part => part !== undefined).join(" · ");
+    variantEntries.push({ name: routeId, labelOverride: label });
+    adapterModels.push({
+      ...adapterModel(routeId, base.alias, base.row, base.keepOptionalToolArguments), displayName: label,
+      ...(spec.effort === undefined ? {} : { reasoningEffort: spec.effort }),
+      ...(spec.tier === undefined ? {} : { serviceTier: spec.tier.id }),
+    });
   }
 
   const profile: Record<string, unknown> = structuredClone(existingProfile);
   profile.inferenceGatewayBaseUrl = `http://127.0.0.1:${adapterPort}`;
   profile.modelDiscoveryEnabled = false;
   profile.alwaysStartWithDefaultModel = true;
-  profile.inferenceModels = [...primaryEntries, ...extras];
+  profile.inferenceModels = [...primaryEntries, ...extras, ...variantEntries];
   if (options.credentialHelper) {
     if (!nonEmptyString(options.credentialHelper.command) || !Array.isArray(options.credentialHelper.args) || options.credentialHelper.args.some(argument => typeof argument !== "string")) fail("credentialHelper must contain a command and string args");
     profile.inferenceCredentialHelper = options.credentialHelper.command;

@@ -143,6 +143,10 @@ function outputEffort(value: unknown): string | undefined {
 
 function controls(value: Data, catalog: Set<string>, effort: string | undefined): Pick<ResponsesRequest, "tool_choice"> & Record<string, unknown> {
   const result: Record<string, unknown> = {};
+  if (value.service_tier !== undefined) {
+    if (typeof value.service_tier !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(value.service_tier)) invalid();
+    result.service_tier = value.service_tier;
+  }
   if (value.temperature !== undefined) result.temperature = finiteProbability(value.temperature);
   if (value.top_p !== undefined) result.top_p = finiteProbability(value.top_p);
   if (value.stop_sequences !== undefined) {
@@ -181,7 +185,7 @@ function controls(value: Data, catalog: Set<string>, effort: string | undefined)
 /** Converts the supported native Anthropic Messages subset without weakening caller semantics. */
 export function messagesToResponses(value: unknown, options: { countTokens?: boolean } = {}): ResponsesRequest {
   const request = object(value);
-  const allowed = new Set(["model", "max_tokens", "messages", "system", "tools", "tool_choice", "temperature", "top_p", "stop_sequences", "stream", "thinking", "output_config", "context_management", "metadata", "cache_control"]);
+  const allowed = new Set(["model", "max_tokens", "messages", "system", "tools", "tool_choice", "temperature", "top_p", "stop_sequences", "stream", "thinking", "output_config", "context_management", "metadata", "cache_control", "service_tier"]);
   for (const key of Object.keys(request)) if (!allowed.has(key)) invalid();
   const model = nonempty(request.model);
   cacheControl(request.cache_control);

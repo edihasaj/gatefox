@@ -2,6 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { ProviderError } from "../providers/provider.js";
 import { messagesToResponses } from "../protocol/messages-request.js";
+import { messagesProviderRequest } from "../protocol/messages-routing.js";
+
+test("Messages service tiers reach the selected provider without changing effort", () => {
+  const base = { model: "m", max_tokens: 1, messages: [{ role: "user", content: "x" }], output_config: { effort: "max" } };
+  for (const service_tier of ["default", "priority", "flex"]) {
+    const translated = messagesToResponses({ ...base, service_tier });
+    assert.equal(translated.service_tier, service_tier);
+    assert.deepEqual(translated.reasoning, { effort: "max" });
+    for (const kind of ["claude-subscription", "codex-subscription", "responses-api"] as const) assert.equal(messagesProviderRequest(translated, kind).service_tier, service_tier);
+    for (const kind of ["chat-completions-api", "anthropic-api", "grok-subscription"] as const) {
+      if (service_tier === "default") assert.equal(messagesProviderRequest(translated, kind).service_tier, "default");
+      else assert.throws(() => messagesProviderRequest(translated, kind), /does not support Messages service tiers/);
+    }
+  }
+  for (const service_tier of [null, 1, "Fast", "priority ", "x".repeat(129)]) assert.throws(() => messagesToResponses({ ...base, service_tier }), ProviderError);
+});
 
 test("Messages request preserves ordered system blocks and native controls", () => {
   const request = messagesToResponses({

@@ -6,6 +6,7 @@ import http from "node:http";
 import path from "node:path";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { isNativeClassifierRequest } from "./claude-desktop-native-messages.mjs";
 import {
   normalizeOptionalToolResponse,
   prepareOptionalToolArguments,
@@ -63,8 +64,12 @@ export function validateConfig(raw) {
     if (value.preserveOptionalToolArguments !== undefined && typeof value.preserveOptionalToolArguments !== "boolean") {
       invalid(`models[${index}].preserveOptionalToolArguments must be a boolean`);
     }
+    if (value.reasoningEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(value.reasoningEffort)) invalid(`models[${index}].reasoningEffort is invalid`);
+    if (value.serviceTier !== undefined && (typeof value.serviceTier !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(value.serviceTier))) invalid(`models[${index}].serviceTier is invalid`);
     const model = { id: value.id, upstream: value.upstream, displayName: value.displayName,
       ...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }),
+      ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+      ...(value.serviceTier === undefined ? {} : { serviceTier: value.serviceTier }),
       ...(value.preserveOptionalToolArguments === true ? { preserveOptionalToolArguments: true } : {}) };
     modelIndex.set(model.id, model);
     return model;
@@ -266,7 +271,20 @@ function forward(req, res, config, route, token, record) {
     }
     record.exposedModel = model.id;
     record.upstreamModel = model.upstream;
+    const auxiliaryReview = isNativeClassifierRequest(payload);
     payload.model = model.upstream;
+    // Selecting a variant explicitly selects these controls, including across
+    // tool continuations whose historical system messages retain older efforts.
+    if (!auxiliaryReview && model.reasoningEffort !== undefined) {
+      payload.output_config = { ...payload.output_config, effort: model.reasoningEffort };
+      // Unknown aliases can inherit the client's no-thinking default. An explicit
+      // effort selection enables adaptive thinking; fixed budgets still fail closed.
+      if (payload.thinking?.type === "disabled" && Object.keys(payload.thinking).length === 1) payload.thinking = { type: "adaptive" };
+      if (Array.isArray(payload.messages)) payload.messages = payload.messages.map(message =>
+        message?.role === "system" && message.output_config?.effort !== undefined
+          ? { ...message, output_config: { ...message.output_config, effort: model.reasoningEffort } } : message);
+    }
+    if (!auxiliaryReview && model.serviceTier !== undefined) payload.service_tier = model.serviceTier;
     const optional = model.preserveOptionalToolArguments
       ? prepareOptionalToolArguments(payload)
       : { payload, plans: new Map() };
