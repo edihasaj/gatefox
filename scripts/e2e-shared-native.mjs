@@ -219,7 +219,19 @@ try {
   host = await startExecutionHost({ config, configPath, nativeHome: home, codex: hostSdk, capabilities, nativeRelayOwnsRegistration: false,
     nativeSdkVerifier: verifyHostSdk, gatewayRuntime: async () => gatewayRuntime });
   if (v['desktop-app']) {
-    desktopWrapper = (await prepareDesktop(configPath, resolve(v['desktop-app']))).wrapper;
+    // Match command(): an installed launcher exports its helper identity, while
+    // a .js gateway runs directly through this Node. Native ownership must see
+    // the same provider/auth helper for both stdio and Unix clients.
+    const helper = { installed: process.env.GATEWAY_INSTALLED, command: process.env.GATEWAY_COMMAND };
+    try {
+      if (!gateway.endsWith('.js')) {
+        process.env.GATEWAY_INSTALLED = '1'; process.env.GATEWAY_COMMAND = gateway;
+      }
+      desktopWrapper = (await prepareDesktop(configPath, resolve(v['desktop-app']))).wrapper;
+    } finally {
+      if (helper.installed === undefined) delete process.env.GATEWAY_INSTALLED; else process.env.GATEWAY_INSTALLED = helper.installed;
+      if (helper.command === undefined) delete process.env.GATEWAY_COMMAND; else process.env.GATEWAY_COMMAND = helper.command;
+    }
     assert.ok(desktopWrapper.startsWith(state + '/'), 'The generated desktop wrapper escaped the isolated state');
   }
   control = new SocketAppServerConnection(join(executionHostHome(configPath, home), 'host.sock'), async () => {}); await control.ready;
