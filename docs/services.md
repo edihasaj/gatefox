@@ -12,6 +12,22 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+The same ownership rule includes the Claude Desktop integration. Its separate
+configuration and loopback listeners do not justify separate startup jobs.
+Legacy `com.edihasaj.claude-*` adapters, private inference and SSH forwards must
+be counted in a gateway audit, even though their labels do not say `gateway`.
+Node executables and SSH processes remain children of the one signed app-owned
+root, not additional LaunchAgents. See [Claude Desktop](claude-desktop.md#apply-and-run)
+for the read-only preview and next-start migration. Never disable a generic
+`node` Login Items row without identifying its registrations: it can contain
+the live Claude bridge or unrelated applications.
+
+The supervisor conservatively refuses automatic restarts while a Claude child
+has established TCP connections or its activity cannot be checked. This is an
+external socket snapshot, not an atomic request-drain protocol for the pinned
+Claude runtime. Migration therefore also requires the Claude apps to be closed
+and their listeners idle. It never forces busy Codex or Claude work to restart.
+
 ## The name macOS shows
 
 For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`

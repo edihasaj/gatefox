@@ -32,6 +32,7 @@ import { runServiceDaemon } from "./service-daemon.js";
 import { enableSharedExecutors } from "./mac-shared-executors.js";
 import { enableSharedNative } from "./mac-shared-native.js";
 import { stageNativeSharing } from "./service-native-staging.js";
+import { previewClaudeConsolidation, stageClaudeConsolidation } from "./service-claude-staging.js";
 import { disableSharing } from "./mac-shared-disable.js";
 import { runExecutionHostCommand } from "./execution-host-command.js";
 import { safeErrorMessage } from "./error-message.js";
@@ -63,6 +64,7 @@ const help = `gateway — local subscription and API inference
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
   gateway service consolidate [--apply | --next-login] [--config PATH]
+  gateway service claude-desktop [--on-restart] [--config PATH]
   gateway service shared-executors [--apply] [--disable] [--config PATH]
   gateway service shared-native [--apply] [--disable] [--on-restart [--with-gateway]] [--config PATH]
   gateway executor-host --config PATH --codex PATH --native-home PATH
@@ -116,7 +118,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
-  if (values["on-restart"] && (command !== "service" || id !== "shared-native")) throw new Error("--on-restart is only valid for service shared-native");
+  if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
   if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");
   if (values["with-gateway"] && !(command === "service" && id === "shared-native" && values["on-restart"])) throw new Error("--with-gateway is only valid with service shared-native --on-restart");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
@@ -168,7 +170,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   if (command === "service") {
-    const result = id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
+    const result = id === "claude-desktop" ? values["on-restart"] ? await stageClaudeConsolidation(path) : await previewClaudeConsolidation(path)
+      : id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
       : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
       : id === "shared-native" && values["on-restart"] ? await stageNativeSharing(path, values["with-gateway"])
       : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path);

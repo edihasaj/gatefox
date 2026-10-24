@@ -19,10 +19,11 @@ import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js"
 import { followCurrentRelease } from "./service-relay-path.js";
 import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
+import { isClaudeComponent, establishedTcpClaudeIdle, type ClaudeIdle } from "./service-claude-activity.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
-/** Why a quiet upgrade waited: the host's reason, or inference that refused its idle guard. */
-type UpgradeWait = QuietWait | "inference_busy";
+/** Why a quiet upgrade waited: the host's reason, inference that refused its idle guard, or Claude sockets that were still established. */
+type UpgradeWait = QuietWait | "inference_busy" | "claude_busy";
 /** A restart that stopped the service (with the host's loaded-chat count), or one that was refused, with why when known. */
 type RestartResult = { loadedChats: number } | { wait?: UpgradeWait };
 interface ComponentState { id: string; kind: string; state: "starting" | "running" | "waiting" | "complete" | "stopped" | "paused"; pid?: number; restarts: number; nextRestartAt?: string; pausedReason?: PauseReason; pausedAt?: string; startedAt?: string; lastConnectedAt?: string }
@@ -87,7 +88,8 @@ export class ServiceSupervisor {
   readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
-    healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs) {
+    healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs,
+    private readonly claudeIdle: ClaudeIdle = establishedTcpClaudeIdle) {
     this.heal = { ...defaultHealing, ...healing };
     const running = this.heal.releaseState()?.running;
     if (running && canonicalRelease.test(running)) this.runningRelease = running;
@@ -284,7 +286,7 @@ export class ServiceSupervisor {
         if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
         if (this.stopping) return;
       }
-      const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment } });
+      const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment }, ...(component.workingDirectory ? { cwd: component.workingDirectory } : {}) });
       slot.child = child; slot.startedAt = Date.now();
       slot.exited = new Promise(resolve => child.once("close", () => resolve()));
       let handled = false;
@@ -325,7 +327,8 @@ export class ServiceSupervisor {
   }
   /**
    * The strict idle restart: `gateway service restart` (SIGUSR2), a failed host close and the first try of every upgrade. The
-   * host must have no adapter lease and no loaded chat, then inference must accept its own idle guard.
+   * host must have no adapter lease and no loaded chat, any running Claude component must hold no established TCP connection
+   * (their pinned runtimes answer no idle signal of their own), then inference must accept its own idle guard.
    */
   async restartWhenIdle(): Promise<boolean> { return "loadedChats" in await this.restartAfter(async (host): Promise<RestartResult> => await host.prepareStop() ? { loadedChats: 0 } : {}); }
   /**
@@ -362,8 +365,9 @@ export class ServiceSupervisor {
   }
   /**
    * One restart at a time, never while stopping: `hostReady` closes the host's gate (an idle or quiet check, returning the
-   * loaded-chat count, or why it refused), then inference must accept SIGUSR2 and exit, and the service stops for launchd to
-   * start it again. Any refusal reopens the host and leaves everything running.
+   * loaded-chat count, or why it refused), then the sockets guard clears any running Claude component, then inference must
+   * accept SIGUSR2 and exit, and the service stops for launchd to start it again. Any refusal reopens the host and leaves
+   * everything running. An explicitly requested stop never comes through here, so it is not subject to the sockets guard.
    */
   private async restartAfter(hostReady: (host: ExecutionHost) => Promise<RestartResult>): Promise<RestartResult> {
     // A host-only restart in progress is finished first; the service restart is asked again later.
@@ -381,6 +385,15 @@ export class ServiceSupervisor {
         loadedChats = ready.loadedChats;
       }
     } catch { executionHost?.resume(); this.restarting = false; return {}; }
+    // Every automatic restart (idle, quiet, skew) ends in the stop below, so the guard sits at this single choke point. The
+    // pids are the supervisor's own live children, so a recycled pid is never asked about, and a probe that throws is a probe
+    // that did not answer: the host reopens and every child, inference included, keeps running.
+    const claudePids = this.slots.flatMap(slot => isClaudeComponent(slot.definition) && typeof slot.child?.pid === "number" ? [slot.child.pid] : []);
+    if (claudePids.length) {
+      let idle = false;
+      try { idle = await this.claudeIdle(claudePids); } catch (error) { reportException(error, "service_claude_idle"); }
+      if (!idle) { executionHost?.resume(); this.restarting = false; return { wait: "claude_busy" }; }
+    }
     if (!inference) { await this.stop(); return { loadedChats }; }
     if (!inference.child) { executionHost?.resume(); this.restarting = false; return {}; }
     inference.child.kill("SIGUSR2");
@@ -397,11 +410,12 @@ export class ServiceSupervisor {
     this.stopHealth?.();
     this.appUpdates?.stop();
     await this.modelMaintenance?.stop();
-    // Inference lets running streams finish before it exits, so it gets its drain on top
-    // of the usual grace. Shared executors are its local clients: the host closes only
-    // once inference has exited, or their running streams would end as cancelled. Plans
-    // override only PATH and SSH_AUTH_SOCK, so inference inherits this drain setting.
-    const grace = (slot: Slot) => slot.definition.kind === "inference" ? inferenceStopGraceMs() : componentStopMs;
+    // Inference lets running streams finish before it exits, so it gets its drain on top of the usual grace. The private Claude
+    // inference gets the same longer wait before SIGKILL, but only as a wait: its own close aborts running requests, so the
+    // larger grace guarantees nothing about them. No idle guard runs on this path; the sockets guard belongs to automatic
+    // restarts. Shared executors are its local clients: the host closes only once inference has exited, or their running
+    // streams would end as cancelled. Plans override only PATH and SSH_AUTH_SOCK, so inference inherits this drain setting.
+    const grace = (slot: Slot) => slot.definition.kind === "inference" || slot.definition.kind === "claude-inference" ? inferenceStopGraceMs() : componentStopMs;
     const inference = this.slots.filter(slot => slot.definition.kind === "inference" && slot.child);
     for (const slot of this.slots) { clearTimeout(slot.timer); slot.child?.kill("SIGTERM"); }
     // A start still in the air is waited for (it sees `stopping` and starts nothing, or its host is closed here).

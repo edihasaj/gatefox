@@ -6,6 +6,7 @@
 
 - Responses providers now recover known transient connection failures through the existing single pre-output retry and retain safe network diagnostics. Partial output, authentication refresh, and permanent connection faults are not replayed. Thanks to Edi Hasaj for reporting the Studio disconnects.
 
+- Existing Claude Desktop adapters, private inference and SSH forwards can move under the single signed app-owned gateway service without changing their isolated settings. Migration is staged for a safe primary service start, and standalone adapter installation no longer creates another background job.
 
 - Claude replay now preserves public reasoning-summary identity instead of presenting summaries as ordinary assistant speech. The session ledger retains genuine string assistant messages, and adopted sessions safely reseed once. Saved chats and public history stay intact. Thanks to Edi Hasaj for reporting the replay failure.
 

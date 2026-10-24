@@ -32,6 +32,13 @@ gateway rollout --verify
    Git commit. Its proof must name the same host, SDK, source, and active
    catalog fingerprint.
 
+A pending Claude consolidation cannot earn `ready`, even when the old service's
+canary passes. The gate checks the staged receipt before and after verification.
+Once adopted, each Claude component must have its own running PID, matching OS
+start and expected executable. Its deliberately pinned private JavaScript is not
+relabeled as the main installed release; its authenticated endpoints require
+separate post-migration checks.
+
 The normal command accepts only a host-controlled cached canary report that is
 less than five minutes old and still matches the live status. `--verify` runs a
 new isolated serving-host canary. It uses a local mock provider and a temporary

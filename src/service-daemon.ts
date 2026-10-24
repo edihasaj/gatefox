@@ -4,6 +4,7 @@ import { configureTelemetry } from "./telemetry.js";
 import { presetDesktopEnv } from "./mac-desktop.js";
 import { activateLoginConsolidation } from "./mac-login-consolidate.js";
 import { activatePendingNativeSharing } from "./service-native-staging.js";
+import { activatePendingClaudeConsolidation } from "./service-claude-staging.js";
 import { runServiceSupervisor } from "./service-supervisor.js";
 
 export interface ServiceDaemonDependencies {
@@ -12,6 +13,8 @@ export interface ServiceDaemonDependencies {
   activate: typeof activateLoginConsolidation;
   /** Promotes a staged native-sharing request only in the primary LaunchAgent process. */
   activateNative: typeof activatePendingNativeSharing;
+  /** Retires verified legacy Claude jobs only at a primary service start. */
+  activateClaude: typeof activatePendingClaudeConsolidation;
   run: typeof runServiceSupervisor;
   /** Holds the process until launchd stops it; see untilStopped. */
   standby: () => Promise<void>;
@@ -27,7 +30,7 @@ export interface ServiceDaemonDependencies {
  * failing the same way. The original primary job starts at the next login (see docs/services.md for doing it sooner).
  */
 export async function runServiceDaemon(configPath: string, overrides: Partial<ServiceDaemonDependencies> = {}): Promise<void> {
-  const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), activate: activateLoginConsolidation, activateNative: activatePendingNativeSharing, run: runServiceSupervisor, standby: untilStopped,
+  const deps: ServiceDaemonDependencies = { preset: stateDirectory => presetDesktopEnv(stateDirectory), activate: activateLoginConsolidation, activateNative: activatePendingNativeSharing, activateClaude: activatePendingClaudeConsolidation, run: runServiceSupervisor, standby: untilStopped,
     notice: line => { process.stderr.write(line + "\n"); }, ...overrides };
   const path = resolve(configPath); const config = await loadConfig(path);
   // A rollback below records its event before the supervisor configures telemetry for itself.
@@ -36,7 +39,7 @@ export async function runServiceDaemon(configPath: string, overrides: Partial<Se
   await deps.preset(config.stateDirectory);
   const { plan, restored } = await deps.activate(path);
   if (plan && plan.config === path) {
-    const adopted = await deps.activateNative(path, plan);
+    const adopted = await deps.activateClaude(path, await deps.activateNative(path, plan));
     if (adopted.config !== path) throw new Error("Unified service plan is missing or uses another configuration");
     await deps.run(adopted, config.stateDirectory); return;
   }
