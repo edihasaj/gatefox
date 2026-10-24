@@ -35,12 +35,11 @@ Sign in with ChatGPT registration. Register the intended email with
 authentication is not a gateway credential source. Copying a native login does
 not grant the gateway's required scopes.
 
-When the existing Codex gateway must remain unchanged, create a separate
-gateway configuration, state directory, fixed loopback port, and service label
-for Claude. The existing provider modules can serve this instance. Run it with
-`gateway serve --config PATH` under its own service. Do not use
-`gateway service install` for a second instance: that command owns the shared
-gateway service label.
+When the existing Codex gateway must remain unchanged, keep Claude's separate
+gateway configuration, state directory and fixed loopback port. Configuration
+isolation does not require a separate macOS startup job: its adapter, private
+inference and SSH forwards belong to the existing signed app-owned service tree.
+Never install another LaunchAgent for them or reuse Codex's provider settings.
 
 An existing scoped registration on the same inference host can be referenced
 through its existing absolute credential path. Do not create independent copies
@@ -86,15 +85,51 @@ Finish Claude work and quit its GUI before applying:
 
 ```sh
 gateway claude-desktop configure --gateway-config /absolute/claude-gateway.json --apply
-gateway claude-desktop install --config /absolute/Claude-3p/desktop-adapter/config.json
 gateway claude-desktop status --config /absolute/Claude-3p/desktop-adapter/config.json
 ```
 
 The configure step stages the two files, creates private backups, and restores
 their exact previous bytes if replacement fails. It validates selected profile
-identity and path confinement before writing. The macOS installer owns only the
-Claude adapter's LaunchAgent and refuses an already loaded service or occupied
-port. It does not stop the shared gateway or register a Codex client.
+identity and path confinement before writing. The old standalone `claude-desktop install`
+command refuses to create another LaunchAgent. It does not unload an existing
+adapter or modify any profile.
+
+For an existing standalone deployment, preview and stage consolidation through
+the main gateway configuration, not the Claude inference configuration:
+
+```sh
+gateway service claude-desktop --config /absolute/main-gateway.json
+gateway service claude-desktop --on-restart --config /absolute/main-gateway.json
+```
+
+Staging leaves the live plan, jobs and listeners alone. The next primary service
+start revalidates the saved ownership receipts and adopts the Claude components
+only when every exact legacy registration is unloaded. A loaded adapter,
+inference process, or tunnel remains pending even when its sockets look idle:
+the pinned private runtime has no atomic drain. Changed or foreign jobs also
+remain pending. The signed app's Node runs the existing
+private runtime with its original arguments, working directory and configuration.
+Inference isolation, account ownership, models, permissions and client endpoints
+remain unchanged. Installation or staging is not proof of activation; check the
+live service tree and both authenticated loopback endpoints afterward.
+
+During an approved maintenance window, an operator may stage one explicit
+interruption authorization:
+
+```sh
+gateway service claude-desktop --on-restart --force --config /absolute/main-gateway.json
+```
+
+`--force` is accepted only with this command. It is stored in that one pending
+receipt, still rechecks the exact signed app, plist hashes, argv and process
+identity, and can retire the owned loaded jobs despite active connections. The
+cutover may interrupt Claude work. Restaging without `--force` creates a normal
+safe receipt again; it is not a permanent service preference.
+
+New component logs live under the main gateway state's `services/` directory
+with private permissions. Existing launchd logs are retained unchanged rather
+than reused or chmodded. Recovery journals and original registrations stay in
+private `service-backups` storage.
 
 For foreground diagnostics:
 
@@ -178,8 +213,9 @@ requests can exceed 140 KiB even for a short task. The macOS bound accommodates
 these requests; a platform's smaller environment limit can still refuse one
 before spawning. The adapter never truncates a review transcript to make it fit.
 
-This entry point belongs only to the separate Claude inference service. It
-does not install or restart the shared gateway or register a Codex client.
+This entry point belongs only to the isolated Claude inference component inside
+the existing app-owned service. It does not share Codex's inference configuration
+or register a Codex client.
 Client cancellation also remains effective while asynchronous classifier
 selection is pending: a closed request cannot start fresh backend work when
 selection finishes. Ordinary streaming cancellation closes the owned upstream

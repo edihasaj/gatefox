@@ -48,6 +48,7 @@ function base(extra: Partial<RolloutDeps> = {}): RolloutDeps {
     host: async () => ({ status: { identity: { hostPid: 101, startedAtMs, runningRelease: installed, sourceCommit, catalogFingerprint, sdkSha256 }, capabilities: ["gateway"], compatible: true, quiescing: false, activeWork: false, cachedProbe: probe({ hostPid: 101 }) } }),
     releaseSource: async () => sourceCommit,
     nativeSharingPending: async () => false,
+    claudeConsolidationPending: async () => false,
     ...extra,
   };
 }
@@ -85,6 +86,31 @@ test("a combined host must actually own the native home before shared-native rol
   assert.equal(pending.reason, "native_owner_pending", "advertising native support does not prove a competing private writer is gone");
   const ready = await runRollout(false, undefined, base({ plan: async () => sharedPlan, host: async () => ({ status: { ...host, nativeHomeOwned: true } }) }));
   assert.equal(ready.state, "ready");
+});
+
+test("Claude consolidation stays pending before activation, on unreadable intent, or when staged during a canary", async () => {
+  let calls = 0;
+  const pending = await runRollout(true, undefined, base({ claudeConsolidationPending: async () => true,
+    host: async () => { calls++; throw new Error("must not run"); } }));
+  assert.equal(pending.reason, "claude_consolidation_pending"); assert.equal(calls, 0);
+  const unknown = await runRollout(false, undefined, base({ claudeConsolidationPending: async () => { throw new Error("unreadable"); } }));
+  assert.equal(unknown.reason, "claude_consolidation_pending");
+  let reads = 0;
+  const raced = await runRollout(true, undefined, base({ claudeConsolidationPending: async () => ++reads > 1 }));
+  assert.equal(raced.reason, "claude_consolidation_pending"); assert.equal(raced.probe?.ready, true);
+});
+
+test("each pinned Claude component needs its own live PID and start, not the main release version", async () => {
+  const kinds = ["claude-adapter", "claude-inference"] as const;
+  const components = kinds.map((kind, index) => ({ id: kind, kind, command: "/signed/node", args: ["/private/cli.js"], log: `/claude-${index}.log` }));
+  const snapshot = { version: 1, pid: 101, updatedAt: new Date(now).toISOString(), runningRelease: installed,
+    components: [{ id: "inference", kind: "inference", state: "running", pid: 102, startedAt: new Date(now - 30_000).toISOString() },
+      ...kinds.map((kind, index) => ({ id: kind, kind, state: "running", pid: 301 + index, startedAt: new Date(now - 30_000).toISOString() }))] };
+  const seen: number[] = [];
+  const deps = base({ plan: async () => ({ ...plan, components: [...plan.components, ...components] }), status: async () => snapshot,
+    componentLiveness: async (_component, pid) => { seen.push(pid); return true; } });
+  assert.equal((await runRollout(false, undefined, deps)).state, "ready"); assert.deepEqual(seen, [301, 302]);
+  assert.equal((await runRollout(false, undefined, { ...deps, componentLiveness: async (_component, pid) => pid !== 302 })).reason, "component_pending");
 });
 
 test("a prior process, unknown process, or HTTP 200 from an old release remains pending", async () => {

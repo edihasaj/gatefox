@@ -12,6 +12,34 @@ login setup under one user LaunchAgent. Provider CLIs and chat executors remain
 separate child processes. The GitHub Actions runner and other applications are
 outside this service.
 
+The same ownership rule includes the Claude Desktop integration. Its separate
+configuration and loopback listeners do not justify separate startup jobs.
+Legacy `com.edihasaj.claude-*` adapters, private inference and SSH forwards must
+be counted in a gateway audit, even though their labels do not say `gateway`.
+Node executables and SSH processes remain children of the one signed app-owned
+root, not additional LaunchAgents. See [Claude Desktop](claude-desktop.md#apply-and-run)
+for the read-only preview and next-start migration. Never disable a generic
+`node` Login Items row without identifying its registrations: it can contain
+the live Claude bridge or unrelated applications.
+
+Claude consolidation has a stricter admission rule than a socket-idle restart:
+the pinned private runtime has no atomic request-drain protocol. A normal staged
+receipt adopts only when every legacy Claude job is unloaded, including SSH
+tunnels. It does not substitute an idle connection snapshot for that guarantee.
+An operator who has approved a maintenance interruption can stage exactly one
+receipt with `gateway service claude-desktop --on-restart --force`; that receipt
+may retire only its still-matching owned jobs and can interrupt Claude work.
+
+Once any Claude component is configured, automatic primary-service restarts and
+upgrade activation remain pending even when no socket is currently busy. The
+pinned runtimes have no atomic admission gate, so a new request could otherwise
+arrive after an idle check. An explicit operator stop/restart remains available
+for an authorized maintenance window. Adopted Claude SSH forwards retain their
+processes across wake; their existing keepalives and confirmed-exit retries
+recover connections instead of a forced wake restart or broad remote cleanup.
+Restaging without `--force` removes that authorization. This never forces busy
+Codex work to restart.
+
 ## The name macOS shows
 
 For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`

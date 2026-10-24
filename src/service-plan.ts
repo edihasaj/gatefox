@@ -6,10 +6,12 @@ export const serviceLabel = "com.edihasaj.subscription-gateway";
 export const serviceMarker = "<!-- Managed by subscription-gateway -->";
 export interface ServiceComponent {
   id: string;
-  kind: "inference" | "desktop" | "native" | "tunnel";
+  kind: "inference" | "desktop" | "native" | "tunnel" | "claude-adapter" | "claude-inference";
   command: string;
   args: string[];
   environment?: Record<string, string>;
+  /** The directory the component is spawned in; the Claude adapter and its private inference run beside configs that name relative state. */
+  workingDirectory?: string;
   log: string;
 }
 export interface ServicePlan { version: 1; config: string; components: ServiceComponent[]; sharedExecutors?: boolean; sharedNativeExecutor?: boolean }
@@ -23,11 +25,12 @@ export function validateServicePlan(value: unknown): ServicePlan {
   if (plan.sharedNativeExecutor !== undefined && typeof plan.sharedNativeExecutor !== "boolean") throw new Error("sharedNativeExecutor must be boolean");
   const ids = new Set<string>(); const singles = new Set<string>();
   for (const component of plan.components) {
-    if (!component || !/^[a-z][a-z0-9-]{0,63}$/.test(component.id) || ids.has(component.id) || !["inference", "desktop", "native", "tunnel"].includes(component.kind)) throw new Error("Invalid or duplicate service component");
+    if (!component || !/^[a-z][a-z0-9-]{0,63}$/.test(component.id) || ids.has(component.id) || !["inference", "desktop", "native", "tunnel", "claude-adapter", "claude-inference"].includes(component.kind)) throw new Error("Invalid or duplicate service component");
     ids.add(component.id);
     if (component.kind !== "tunnel" && singles.has(component.kind)) throw new Error("Duplicate service responsibility");
     singles.add(component.kind);
     if (typeof component.command !== "string" || !isAbsolute(component.command) || !Array.isArray(component.args) || component.args.some(arg => typeof arg !== "string" || arg.includes("\0")) || typeof component.log !== "string" || !isAbsolute(component.log)) throw new Error("Invalid service command or log path");
+    if (component.workingDirectory !== undefined && (typeof component.workingDirectory !== "string" || !isAbsolute(component.workingDirectory) || /[\0\r\n]/.test(component.workingDirectory))) throw new Error("Invalid service working directory");
     if (component.environment && (typeof component.environment !== "object" || Array.isArray(component.environment) || Object.entries(component.environment).some(([key, val]) => !["PATH", "SSH_AUTH_SOCK"].includes(key) || typeof val !== "string" || /[\0\r\n]/.test(val)))) throw new Error("Service plans allow only PATH and SSH_AUTH_SOCK environment overrides");
   }
   if (plan.sharedExecutors) serviceExecutionPaths(plan);

@@ -75,8 +75,22 @@ test("the daemon attempts staged native adoption after login activation and befo
       preset: async () => { order.push("preset"); },
       activate: async () => { order.push("login"); return { plan: f.plan, restored: false }; },
       activateNative: async (_path, plan) => { order.push("native"); return plan; },
+      activateClaude: async (_path, plan) => { order.push("claude"); return plan; },
       run: async () => { order.push("supervisor"); },
     });
-    assert.deepEqual(order, ["preset", "login", "native", "supervisor"]);
+    assert.deepEqual(order, ["preset", "login", "native", "claude", "supervisor"]);
+  } finally { await f.remove(); }
+});
+
+test("the daemon passes an adopted Claude plan to the supervisor without changing its config", async () => {
+  const f = await configured();
+  const adopted: ServicePlan = { ...f.plan, components: [{ id: "claude-adapter", kind: "claude-adapter", command: "/signed/node", args: [], log: join(f.directory, "adapter.log") }] };
+  try {
+    await runServiceDaemon(f.config, { preset: async () => {}, activate: async () => ({ plan: f.plan, restored: false }),
+      activateNative: async (_path, plan) => plan, activateClaude: async () => adopted,
+      run: async plan => { assert.deepEqual(plan, adopted); } });
+    await assert.rejects(runServiceDaemon(f.config, { preset: async () => {}, activate: async () => ({ plan: f.plan, restored: false }),
+      activateNative: async (_path, plan) => plan, activateClaude: async () => ({ ...adopted, config: join(f.directory, "other.json") }),
+      run: async () => assert.fail("foreign plan must not run") }), /another configuration/);
   } finally { await f.remove(); }
 });

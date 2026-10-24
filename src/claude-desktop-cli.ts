@@ -24,7 +24,9 @@ configure reads the selected Claude Desktop Harness Gateway profile and writes a
 candidate under Claude-3p/alias-trial/candidate. --apply requires Claude Desktop
 to be quit, writes a recoverable backup, and updates only that selected profile
 and the private adapter config. For a separate gateway, use a local http://
-loopback SSH forward as --endpoint and pair it with that forward's --token-file.`;
+loopback SSH forward as --endpoint and pair it with that forward's --token-file.
+install is retired: it never creates a separate LaunchAgent. Existing deployments
+move under the signed app with gateway service claude-desktop --on-restart.`;
 
 function requireAbsolute(value: string | undefined, name: string): string {
   if (!value || !isAbsolute(value)) throw new Error(`${name} must be an absolute path`);

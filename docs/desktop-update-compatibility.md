@@ -43,6 +43,12 @@ After gateway-only degradation, restoring native sharing requires a verified
 engine and an idle host/service restart. The gateway does not automatically
 admit a new engine merely because its file has returned.
 
+Stopping the app-owned metadata timer settles its pending policy-read attempt
+immediately, even when that reader ignores cancellation. The underlying reader retains
+its busy slot until it actually settles, so shutdown neither waits for its
+deadline nor starts overlapping work. A reconciliation pass retains its bounded
+cleanup wait.
+
 ## Verify an app update
 
 1. Verify the installed app engine's exact version, OpenAI signature and binary

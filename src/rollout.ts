@@ -11,6 +11,7 @@ import { configPath } from "./paths.js";
 import { readServicePlan, serviceExecutionPaths, serviceStatusPath, type ServicePlan } from "./service-plan.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { readPendingNativeSharing } from "./service-native-staging.js";
+import { readPendingClaudeConsolidation } from "./service-claude-staging.js";
 import { locateInstall, parsePs, runVersions, type VersionsResult } from "./versions.js";
 
 export type RolloutState = "ready" | "pending" | "blocked" | "failed";
@@ -19,7 +20,7 @@ export type RolloutReason =
   | "service_status_pending" | "service_identity_pending" | "service_release_pending"
   | "component_pending" | "inference_pending" | "inference_failed" | "host_pending"
   | "host_status_pending" | "host_identity_pending" | "probe_pending" | "probe_stale"
-  | "probe_failed" | "active_work" | "rollout_changed" | "native_sharing_pending" | "native_owner_pending";
+  | "probe_failed" | "active_work" | "rollout_changed" | "native_sharing_pending" | "native_owner_pending" | "claude_consolidation_pending";
 
 interface HostIdentity {
   hostPid: number;
@@ -42,7 +43,7 @@ interface HostStatus {
 
 interface ServiceComponentStatus {
   id: string;
-  kind: "inference" | "desktop" | "native" | "tunnel";
+  kind: ServicePlan["components"][number]["kind"];
   state: string;
   pid?: number;
   startedAt?: string;
@@ -72,6 +73,7 @@ export interface RolloutDeps {
   releaseSource?: (installed: string) => Promise<string | undefined>;
   componentLiveness?: (component: ServicePlan["components"][number], pid: number, startedAt: string) => Promise<boolean>;
   nativeSharingPending?: (state: string) => Promise<boolean>;
+  claudeConsolidationPending?: (state: string) => Promise<boolean>;
 }
 
 const release = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
@@ -196,7 +198,7 @@ function componentStatuses(value: unknown): ServiceComponentStatus[] {
   return rows.flatMap(value => {
     const row = object(value);
     if (!row || typeof row.id !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(row.id)
-      || typeof row.kind !== "string" || !["inference", "desktop", "native", "tunnel"].includes(row.kind)
+      || typeof row.kind !== "string" || !["inference", "desktop", "native", "tunnel", "claude-adapter", "claude-inference"].includes(row.kind)
       || typeof row.state !== "string") return [];
     return [{
       id: row.id, kind: row.kind as ServiceComponentStatus["kind"], state: row.state,
@@ -246,6 +248,12 @@ async function requiredComponentPending(plan: ServicePlan, rawStatus: unknown, v
     if (row.state === "complete") { if (component.kind !== "desktop") return true; continue; }
     if (row.state !== "running" || !row.pid || !row.startedAt) return true;
     const pid = row.pid; const startedAt = row.startedAt;
+    // Claude keeps its separately pinned runtime. Do not relabel it as the main
+    // installed release: verify the exact supervised executable and OS start.
+    if (component.kind === "claude-adapter" || component.kind === "claude-inference") {
+      if (!await externalLiveness(component, pid, startedAt)) return true;
+      continue;
+    }
     if (component.kind === "tunnel" || component.kind === "desktop") {
       const role = component.kind === "tunnel" ? "tunnel" : "desktop-adapter";
       if (versions.processes.some(process => process.role === role && process.pid === pid
@@ -277,6 +285,11 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     catch { return true; } // An unreadable adoption receipt cannot earn readiness.
   };
   if (await sharingPending()) return result("pending", "native_sharing_pending", base);
+  const claudePending = async (): Promise<boolean> => {
+    try { return await (deps.claudeConsolidationPending ?? (async state => !!await readPendingClaudeConsolidation(state)))(config.stateDirectory); }
+    catch { return true; }
+  };
+  if (await claudePending()) return result("pending", "claude_consolidation_pending", base);
 
   const plan = await (deps.plan ?? readServicePlan)(config.stateDirectory);
   if (!plan) return result("pending", "service_plan_pending", base);
@@ -331,6 +344,7 @@ export async function runRollout(verify: boolean, explicitConfig?: string, deps:
     return result("pending", "rollout_changed", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
   }
   if (await sharingPending()) return result("pending", "native_sharing_pending", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
+  if (await claudePending()) return result("pending", "claude_consolidation_pending", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
   return result("ready", "ready", { ...base, service: serviceReport, inference, host: hostReport, probe: reportProbe(probe) });
 }
 

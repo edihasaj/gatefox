@@ -83,6 +83,18 @@ test("staged native-sharing option conflicts fail before configuration access", 
   await assert.rejects(main(["service", "shared-executors", "--on-restart", "--config", "/unreadable/gateway.json"]), /--on-restart is only valid/);
 });
 
+test("staged Claude ownership rejects immediate mutation flags before reading configuration", async () => {
+  await assert.rejects(main(["service", "claude-desktop", "--on-restart", "--apply", "--config", "/unreadable/gateway.json"]), /--apply is only valid/);
+  await assert.rejects(main(["service", "claude-desktop", "--on-restart", "--disable", "--config", "/unreadable/gateway.json"]), /--disable is only valid/);
+  await assert.rejects(main(["service", "claude-desktop", "--with-gateway", "--config", "/unreadable/gateway.json"]), /--with-gateway is only valid/);
+});
+
+test("Claude interruption authorization is available only on its staged command", async () => {
+  await assert.rejects(main(["service", "claude-desktop", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service claude-desktop --on-restart/);
+  await assert.rejects(main(["service", "shared-native", "--on-restart", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service claude-desktop --on-restart/);
+  await assert.rejects(main(["service", "claude-desktop", "--on-restart", "--force", "--config", "/unreadable/gateway.json"]), /Configuration file is unreadable/);
+});
+
 test("desktop status reports a corrupt registration as invalid JSON only", { skip: process.platform !== "darwin" }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-cli-json-"));
   const home = join(directory, "home"); const state = join(directory, "state");

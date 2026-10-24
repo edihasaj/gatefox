@@ -231,6 +231,24 @@ test("a policy read that never returns stops the maintenance claim and is not re
   } finally { await handle.stop(); }
 });
 
+test("stop settles an uncooperative policy read without advancing its deadline clock", { timeout: 5000 }, async () => {
+  const f = await fixture(); let release!: (value: boolean) => void; let observed: AbortSignal | undefined;
+  const gate = new Promise<boolean>(done => { release = done; });
+  const handle = startAutoLatestMaintenance(f.config, f.options({ readEnabled: (_path, signal) => { observed = signal; return gate; } }));
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  let stopping: Promise<void> | undefined;
+  try {
+    await f.world.advance(1_000); await until(() => f.active(), "the initial heartbeat");
+    assert.ok(observed);
+    stopping = handle.stop();
+    const completed = await Promise.race([stopping.then(() => true), new Promise<boolean>(done => { deadline = setTimeout(() => done(false), 1000); })]);
+    assert.equal(completed, true, "shutdown must settle the attempt even when its policy ignores cancellation");
+    assert.equal(observed.aborted, true);
+    assert.equal(f.world.pending, 0);
+    assert.deepEqual(await f.status(), { scheduled: false, reason: "service_unavailable" });
+  } finally { clearTimeout(deadline); release(false); await (stopping ?? handle.stop()); }
+});
+
 async function realConfig(f: Awaited<ReturnType<typeof fixture>>) {
   const state = join(f.root, "state"); const native = join(f.root, "native");
   await mkdir(state, { recursive: true }); await mkdir(native, { recursive: true });

@@ -132,9 +132,11 @@ export function startAutoLatestMaintenance(configPath: string, options: Maintena
    * Runs `run` with a deadline. The deadline aborts the attempt's own signal (so does stop) but cannot cancel work that
    * ignores it: the caller keeps its own busy flag until that work really settles, so nothing is started on top of it.
    */
-  const attempt = <T>(run: (signal: AbortSignal) => Promise<T>, ms: number): Promise<Outcome<T>> => new Promise(resolve => {
+  const attempt = <T>(run: (signal: AbortSignal) => Promise<T>, ms: number, stopImmediately = false): Promise<Outcome<T>> => new Promise(resolve => {
     const own = new AbortController();
-    const onStop = (): void => own.abort();
+    // Settling the wrapper is separate from cancelling underlying I/O: a policy
+    // reader may ignore its signal, but must not keep service shutdown waiting.
+    const onStop = (): void => { own.abort(); if (stopImmediately) finish({ kind: "timeout" }); };
     controller.signal.addEventListener("abort", onStop, { once: true });
     let done = false; let timer: unknown;
     const finish = (result: Outcome<T>): void => {
@@ -158,7 +160,7 @@ export function startAutoLatestMaintenance(configPath: string, options: Maintena
       // Work from an earlier tick that never returned is still holding its slot: wait for it, and report no progress.
       if (!readBusy && !passBusy) {
         readBusy = true;
-        const read = await attempt(async signal => { try { return await readEnabled(configPath, signal); } finally { readBusy = false; } }, readMs);
+        const read = await attempt(async signal => { try { return await readEnabled(configPath, signal); } finally { readBusy = false; } }, readMs, true);
         if (stopped || read.kind === "timeout") return;
         progressAt = identity.now();
         const enabled = read.kind === "done" && read.value === true;
