@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Client tools that a caller declares as deferred stay reachable on gateway models that lack tool search. The gateway engine now exposes them directly while preserving their schemas, namespaces, permissions and search behavior on models that support it. Thanks to Edi Hasaj for reporting the missing tools.
+
 - Codex scheduled tasks can now run on gateway models. Projectless automations send the home folder as the exact `~` workspace root, which the gateway engine refused as a relative path, so the run never started. Gateway chats now receive the user's home directory for that exact entry; every other path, permission and model choice is forwarded unchanged. Thanks to Edi Hasaj for asking for native scheduling parity.
 
 - ChatGPT startup diagnostics now reach the app's own engine without adapter preflight. App-bundle replacement and native path changes no longer take the independent gateway executor offline, and the verified 0.164.0-alpha.11.1 engine is supported for native sharing and relay transport. Thanks to Edi Hasaj for reporting the update failures.
