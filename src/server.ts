@@ -323,9 +323,11 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // A rejected Responses request says which fixed class of data it rejected.
       const translation = translationFailureFields(error);
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
-      if (!(error instanceof ProviderError) && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
+      if (known !== error && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
       const diagnostic = providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: Date.now() - startedAt, failure: known, abortCause, ...translation });
-      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause, upstreamCode: known.upstream?.code, upstreamEvent: known.upstream?.event, upstreamReason: diagnostic.upstreamReason, subtype: known.upstream?.subtype, ...translation });
+      telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause,
+        upstreamCode: diagnostic.upstreamCode, upstreamEvent: diagnostic.upstreamEvent, upstreamStage: diagnostic.upstreamStage,
+        upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, ...translation });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
       try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(diagnostic)); } catch { /* Diagnostics never replace the request outcome. */ }

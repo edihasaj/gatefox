@@ -201,7 +201,12 @@ compaction recovery can trim history and retry. The gateway does not choose a
 different model or account. Transport failures and deadline expiry have separate
 messages; they do not imply a failed login. Responses upstream server errors retry
 once after one second only before any text, reasoning state, or tool output has
-been published. A clean EOF without a terminal event has the same single retry
+been published. Known transient connection failures before output share that
+same single retry budget, including socket resets and temporary DNS failures.
+A connection failure after any inference output is not replayed. Certificate
+failures, permanent DNS failures, refused connections, unknown network faults,
+OAuth refresh failures, and cancellations receive no additional internal retry.
+A clean EOF without a terminal event has the same single retry
 only before any inference output has been published. Cancellation stops that
 wait. Quota, authentication, malformed streams, partial responses, and unclassified
 stream failures other than an `error` or `response.failed` event with an unknown code
