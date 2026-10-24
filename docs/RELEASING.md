@@ -378,9 +378,15 @@ receipt; the verified SDK source tree must match again before building the execu
 The cases set the executor marker in the process environment, so the gate runs every
 case on one thread. Capability `gateway-executor-v3` combines the executor identity
 patch with `scripts/patches/gateway-queue.patch`, which preserves queued messages
-after failed gateway turns. Both patches contribute to the patch and source
-digests. The first release with this capability must build the SDK again; it
-cannot reuse an SDK component from a v1 or v2 release.
+after failed gateway turns. `scripts/patches/gateway-dynamic-tools.patch` also keeps
+declared-deferred client tools reachable when the selected model lacks search;
+Seven additional Rust cases preserve search, schemas, policy and namespace rules;
+the existing deferred-filtering regression also runs explicitly in the gate.
+All three patches contribute to the patch and source digests. A changed patch
+requires a new SDK build even when the capability name stays the same; it cannot
+reuse an SDK component with older source hashes. See
+[client tool reachability](client-tool-reachability.md) for the mock E2E gate and
+the separate desktop scheduling boundary.
 
 A JavaScript-only fix can explicitly reuse unchanged native components from a
 previous published installer instead of rebuilding Rust. Download the exact

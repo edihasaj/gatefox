@@ -26,6 +26,12 @@ Claude, Copilot and other rows, and clients without a native catalog, get no
 model-specific base prompt. Explicit and resumed client instructions remain
 authoritative.
 
+Client tools must be registered before the gateway can transport them. The gateway
+SDK falls back to direct exposure for declared-deferred dynamic tools when the
+selected model lacks tool search; it does not invent scheduling or app tools.
+See [client tool reachability](client-tool-reachability.md) for discovery behavior,
+the desktop scheduling boundary, and the isolated executable checks.
+
 **Collaboration tool transport.** Before forwarding to a translated Responses
 provider, the gateway removes the optional `encrypted` JSON Schema marker only
 from `parameters.properties.message` on the exact `collaboration` namespace

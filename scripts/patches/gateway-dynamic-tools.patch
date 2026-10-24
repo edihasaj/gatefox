@@ -1,0 +1,411 @@
+diff --git a/codex-rs/core/src/tools/gateway_dynamic_tool_tests.rs b/codex-rs/core/src/tools/gateway_dynamic_tool_tests.rs
+new file mode 100644
+index 0000000..8d57c05
+--- /dev/null
++++ b/codex-rs/core/src/tools/gateway_dynamic_tool_tests.rs
+@@ -0,0 +1,273 @@
++//! Declared-deferred client tools stay callable when the selected model cannot search.
++use super::*;
++use crate::tools::registry::ToolRegistry;
++use codex_extension_api::ToolPolicy;
++use pretty_assertions::assert_eq;
++
++const AUTOMATION: &str = "automation_update";
++
++fn automation_name() -> String {
++    ToolName::namespaced("codex_app", AUTOMATION).to_string()
++}
++
++fn deferred_client_tools() -> Vec<DynamicToolSpec> {
++    vec![
++        dynamic_tool(Some("codex_app"), AUTOMATION, /*defer_loading*/ true),
++        dynamic_tool(
++            /*namespace*/ None,
++            "flat_deferred",
++            /*defer_loading*/ true,
++        ),
++    ]
++}
++
++fn select_model(turn: &mut TurnContext, supports_search_tool: bool) {
++    update_turn_settings_for_test(turn, |settings| {
++        let model = Arc::make_mut(&mut settings.model_info);
++        model.supports_search_tool = supports_search_tool;
++        model.use_responses_lite = false;
++    });
++}
++
++/// The shape of a gateway catalog row: no search, tools called directly.
++fn select_direct_model(turn: &mut TurnContext, supports_search_tool: bool) {
++    select_model(turn, supports_search_tool);
++    update_turn_settings_for_test(turn, |settings| {
++        Arc::make_mut(&mut settings.model_info).tool_mode = Some(ToolMode::Direct);
++    });
++}
++
++async fn probe_dynamic(
++    supports_search_tool: bool,
++    dynamic_tools: Vec<DynamicToolSpec>,
++) -> ToolPlanProbe {
++    probe_with(
++        |turn| select_direct_model(turn, supports_search_tool),
++        ToolPlanInputs {
++            dynamic_tools,
++            ..ToolPlanInputs::default()
++        },
++    )
++    .await
++}
++
++fn spec_json(plan: &ToolPlanProbe, name: &str) -> serde_json::Value {
++    serde_json::to_value(plan.visible_spec(name)).expect("tool spec should serialize")
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_declared_deferred_falls_back_to_direct_without_search() {
++    let plan = probe_dynamic(/*supports_search_tool*/ false, deferred_client_tools()).await;
++
++    assert_eq!(plan.exposure(&automation_name()), ToolExposure::Direct);
++    assert_eq!(plan.exposure("flat_deferred"), ToolExposure::Direct);
++    plan.assert_visible_contains(&["codex_app", "flat_deferred"]);
++    plan.assert_visible_lacks(&["tool_search"]);
++    plan.assert_registered_lacks(&["tool_search"]);
++    assert_eq!(plan.namespace_function_names("codex_app"), [AUTOMATION]);
++    // The model sees an ordinary callable tool, not a deferred stub.
++    let ToolSpec::Namespace(namespace) = plan.visible_spec("codex_app") else {
++        panic!("expected the client namespace to be visible");
++    };
++    let ResponsesApiNamespaceTool::Function(tool) = &namespace.tools[0] else {
++        panic!("expected a namespace function tool");
++    };
++    assert_eq!(tool.defer_loading, None);
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_fallback_matches_the_tool_declared_direct() {
++    let fallback = probe_dynamic(/*supports_search_tool*/ false, deferred_client_tools()).await;
++    let declared_direct = probe_dynamic(
++        /*supports_search_tool*/ false,
++        vec![
++            dynamic_tool(Some("codex_app"), AUTOMATION, /*defer_loading*/ false),
++            dynamic_tool(
++                /*namespace*/ None,
++                "flat_deferred",
++                /*defer_loading*/ false,
++            ),
++        ],
++    )
++    .await;
++
++    for name in ["codex_app", "flat_deferred"] {
++        assert_eq!(
++            spec_json(&fallback, name),
++            spec_json(&declared_direct, name)
++        );
++    }
++    assert_eq!(fallback.exposures, declared_direct.exposures);
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_search_capable_model_keeps_deferred_discovery() {
++    let plan = probe_dynamic(/*supports_search_tool*/ true, deferred_client_tools()).await;
++
++    assert_eq!(plan.exposure(&automation_name()), ToolExposure::Deferred);
++    assert_eq!(plan.exposure("flat_deferred"), ToolExposure::Deferred);
++    plan.assert_visible_contains(&["tool_search"]);
++    plan.assert_visible_lacks(&["codex_app", "flat_deferred"]);
++    plan.assert_registered_contains(&[&automation_name(), "flat_deferred", "tool_search"]);
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_declared_direct_is_unaffected_by_search_support() {
++    let eager = || {
++        vec![
++            dynamic_tool(Some("codex_app"), AUTOMATION, /*defer_loading*/ false),
++            dynamic_tool(
++                /*namespace*/ None,
++                "flat_direct",
++                /*defer_loading*/ false,
++            ),
++        ]
++    };
++    for supports_search_tool in [false, true] {
++        let plan = probe_dynamic(supports_search_tool, eager()).await;
++        assert_eq!(plan.exposure(&automation_name()), ToolExposure::Direct);
++        assert_eq!(plan.exposure("flat_direct"), ToolExposure::Direct);
++        plan.assert_visible_contains(&["codex_app", "flat_direct"]);
++        // A search-capable plan may carry tool_search for other deferred built-in tools, so compare it
++        // with the same plan without client tools instead of asserting its absence.
++        let baseline = probe_dynamic(supports_search_tool, Vec::new()).await;
++        assert_eq!(
++            plan.visible_names.iter().any(|name| name == "tool_search"),
++            baseline
++                .visible_names
++                .iter()
++                .any(|name| name == "tool_search"),
++            "declared-direct client tools must not change tool_search visibility"
++        );
++    }
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_registration_leaves_the_caller_declaration_unchanged() {
++    let declared = deferred_client_tools();
++    let before = serde_json::to_value(&declared).expect("declaration should serialize");
++    for supports_search_tool in [false, true] {
++        let (_, mut turn) = make_session_and_context().await;
++        select_direct_model(&mut turn, supports_search_tool);
++        let mcp = codex_mcp::McpBinding::empty(mcp_config_for_test(&turn.config));
++        let mut registry = build_core_tool_registry(
++            &turn,
++            turn.model_info(),
++            &turn.initial_environments,
++            &mcp,
++            /*tool_suggest_candidates*/ None,
++            /*wait_for_environment_tool_config*/ None,
++        );
++        let hosted = append_source_tools(
++            &turn,
++            turn.model_info(),
++            &mut registry,
++            Vec::new(),
++            std::iter::empty::<Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>>(),
++            &declared,
++        );
++        let _router = ToolRouter::from_registry(
++            &turn,
++            turn.model_info(),
++            registry,
++            hosted,
++            &Default::default(),
++        );
++        assert_eq!(
++            serde_json::to_value(&declared).expect("declaration should serialize"),
++            before
++        );
++    }
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_fallback_honors_the_tool_policy() {
++    let (_, mut turn) = make_session_and_context().await;
++    select_direct_model(&mut turn, /*supports_search_tool*/ false);
++    let mut registry = ToolRegistry::with_tool_policy(Arc::new(ToolPolicy {
++        allowed_tools: Some(vec![ToolName::plain("allowed_dynamic")]),
++        ..Default::default()
++    }));
++    let hosted = append_source_tools(
++        &turn,
++        turn.model_info(),
++        &mut registry,
++        Vec::new(),
++        std::iter::empty::<Arc<dyn for<'call> ToolExecutor<ExtensionToolCall<'call>>>>(),
++        &[
++            dynamic_tool(
++                /*namespace*/ None,
++                "allowed_dynamic",
++                /*defer_loading*/ true,
++            ),
++            dynamic_tool(
++                /*namespace*/ None,
++                "denied_dynamic",
++                /*defer_loading*/ true,
++            ),
++            dynamic_tool(Some("denied_ns"), AUTOMATION, /*defer_loading*/ true),
++        ],
++    );
++    let plan = ToolPlanProbe::from_router(ToolRouter::from_registry(
++        &turn,
++        turn.model_info(),
++        registry,
++        hosted,
++        &Default::default(),
++    ));
++
++    assert_eq!(plan.exposure("allowed_dynamic"), ToolExposure::Direct);
++    plan.assert_registered_lacks(&[
++        "denied_dynamic",
++        &ToolName::namespaced("denied_ns", AUTOMATION).to_string(),
++    ]);
++    plan.assert_visible_lacks(&["denied_dynamic", "denied_ns"]);
++}
++
++#[tokio::test]
++async fn gateway_dynamic_tool_fallback_honors_code_mode_namespace_settings() {
++    let plan = probe_with(
++        |turn| {
++            set_features(turn, &[Feature::CodeMode, Feature::CodeModeOnly]);
++            select_model(turn, /*supports_search_tool*/ false);
++            update_config(turn, |config| {
++                config.code_mode.direct_only_tool_namespaces = vec!["direct_only".to_string()];
++                config.code_mode.excluded_tool_namespaces = vec!["excluded".to_string()];
++            });
++        },
++        ToolPlanInputs {
++            dynamic_tools: vec![
++                dynamic_tool(Some("direct_only"), "lookup", /*defer_loading*/ true),
++                dynamic_tool(Some("excluded"), "lookup", /*defer_loading*/ true),
++                dynamic_tool(Some("nested"), "lookup", /*defer_loading*/ true),
++            ],
++            ..ToolPlanInputs::default()
++        },
++    )
++    .await;
++
++    // A direct-only namespace stays model-visible; an excluded one never enters exec.
++    let direct_only = ToolName::namespaced("direct_only", "lookup");
++    let excluded = ToolName::namespaced("excluded", "lookup");
++    let nested = ToolName::namespaced("nested", "lookup");
++    assert_eq!(
++        plan.exposure(&direct_only.to_string()),
++        ToolExposure::DirectModelOnly
++    );
++    plan.assert_visible_contains(&["direct_only"]);
++    plan.assert_visible_lacks(&["tool_search", "excluded", "nested"]);
++    let in_exec = |name: &ToolName| {
++        plan.code_mode_tool_names
++            .values()
++            .any(|nested| nested == name)
++    };
++    assert!(in_exec(&nested), "fallback tool must be callable via exec");
++    assert!(
++        !in_exec(&excluded),
++        "excluded namespace must stay out of exec"
++    );
++    assert!(
++        !in_exec(&direct_only),
++        "direct-only namespace must stay out of exec"
++    );
++}
+diff --git a/codex-rs/core/src/tools/router_tests.rs b/codex-rs/core/src/tools/router_tests.rs
+index aff6d41..72c201b 100644
+--- a/codex-rs/core/src/tools/router_tests.rs
++++ b/codex-rs/core/src/tools/router_tests.rs
+@@ -4,6 +4,7 @@ use std::sync::Arc;
+ use crate::config::Config;
+ use crate::session::step_context::StepContext;
+ use crate::session::tests::make_session_and_context;
++use crate::session::tests::update_turn_settings_for_test;
+ use crate::tools::context::ToolPayload;
+ use crate::tools::handlers::McpHandler;
+ use crate::tools::registry::CoreToolRuntime;
+@@ -439,7 +440,11 @@ async fn tools_without_handlers_do_not_support_parallel() -> anyhow::Result<()>
+ 
+ #[tokio::test]
+ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
+-    let (_, turn) = make_session_and_context().await;
++    let (_, mut turn) = make_session_and_context().await;
++    // Only a search-capable model hides deferred dynamic tools until discovery.
++    update_turn_settings_for_test(&mut turn, |settings| {
++        Arc::make_mut(&mut settings.model_info).supports_search_tool = true;
++    });
+     let turn = Arc::new(turn);
+     let step_context = StepContext::for_test(Arc::clone(&turn));
+     let hidden_tool = "hidden_dynamic_tool";
+@@ -484,10 +489,13 @@ async fn specs_filter_deferred_dynamic_tools() -> anyhow::Result<()> {
+         namespace_function_names(&visible_specs, "codex_app"),
+         vec![visible_tool.to_string()]
+     );
+-    assert_eq!(
+-        router.deferred_tool_namespaces(),
+-        BTreeMap::from([("codex_app".to_string(), "Codex app tools.".to_string())])
+-    );
++    // A search-capable plan also defers built-in namespaces, so expect the same step's baseline
++    // without client tools plus the client namespace.
++    let baseline = test_tool_router(step_context.as_ref(), Vec::new(), Vec::new(), &[]);
++    let mut expected_deferred = baseline.deferred_tool_namespaces();
++    assert!(!expected_deferred.contains_key("codex_app"));
++    expected_deferred.insert("codex_app".to_string(), "Codex app tools.".to_string());
++    assert_eq!(router.deferred_tool_namespaces(), expected_deferred);
+ 
+     let updated_router = test_tool_router(step_context.as_ref(), Vec::new(), Vec::new(), &[]);
+     let updated_specs = updated_router.model_visible_specs();
+diff --git a/codex-rs/core/src/tools/spec_plan.rs b/codex-rs/core/src/tools/spec_plan.rs
+index fd5b5e1..871a880 100644
+--- a/codex-rs/core/src/tools/spec_plan.rs
++++ b/codex-rs/core/src/tools/spec_plan.rs
+@@ -169,7 +169,11 @@ pub(crate) fn build_tool_router(
+         extension_tool_executors(session, step_store),
+         &mut registry,
+     );
+-    append_dynamic_tool_runtimes(&turn_context.dynamic_tools, &mut registry);
++    append_dynamic_tool_runtimes(
++        &turn_context.dynamic_tools,
++        model_info.supports_search_tool,
++        &mut registry,
++    );
+     let hosted_specs = hosted_model_tool_specs(
+         turn_context,
+         model_info,
+@@ -337,7 +341,7 @@ pub(crate) fn append_source_tools(
+         extension_tool_executors,
+         registry,
+     );
+-    append_dynamic_tool_runtimes(dynamic_tools, registry);
++    append_dynamic_tool_runtimes(dynamic_tools, model_info.supports_search_tool, registry);
+     hosted_model_tool_specs(
+         turn_context,
+         model_info,
+@@ -1591,8 +1595,32 @@ fn add_collaboration_tools(context: &CoreToolPlanContext<'_>, registry: &mut Too
+     }
+ }
+ 
++/// The caller declares which dynamic tools are deferred, but only search-capable models can discover
++/// them. Without search, a declared-deferred tool would be stranded, so it stays directly callable,
++/// as MCP tools already do. Hidden, DirectModelOnly and every other exposure are untouched.
++fn dynamic_tool_exposure(declared: ToolExposure, supports_search_tool: bool) -> ToolExposure {
++    if !supports_search_tool && declared == ToolExposure::Deferred {
++        ToolExposure::Direct
++    } else {
++        declared
++    }
++}
++
++fn register_dynamic_tool(
++    registry: &mut ToolRegistry,
++    handler: DynamicToolHandler,
++    supports_search_tool: bool,
++) {
++    let exposure = dynamic_tool_exposure(handler.exposure(), supports_search_tool);
++    registry.register_external_with_exposure(Arc::new(handler), exposure);
++}
++
+ #[instrument(level = "trace", skip_all, fields(dynamic_tool_count = dynamic_tools.len()))]
+-fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mut ToolRegistry) {
++fn append_dynamic_tool_runtimes(
++    dynamic_tools: &[DynamicToolSpec],
++    supports_search_tool: bool,
++    registry: &mut ToolRegistry,
++) {
+     for spec in dynamic_tools {
+         match spec {
+             DynamicToolSpec::Function(tool) => {
+@@ -1603,7 +1631,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
+                     );
+                     continue;
+                 };
+-                registry.register_external(Arc::new(handler));
++                register_dynamic_tool(registry, handler, supports_search_tool);
+             }
+             DynamicToolSpec::Namespace(namespace) => {
+                 for tool in &namespace.tools {
+@@ -1617,7 +1645,7 @@ fn append_dynamic_tool_runtimes(dynamic_tools: &[DynamicToolSpec], registry: &mu
+                         );
+                         continue;
+                     };
+-                    registry.register_external(Arc::new(handler));
++                    register_dynamic_tool(registry, handler, supports_search_tool);
+                 }
+             }
+         }
+diff --git a/codex-rs/core/src/tools/spec_plan_tests.rs b/codex-rs/core/src/tools/spec_plan_tests.rs
+index 1a8a066..07bbd16 100644
+--- a/codex-rs/core/src/tools/spec_plan_tests.rs
++++ b/codex-rs/core/src/tools/spec_plan_tests.rs
+@@ -3392,3 +3392,6 @@ async fn hosted_web_search_and_standalone_image_generation_follow_runtime_gates(
+ 
+ #[path = "spec_plan_strict_third_party_tests.rs"]
+ mod strict_third_party;
++
++#[path = "gateway_dynamic_tool_tests.rs"]
++mod gateway_dynamic_tool;

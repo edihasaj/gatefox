@@ -130,8 +130,12 @@ if (values.test) {
   passed(withGatewaySdkCompactionTests(sdk, () => run(['-p', 'codex-core', '--test', 'all',
     'gateway_pre_sampling_compaction_stays_in_selected_user_turn'])), 6, 'compaction');
   passed(run(['-p', 'codex-queue-extension', '--test', 'queue_service', 'gateway_']), 2, 'queue preservation');
+  // Declared-deferred client tools: flat and namespaced fallback, search-capable discovery, policy and namespace rules.
+  passed(run(['-p', 'codex-core', '--lib', 'gateway_dynamic_tool']), 7, 'dynamic client tool');
+  // The existing router test this patch changes (search-capable model plus baseline namespaces) must keep passing.
+  passed(run(['-p', 'codex-core', '--lib', 'specs_filter_deferred_dynamic_tools']), 1, 'deferred dynamic tool filtering');
   if (treeDigest(sdk) !== input.patchedSdkSha256) throw Error('SDK test gate changed the verified source tree');
-  console.log(JSON.stringify({ tests: 11, revision: gatewaySdkRevision, patchSha256, sourceSha256,
+  console.log(JSON.stringify({ tests: 19, revision: gatewaySdkRevision, patchSha256, sourceSha256,
     testRunnerSha256: gatewaySdkTestRunnerDigest() }));
 } else {
   const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--format-version', '1', '--manifest-path', manifest],
@@ -181,8 +185,9 @@ if (values.test) {
   cpSync(join(sdk, 'LICENSE'), join(artifact, 'CODEX-LICENSE'));
   cpSync(join(sdk, 'NOTICE'), join(artifact, 'CODEX-NOTICE'));
   writeFileSync(join(artifact, 'NOTICE'), 'Harness Gateway uses a separately compiled OpenAI Codex SDK for gateway-provider execution.\n' +
-    'Its patch applies only inside a gateway executor: selected-model compaction for the gateway provider, and the openai id\n' +
-    'naming that loopback gateway provider when HARNESS_GATEWAY_EXECUTOR=1. The native signed Codex executable is unchanged.\n' +
+    'Executor identity, selected-model compaction and failed-turn queue preservation apply inside marked gateway executors.\n' +
+    'Its dynamic-tool registration also exposes declared-deferred tools directly when the selected model cannot search.\n' +
+    'The native signed Codex executable is unchanged.\n' +
     'The package also carries codex-code-mode-host, the Code Mode process Codex starts beside itself. It is built from the\n' +
     'same pinned Codex source and statically links V8 through Codex\'s code-mode runtime; dependencies.json lists the Cargo\n' +
     'packages and their licenses, including V8\'s.\n', { mode: 0o600 });

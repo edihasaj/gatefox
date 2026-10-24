@@ -9,7 +9,8 @@ export const gatewaySdkCodexVersion = pin.version;
 /** v3 adds preserved queues after failed gateway turns, including cold resume. */
 export const gatewaySdkCapability = 'gateway-executor-v3';
 export const gatewaySdkPatch = 'scripts/patches/gateway-executor.patch';
-export const gatewaySdkPatches = [gatewaySdkPatch, 'scripts/patches/gateway-queue.patch'];
+/** The dynamic-tools patch keeps declared-deferred client tools callable when the selected model cannot search. */
+export const gatewaySdkPatches = [gatewaySdkPatch, 'scripts/patches/gateway-queue.patch', 'scripts/patches/gateway-dynamic-tools.patch'];
 
 export function gatewaySdkPatchDigest() {
   const hash = createHash('sha256');

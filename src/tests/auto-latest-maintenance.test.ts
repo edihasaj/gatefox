@@ -222,6 +222,8 @@ test("a policy read that never returns stops the maintenance claim and is not re
   const f = await fixture(); let reads = 0;
   const handle = startAutoLatestMaintenance(f.config, f.options({ readEnabled: () => { reads++; return new Promise<boolean>(() => undefined); } }));
   try {
+    // The heartbeat is real asynchronous file I/O, not part of the fake deadline clock.
+    await until(() => f.active(), "the initial heartbeat");
     await f.world.advance(1_000);
     assert.equal(await f.active(), true);
     await f.world.advance(400_000);
