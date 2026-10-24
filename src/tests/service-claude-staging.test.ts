@@ -156,3 +156,34 @@ test("a shared or linked receipt is never read, and a retiring receipt blocks re
     await assert.rejects(readPendingClaudeConsolidation(f.state), /safely open/);
   });
 });
+
+const fleetInferenceLog = (f: Fixture, name = "service.log") => join(f.home, "Library", "Application Support", "Claude-3p", "inference", name);
+
+test("the deployed inference log beside its runtime is accepted and the component still gets a private log", async () => {
+  await withFixture(async f => {
+    const log = fleetInferenceLog(f);
+    await rewrite(f, labels.inference, object => { object.StandardOutPath = log; object.StandardErrorPath = log; });
+    assert.equal((await previewClaudeConsolidation(f.config, f.deps())).ready, true);
+    assert.equal((await stageClaudeConsolidation(f.config, f.deps())).staged, true);
+    const receipt = (await readPendingClaudeConsolidation(f.state))!;
+    assert.equal(receipt.candidatePlan.components.find(component => component.id === "claude-inference")!.log, join(f.state, "services", "claude-inference.log"));
+  });
+});
+
+const logRefusals: Array<{ name: string; label: string; change(f: Fixture, object: Record<string, any>): void }> = [
+  { name: "another file beside the inference runtime", label: labels.inference, change: (f, object) => { const log = fleetInferenceLog(f, "other.log"); object.StandardOutPath = log; object.StandardErrorPath = log; } },
+  { name: "the inference log used by the adapter", label: labels.adapter, change: (f, object) => { const log = fleetInferenceLog(f); object.StandardOutPath = log; object.StandardErrorPath = log; } },
+  { name: "the inference log used by a tunnel", label: labels.tunnel, change: (f, object) => { const log = fleetInferenceLog(f); object.StandardOutPath = log; object.StandardErrorPath = log; } },
+  { name: "differing inference stdout and stderr", label: labels.inference, change: (f, object) => { object.StandardOutPath = fleetInferenceLog(f); } },
+  { name: "a log outside the allowed folders", label: labels.inference, change: (_f, object) => { object.StandardOutPath = "/tmp/service.log"; object.StandardErrorPath = "/tmp/service.log"; } },
+];
+for (const item of logRefusals) {
+  test(`a legacy log path is still refused: ${item.name}`, async () => {
+    await withFixture(async f => {
+      await rewrite(f, item.label, object => item.change(f, object));
+      await assert.rejects(stageClaudeConsolidation(f.config, f.deps()), /not staged/);
+      assert.equal(await readPendingClaudeConsolidation(f.state), undefined);
+      assert.equal((await previewClaudeConsolidation(f.config, f.deps())).reason, "legacy_shape");
+    });
+  });
+}
