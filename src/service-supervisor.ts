@@ -18,6 +18,7 @@ import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGa
 import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js";
 import { followCurrentRelease } from "./service-relay-path.js";
 import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
+import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
 /** Why a quiet upgrade waited: the host's reason, or inference that refused its idle guard. */
@@ -76,6 +77,7 @@ export class ServiceSupervisor {
   private readonly host: ServiceHostKeeper;
   private stopHealth?: () => void;
   private appUpdates?: AppUpdateSchedule;
+  private modelMaintenance?: { stop(): void | Promise<void> };
   private statusFailedAt = Number.NEGATIVE_INFINITY;
   /** `self_upgrade_waiting` already logged, per pending release and reason. */
   private readonly upgradeWaits = new Set<string>();
@@ -141,6 +143,10 @@ export class ServiceSupervisor {
     // Updates share this existing service lifecycle; they never add another
     // LaunchAgent and the scheduler itself refuses checkout/test modules.
     this.appUpdates = await startAppUpdateScheduler(this.plan.config);
+    // Inference servers own their hot-swappable timer. Client-only plans use this existing service instead.
+    if (!this.stopping && !this.slots.some(slot => slot.definition.kind === "inference")) {
+      this.modelMaintenance = hostAutoLatestMaintenance(this.plan.config, "service");
+    }
     await this.publish();
   }
   /** Probes the running host now; the service's own probe tick does the same (see ServiceHostKeeper.checkHost). */
@@ -390,6 +396,7 @@ export class ServiceSupervisor {
     // Stops the watchdog heartbeat and aborts a compatibility check it is still running.
     this.stopHealth?.();
     this.appUpdates?.stop();
+    await this.modelMaintenance?.stop();
     // Inference lets running streams finish before it exits, so it gets its drain on top
     // of the usual grace. Shared executors are its local clients: the host closes only
     // once inference has exited, or their running streams would end as cancelled. Plans

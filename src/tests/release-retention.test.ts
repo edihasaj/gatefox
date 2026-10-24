@@ -70,7 +70,7 @@ test("a hot-swapped runtime holds its old release until its own request finishes
     for (let attempt = 0; oldReleased === 0; attempt++) { assert.ok(attempt < 100, "old release did not drain"); await new Promise(resolve => setTimeout(resolve, 10)); }
     assert.equal(oldReleased, 1);
   } finally {
-    finish?.(); replacement?.runtime.stop(); gateway?.server.closeAllConnections();
+    finish?.(); await replacement?.runtime.stop(); gateway?.server.closeAllConnections();
     if (gateway) await new Promise<void>(resolve => gateway!.server.close(() => resolve()));
     upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve()));
     delete process.env[key]; await rm(root, { recursive: true, force: true });

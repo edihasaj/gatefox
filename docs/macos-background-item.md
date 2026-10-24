@@ -11,6 +11,11 @@ Harness Gateway uses one existing gateway LaunchAgent. A signed copy of the app
 can associate that job with its name and fox icon. It does not register another
 startup job or require its window to stay open.
 
+Automatic latest-model polling belongs to this same service tree. It must not
+add its own LaunchAgent or show a separate CLI-owned background item. Releases
+after 0.8.7 retire that version's separate metadata job without changing the
+signed app association, icon, inference process or current model selection.
+
 ```text
 Harness Gateway.app
   ├─ GatewayApp: settings window, exits when the last window closes

@@ -26,7 +26,7 @@ export interface AutoLatestCliTools {
 export const autoLatestHelp = `gateway auto-latest — background upkeep for auto-latest model selections
 
   gateway auto-latest check [--config PATH]    One reconcile pass; prints one JSON line. Exit 0 done, 75 deferred (busy, cancelled, stale), 1 failed.
-  gateway auto-latest status [--config PATH]   Whether the background job for this configuration is installed and loaded.
+  gateway auto-latest status [--config PATH]   Whether automatic checks are running inside the existing gateway service.
 `;
 
 function defaultTools(): AutoLatestCliTools {

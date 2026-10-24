@@ -10,10 +10,11 @@ import { configureTelemetry, telemetry } from "./telemetry.js";
 import { startErrorReports } from "./error-report.js";
 import { releaseState, watchForUpgrade } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
+import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
 
 /** Releases that agree on this number can take over a running server in place. */
 export const serveRuntimeVersion = 1;
-export interface ServeRuntime { version: number; stop(): void }
+export interface ServeRuntime { version: number; stop(): void | Promise<void> }
 
 /**
  * Starts (or, given `server`, takes over) the inference server's request handling and
@@ -33,7 +34,9 @@ export async function startServeRuntime(configPath: string, port?: number, serve
     const listener = createServer(); listener.requestTimeout = 30000; gateway = adoptGatewayHandler(listener, handler);
     await new Promise<void>((done, fail) => { listener.once("error", fail); listener.listen(config.port, "127.0.0.1", () => { listener.off("error", fail); done(); }); });
   }
-  previous?.stop();
+  await previous?.stop();
+  // The existing app-owned service tree hosts model maintenance. Never register another background item.
+  const maintenance = hostAutoLatestMaintenance(configPath, "server");
   // Model metadata follows each provider's own catalog: shortly after start, then every six hours.
   const refresh = () => { void refreshModelMetadata(configPath).then(updated => { if (updated.length) telemetry("model_metadata_refreshed", { providers: updated.join(",") }); }).catch(() => {}); };
   const first = setTimeout(refresh, 60_000); first.unref(); const every = setInterval(refresh, 6 * 60 * 60_000); every.unref();
@@ -48,7 +51,7 @@ export async function startServeRuntime(configPath: string, port?: number, serve
     // A release that cannot take over in place restarts the process at an idle moment.
     return gateway.restartWhenIdle(() => process.exit(0));
   });
-  let stopped = false;
+  let stopped = false; let stopping: Promise<void> | undefined;
   const releaseWhenDrained = () => {
     if (!stopped) return;
     // This runtime's handler can still finish a request after a newer handler took
@@ -57,9 +60,12 @@ export async function startServeRuntime(configPath: string, port?: number, serve
     const timer = setTimeout(releaseWhenDrained, 100); timer.unref();
   };
   runtime = { version: serveRuntimeVersion, stop: () => {
-    if (stopped) return;
-    stopped = true; clearTimeout(first); clearInterval(every); stopWatching(); releaseWhenDrained();
+    if (stopped) return stopping;
+    stopped = true; gateway.off("close", onClose); clearTimeout(first); clearInterval(every); stopWatching(); releaseWhenDrained();
+    return stopping = Promise.resolve(maintenance.stop());
   } };
+  const onClose = () => { void runtime.stop(); };
+  gateway.once("close", onClose);
   return { server: gateway, runtime };
  } catch (error) {
    lease.release();

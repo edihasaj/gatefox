@@ -225,6 +225,18 @@ after cancellation. Native cancellation and bounded live Qwen manual compaction
 also passed their dedicated checks. A rendered Desktop Auto task passed with
 the default Fable parent, Qwen reader, and second-account GPT writer.
 
+## 0.8.8 — 2026-10-24
+
+Automatic model updates now run inside the existing signed app-owned gateway
+service instead of registering a separate background job. Migration removes only
+the verified legacy metadata job and preserves the app's icon, current models,
+accounts and active chats. The app reports live maintenance ownership rather
+than assuming that an installed job is running. Thanks to @edihasaj for catching
+the duplicate background item.
+The older standalone developer provider-build schedule is also retired to keep
+one startup item. Provider compatibility builds remain manual; automatic model
+discovery continues inside the app-owned service.
+
 ## 0.8.7 — 2026-10-24
 
 The macOS app can automatically follow new versions of selected model families.

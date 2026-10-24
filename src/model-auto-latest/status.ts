@@ -10,7 +10,7 @@ import { autoLatestIntervalMinutes, type AutoLatestStatus } from "./types.js";
  * setting is on, the families are the ones being watched. While it is off they are the ones turning it on would follow
  * (the recognizable families of the routes selected right now), so the screen can say so before the user decides.
  */
-/** Read-only observation of the background job: one bounded launchctl query, nothing created or started. */
+/** Read-only observation of the existing service's timer: one bounded identity-checked heartbeat, nothing started. */
 export type ScheduleObserver = (configPath: string) => Promise<{ scheduled: boolean; reason?: string }>;
 const observeTimeoutMs = 4000;
 const defaultObserver: ScheduleObserver = async configPath => (await import("./schedule.js")).getAutoLatestScheduleStatus(configPath);

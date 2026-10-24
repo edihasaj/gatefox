@@ -3,7 +3,7 @@ summary: 'Opt-in automatic updates for selected model families, bounded catalog 
 read_when:
   - Enabling or changing automatic latest-model selection.
   - Changing model discovery, family matching, timestamps or picker visibility.
-  - Investigating the five-minute model refresh job or a model that stayed disabled.
+  - Investigating the service's five-minute model refresh or a model that stayed disabled.
 ---
 
 # Automatic latest models
@@ -90,10 +90,13 @@ file leaves the last valid presentation in place.
 
 ## Background checks
 
-The switch manages a separate metadata-maintenance LaunchAgent for this
-configuration, not another inference daemon. It runs the installed managed
-launcher every 300 seconds and at load. It does not restart the inference
-service or interrupt active work. A slow pass cannot overlap another pass for
+The existing app-owned gateway service runs metadata maintenance in its process
+tree every 300 seconds. It never creates a second LaunchAgent or Login Item.
+Inference servers own a hot-swappable timer; a client-only plan without an
+inference child runs the timer in its existing supervisor. The settings window
+does not need to stay open. A fresh process-identity heartbeat reports whether
+the timer is actually active. It does not restart the service or interrupt work.
+A slow pass cannot overlap another pass for
 the same configuration. A toggle or manual edit during discovery makes the
 outdated result stale rather than overwriting the edit.
 
@@ -108,10 +111,11 @@ gateway auto-latest check --config /absolute/gateway.json
 gateway auto-latest status --config /absolute/gateway.json
 ```
 
-The app reports when scheduling fails rather than claiming checks are running.
-The job uses a verified managed launcher, a private scratch directory, safe
-owned paths and a configuration-specific label. Disabling it stops only that
-maintenance job. Output contains fixed outcomes, counts and timestamps, never
+The app reports when the existing service has not adopted maintenance yet rather
+than claiming checks are running. Enabling or disabling the policy changes no
+background registration. A verified legacy 0.8.7 model-maintenance LaunchAgent is
+removed during migration; foreign jobs are left alone. Output contains fixed
+outcomes, counts and timestamps, never
 provider credentials, request bodies, tool arguments or raw failure text.
 
 Configuration stores `autoLatestModels.enabled`, each provider's selected

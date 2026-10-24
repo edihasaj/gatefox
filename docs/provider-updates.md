@@ -8,7 +8,7 @@ read_when:
 
 # Provider updates
 
-The build host can maintain current stable provider compatibility every day.
+The build host can validate and update stable provider compatibility manually.
 Codex changes reach installed gateways through the normal verified gateway
 release. Claude and Copilot use private verified installations on that host;
 new processes select the current installation and running sessions keep theirs.
@@ -65,7 +65,6 @@ the usual release build tools must already be available.
 npm run providers:check
 npm run providers:update
 npm run providers:update -- --commit
-npm run providers:schedule -- install
 npm run providers:schedule -- status
 npm run providers:schedule -- uninstall
 ```
@@ -77,11 +76,12 @@ those explicit source paths.
 It never pushes, merges, publishes a release, dispatches hosted CI or restarts
 a gateway. A dirty checkout refuses automatic promotion.
 
-The macOS schedule runs `--apply --commit` once every 24 hours, at background
-priority. It maintains the checkout where it was installed. It leaves a dirty
-checkout or a different branch alone, and serializes manual and scheduled runs with the existing
-private-file lock, including dead-process recovery. Scheduling creates no
-GitHub Actions trigger. See the [CI cost policy](ci-cost-policy.md).
+The former standalone daily developer LaunchAgent is retired. `install` refuses
+to create it, preserving the single signed app-owned background item. Provider
+compatibility builds remain manual; model-family discovery still runs
+automatically inside the app service. Manual maintenance leaves a dirty checkout
+or a different branch alone and uses the private-file lock. It creates no GitHub
+Actions trigger. See the [CI cost policy](ci-cost-policy.md).
 
 The fixed outcome and phase are in `.state/provider-maintenance/latest.json`;
 the schedule prints only safe outcomes in `schedule.log`. A failed validator also

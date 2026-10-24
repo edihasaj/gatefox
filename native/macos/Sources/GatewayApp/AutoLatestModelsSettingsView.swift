@@ -100,7 +100,7 @@ struct AutoLatestModelsSettingsView: View {
         case .running:
             note("Checking about every \(status.intervalMinutes) minutes.", id: "auto-latest.polling")
         case .notScheduled:
-            Label("Automatic checks are not running on this Mac because the background job could not be installed. Your models stay as they are until it is fixed; Check now still works.\(status.scheduleReason.map { " (\($0.replacingOccurrences(of: "_", with: " ")))" } ?? "")", systemImage: "exclamationmark.triangle")
+            Label("Automatic checks are not running in the gateway service on this Mac yet. Your models stay as they are; Check now still works.\(status.scheduleReason.map { " (\($0.replacingOccurrences(of: "_", with: " ")))" } ?? "")", systemImage: "exclamationmark.triangle")
                 .font(GatewayTheme.body(12))
                 .foregroundStyle(GatewayTheme.vermilion)
                 .fixedSize(horizontal: false, vertical: true)

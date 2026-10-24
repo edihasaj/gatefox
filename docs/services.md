@@ -827,10 +827,16 @@ control or the built-in cloud connection.
 
 ## Automatic model selection maintenance
 
-The optional [automatic latest models](auto-latest-models.md) setting owns a
-separate configuration-specific LaunchAgent, named
-`com.edihasaj.harness-gateway.models-<path-hash>`. It checks model metadata every
-five minutes through the installed managed launcher. It is not an inference
-service and never restarts one. Disabling the setting removes only its owned
-maintenance job. Install a release supporting `auto-latest probe` before enabling
-the setting; the app reports a scheduling failure if that command is unavailable.
+The optional [automatic latest models](auto-latest-models.md) setting runs a
+five-minute metadata timer inside the existing app-owned service tree. There is
+still exactly one gateway LaunchAgent and one signed app identity with its icon.
+The inference runtime owns the timer, or the existing supervisor owns it for a
+client-only plan with no inference child. Stopping or replacing that runtime
+cancels its maintenance. A fresh PID/start-identity heartbeat, not a historical
+successful check, proves that automatic checks are available.
+
+Migration removes only a verified legacy
+`com.edihasaj.harness-gateway.models-<path-hash>` job from 0.8.7. Toggling the
+policy never registers another job, changes the parent app registration or
+restarts active chats. macOS may temporarily retain a historical Login Items row;
+do not reset the global background-task database to hide it.

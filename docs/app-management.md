@@ -163,6 +163,10 @@ The operations are `inspect`, `prepare`, `authenticate`, `discover`, `commit`,
 revision, capturing today's selected families without changing model selection.
 `auto-latest-check` uses the reviewed revision to run one metadata-only check.
 Both report the effective policy and bounded check/scheduling status.
+Automatic checks run inside the existing signed app-owned service. A toggle
+never adds a LaunchAgent; the live heartbeat reports when that service has adopted
+maintenance. Legacy 0.8.7 metadata jobs are retired without editing the parent
+app's registration or interrupting chats.
 Reordering sends
 `providerIds`, an exact permutation of all local connection IDs, together with
 the reviewed configuration revision. Duplicate, missing, or unknown IDs and

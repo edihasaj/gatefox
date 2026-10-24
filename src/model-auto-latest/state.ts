@@ -18,6 +18,8 @@ async function sibling(configPath: string, prefix: string): Promise<string> {
 export const statePath = (configPath: string): Promise<string> => sibling(configPath, "app-auto-latest");
 /** The file whose lock serializes installing and removing the background job for one configuration. */
 export const schedulePath = (configPath: string): Promise<string> => sibling(configPath, "app-auto-latest-schedule");
+/** The per-configuration heartbeat of the in-process maintenance owner (see maintenance.ts). */
+export const maintenancePath = (configPath: string): Promise<string> => sibling(configPath, "app-auto-latest-maintenance");
 
 export async function readState(configPath: string): Promise<{ lastCheckedAt?: number; lastOutcome?: AutoLatestOutcome }> {
   try {
