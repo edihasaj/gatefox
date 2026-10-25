@@ -246,6 +246,97 @@ test("shared-native transport loss closes frontend without reporting native SDK 
   } finally { await f.clean(); }
 });
 
+const controlLostEvents = async (f: Awaited<ReturnType<typeof fixture>>, since: number) => { await flushTelemetry(); return (await readTelemetry(f.config.stateDirectory, since)).filter(event => event.event === "execution_host_control_lost"); };
+
+// The host may drop the control connection while its own process and engine keep running. That connection is what the host
+// keys this session's native ownership to, so the session must end and the app must reconnect; the running turn is not failed.
+test("losing the executor host control connection ends the session and the next one acquires the host again", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    const first = await f.create(); const id = String(object((await first.adapter.request("thread/start", { cwd: f.directory })).thread).id);
+    await first.adapter.request("turn/start", { threadId: id });
+    await until(() => first.events.some(message => message.method === "turn/started")); // The turn is live when the host drops control.
+    f.disconnectControl();
+    await until(() => first.exits() === 1);
+    assert.equal(first.adapter.native.closed, true);
+    assert.equal(first.events.some(message => message.method === "error" || object(object(message.params).turn).status === "failed"), false);
+    const events = await controlLostEvents(f, since);
+    assert.equal(events.length, 1); assert.equal(events[0].sharedGateway, false);
+    assert.deepEqual(Object.keys(events[0]).sort(), ["at", "component", "event", "host", "pid", "sharedGateway"]);
+    await Promise.race([first.adapter.stop(), delay(1000, undefined, { ref: false }).then(() => { throw new Error("Shutdown after a lost host control connection never finished"); })]);
+    const second = await f.create();
+    assert.equal(object((await second.adapter.request("thread/resume", { threadId: id })).thread).id, id);
+    assert.equal(f.calls.filter(message => message.method === "native/acquire").length, 2); await f.noSpawn();
+  } finally { await f.clean(); }
+});
+
+// The exit path the fix reuses ends only after the engine's last frames are forwarded. A desktop app that stopped reading parks
+// one of them there forever, so the lost-host teardown must bound that wait instead of inheriting it.
+test("a lost host control connection ends the session while blocked frontend output holds a notification", { timeout: 10000 }, async () => {
+  const f = await fixture(); let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const first = await f.create(); const id = String(object((await first.adapter.request("thread/start", { cwd: f.directory })).thread).id);
+    await first.adapter.request("turn/start", { threadId: id });
+    f.hooks.emit = async message => { if (message.method === "turn/started") await held; };
+    f.nativeMessages([{ method: "turn/started", params: { threadId: id, turn: { id: "wedged-turn", status: "inProgress" } } }]);
+    await until(() => first.events.length === 2); // The turn is tracked and live; only its delivery is parked on the blocked write.
+    f.disconnectControl();
+    await until(() => first.exits() === 1, 1500);
+    assert.equal(first.adapter.native.closed, true);
+    assert.equal(first.events.some(message => message.method === "error" || object(object(message.params).turn).status === "failed"), false);
+    release(); await first.adapter.native.drained;
+    await Promise.race([first.adapter.stop(), delay(1000, undefined, { ref: false }).then(() => { throw new Error("Shutdown stayed wedged behind the released notification"); })]);
+  } finally { release(); await f.clean(); }
+});
+
+test("a deliberate stop closes the control connection without recording a host loss", { timeout: 10000 }, async () => {
+  const f = await fixture(); const since = Date.now() - 1000; configureTelemetry(f.config.stateDirectory, "test");
+  try {
+    const first = await f.create();
+    await first.adapter.request("thread/start", { cwd: f.directory });
+    await first.adapter.stop();
+    assert.equal(first.exits(), 1);
+    assert.equal((await controlLostEvents(f, since)).length, 0); await f.noSpawn();
+  } finally { await f.clean(); }
+});
+
+const stopCleanly = (adapter: AppServerBackends) => Promise.race([adapter.stop(), delay(1000, undefined, { ref: false }).then(() => { throw new Error("Shutdown stayed wedged behind output the app had not read"); })]);
+
+// A confirmed engine death is reported through an `error` and a failed `turn/completed`, and either one can park on an app that
+// stopped reading. Here the engine socket dies first, so the host control loss arrives with `native.closed` already true: the
+// bound must arm itself without closing anything, and the loop must stop rather than park on the next frame.
+async function deathReportBlockedOn(f: Awaited<ReturnType<typeof fixture>>, frame: "error" | "turn/completed", held: Promise<void>) {
+  const first = await f.create(); const id = String(object((await first.adapter.request("thread/start", { cwd: f.directory })).thread).id);
+  await first.adapter.request("turn/start", { threadId: id });
+  f.hooks.emit = async message => { if (message.method === frame) await held; };
+  f.nativeDeath();
+  await until(() => first.events.some(message => message.method === "error")); // the host confirmed this exact launch died
+  assert.equal(first.adapter.native.closed, true);
+  f.disconnectControl();
+  await until(() => first.exits() === 1, 2000);
+  return first;
+}
+
+test("a lost host control connection bounds a death report the app has not read", { timeout: 10000 }, async () => {
+  const f = await fixture(); let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const first = await deathReportBlockedOn(f, "error", held);
+    assert.equal(first.events.some(message => message.method === "turn/completed"), false);
+    release(); await stopCleanly(first.adapter); assert.equal(first.exits(), 1);
+  } finally { release(); await f.clean(); }
+});
+
+test("a lost host control connection bounds the failed completion of a death report", { timeout: 10000 }, async () => {
+  const f = await fixture(); let release!: () => void; const held = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const first = await deathReportBlockedOn(f, "turn/completed", held);
+    const completed = first.events.filter(message => message.method === "turn/completed");
+    assert.equal(completed.length, 1); assert.equal(object(object(completed[0].params).turn).status, "failed");
+    release(); await stopCleanly(first.adapter); assert.equal(first.exits(), 1);
+  } finally { release(); await f.clean(); }
+});
+
 test("confirmed native SDK death reports the actual active turn from a warm resume snapshot", { timeout: 10000 }, async () => {
   const f = await fixture();
   try {

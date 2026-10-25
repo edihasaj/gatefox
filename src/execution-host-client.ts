@@ -54,8 +54,13 @@ async function receiptAlive(record: { pid: number; bootId?: string; startedAtMs?
 /** One control connection keeps its generation leases until the adapter closes. */
 export class ExecutionHostClient {
   private readonly connection: SocketAppServerConnection;
+  private closedByUs = false;
   private constructor(private readonly home: string, socketPath: string, readonly capabilities: readonly ExecutionCapability[]) { this.connection = new SocketAppServerConnection(socketPath, async () => {}); }
   get closed(): boolean { return this.connection.closed; }
+  /** Resolves when the one control connection closes, whether this adapter asked for it or the host dropped it. */
+  get exited(): Promise<{ code: number | null; signal: NodeJS.Signals | null }> { return this.connection.exited; }
+  /** True once `close()` has been called here, so a later `exited` is our own shutdown rather than a lost host. */
+  get closedByAdapter(): boolean { return this.closedByUs; }
   static async assertNativeUnowned(configPath: string | undefined, nativeHome: string): Promise<void> {
     const blocked = () => { throw Object.assign(new Error("A managed shared native executor still owns this native home. Finish the sharing-mode migration before reconnecting; its chats were preserved."), { code: -32001 }); };
     // The same verdict a host's claim gets: a live host (even with its SDK idle), a launch still inside its startup grace, or a
@@ -228,5 +233,5 @@ export class ExecutionHostClient {
     } catch { return false; }
     finally { clearTimeout(timer); }
   }
-  close(): void { this.connection.stop(); }
+  close(): void { this.closedByUs = true; this.connection.stop(); }
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- A shared executor host that drops a chat's control connection no longer leaves that machine's chats broken until someone kills the listener. Sessions built on the shared native host now notice the loss, record `execution_host_control_lost`, and end the session the way a native engine exit does — with the engine's frame drain and the report of a confirmed engine death both bounded, so an app that stopped reading cannot hold the teardown open — and the app reconnects to a session that acquires a fresh host connection. Chats that were mid-turn keep their saved history and are not reported failed, because a lost control socket is not proof that the engine died. Thanks to Edi Hasaj for reporting the chats that never loaded again.
 - The TCP activity probe no longer mistakes Xcode's unrelated CoreDevice filesystem warning for an unanswered socket inspection. It recognizes only the complete mount-stat warning and fallback block; socket activity, other diagnostics, timeouts, and process identity changes still refuse the check. Thanks to Edi Hasaj for asking to fix the recurring macOS test failure.
 
 ## 0.9.5 — 2026-10-25
