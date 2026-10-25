@@ -25,6 +25,8 @@ import { launchDesktop } from "./desktop-launch.js";
 import { macTunnel } from "./mac-tunnel.js";
 import { uninstallGateway } from "./uninstall.js";
 import { macDesktop } from "./mac-desktop.js";
+import { desktopApiMode } from "./desktop-api-mode.js";
+import { apiModeDeps } from "./desktop-api-mode-native.js";
 import { macNative } from "./mac-native.js";
 import { consolidateService } from "./mac-consolidate.js";
 import { stageLoginConsolidation } from "./mac-login-consolidate.js";
@@ -57,6 +59,7 @@ const help = `gateway — local subscription and API inference
   gateway setup --client --port PORT --token-file PATH [--config DESTINATION]
   gateway desktop [--config PATH] [--native-home PATH]
   gateway desktop register|unregister|status
+  gateway desktop api-mode [on|off|status] [--config PATH] [--model ALIAS]   Let the app run its own engine, with the gateway as its model provider (macOS)
   gateway ssh register|unregister|status [--codex ORIGINAL_CLI_PATH]
   gateway native install|status|uninstall [--codex MATCHING_CLI_PATH]
   gateway uninstall
@@ -115,7 +118,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" },
   } });
   const [command, id, ...extra] = positionals;
-  if (!command || extra.length || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
+  // `desktop api-mode` is the one command that takes a word after its id, so it is the one place an extra positional is allowed.
+  const apiMode = command === "desktop" && id === "api-mode";
+  if (!command || (extra.length && !(apiMode && extra.length === 1)) || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
   if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
@@ -131,7 +136,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
   if (command !== "tunnel" && [values["tunnel-id"], values.host, values["remote-port"], values.reverse, values["ssh-config"]].some(Boolean)) throw new Error("Tunnel options are only valid for tunnel");
-  if (values.model && !["codex-config", "claude-config", "catalog"].includes(command)) throw new Error("--model is only valid for codex-config, claude-config or catalog");
+  if (values.model && !["codex-config", "claude-config", "catalog"].includes(command) && !apiMode) throw new Error("--model is only valid for codex-config, claude-config, catalog or desktop api-mode on");
   if ((values.select || values.load) && command !== "discover") throw new Error("--select and --load are only valid for discover");
   if (values["no-browser"] && command !== "login") throw new Error("--no-browser is only valid for login");
   if (values["account-email"] !== undefined && command !== "login") throw new Error("--account-email is only valid for Codex subscription login");
@@ -166,6 +171,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(JSON.stringify(await setupGateway(resolve(values["from-config"]), path, values.client), null, 2) + "\n"); return;
   }
   if (command === "desktop") {
+    if (id === "api-mode") {
+      const action = (extra[0] || "status") as "on" | "off" | "status";
+      if (values.model && action !== "on") throw new Error("--model is only valid with gateway desktop api-mode on");
+      process.stdout.write(JSON.stringify(await desktopApiMode(action, path, { model: values.model, app: values.app }, apiModeDeps()), null, 2) + "\n"); return;
+    }
     if (id && values["native-home"]) throw new Error("Persistent desktop registration uses the original native home; --native-home is only for a test launch");
     if (id) process.stdout.write(JSON.stringify(await macDesktop(id, path, values.app)) + "\n");
     else process.stdout.write(JSON.stringify(await launchDesktop(path, values["native-home"], values.app)) + "\n");

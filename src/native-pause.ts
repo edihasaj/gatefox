@@ -80,7 +80,13 @@ export async function relayFingerprint(component: ServiceComponent, stateDirecto
 /** A `ps -axo comm=` line per running process; the check the native install already makes. */
 export const realProcessList = async (): Promise<string> => (await exec("/bin/ps", ["-axo", "comm="], { timeout: 5000 })).stdout;
 
-/** Whether a ChatGPT desktop app is running here, so a relay never competes with its stock remote control. */
-export async function chatGptAppRunning(listProcesses: () => Promise<string> = realProcessList): Promise<boolean> {
-  try { return (await listProcesses()).split("\n").some(line => line.trim() === "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"); } catch { return true; }
+/** The app executable a `comm=` line names when the default ChatGPT.app is running. */
+export const chatGptAppExecutable = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT";
+/**
+ * Whether a ChatGPT desktop app is running here, so a relay never competes with its stock remote control. An unreadable
+ * process list counts as running: the check only ever refuses an action, and a machine that cannot answer is not a
+ * machine to change. `executable` lets a caller name another bundle's app binary.
+ */
+export async function chatGptAppRunning(listProcesses: () => Promise<string> = realProcessList, executable = chatGptAppExecutable): Promise<boolean> {
+  try { return (await listProcesses()).split("\n").some(line => line.trim() === executable); } catch { return true; }
 }

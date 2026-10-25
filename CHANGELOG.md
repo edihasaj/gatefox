@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `gateway desktop api-mode on|off|status` is a new opt-in desktop mode for macOS. The ChatGPT app starts its own signed Codex engine and uses Harness Gateway only as a plain Responses model provider, which keeps the app's `codex_app` tools (automations, thread management) working on gateway models, because the app only authorizes those tools for an OpenAI-signed engine process chain. API mode changes the native configuration through the app's own engine rather than by editing `config.toml`, remembers what it replaced so `off` can restore it, and holds every adapter path (the daemon's login preset, the service's desktop restore and a hand-run `gateway desktop register`) back while it is on. Every model, GPT included, is served through the gateway provider in this mode; see [API mode](docs/api-mode.md). Thanks to Edi Hasaj for asking for the app tools on gateway models.
 - The TCP activity probe no longer mistakes Xcode's unrelated CoreDevice filesystem warning for an unanswered socket inspection. It recognizes only the complete mount-stat warning and fallback block; socket activity, other diagnostics, timeouts, and process identity changes still refuse the check. Thanks to Edi Hasaj for asking to fix the recurring macOS test failure.
 
 ## 0.9.5 — 2026-10-25

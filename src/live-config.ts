@@ -45,7 +45,11 @@ export class LiveConfig {
   private readonly pinnedBindings: Map<string, string>;
   /** The stamp of the file that was refused, and why; undefined while the newest file is applied. */
   private refused?: { stamp: string; reason: ConfigRejection };
-  constructor(private readonly path: string, initial: GatewayConfig, private readonly portOverride?: number) { this.value = initial; this.served = initial; this.pinnedBindings = bindings(initial); }
+  /**
+   * `onApplied` runs once for each file this reload actually adopts, never for a refused one and never twice for the
+   * same stamp. It is told the configuration that is now serving. The first load at startup is not its to observe.
+   */
+  constructor(private readonly path: string, initial: GatewayConfig, private readonly portOverride?: number, private readonly onApplied?: (config: GatewayConfig) => void) { this.value = initial; this.served = initial; this.pinnedBindings = bindings(initial); }
   /** Why the newest change to the file is not applied, or undefined when the file in place is the one serving. */
   get rejection(): ConfigRejection | undefined { return this.refused?.reason; }
   current(): Promise<GatewayConfig> {
@@ -82,6 +86,10 @@ export class LiveConfig {
     const before = this.pinnedBindings; const after = bindings(next);
     for (const [alias, route] of before) if (after.has(alias) && after.get(alias) !== route) return this.refuse(stamp, "rebind", next);
     for (const [alias, route] of after) this.pinnedBindings.set(alias, route);
-    this.value = next; this.served = next; this.stamp = stamp; this.refused = undefined; return next;
+    this.value = next; this.served = next; this.stamp = stamp; this.refused = undefined;
+    // Only now, with the new configuration in place, may anything act on it. A hook that throws is not this class's
+    // problem to solve twice: the configuration it was adopted for is already serving.
+    this.onApplied?.(next);
+    return next;
   }
 }
