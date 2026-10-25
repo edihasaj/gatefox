@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A registered native relay now owns every remote-control request while its private
+  socket reconnects. The app engine's startup-only suppression could be undone by a
+  later `remoteControl/enable` request after a relay outage, racing the managed relay
+  and leaving it at HTTP 409. Unavailable control requests now fail closed and can be
+  retried through the same adapter when the relay returns; ordinary app-server requests still
+  use their normal engine. Thanks to Edi Hasaj for reporting the loaded chats that
+  could not regain control.
 - A shared executor host that drops a chat's control connection no longer leaves that machine's chats broken until someone kills the listener. Sessions built on the shared native host now notice the loss, record `execution_host_control_lost`, and end the session the way a native engine exit does — with the engine's frame drain and the report of a confirmed engine death both bounded, so an app that stopped reading cannot hold the teardown open — and the app reconnects to a session that acquires a fresh host connection. Chats that were mid-turn keep their saved history and are not reported failed, because a lost control socket is not proof that the engine died. Thanks to Edi Hasaj for reporting the chats that never loaded again.
 - The TCP activity probe no longer mistakes Xcode's unrelated CoreDevice filesystem warning for an unanswered socket inspection. It recognizes only the complete mount-stat warning and fallback block; socket activity, other diagnostics, timeouts, and process identity changes still refuse the check. Thanks to Edi Hasaj for asking to fix the recurring macOS test failure.
 

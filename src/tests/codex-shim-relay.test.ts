@@ -6,6 +6,7 @@ import { createInterface } from "node:readline";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { once } from "node:events";
+import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer } from "ws";
 import { shimFiles } from "./shim-fixture.js";
 import { relaySocketPath } from "../native-control.js";
@@ -19,11 +20,17 @@ async function adapter(env: NodeJS.ProcessEnv, backend: string, cli: string, con
   child.stderr.resume();
   const lines = createInterface({ input: child.stdout }); const pending = new Map<number, (message: Message) => void>(); let id = 0;
   lines.on("line", line => { const message = JSON.parse(line) as Message; if (typeof message.id === "number") pending.get(message.id)?.(message); });
+  const rawRpc = async (method: string, params: Message = {}) => {
+    const requestId = ++id;
+    const reply = await new Promise<Message>(resolve => { pending.set(requestId, resolve); child.stdin.write(JSON.stringify({ id: requestId, method, params }) + "\n"); });
+    pending.delete(requestId);
+    return reply;
+  };
   const rpc = async (method: string, params: Message = {}) => {
-    const reply = await new Promise<Message>(resolve => { pending.set(++id, resolve); child.stdin.write(JSON.stringify({ id, method, params }) + "\n"); });
+    const reply = await rawRpc(method, params);
     assert.equal(reply.error, undefined, JSON.stringify(reply.error)); return reply.result as Message;
   };
-  return { child, lines, rpc, close: async () => { const closed = once(child, "close"); child.stdin.end(); await closed; child.kill("SIGKILL"); lines.close(); } };
+  return { child, lines, rawRpc, rpc, close: async () => { const closed = once(child, "close"); child.stdin.end(); await closed; child.kill("SIGKILL"); lines.close(); } };
 }
 
 /**
@@ -47,10 +54,10 @@ async function bindBlocked(path: string): Promise<boolean> {
   return refused;
 }
 
-/** A relay that is really there: its socket answers, and its status file says connected. */
-async function liveRelay(home: string) {
+/** A relay that is really there: its socket answers regardless of its last cloud status. */
+async function liveRelay(home: string, status = "connected") {
   await mkdir(join(home, "app-server-control"), { recursive: true, mode: 0o700 });
-  await writeFile(join(home, "status.json"), '{"status":"connected"}');
+  await writeFile(join(home, "status.json"), JSON.stringify({ status }));
   const http = createServer(); const ws = new WebSocketServer({ server: http });
   ws.on("connection", client => client.on("message", data => {
     const request = JSON.parse(data.toString()) as { id: number; method: string };
@@ -60,7 +67,7 @@ async function liveRelay(home: string) {
   return async () => { for (const client of ws.clients) client.terminate(); await new Promise(done => ws.close(done)); await new Promise(done => http.close(done)); };
 }
 
-test("without a live relay the app engine keeps its own remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+test("without a registered relay the app engine keeps its own remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const files = await shimFiles({ serve: false });
   try {
     const adapter_ = await adapter(files.env, files.backend, files.cli, files.config);
@@ -72,43 +79,55 @@ test("without a live relay the app engine keeps its own remote control", { skip:
   } finally { files.close(); await rm(files.directory, { recursive: true, force: true }); }
 });
 
-// Registration, not the live status, decides who owns remote control: OpenAI allows one remote-control connection per
-// machine, so an engine that took it while the registered relay was down would lock the relay out (HTTP 409) until it
-// exited. Everything the adapter reads claims a relay but nothing answers on its socket: the engine stands down, and
-// remoteControl/* is not routed to the relay (it reaches the engine, which has switched its own remote control off).
-async function registeredButDown(prepare: (home: string, stateDirectory: string, nativeHome: string) => Promise<void>) {
-  const files = await shimFiles({ serve: false }); const own = await privateHome();
-  const home = join(own.relayRoot, "su");
+const registered = (home: string, state: string, nativeHome: string) => writePrivateJson(join(state, "native-registration.json"), { registered: true, home, nativeHome });
+
+test("a registered relay keeps control requests out of the engine while its socket reconnects", { skip: process.platform === "win32", timeout: 30000 }, async t => {
+  const files = await shimFiles({ serve: false }); const own = await privateHome(); const home = join(own.relayRoot, "su");
   await mkdir(join(home, "app-server-control"), { recursive: true, mode: 0o700 });
-  await prepare(home, files.value.stateDirectory, files.nativeHome);
+  await registered(home, files.value.stateDirectory, files.nativeHome);
+  let stop: (() => Promise<void>) | undefined;
   try {
     const adapter_ = await adapter({ ...files.env, HOME: own.home }, files.backend, files.cli, files.config);
     try {
       await adapter_.rpc("initialize", { clientInfo: { name: "Codex Desktop", version: "1" }, capabilities: {} });
-      assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "a registered relay that is down still owns remote control");
-      assert.equal((await adapter_.rpc("remoteControl/status/read")).transport, "engine", "nothing was routed to the relay");
+      assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "registration suppresses the engine's startup control");
+      for (const method of ["remoteControl/status/read", "remoteControl/enable", "remoteControl/disable"]) {
+        const reply = await adapter_.rawRpc(method);
+        assert.ok(reply.error, `${method} must fail through the missing registered relay`);
+        assert.match(String((reply.error as Message).message), /Native connected-machine relay/, `${method} never falls through to the engine`);
+      }
+      assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "ordinary engine requests still work");
+      try { stop = await liveRelay(home); }
+      catch { return void t.skip("this machine will not bind a private relay socket"); }
+      for (const method of ["remoteControl/status/read", "remoteControl/enable", "remoteControl/disable"]) {
+        let reply: Message | undefined;
+        for (let attempt = 0; attempt < 30; attempt++) {
+          await delay(100); reply = await adapter_.rawRpc(method);
+          if (!reply.error) break;
+        }
+        assert.equal(reply?.error, undefined, `${method} retries through the same adapter after the relay appears`);
+        assert.equal((reply?.result as Message).transport, "relay");
+      }
+    } finally { await adapter_.close(); }
+  } finally { await stop?.(); files.close(); await rm(files.directory, { recursive: true, force: true }); await own.remove(); }
+});
+
+test("an activation in progress already routes remote control to its registered relay", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const files = await shimFiles({ serve: false }); const own = await privateHome(); const home = join(own.relayRoot, "sp");
+  await mkdir(join(home, "app-server-control"), { recursive: true, mode: 0o700 });
+  await writePrivateJson(join(files.value.stateDirectory, "native-registration.pending"), { registered: true, home, nativeHome: files.nativeHome });
+  try {
+    const adapter_ = await adapter({ ...files.env, HOME: own.home }, files.backend, files.cli, files.config);
+    try {
+      await adapter_.rpc("initialize", { clientInfo: { name: "Codex Desktop", version: "1" }, capabilities: {} });
+      assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true);
+      assert.ok((await adapter_.rawRpc("remoteControl/status/read")).error, "a pending registration must not fall through to the engine");
     } finally { await adapter_.close(); }
   } finally { files.close(); await rm(files.directory, { recursive: true, force: true }); await own.remove(); }
-}
-const registered = (home: string, state: string, nativeHome: string) => writePrivateJson(join(state, "native-registration.json"), { registered: true, home, nativeHome });
-
-test("a registered relay that is not reachable still owns remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
-  await registeredButDown(async (home, state, nativeHome) => {
-    await writeFile(join(home, "status.json"), '{"status":"connected"}');
-    await registered(home, state, nativeHome);
-  });
-});
-
-test("a registered relay that never connected still owns remote control", { skip: process.platform === "win32", timeout: 30000 }, async () => {
-  await registeredButDown(registered);
-});
-
-test("an activation in progress already owns remote control for adapters that start during it", { skip: process.platform === "win32", timeout: 30000 }, async () => {
-  await registeredButDown((home, state, nativeHome) => writePrivateJson(join(state, "native-registration.pending"), { registered: true, home, nativeHome }));
 });
 
 // A relay lives under the state home of the test's own HOME, which its adapter shares.
-test("a live relay takes remote control, and the engine is told to release it", { skip: process.platform === "win32", timeout: 30000 }, async t => {
+test("a reachable registered relay owns control even when its cloud status is errored", { skip: process.platform === "win32", timeout: 30000 }, async t => {
   const own = await privateHome(); const relayRoot = own.relayRoot;
   await mkdir(relayRoot, { recursive: true, mode: 0o700 });
   if (await bindBlocked(join(relayRoot, "sp"))) { await own.remove(); return void t.skip("this machine will not bind a private relay socket"); }
@@ -116,15 +135,17 @@ test("a live relay takes remote control, and the engine is told to release it", 
   const home = join(relayRoot, "sf");
   await writePrivateJson(join(files.value.stateDirectory, "native-registration.json"), { registered: true, home, nativeHome: files.nativeHome });
   let stop: (() => Promise<void>) | undefined;
-  try { stop = await liveRelay(home); }
+  try { stop = await liveRelay(home, "errored"); }
   catch { await own.remove(); files.close(); return void t.skip("this machine will not bind a private relay socket"); }
   try {
     const adapter_ = await adapter({ ...files.env, HOME: own.home }, files.backend, files.cli, files.config);
     try {
       await adapter_.rpc("initialize", { clientInfo: { name: "Codex Desktop", version: "1" }, capabilities: {} });
       assert.equal((await adapter_.rpc("engine/info")).remoteControlDisabled, true, "the engine was told its remote control is owned");
-      const answered = await adapter_.rpc("remoteControl/status/read");
-      assert.equal(answered.transport, "relay"); assert.equal(answered.method, "remoteControl/status/read");
+      for (const method of ["remoteControl/status/read", "remoteControl/enable", "remoteControl/disable"]) {
+        const answered = await adapter_.rpc(method);
+        assert.equal(answered.transport, "relay"); assert.equal(answered.method, method);
+      }
     } finally { await adapter_.close(); }
   } finally { await stop(); files.close(); await rm(files.directory, { recursive: true, force: true }); await own.remove(); }
 });
