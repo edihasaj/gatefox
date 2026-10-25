@@ -12,6 +12,7 @@ import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { trimGatewayFeatureArgs, trimmedGatewayFeatures } from "./gateway-feature-schema.js";
 import { gatewaySdkRuntime, type GatewaySdkRuntime } from "./gateway-sdk-runtime.js";
 import { spawnStamp } from "./boot-identity.js";
+import { trackExecutorTurns, type TurnTracker } from "./execution-host-turns.js";
 import gatewaySdkPin from "./gateway-sdk-pin.json" with { type: "json" };
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
@@ -97,6 +98,7 @@ export class ExecutionEngine {
   private child?: ChildProcess;
   private admin?: SocketAppServerConnection;
   private adminProbe?: Promise<Set<string>>;
+  private turns?: TurnTracker;
   private exited: Promise<void> = Promise.resolve();
   private stopped = false;
   private stopDone?: Promise<void>;
@@ -161,7 +163,7 @@ export class ExecutionEngine {
     this.child = child;
     this.exited = new Promise(resolve => {
       child.once("error", () => { this.closed = true; });
-      child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); void changed().catch(() => {}); resolve(); });
+      child.once("close", () => { this.closed = true; this.owner.pid = 0; this.admin?.stop(); this.turns?.stop(); void changed().catch(() => {}); resolve(); });
     });
     this.owner.pid = child.pid || 0; Object.assign(this.owner, child.pid ? await spawnStamp(child.pid) : {}); await changed();
     const deadline = Date.now() + 10000;
@@ -180,6 +182,7 @@ export class ExecutionEngine {
       await delay(25);
     }
     await this.loadedThreads();
+    if (!this.closed && !this.stopped) this.turns = trackExecutorTurns({ socketPath: this.record.socketPath, engine: "gateway", expected: () => this.owner.socket });
   }
   async loadedThreads(): Promise<Set<string>> {
     if (this.closed) return new Set();
@@ -214,7 +217,7 @@ export class ExecutionEngine {
   }
   stop(): Promise<void> { return this.stopDone ||= this.stopOwned(); }
   private async stopOwned(): Promise<void> {
-    this.stopped = true; this.admin?.stop(); this.child?.kill("SIGTERM");
+    this.stopped = true; this.admin?.stop(); this.turns?.stop(); this.child?.kill("SIGTERM");
     await Promise.race([this.exited, delay(1500)]);
     if (!this.closed) this.child?.kill("SIGKILL");
     await Promise.race([this.exited, delay(1000)]);

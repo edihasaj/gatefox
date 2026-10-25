@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url';
 
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
   native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
-  unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' } } });
+  unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
+  'executor-diagnostics': { type: 'boolean', default: false } } });
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
 const root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-chat-state-');
@@ -20,7 +21,7 @@ for (const folder of [root, native, state, work]) await mkdir(folder, { recursiv
 // These changes apply only to this fixture process and its own SDK children.
 process.env.CODEX_HOME = native;
 process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
-process.env.GATEWAY_TELEMETRY = 'off';
+process.env.GATEWAY_TELEMETRY = values['executor-diagnostics'] ? 'on' : 'off';
 process.env.GATEWAY_ERROR_REPORTS = 'off';
 for (const key of ['OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_BASE_URL', 'HARNESS_GATEWAY_EXECUTOR']) delete process.env[key];
 const load = name => import(pathToFileURL(join(source, 'dist', name + '.js')));
@@ -40,6 +41,9 @@ const { gatewaySdkRuntime } = await load('gateway-sdk-runtime');
 const { modelCatalog } = await load('catalog');
 const { startGateway } = await load('server');
 const { writePrivateJson } = await load('config');
+const { configureTelemetry, flushTelemetry, readTelemetry } = await load('telemetry');
+const { ProviderError } = await load('providers/provider');
+if (values['executor-diagnostics']) configureTelemetry(state, 'fixture');
 setExecutionHostRootForTests(join(fixture, 'x'));
 setNativeOwnerRootForTests(join(fixture, 'n'));
 // The real SDK owns its protected rendezvous; receipts and all chat paths are isolated.
@@ -58,7 +62,7 @@ const until = async (check, name, ms = 20_000) => {
   throw Error(name + ' timed out');
 };
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-let gate, calls = 0, host, gateway;
+let gate, calls = 0, host, gateway, failNext = false;
 let phase = 'server';
 const clients = [];
 const evidence = { fixture, engine: values.native ? 'native' : values.private ? 'private-gateway' : 'shared-gateway',
@@ -70,6 +74,7 @@ try {
       if (gate) await Promise.race([gate.promise, new Promise((_, reject) => {
         signal.addEventListener('abort', () => reject(Error('Fixture cancelled')), { once: true });
       })]);
+      if (failNext) { failNext = false; throw new ProviderError('usage_limit', 'Synthetic subscription usage limit reached', 429); }
       yield { type: 'text', text: 'Fixture answer.' };
       yield { type: 'done', usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } };
     },
@@ -154,6 +159,34 @@ try {
   evidence.completionStatusDelivered = true;
   evidence.passiveClientReceivedNoTurnContent = true;
   evidence.nativeConfigurationUnchanged = true;
+  if (values['executor-diagnostics']) {
+    assert.ok(!values.private && !values.native && !values.unread, 'Diagnostics fixture requires shared gateway execution');
+    phase = 'diagnostics:initial-census';
+    const settled = async () => {
+      await flushTelemetry();
+      return (await readTelemetry(state, 0)).filter(event => event.event === 'executor_turn_settled');
+    };
+    await until(async () => (await settled()).some(event => event.turnId === active.turn.id), 'Automatic executor census', 45_000);
+    gate = deferred(); failNext = true;
+    const failed = await writerRpc('turn/start', {threadId: id, input: [{type: 'text', text: 'Synthetic offline failure.'}]});
+    await until(() => calls === 3, 'Held failure request');
+    // Both application clients disappear. The host and its inference turn continue.
+    await phone.backend.stop(); await writer.backend.stop();
+    phase = 'diagnostics:offline-failure';
+    gate.resolve();
+    const recorded = await until(async () => (await settled()).find(event => event.turnId === failed.turn.id), 'Offline failure telemetry', 45_000);
+    assert.equal(recorded.errorClass, 'usage_limit');
+    assert.equal(recorded.engine, 'gateway');
+    const reconnected = await client('diagnostics_reconnected');
+    const reply = await reconnected.router.request('thread/turns/list', {threadId: id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded'});
+    assert.equal(reply.data[0].id, failed.turn.id);
+    assert.equal(recorded.status, reply.data[0].status);
+    assert.equal((await settled()).filter(event => event.turnId === failed.turn.id).length, 1);
+    evidence.offlineFailureRecorded = true;
+    evidence.offlineFailureClass = recorded.errorClass;
+    evidence.offlineFailureStatus = recorded.status;
+    evidence.bothApplicationClientsDisconnected = true;
+  }
   if (values.unread) {
     assert.equal(values.private, false, 'Offline unread check requires a shared executor');
     const { installReadStateBridge } = await import(pathToFileURL(join(source, 'scripts/codex-unread-trial/read-state-bridge.mjs')));
