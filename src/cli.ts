@@ -24,7 +24,7 @@ import { readClientToken as readPrivateClientToken } from "./config.js";
 import { launchDesktop } from "./desktop-launch.js";
 import { macTunnel } from "./mac-tunnel.js";
 import { uninstallGateway } from "./uninstall.js";
-import { macDesktop } from "./mac-desktop.js";
+import { macDesktop, presetDesktopEnv } from "./mac-desktop.js";
 import { desktopApiMode } from "./desktop-api-mode.js";
 import { apiModeDeps } from "./desktop-api-mode-native.js";
 import { macNative } from "./mac-native.js";
@@ -113,7 +113,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     config: { type: "string" }, port: { type: "string" }, json: { type: "boolean" }, since: { type: "string" }, disable: { type: "boolean" }, model: { type: "string" }, "no-browser": { type: "boolean" }, "account-email": { type: "string" }, select: { type: "string" }, load: { type: "boolean" },
     endpoint: { type: "string" }, "token-file": { type: "string" }, catalog: { type: "string" }, file: { type: "string" },
     "from-config": { type: "string" }, "native-home": { type: "string" }, app: { type: "string" }, codex: { type: "string" },
-    client: { type: "boolean" },
+    client: { type: "boolean" }, state: { type: "string" },
     "tunnel-id": { type: "string" }, host: { type: "string" }, "remote-port": { type: "string" }, reverse: { type: "boolean" }, "ssh-config": { type: "string" },
     apply: { type: "boolean" }, "next-login": { type: "boolean" }, "on-restart": { type: "boolean" }, "with-gateway": { type: "boolean" }, force: { type: "boolean" },
   } });
@@ -121,7 +121,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   // `desktop api-mode` is the one command that takes a word after its id, so it is the one place an extra positional is allowed.
   const apiMode = command === "desktop" && id === "api-mode";
   if (!command || (extra.length && !(apiMode && extra.length === 1)) || (id && !["login", "discover", "service", "tunnel", "desktop", "ssh", "native", "tool-search"].includes(command))) throw new Error("Choose one command; run gateway --help");
-  if (!["init", "setup", "desktop", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
+  if (!["init", "setup", "desktop", "desktop-preset", "desktop-restore", "daemon", "executor-host", "ssh", "native", "uninstall", "tunnel", "serve", "providers", "login", "doctor", "codex-config", "claude-config", "token", "catalog", "discover", "service", "diagnostics", "tool-search"].includes(command)) throw new Error("Unknown command; run gateway --help");
   if (values.apply && (command !== "service" || !["consolidate", "shared-executors", "shared-native"].includes(id))) throw new Error("--apply is only valid for service consolidate, shared-executors, or shared-native");
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
@@ -133,6 +133,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values["from-config"] && command !== "setup") throw new Error("--from-config is only valid for setup");
   if (values["native-home"] && !["desktop", "native", "executor-host"].includes(command)) throw new Error("--native-home is only valid for desktop, native, or executor-host");
   if (values.app && !["desktop", "desktop-restore"].includes(command)) throw new Error("--app is only valid for desktop");
+  if (values.state && command !== "desktop-preset") throw new Error("--state is only valid for the internal desktop preset");
   if (values.port && !["serve", "tunnel", "setup"].includes(command)) throw new Error("--port is only valid for serve, setup or tunnel");
   if (values.client && command !== "setup") throw new Error("--client is only valid for setup");
   if (command !== "tunnel" && [values["tunnel-id"], values.host, values["remote-port"], values.reverse, values["ssh-config"]].some(Boolean)) throw new Error("Tunnel options are only valid for tunnel");
@@ -156,6 +157,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (command !== "codex-config" || !values.model || !values.endpoint || !values["token-file"] || values.config) throw new Error("Remote codex-config requires --model, --endpoint and --token-file, without --config");
     const tokenFile = resolve(values["token-file"]);
     process.stdout.write(await remoteCodexSettings(values.model, values.endpoint, tokenFile, resolve(values.catalog || `${dirname(tokenFile)}/codex-models.json`))); return;
+  }
+  if (command === "desktop-preset") {
+    if (!values.state || id) throw new Error("desktop-preset requires --state");
+    await presetDesktopEnv(resolve(values.state)); return;
   }
   const path = await configPath(values.config);
   if (command === "desktop-restore") { await macDesktop("register", path, values.app, true); return; }

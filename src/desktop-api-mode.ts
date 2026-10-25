@@ -1,11 +1,13 @@
 import { access, constants, readFile, unlink } from "node:fs/promises";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { loadConfig, writePrivateJson, type GatewayConfig } from "./config.js";
 import { modelCatalog } from "./catalog.js";
 import { gatewayProviderTable } from "./codex-config.js";
 import { configureTelemetry, telemetry } from "./telemetry.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
-import type { NativeConfigClient, NativeConfigEdit } from "./desktop-api-mode-native.js";
+import { NativeConfigWriteRejected, type NativeConfigClient, type NativeConfigEdit } from "./desktop-api-mode-native.js";
+import { guardEnvAgentForApiMode } from "./desktop-env-agent.js";
 
 /**
  * API mode for the Codex desktop app. While the receipt below exists the app starts its own signed engine and uses this
@@ -31,7 +33,9 @@ export type ApiModeReceipt = {
   nativeHome: string;
   original: { model?: unknown; model_provider?: unknown; model_catalog_json?: unknown };
   providerTableExisted: boolean;
-  applied: { provider: string; catalogPath: string; model: string };
+  /** The provider table API mode replaces, when one was already present. */
+  originalProviderTable?: unknown;
+  applied: { provider: string; catalogPath: string; model: string; providerTable?: Record<string, unknown> };
   /** Whether API mode removed this gateway's own adapter override from the login session, so `off` must set it back. */
   cliPathCleared: boolean;
   enabledAt: string;
@@ -55,7 +59,7 @@ export interface ApiModeDeps {
   /** Remove the session's adapter override. Only ever called once `cliPathOwner` answered `gateway`. */
   clearCliPath: () => Promise<void>;
   /** The daemon's own first step: sets the override again when the registration receipt names our wrapper. */
-  presetEnv: (stateDirectory: string) => Promise<void>;
+  presetEnv: (stateDirectory: string) => Promise<"set" | "skipped" | "failed">;
   now: () => Date;
 }
 
@@ -72,7 +76,9 @@ export async function readApiModeReceipt(stateDirectory: string): Promise<ApiMod
   const receipt = value as Partial<ApiModeReceipt>;
   if (!value || typeof value !== "object" || Array.isArray(value) || receipt.version !== 1 || typeof receipt.nativeHome !== "string"
     || !receipt.original || typeof receipt.original !== "object" || typeof receipt.providerTableExisted !== "boolean" || typeof receipt.cliPathCleared !== "boolean"
-    || !receipt.applied || typeof receipt.applied !== "object" || ["provider", "catalogPath", "model"].some(key => typeof (receipt.applied as Record<string, unknown>)[key] !== "string")) {
+    || receipt.providerTableExisted && !Object.hasOwn(receipt, "originalProviderTable")
+    || !receipt.applied || typeof receipt.applied !== "object" || ["provider", "catalogPath", "model"].some(key => typeof (receipt.applied as Record<string, unknown>)[key] !== "string")
+    || (receipt.applied.providerTable !== undefined && (typeof receipt.applied.providerTable !== "object" || receipt.applied.providerTable === null || Array.isArray(receipt.applied.providerTable)))) {
     throw new Error(unreadable);
   }
   return value as ApiModeReceipt;
@@ -136,9 +142,9 @@ export function chooseModel(wanted: string | undefined, nativeModel: unknown, ca
 }
 
 /** What `on` writes, in one batch: the provider, then the three keys that point the engine at it. */
-function applyEdits(config: GatewayConfig, configPath: string, receipt: ApiModeReceipt): NativeConfigEdit[] {
+function applyEdits(receipt: ApiModeReceipt): NativeConfigEdit[] {
   return [
-    { keyPath: `model_providers.${apiModeProvider}`, value: providerTable(config, configPath), mergeStrategy: "replace" },
+    { keyPath: `model_providers.${apiModeProvider}`, value: receipt.applied.providerTable!, mergeStrategy: "replace" },
     { keyPath: "model_provider", value: apiModeProvider, mergeStrategy: "replace" },
     { keyPath: "model_catalog_json", value: receipt.applied.catalogPath, mergeStrategy: "replace" },
     { keyPath: "model", value: receipt.applied.model, mergeStrategy: "replace" },
@@ -148,7 +154,7 @@ function applyEdits(config: GatewayConfig, configPath: string, receipt: ApiModeR
 /**
  * The edits that put the user configuration back: each key API mode still holds returns to what the receipt found
  * there (a key that was absent is cleared), one the user has since changed is left alone and named, and the provider
- * table is removed only where API mode created it.
+ * table returns only where it still exactly equals the table API mode wrote.
  */
 function editsToRestore(receipt: ApiModeReceipt, config: Record<string, unknown>): { edits: NativeConfigEdit[]; changed: ModelKey[] } {
   const applied: Record<ModelKey, unknown> = { model: receipt.applied.model, model_provider: receipt.applied.provider, model_catalog_json: receipt.applied.catalogPath };
@@ -158,7 +164,10 @@ function editsToRestore(receipt: ApiModeReceipt, config: Record<string, unknown>
     const original = receipt.original[key];
     edits.push({ keyPath: key, value: original === undefined ? null : original, mergeStrategy: "replace" });
   }
-  if (!receipt.providerTableExisted) edits.push({ keyPath: `model_providers.${apiModeProvider}`, value: null, mergeStrategy: "replace" });
+  const currentProvider = (config.model_providers as Record<string, unknown> | undefined)?.[apiModeProvider];
+  if (receipt.applied.providerTable !== undefined && isDeepStrictEqual(currentProvider, receipt.applied.providerTable)) {
+    edits.push({ keyPath: `model_providers.${apiModeProvider}`, value: receipt.providerTableExisted ? receipt.originalProviderTable : null, mergeStrategy: "replace" });
+  }
   return { edits, changed };
 }
 
@@ -208,10 +217,15 @@ async function runStatus(config: GatewayConfig, app: string, deps: ApiModeDeps):
 
 /** Whether the adapter registration receipt names a wrapper, as `gateway desktop status` counts it. */
 async function desktopRegistrationPresent(stateDirectory: string): Promise<boolean> {
+  return (await desktopRegistrationWrapper(stateDirectory)) !== undefined;
+}
+
+/** The registered wrapper where a valid registration receipt names one; invalid data stays absent for API-mode migration. */
+async function desktopRegistrationWrapper(stateDirectory: string): Promise<string | undefined> {
   let wrapper: unknown;
   try { wrapper = (JSON.parse(await readFile(resolve(stateDirectory, "desktop-registration.json"), "utf8")) as { wrapper?: unknown }).wrapper; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
-  return typeof wrapper === "string" && wrapper !== "";
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  return typeof wrapper === "string" && wrapper !== "" ? wrapper : undefined;
 }
 
 async function enable(config: GatewayConfig, configPath: string, app: string, wanted: string | undefined, deps: ApiModeDeps): Promise<Record<string, unknown>> {
@@ -221,35 +235,45 @@ async function enable(config: GatewayConfig, configPath: string, app: string, wa
   const owner = await deps.cliPathOwner(stateDirectory);
   // A foreign override stays exactly where it is: nothing is written, because API mode could not hand it back later.
   if (owner === "other") { report("on", "refused", "foreign_cli_path"); throw new Error("Another desktop CLI override is active; it was not replaced. API mode cannot run while CODEX_CLI_PATH names a CLI this gateway did not register."); }
+  const catalog = modelCatalog(config);
+  if (!catalog.models.length) throw new Error("This gateway offers no models, so there is nothing for API mode to serve");
+  const selected = wanted === undefined ? undefined : chooseModel(wanted, undefined, catalog.models);
+  const appliedProviderTable = providerTable(config, configPath);
+  // A standalone login agent survives until the next login. Upgrade only the script whose marker and state-local
+  // wrapper prove it is ours, before API mode can make its receipt visible.
+  await guardEnvAgentForApiMode(stateDirectory, await desktopRegistrationWrapper(stateDirectory));
   const nativeHome = deps.nativeHome();
   const client = await deps.native(nativeHome, app);
   try {
     const read = await client.read();
     const original: ApiModeReceipt["original"] = {};
     for (const key of modelKeys) if (read.config[key] !== undefined) original[key] = read.config[key];
-    const providers = read.config.model_providers;
-    const catalog = modelCatalog(config);
-    // The engine refuses to read a configuration whose catalog is missing or empty, so this file has to exist with at
-    // least one row before `model_catalog_json` names it, or the app would be left without any model at all.
-    if (!catalog.models.length) throw new Error("This gateway offers no models, so there is nothing for API mode to serve");
+    const providers = read.config.model_providers as Record<string, unknown> | undefined;
     const catalogPath = apiModeCatalogPath(stateDirectory);
     let receipt: ApiModeReceipt = { version: 1, nativeHome, original,
       providerTableExisted: hasProvider(providers),
-      applied: { provider: apiModeProvider, catalogPath, model: chooseModel(wanted, read.config.model, catalog.models) },
+      ...(hasProvider(providers) ? { originalProviderTable: providers![apiModeProvider] } : {}),
+      applied: { provider: apiModeProvider, catalogPath, model: selected || chooseModel(undefined, read.config.model, catalog.models), providerTable: appliedProviderTable },
       cliPathCleared: false, enabledAt: new Date().toISOString() };
     // Everything this batch needs from the configuration is checked before a single file is written, so a bad port,
     // endpoint or model choice is a refusal rather than a rollback.
-    const edits = applyEdits(config, configPath, receipt);
+    const edits = applyEdits(receipt);
     await writePrivateJson(catalogPath, catalog);
     // The receipt lands before the batch write, so a crash between the two leaves the record that says what to undo.
     await writePrivateJson(apiModeReceiptPath(stateDirectory), receipt);
     try { await client.write(edits, read.version); }
-    catch (error) { await detach(client, receipt, stateDirectory); report("on", "rolled_back", "native_write"); throw error; }
+    catch (error) {
+      const recovered = await detach(client, receipt, stateDirectory, !(error instanceof NativeConfigWriteRejected));
+      report("on", recovered ? "rolled_back" : "failed", recovered ? "native_write" : "rollback"); throw error;
+    }
     // Detach the adapter: the app must not load the wrapper beside its own provider. The registration receipt and the
     // service plan are left as they are, so `off` and the daemon's own preset can put the override back.
     if (owner === "gateway") {
       try { await deps.clearCliPath(); }
-      catch (error) { await detach(client, receipt, stateDirectory); report("on", "rolled_back", "clear_cli_path"); throw error; }
+      catch (error) {
+        const recovered = await detach(client, receipt, stateDirectory, true);
+        report("on", recovered ? "rolled_back" : "failed", recovered ? "clear_cli_path" : "rollback"); throw error;
+      }
       receipt = { ...receipt, cliPathCleared: true };
     }
     await writePrivateJson(apiModeReceiptPath(stateDirectory), receipt);
@@ -258,10 +282,12 @@ async function enable(config: GatewayConfig, configPath: string, app: string, wa
   } finally { await client.close(); }
 }
 
-/** Undo a failed `on`: put the user configuration back as the receipt found it, then retire the receipt. */
-async function detach(client: NativeConfigClient, receipt: ApiModeReceipt, stateDirectory: string): Promise<void> {
-  await restore(client, receipt).catch(() => undefined);
-  await unlink(apiModeReceiptPath(stateDirectory)).catch(() => undefined);
+/** Undo a failed `on`: a rejected batch wrote nothing; an uncertain one is re-read and restored conservatively. */
+async function detach(client: NativeConfigClient, receipt: ApiModeReceipt, stateDirectory: string, uncertain: boolean): Promise<boolean> {
+  if (uncertain) {
+    try { await restore(client, receipt); } catch { return false; }
+  }
+  try { await unlink(apiModeReceiptPath(stateDirectory)); return true; } catch { return false; }
 }
 
 const hasProvider = (providers: unknown): boolean => !!providers && typeof providers === "object" && Object.hasOwn(providers as Record<string, unknown>, apiModeProvider);
@@ -277,9 +303,9 @@ async function disable(config: GatewayConfig, app: string, deps: ApiModeDeps): P
     await unlink(apiModeReceiptPath(stateDirectory));
     // Hand the desktop back to the adapter the same way the daemon takes it up: only a registration receipt that names
     // this gateway's wrapper can set the override, and the app picks it up at its next launch.
-    let cliPathRestored = false;
-    if (await desktopRegistrationPresent(stateDirectory)) { await deps.presetEnv(stateDirectory); cliPathRestored = true; }
+    const preset = await deps.presetEnv(stateDirectory);
+    const cliPathRestored = preset === "set";
     report("off", "applied");
-    return { mode: "adapter", restored, changedSinceEnable: changed, cliPathRestored };
+    return { mode: "adapter", restored, changedSinceEnable: changed, cliPathRestored, ...(cliPathRestored ? {} : { cliPathRestoreReason: preset }) };
   } catch (error) { report("off", "failed", "native_write"); throw error; } finally { await client.close(); }
 }

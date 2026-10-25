@@ -188,6 +188,10 @@ async function reportEnvAgentFailure(stateDirectory: string, error: unknown): Pr
  * and the daemon goes on. `runtimeFile` is a seam for the release check.
  */
 export async function presetDesktopEnv(stateDirectory: string, exec: LaunchctlExec = launchctlExec, runtimeFile = agentRuntimeFile()): Promise<"set" | "skipped" | "failed"> {
+  return await withLoginRegistrationLock(stateDirectory, () => presetDesktopEnvLocked(stateDirectory, exec, runtimeFile));
+}
+/** The preset while its caller already holds the registration lock (API mode's `off` path). */
+export async function presetDesktopEnvLocked(stateDirectory: string, exec: LaunchctlExec = launchctlExec, runtimeFile = agentRuntimeFile()): Promise<"set" | "skipped" | "failed"> {
   if (process.platform !== "darwin") return "skipped";
   // API mode owns the desktop while its receipt is in place, so the adapter override stays out of the login session
   // until `gateway desktop api-mode off` hands it back. The receipt, not this call, is the switch.

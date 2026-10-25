@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { writePrivateJson, loadConfig } from "../config.js";
 import { prepareDesktop } from "../desktop-launch.js";
@@ -8,6 +10,9 @@ import { modelCatalog } from "../catalog.js";
 import { codexSettings, gatewayProviderTable } from "../codex-config.js";
 import { apiModeActive, apiModeCatalogPath, apiModeReceiptPath, desktopApiMode, refreshApiModeCatalog, apiModeProvider } from "../desktop-api-mode.js";
 import { macDesktop, presetDesktopEnv } from "../mac-desktop.js";
+import { withLoginRegistrationLock } from "../login-registration-lock.js";
+import { agentRuntimeFile, envAgentLabel, envAgentPlist, envAgentScript, envAgentScriptPath } from "../desktop-env-agent.js";
+import { NativeConfigWriteRejected } from "../desktop-api-mode-native.js";
 import { flushTelemetry, readTelemetry } from "../telemetry.js";
 import { desktopFixture, inDesktopHome, PATH_KEY, type DesktopFixture as Fixture } from "./desktop-fixture.js";
 
@@ -15,7 +20,8 @@ const mac = { skip: process.platform !== "darwin" };
 
 /** A stand-in for the app's engine: a user layer, its version stamp, and every batch write it was asked to make. */
 function fakeEngine(initial: Record<string, unknown> = {}) {
-  const state = { config: structuredClone(initial), version: "v1", writes: [] as Array<{ edits: unknown[]; expected: string }>, closed: 0, failWrite: false };
+  const state = { config: structuredClone(initial), version: "v1", writes: [] as Array<{ edits: unknown[]; expected: string }>, closed: 0,
+    failWrite: undefined as undefined | "rejected" | "uncertain", beforeWrite: undefined as undefined | (() => void) };
   const apply = (config: Record<string, unknown>, edits: Array<{ keyPath: string; value: unknown }>) => {
     for (const edit of edits) {
       const parts = edit.keyPath.split(".");
@@ -31,8 +37,9 @@ function fakeEngine(initial: Record<string, unknown> = {}) {
   const client = {
     read: async () => ({ version: state.version, config: structuredClone(state.config), file: "/home/.codex/config.toml" }),
     write: async (edits: Array<{ keyPath: string; value: unknown }>, expected: string) => {
-      if (expected !== state.version) throw new Error("Configuration was modified since last read");
-      if (state.failWrite) { state.failWrite = false; throw new Error("the engine refused the write"); }
+      state.beforeWrite?.(); state.beforeWrite = undefined;
+      if (expected !== state.version) throw new NativeConfigWriteRejected("Configuration was modified since last read");
+      if (state.failWrite) { const failure = state.failWrite; state.failWrite = undefined; throw failure === "rejected" ? new NativeConfigWriteRejected("the engine refused the write") : new Error("the engine lost the write reply"); }
       state.writes.push({ edits, expected });
       apply(state.config, edits); state.version = `v${state.writes.length + 1}`;
     },
@@ -50,7 +57,7 @@ function harness(f: Fixture, engine: ReturnType<typeof fakeEngine>, over: Partia
     nativeHome: () => join(f.root, "native-home"),
     cliPathOwner: async () => (over.cliPathOwner ?? "none") as "gateway" | "none" | "other",
     clearCliPath: async () => { calls.push("clear"); if (over.failClear) throw new Error("launchctl refused"); },
-    presetEnv: async () => { calls.push("preset"); },
+    presetEnv: async (): Promise<"set" | "skipped" | "failed"> => { calls.push("preset"); return "skipped"; },
     now: () => new Date("2026-10-25T12:00:00Z"),
   };
   return { deps, calls };
@@ -143,6 +150,8 @@ test("on detaches our own adapter, and puts everything back when the session ref
     assert.equal((await readFile(apiModeReceiptPath(ok.f.state), "utf8")).includes('"cliPathCleared": true'), true);
   });
   const bad = await setup({ model: "fixture" }, "api-mode-detach-fail");
+  const originalProvider = { name: "Before API mode", base_url: "http://127.0.0.1:9/v1" };
+  bad.engine.state.config.model_providers = { [apiModeProvider]: originalProvider };
   bad.deps.cliPathOwner = async () => "gateway";
   bad.deps.clearCliPath = async () => { throw new Error("launchctl said no"); };
   await inDesktopHome(bad.f, async () => {
@@ -150,19 +159,48 @@ test("on detaches our own adapter, and puts everything back when the session ref
     const [first, second] = bad.engine.state.writes;
     assert.equal(first.edits.length, 4);
     assert.deepEqual(second.edits.map(e => (e as { keyPath: string }).keyPath).sort(), ["model", "model_catalog_json", "model_provider", `model_providers.${apiModeProvider}`]);
-    assert.equal(second.edits.every(e => (e as { value: unknown }).value === "fixture" || (e as { value: unknown }).value === null), true, "the originals come back, and what was absent is cleared");
+    assert.deepEqual(second.edits.find(e => (e as { keyPath: string }).keyPath === `model_providers.${apiModeProvider}`), { keyPath: `model_providers.${apiModeProvider}`, value: originalProvider, mergeStrategy: "replace" });
     assert.equal(await apiModeActive(bad.f.state), false, "the receipt is removed with the rollback");
-    assert.deepEqual(bad.engine.state.config, { model: "fixture" }, "the engine ends where it started");
+    assert.deepEqual(bad.engine.state.config, { model: "fixture", model_providers: { [apiModeProvider]: originalProvider } }, "the engine ends where it started");
   });
 });
 
 test("a failed native write rolls the receipt away too", mac, async () => {
   const { f, engine, deps } = await setup({ model: "fixture" }, "api-mode-write-fail");
-  engine.state.failWrite = true;
+  engine.state.failWrite = "rejected";
   await inDesktopHome(f, async () => {
     await assert.rejects(() => desktopApiMode("on", f.config, {}, deps), /refused the write/);
     assert.equal(await apiModeActive(f.state), false, "the rollback retires the receipt it had written first");
     assert.deepEqual(engine.state.config, { model: "fixture" }, "nothing landed, so nothing needed undoing beyond the receipt");
+    await flushTelemetry();
+  });
+});
+
+test("a rejected batch does not roll back a concurrent provider table", mac, async () => {
+  const { f, engine, deps } = await setup({ model: "fixture" }, "api-mode-version-conflict");
+  await inDesktopHome(f, async () => {
+    const concurrent = { name: "user's provider" };
+    engine.state.beforeWrite = () => { engine.state.config.model_providers = { [apiModeProvider]: concurrent }; engine.state.version = "v2"; };
+    await assert.rejects(() => desktopApiMode("on", f.config, {}, deps), /modified since last read/);
+    assert.deepEqual(engine.state.config.model_providers, { [apiModeProvider]: concurrent }, "a batch rejected before its write never rolls back another editor's table");
+    assert.equal(engine.state.writes.length, 0, "the rejected batch issued no compensating write");
+    assert.equal(await apiModeActive(f.state), false, "the harmless pre-write receipt is retired");
+  });
+});
+
+test("a failed uncertain rollback retains its receipt until off can recover", mac, async () => {
+  const { f, engine, deps } = await setup({ model: "fixture" }, "api-mode-rollback-receipt");
+  deps.cliPathOwner = async () => "gateway";
+  deps.clearCliPath = async () => { engine.state.failWrite = "uncertain"; throw new Error("session clear failed"); };
+  await inDesktopHome(f, async () => {
+    await assert.rejects(() => desktopApiMode("on", f.config, {}, deps), /session clear failed/);
+    assert.equal(await apiModeActive(f.state), true, "the receipt remains while the native configuration may still be active");
+    assert.equal(engine.state.config.model_provider, apiModeProvider);
+    const events = (await readTelemetry(f.state, 0)).filter(event => event.event === "desktop_api_mode");
+    assert.deepEqual(events.map(event => [event.action, event.outcome, event.reason]).at(-1), ["on", "failed", "rollback"]);
+    await desktopApiMode("off", f.config, {}, deps);
+    assert.equal(await apiModeActive(f.state), false, "off retries the retained restoration");
+    assert.deepEqual(engine.state.config, { model: "fixture" });
   });
 });
 
@@ -182,9 +220,10 @@ test("off restores what API mode applied, keeps what the user changed, and clear
   });
 });
 
-test("off clears the provider table only where it created it, and hands the desktop back only when registered", mac, async () => {
+test("off restores an original provider table and hands the desktop back only when registered", mac, async () => {
   const { f, engine, deps, calls } = await setup({ model: "fixture" }, "api-mode-off-registered");
   engine.state.config.model_providers = { [apiModeProvider]: { name: "someone else's" }, other: {} };
+  deps.presetEnv = async () => { calls.push("preset"); return "set"; };
   await inDesktopHome(f, async () => {
     await desktopApiMode("on", f.config, {}, deps);
     assert.equal((JSON.parse(await readFile(apiModeReceiptPath(f.state), "utf8")) as { providerTableExisted: boolean }).providerTableExisted, true);
@@ -193,8 +232,19 @@ test("off clears the provider table only where it created it, and hands the desk
     assert.equal(result.cliPathRestored, true);
     assert.deepEqual(calls, ["preset"]);
     const last = engine.state.writes.at(-1)!;
-    assert.equal(last.edits.some(e => (e as { keyPath: string }).keyPath.startsWith("model_providers")), false, "a table that predates API mode survives it");
-    assert.deepEqual(Object.keys(engine.state.config.model_providers as object), ["harness_gateway", "other"]);
+    assert.deepEqual(last.edits.find(e => (e as { keyPath: string }).keyPath === `model_providers.${apiModeProvider}`), { keyPath: `model_providers.${apiModeProvider}`, value: { name: "someone else's" }, mergeStrategy: "replace" });
+    assert.deepEqual(engine.state.config.model_providers, { [apiModeProvider]: { name: "someone else's" }, other: {} });
+  });
+});
+
+test("off reports the daemon preset result instead of claiming the path was restored", mac, async () => {
+  const { f, deps } = await setup({ model: "fixture" }, "api-mode-preset-result");
+  deps.presetEnv = async () => "failed";
+  await inDesktopHome(f, async () => {
+    await desktopApiMode("on", f.config, {}, deps);
+    const result = await desktopApiMode("off", f.config, {}, deps);
+    assert.equal(result.cliPathRestored, false);
+    assert.equal(result.cliPathRestoreReason, "failed");
   });
 });
 
@@ -291,6 +341,71 @@ async function registered(f: Fixture) {
   await mkdir(join(runtime, ".."), { recursive: true }); await writeFile(runtime, "");
   return { wrapper, runtime };
 }
+
+test("the login preset rechecks API mode inside the shared registration lock", mac, async () => {
+  const { f } = await setup({}, "api-mode-preset-lock");
+  await inDesktopHome(f, async () => {
+    const { wrapper, runtime } = await registered(f);
+    const script = envAgentScript(wrapper, runtime, { command: "/gateway", args: [] });
+    assert.match(script, /exec '\/gateway' 'desktop-preset' '--state'/, "the login script delegates the guarded setter");
+    assert.equal(script.includes("launchctl setenv"), false);
+    let entered!: () => void; const holding = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void; const released = new Promise<void>(resolve => { release = resolve; });
+    const holder = withLoginRegistrationLock(f.state, async () => { entered(); await released; await writeFile(apiModeReceiptPath(f.state), "{}", { mode: 0o600 }); });
+    await holding;
+    const preset = presetDesktopEnv(f.state, f.exec, runtime);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(f.calls.some(call => call.startsWith("setenv")), false, "the setter waits with the transitions");
+    release(); await holder;
+    assert.equal(await preset, "skipped", "the receipt is checked again immediately before a setenv");
+    assert.equal(f.calls.some(call => call.startsWith("setenv")), false);
+  });
+});
+
+test("the standalone login script is guarded and migrated while API mode is enabled", mac, async () => {
+  const { f, deps } = await setup({ model: "fixture" }, "api-mode-login-agent");
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await registered(f); const runtime = agentRuntimeFile();
+    await mkdir(join(runtime, ".."), { recursive: true }); await writeFile(runtime, "");
+    const guarded = envAgentScript(wrapper); const legacy = guarded.replace(`[ -e '${join(f.state, "api-mode.json")}' ] && exit 0\n`, "");
+    await writeFile(envAgentScriptPath(f.state), legacy, { mode: 0o700 });
+    await writeFile(join(f.home, "Library/LaunchAgents", `${envAgentLabel}.plist`), envAgentPlist(envAgentScriptPath(f.state)));
+    await desktopApiMode("on", f.config, {}, deps);
+    assert.equal(await readFile(envAgentScriptPath(f.state), "utf8"), guarded, "on upgrades an owned old script");
+    const probe = join(f.root, "login-env-probe");
+    await writeFile(probe, guarded.replace(/^exec .*$/m, `exec printf %s '${wrapper}'`), { mode: 0o700 });
+    const run = async () => (await promisify(execFile)("/bin/sh", [probe])).stdout;
+    assert.equal(await run(), "", "the receipt makes a login set nothing");
+    await desktopApiMode("off", f.config, {}, deps);
+    assert.equal(await run(), wrapper, "without the receipt the generated script sets the wrapper");
+  });
+});
+
+test("API mode validates a requested model before changing an owned login script", mac, async () => {
+  const { f, deps, engine } = await setup({ model: "fixture" }, "api-mode-invalid-model-agent");
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await registered(f); const guarded = envAgentScript(wrapper);
+    const legacy = guarded.replace(`[ -e '${join(f.state, "api-mode.json")}' ] && exit 0\n`, "");
+    await writeFile(envAgentScriptPath(f.state), legacy, { mode: 0o700 });
+    await writeFile(join(f.home, "Library/LaunchAgents", `${envAgentLabel}.plist`), envAgentPlist(envAgentScriptPath(f.state)));
+    await assert.rejects(() => desktopApiMode("on", f.config, { model: "not-configured" }, deps), /not in this gateway's catalog/);
+    assert.equal(await readFile(envAgentScriptPath(f.state), "utf8"), legacy);
+    assert.equal(engine.state.writes.length, 0);
+    assert.equal(await readFile(apiModeReceiptPath(f.state), "utf8").catch(() => "gone"), "gone");
+  });
+});
+
+test("API mode refuses a gateway-owned legacy direct-launchctl agent before writes", mac, async () => {
+  const { f, deps, engine } = await setup({ model: "fixture" }, "api-mode-legacy-agent");
+  await inDesktopHome(f, async () => {
+    const { wrapper } = await registered(f);
+    const legacy = `<?xml version="1.0"?>\n<!-- Managed by subscription-gateway desktop-env -->\n<plist version="1.0"><dict><key>ProgramArguments</key><array><string>/bin/launchctl</string><string>setenv</string><string>CODEX_CLI_PATH</string><string>${wrapper}</string></array></dict></plist>`;
+    await writeFile(join(f.home, "Library/LaunchAgents", `${envAgentLabel}.plist`), legacy);
+    await assert.rejects(() => desktopApiMode("on", f.config, {}, deps), /too old for API mode/);
+    assert.equal(engine.state.writes.length, 0);
+    assert.equal(await readFile(apiModeReceiptPath(f.state), "utf8").catch(() => "gone"), "gone");
+  });
+});
 
 test("every path that arms the adapter stands down while the receipt exists, and only while it does", mac, async () => {
   const { f, deps, engine } = await setup({ model: "fixture" }, "api-mode-preset-guard");

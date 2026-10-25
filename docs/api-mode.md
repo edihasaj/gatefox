@@ -104,18 +104,29 @@ so a crash in between leaves the record that says what to undo; `off` removes it
 While it exists, every path that would arm the adapter stands down. The daemon's
 first-step `launchctl setenv` preset and the service's `desktop-restore` child skip and
 record one `desktop_api_mode` event (`action: "preset"`, `outcome: "skipped"`) per
-process; a hand-run `gateway desktop register` refuses. The desktop registration receipt
-and the service plan are **not** changed: API mode only takes `CODEX_CLI_PATH` out of the
-login session, and only when the session's value was one of this gateway's own wrappers.
-A foreign override is refused before anything is written, because API mode could not hand
-it back. `gateway desktop status` reports this as `cliPathOverride:
-"gateway"|"none"|"other"`, never the path itself.
+process; a hand-run `gateway desktop register` refuses. The preset's receipt check and its
+setter share the registration lock with `on` and `off`, and it checks again while holding
+that lock. The standalone login-environment script calls the same locked preset after its
+receipt check, so a concurrent `on` cannot slip a `setenv` between those steps; `on` upgrades
+an existing gateway-owned script with that guard and refuses an older direct-`launchctl`
+agent until it is re-registered. The desktop
+registration receipt and the service plan are **not** changed: API mode only takes
+`CODEX_CLI_PATH` out of the login session, and only when the session's value was one of this
+gateway's own wrappers. A foreign override is refused before anything is written, because
+API mode could not hand it back. `gateway desktop api-mode status` reports this as
+`cliPathOverride: "gateway"|"none"|"other"`, never the path itself.
+
+If an `on` batch is rejected before the engine applies it, API mode retires only its
+pre-write receipt. For an uncertain result, it re-reads the user layer and restores only
+keys still equal to API mode's values; it restores or removes a provider table only when it
+still exactly equals the table API mode wrote. A failed restoration keeps the receipt and reports
+`desktop_api_mode` as `failed` with the fixed `rollback` reason, so the adapter stays
+guarded and `off` can retry safely.
 
 The catalog stays current without a timer or another background item: the running service
 rewrites it at the moment it adopts a new gateway configuration, and only while the
-receipt exists. A model added to the gateway therefore reaches the app's picker with no
-restart, and an app that starts after a `gateway service restart` still reads the same
-list.
+receipt exists. A model added to the gateway is written to that catalog for the next engine reload.
+Immediate refresh of an already-open model picker has not been verified.
 
 ## What API mode gives up
 
@@ -142,8 +153,9 @@ gateway desktop api-mode off
 Quit ChatGPT (Command-Q) first: both `on` and `off` refuse while it is running, because
 the configuration only takes effect at the next launch. `off` then restores the native
 configuration and re-arms the adapter through the same preset the service uses, so the
-next launch is back in adapter mode. A `clientOnly` gateway refuses `on` — API mode needs
-a gateway running on this Mac.
+next launch is back in adapter mode. It reports `cliPathRestored: false` with a fixed
+`cliPathRestoreReason` when that preset skips or fails. A `clientOnly` gateway refuses
+`on` — API mode needs a gateway running on this Mac.
 
 `scripts/e2e-api-mode-native-config.mjs` runs the real `on`/`off` logic against the app's
 real signed engine in a throwaway native home and checks the resulting `config.toml`
@@ -155,3 +167,16 @@ One event, `desktop_api_mode`, with exactly `action` (`on`, `off`, `preset`), `o
 (`applied`, `refused`, `rolled_back`, `failed`, `skipped`) and a fixed `reason` when there
 is one. No path, model, configuration value or environment value is ever recorded. See
 [diagnostics](diagnostics.md).
+
+## Verification status, 2026-10-25
+
+The native configuration check passed against the signed app engine, including restoring
+comments, absent keys and user changes. On macbook-server an isolated API-mode enable and
+disable also completed, and the test app and its temporary home were removed afterwards.
+The normal gateway desktop registration remained active.
+
+A previous direct-engine trial exposed `automation_update` to a gateway-model chat and
+showed the app's normal approval prompt. Saving and firing a real schedule remain
+unverified: that trial received invalid model arguments, and the latest attempt was
+blocked by the desktop lock screen before a prompt was sent. API mode has not been
+enabled in the user's normal Codex home or deployed as a new release.

@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
@@ -6,7 +6,7 @@ import { nativeEngineExecutable } from "./native-engine-path.js";
 import { nativeEnvironment } from "./executor-identity.js";
 import { chatGptAppExecutable, chatGptAppRunning, realProcessList } from "./native-pause.js";
 import { testSafeRoot } from "./test-root-guard.js";
-import { clearDesktopCliPath, desktopCliPathOwner, presetDesktopEnv } from "./mac-desktop.js";
+import { clearDesktopCliPath, desktopCliPathOwner, presetDesktopEnvLocked } from "./mac-desktop.js";
 import type { ApiModeDeps } from "./desktop-api-mode.js";
 
 /**
@@ -34,6 +34,9 @@ export interface NativeConfigClient {
   close(): Promise<void>;
 }
 
+/** The engine rejected a batch before applying it (including an expected-version conflict). */
+export class NativeConfigWriteRejected extends Error {}
+
 /** How long one engine round trip may take before the whole call is given up on. */
 const engineTimeoutMs = 20000;
 
@@ -59,7 +62,7 @@ export function apiModeDeps(): ApiModeDeps {
     nativeHome: apiModeNativeHome,
     cliPathOwner: stateDirectory => desktopCliPathOwner(stateDirectory),
     clearCliPath: () => clearDesktopCliPath(),
-    presetEnv: async stateDirectory => { await presetDesktopEnv(stateDirectory); },
+    presetEnv: async stateDirectory => await presetDesktopEnvLocked(stateDirectory),
     now: () => new Date(),
   };
 }
@@ -83,19 +86,27 @@ function userLayer(result: ObjectValue): NativeUserConfig {
  * the command instead of hanging it, and `close` always runs. Nothing the engine prints is kept, logged, or returned
  * beyond the configuration values this module was asked to read.
  */
-export async function openNativeConfig(engine: string, nativeHome: string): Promise<NativeConfigClient> {
-  const child = spawn(engine, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], env: { ...nativeEnvironment(), CODEX_HOME: nativeHome } });
+export type NativeConfigProcessDeps = {
+  spawn?: typeof spawn;
+  setTimeout?: (callback: () => void, ms: number) => NodeJS.Timeout;
+  clearTimeout?: (timeout: NodeJS.Timeout | undefined) => void;
+};
+
+export async function openNativeConfig(engine: string, nativeHome: string, deps: NativeConfigProcessDeps = {}): Promise<NativeConfigClient> {
+  const child = (deps.spawn || spawn)(engine, ["app-server", "--listen", "stdio://"], { stdio: ["pipe", "pipe", "pipe"], env: { ...nativeEnvironment(), CODEX_HOME: nativeHome } }) as ChildProcessWithoutNullStreams;
+  const setEngineTimeout = deps.setTimeout || setTimeout; const clearEngineTimeout = deps.clearTimeout || clearTimeout;
+  const exited = new Promise<void>(done => child.once("close", () => done()));
   child.stderr.resume();
   const lines = createInterface({ input: child.stdout });
-  const pending = new Map<number, { resolve: (value: ObjectValue) => void; reject: (error: Error) => void }>();
+  const pending = new Map<number, { resolve: (value: ObjectValue) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout }>();
   let sequence = 0; let failure: Error | undefined; let closed = false; let hardStop: NodeJS.Timeout | undefined;
   const stop = (error: Error) => {
     if (failure) return;
     failure = error;
     child.stdin.end(); child.kill("SIGTERM");
-    hardStop = setTimeout(() => child.kill("SIGKILL"), 1500).unref();
+    hardStop = setEngineTimeout(() => child.kill("SIGKILL"), 1500).unref();
   };
-  const settle = (error: Error) => { for (const request of pending.values()) request.reject(error); pending.clear(); };
+  const settle = (error: Error) => { for (const request of pending.values()) { clearEngineTimeout(request.timeout); request.reject(error); } pending.clear(); };
   lines.on("line", line => {
     let message: ObjectValue;
     try { message = object(JSON.parse(line)); } catch { stop(new Error("Codex engine returned an unreadable response")); return; }
@@ -106,8 +117,8 @@ export async function openNativeConfig(engine: string, nativeHome: string): Prom
       return;
     }
     if (typeof message.id !== "number" || !pending.has(message.id)) return;
-    const request = pending.get(message.id)!; pending.delete(message.id);
-    message.error ? request.reject(new Error("The Codex engine refused this configuration change")) : request.resolve(object(message.result));
+    const request = pending.get(message.id)!; pending.delete(message.id); clearEngineTimeout(request.timeout);
+    message.error ? request.reject(new NativeConfigWriteRejected("The Codex engine refused this configuration change")) : request.resolve(object(message.result));
   });
   child.on("error", () => { stop(new Error("The Codex engine could not start")); settle(failure!); });
   child.stdin.on("error", () => { stop(new Error("The Codex engine closed its input")); settle(failure!); });
@@ -115,10 +126,11 @@ export async function openNativeConfig(engine: string, nativeHome: string): Prom
   const call = (method: string, params: ObjectValue): Promise<ObjectValue> => new Promise((resolveCall, rejectCall) => {
     if (failure) return rejectCall(failure);
     const id = ++sequence;
-    pending.set(id, { resolve: resolveCall, reject: rejectCall });
-    child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
     // One guard per call: an engine that never answers is stopped, and everything in flight fails with it.
-    setTimeout(() => { stop(new Error("The Codex engine did not answer in time")); settle(failure!); }, engineTimeoutMs).unref();
+    const timeout = setEngineTimeout(() => { stop(new Error("The Codex engine did not answer in time")); settle(failure!); }, engineTimeoutMs).unref();
+    pending.set(id, { resolve: resolveCall, reject: rejectCall, timeout });
+    try { child.stdin.write(JSON.stringify({ id, method, params }) + "\n"); }
+    catch (error) { pending.delete(id); clearEngineTimeout(timeout); rejectCall(error instanceof Error ? error : new Error("The Codex engine closed its input")); }
   });
   await call("initialize", { clientInfo: { name: "harness_gateway_api_mode", version: "1" }, capabilities: { experimentalApi: true } });
   child.stdin.write(JSON.stringify({ method: "initialized", params: {} }) + "\n");
@@ -131,9 +143,9 @@ export async function openNativeConfig(engine: string, nativeHome: string): Prom
       if (closed) return;
       closed = true;
       child.stdin.end(); child.kill("SIGTERM");
-      hardStop = setTimeout(() => child.kill("SIGKILL"), 1500).unref();
-      await new Promise<void>(done => child.once("close", () => done()));
-      clearTimeout(hardStop); lines.close();
+      hardStop = setEngineTimeout(() => child.kill("SIGKILL"), 1500).unref();
+      await exited;
+      clearEngineTimeout(hardStop); lines.close();
     },
   };
 }

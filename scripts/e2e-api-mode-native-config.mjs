@@ -49,7 +49,7 @@ const deps = {
   nativeHome: () => home,
   cliPathOwner: async () => "none",
   clearCliPath: async () => { throw new Error("this check never touches the login session"); },
-  presetEnv: async () => { throw new Error("this check never touches the login session"); },
+  presetEnv: async () => "skipped",
   now: () => new Date(),
 };
 
