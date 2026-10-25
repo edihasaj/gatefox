@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url';
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
   native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
   unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
-  'executor-diagnostics': { type: 'boolean', default: false } } });
+  'executor-diagnostics': { type: 'boolean', default: false }, 'restart-discovery': { type: 'boolean', default: false },
+  'delayed-discovery': { type: 'boolean', default: false } } });
+assert.ok(!values['delayed-discovery'] || values['restart-discovery'], '--delayed-discovery requires --restart-discovery');
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
 const root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-chat-state-');
@@ -131,25 +133,60 @@ try {
   phase = 'chat:active';
   const active = await writerRpc('turn/start', { threadId: id, input: [{ type: 'text', text: 'Hold this fixture turn.' }] });
   await until(() => calls === 2, 'Running inference');
+  if (values['restart-discovery']) {
+    assert.ok(!values.private && !values.native && !values.unread && !values['executor-diagnostics'], 'Restart fixture requires shared gateway execution');
+    await writer.backend.stop();
+    evidence.previousApplicationClientDisconnected = true;
+  }
   const phone = await client('chat_state_list_client');
+  let restoreDiscovery;
+  if (values['delayed-discovery']) {
+    // Test seam: the host remains alive, but the first list cannot discover its generations.
+    const original = phone.backend.chatListSources.bind(phone.backend);
+    phone.backend.chatListSources = async () => undefined;
+    restoreDiscovery = () => { phone.backend.chatListSources = original; };
+  }
   phase = 'chat:list';
   const stored = await phone.backend.native.request('thread/list', { modelProviders: [], limit: 100 });
   assert.equal(stored.data.find(thread => thread.id === id).status.type, 'notLoaded');
   evidence.nativeListWasNotLoaded = true;
-  const listed = await phone.router.request('thread/list', { limit: 100 });
+  const listed = await phone.router.request('thread/list', { limit: 100, useStateDbOnly: values['restart-discovery'] });
   const row = listed.data.find(thread => thread.id === id);
-  assert.equal(row?.status.type, 'active', 'The list must read the owning gateway engine');
-  assert.equal(row.model, alias);
+  if (values['delayed-discovery']) {
+    assert.equal(row?.status.type, 'notLoaded', 'The first native-only list reproduces the cold startup gap');
+    phase = 'restart:delayed-discovery'; restoreDiscovery();
+    await until(() => phone.events.some(message => message.method === 'thread/status/changed' &&
+      message.params.threadId === id && message.params.status.type === 'active'), 'Automatic rediscovery without another list', 12_000);
+    evidence.activeStatusRecoveredWithoutAnotherList = true;
+  } else {
+    assert.equal(row?.status.type, 'active', 'The list must read the owning gateway engine');
+    assert.equal(row.model, alias);
+  }
   assert.equal(phone.methods.includes('thread/resume'), false);
   assert.equal(calls, 2, 'Listing must not start inference');
   evidence.runningVisibleWithoutResume = true;
+  if (values['restart-discovery']) {
+    assert.equal(phone.methods.filter(method => method === 'thread/list').length, 1);
+    assert.equal(phone.methods.includes('thread/loaded/list'), false, 'Discovery matches the desktop thread/list bootstrap');
+    const snapshot = await phone.router.request('thread/read', {threadId: id, includeTurns: true});
+    assert.equal(snapshot.thread.turns.at(-1).id, active.turn.id, 'Reconnect preserves the actual running turn');
+    assert.equal(snapshot.thread.turns.at(-1).status, 'inProgress');
+    evidence.sameRunningTurnRestored = true;
+  }
   const loaded = await phone.router.request('thread/loaded/list', { limit: 100 });
   assert.ok(loaded.data.includes(id), 'The loaded list must include gateway chats');
   evidence.loadedListIncludesGateway = true;
   const offset = phone.events.length;
   phase = 'chat:completion';
   gate.resolve();
-  await until(() => writer.events.find(message => message.method === 'turn/completed' && message.params.turn.id === active.turn.id), 'Writer completion');
+  if (values['restart-discovery']) {
+    await until(async () => {
+      const reply = await phone.router.request('thread/read', {threadId: id, includeTurns: true});
+      return reply.thread.turns.at(-1).id === active.turn.id && reply.thread.turns.at(-1).status === 'completed';
+    }, 'Persisted completion after client restart');
+  } else {
+    await until(() => writer.events.find(message => message.method === 'turn/completed' && message.params.turn.id === active.turn.id), 'Writer completion');
+  }
   await until(() => phone.events.slice(offset).find(message => message.method === 'thread/status/changed' &&
     message.params.threadId === id && message.params.status.type === 'idle'), 'List client idle event');
   assert.equal(phone.events.some(message => message.method === 'item/agentMessage/delta' || message.method === 'turn/completed'), false,

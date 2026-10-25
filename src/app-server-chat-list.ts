@@ -21,6 +21,7 @@ type Status = { value: unknown; epoch: number; revision: string };
 type ReadResult = { thread: Message; statusEpoch: number };
 type SourceThread = ReadResult & { source: Source; sourceEpoch: number };
 type Reconciled = { sources: Source[]; complete: boolean };
+type Candidate = { shown: unknown; epoch: number; served: number };
 type ReadFlight = {
   source: Source;
   id: string;
@@ -30,12 +31,13 @@ type ReadFlight = {
   resolve: (thread: ReadResult | undefined) => void;
 };
 const runtimeFields = ["status", "model", "reasoningEffort", "environments", "canAcceptDirectInput"] as const;
-const maxSources = 4; const maxPages = 4; const maxReads = 4; const pageSize = 100; const maxStatuses = 4096;
+const maxSources = 4; const maxPages = 4; const maxReads = 4; const pageSize = 100; const maxCandidates = 512; const maxStatuses = 4096;
 
 function status(value: unknown): boolean {
   const state = object(value); const type = state.type;
   return type === "idle" || type === "systemError" || type === "notLoaded" || (type === "active" && Array.isArray(state.activeFlags));
 }
+function sameStatus(left: unknown, right: unknown): boolean { return JSON.stringify(left) === JSON.stringify(right); }
 function uuid(value: unknown): value is string { return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value); }
 
 /** A passive status bridge that never creates/resumes chats or forwards callbacks. */
@@ -46,12 +48,15 @@ export class AppServerChatList {
   private readonly readQueues = new Map<string, ReadFlight[]>();
   private readonly activeReads = new Map<string, number>();
   private readonly statuses = new Map<string, Status>();
+  private readonly candidates = new Map<string, Candidate>();
   private timer?: NodeJS.Timeout;
   private stopped = false;
   private epoch = 0;
   private sourceEpoch = 0;
+  private serviceEpoch = 0;
   private started = false;
   private reconciling?: Promise<Reconciled | undefined>;
+  private refreshing?: Promise<void>;
   private readonly timeoutMs: number;
   private readonly intervalMs: number;
   private readonly create: NonNullable<ChatListOptions["connection"]>;
@@ -70,8 +75,23 @@ export class AppServerChatList {
 
   private begin(): number {
     this.started = true;
-    if (!this.timer) this.timer = setInterval(() => { void this.reconcile(Date.now() + this.timeoutMs).catch(() => {}); }, this.intervalMs).unref();
+    if (!this.timer) this.timer = setInterval(() => { void this.refresh().catch(() => {}); }, this.intervalMs).unref();
     return Date.now() + this.timeoutMs;
+  }
+
+  private rememberCandidate(id: string, shown: unknown, hydrateEpoch: number): void {
+    const existing = this.candidates.get(id);
+    if ((this.statuses.get(id)?.epoch ?? 0) > hydrateEpoch) return;
+    this.candidates.delete(id); this.candidates.set(id, existing ?? { shown, epoch: 0, served: 0 });
+    const candidate = this.candidates.get(id)!;
+    candidate.shown = shown; candidate.epoch = ++this.epoch;
+    while (this.candidates.size > maxCandidates) this.candidates.delete(this.candidates.keys().next().value!);
+  }
+
+  private shown(id: string, value: unknown): void {
+    const candidate = this.candidates.get(id); if (!candidate) return;
+    candidate.shown = value; candidate.epoch = ++this.epoch;
+    this.candidates.delete(id); this.candidates.set(id, candidate);
   }
 
   private initialized(): Message {
@@ -111,7 +131,13 @@ export class AppServerChatList {
       return;
     }
     if (!this.observeStatus(message, revision)) return;
-    await this.options.emit(message); // Retain emittedAtMs and every other SDK envelope field.
+    const threadId = typeof params.threadId === "string" ? params.threadId : undefined;
+    const observedEpoch = threadId ? this.statuses.get(threadId)?.epoch : undefined;
+    try { await this.options.emit(message); }
+    catch { return; } // The candidate remains eligible for a verified snapshot.
+    const observed = threadId ? this.statuses.get(threadId) : undefined;
+    if (threadId && observed?.epoch === observedEpoch && observed?.revision === revision) this.shown(threadId, params.status);
+    // Retain emittedAtMs and every other SDK envelope field.
   }
 
   /**
@@ -275,11 +301,63 @@ export class AppServerChatList {
     return output;
   }
 
+  /** Complete source metadata is required, but one slow candidate must not suppress its neighbours. */
+  private async refreshThreads(sources: Source[], candidates: ReadonlyMap<string, number>, deadline: number, deliver: (id: string, thread: SourceThread) => Promise<void>): Promise<void> {
+    const sourceEpoch = this.sourceEpoch;
+    const lists = await Promise.all(sources.map(async source => {
+      try {
+        const ids = await this.bounded(this.loaded(source), deadline, () => { if (source.owned) this.closeObserver(source.record.revision); });
+        return ids && this.current(source, sourceEpoch) ? { source, ids } : undefined;
+      } catch { if (source.owned) this.closeObserver(source.record.revision); return; }
+    }));
+    if (this.stopped || Date.now() >= deadline || lists.some(list => list === undefined) || !this.current(sources[0]!, sourceEpoch)) return;
+    await Promise.all([...candidates].map(async ([id, epoch]) => {
+      const candidate = this.candidates.get(id);
+      if (!candidate || candidate.epoch !== epoch) return;
+      candidate.served = ++this.serviceEpoch;
+      const listed = lists.find(list => list!.ids.has(id)); if (!listed) return;
+      // This caller deadline must not close an owned source or release its borrowed raw read slot.
+      const thread = await this.bounded(this.read(listed!.source, id, deadline), deadline);
+      if (thread && this.current(listed!.source, sourceEpoch) && this.candidates.get(id)?.epoch === epoch) await deliver(id, { ...thread, source: listed!.source, sourceEpoch });
+    }));
+  }
+
+  /** Refresh only rows a client actually saw as saved/notLoaded; it never discovers arbitrary engine chats. */
+  private refresh(): Promise<void> {
+    if (this.stopped || !this.started) return Promise.resolve();
+    return this.refreshing ??= (async () => {
+      const deadline = Date.now() + this.timeoutMs;
+      const reconciled = await this.reconcile(deadline);
+      if (!reconciled || !reconciled.complete || !reconciled.sources.length || this.stopped || Date.now() >= deadline) return;
+      const snapshot = new Map([...this.candidates].sort(([, left], [, right]) => left.served - right.served).slice(0, maxReads).map(([id, candidate]) => [id, candidate.epoch]));
+      if (!snapshot.size) return;
+      await this.refreshThreads(reconciled.sources, snapshot, deadline, async (id, cached) => {
+        const candidate = this.candidates.get(id);
+        if (!candidate || candidate.epoch !== snapshot.get(id) || !this.current(cached.source, cached.sourceEpoch)) return;
+        const newest = this.statuses.get(id);
+        const actual = newest?.revision === cached.source.record.revision && newest.epoch > cached.statusEpoch ? newest.value : cached.thread.status;
+        if (!status(actual) || sameStatus(candidate.shown, actual)) return;
+        // A native status event that arrived after this read wins; never overwrite it with stale metadata.
+        if (this.statuses.get(id)?.epoch !== newest?.epoch || !this.current(cached.source, cached.sourceEpoch)) return;
+        const deliveryEpoch = ++this.epoch;
+        this.statuses.set(id, { value: actual, epoch: deliveryEpoch, revision: cached.source.record.revision });
+        try { await this.options.emit({ method: "thread/status/changed", params: { threadId: id, status: actual } }); }
+        catch { return; } // Do not deduplicate a snapshot the client never received.
+        if (!this.stopped && this.current(cached.source, cached.sourceEpoch) && this.statuses.get(id)?.epoch === deliveryEpoch && this.candidates.get(id)?.epoch === snapshot.get(id)) this.shown(id, actual);
+      });
+    })().finally(() => { this.refreshing = undefined; });
+  }
+
   /** Enrich only saved/notLoaded native rows that a gateway SDK says are currently loaded. */
   async hydrate(native: Message): Promise<Message> {
     if (this.stopped || !Array.isArray(native.data) || native.data.length > 500) return native;
-    const deadline = this.begin();
+    const deadline = this.begin(); const hydrateEpoch = this.epoch;
     const candidates = new Set(native.data.map(object).filter(row => typeof row.id === "string" && object(row.status).type === "notLoaded").map(row => String(row.id)));
+    for (const value of native.data.map(object)) {
+      if (typeof value.id !== "string") continue;
+      if (object(value.status).type === "notLoaded") this.rememberCandidate(value.id, value.status, hydrateEpoch);
+      else this.candidates.delete(value.id); // Native live rows always remain native-owned.
+    }
     const reconciled = await this.reconcile(deadline); if (!reconciled || !reconciled.sources.length || !candidates.size || Date.now() >= deadline || this.stopped) return native;
     const reads = await Promise.all(reconciled.sources.map(source => this.sourceThreads(source, candidates, deadline))).catch(() => undefined);
     if (!reads) return native;
@@ -294,9 +372,10 @@ export class AppServerChatList {
       } else byId.set(id, cached.thread);
     }
     const data = native.data.map(value => {
-      const row = object(value); if (object(row.status).type !== "notLoaded") return value;
+      const row = object(value); if (object(row.status).type !== "notLoaded") { if (typeof row.id === "string") this.candidates.delete(row.id); return value; }
       const live = typeof row.id === "string" ? byId.get(row.id) : undefined; if (!live) return value;
       const result: Message = { ...row }; for (const field of runtimeFields) if (field in live) result[field] = live[field];
+      if (typeof row.id === "string" && status(result.status)) this.shown(row.id, result.status);
       return result;
     });
     return { ...native, data };
@@ -329,6 +408,7 @@ export class AppServerChatList {
 
   async stop(): Promise<void> {
     this.stopped = true; this.sourceEpoch++; clearInterval(this.timer); this.timer = undefined;
+    this.candidates.clear();
     for (const revision of [...this.observers.keys()]) this.closeObserver(revision);
     // Borrowed RPCs remain coalesced until their owner settles them; late results are ignored.
   }

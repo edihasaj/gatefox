@@ -28,6 +28,47 @@ turn, the adapter reattaches the chat and verifies the SDK's saved turn state.
 It never accepts a pending approval or repeats a caller action; unavailable or
 unverified state remains available through the ordinary explicit resume path.
 
+## Discover running chats after restarting the app
+
+A fresh desktop connection discovers recent chats through `thread/list`. The
+adapter overlays the owning shared executor's current status on saved native
+`notLoaded` rows. An `active` status lets the desktop show its running indicator
+without starting or resuming a turn.
+
+If the first list misses the executor or its metadata deadline, the adapter
+retries the listed candidates in the background. Once the engine answers, a
+verified `thread/status/changed` snapshot updates the running indicator without
+requiring another manual list refresh. Missing or unavailable engines do not
+prove a chat idle. Candidate counts, reads, and deadlines are bounded; real SDK
+status events take precedence over earlier metadata reads.
+The adapter remembers up to 512 listed candidates and rotates through four at a
+time on its five-second refresh. Successful snapshots can arrive while a slow
+neighbour is still pending, and an unsuccessful delivery remains eligible for
+retry. Large lists can therefore take several refreshes to recover fully.
+
+The indicator and an attached transcript are separate. Opening a chat uses the
+normal resume path to join its stream. The gateway does not replay `turn/start`,
+commands, approvals, or completion notifications to make it look connected.
+This recovery covers rows the client has actually listed; a chat outside that
+list, a host with auto-connect disabled, or the desktop's catalog-history mode
+needs its own discovery path. It does not turn API-mode app-owned engines into
+durable service-owned executors.
+
+Verify cold and delayed discovery with the isolated SDK fixture:
+
+```sh
+node scripts/e2e-chat-state.mjs --package /absolute/verified/package \
+  --root /tmp/task-cold-reconnect --restart-discovery
+node scripts/e2e-chat-state.mjs --package /absolute/verified/package \
+  --root /tmp/task-delayed-reconnect --restart-discovery --delayed-discovery
+```
+
+The previous application client disconnects during synthetic inference. The new
+client starts with an ordinary state-database list; it must find the same running
+turn and later its real completion without starting inference again. The delayed
+case makes the first executor lookup unavailable and requires automatic status
+recovery without a second list. No account or paid inference is used.
+
 ## Native and gateway ownership
 
 Shared gateway executors already belong to the service. Shared native execution

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.7 — 2026-10-25
+
+- Restarted desktop clients recover running indicators when their first shared-executor discovery or metadata read is unavailable. The adapter retries saved rows from the client's own chat list and sends verified status snapshots after the executor answers, without requiring a manual refresh or starting another turn. Newer SDK status events, native live rows, and pending approvals retain their authority. Thanks to Edi Hasaj for requesting automatic running-agent discovery after restarting ChatGPT.
+
 ## 0.9.6 — 2026-10-25
 
 - `gateway diagnostics` now includes shared-executor outcomes after desktop disconnects. Bounded, short-lived inspections collect persisted terminal turns and fixed error classes from shared gateway and native engines, including failures after a laptop sleeps. The separate `executorTurns` summary avoids adding the same outcome to adapter counts twice. Inspection clients close after each pass, never answer approvals, and never log error text. Thanks to Edi Hasaj for asking why chats stopped.
