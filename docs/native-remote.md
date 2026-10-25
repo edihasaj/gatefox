@@ -149,11 +149,16 @@ never enrolls a new machine. Running it again with the same plan changes nothing
 connection per Mac, so an engine that connects first leaves the relay with
 `HTTP error: 409 Conflict` on every retry until that engine exits. Once the relay is
 registered, every adapter, SSH listener and shared host starts its stock engine with
-remote control switched off, whether or not the relay is connected at that moment. A
-registered relay that is down for a while means the phone loses this Mac until the
-relay is back; no other engine takes its place. Only a live relay also receives
-`remoteControl/*`. A `409 Conflict` in the relay log therefore means another engine
-holds the slot (a process that started before the relay was registered).
+remote control switched off, whether or not the relay is connected at that moment. The
+environment switch applies only to engine startup; it does not make a later
+`remoteControl/enable` safe. Therefore a registered relay owns every
+`remoteControl/*` request, even when its cloud status is errored or its private socket
+is temporarily absent. The adapter reconnects that socket automatically. While it is
+unavailable, those control requests fail with the relay error; they never fall back to
+the stock engine. A registered relay that is down for a while means the phone loses
+this Mac until the relay is back; no other engine takes its place. A `409 Conflict` in
+the relay log can indicate a competing engine, including an older adapter that allowed
+an enable request while the relay was unavailable; it is not proof of the exact holder.
 
 The install avoids that race in this order:
 

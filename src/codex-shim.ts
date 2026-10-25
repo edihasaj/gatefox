@@ -14,7 +14,7 @@ import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { watchForUpgrade } from "./self-update.js";
 import { sshControlHome, reuseSshSocket, type SshSocketReuse, type SshSocketReplacement } from "./ssh-socket.js";
-import { liveNativeRelay, registeredNativeRelay } from "./native-control.js";
+import { registeredNativeRelay } from "./native-control.js";
 import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { ListenerActivity } from "./ssh-listener-activity.js";
 import { runtimeBusy } from "./runtime-activity.js";
@@ -82,14 +82,14 @@ export async function codexShim(argv: string[]): Promise<void> {
   }
   const path = resolve(values.config); const config = await loadConfig(path);
   configureTelemetry(config.stateDirectory, "adapter"); startErrorReports(config.stateDirectory, "adapter");
-  // One relay decision per process: this adapter or SSH listener never re-checks it while running,
-  // so a relay that connects later is used from the next app or listener start. Registration decides
-  // who owns remote control: a registered relay that is down for a moment must not leave its slot to
-  // this process's engine, so the engine is told to stand down whether or not the relay is live. Only
-  // a live relay also receives `remoteControl/*`.
+  // One relay ownership decision per process: a registration owns every `remoteControl/*` request,
+  // including while its private socket is reconnecting. This environment flag suppresses only the
+  // stock engine's startup control; a later enable request can otherwise turn it back on and compete
+  // with the registered relay. NativeControl reconnects the registered private socket, and an absent
+  // relay fails control requests instead of falling through to the engine.
   const registered = await registeredNativeRelay(config);
   if (registered) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
-  const relay = registered && await liveNativeRelay(registered);
+  const relay = registered;
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
   const helper = gatewayCommand();
   const overrides = {

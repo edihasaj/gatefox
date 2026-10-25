@@ -2,6 +2,7 @@
 summary: 'Why desktop-adapter engine exits and dropped engine frames are recorded, and what each event means.'
 read_when:
   - Investigating "The Codex engine stopped while this turn was running" or an unexplained engine restart
+  - Investigating "Shared executor host connection was lost" or a chat that keeps failing until its computer connection reconnects
   - Changing how the adapter reads native or gateway engine streams or when it stops an engine
 ---
 
@@ -113,3 +114,35 @@ with the app's adapter restarts: the app restarts the adapter within about
 half a second, which starts a new native process and a fresh `engine_exit`
 series. `adapter_session_end` records whether the native engine was already
 closed when the session ended.
+
+## The shared host's control connection
+
+A desktop adapter that shares native chats keeps one extra connection to the
+executor host (`host.sock`) next to the engine socket. That connection is what the
+host keys this adapter's native ownership and generation leases to, and the host
+drops them when it closes it, so the session cannot go on even though the host
+process and its engine are still running. The adapter records
+`execution_host_control_lost` (only `sharedGateway`; no paths or chat ids) and ends
+the session the way a native engine exit does, so the app reconnects within about
+half a second and the new session discovers the host and acquires a fresh
+connection. Turns already running in the host-owned engine are not reported failed
+by this, for the same reason a lost engine socket does not prove SDK death; they are
+failed only when the host confirms that exact launch died. A connection the adapter
+closed itself, because it was stopping, records nothing.
+
+That exit path waits twice on the desktop app, and a lost host connection bounds both
+waits to 250 ms. It first lets the frames the engine already sent reach the app; if
+the app has stopped reading, a forwarded notification parks there and the session
+never ends. Then, when the host confirms that this exact launch died, the exit reports
+each live turn with an `error` and a failed `turn/completed` — either frame can park
+the same way, so each is raced against the bound, and once the bound has fired the
+loop stops rather than blocking on the next turn's pair. Every frame is still handed
+to the writer before it is awaited, so a bound that had already fired cannot swallow
+the report of a confirmed death: the notice goes out whenever the app reads again, and
+the reconnecting app finds those chats through their saved history either way.
+
+The bound is a promise of its own rather than the one a deliberate stop resolves,
+because that one also ends the `native/death` check: cutting the confirmation short
+would lose a genuine death on an exit that has nothing to do with this connection. It
+arms whether or not this adapter had to close the engine socket itself, so it also
+bounds an exit whose socket died first.

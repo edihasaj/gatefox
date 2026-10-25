@@ -33,7 +33,7 @@ test("router returns the SDK's own resume answer for a chat no SDK knows", async
 });
 
 test("router still fails closed when the provider probe fails for another reason", async () => {
-  const router = new AppServerRouter(await config(), async method => { if (method === "thread/read") throw Object.assign(new Error("Shared executor host connection was lost"), { code: -32001 }); return {}; });
+  const router = new AppServerRouter(await config(), async method => { if (method === "thread/read") throw Object.assign(new Error("Shared executor host connection was lost; this chat's computer connection is reconnecting"), { code: -32001 }); return {}; });
   await router.initialize();
   await assert.rejects(router.request("thread/resume", { threadId: id }), { code: -32001 });
 });
