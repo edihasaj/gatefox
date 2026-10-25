@@ -103,6 +103,31 @@ of `dist` carrying 0.9.1's `gateway-sdk-build-pins.js`; the patch does not touch
 root validation. This proves the adapter fix, not a live scheduled run in the
 desktop app; that still needs the release installed and the QA automation rerun.
 
+### Creating schedules from a chat: app pipe trust boundary
+
+`automation_update`, `create_thread`, `send_message_to_thread`, `fork_thread`,
+`handoff_thread` and `move_thread_to_project` come from the app's bundled
+`codex_app` MCP server, not from dynamic tools. That server reaches the app through
+a private pipe named by `CODEX_APP_TOOLS_PIPE_PATH`, which the app sets on the
+engines it starts and which the engine forwards through the server's `env_vars`.
+Shared-host engines are started by the gateway service, so they never have the
+variable, and in gateway chats the server exits with "Codex did not provide
+CODEX_APP_TOOLS_PIPE_PATH to the app tools MCP."
+
+Supplying the path does not help. Read-only inspection of ChatGPT 26.1021.31345
+on 2026-10-25 found that the packaged app authorizes each pipe peer with
+`native/browser-use-peer-authorization.node`. It reads the peer's audit token and
+checks the code-signing identity of the peer, its parent and its grandparent
+against OpenAI's team (`2DC432GLL2`) and `com.openai.codex*` identifiers. The app's
+log on the Studio had 158 `dynamic_app_tools_peer_rejected` entries: 154
+`untrusted-code-signing-identity` (the gateway SDK is not OpenAI-signed) and 4
+`untrusted-process-ancestry`. A direct probe with the correct path was also
+closed by the app. This is a deliberate client access control. The gateway must
+not get past it through re-signing, signed binaries used as launch trampolines,
+relays or any other identity substitution. Chats on gateway engines therefore
+cannot create or change schedules or manage chats through these tools. Tasks
+created in the app's Scheduled screen still run on gateway models.
+
 ### Independent background coding jobs
 
 A client can separately register an existing Mission Runtime companion as an
