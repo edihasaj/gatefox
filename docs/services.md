@@ -41,6 +41,19 @@ recover connections instead of a forced wake restart or broad remote cleanup.
 Restaging without `--force` removes that authorization. This never forces busy
 Codex work to restart.
 
+The TCP-only Claude activity probe tolerates one specific unrelated diagnostic:
+`lsof` cannot stat a CoreDevice `devicefs` mount under
+`/Users/<account>/Library/Developer/CoreDevice/DeviceFS` and falls back to the
+mount table's device number. It requires that complete three-line diagnostic;
+partial, changed, or additional diagnostics still refuse the probe. Darwin
+[`lsof` reads mount metadata](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/dialects/darwin/libproc/dmnt.c#L143)
+separately from its
+[`libproc` socket inspection](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/dialects/darwin/libproc/dsock.c#L482),
+so this filesystem warning does not hide established TCP connections. Socket
+output, timeouts, unexpected exits, and unknown or reused process identities
+remain refusals. This exception does not enable automatic restarts with Claude
+components configured.
+
 ## The name macOS shows
 
 For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`

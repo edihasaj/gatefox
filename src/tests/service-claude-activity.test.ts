@@ -7,6 +7,14 @@ import { claudeIdleChecker, establishedTcpClaudeIdle, isClaudeComponent, type Ls
 
 const ran = (overrides: Partial<LsofRun> = {}): LsofRun => ({ stdout: "", stderr: "", code: 0, killed: false, ...overrides });
 const errno = (code: string) => Object.assign(new Error(code), { code });
+/** The exact three lines Apple's lsof writes for a mounted file system it cannot stat(); the runner account's mount is the reference case. */
+const coreDeviceBlock = (user = "ghrunner", dev = "30000005") =>
+  `lsof: WARNING: can't stat() devicefs file system /Users/${user}/Library/Developer/CoreDevice/DeviceFS\n` +
+  `      Output information may be incomplete.\n` +
+  `      assuming "dev=${dev}" from mount table\n`;
+/** A kernel-socket read error lsof can also write: always a question, never noise to look past. */
+const socketError = "lsof: PID 77, FD 5: proc_pidfdinfo(PROC_PIDFDSOCKETINFO);\n      too few bytes; expected 256, got 1\n";
+const established = "COMMAND PID\nnode 77 edi 20u IPv4 TCP 127.0.0.1:1->127.0.0.1:2 (ESTABLISHED)\n";
 /** A checker with every dependency answered by the test; `calls` records each lsof invocation. */
 function checker(options: { run?: () => Promise<LsofRun> | LsofRun; signal?: (pid: number) => void; starts?: Array<number | undefined> } = {}) {
   const calls: Array<{ file: string; args: string[] }> = []; const starts = [...(options.starts ?? [])]; let last: number | undefined = 1000;
@@ -38,10 +46,65 @@ test("exit 0 with no output, and lsof's no-match exit 1 with no output at all, a
 });
 
 test("an established connection, or any output at all, keeps the restart away", async () => {
-  assert.equal(await checker({ run: () => ran({ stdout: "COMMAND PID\nnode 77 edi 20u IPv4 TCP 127.0.0.1:1->127.0.0.1:2 (ESTABLISHED)\n" }) }).idle([77]), false);
+  assert.equal(await checker({ run: () => ran({ stdout: established }) }).idle([77]), false);
   assert.equal(await checker({ run: () => ran({ code: 1, stdout: "node 77\n" }) }).idle([77]), false);
-  assert.equal(await checker({ run: () => ran({ stderr: "lsof: WARNING: something\n" }) }).idle([77]), false, "a warning is not an answer");
+  assert.equal(await checker({ run: () => ran({ stderr: "lsof: WARNING: something\n" }) }).idle([77]), false, "an unrecognised warning is not an answer");
   assert.equal(await checker({ run: () => ran({ code: 1, stderr: "lsof: WARNING: can't stat\n" }) }).idle([77]), false);
+});
+
+test("the CoreDevice mount-stat block alone is looked past: lsof still answered the TCP question", async () => {
+  const warning = coreDeviceBlock();
+  assert.equal(await checker({ run: () => ran({ code: 1, stderr: warning }) }).idle([77]), true, "no match, exit 1, only the mount diagnostic");
+  assert.equal(await checker({ run: () => ran({ code: 0, stderr: warning }) }).idle([77]), true, "empty stdout with exit 0 is the same answer");
+  assert.equal(await checker({ run: () => ran({ code: 1, stderr: warning + warning }) }).idle([77]), true, "one block per un-statable mount");
+  assert.equal(await checker({ run: () => ran({ code: 1, stderr: coreDeviceBlock("edi") + coreDeviceBlock("ghrunner", "DEADBEEF") }) }).idle([77]), true, "different mounts and a hex device");
+  assert.equal(await checker({ run: () => ran({ code: 1, stderr: "  \n" }) }).idle([77]), true, "blank stderr stays as blank as it always was");
+});
+
+test("the same block beside a real connection is still refused: stdout decides busy", async () => {
+  assert.equal(await checker({ run: () => ran({ code: 0, stdout: established, stderr: coreDeviceBlock() }) }).idle([77]), false, "busy on a machine that prints the mount warning");
+  assert.equal(await checker({ run: () => ran({ code: 0, stdout: "node 77\n", stderr: coreDeviceBlock() }) }).idle([77]), false);
+});
+
+test("anything around the block is a question: altered, shortened, mixed or extra stderr fails closed", async () => {
+  const warning = coreDeviceBlock();
+  const lines = warning.split("\n");
+  for (const [label, stderr] of [
+    ["a socket read error on its own", socketError],
+    ["the block then a socket read error", warning + socketError],
+    ["a socket read error then the block", socketError + warning],
+    ["the block with no final newline", warning.slice(0, -1)],
+    ["only the first two lines", `${lines[0]}\n${lines[1]}\n`],
+    ["only the last two lines", `${lines[1]}\n${lines[2]}\n`],
+    ["lines 1 and 3", `${lines[0]}\n${lines[2]}\n`],
+    ["the lines reordered", `${lines[1]}\n${lines[0]}\n${lines[2]}\n`],
+    ["another file system type", warning.replace("devicefs", "smbfs")],
+    ["no /Users mount point", warning.replace("/Users/ghrunner/Library", "/Library")],
+    ["two path components", warning.replace("/Users/ghrunner/", "/Users/gh/sub/")],
+    ["a longer mount point", warning.replace("DeviceFS\n", "DeviceFSExtra\n")],
+    ["a carriage return in the account", coreDeviceBlock("gh\rrunner")],
+    ["a non-hex device", coreDeviceBlock("ghrunner", "3000000g")],
+    ["an empty device", coreDeviceBlock("ghrunner", "")],
+    ["a different continuation indent", warning.replace("      Output", "     Output")],
+    ["an altered word", warning.replace("may be incomplete", "may be complete")],
+    ["a capitalised prefix", warning.replace("lsof: WARNING", "lsof: warning")],
+    ["an indented first line", ` ${warning}`],
+    ["the block then a blank line", `${warning}\n`],
+    ["two blocks split by a blank line", `${lines[0]}\n${lines[1]}\n\n${lines[2]}\n`],
+    ["a tail of another warning", `${warning}lsof: no process with id 77 exists\n`],
+  ] as Array<[string, string]>) {
+    assert.equal(await checker({ run: () => ran({ code: 1, stderr }) }).idle([77]), false, label);
+    assert.equal(await checker({ run: () => ran({ code: 0, stderr }) }).idle([77]), false, `${label} (exit 0)`);
+  }
+});
+
+test("the mount diagnostic never excuses an end that is not an answer", async () => {
+  const warning = coreDeviceBlock();
+  for (const code of [2, 3, 127, 255, null, "ENOENT", "EACCES", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"]) {
+    assert.equal(await checker({ run: () => ran({ code, stderr: warning }) }).idle([77]), false, `empty output with code ${String(code)}`);
+  }
+  assert.equal(await checker({ run: () => ran({ code: 1, stderr: warning, killed: true }) }).idle([77]), false, "a timed-out run is unanswered whatever its stderr");
+  assert.equal(await checker({ run: () => ran({ code: null, stderr: warning, killed: true }) }).idle([77]), false);
 });
 
 test("an exit that is not a clean answer is never idle: other codes, timeouts, a missing binary, a throwing run", async () => {

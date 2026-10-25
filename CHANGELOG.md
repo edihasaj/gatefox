@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- The TCP activity probe no longer mistakes Xcode's unrelated CoreDevice filesystem warning for an unanswered socket inspection. It recognizes only the complete mount-stat warning and fallback block; socket activity, other diagnostics, timeouts, and process identity changes still refuse the check. Thanks to Edi Hasaj for asking to fix the recurring macOS test failure.
+
 ## 0.9.5 — 2026-10-25
 
 - `gateway service restart` no longer fails with a misleading "could not restart while idle" on Macs with Claude Desktop components. It now explains that those components hold every idle restart, and `gateway service restart --force` performs the documented operator restart: it still requires ChatGPT to be quit and inference to be idle, then has launchd stop and start the service and waits for the new process. Thanks to Edi Hasaj for asking for a restart that works.
