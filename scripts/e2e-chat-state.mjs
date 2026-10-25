@@ -10,7 +10,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
-  native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' } } });
+  native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
+  unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' } } });
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
 const root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-chat-state-');
@@ -100,7 +101,7 @@ try {
   async function client(name) {
     phase = name + ':initialize';
     const events = [], methods = [];
-    const backend = await AppServerBackends.create(sdk, ['app-server', '--listen', 'stdio://'], config, {}, overrides, catalog,
+    const backend = await AppServerBackends.create(values['native-engine'] ?? sdk, ['app-server', '--listen', 'stdio://'], config, {}, overrides, catalog,
       async message => { events.push(message); }, () => {}, configPath);
     backend.resolveRuntime = async () => runtime;
     const router = new AppServerRouter(config, (method, params, hint) => {
@@ -153,6 +154,47 @@ try {
   evidence.completionStatusDelivered = true;
   evidence.passiveClientReceivedNoTurnContent = true;
   evidence.nativeConfigurationUnchanged = true;
+  if (values.unread) {
+    assert.equal(values.private, false, 'Offline unread check requires a shared executor');
+    const { installReadStateBridge } = await import(pathToFileURL(join(source, 'scripts/codex-unread-trial/read-state-bridge.mjs')));
+    const saved = new Map(), loadedUi = new Map(), listeners = new Set();
+    const store = { has: id => saved.get(id), isReady: () => true,
+      set(id, unread) { saved.set(id, unread); },
+      subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); } };
+    const connection = { sendRequest: (method, params, ...rest) => phone.router.request(method, params, ...rest) };
+    const notify = (id, unread) => loadedUi.set(id, unread);
+    let bridge = installReadStateBridge({client: connection, saved: store, notify});
+    try {
+      await connection.sendRequest('thread/list', {limit: 100});
+      assert.equal(store.has(id), true, 'Existing completion is unread before an explicit read');
+      store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      await until(async () => (await writerRpc('thread/read', {threadId: id})).readState?.firstUnread === null, 'Durable read acknowledgement');
+      bridge.dispose();
+      await phone.backend.stop();
+      gate = deferred();
+      const offline = await writerRpc('turn/start', {threadId: id, input: [{type: 'text', text: 'Finish while fixture reader is offline.'}]});
+      await until(() => calls === 3, 'Offline inference');
+      gate.resolve();
+      await until(() => writer.events.some(message => message.method === 'turn/completed' && message.params.turn.id === offline.turn.id), 'Offline completion');
+      const reconnected = await client('unread_reconnected');
+      connection.sendRequest = (method, params, ...rest) => reconnected.router.request(method, params, ...rest);
+      loadedUi.clear();
+      bridge = installReadStateBridge({client: connection, saved: store, notify});
+      const result = await connection.sendRequest('thread/list', {limit: 100});
+      assert.equal(result.readStates[id].firstUnread.turnId, offline.turn.id);
+      assert.equal(store.has(id), true, 'Reconnect receipt restores the unread boolean');
+      assert.equal(loadedUi.get(id), true, 'The client receives an explicit UI state update');
+      assert.equal(reconnected.events.some(message => message.method === 'turn/completed'), false, 'No synthetic terminal replay');
+      store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      await until(async () => (await writerRpc('thread/read', {threadId: id})).readState?.firstUnread === null, 'Reconnect read acknowledgement');
+      await connection.sendRequest('thread/list', {limit: 100});
+      assert.equal(store.has(id), false, 'A later refresh does not resurrect already-read attention');
+      evidence.offlineUnreadReceiptApplied = true;
+      evidence.explicitReadPersisted = true;
+      evidence.readRefreshStayedRead = true;
+      evidence.terminalReplayEvents = reconnected.events.filter(message => message.method === 'turn/completed').length;
+    } finally { bridge.dispose(); }
+  }
   evidence.mockInferenceRequests = calls;
   evidence.passed = true;
 } catch (error) {

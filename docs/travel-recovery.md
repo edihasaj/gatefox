@@ -79,6 +79,12 @@ The SDK handles provider stream reconnection. A request whose retries are
 exhausted remains a real failure, and queued work remains available for an
 explicit continuation. The gateway never replays uncertain side effects.
 
+Completed work and the sidebar's unread dot are separate states. The current
+desktop renderer can miss its dot after an offline completion even when the
+SDK returns a durable unread receipt. See the
+[isolated unread prototype](codex-unread-trial.md) for the evidence and the
+client-side testing boundary; it is not an installed gateway fix.
+
 Mosh's terminal reconnection does not provide these JSON-RPC ownership or
 approval guarantees. The existing SSH and connected-machine transports remain
 in place; the executor lifetime is independent of those connections.
