@@ -135,7 +135,7 @@ Verify Standard/Fast separately, including refusal or hidden controls for an
 unsupported model. Never infer success from metadata or a screenshot alone.
 The harness does not enable remote debugging or bypass app security checks.
 
-## Current verification status
+## October 24 verification
 
 On October 24, 2026, the owner explicitly approved re-signing the disposable
 copy. An ad-hoc signature first failed with restricted-entitlement error -424;
@@ -178,6 +178,46 @@ regressions, reported 93 passes, no failures and one skip. Do not report the
 full gate as green.
 The synthetic runner and fixture were stopped after the workstation re-locked;
 the signed candidate and sanitized receipts remain for the pending tests.
+
+## October 25 desktop comparison
+
+An isolated comparison on macbook-server exercised the actual Claude Desktop
+2.42304.2 window with native CLI 2.1.299 and synthetic inference. The baseline
+copy had only the state-isolation prelude; its model-handling code and renderer
+matched the official app. The installed app, real profiles, accounts, and
+gateway service were not modified.
+
+| Experiment | Observed result |
+| --- | --- |
+| Baseline `claude-opus-5-5` row | Native effort slider was visible, without an Ultracode stop. |
+| `/effort ultracode` in the baseline chat | Saved `effort: xhigh` and `sessionSettings.ultracode: true`; a follow-up completed with `xhigh` on the wire. The footer still showed Medium and the slider did not gain Ultracode. |
+| Baseline opaque gateway row | No native effort control was offered. |
+| Existing metadata extension in the disposable copy | The opaque row gained Claude's own Ultracode slider stop without a renderer change or a Claude-family identity. |
+| Selecting that stop | The session saved `ultracode: true`, the request retained the opaque model ID and `xhigh`, and the fixture reply completed. |
+| Selecting Low afterward | Cleared Ultracode, sent `low`, and completed another reply. |
+| Quitting, relaunching, and reopening the same chat | The Ultracode control remained selected; another reply completed at `xhigh`. |
+| Lowering the opaque row's cap to High | Removed Ultracode and limited the slider to Low, Medium, and High. |
+
+These observations supersede the assumption that `/effort ultracode` alone
+would make the baseline slider display the stop. They establish a working
+desktop control path in the disposable patched copy, not a production release.
+
+A separate six-case CLI experiment used fresh homes and matched fixture model
+IDs for both `claude-opus-5-5` and the opaque route. Both IDs reported active,
+available Ultracode and completed replies with Workflows unset or enabled.
+Setting `enableWorkflows: false` or `disableWorkflows: true` kept requested
+Ultracode inactive and unavailable. Accepted settings alone were not counted as
+active Ultracode. The 36 focused catalog, main-process, and CLI-smoke regression
+tests passed. Repository check and build also passed. The full test command
+stopped after 3,322 core passes, one skip, and the previously observed real-`lsof`
+idle-child failure on Studio. Its chained full desktop suite was therefore not
+reached; the 36 focused desktop tests were run separately.
+
+The [sanitized receipt](evidence/claude-native-picker-2026-10-25/verification.json),
+[native control capture](evidence/claude-native-picker-2026-10-25/native-ultracode.png),
+and [High-cap capture](evidence/claude-native-picker-2026-10-25/capped-effort.png)
+contain only fixture identity and generation controls. Real provider inference,
+actual Workflow agent fan-out, and production deployment remain unverified.
 
 Run `npm run check`, `npm run build`, and `npm test` before handoff. Focused
 tests are in `scripts/claude-desktop-tests/claude-native-*.test.mjs`. Preserve
