@@ -51,6 +51,12 @@ type ActiveRecovery = "recovered" | "superseded" | "failed";
 function stopConnection(connection: RpcConnection, reason: EngineStopReason): void {
   if (connection instanceof AppServerConnection) connection.stop(reason); else connection.stop();
 }
+/**
+ * How long a lost host control connection still waits for frames the engine had already sent to reach the desktop app before
+ * teardown stops waiting. It is only reached when the app has stopped reading: an engine socket that closes normally drains in
+ * milliseconds, so this bounds the wedged case rather than delaying the normal one.
+ */
+const hostControlDrainMs = 250;
 
 /** A stable native connection plus gateway generations pinned to loaded chats. */
 export class AppServerBackends {
@@ -85,6 +91,10 @@ export class AppServerBackends {
   private leaseReleased?: Promise<void>;
   private finishNativeClosing!: () => void;
   private readonly nativeClosing = new Promise<void>(resolve => { this.finishNativeClosing = resolve; });
+  /** Resolved once a lost host control connection has had its bounded drain, so teardown cannot wedge on frontend output. */
+  private finishHostControlDrain!: () => void;
+  private hostControlDrained = false;
+  private readonly hostControlDrain = new Promise<void>(resolve => { this.finishHostControlDrain = () => { this.hostControlDrained = true; resolve(); }; });
   /** Aborted by stop(), so a host wait this adapter started (a kick and up to 20 s of looking) ends with it. */
   private readonly stopped = new AbortController();
   /** This connection's chat classification; the router shares it, so both read one registry and one set of seen chats. */
@@ -147,7 +157,11 @@ export class AppServerBackends {
       }
       backend = new AppServerBackends(executable, args, config, settings, overrides, catalog, emit, onNativeExit, configPath,
         (_args, onMessage, onExit) => new SharedNativeConnection(record.socketPath, onMessage, onExit, process.cwd()));
-      backend.nativeHost = { client: client!, record }; backend.sharedGateway = plan.sharedExecutors === true;
+      const shared = backend; const control = client!;
+      shared.nativeHost = { client: control, record }; shared.sharedGateway = plan.sharedExecutors === true;
+      // The host drops this connection's leases and its record of our native ownership when the control socket closes, and the
+      // engine may keep running without us. Nothing else watches that socket, so its close ends the session here.
+      void control.exited.then(() => shared.hostControlLost()).catch(() => {});
       await backend.native.ready; return backend;
     } catch (error) {
       await backend?.stop(); client?.close();
@@ -168,10 +182,7 @@ export class AppServerBackends {
     });
     // Register only the added provider at runtime. Native account/model defaults stay intact.
     // The native exit record waits for the drain, because only then is the turn table final.
-    const exited = (connection?: RpcConnection) => {
-      this.leaseReleased = this.nativeLease?.release().catch(() => {}); // The engine is gone, so the native home is free again.
-      this.nativeExitPending = this.nativeExited(connection).finally(() => { onNativeExit(); });
-    };
+    const exited = (connection?: RpcConnection) => this.observeEngineExit(connection);
     const nativeArgs = nativeArguments(this.args, overrides);
     this.native = nativeFactory ? nativeFactory(nativeArgs, message => this.forward(this.native, message), exited)
       : new AppServerConnection(executable, nativeArgs, message => this.forward(this.native, message), exited, nativeEnvironment(), "native");
@@ -186,7 +197,9 @@ export class AppServerBackends {
   private async nativeExited(connection?: RpcConnection): Promise<void> {
     // Drain before deciding which tasks lost their terminal event. Pending SDK
     // RPCs are already rejected at child close, so forwarding can finish.
-    await Promise.race([this.native.drained, this.nativeClosing]);
+    // A lost host control connection bounds this wait and the deliveries below through `hostControlDrain` (see
+    // `hostControlLost`), never by resolving `nativeClosing`: that promise also short-circuits the death check.
+    await Promise.race([this.native.drained, this.nativeClosing, this.hostControlDrain]);
     // Exactly one record per process, counting the turns that survived its last forwarded frames.
     this.reportEngineExit(connection ?? this.native, this.nativeTurns.active.size);
     this.nativeTurns.close();
@@ -195,6 +208,9 @@ export class AppServerBackends {
     if (this.closing) return;
     // Socket loss does not prove SDK death. Only the matching host-owned SDK's
     // observed death of this exact SDK launch permits failure of observed turns.
+    // The drain bound is deliberately absent from this race: a real death must still be confirmed and reported whenever the
+    // app is reading. If the control socket closes during the check, that check ends on its own (a dead connection cannot
+    // answer), and the deliveries below are then bounded by the timer `hostControlLost` arms.
     if (this.native.shared) {
       const confirmed = await Promise.race([this.nativeHost?.client.confirmedNativeDeath(this.nativeHost.record), this.nativeClosing.then(() => false)]);
       if (this.closing || !confirmed) return;
@@ -202,11 +218,47 @@ export class AppServerBackends {
     const error = { message: "The Codex engine stopped while this turn was running (the app may have restarted it). The chat's history is saved; send a message to continue, or reconnect this chat's computer if it stays unavailable.", codexErrorInfo: "internalServerError", additionalDetails: null };
     for (const [threadId, turn] of active) {
       if (this.closing) break;
-      try { await Promise.race([this.emit({ method: "error", params: { threadId, turnId: turn.id, error, willRetry: false } }), this.nativeClosing]); } catch { /* The client may already be gone. */ }
-      if (this.closing) break;
+      // Each frame is started before it is awaited, so a bound that has already fired still cannot swallow the report of a
+      // confirmed death: the write goes out whenever the app reads again. The bound ends the loop rather than parking on it,
+      // because a wedged frontend must not make every remaining turn wait behind it; the reconnecting app finds these chats
+      // through their saved history.
+      try { await Promise.race([this.emit({ method: "error", params: { threadId, turnId: turn.id, error, willRetry: false } }).catch(() => {}), this.nativeClosing, this.hostControlDrain]); } catch { /* The client may already be gone. */ }
+      if (this.closing || this.hostControlDrained) break;
       try { await Promise.race([this.emit({ method: "turn/completed", params: { threadId, turn: { ...turn, items: [], itemsView: "notLoaded", status: "failed", error,
-        completedAt: null, durationMs: null } } }), this.nativeClosing]); } catch { /* Shutdown still follows the attempted terminal delivery. */ }
+        completedAt: null, durationMs: null } } }).catch(() => {}), this.nativeClosing, this.hostControlDrain]); } catch { /* Shutdown still follows the attempted terminal delivery. */ }
+      if (this.closing || this.hostControlDrained) break;
     }
+  }
+  /**
+   * One loss of an engine connection, whatever its source: release the private native home, then end the session once the
+   * exit is recorded. `connection` is the transport that reported it, when one knows.
+   */
+  private observeEngineExit(connection?: RpcConnection): void {
+    this.leaseReleased = this.nativeLease?.release().catch(() => {}); // The engine is gone, so the native home is free again.
+    this.nativeExitPending = this.nativeExited(connection).finally(() => { this.onNativeExit(); });
+  }
+  /**
+   * The execution host closed this session's control connection while its own process kept running. That connection is what
+   * the host keys our native ownership and generation leases to, so the session cannot continue: it ends exactly the way a
+   * native engine exit ends, so the app reconnects and the new session discovers and acquires a fresh client. Turns already
+   * running in the host-owned engine are not reported failed for this, because a lost control socket, like a lost engine
+   * socket, is not proof that the SDK died (see `nativeExited`).
+   */
+  private hostControlLost(): void {
+    if (this.closing || this.nativeHost?.client.closedByAdapter) return;
+    telemetry("execution_host_control_lost", { sharedGateway: this.sharedGateway === true });
+    // Closing the engine socket takes the existing exit path, which drains what the engine already sent before the session ends.
+    if (!this.native.closed) stopConnection(this.native, "session_end");
+    // Waiting for the engine's own frames is only half of that path: the exit also parks on the desktop app when the app has
+    // stopped reading, whether it is a forwarded notification or the report of a confirmed engine death, and a session that
+    // never ends is the failure this method exists to prevent. So every one of those waits is bounded. Resolving `nativeClosing`
+    // here (what a deliberate stop does) was rejected on purpose: that promise also ends the `confirmedNativeDeath` check, so
+    // cutting it short could lose a genuine death confirmation on an exit that has nothing to do with this connection. A frame
+    // already handed to the writer is not cancelled by the grace, only deferred; one the loop never reaches is dropped, and the
+    // reconnecting app finds those chats through their saved history. The session ending late is the worse failure, because
+    // every chat on this machine waits behind it. The timer is armed whether or not this adapter had to close the engine socket
+    // itself: when the socket died first, its exit path is the one that needs bounding.
+    setTimeout(() => this.finishHostControlDrain(), hostControlDrainMs).unref();
   }
   private async nativeRequest(method: string, params: Message): Promise<Message> {
     const revision = this.nativeTurns.revision;
@@ -480,7 +532,7 @@ export class AppServerBackends {
     if (this.closing || this.sharedGateway === false) return;
     if (this.nativeHost) {
       if (!this.nativeHost.client.capabilities.includes("gateway")) return;
-      if (this.nativeHost.client.closed) throw Object.assign(new Error("Shared executor host connection was lost; reconnect this chat's computer connection"), { code: -32001 });
+      if (this.nativeHost.client.closed) throw Object.assign(new Error("Shared executor host connection was lost; this chat's computer connection is reconnecting"), { code: -32001 });
       return this.nativeHost.client;
     }
     if (!this.configPath) {

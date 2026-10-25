@@ -5,6 +5,14 @@
 ## 0.9.7 — 2026-10-25
 
 - Restarted desktop clients recover running indicators when their first shared-executor discovery or metadata read is unavailable. The adapter retries saved rows from the client's own chat list and sends verified status snapshots after the executor answers, without requiring a manual refresh or starting another turn. Newer SDK status events, native live rows, and pending approvals retain their authority. Thanks to Edi Hasaj for requesting automatic running-agent discovery after restarting ChatGPT.
+- A registered native relay now owns every remote-control request while its private
+  socket reconnects. The app engine's startup-only suppression could be undone by a
+  later `remoteControl/enable` request after a relay outage, racing the managed relay
+  and leaving it at HTTP 409. Unavailable control requests now fail closed and can be
+  retried through the same adapter when the relay returns; ordinary app-server requests still
+  use their normal engine. Thanks to Edi Hasaj for reporting the loaded chats that
+  could not regain control.
+- A shared executor host that drops a chat's control connection no longer leaves that machine's chats broken until someone kills the listener. Sessions built on the shared native host now notice the loss, record `execution_host_control_lost`, and end the session the way a native engine exit does — with the engine's frame drain and the report of a confirmed engine death both bounded, so an app that stopped reading cannot hold the teardown open — and the app reconnects to a session that acquires a fresh host connection. Chats that were mid-turn keep their saved history and are not reported failed, because a lost control socket is not proof that the engine died. Thanks to Edi Hasaj for reporting the chats that never loaded again.
 
 ## 0.9.6 — 2026-10-25
 

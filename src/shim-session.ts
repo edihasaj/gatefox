@@ -43,7 +43,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const unregisterActivity = registerActivityProbe("adapter_session", () => !started || !idle());
   try { await source.initialize(); } catch (error) { unregisterActivity(); throw error; }
   let closing = false;
-  // The caller decided once whether a live relay exists; without one the app engine keeps its own remote control.
+  // The caller decided once whether a relay is registered. It owns every remote-control request while
+  // NativeControl reconnects its private socket; an unavailable relay fails those requests rather than using the engine.
   const control = relay ? new NativeControl(relay.home, emit) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
   let router: AppServerRouter | undefined;
