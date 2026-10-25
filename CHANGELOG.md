@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `gateway service restart` no longer fails with a misleading "could not restart while idle" on Macs with Claude Desktop components. It now explains that those components hold every idle restart, and `gateway service restart --force` performs the documented operator restart: it still requires ChatGPT to be quit and inference to be idle, then has launchd stop and start the service and waits for the new process. Thanks to Edi Hasaj for asking for a restart that works.
+
 - Chats saved under a retired connection alias open again. After the `claude` connection was split into `claude-primary` and `claude-secondary`, chats saved as `claude/<model>` failed with "This model alias is no longer offered by the gateway". A resume now maps a retired alias to the `-primary` replacement, or to the only matching replacement, before the chat is classified and routed. Offered aliases are unchanged. Thanks to Edi Hasaj for reporting the unopenable chats.
 
 - Client tools that a caller declares as deferred stay reachable on gateway models that lack tool search. The gateway engine now exposes them directly while preserving their schemas, namespaces, permissions and search behavior on models that support it. Thanks to Edi Hasaj for reporting the missing tools.

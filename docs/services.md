@@ -33,8 +33,9 @@ may retire only its still-matching owned jobs and can interrupt Claude work.
 Once any Claude component is configured, automatic primary-service restarts and
 upgrade activation remain pending even when no socket is currently busy. The
 pinned runtimes have no atomic admission gate, so a new request could otherwise
-arrive after an idle check. An explicit operator stop/restart remains available
-for an authorized maintenance window. Adopted Claude SSH forwards retain their
+arrive after an idle check. An explicit operator restart remains available for an
+authorized maintenance window: `gateway service restart --force` (see below); a
+plain `gateway service restart` refuses and names that reason. Adopted Claude SSH forwards retain their
 processes across wake; their existing keepalives and confirmed-exit retries
 recover connections instead of a forced wake restart or broad remote cleanup.
 Restaging without `--force` removes that authorization. This never forces busy
@@ -178,7 +179,17 @@ the service stops. Every self-heal event is listed in
 plan has no inference component (a Mac moving from client-only to standalone),
 the window skips the inference health check because nothing listens yet. The inference
 child must accept its own idle guard before the supervisor stops its other
-components. `gateway service uninstall` explicitly stops all owned components
+components. When a Claude component is configured, the supervisor always declines
+that idle restart, so the command refuses up front and says why.
+
+`gateway service restart --force` is the explicit operator restart. It still
+requires the maintenance window (ChatGPT quit, inference idle), then has launchd
+stop and start the service (`launchctl kickstart -k`): the supervisor's SIGTERM path
+drains inference for `GATEWAY_SHUTDOWN_DRAIN_MS` and stops every component, including
+Claude components, which can interrupt Claude work. It waits up to a minute for the
+new process and reports `restart: "forced"`; a plain restart reports `restart: "idle"`.
+Use it to adopt an installed release when Claude components hold the automatic move,
+then confirm with `gateway rollout --verify`. `gateway service uninstall` explicitly stops all owned components
 and moves the plan and LaunchAgent to Trash. Provider credentials remain. A job
 launchd has already dropped (`launchctl bootout` reporting `3: No such process`)
 can be absent while its process still drains. Legacy standalone installation

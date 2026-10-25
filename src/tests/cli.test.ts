@@ -90,8 +90,8 @@ test("staged Claude ownership rejects immediate mutation flags before reading co
 });
 
 test("Claude interruption authorization is available only on its staged command", async () => {
-  await assert.rejects(main(["service", "claude-desktop", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service claude-desktop --on-restart/);
-  await assert.rejects(main(["service", "shared-native", "--on-restart", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service claude-desktop --on-restart/);
+  await assert.rejects(main(["service", "claude-desktop", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service restart or service claude-desktop --on-restart/);
+  await assert.rejects(main(["service", "shared-native", "--on-restart", "--force", "--config", "/unreadable/gateway.json"]), /--force is only valid with service restart or service claude-desktop --on-restart/);
   await assert.rejects(main(["service", "claude-desktop", "--on-restart", "--force", "--config", "/unreadable/gateway.json"]), /Configuration file is unreadable/);
 });
 

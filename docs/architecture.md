@@ -113,7 +113,8 @@ creating another owner. See
 checks all HTTP requests, including unfinished body uploads, before closing its
 listener. Active work refuses the restart and keeps its process. Older daemons
 without this capability refuse the command; upgrade those during an idle window.
-Explicit stop or uninstall still stops the service and cancels active work.
+Explicit stop, `gateway service restart --force` or uninstall still stops the
+service and cancels active work; see [services](services.md).
 
 ## Desktop connections
 

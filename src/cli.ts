@@ -63,6 +63,7 @@ const help = `gateway — local subscription and API inference
   gateway tunnel install|status|uninstall --tunnel-id NAME [--host HOST --port PORT --remote-port PORT] [--reverse] [--ssh-config PATH]
   gateway serve [--config PATH] [--port NUMBER]
   gateway service install|status|restart|uninstall [--config PATH]
+  gateway service restart --force [--config PATH]   Stop and restart now even with Claude components (may interrupt Claude work)
   gateway service consolidate [--apply | --next-login] [--config PATH]
   gateway service claude-desktop [--on-restart [--force]] [--config PATH]
   gateway service shared-executors [--apply] [--disable] [--config PATH]
@@ -120,7 +121,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (values.disable && (command !== "service" || !["shared-executors", "shared-native"].includes(id))) throw new Error("--disable is only valid for service shared-executors or shared-native");
   if (values["on-restart"] && (command !== "service" || !["shared-native", "claude-desktop"].includes(id))) throw new Error("--on-restart is only valid for service shared-native or claude-desktop");
   if (values["on-restart"] && (values.apply || values.disable)) throw new Error("--on-restart cannot be combined with --apply or --disable");
-  if (values.force && !(command === "service" && id === "claude-desktop" && values["on-restart"])) throw new Error("--force is only valid with service claude-desktop --on-restart");
+  if (values.force && !(command === "service" && (id === "restart" || id === "claude-desktop" && values["on-restart"]))) throw new Error("--force is only valid with service restart or service claude-desktop --on-restart");
   if (values["with-gateway"] && !(command === "service" && id === "shared-native" && values["on-restart"])) throw new Error("--with-gateway is only valid with service shared-native --on-restart");
   if (values["next-login"] && (command !== "service" || id !== "consolidate" || values.apply)) throw new Error("--next-login is only valid for service consolidate and cannot be combined with --apply");
   if (values.codex && !["ssh", "native", "executor-host"].includes(command)) throw new Error("--codex is only valid for ssh, native, or executor-host");
@@ -175,7 +176,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       : id === "consolidate" ? values["next-login"] ? await stageLoginConsolidation(path) : await consolidateService(path, values.apply)
       : values.disable && (id === "shared-executors" || id === "shared-native") ? await disableSharing(path, id, values.apply)
       : id === "shared-native" && values["on-restart"] ? await stageNativeSharing(path, values["with-gateway"])
-      : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path);
+      : id === "shared-executors" ? await enableSharedExecutors(path, values.apply) : id === "shared-native" ? await enableSharedNative(path, values.apply) : await macService(id, path, { force: values.force });
     process.stdout.write(JSON.stringify(result, null, 2) + "\n"); return;
   }
   if (command === "init") {
