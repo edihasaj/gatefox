@@ -36,18 +36,18 @@ test("the agent runs one private script, not launchctl, so macOS lists it as har
   for (const forbidden of ["KeepAlive", "EnvironmentVariables", "node", "WorkingDirectory", "StandardOutPath"]) assert.equal(text.includes(forbidden), false, forbidden);
   assert.ok(envAgentPlist("/a&b/<x>").includes("<string>/a&amp;b/&lt;x&gt;</string>"), "the path is escaped");
   assert.equal(envAgentScriptPath("/state"), script);
-  assert.equal(envAgentScript(wrapper, "/prefix/share/subscription-gateway/current/package/dist/cli.js"),
-    `#!/bin/sh\n# Managed by subscription-gateway desktop-env\n[ -x '${wrapper}' ] && [ -f '/prefix/share/subscription-gateway/current/package/dist/cli.js' ] || exit 0\nexec /bin/launchctl setenv CODEX_CLI_PATH '${wrapper}'\n`);
+  assert.equal(envAgentScript(wrapper, "/prefix/share/subscription-gateway/current/package/dist/cli.js", { command: "/gateway", args: [] }),
+    `#!/bin/sh\n# Managed by subscription-gateway desktop-env\n[ -e '/state/api-mode.json' ] && exit 0\n[ -x '${wrapper}' ] && [ -f '/prefix/share/subscription-gateway/current/package/dist/cli.js' ] || exit 0\nexec '/gateway' 'desktop-preset' '--state' '/state'\n`);
 });
 
-/** The script with its one launchctl call swapped for a print, so a test can run it without reaching the login session. */
-const withoutLaunchctl = (script: string) => script.replace("/bin/launchctl setenv CODEX_CLI_PATH", "printf %s");
+/** The script with its preset helper swapped for a print, so a test can run it without reaching the login session. */
+const withoutPreset = (script: string, wrapper: string) => script.replace(/^exec .*$/m, `exec printf %s '${wrapper.replaceAll("'", "'\\''")}'`);
 
 test("the script sets nothing once the wrapper or the gateway release is gone", mac, async () => {
   const f = await fixture();
   await inDesktopHome(f, async () => {
     const wrapper = join(f.state, "desktop-wrapper-0123456789abcdef"); const cli = join(f.root, "share/current/package/dist/cli.js");
-    const file = join(f.root, "login-env"); await writeFile(file, withoutLaunchctl(envAgentScript(wrapper, cli)), { mode: 0o700 });
+    const file = join(f.root, "login-env"); await writeFile(file, withoutPreset(envAgentScript(wrapper, cli), wrapper), { mode: 0o700 });
     const sh = () => promisify(execFile)("/bin/sh", [file]).then(result => result.stdout, (error: { code: number }) => `exit ${error.code}`);
     assert.equal(await sh(), "", "neither the wrapper nor the release exists: exit 0, nothing set");
     await writeFile(wrapper, "#!/bin/sh\n", { mode: 0o700 });
@@ -67,7 +67,7 @@ test("the registered script checks the installed release's CLI", mac, async () =
     await macDesktop("register", f.config, f.app, false, f.exec);
     const text = (await read(scriptOf(f)))!;
     assert.ok(text.includes(`[ -f '${join(f.root, "../share/subscription-gateway/current/package/dist/cli.js")}' ]`), text);
-    assert.match(text, /\|\| exit 0\nexec \/bin\/launchctl setenv CODEX_CLI_PATH /);
+    assert.match(text, /\|\| exit 0\nexec .*'desktop-preset' '--state' /);
   });
 });
 
@@ -75,7 +75,7 @@ test("the script quotes the wrapper path for the shell, whatever it holds", mac,
   const f = await fixture();
   await inDesktopHome(f, async () => {
     for (const wrapper of ["/a b/it's/$HOME/`id`/\"x\"/desktop-wrapper-0123456789abcdef", "/line\nbreak/desktop-wrapper-0123456789abcdef"].map(name => f.root + name)) {
-      const file = join(f.root, "login-env"); await writeFile(file, withoutLaunchctl(envAgentScript(wrapper, join(f.root, "cli.js"))), { mode: 0o700 });
+      const file = join(f.root, "login-env"); await writeFile(file, withoutPreset(envAgentScript(wrapper, join(f.root, "cli.js")), wrapper), { mode: 0o700 });
       await mkdir(join(wrapper, ".."), { recursive: true }); await writeFile(wrapper, "#!/bin/sh\n", { mode: 0o700 }); await writeFile(join(f.root, "cli.js"), "");
       const { stdout } = await promisify(execFile)("/bin/sh", [file]);
       assert.equal(stdout, wrapper, "the shell reads back exactly the wrapper");

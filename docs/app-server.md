@@ -614,6 +614,15 @@ checks that the registered wrapper is executable and that the installed release'
 `package/dist/cli.js` exists, and otherwise exits 0. A login after the gateway was
 uninstalled, or unregistered by an older release, therefore does not set the variable again.
 
+While API mode is on, none of these paths arms the adapter. `<state>/api-mode.json` is the
+switch, so the daemon's first-step preset, the `desktop-restore` child and a hand-run
+`gateway desktop register` all hold back: the first two skip and record one
+`desktop_api_mode` event (`action: "preset"`, `outcome: "skipped"`) per process, and a
+hand-run register refuses with "API mode is on; run gateway desktop api-mode off first".
+Neither the registration receipt nor the service plan is changed by that, because API mode
+only takes the variable out of the login session; `gateway desktop api-mode off` puts it
+back through the same preset. See [API mode](api-mode.md).
+
 Rolling back to 0.4.5 or earlier: those releases do not know this agent, so their
 `gateway desktop unregister` and `gateway uninstall` leave its plist and script behind. Before
 running either, remove them: `launchctl bootout gui/$UID/com.edihasaj.subscription-gateway.desktop-env`,

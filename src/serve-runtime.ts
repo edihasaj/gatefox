@@ -2,7 +2,7 @@ import { realpathSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { loadConfig } from "./config.js";
+import { loadConfig, type GatewayConfig } from "./config.js";
 import { LiveConfig } from "./live-config.js";
 import { adoptGatewayHandler, createGatewayHandler, type GatewayHandler, type GatewayServer } from "./server.js";
 import { refreshModelMetadata } from "./model-refresh.js";
@@ -11,6 +11,7 @@ import { startErrorReports } from "./error-report.js";
 import { releaseState, watchForUpgrade } from "./self-update.js";
 import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
+import { refreshApiModeCatalog } from "./desktop-api-mode.js";
 
 /** Releases that agree on this number can take over a running server in place. */
 export const serveRuntimeVersion = 1;
@@ -25,7 +26,10 @@ export async function startServeRuntime(configPath: string, port?: number, serve
  try {
   const config = await loadConfig(configPath); if (port) config.port = port;
   configureTelemetry(config.stateDirectory, "server"); startErrorReports(config.stateDirectory, "server");
-  const live = new LiveConfig(configPath, config, port);
+  // API mode's model list lives in a file the app's own engine reads, so it follows every configuration this service
+  // adopts. No timer and no background item of its own: the hook runs on the apply that is already happening, and only
+  // at all while the API mode receipt exists.
+  const live = new LiveConfig(configPath, config, port, applied => { void refreshApiModeCatalog(applied); });
   const options = { configRejection: () => live.rejection };
   const handler: GatewayHandler = await createGatewayHandler(config, undefined, () => live.current(), options);
   let gateway: GatewayServer;

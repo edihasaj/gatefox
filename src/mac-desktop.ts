@@ -14,6 +14,7 @@ import { readPendingLoginConsolidation } from "./mac-login-consolidate.js";
 import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { agentRuntimeFile, envAgentFailure, envAgentNames, readEnvAgent, readGuiDesktopEnv, removeEnvAgent, writeEnvAgent } from "./desktop-env-agent.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
+import { apiModeActive, apiModeOnMessage, reportPresetSkipped } from "./desktop-api-mode.js";
 
 const execFileAsync = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 /** Seam for every launchctl call so a registration test can observe the GUI session without changing it. */
@@ -187,7 +188,14 @@ async function reportEnvAgentFailure(stateDirectory: string, error: unknown): Pr
  * and the daemon goes on. `runtimeFile` is a seam for the release check.
  */
 export async function presetDesktopEnv(stateDirectory: string, exec: LaunchctlExec = launchctlExec, runtimeFile = agentRuntimeFile()): Promise<"set" | "skipped" | "failed"> {
+  return await withLoginRegistrationLock(stateDirectory, () => presetDesktopEnvLocked(stateDirectory, exec, runtimeFile));
+}
+/** The preset while its caller already holds the registration lock (API mode's `off` path). */
+export async function presetDesktopEnvLocked(stateDirectory: string, exec: LaunchctlExec = launchctlExec, runtimeFile = agentRuntimeFile()): Promise<"set" | "skipped" | "failed"> {
   if (process.platform !== "darwin") return "skipped";
+  // API mode owns the desktop while its receipt is in place, so the adapter override stays out of the login session
+  // until `gateway desktop api-mode off` hands it back. The receipt, not this call, is the switch.
+  if (await apiModeActive(stateDirectory)) { reportPresetSkipped(stateDirectory); return "skipped"; }
   let reason: "read" | "setenv" = "read";
   try {
     const { wrapper } = await readReceipt(resolve(stateDirectory, "desktop-registration.json"));
@@ -201,9 +209,30 @@ export async function presetDesktopEnv(stateDirectory: string, exec: LaunchctlEx
     return "set";
   } catch { telemetry("desktop_env_preset_failed", { reason }); return "failed"; }
 }
+/**
+ * Who owns the login session's `CODEX_CLI_PATH`, in one of three words and never the value itself: this gateway's own
+ * wrapper (`gateway`, the same proof the daemon preset and status use), nothing (`none`), or somebody else's CLI
+ * (`other`). API mode reads it before it writes anything, because a foreign override is not its to hand back.
+ */
+export async function desktopCliPathOwner(stateDirectory: string, exec: LaunchctlExec = launchctlExec): Promise<"gateway" | "none" | "other"> {
+  const { cliPath } = await readGuiDesktopEnv(exec, name => getenv(exec, name));
+  if (!cliPath) return "none";
+  const { wrapper } = await readReceipt(resolve(stateDirectory, "desktop-registration.json"));
+  return wrapper === cliPath || await ownWrapper(stateDirectory, cliPath) ? "gateway" : "other";
+}
+/** Take this gateway's adapter override out of the login session, leaving the registration receipt and the plan alone. */
+export async function clearDesktopCliPath(exec: LaunchctlExec = launchctlExec): Promise<void> { await exec("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]); }
+
 async function desktopOperation(action: string, configPath: string, app: string, restoreOnly: boolean, exec: LaunchctlExec): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["register", "unregister", "status"].includes(action)) throw new Error("Choose gateway desktop register, unregister or status on macOS");
   const config = await loadConfig(configPath);
+  // While API mode is on the app runs its own engine, so nothing may hand the desktop back to the adapter. A restore
+  // the service runs at its own starts simply reports the skip, because there is nothing there for it to undo.
+  if (action === "register" && await apiModeActive(config.stateDirectory)) {
+    if (!restoreOnly) throw new Error(apiModeOnMessage);
+    reportPresetSkipped(config.stateDirectory);
+    return { registered: false, activeForFutureLaunches: false, nativeConfigUntouched: true, skipped: "api_mode" };
+  }
   if (action === "unregister") return applyUnregister(await planUnregister(config.stateDirectory, exec), exec);
   const receipt = resolve(config.stateDirectory, "desktop-registration.json");
   const unified = await readServicePlan(config.stateDirectory);

@@ -7,6 +7,7 @@ import { object, type Message } from "./app-server-connection.js";
 import { SocketAppServerConnection } from "./socket-app-server-connection.js";
 import { privateDirectory, removeOwnedSocket, sameSocketIdentity, sdkIdentity, sdkSocketTarget, socketIdentity, type EngineOwner, type HostIdentity, type NativeDeath } from "./execution-host-storage.js";
 import { spawnStamp } from "./boot-identity.js";
+import { trackExecutorTurns, type TurnTracker } from "./execution-host-turns.js";
 import { nativeEnvironment } from "./executor-identity.js";
 
 export interface NativeExecutionDescriptor { args: string[]; cwd: string }
@@ -105,6 +106,7 @@ export function nativeExecutionEnvironment(nativeHome: string, managedRelay: boo
 export class NativeExecutionEngine {
   private child?: ChildProcess;
   private readonly admins = new Set<SocketAppServerConnection>();
+  private turns?: TurnTracker;
   private socketCapture?: Promise<boolean>;
   private exited: Promise<void> = Promise.resolve();
   private started = false;
@@ -151,6 +153,7 @@ export class NativeExecutionEngine {
         if (child.pid) this.death = { revision: this.record.revision, pid: child.pid, instanceId: this.record.instanceId, exitedAtMs: Date.now(), intentional: this.stopped };
         this.closed = true; this.owner.pid = 0; this.record.pid = 0;
         for (const admin of this.admins) admin.stop();
+        this.turns?.stop();
         void changed().catch(() => {}); resolve();
       });
     });
@@ -169,6 +172,7 @@ export class NativeExecutionEngine {
       await delay(25);
     }
     await this.withAdmin(async () => {});
+    if (!this.closed && !this.stopped) this.turns = trackExecutorTurns({ socketPath: this.record.socketPath, engine: "native", expected: () => this.owner.socket });
   }
 
   private async captureSocket(): Promise<boolean> {
@@ -253,6 +257,7 @@ export class NativeExecutionEngine {
   private async stopOwned(): Promise<void> {
     this.stopped = true;
     for (const admin of this.admins) admin.stop();
+    this.turns?.stop();
     // Finish an in-flight identity capture while the SDK is still alive. Waiting
     // for all of start() here would deadlock its caller's failed-start cleanup.
     await this.socketCapture?.catch(() => {});

@@ -13,10 +13,35 @@ export function endpointURL(value: string): string {
 /** Codex gives up on a silent stream after this long; gateway heartbeats arrive every 15 seconds. */
 export const codexStreamIdleTimeoutMs = 90000;
 
+/** The provider id the desktop adapter registers under in a native configuration. */
+export const adapterProvider = "subscription_gateway";
+
+/**
+ * The gateway's own Responses provider, in the spelling `config.toml` uses. Both the adapter's generated settings and
+ * API mode's native `model_providers` table come from here, so a change to the endpoint, the retry policy or the
+ * credential helper is one change. The table is passed to the engine as data and written verbatim, so its keys stay in
+ * TOML form (`base_url`, not `baseUrl`).
+ */
+export function gatewayProviderTable(endpoint: string, credentialArgs: string[]): Record<string, unknown> {
+  const helper = gatewayCommand();
+  return { name: "Harness Gateway", base_url: endpointURL(endpoint), wire_api: "responses", supports_websockets: false,
+    request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
+    auth: { command: helper.command, args: [...helper.args, "token", ...credentialArgs], timeout_ms: 5000, refresh_interval_ms: 300000 } };
+}
+
+/** How the engine spells a settings value: strings quoted, arrays inline, numbers and booleans as they are. */
+const tomlValue = (value: unknown): string => Array.isArray(value) ? `[${value.map(tomlValue).join(", ")}]` : JSON.stringify(value);
+const tomlEntries = (table: Record<string, unknown>): string => Object.entries(table).map(([key, value]) => `${key} = ${tomlValue(value)}`).join("\n");
+
+/** The provider's two tables, as the generated settings have always printed them. */
+function providerTableToml(endpoint: string, credentialArgs: string[], id: string): string {
+  const { auth, ...flat } = gatewayProviderTable(endpoint, credentialArgs);
+  return `[model_providers.${id}]\n${tomlEntries(flat)}\n\n[model_providers.${id}.auth]\n${tomlEntries(auth as Record<string, unknown>)}\n`;
+}
+
 export function codexSettings(model: string, catalog: string, endpoint: string, credentialArgs: string[]): string {
   const quoted = (value: string) => JSON.stringify(value);
-  const helper = gatewayCommand();
-  return `model = ${quoted(model)}\nmodel_provider = "subscription_gateway"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\n\n[model_providers.subscription_gateway]\nname = "Harness Gateway"\nbase_url = ${quoted(endpointURL(endpoint))}\nwire_api = "responses"\nsupports_websockets = false\nrequest_max_retries = 2\nstream_idle_timeout_ms = ${codexStreamIdleTimeoutMs}\n\n[model_providers.subscription_gateway.auth]\ncommand = ${quoted(helper.command)}\nargs = [${[...helper.args, "token", ...credentialArgs].map(quoted).join(", ")}]\ntimeout_ms = 5000\nrefresh_interval_ms = 300000\n`;
+  return `model = ${quoted(model)}\nmodel_provider = "${adapterProvider}"\nmodel_catalog_json = ${quoted(resolve(catalog))}\nmodel_reasoning_summary = "auto"\n\n${providerTableToml(endpoint, credentialArgs, adapterProvider)}`;
 }
 
 /** Fetch only the public catalog. The inference host keeps provider credentials. */

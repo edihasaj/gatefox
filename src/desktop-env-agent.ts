@@ -13,7 +13,7 @@ import { gatewayCommand } from "./command.js";
  *
  * macOS names a background item after the executable in ProgramArguments[0]. Running `/bin/launchctl` directly would
  * list the item as "launchctl", so the agent runs a private script in the state directory named `harness-gateway-login-env`
- * whose one command is that `launchctl setenv`.
+ * which delegates the guarded set to the gateway CLI, so it shares the registration lock with API-mode changes.
  */
 export const envAgentLabel = "com.edihasaj.subscription-gateway.desktop-env";
 export const envAgentMarker = "<!-- Managed by subscription-gateway desktop-env -->";
@@ -52,8 +52,8 @@ export function agentRuntimeFile(): string {
  * release exist; otherwise it exits 0 and sets nothing, so a gateway that was uninstalled or unregistered by an older
  * release is not set up again at the next login.
  */
-export const envAgentScript = (wrapper: string, runtimeFile = agentRuntimeFile()): string =>
-  `#!/bin/sh\n${envAgentScriptMarker}\n[ -x ${shellQuote(wrapper)} ] && [ -f ${shellQuote(runtimeFile)} ] || exit 0\nexec /bin/launchctl setenv CODEX_CLI_PATH ${shellQuote(wrapper)}\n`;
+export const envAgentScript = (wrapper: string, runtimeFile = agentRuntimeFile(), command = gatewayCommand()): string =>
+  `#!/bin/sh\n${envAgentScriptMarker}\n[ -e ${shellQuote(resolve(dirname(wrapper), "api-mode.json"))} ] && exit 0\n[ -x ${shellQuote(wrapper)} ] && [ -f ${shellQuote(runtimeFile)} ] || exit 0\nexec ${[command.command, ...command.args, "desktop-preset", "--state", dirname(wrapper)].map(shellQuote).join(" ")}\n`;
 /** The whole plist for one script; its only program argument is the script, so macOS lists it by that name. */
 export function envAgentPlist(script: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${envAgentMarker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${envAgentLabel}</string>\n<key>ProgramArguments</key><array><string>${xml(script)}</string></array>\n<key>RunAtLoad</key><true/>\n<key>LimitLoadToSessionType</key><string>Aqua</string>\n</dict></plist>\n`;
@@ -79,6 +79,23 @@ export async function envAgentNames(contents: string | undefined, wrapper: strin
   const script = envAgentScriptOf(contents);
   if (!contents || !wrapper || !script) return false;
   return await readIfExists(script).catch(() => undefined) === envAgentScript(wrapper);
+}
+/** Add the API-mode receipt guard to an owned standalone agent without reloading it or touching an unmanaged file. */
+export async function guardEnvAgentForApiMode(stateDirectory: string, wrapper: string | undefined): Promise<boolean> {
+  if (!wrapper || !isOwnWrapperPath(wrapper, stateDirectory)) return false;
+  const contents = await readEnvAgent(); const script = envAgentScriptOf(contents);
+  if (contents !== undefined && script !== envAgentScriptPath(stateDirectory)) {
+    throw new Error("The gateway-owned login environment agent is too old for API mode; run `gateway desktop register` first");
+  }
+  if (!script) return false;
+  const prior = await readIfExists(script);
+  if (prior === undefined || !prior.includes(envAgentScriptMarker)) return false;
+  const text = envAgentScript(wrapper);
+  if (prior === text) return true;
+  const temporary = `${script}.${process.pid}.tmp`;
+  try { await writeFile(temporary, text, { mode: 0o700 }); await chmod(temporary, 0o700); await rename(temporary, script); }
+  catch (error) { await unlink(temporary).catch(() => undefined); throw error; }
+  return true;
 }
 /**
  * Writes or updates the agent for `wrapper` and loads it into the login session. The wrapper must be a generated

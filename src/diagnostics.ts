@@ -12,7 +12,7 @@ const percentile = (values: number[], p: number) => { if (!values.length) return
 
 /** Aggregates local telemetry into counts per model and a short list of recent problems. */
 export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Record<string, unknown> {
-  const turns: Record<string, Counts> = {}; const turnFailures: Counts = {};
+  const turns: Record<string, Counts> = {}; const turnFailures: Counts = {}; const executorTurns: Counts = {};
   const requests: Record<string, Counts & { input?: number; cached?: number; nano?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
   const sessions: Record<string, { count: number; rewrites: number; cacheReadTokens: number; cacheWriteTokens: number }> = {}; const accounts: Counts = {};
@@ -21,6 +21,14 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const autoReview: Counts = {};
   for (const event of events) {
     const model = String(event.model ?? "unknown");
+    // Turn outcomes the shared executor recorded itself, whether or not a window was connected.
+    if (event.event === "executor_turn_settled") {
+      bump(executorTurns, `${event.engine ?? "unknown"} ${event.status ?? "unknown"}${event.errorClass ? ":" + event.errorClass : ""}`);
+      if (event.status === "failed" || (event.errorClass && event.errorClass !== "none")) {
+        const { at, host: machine, component, event: name, pid: _pid, ...fields } = event;
+        recent.push({ at, machine, component, event: name, ...fields }); if (recent.length > 25) recent.shift();
+      }
+    }
     if (event.event.startsWith("turn_")) {
       const key = `${event.provider ?? "unknown"} ${model}`; turns[key] ||= {};
       if (event.event === "turn_completed" || event.event === "turn_empty_completion") bump(turns[key], event.event === "turn_empty_completion" ? "empty" : event.status);
@@ -64,6 +72,6 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
-    turns, turnFailures, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
+    turns, turnFailures, executorTurns, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
     claudeSessions: sessions, accountEngines: accounts, recentProblems: recent };
 }
