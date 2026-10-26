@@ -414,14 +414,42 @@ its own complete native cancellation chain and a live Fable request.
 - Keep **Manual** permissions on another installation until its native review
   transport passes a real Auto-mode task. Manual remains a fallback, and the
   deployed GUI's saved permission choice remains unchanged.
-- Opaque aliases use Claude's generic 200K client context estimate and do not
-  expose the native effort picker. The estimate is not the provider's true limit.
+- Routes without reasoning levels keep opaque aliases and Claude's generic
+  200K context estimate. Mapped reasoning routes expose the native effort
+  control but inherit a 1M client estimate. Neither estimate establishes the
+  provider's true limit; see the compaction limitation above.
 - Native Claude mobile Remote Control excludes custom gateways and proxies.
   Desktop aliases do not remove that restriction.
 - Provider capabilities still apply. A text-only Qwen route does not accept
   images, and switching providers replays the conversation.
 - Short connectivity proofs do not qualify long-session compaction or every
   possible MCP JSON schema.
+
+## October 26 model mapping verification
+
+Claude Desktop 3.6556.2 on the MacBook displayed its own Effort submenu on a
+mapped `Codex · GPT-6.1-Sol` row: Low, Medium, High, Extra, and Max. This build
+uses a submenu rather than the slider seen in the older trial. The
+[cropped capture](evidence/claude-model-mapping-2026-10-26/native-effort.png)
+shows that native control and the truthful GPT label together. The deployment
+preserved the existing 25 visible rows; 21 received mapped reasoning controls.
+The adapter kept its old IDs for saved chats. This deployment updated the
+profile and the private adapter under the existing gateway service.
+
+A separate native CLI 2.1.299 process used a private home, a local synthetic
+backend, and the exact deployed adapter code. Its bracketed model ID survived
+the CLI and mapped to the expected backend ID; the completed turn carried
+`xhigh`. Explicit native control requests also reported applied Ultracode
+active and available. The [sanitized CLI receipt](evidence/claude-model-mapping-2026-10-26/cli-verification.json)
+records those flags and the backend effort, without prompts or credentials.
+That protocol check does not add an Ultracode item to the Desktop menu or
+verify real-provider workflow fan-out.
+
+Claude.app retained the same archive SHA-256 and passed strict deep signature
+verification after installation. No app patch or re-signing was performed.
+The MacBook's gateway rollout and direct-tool canary reported `ready`; health
+reported `ok`. A real provider turn selected through the GUI and long-session
+compaction remain unverified.
 
 Offline native-engine fixtures exercise overflow, reactive compaction, and a
 smaller retry through the actual GPT and Qwen provider adapters. A live Qwen
