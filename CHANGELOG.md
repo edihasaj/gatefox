@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.0.1 — 2026-10-26
+
+- Stock desktop adapters no longer replay a historical completion when a chat resumes.
+  The renderer can mark the chat read before that replay arrives, then keep its blue dot
+  because its automatic read hook ignores the same completed turn. Live completion
+  notifications and saved history remain intact. Offline completions may lack a blue
+  dot until the client can reconcile durable read receipts safely. Thanks to Edi Hasaj
+  for reporting unread dots that remained after opening a chat.
+
 ## 1.0.0 — 2026-10-26
 
 - Desktop SSH app-server proxies now preserve the native HTTP/WebSocket handshake while

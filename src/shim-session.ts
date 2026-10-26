@@ -143,8 +143,6 @@ export async function shimSession(executable: string, args: string[], config: Ga
         const answer = (reply: Message, created?: string) => { const written = send(reply); if (creating) for (const held of order.settle(created)) void send(held).catch(() => {}); return written; };
         const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(async result => {
           await answer({ id: message.id, result }, typeof object(result.thread).id === "string" ? String(object(result.thread).id) : undefined);
-          const threadId = object(message.params).threadId;
-          if (message.method === "thread/resume" && typeof threadId === "string") void completionReplay.resume(threadId).catch(() => {});
         }, error => {
           const failure = error as Error & { code?: number; data?: unknown };
           // Routing errors carry fixed gateway text; other failures are classified only.

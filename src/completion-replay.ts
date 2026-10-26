@@ -109,7 +109,7 @@ export class CompletionReplay {
     }
     else this.delivered.delete(this.key(found.threadId, found.turnId));
   }
-  /** Run only after a successful thread/resume reply has reached this adapter session. */
+  /** Available only to an explicit client integration with safe replay semantics. */
   async resume(threadId: string): Promise<void> {
     let entry: CompletionReplayEntry | undefined;
     try { entry = (await this.dependencies.storage.read())[this.entryKey(threadId)]; } catch { return; }

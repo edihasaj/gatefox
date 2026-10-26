@@ -130,23 +130,25 @@ session was attached; its durable SDK read receipt does not repair that state.
 The adapter keeps a private host-wide ledger at
 `<state>/completion-replay.json`. It records a followed turn separately for
 each device and marks it delivered when that device's adapter forwards its
-terminal frame. After a successful `thread/resume`, the adapter reads the SDK's
-latest turn and may forward that exact terminal frame once. The record is shared
-by every local adapter process, is bounded to 512 device/thread entries and
-seven days, and only a terminal completed within 24 hours is eligible.
+terminal frame. The ledger is retained for a future explicit client integration
+whose receipt and read semantics make replay safe. Stock adapters deliberately
+do **not** read it after `thread/resume`, query the SDK for an old turn, or
+synthesize a historical terminal. The stock renderer can apply such a terminal
+after a foreground read and mark the chat unread again; a resume does not prove
+focus or read intent. The record is shared by every local adapter process and
+is bounded to 512 device/thread entries and seven days.
 
 ```text
 device follows turn → app disconnects → SDK finishes → that device resumes
                                             ↓
-                           latest saved terminal is replayed once
+                      SDK receipts and history remain authoritative
 ```
 
-The ledger atomically claims the replay before it emits, so concurrently
-resuming sessions from the same device cannot both replay it. A claim is
-released when its app write fails and an unconfirmed claim expires after one
-minute; a normally connected app still receives its own live terminal event.
-The adapter never replays a start, tool action, approval, read state, or
-non-terminal event.
+The ledger's bounded claim machinery remains available only to that future
+explicit integration. A normally connected app still receives its own live
+terminal event. Offline completion does not currently guarantee a stock
+renderer unread dot or alert, and the adapter never infers or changes read
+state from `thread/resume`.
 
 An SSH proxy identifies its client by hashing its SSH client address with a
 local, random private salt, so the ledger receives only a stable local pseudonym
@@ -156,10 +158,10 @@ listener validates one 32-hex value and synthesizes the internal
 `gateway/client` notification before decoded client frames. This leaves the
 native HTTP/WebSocket byte pipe intact. Sessions without that header are `local`; relay
 registration identifies only the host's remote-control route, not where an
-inbound app session originated. This means a Mac whose SSH address changes
-between sleep and wake is a new device and does not receive the earlier replay.
-It also still depends on ChatGPT reloading the chats it was streaming after
-reconnect; that behavior was observed in 26.1021.31345.
+inbound app session originated. The pseudonym never establishes focus or read
+intent, and stock adapters do not use it for resume replay. If a future explicit
+client integration uses the ledger, an SSH address change would be a distinct
+device identity under that integration's contract.
 
 See the [isolated unread prototype](codex-unread-trial.md) for the renderer
 evidence and the separate client-side testing boundary.
