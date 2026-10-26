@@ -32,6 +32,8 @@
     "dist/app-background/*.d.ts",
     "dist/model-auto-latest/*.js",
     "dist/model-auto-latest/*.d.ts",
+    "dist/availability/*.js",
+    "dist/availability/*.d.ts",
     "LICENSE",
     "scripts/codex-desktop-shim",
     "scripts/e2e-fast-mode.mjs",

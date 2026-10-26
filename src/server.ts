@@ -41,6 +41,8 @@ import { hasPlanLogin } from "./auth/chatgpt.js";
 import { gatewayInfoPath, gatewayInfoPayload } from "./gateway-info.js";
 import { pickerHiddenAliases } from "./model-auto-latest/metadata.js";
 import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
+import { AvailabilityService } from "./availability/service.js";
+import { availabilityPath, serveAvailability } from "./availability/http.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 /** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
@@ -119,6 +121,8 @@ export interface GatewayStartOptions {
   copilotTempBase?: string;
   /** Why the newest change to the configuration file is not applied, if it is not; `/health` reports it as `configRejected`. */
   configRejection?: () => ConfigRejection | undefined;
+  /** Test hook: the availability collectors this handler reports from. */
+  availability?: AvailabilityService;
 }
 /**
  * One generation of request handling; a server can switch generations without closing its socket.
@@ -140,6 +144,8 @@ export interface GatewayHandler {
    * returns how many. A process calls this just before it exits, so a request it stops mid-stream still reaches the ledger.
    */
   recordPending?(): number;
+  /** Stops this generation's background work for good once a newer generation takes its requests. */
+  retire?(): void;
 }
 type HandledServer = GatewayServer & { gatewayHandlers?: GatewayHandler[]; gatewayClose?: Server["close"]; gatewayClosing?: Promise<Error | undefined>;
   gatewayUpgrade?: (req: IncomingMessage, socket: Duplex, head: Buffer) => void };
@@ -179,6 +185,7 @@ async function drain(target: HandledServer, close: Server["close"]): Promise<Err
 export function adoptGatewayHandler(server: Server, handler: GatewayHandler): GatewayServer {
   const target = server as HandledServer;
   const close = target.gatewayClose ??= server.close.bind(server);
+  for (const previous of target.gatewayHandlers || []) if (previous !== handler) previous.retire?.();
   target.gatewayHandlers = [...(target.gatewayHandlers || []).filter(previous => !previous.isIdle()), handler];
   server.removeAllListeners("request"); server.on("request", handler.handle);
   // Upgrades (WebSocket handshakes among them) never reach an inference path; the newest generation still at work refuses them.
@@ -218,6 +225,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
   const admissions = options.admissionRegistry ?? new AdmissionRegistry();
+  const availability = options.availability ?? new AvailabilityService();
+  availability.configure(config);
   const buildRoutes = (current: GatewayConfig) => {
     admissions.configure(current);
     const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
@@ -236,6 +245,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     const next = reload ? await reload() : current;
     if (next !== current) {
       const previous = currentRoutes; const updated = buildRoutes(next); currentRoutes = updated; routes = updated.routes; reviewers = updated.reviewers; current = next; previous.release();
+      availability.configure(next);
       // Live Copilot sessions of a provider the new configuration removed or changed would otherwise live out their timers.
       retireUnconfiguredCopilotScopes(next.providers);
     }
@@ -287,6 +297,10 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === availabilityPath) {
+      try { const config = state.config; await serveAvailability(req, res, availability, config, id => { const provider = config.providers.find(entry => entry.id === id); return { ...admissions.load(id), limit: provider ? providerAdmissionLimit(provider, config) : 0 }; }, providerUsage.snapshot(config.providers), pickerHiddenAliases(config)); }
+      finally { state.release(); } return;
+    }
     if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { try { fail(404, "not_found", "Unknown endpoint"); } finally { state.release(); } return; }
     // Over capacity every inference request gets a retryable 429 before its body is read, so an overload never buffers bodies. A remote
     // compaction refused this way is retried and gets its final refusal once a slot is free.
@@ -300,7 +314,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     active.set(controller, cause => { abortCause ||= cause; clearInterval(heartbeat); controller.abort(); });
     // A request is recorded once, whichever of its end and a process exit gets there first.
     let recorded = false;
-    let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let requestedModel: string | undefined; let context: InferenceContext | undefined;
+    let providerId: string | undefined; let providerType: string | undefined; let model: string | undefined; let requestedModel: string | undefined; let context: InferenceContext | undefined; let routedAs: string | undefined;
     const startedAt = Date.now();
     let admittedAt = 0; let firstEventAt = 0; let events = 0; let tools = 0; let droppedControlItems = 0; let usage: Usage | undefined; let accounting: UsageAccounting | undefined; let responseId: string | undefined; let turnStateReturned = false;
     const outcome = () => { const routing = context ?? inferenceContext(req.headers); return { requestId, provider: providerId, model, durationMs: Date.now() - startedAt, queueMs: admittedAt ? admittedAt - startedAt : undefined,
@@ -330,6 +344,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, networkCodes: diagnostic.networkCodes, retryAfterMs: diagnostic.retryAfterMs, ...translation });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
+      if (providerId) availability.recordFailure(providerId, routedAs, known.code, typeof diagnostic.upstreamCode === "string" ? diagnostic.upstreamCode : undefined, typeof diagnostic.retryAfterMs === "number" ? diagnostic.retryAfterMs : undefined, abortCause);
       try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(diagnostic)); } catch { /* Diagnostics never replace the request outcome. */ }
       return known;
     };
@@ -374,6 +389,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!route) throw new ProviderError("model_not_found", unknownModelMessage(request.model), 404);
       if (alias && alias !== request.model) telemetry("model_alias_resolved", { requested: request.model, alias });
       providerId = route.id; providerType = route.type; model = alias ?? request.model; requestedModel = alias && alias !== request.model ? request.model : undefined; admission = route.admission;
+      routedAs = availability.identityOf(route.id);
       // Validate the supported protocol before invoking any provider. Only the Codex subscription route forwards hosted web_search
       // and drops or bridges tool_search; every other route drops both and their replayed items (keeping tools a search loaded),
       // so a chat that switches from Codex 2 keeps working, and each drop is counted once per request.
@@ -459,6 +475,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         recorded = true;
         telemetry(events <= 1 && !tools ? "request_empty" : "request_completed", outcome());
         ledger(events <= 1 && !tools ? "empty" : "completed");
+        if (providerId) availability.recordSuccess(providerId, routedAs);
       }
       if (!res.destroyed) {
         if (controller.signal.aborted && res.writableNeedDrain) res.destroy();
@@ -491,6 +508,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   return { handle: (req, res) => { handle(req, res).catch(error => answerCrash(res, error)); }, handleUpgrade: (req, socket) => handleUpgrade(req, socket, token), isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
     recordPending: () => { let recorded = 0; for (const record of [...pending]) if (record()) recorded++; return recorded; },
+    retire: () => availability.retire(),
     beginDrain: () => {
       draining = true; let running = 0;
       for (const [controller, abort] of active) { if (controller.signal.aborted) continue; if (admitted.has(controller)) running++; else abort("shutdown"); }

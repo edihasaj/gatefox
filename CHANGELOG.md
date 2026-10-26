@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `GET /v1/availability` and `gateway availability [--json]` report what each
+  provider can serve right now: local model server health per router address,
+  this Mac's queue load, subscription quota (from Spendwatch when
+  `availability.spendwatch` is set, joined by the account email of each local
+  login, or from the gateway's own usage counters), the OpenRouter balance, and
+  recent quota, throttle, authentication and connection failures. The gateway
+  reports facts only and never changes routing. Collection starts on the first
+  request and stops after 30 idle minutes. See `docs/availability.md`.
+
 ## 1.0.4 — 2026-10-26
 
 - OpenRouter API routes now send their documented session-affinity header using

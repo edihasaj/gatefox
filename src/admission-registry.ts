@@ -52,6 +52,12 @@ export class AdmissionRegistry {
 
   size(): number { this.discardIdle(); return this.entries.size; }
 
+  /** One provider's running and queued requests; zero for a provider without an admission. */
+  load(id: string): { running: number; queued: number } {
+    const admission = this.entries.get(id)?.admission;
+    return { running: admission?.running ?? 0, queued: admission?.queued ?? 0 };
+  }
+
   private discardIdle(): void {
     for (const [id, entry] of this.entries) {
       if (!this.configured.has(id) && !entry.snapshots && !entry.admission.running && !entry.admission.queued) this.entries.delete(id);

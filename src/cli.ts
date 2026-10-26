@@ -47,6 +47,7 @@ import { runClaudeDesktopCommand } from "./claude-desktop-cli.js";
 import { providerCommand } from "./provider-tool-runtime.js";
 import { retainCliEntryPoint } from "./release-retention.js";
 import { runAutoLatestCli } from "./auto-latest-cli.js";
+import { availabilityCommand } from "./availability/cli.js";
 
 // This happens before command dispatch. A managed release remains visible to the
 // installer even when an app-owned Node executes this file through `current`.
@@ -80,6 +81,7 @@ const help = `gateway — local subscription and API inference
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
   gateway rollout [--json] [--verify] [--config PATH]   Release readiness from loaded process, service, inference, execution-host and tool-canary evidence.
+  gateway availability [--json] [--wait MS]   What this Mac's gateway can serve now: local model health, load, quota and paid balance (facts only).
   gateway login PROVIDER [--config PATH] [--account-email EMAIL] [--no-browser]
   gateway doctor [--config PATH] [--json]
   gateway codex-config --model ALIAS [--config PATH]
@@ -107,6 +109,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "health") { process.exitCode = await healthCommand(argv.slice(1)); return; }
   if (argv[0] === "auto-latest") { process.exitCode = await runAutoLatestCli(argv.slice(1)); return; }
   if (argv[0] === "rollout") { process.exitCode = await rolloutCommand(argv.slice(1)); return; }
+  if (argv[0] === "availability") { process.exitCode = await availabilityCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {

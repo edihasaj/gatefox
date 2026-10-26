@@ -1,6 +1,6 @@
 import { constants } from "node:fs";
 import { readFile, mkdir, open, rename, chmod, link, unlink, utimes } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { totalmem } from "node:os";
 import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-service-tiers.js";
@@ -139,6 +139,18 @@ export interface GatewayConfig {
   nativeModelPickerPlacement?: NativeModelPickerPlacement;
   /** Opt-in automatic newest-model upkeep. See docs/app-management.md. */
   autoLatestModels?: AutoLatestSettings;
+  /** Optional sources for `/v1/availability`. See docs/availability.md. */
+  availability?: AvailabilitySettings;
+}
+/** `spendwatch` is the absolute path of a Spendwatch executable whose `capacity-current` reports subscription quota. */
+export interface AvailabilitySettings { spendwatch?: string }
+export function validateAvailabilitySettings(value: unknown): AvailabilitySettings {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("availability must be an object");
+  const settings = value as Record<string, unknown>;
+  if (Object.keys(settings).some(key => key !== "spendwatch")) throw new Error("availability supports only spendwatch");
+  if (settings.spendwatch === undefined) return {};
+  if (typeof settings.spendwatch !== "string" || !isAbsolute(settings.spendwatch) || settings.spendwatch.length > 1024 || /[\0\r\n]/.test(settings.spendwatch)) throw new Error("availability.spendwatch must be an absolute executable path");
+  return { spendwatch: settings.spendwatch };
 }
 
 export type NativeModelPickerPlacement = "first" | "last" | "hidden";
@@ -169,6 +181,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const nativeModelPicker = config.nativeModelPicker === undefined ? undefined : validateNativeModelPicker(config.nativeModelPicker);
   const autoLatestModels = config.autoLatestModels === undefined ? undefined : validateAutoLatestSettings(config.autoLatestModels);
+  const availability = config.availability === undefined ? undefined : validateAvailabilitySettings(config.availability);
   if (config.nativeModelPickerPlacement !== undefined && config.nativeModelPickerPlacement !== "first" && config.nativeModelPickerPlacement !== "last" && config.nativeModelPickerPlacement !== "hidden") throw new Error("nativeModelPickerPlacement must be first, last or hidden");
   const ids = new Set<string>(); const aliases = new Set<string>();
   const stateDirectory = resolve(directory, config.stateDirectory || ".state");
@@ -259,7 +272,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),
     ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}),
-    ...(autoLatestModels ? { autoLatestModels } : {}) };
+    ...(autoLatestModels ? { autoLatestModels } : {}), ...(availability ? { availability } : {}) };
 }
 
 /**
