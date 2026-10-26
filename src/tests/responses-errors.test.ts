@@ -102,6 +102,12 @@ test("a named stream quota wins over throttles, while transient rate limits stay
       assert.equal(error.code, "rate_limit_exceeded"); assert.equal(streamFailureCode(error), "rate_limit_exceeded");
     }
   }
+  const typedThrottle = responsesStreamError({ type: "error", error: { code: "unknown_provider_code", type: "rate_limit_error", message: privateMessage } });
+  assert.equal(typedThrottle.code, "rate_limit_exceeded"); assert.equal(typedThrottle.upstream?.code, "rate_limit_exceeded");
+  for (const [code, expected] of [["invalid_api_key", "authentication"], ["context_length_exceeded", "context_length_exceeded"]] as const) {
+    const final = responsesStreamError({ type: "error", error: { code, type: "rate_limit_error", message: privateMessage } });
+    assert.equal(final.code, expected, `${code} must not be changed into a throttle`);
+  }
   const plan = responsesStreamError({ type: "error", error: { type: "usage_not_included", message: privateMessage } });
   assert.equal(plan.code, "upstream_rejected"); assert.equal(streamFailureCode(plan), "usage_not_included");
 });
@@ -226,6 +232,8 @@ test("A named non-OpenAI throttle stays retryable; a named quota class stays fin
     assert.equal(limit.code, "usage_limit", JSON.stringify(error)); assert.equal(streamFailureCode(limit), "invalid_prompt");
   }
   assert.equal((await http429({ code: "unrecognized_limit" })).code, "usage_limit", "an unknown name without a short wait stays final");
+  assert.equal((await http429({ type: "rate_limit_error" }, { "retry-after": "75" })).code, "rate_limit_exceeded", "a named throttle may use the full throttle budget");
+  assert.equal((await responsesHttpError(new Response("{}", { status: 429, headers: { "retry-after": "75" } }))).code, "usage_limit", "unnamed 429 compatibility remains capped at one minute");
 });
 
 test("a ChatGPT subscription usage limit is final with account guidance in every envelope", async () => {

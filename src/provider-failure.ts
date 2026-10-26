@@ -1,6 +1,6 @@
 import { oauthErrorCodes } from "./auth/chatgpt.js";
 import { ProviderError } from "./providers/provider.js";
-import { classifyNetworkFailure, diagnosticNetworkCodes, transientNetworkCodes } from "./provider-network.js";
+import { classifyNetworkFailure, diagnosticNetworkCodes, networkCodesField, transientNetworkCodes } from "./provider-network.js";
 import { ResponsesTranslationError, translationItemTypes, translationReasons } from "./protocol/request.js";
 
 export type ProviderAbortCause = "timeout" | "cancelled" | "shutdown" | undefined;
@@ -128,6 +128,10 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
     if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
     const stage = own(upstream, "stage");
     if (event === "network" && (stage === "connect" || stage === "stream" || stage === "unknown")) result.upstreamStage = stage;
+    const codes = networkCodesField(own(upstream, "networkCodes"));
+    if (codes) result.networkCodes = codes;
+    const retryAfterMs = own(upstream, "retryAfterMs");
+    if (typeof retryAfterMs === "number" && Number.isInteger(retryAfterMs) && retryAfterMs >= 0 && retryAfterMs <= 3600000) result.retryAfterMs = retryAfterMs;
     if (upstreamCode === "authentication_failed" && (event === "claude.assistant" || event === "claude.result")) {
       const reason = allowlisted(own(upstream, "reason"), claudeCredentialReasons);
       if (reason) result.upstreamReason = reason;

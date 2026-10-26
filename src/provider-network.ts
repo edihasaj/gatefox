@@ -13,14 +13,16 @@ export const diagnosticNetworkCodes = [
 export type ProviderNetworkCode = typeof transientNetworkCodes[number] | typeof diagnosticNetworkCodes[number];
 export type ProviderNetworkStage = "connect" | "stream" | "unknown";
 export type NetworkFailureKind = "transient" | "diagnostic" | "abort" | "unknown";
-export interface NetworkFailure { kind: NetworkFailureKind; code?: ProviderNetworkCode }
+export interface NetworkFailure { kind: NetworkFailureKind; code?: ProviderNetworkCode; codes?: ProviderNetworkCode[] }
 
 const transient = new Set<string>(transientNetworkCodes);
+const allowed = new Set<string>([...transientNetworkCodes, ...diagnosticNetworkCodes]);
 const diagnostic = new Set<string>(diagnosticNetworkCodes);
 const abortCodes = new Set(["ABORT_ERR", "ERR_ABORTED", "ERR_CANCELED"]);
 const maxDepth = 4;
 const maxAggregateErrors = 8;
 const maxNodes = 24;
+const maxMixedCodes = 4;
 const unknown: NetworkFailure = { kind: "unknown" };
 type Data = { state: "absent" | "unreadable" } | { state: "value"; value: unknown };
 
@@ -55,7 +57,14 @@ function merge(results: NetworkFailure[]): NetworkFailure {
   if (!results.length || results.some(result => result.kind === "unknown")) return unknown;
   let common = results[0]!.code;
   for (const result of results.slice(1)) if (result.code !== common) common = undefined;
-  return { kind: "transient", ...(common ? { code: common } : {}) };
+  if (common) return { kind: "transient", code: common };
+  // Node reports one happy-eyeballs attempt per address, so a dead path can hold
+  // different transient codes. Keep the set (allowlisted, bounded, sorted) so the
+  // outage stays diagnosable even when no single code names it, including where a
+  // nested aggregate already had to give its own code up.
+  const mixed = [...new Set(results.flatMap(result => result.code !== undefined ? [result.code] : result.codes ?? []))]
+    .filter((code): code is ProviderNetworkCode => transient.has(code)).sort().slice(0, maxMixedCodes);
+  return { kind: "transient", ...(mixed.length ? { codes: mixed } : {}) };
 }
 function aggregateFailure(errors: unknown, depth: number, state: { seen: Set<unknown>; nodes: number }): NetworkFailure {
   try { if (!Array.isArray(errors)) return unknown; } catch { return unknown; }
@@ -84,6 +93,29 @@ function classify(value: unknown, depth: number, state: { seen: Set<unknown>; no
   else if (errors.state === "value") results.push(aggregateFailure(errors.value, depth, state));
   if (!results.length) return genericFetchFailure(value) ? { kind: "diagnostic" } : unknown;
   return merge(results);
+}
+
+/**
+ * The comma-joined form of a mixed transient failure's codes, or nothing unless every entry is allowlisted.
+ * Like the classifier this reads own data properties, and it reads each one exactly once: a getter or an
+ * overridden array method must not be able to validate as one code and then print as something else.
+ */
+export function networkCodesField(value: unknown): string | undefined {
+  try {
+    if (Object.getPrototypeOf(value) !== Array.prototype) return;
+    const length = data(value, "length");
+    if (length.state !== "value" || typeof length.value !== "number" || !Number.isSafeInteger(length.value) || length.value < 1 || length.value > maxMixedCodes) return;
+    // An own `every`, iterator or accessor is a second channel to the record, so an array holding anything
+    // besides its own indexed elements is refused before any of them is read.
+    if (Object.getOwnPropertyNames(value).length !== length.value + 1 || Object.getOwnPropertySymbols(value).length) return;
+    const codes: string[] = [];
+    for (let index = 0; index < length.value; index++) {
+      const item = data(value, String(index));
+      if (item.state !== "value" || typeof item.value !== "string" || !allowed.has(item.value)) return;
+      codes.push(item.value);
+    }
+    return [...new Set(codes)].sort().join(",");
+  } catch { return; }
 }
 
 /** Bounded, cycle-safe classification for raw fetch and body-reader failures. */

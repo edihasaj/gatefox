@@ -215,9 +215,20 @@ compaction recovery can trim history and retry. The gateway does not choose a
 different model or account. Transport failures and deadline expiry have separate
 messages; they do not imply a failed login. Responses upstream server errors retry
 once after one second only before any text, reasoning state, or tool output has
-been published. Known transient connection failures before output share that
-same single retry budget, including socket resets and temporary DNS failures.
-A connection failure after any inference output is not replayed. Certificate
+been published. Known transient connection failures before output, including
+socket resets and temporary DNS failures, get their own budget instead: the
+gateway waits one second, then two, four and eight seconds per retry (each
+within twenty percent of jitter) for up to 120 seconds, so a short outage is
+absorbed here rather than ending the chat. No attempt starts at or after that
+deadline: a wait that would cross it is refused, and the deadline is checked
+again after an abortable wait in case sleep or an event-loop stall overshot it;
+the triggering failure is returned unchanged. An attempt already in flight may
+finish after its retry window; the caller deadline remains its bound. The budget
+is timed from the first connection failure, so a throttle earlier in the request
+cannot spend it. The stream keeps sending its
+heartbeat while the provider has produced nothing, so the wait stays covered.
+Every other retryable class keeps the single retry above, whichever attempt it
+lands on. A connection failure after any inference output is not replayed. Certificate
 failures, permanent DNS failures, refused connections, unknown network faults,
 OAuth refresh failures, and cancellations receive no additional internal retry.
 A clean EOF without a terminal event has the same single retry
@@ -236,9 +247,22 @@ HTTP 500/502/503/504 failures have the same single retry before output. An HTTP 
 is a throttle when its `error.code` or `error.type` names a temporary rate limit
 (for example `rate_limit_exceeded`, `rate_limit_error` or `limit_requests`), or
 when it names no quota class and asks for a `Retry-After` of at most 60 seconds.
-The gateway retries a throttle once before output when its wait is at most 30
-seconds (one second when no wait is given); a longer wait returns at once and
-stays retryable for Codex. A 429 that names a quota, billing, spend or plan class
+On a Responses route, a throttle (an HTTP 429 throttle or a stream `error` naming a
+temporary rate limit) has its own retry budget before output, separate from the
+connection budget and from the single retry of other classes. The gateway waits
+one, two, four and then eight seconds per retry, jittered by ±20%, or a provider's
+`Retry-After` of at least one second, for up to 120 seconds from the first throttle.
+The 60-second header rule applies only to an otherwise unnamed 429; a named
+temporary throttle may use the remaining 120-second budget. It never starts a wait
+that would end past the budget, and checks again after the abortable wait before it
+starts the next request; an already-started request remains bounded by the caller
+deadline. The ChatGPT backend usually
+throttles without `Retry-After` and for longer than Codex's own retry schedule
+(about 10 seconds), so earlier releases, which retried once after one second,
+failed the turn while the throttle was still active. When the budget runs out, the
+throttle returns as `rate_limit_exceeded` (HTTP 429) with the message "Provider is
+temporarily rate limiting requests; retry shortly" and stays retryable for Codex.
+A 429 that names a quota, billing, spend or plan class
 (such as `insufficient_quota` or `usage_limit_reached`), and any other 429, is a
 final usage limit. ChatGPT reports a shared subscription that has used its
 allowance as `subscription_sharing_usage_limit_exceeded`, with the generic type

@@ -72,7 +72,7 @@ test("temporary HTTP server errors recover and rate limits honor Retry-After bef
   }
 });
 test("HTTP quota, unspecified 429, and rate limits needing a long wait never retry", async () => {
-  for (const initial of [{ status: 429, code: "insufficient_quota" }, { status: 429, code: "unknown" }, { status: 429, code: "rate_limit_exceeded", retryAfter: "31" }]) {
+  for (const initial of [{ status: 429, code: "insufficient_quota" }, { status: 429, code: "unknown" }, { status: 429, code: "rate_limit_exceeded", retryAfter: "61" }]) {
     const f = await fixture(() => initial);
     try { await assert.rejects(collect(f.provider)); assert.equal(f.attempts(), 1); }
     finally { await f.close(); }

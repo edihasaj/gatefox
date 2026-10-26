@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- Responses routes now wait longer for a ChatGPT throttle before ending a Codex chat. The Codex
+  backend often returns HTTP 429 `rate_limit_exceeded` without `Retry-After` and keeps
+  throttling for minutes; the gateway retried once after one second and then Codex gave
+  up. Responses routes now give throttles their own 120-second budget before any output:
+  one, two, four and then eight seconds per retry, jittered, or the provider's
+  `Retry-After`. Stream throttles are retried too. A named throttle can use the full
+  budget while an otherwise unnamed 429 retains its 60-second header compatibility limit.
+  The throttle no longer reports the
+  misleading "Provider usage limit reached"; it says "Provider is temporarily rate
+  limiting requests; retry shortly", and real usage limits keep their own messages.
+  `provider_recovered` now records its recovery `class` (`throttle` or `network`) for a
+  request that outlasted an outage. Retry windows are checked again after a sleep, so a
+  machine wake or event-loop stall cannot start a late retry; an in-flight attempt remains
+  bounded by the caller deadline. `request_failed` now keeps only a bounded numeric
+  `retryAfterMs`, and desktop telemetry separates `rate_limit` from usage and quota limits.
+  Thanks to Edi Hasaj for reporting frequent rate-limit failures on Codex models.
+
+- A short internet outage no longer ends a Codex chat. The gateway now absorbs a
+  transient connection failure before any output with its own backoff — one second,
+  then two, four and eight seconds per retry, jittered, for up to 120 seconds — while
+  the stream's existing heartbeats keep the client alive, instead of spending the single
+  retry it shared with every other temporary failure class. Other classes keep exactly one
+  retry as before. `provider_retry` records the real attempt number and how long the outage
+  has lasted, a new `provider_recovered` records a request that made it through one, and a
+  connection failure whose happy-eyeballs attempts reported different socket codes now names
+  them in `networkCodes` rather than losing them.
+  Thanks to Edi Hasaj for reporting chats that ended during a short network outage.
+
 - Desktop adapters now replay one verified terminal completion after a chat
   resumes from a sleep-time disconnect, so the current renderer can set its
   unread dot and completion alert. A private bounded ledger proves the adapter

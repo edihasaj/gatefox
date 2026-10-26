@@ -327,7 +327,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       const diagnostic = providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: Date.now() - startedAt, failure: known, abortCause, ...translation });
       telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause,
         upstreamCode: diagnostic.upstreamCode, upstreamEvent: diagnostic.upstreamEvent, upstreamStage: diagnostic.upstreamStage,
-        upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, ...translation });
+        upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, networkCodes: diagnostic.networkCodes, retryAfterMs: diagnostic.retryAfterMs, ...translation });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
       try { if (options.onFailure) options.onFailure(failure); else console.error(JSON.stringify(diagnostic)); } catch { /* Diagnostics never replace the request outcome. */ }

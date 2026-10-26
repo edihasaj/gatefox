@@ -17,7 +17,9 @@ import { plaintextCollaborationTransport, subscriptionCollaborationTransport } f
 import { apiRoutingHeaders } from "./api-routing.js";
 import { grokToolBridge } from "./grok-tools.js";
 import { codexUsageFromEvent, codexUsageFromHeaders, credentialRevision, observeCodexUsage, type CodexUsageObserver } from "./codex-usage.js";
-import { classifyNetworkFailure, type ProviderNetworkStage } from "../provider-network.js";
+import { classifyNetworkFailure, networkCodesField, type ProviderNetworkStage } from "../provider-network.js";
+import { networkRetryExpired, networkRetryNow, networkRetrySleep, networkRetryWaitMs } from "./network-retry.js";
+import { throttleRetryExpired, throttleRetryNow, throttleRetrySleep, throttleRetryWaitMs } from "./throttle-retry.js";
 
 /** Convert only a recognized raw transport error at a fetch/body boundary. */
 function networkProviderError(error: unknown, stage: ProviderNetworkStage): ProviderError | undefined {
@@ -25,7 +27,8 @@ function networkProviderError(error: unknown, stage: ProviderNetworkStage): Prov
   const failure = classifyNetworkFailure(error);
   if (failure.kind === "unknown" || failure.kind === "abort") return;
   return new ProviderError("upstream_unavailable", "Provider connection failed or disconnected; retry when its connection is available", 503, {
-    event: "network", stage, ...(failure.code ? { code: failure.code } : {}), ...(failure.kind === "transient" ? { retryableNetwork: true as const } : {}),
+    event: "network", stage, ...(failure.code ? { code: failure.code } : {}), ...(failure.codes ? { networkCodes: failure.codes } : {}),
+    ...(failure.kind === "transient" ? { retryableNetwork: true as const } : {}),
   });
 }
 
@@ -56,6 +59,14 @@ export class ResponsesAPI implements Provider {
     else normalized.service_tier = tier;
     // The turn-state is opaque and scoped to this account route; a value from another route is dropped.
     let turnState = this.emitsTransport ? unwrapTurnState(context.turnState, this.scope) : undefined; let transported = false;
+    // A transient connection failure gets the whole outage budget, because a route that is down for a minute
+    // is normal and a client with its own small retry count gives up inside it. Non-throttle classes share one
+    // retry in total, whichever attempt it lands on. Each class is timed from its own first failure, so a
+    // throttle earlier in the request cannot eat the outage budget.
+    let firstNetworkAt: number | undefined; let networkRetries = 0; let replayed = false;
+    // A provider throttle has its own budget (see throttle-retry.ts): it often lasts minutes without a
+    // Retry-After, and it must not spend the connection budget or the single retry of other classes.
+    let firstThrottleAt: number | undefined; let throttleRetries = 0;
     for (let attempt = 0; ; attempt++) {
       let published = false;
       try {
@@ -65,29 +76,45 @@ export class ResponsesAPI implements Provider {
           if (event.type === "transport") { if (!transported) { transported = true; turnState ??= unwrapTurnState(event.turnState, this.scope); yield event; } continue; }
           published = true; yield event;
         }
+        if (networkRetries && firstNetworkAt !== undefined) telemetry("provider_recovered", { provider: this.config.id, class: "network", attempts: attempt + 1, elapsedMs: networkRetryNow() - firstNetworkAt });
+        if (throttleRetries && firstThrottleAt !== undefined) telemetry("provider_recovered", { provider: this.config.id, class: "throttle", attempts: attempt + 1, elapsedMs: throttleRetryNow() - firstThrottleAt });
         return;
       } catch (error) {
         // Caller tools run outside this provider. Retry only a known transient
         // failure before publishing any output, keeping partial turns intact.
         let typed = false; try { typed = error instanceof ProviderError; } catch { /* Hostile errors are never retryable. */ }
-        if (attempt || published || signal.aborted || !typed) throw error;
+        if (published || signal.aborted || !typed) throw error;
         const failure = error as ProviderError;
         // A failed login refresh is never retried here: the refresh token is single-use, so a second
         // token request in the same turn could spend or reuse it. Codex reconnects on the 503 instead.
         if (failure.upstream?.event === "oauth_refresh") throw failure;
         // Body codes mark a transient failure only in the stream; HTTP 5xx is covered below.
-        const temporary = failure.upstream?.event === "network" && failure.upstream.retryableNetwork === true ||
+        const network = failure.upstream?.event === "network" && failure.upstream.retryableNetwork === true;
+        const throttle = !network && failure.code === "rate_limit_exceeded";
+        const temporary = network || throttle ||
           (failure.upstream?.event !== "http" && ["server_error", "server_is_overloaded"].includes(failure.upstream?.code || "")) ||
-          (failure.upstream?.event === "http" && ["upstream_unavailable", "rate_limit_exceeded"].includes(failure.code)) ||
+          (failure.upstream?.event === "http" && failure.code === "upstream_unavailable") ||
           (failure.code === "inference_failed" && ["error", "response.failed"].includes(failure.upstream?.event || "") && failure.upstream?.code === "unknown") ||
           (failure.code === "incomplete" && failure.upstream?.code === "missing_terminal" && failure.upstream.event === "eof");
-        const backoff = failure.upstream?.retryAfterMs ?? 1000;
-        if (!temporary || backoff > 30000) throw failure;
+        if (!temporary) throw failure;
+        const startedAt = network ? (firstNetworkAt ??= networkRetryNow()) : throttle ? (firstThrottleAt ??= throttleRetryNow()) : networkRetryNow();
+        const elapsedMs = (throttle ? throttleRetryNow() : networkRetryNow()) - startedAt;
+        const backoff = network ? networkRetryWaitMs(networkRetries, elapsedMs)
+          : throttle ? throttleRetryWaitMs(throttleRetries, elapsedMs, failure.upstream?.retryAfterMs)
+          : replayed ? undefined : failure.upstream?.retryAfterMs ?? 1000;
+        if (backoff === undefined || (!network && !throttle && backoff > 30000)) throw failure;
+        if (network) networkRetries++; else if (throttle) throttleRetries++; else replayed = true;
         const upstreamCode = failure.upstream?.code;
-        const networkStage = failure.upstream?.event === "network" ? failure.upstream.stage : undefined;
-        console.error(JSON.stringify({ event: "provider_retry", attempt: 2, ...(upstreamCode ? { upstreamCode } : {}) }));
-        telemetry("provider_retry", { provider: this.config.id, attempt: 2, code: failure.code, ...(upstreamCode ? { upstreamCode } : {}), ...(networkStage ? { upstreamStage: networkStage } : {}), backoffMs: backoff });
-        await delay(backoff, undefined, { signal });
+        const networkCodes = network ? networkCodesField(failure.upstream?.networkCodes) : undefined;
+        const networkStage = network ? failure.upstream?.stage : undefined;
+        console.error(JSON.stringify({ event: "provider_retry", attempt: attempt + 2, ...(upstreamCode ? { upstreamCode } : {}) }));
+        telemetry("provider_retry", { provider: this.config.id, attempt: attempt + 2, code: failure.code, ...(upstreamCode ? { upstreamCode } : {}), ...(networkCodes ? { networkCodes } : {}),
+          ...(networkStage ? { upstreamStage: networkStage } : {}), backoffMs: backoff, elapsedMs });
+        if (network) await networkRetrySleep(backoff, signal); else if (throttle) await throttleRetrySleep(backoff, signal); else await delay(backoff, undefined, { signal });
+        // An event-loop stall or laptop sleep can make an otherwise admissible wait end outside its
+        // class budget. Never start that late request; return the failure that triggered this wait.
+        if (signal.aborted || (network && firstNetworkAt !== undefined && networkRetryExpired(firstNetworkAt)) ||
+          (throttle && firstThrottleAt !== undefined && throttleRetryExpired(firstThrottleAt))) throw failure;
       }
     }
   }

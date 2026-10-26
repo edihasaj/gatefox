@@ -27,6 +27,19 @@ test("diagnostics sum Copilot credits per model", () => {
   assert.equal(summary.requests["copilot/x"].credits, 3.5);
 });
 
+// A retry that reported two socket families is counted apart from a single-code reset, so `gateway
+// diagnostics` can tell a mixed outage from a plain one instead of hiding both under the error code.
+test("diagnostics key a retry by its socket codes when an attempt reported more than one", () => {
+  const at = new Date().toISOString(); const base = { at, host: "mac", component: "gateway", pid: 1 };
+  const summary = summarizeTelemetry([
+    { ...base, event: "provider_retry", code: "upstream_unavailable", upstreamCode: "ECONNRESET" },
+    { ...base, event: "provider_retry", code: "upstream_unavailable", networkCodes: "EHOSTUNREACH,ETIMEDOUT" },
+    { ...base, event: "provider_retry", code: "upstream_unavailable", networkCodes: "EHOSTUNREACH,ETIMEDOUT" },
+    { ...base, event: "provider_retry", code: "inference_failed" },
+  ], new Date(0)) as { providerRetries: Record<string, number> };
+  assert.deepEqual(summary.providerRetries, { ECONNRESET: 1, "EHOSTUNREACH,ETIMEDOUT": 2, inference_failed: 1 });
+});
+
 test("events persist privately per day and turn telemetry flags silent completions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "gateway-telemetry-"));
   try {
@@ -58,6 +71,11 @@ test("error classes cover the failures seen in the field", () => {
   assert.equal(errorClass("stream disconnected before completion: Provider stream ended without completion"), "stream_disconnected");
   assert.equal(errorClass("idle timeout waiting for SSE"), "idle_timeout");
   assert.equal(errorClass("Claude usage limit reached; resets at 5pm"), "usage_limit");
+  assert.equal(errorClass("rate limit exceeded: Provider is temporarily rate limiting requests; retry shortly"), "rate_limit");
+  assert.equal(errorClass("Provider is rate-limiting requests; retrying shortly"), "rate_limit");
+  assert.equal(errorClass("rate_limit_exceeded"), "rate_limit");
+  assert.equal(errorClass("rate limit exceeded: Provider usage limit reached"), "usage_limit");
+  assert.equal(errorClass("rate limit exceeded: Provider credits or quota are exhausted"), "usage_limit");
   assert.equal(errorClass(undefined), "none");
   assert.equal(errorClass("local queued attachment is invalid: Operation not permitted (os error 1)"), "attachment");
   assert.equal(errorClass("HTTP 503 from upstream"), "overloaded");

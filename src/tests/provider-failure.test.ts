@@ -10,6 +10,22 @@ function withoutTimestamp(diagnostic: Record<string, string | number>): Record<s
   assert.equal(new Date(timestamp).toISOString(), timestamp); return metadata;
 }
 
+test("retry waits are bounded numeric metadata, never getters or private error details", () => {
+  const diagnose = (upstream: object) => providerFailureDiagnostic({ requestId: "invalid", durationMs: 0,
+    failure: new ProviderError("rate_limit_exceeded", "private error detail", 429, upstream) });
+  for (const retryAfterMs of [0, 45000, 3600000]) assert.equal(diagnose({ retryAfterMs }).retryAfterMs, retryAfterMs);
+  for (const retryAfterMs of [-1, 0.5, 3600001, NaN, Infinity, "45000", "private error detail", null]) {
+    const record = diagnose({ retryAfterMs });
+    assert.ok(!Object.hasOwn(record, "retryAfterMs"));
+    assert.ok(!JSON.stringify(record).includes("private error detail"));
+  }
+  let reads = 0;
+  const getter = Object.defineProperty({}, "retryAfterMs", { get() { reads++; throw new Error("private error detail"); } });
+  assert.ok(!Object.hasOwn(diagnose(getter), "retryAfterMs"));
+  assert.ok(!Object.hasOwn(diagnose(Object.create({ retryAfterMs: 45000 })), "retryAfterMs"));
+  assert.equal(reads, 0);
+});
+
 test("known provider failures retain their typed status and code", () => {
   for (const error of [new ProviderError("authentication", "Provider login is missing or expired", 401), new ProviderError("usage_limit", "Provider usage limit reached", 429), new ProviderError("context_length_exceeded", "Provider context limit reached", 400)]) assert.equal(classifyProviderFailure(error, undefined), error);
   const translated = classifyProviderFailure(new ResponsesTranslationError("invalid fixture input", "unsupported_input_item", "agent_message"), undefined);
