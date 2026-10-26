@@ -326,20 +326,26 @@ test("the first ordinary request has no recovery deadline, but empty EOF and ret
 });
 
 test("the recovery request deadline is a typed timeout after a clean empty first completion", async () => {
-  let attempts = 0;
-  const upstream = createServer((_request, response) => {
+  let attempts = 0; const originalFetch = globalThis.fetch;
+  // Exercise the request deadline without requiring an OS socket accept within five milliseconds.
+  globalThis.fetch = async (_input, init) => {
     attempts++;
-    if (attempts === 1) { for (const frame of empty("")) response.write(frame === "[DONE]" ? "data: [DONE]\n\n" : `data: ${JSON.stringify(frame)}\n\n`); response.end(); }
-  });
-  upstream.listen(0, "127.0.0.1"); await once(upstream, "listening");
+    if (attempts === 1) return new Response(empty("").map(frame => frame === "[DONE]" ? "data: [DONE]\n\n" : `data: ${JSON.stringify(frame)}\n\n`).join(""));
+    const signal = init?.signal;
+    assert.ok(signal, "the recovery request must carry its deadline signal");
+    return new Promise<Response>((_resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true });
+    });
+  };
   const key = "GATEWAY_EMPTY_RETRY_TIMEOUT_KEY"; process.env[key] = "fixture";
-  const provider = new ChatCompletionsAPI({ id: "qwen", type: "chat-completions-api", baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}/v1`, apiKeyEnv: key, models: { "qwen/flash": "qwen-flash" } },
+  const provider = new ChatCompletionsAPI({ id: "qwen", type: "chat-completions-api", baseUrl: "http://fixture.invalid/v1", apiKeyEnv: key, models: { "qwen/flash": "qwen-flash" } },
     undefined, { models: ["qwen-flash"], timeoutMs: 5 });
   try {
     const result = await collect(provider);
     assert.equal(attempts, 2); assert.equal((result.error as { code?: string; status?: number }).code, "timeout");
     assert.equal((result.error as { status?: number }).status, 504);
-  } finally { delete process.env[key]; await close(upstream); }
+  } finally { globalThis.fetch = originalFetch; delete process.env[key]; }
 });
 
 test("default output cancellation closes the body, and later invalid tools still follow an earlier valid tool", async () => {
