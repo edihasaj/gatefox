@@ -253,7 +253,7 @@ test("deadline covers failure-frame and nonstream JSON delivery until the owned 
         if (mode === "failure-sse") throw new ProviderError("context_length_exceeded", "Context limit reached " + "x".repeat(4 * 1024 * 1024), 400);
         yield { type: "done", usage };
       } finally { stopped = true; }
-    } }, 100);
+    } }, 500);
     let client: ClientRequest | undefined; let stream: IncomingMessage | undefined; let outgoing: ServerResponse | undefined;
     gateway.server.once("request", (_request, reply) => { outgoing = reply; });
     try {

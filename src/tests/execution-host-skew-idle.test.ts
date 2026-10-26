@@ -97,20 +97,32 @@ test("a look costs a status read per chat and nothing else, and ends at the firs
   } finally { await h.f.clean(); }
 });
 
-test("a look blocked by a background terminal backs off instead of reading every 5 ms, and a gap resets it", { timeout: 30000 }, async () => {
+test("a look blocked by a background terminal backs off instead of reading every 5 ms, and a gap resets it", { timeout: 30000 }, async context => {
   const h = await skewHost();
   try {
     const chat = await h.start(); await chat.turn({ status: "completed", completedAt: seconds() }); await chat.terminal(true);
-    await h.refuse(); await delay(30);
-    const before = (await chat.calls())["thread/loaded/list"] ?? 0; await delay(400);
-    const looks = ((await chat.calls())["thread/loaded/list"] ?? 0) - before;
-    assert.ok(looks >= 2 && looks <= 12, `5, 10, 20, 40, 80 ms then every 80 ms, not every 5 ms (${looks} looks in 400 ms)`);
+    // Observe the requested timer intervals, not socket round trips completed per wall-clock window.
+    const scheduled: number[] = []; const original = globalThis.setTimeout;
+    context.mock.method(globalThis, "setTimeout", ((...args: Parameters<typeof setTimeout>) => {
+      if (typeof args[1] === "number" && [5, 10, 20, 40, 80].includes(args[1])) scheduled.push(args[1]);
+      return original(...args);
+    }) as typeof setTimeout);
+    const until = async (ready: () => boolean) => {
+      const deadline = Date.now() + 10000;
+      while (!ready() && Date.now() < deadline) await delay(10);
+      assert.ok(ready(), `watcher did not schedule the expected interval: ${scheduled.join(",")}`);
+    };
+    await h.refuse(); await until(() => scheduled.length >= 6);
+    assert.deepEqual(scheduled.slice(0, 6), [5, 10, 20, 40, 80, 80], "blocked looks double and cap at the supervisor interval");
     assert.deepEqual(h.idle, []);
+    const before = scheduled.length;
     await chat.terminal(false);
-    for (let attempt = 0; attempt < 100 && !h.idle.length; attempt++) await delay(10);
+    await until(() => h.idle.length === 1 && scheduled.indexOf(5, before) >= 0);
     assert.deepEqual(h.idle, ["0.4.7"], "the gap is found within the backed-off pace");
-    const reset = (await chat.calls())["thread/loaded/list"] ?? 0; await delay(100);
-    assert.ok(((await chat.calls())["thread/loaded/list"] ?? 0) - reset >= 6, "a gap resets the pace to the base one");
+    const reset = scheduled.indexOf(5, before);
+    await until(() => scheduled.length > reset + 1);
+    assert.equal(scheduled[reset + 1], 5, "a gap resets and keeps the base pace");
+    assert.equal(h.idle.length, 1, "later idle looks do not repeat the notification");
   } finally { await h.f.clean(); }
 });
 
