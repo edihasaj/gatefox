@@ -5,12 +5,13 @@ import { createHash } from 'node:crypto';
 import { readAsarFile } from '../claude-native-trial/asar.mjs';
 import { patchUnreadRenderer, patchPinnedUnreadRenderer, supportedUnreadTrial } from '../codex-unread-trial/patch.mjs';
 
-const bridge = 'export function installReadStateBridge(options){globalThis.testBridgeCalls.push(options);return{observe(message){globalThis.testObserved.push(message)},mark(id,unread){globalThis.testMarks.push([id,unread])},dispose(){}}}';
+const bridge = 'export function installReadStateBridge(options){globalThis.testBridgeCalls.push(options);return{snapshot(){return null},subscribe(){return()=>{}},observe(message){globalThis.testObserved.push(message)},mark(id,unread){globalThis.testMarks.push([id,unread])},dispose(){}}}';
 const fixture = `class Manager {
   cleanup=[];
   readState={values:new Map(),has(id){return this.values.get(id)},set(id,unread){this.values.set(id,unread)},isReady(){return true},subscribe(){return ()=>{}}};
   threadStore={params:{requestClient:{sendRequest(){}}}};
   constructor(){this.constructed=true;}
+  getHostId(){return 'fixture-host'}
   saveReadState(){}
   setConversationUnreadState(id,unread){this.readState.set(id,unread)}
   getThreadHasUnreadTurn(){}

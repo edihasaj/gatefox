@@ -269,7 +269,12 @@ try {
     try {
       await connection.sendRequest('thread/list', {limit: 100});
       assert.equal(store.has(id), true, 'Existing completion is unread before an explicit read');
-      store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      const latest = await connection.sendRequest('thread/turns/list', {threadId: id, limit: 1, sortDirection: 'desc', itemsView: 'full'});
+      // This fixture supplies a hydrated view; native-window hydration still needs separate verification.
+      const view = {visible: true, history: {isComplete: true, turns: latest.data.map(turn => ({turnId: turn.id, status: turn.status}))}};
+      assert.equal(await bridge.readVisible(id, () => view, () => {
+        store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      }), true, 'A matching hydrated view permits the guarded acknowledgement');
       await until(async () => (await writerRpc('thread/read', {threadId: id})).readState?.firstUnread === null, 'Durable read acknowledgement');
       bridge.dispose();
       await phone.backend.stop();
@@ -287,11 +292,19 @@ try {
       assert.equal(store.has(id), true, 'Reconnect receipt restores the unread boolean');
       assert.equal(loadedUi.get(id), true, 'The client receives an explicit UI state update');
       assert.equal(reconnected.events.some(message => message.method === 'turn/completed'), false, 'No synthetic terminal replay');
-      store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      assert.equal(await bridge.readVisible(id, () => view, () => {
+        throw Error('An old transcript must never reach the semantic read action');
+      }), false, 'Newly completed offline work is not cleared by the older loaded transcript');
+      view.history.turns = [{turnId: offline.turn.id, status: 'completed'}];
+      assert.equal(await bridge.readVisible(id, () => view, () => {
+        store.set(id, false); loadedUi.set(id, false); bridge.mark(id, false);
+      }), true, 'Hydrating the offline completion permits a fresh guarded read');
       await until(async () => (await writerRpc('thread/read', {threadId: id})).readState?.firstUnread === null, 'Reconnect read acknowledgement');
       await connection.sendRequest('thread/list', {limit: 100});
       assert.equal(store.has(id), false, 'A later refresh does not resurrect already-read attention');
       evidence.offlineUnreadReceiptApplied = true;
+      evidence.oldTranscriptDidNotClearNewWork = true;
+      evidence.guardedHydratedReadPersisted = true;
       evidence.explicitReadPersisted = true;
       evidence.readRefreshStayedRead = true;
       evidence.terminalReplayEvents = reconnected.events.filter(message => message.method === 'turn/completed').length;
