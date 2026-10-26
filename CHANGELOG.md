@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.9 — 2026-10-26
+
 - A secondary route with reasoning levels now appears in Claude Desktop's picker as
   `claude-opus-5[hg-route-<decimal>]`, keeping its real provider and model in the label, so the
   app shows its native reasoning slider for GPT, Qwen and other routed models. The row is capped
