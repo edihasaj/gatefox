@@ -67,9 +67,10 @@ wrapper uses that app-owned Node while continuing to load the selected installed
 JavaScript. Installing a CLI update preserves the registration. See
 [Node and tool permissions](macos-background-item.md#node-and-tool-permissions).
 
-1. Choose the next version with `npm run version:next`. The patch tops out at 9: after
-   `x.y.9` the next release is `x.(y+1).0`, and the minor keeps counting, so `0.9.9`
-   becomes `0.10.0`. A legacy patch above 9 such as `0.2.36` moves to `0.3.0`. Set that
+1. Choose the next version with `npm run version:next`. Minor and patch top out at 9:
+   after `x.y.9` increment the minor, and after `x.9.9` increment the major. Thus
+   `0.9.9` becomes `1.0.0` and `1.9.9` becomes `2.0.0`, never `x.10.x`.
+   A legacy patch above 9 such as `0.2.36` moves to `0.3.0`. Set that
    value in `package.json`, confirm it with `npm run version:next -- --check` (it prints
    `ok`, or the problem and a non-zero exit when the version is invalid), then update the
    lockfile. Run the development gate.
@@ -81,6 +82,11 @@ JavaScript. Installing a CLI update preserves the registration. See
 4. Run real model tool loops against the installed command on the test Mac. Use
    isolated native and gateway state directories. Record configuration digests,
    provider registration, client-requested chat names, and resume results.
+   For SSH proxy changes, run `scripts/e2e-ssh-proxy.mjs --package INSTALLED_PACKAGE
+   --codex SIGNED_NATIVE_CLI --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It uses the
+   real native byte proxy, a real WebSocket upgrade, and an isolated Unix listener
+   to verify that device identification precedes the initialize request only
+   inside the upgraded session. No account or provider inference is used.
    For gateway sub-agent routing, run `scripts/e2e-subagent-sidebar.mjs --package
    INSTALLED_PACKAGE --code CHECKOUT --root FRESH_EVIDENCE_DIRECTORY`.
    Repeat with `--private`, `--openai`, `--cold --mixed-identity`, and

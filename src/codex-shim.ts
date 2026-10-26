@@ -20,24 +20,29 @@ import { ListenerActivity } from "./ssh-listener-activity.js";
 import { runtimeBusy } from "./runtime-activity.js";
 import { appServerIndex, isAppServerSession } from "./codex-invocation.js";
 import { deviceKey } from "./device-key.js";
+import { sshProxyDeviceHeader } from "./ssh-proxy-header.js";
 
 export { appServerIndex } from "./codex-invocation.js";
 
 type ProxyChild = Pick<ChildProcess, "stdin" | "once">;
-/** The native proxy is a byte pipe; the one private hello must precede its client frames. */
+/** The native proxy is a byte pipe. Its optional identity belongs in the opening HTTP upgrade. */
 export async function proxyNative(executable: string, args: string[], env: NodeJS.ProcessEnv, input: NodeJS.ReadableStream,
   device: string | undefined, spawnNative: (command: string, childArgs: string[], options: { stdio: ["pipe", "inherit", "inherit"]; env: NodeJS.ProcessEnv }) => ProxyChild = spawn as never): Promise<[unknown, unknown]> {
   const child = spawnNative(executable, args, { stdio: ["pipe", "inherit", "inherit"], env });
   child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
   const stdin = child.stdin;
   if (!stdin) { const [code, signal] = await once(child as unknown as NodeJS.EventEmitter, "exit"); return [code, signal]; }
+  const header = sshProxyDeviceHeader(device);
   let stopped = false;
-  const stopInput = () => { if (!stopped) { stopped = true; input.unpipe(stdin); input.pause(); } };
+  const stopInput = () => {
+    if (!stopped) {
+      stopped = true; input.unpipe(header || stdin); header?.unpipe(stdin); header?.destroy(); input.pause();
+    }
+  };
   const onInputError = () => stopInput(), onStdinError = () => stopInput();
-  input.on("error", onInputError); stdin.on("error", onStdinError);
+  input.on("error", onInputError); stdin.on("error", onStdinError); header?.on("error", onInputError);
   try {
-    if (device) try { stdin.write(JSON.stringify({ method: "gateway/client", params: { device } }) + "\n"); } catch { stopInput(); }
-    if (!stopped) input.pipe(stdin);
+    if (!stopped) input.pipe(header || stdin); if (header) header.pipe(stdin);
     const [code, signal] = await once(child as unknown as NodeJS.EventEmitter, "exit");
     return [code, signal];
   } finally {

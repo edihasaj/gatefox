@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.0.0 — 2026-10-26
+
+- Desktop SSH app-server proxies now preserve the native HTTP/WebSocket handshake while
+  carrying their optional private device pseudonym in the opening Unix-socket upgrade.
+  The listener validates it only after the upgrade and keeps malformed, duplicate, absent,
+  or oversized headers as ordinary local sessions. Thanks to Edi Hasaj for reporting the
+  SSH regression.
+
+- Release versions now roll both minor and patch numbers over at nine, so
+  `0.9.9` advances to `1.0.0` and `1.9.9` advances to `2.0.0`.
+
 ## 0.9.9 — 2026-10-26
 
 - A secondary route with reasoning levels now appears in Claude Desktop's picker as

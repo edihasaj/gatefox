@@ -12,6 +12,7 @@ import { withPrivateFileLock } from "./private-file-lock.js";
 import { releasePattern, releaseState } from "./self-update.js";
 import { ownerStamp } from "./boot-identity.js";
 import { isManagedSshSocket, previousLease, repairSshLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
+import { DEVICE_HEADER, isDevicePseudonym } from "./ssh-proxy-header.js";
 
 /** What the process owning a listener uses to retire it after an install. */
 export interface UnixListenerControl {
@@ -90,6 +91,11 @@ export async function serveUnix(path: string, signal: AbortSignal,
   let retiring = false; let leaseTimer: NodeJS.Timeout | undefined; let inode: string | undefined; let device: string | undefined;
   server.on("upgrade", (req, socket, head) => {
     if (retiring || signal.aborted || active.size >= 8 || req.headers.origin || !["/", "/rpc"].includes(req.url || "")) { socket.destroy(); return; }
+    const supplied: string[] = [];
+    for (let index = 0; index < req.rawHeaders.length; index += 2) {
+      if (req.rawHeaders[index].toLowerCase() === DEVICE_HEADER) supplied.push(req.rawHeaders[index + 1] || "");
+    }
+    const clientDevice = supplied.length === 1 && isDevicePseudonym(supplied[0]) ? supplied[0] : undefined;
     sockets.handleUpgrade(req, socket, head, ws => {
       const control = new AbortController(); controllers.add(control);
       const input = new Readable({ read() { ws.resume(); } });
@@ -99,6 +105,9 @@ export async function serveUnix(path: string, signal: AbortSignal,
         if (binary) { ws.close(1003, "Text JSON-RPC frames required"); return; }
         if (!input.push(Buffer.concat([Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer), Buffer.from("\n")]))) ws.pause();
       });
+      // This private, post-upgrade notification is not a WebSocket frame supplied by the client.
+      // It gives shimSession the same first-message contract without corrupting the native handshake.
+      if (clientDevice) input.push(Buffer.from(JSON.stringify({ method: "gateway/client", params: { device: clientDevice } }) + "\n"));
       const emit = (message: Message) => new Promise<void>((resolve, reject) => {
         if (ws.readyState !== WebSocket.OPEN) { reject(new Error("Unix client disconnected")); return; }
         if (ws.bufferedAmount > 16 * 1024 * 1024) { ws.close(1009, "Client output queue exceeded"); reject(new Error("Unix client output queue exceeded")); return; }

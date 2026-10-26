@@ -11,15 +11,15 @@ const script = new URL("../../scripts/release-version.mjs", import.meta.url);
 const { nextReleaseVersion, releaseVersionProblem } = (await import(script.href)) as unknown as ReleaseVersion;
 const declared = (JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as { version: string }).version;
 
-test("next release version rolls the minor once the patch tops out at 9", () => {
-  for (const [from, to] of [["0.2.36", "0.3.0"], ["0.3.0", "0.3.1"], ["0.3.8", "0.3.9"], ["0.3.9", "0.4.0"], ["0.9.9", "0.10.0"], ["1.0.9", "1.1.0"]]) assert.equal(nextReleaseVersion(from), to);
+test("next release version rolls minor and patch at 9, then advances the major", () => {
+  for (const [from, to] of [["0.2.36", "0.3.0"], ["0.3.0", "0.3.1"], ["0.3.8", "0.3.9"], ["0.3.9", "0.4.0"], ["0.9.9", "1.0.0"], ["1.0.9", "1.1.0"], ["1.9.8", "1.9.9"], ["1.9.9", "2.0.0"], ["1.10.0", "2.0.0"]]) assert.equal(nextReleaseVersion(from), to);
 });
 test("next release version rejects malformed versions", () => {
   for (const version of ["1.2", "v0.3.0"]) assert.throws(() => nextReleaseVersion(version), /Invalid release version/);
 });
 test("release version problem accepts only canonical versions", () => {
-  for (const version of ["0.3.0", "0.3.9", "1.10.0"]) assert.equal(releaseVersionProblem(version), undefined);
-  for (const version of ["0.3.10", "0.2.36", "1.2", "v0.3.0"]) assert.match(String(releaseVersionProblem(version)), /patch tops out at 9/);
+  for (const version of ["0.3.0", "0.3.9", "1.0.0", "1.9.9"]) assert.equal(releaseVersionProblem(version), undefined);
+  for (const version of ["0.3.10", "0.2.36", "0.10.0", "1.10.0", "1.2", "v0.3.0"]) assert.match(String(releaseVersionProblem(version)), /minor and patch top out at 9/);
 });
 
 test("the script still runs when Node starts it through a symlink", () => {

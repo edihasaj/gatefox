@@ -150,7 +150,11 @@ non-terminal event.
 
 An SSH proxy identifies its client by hashing its SSH client address with a
 local, random private salt, so the ledger receives only a stable local pseudonym
-instead of an address. Sessions without that hello are `local`; relay
+instead of an address. It carries that pseudonym only in the private Unix
+WebSocket upgrade's `X-Harness-Gateway-Device` header; after the upgrade the
+listener validates one 32-hex value and synthesizes the internal
+`gateway/client` notification before decoded client frames. This leaves the
+native HTTP/WebSocket byte pipe intact. Sessions without that header are `local`; relay
 registration identifies only the host's remote-control route, not where an
 inbound app session originated. This means a Mac whose SSH address changes
 between sleep and wake is a new device and does not receive the earlier replay.

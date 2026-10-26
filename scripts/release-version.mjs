@@ -1,12 +1,13 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const canonical = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.[0-9]$/;
+const canonical = /^(0|[1-9]\d*)\.[0-9]\.[0-9]$/;
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
-export const releaseVersionProblem = version => canonical.test(String(version)) ? undefined : `Invalid release version ${version}; the patch tops out at 9, so use x.y.z with z from 0 to 9`;
+export const releaseVersionProblem = version => canonical.test(String(version)) ? undefined : `Invalid release version ${version}; the minor and patch top out at 9, so use x.y.z with y and z from 0 to 9`;
 export function nextReleaseVersion(version) {
   const parts = semver.exec(String(version)); if (!parts) throw new Error(`Invalid release version ${version}; expected x.y.z`);
   const [, major, minor, patch] = parts; const [y, z] = [Number(minor), Number(patch)];
+  if (y > 9 || (y === 9 && z >= 9)) return `${BigInt(major) + 1n}.0.0`;
   return z >= 9 ? `${major}.${y + 1}.0` : `${major}.${y}.${z + 1}`;
 }
 /** Node loads this file by its real path, so the entry point is compared the same way. */
