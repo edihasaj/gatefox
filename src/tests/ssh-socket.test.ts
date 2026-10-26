@@ -56,13 +56,25 @@ test("SSH listeners reuse live sockets and recover their own crashed sockets wit
   } finally { child.kill("SIGTERM"); await exited; f.close(); await folder.remove(); }
 });
 
-test("SSH proxy redirects only its child control home and never needs gateway credentials", { skip: process.platform === "win32" }, async () => {
+test("SSH proxy redirects only its child control home while loading its private device salt", { skip: process.platform === "win32" }, async () => {
   const f = await shimFiles(); const reporter = join(f.directory, "proxy");
   await writeFile(reporter, '#!/usr/bin/env node\nconsole.log(process.env.CODEX_HOME)\n', { mode: 0o700 });
   try {
-    const result = await promisify(execFile)(process.execPath, [f.cli, "codex-shim", "--ssh", "--ssh-home", "/tmp/gateway-proxy-home", "--config", "/absent.json", "--codex", reporter, "--", "app-server", "proxy"], { env: f.env });
+    const result = await promisify(execFile)(process.execPath, [f.cli, "codex-shim", "--ssh", "--ssh-home", "/tmp/gateway-proxy-home", "--config", f.config, "--codex", reporter, "--", "app-server", "proxy"], { env: f.env });
     assert.equal(result.stdout.trim(), "/tmp/gateway-proxy-home");
     assert.equal(f.env.CODEX_HOME, f.nativeHome);
+  } finally { f.close(); }
+});
+
+test("SSH proxy with a missing config preserves native proxy input", { skip: process.platform === "win32" }, async () => {
+  const f = await shimFiles(); const reporter = join(f.directory, "proxy-input"), missing = join(f.directory, "missing-gateway.json");
+  await writeFile(reporter, '#!/usr/bin/env node\nlet input="";process.stdin.setEncoding("utf8").on("data",chunk=>input+=chunk).on("end",()=>process.stdout.write(JSON.stringify({home:process.env.CODEX_HOME,input})));\n', { mode: 0o700 });
+  try {
+    for (const sshConnection of [undefined, "198.51.100.24 22 203.0.113.1 22"]) {
+      const child = spawn(process.execPath, [f.cli, "codex-shim", "--ssh", "--ssh-home", "/tmp/gateway-proxy-home", "--config", missing, "--codex", reporter, "--", "app-server", "proxy"], { env: { ...f.env, SSH_CONNECTION: sshConnection }, stdio: ["pipe", "pipe", "pipe"] });
+      let stdout = ""; child.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; }); child.stderr.resume(); child.stdin.end(); await once(child, "close");
+      assert.equal(child.exitCode, 0); assert.deepEqual(JSON.parse(stdout), { home: "/tmp/gateway-proxy-home", input: "" });
+    }
   } finally { f.close(); }
 });
 

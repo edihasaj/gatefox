@@ -6,7 +6,9 @@
   resumes from a sleep-time disconnect, so the current renderer can set its
   unread dot and completion alert. A private bounded ledger proves the adapter
   did not deliver the terminal to an app, and shared live/replay deduplication
-  prevents a duplicate event, tool action, or read-state change.
+  prevents a duplicate event, tool action, or read-state change. The ledger now
+  records delivery per device, so each Mac that missed a completion receives one
+  replay on its next resume while a device that received it live receives none.
 
 ## 0.9.8 — 2026-10-26
 

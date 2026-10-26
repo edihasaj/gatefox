@@ -1,5 +1,5 @@
 import { codexStreamIdleTimeoutMs } from "./codex-config.js";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,8 +19,39 @@ import { normalizeCodexFeatureArgs } from "./codex-feature-compat.js";
 import { ListenerActivity } from "./ssh-listener-activity.js";
 import { runtimeBusy } from "./runtime-activity.js";
 import { appServerIndex, isAppServerSession } from "./codex-invocation.js";
+import { deviceKey } from "./device-key.js";
 
 export { appServerIndex } from "./codex-invocation.js";
+
+type ProxyChild = Pick<ChildProcess, "stdin" | "once">;
+/** The native proxy is a byte pipe; the one private hello must precede its client frames. */
+export async function proxyNative(executable: string, args: string[], env: NodeJS.ProcessEnv, input: NodeJS.ReadableStream,
+  device: string | undefined, spawnNative: (command: string, childArgs: string[], options: { stdio: ["pipe", "inherit", "inherit"]; env: NodeJS.ProcessEnv }) => ProxyChild = spawn as never): Promise<[unknown, unknown]> {
+  const child = spawnNative(executable, args, { stdio: ["pipe", "inherit", "inherit"], env });
+  child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
+  const stdin = child.stdin;
+  if (!stdin) { const [code, signal] = await once(child as unknown as NodeJS.EventEmitter, "exit"); return [code, signal]; }
+  let stopped = false;
+  const stopInput = () => { if (!stopped) { stopped = true; input.unpipe(stdin); input.pause(); } };
+  const onInputError = () => stopInput(), onStdinError = () => stopInput();
+  input.on("error", onInputError); stdin.on("error", onStdinError);
+  try {
+    if (device) try { stdin.write(JSON.stringify({ method: "gateway/client", params: { device } }) + "\n"); } catch { stopInput(); }
+    if (!stopped) input.pipe(stdin);
+    const [code, signal] = await once(child as unknown as NodeJS.EventEmitter, "exit");
+    return [code, signal];
+  } finally {
+    // A final buffered EPIPE can arrive after `exit`; keep both swallowers through process teardown.
+    stopInput();
+  }
+}
+
+/** Identity is optional: a broken or absent config cannot change native proxy behavior. */
+export async function proxyDevice(configPath: string, sshConnection = process.env.SSH_CONNECTION): Promise<string | undefined> {
+  if (!sshConnection?.trim()) return undefined;
+  try { return await deviceKey((await loadConfig(resolve(configPath))).stateDirectory, sshConnection); }
+  catch { return undefined; }
+}
 
 /**
  * Keep a listener running. Another bootstrap can bind the socket while this process prepares
@@ -57,6 +88,11 @@ export async function codexShim(argv: string[]): Promise<void> {
   const command = appIndex >= 0 ? forwarded[appIndex + 1] : undefined;
   const decorate = isAppServerSession(forwarded);
   if (!decorate) {
+    if (command === "proxy" && controlHome) {
+      const device = await proxyDevice(values.config);
+      const [code, signal] = await proxyNative(executable, forwarded, { ...process.env, CODEX_HOME: controlHome }, process.stdin, device);
+      process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;
+    }
     const child = spawn(executable, forwarded, { stdio: "inherit", ...(command === "proxy" && controlHome ? { env: { ...process.env, CODEX_HOME: controlHome } } : {}) });
     child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
     const [code, signal] = await once(child, "exit"); process.exitCode = typeof code === "number" ? code : signal === "SIGINT" ? 130 : 1; return;

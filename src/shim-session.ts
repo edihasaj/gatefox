@@ -33,6 +33,15 @@ export function sessionIdleMs(raw = process.env.GATEWAY_SESSION_IDLE_MS): number
   return Number.isFinite(value) && value >= 0 && value <= 30000 ? value : 30000;
 }
 
+/** The proxy's private hello has no RPC identity and never reaches an engine. */
+export function gatewayClientDevice(message: Message, firstClientMessage: boolean, initialized: boolean): string | undefined {
+  const device = object(message.params).device;
+  return message.method === "gateway/client" && firstClientMessage && !initialized && message.id === undefined && typeof device === "string" && /^[0-9a-f]{32}$/.test(device) ? device : undefined;
+}
+
+/** Registration lets this host route remote control; it does not identify the inbound app session. */
+export function shimSessionDevice(_relay?: { home: string; nativeHome: string }): "local" { return "local"; }
+
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args,
@@ -45,7 +54,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   try { await source.initialize(); } catch (error) { unregisterActivity(); throw error; }
   let closing = false;
   let router: AppServerRouter | undefined;
-  const completionReplay = new CompletionReplay({ storage: completionReplayStorage(config.stateDirectory), request: (method, params) => router!.request(method, params), emit });
+  const completionReplay = new CompletionReplay({ storage: completionReplayStorage(config.stateDirectory), request: (method, params) => router!.request(method, params), emit, device: shimSessionDevice(relay), awaitClient: true });
   const send = async (message: Message): Promise<void> => {
     if (!completionReplay.forward(message)) return;
     try { await emit(message); void completionReplay.written(message); }
@@ -59,7 +68,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
   let backends: AppServerBackends;
   const announced = new AnnouncedThreads();
   const turns = new TurnTelemetry(threadId => describeChat(router?.describeThread(threadId), announced, threadId));
-  const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now();
+  const startedAt = Date.now(); let handled = 0; let lastActivity = Date.now(); let firstClientMessage = true; let initialized = false;
   const tasks = new Set<Promise<void>>();
   // Idle means no turn, no request in flight and no traffic for 30 s. The SSH listener asks this process-wide question (see
   // runtimeBusy) when it is asked to retire, and a session is busy from its first moment, while its engines still start.
@@ -114,11 +123,20 @@ export async function shimSession(executable: string, args: string[], config: Ga
     for await (const line of jsonLines(input)) {
       let message: Message;
       try { message = object(JSON.parse(line)); }
-      catch { await send({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
+      catch { if (firstClientMessage) completionReplay.settleDevice(); firstClientMessage = false; await send({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
       lastActivity = Date.now();
+      if (firstClientMessage) {
+        const device = gatewayClientDevice(message, true, initialized);
+        if (device) completionReplay.setDevice(device); else completionReplay.settleDevice();
+      }
+      if (message.method === "gateway/client") {
+        firstClientMessage = false;
+        continue;
+      }
+      firstClientMessage = false;
       if (typeof message.method === "string" && isId(message.id)) {
         handled++;
-        if (message.method === "initialize") { const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
+        if (message.method === "initialize") { initialized = true; const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
         if (tasks.size >= 256) { await send({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
         const creating = order.begin(message.method, object(message.params));
         // Writes are queued synchronously, so held notifications follow the reply in SDK order.

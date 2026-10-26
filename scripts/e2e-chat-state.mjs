@@ -17,9 +17,11 @@ const { values } = parseArgs({ options: { package: { type: 'string' }, root: { t
 assert.ok(!values['delayed-discovery'] || values['restart-discovery'], '--delayed-discovery requires --restart-discovery');
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
-const root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-chat-state-');
+const root = resolve(values.root);
+await mkdir(root, { recursive: true, mode: 0o700 });
+const fixture = await mkdtemp(join(root, 'fixture-'));
 const native = join(fixture, 'native'), state = join(fixture, 'state'), work = join(fixture, 'work');
-for (const folder of [root, native, state, work]) await mkdir(folder, { recursive: true, mode: 0o700 });
+for (const folder of [native, state, work]) await mkdir(folder, { recursive: true, mode: 0o700 });
 // These changes apply only to this fixture process and its own SDK children.
 process.env.CODEX_HOME = native;
 process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = '1';
@@ -46,6 +48,7 @@ const { writePrivateJson } = await load('config');
 const { configureTelemetry, flushTelemetry, readTelemetry } = await load('telemetry');
 const { ProviderError } = await load('providers/provider');
 const { CompletionReplay, completionReplayStorage } = await load('completion-replay');
+const { gatewayClientDevice } = await load('shim-session');
 if (values['executor-diagnostics']) configureTelemetry(state, 'fixture');
 setExecutionHostRootForTests(join(fixture, 'x'));
 setNativeOwnerRootForTests(join(fixture, 'n'));
@@ -106,7 +109,7 @@ try {
   const overrides = { name: 'Fixture', base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: 'responses',
     requires_openai_auth: false, supports_websockets: false, request_max_retries: 0, stream_idle_timeout_ms: 30_000,
     'auth.command': process.execPath, 'auth.args': [join(source, 'dist/cli.js'), 'token', '--config', configPath] };
-  async function client(name) {
+  async function client(name, device) {
     phase = name + ':initialize';
     const events = [], methods = [];
     let replay;
@@ -116,14 +119,18 @@ try {
     const router = new AppServerRouter(config, (method, params, hint) => {
       methods.push(method); return backend.request(method, params, hint);
     }, join(state, 'fixture-catalog.json'), undefined, native, backend.identity);
-    replay = new CompletionReplay({ storage: completionReplayStorage(state), request: (method, params) => router.request(method, params), emit: async message => { events.push(message); } });
+    replay = new CompletionReplay({ storage: completionReplayStorage(state), request: (method, params) => router.request(method, params), emit: async message => { events.push(message); }, awaitClient: true });
+    const first = device ? { method: 'gateway/client', params: { device } } : { id: 1, method: 'initialize', params: {} };
+    const identified = gatewayClientDevice(first, true, false);
+    if (identified) replay.setDevice(identified); else replay.settleDevice();
     clients.push(backend);
     await router.initialize();
     await router.request('initialize', { clientInfo: { name, version: '1' }, capabilities: { experimentalApi: true } });
     backend.notify({ method: 'initialized', params: {} });
     return { backend, router, events, methods, replay };
   }
-  const writer = await client('chat_state_writer');
+  const replayDevices = ['1'.repeat(32), '2'.repeat(32)];
+  const writer = await client('chat_state_writer', replayDevices[0]);
   const writerRpc = values.native ? (method, params) => writer.backend.native.request(method, params)
     : (method, params) => writer.router.request(method, params);
   phase = 'chat:start';
@@ -132,6 +139,8 @@ try {
   phase = 'chat:seed';
   const seed = await writerRpc('turn/start', { threadId: id, input: [{ type: 'text', text: 'Seed fixture history.' }] });
   await until(() => writer.events.find(message => message.method === 'turn/completed' && message.params.turn.id === seed.turn.id), 'Seed turn');
+  const sleepingSecond = values['replay-completion'] ? await client('completion_replay_sleeping_second', replayDevices[1]) : undefined;
+  if (sleepingSecond) await sleepingSecond.router.request('thread/resume', {threadId: id});
   gate = deferred();
   phase = 'chat:active';
   const active = await writerRpc('turn/start', { threadId: id, input: [{ type: 'text', text: 'Hold this fixture turn.' }] });
@@ -143,22 +152,23 @@ try {
   }
   if (values['replay-completion']) {
     assert.ok(!values.private && !values.native && !values.unread && !values['restart-discovery'] && !values['executor-diagnostics'], 'Completion replay requires shared gateway execution');
-    await writer.replay.settled(); await writer.backend.stop(); evidence.previousApplicationClientDisconnected = true;
+    await until(() => sleepingSecond.events.some(message => message.method === 'turn/started' && message.params.threadId === id && message.params.turn.id === active.turn.id), 'Second device follows active turn');
+    await Promise.all([writer.replay.settled(), sleepingSecond.replay.settled()]); await Promise.all([writer.backend.stop(), sleepingSecond.backend.stop()]); evidence.previousApplicationClientDisconnected = true;
     phase = 'replay:offline-completion'; gate.resolve();
-    const reader = await client('completion_replay_reader');
-    await until(async () => (await reader.router.request('thread/turns/list', {threadId: id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded'})).data[0]?.status === 'completed', 'Offline completion');
+    const readers = await Promise.all(replayDevices.map((device, index) => client(`completion_replay_reader_${index + 1}`, device)));
+    await until(async () => (await readers[0].router.request('thread/turns/list', {threadId: id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded'})).data[0]?.status === 'completed', 'Offline completion');
     // This fixture owns the router directly instead of shimSession's JSON pipe;
     // awaiting its RPC is the same successful reply boundary before the shared
     // CompletionReplay instance runs, without adding a second app-server layer.
-    const resume = async () => { await reader.router.request('thread/resume', {threadId: id}); await reader.replay.resume(id); };
-    phase = 'replay:resume'; await resume();
-    await until(() => reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length === 1, 'One replayed completion');
-    await resume();
-    assert.equal(reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length, 1, 'A second resume must not replay');
+    const resume = async reader => { await reader.router.request('thread/resume', {threadId: id}); await reader.replay.resume(id); };
+    phase = 'replay:resume'; await Promise.all(readers.map(resume));
+    await until(() => readers.every(reader => reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length === 1), 'One replayed completion per device');
+    await Promise.all(readers.map(resume));
+    assert.ok(readers.every(reader => reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length === 1), 'A second resume must not replay');
     assert.equal(calls, 2, 'Replay must not start inference');
     evidence.replayedCompletionTurnId = active.turn.id;
     evidence.replayedCompletionStatus = 'completed';
-    evidence.replayedCompletionEvents = 1;
+    evidence.replayedCompletionEvents = 2;
   } else {
   const phone = await client('chat_state_list_client');
   let restoreDiscovery;

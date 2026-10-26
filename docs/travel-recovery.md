@@ -128,25 +128,34 @@ thread but can miss a terminal that the shared executor emitted while no app
 session was attached; its durable SDK read receipt does not repair that state.
 
 The adapter keeps a private host-wide ledger at
-`<state>/completion-replay.json`. It records a followed turn and marks it
-delivered when an adapter forwards its terminal frame. After a successful
-`thread/resume`, the adapter reads the SDK's latest turn and may forward that
-exact terminal frame once. The record is shared by every local adapter process,
-is bounded to 512 threads and seven days, and only a terminal completed within
-24 hours is eligible.
+`<state>/completion-replay.json`. It records a followed turn separately for
+each device and marks it delivered when that device's adapter forwards its
+terminal frame. After a successful `thread/resume`, the adapter reads the SDK's
+latest turn and may forward that exact terminal frame once. The record is shared
+by every local adapter process, is bounded to 512 device/thread entries and
+seven days, and only a terminal completed within 24 hours is eligible.
 
 ```text
-followed turn → app disconnects → SDK finishes → fresh session resumes
-                                      ↓
-                     latest saved terminal is replayed once
+device follows turn → app disconnects → SDK finishes → that device resumes
+                                            ↓
+                           latest saved terminal is replayed once
 ```
 
 The ledger atomically claims the replay before it emits, so concurrently
-resuming disconnected sessions cannot both replay it. A claim is released when
-its app write fails and an unconfirmed claim expires after one minute; a
-normally connected app still receives its own live terminal event. The adapter
-never replays a start, tool action, approval, read state, or non-terminal event.
-Relay-based ChatGPT remote-control sessions are not covered.
+resuming sessions from the same device cannot both replay it. A claim is
+released when its app write fails and an unconfirmed claim expires after one
+minute; a normally connected app still receives its own live terminal event.
+The adapter never replays a start, tool action, approval, read state, or
+non-terminal event.
+
+An SSH proxy identifies its client by hashing its SSH client address with a
+local, random private salt, so the ledger receives only a stable local pseudonym
+instead of an address. Sessions without that hello are `local`; relay
+registration identifies only the host's remote-control route, not where an
+inbound app session originated. This means a Mac whose SSH address changes
+between sleep and wake is a new device and does not receive the earlier replay.
+It also still depends on ChatGPT reloading the chats it was streaming after
+reconnect; that behavior was observed in 26.1021.31345.
 
 See the [isolated unread prototype](codex-unread-trial.md) for the renderer
 evidence and the separate client-side testing boundary.
