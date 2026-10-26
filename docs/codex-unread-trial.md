@@ -31,10 +31,13 @@ Current renderer   → ignores receipt → no blue dot
 Prototype bridge   → consumes receipt → existing unread store
 ```
 
-Replaying old completion events is not a safe substitute. The renderer has no
-general completion-ID deduplication before unread and notification side effects;
-replay could mark an already-read chat unread or repeat an alert. Passive
-gateway observers must remain status-only.
+Replaying arbitrary old completion events is not a safe substitute. The renderer
+has no general completion-ID deduplication before unread and notification side
+effects; replay could mark an already-read chat unread or repeat an alert.
+The bounded gateway replay instead requires a ledger proving that no app adapter
+received the terminal frame, checks the SDK's latest terminal turn after resume,
+and shares per-session deduplication with live delivery. Passive gateway
+observers remain status-only.
 
 ## Prototype boundary
 

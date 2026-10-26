@@ -120,11 +120,36 @@ The SDK handles provider stream reconnection. A request whose retries are
 exhausted remains a real failure, and queued work remains available for an
 explicit continuation. The gateway never replays uncertain side effects.
 
-Completed work and the sidebar's unread dot are separate states. The current
-desktop renderer can miss its dot after an offline completion even when the
-SDK returns a durable unread receipt. See the
-[isolated unread prototype](codex-unread-trial.md) for the evidence and the
-client-side testing boundary; it is not an installed gateway fix.
+## Unread dot after sleep
+
+The desktop renderer sets its unread dot and completion alert only when it
+receives a live terminal event for a loaded thread. After sleep, it resumes the
+thread but can miss a terminal that the shared executor emitted while no app
+session was attached; its durable SDK read receipt does not repair that state.
+
+The adapter keeps a private host-wide ledger at
+`<state>/completion-replay.json`. It records a followed turn and marks it
+delivered when an adapter forwards its terminal frame. After a successful
+`thread/resume`, the adapter reads the SDK's latest turn and may forward that
+exact terminal frame once. The record is shared by every local adapter process,
+is bounded to 512 threads and seven days, and only a terminal completed within
+24 hours is eligible.
+
+```text
+followed turn → app disconnects → SDK finishes → fresh session resumes
+                                      ↓
+                     latest saved terminal is replayed once
+```
+
+The ledger atomically claims the replay before it emits, so concurrently
+resuming disconnected sessions cannot both replay it. A claim is released when
+its app write fails and an unconfirmed claim expires after one minute; a
+normally connected app still receives its own live terminal event. The adapter
+never replays a start, tool action, approval, read state, or non-terminal event.
+Relay-based ChatGPT remote-control sessions are not covered.
+
+See the [isolated unread prototype](codex-unread-trial.md) for the renderer
+evidence and the separate client-side testing boundary.
 
 Mosh's terminal reconnection does not provide these JSON-RPC ownership or
 approval guarantees. The existing SSH and connected-machine transports remain

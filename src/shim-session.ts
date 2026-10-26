@@ -16,6 +16,7 @@ import { ThreadStartOrder } from "./thread-start-order.js";
 import { nativeThreadAbsent } from "./native-thread-absence.js";
 import { rpcRejection } from "./rpc-rejection.js";
 import { applyCodexHookCorrections, hasLegacyCodexHookConfig, normalizeCodexFeatureRequest, rewrittenCodexHookScopes, scopedCodexFeatureBase } from "./codex-feature-compat.js";
+import { CompletionReplay, completionReplayStorage } from "./completion-replay.js";
 
 /** One transport owns its RPC clients, approvals, and cancellation routing. */
 export function operationalStartFailure(error: unknown): boolean {
@@ -43,11 +44,17 @@ export async function shimSession(executable: string, args: string[], config: Ga
   const unregisterActivity = registerActivityProbe("adapter_session", () => !started || !idle());
   try { await source.initialize(); } catch (error) { unregisterActivity(); throw error; }
   let closing = false;
+  let router: AppServerRouter | undefined;
+  const completionReplay = new CompletionReplay({ storage: completionReplayStorage(config.stateDirectory), request: (method, params) => router!.request(method, params), emit });
+  const send = async (message: Message): Promise<void> => {
+    if (!completionReplay.forward(message)) return;
+    try { await emit(message); void completionReplay.written(message); }
+    catch (error) { completionReplay.failed(message); throw error; }
+  };
   // The caller decided once whether a relay is registered. It owns every remote-control request while
   // NativeControl reconnects its private socket; an unavailable relay fails those requests rather than using the engine.
-  const control = relay ? new NativeControl(relay.home, emit) : undefined;
+  const control = relay ? new NativeControl(relay.home, send) : undefined;
   const rewrittenHooks = rewrittenCodexHookScopes(originalArgs, prepared.settings);
-  let router: AppServerRouter | undefined;
   const order = new ThreadStartOrder();
   let backends: AppServerBackends;
   const announced = new AnnouncedThreads();
@@ -64,8 +71,8 @@ export async function shimSession(executable: string, args: string[], config: Ga
       if (!isId(message.id)) { announced.observe(message, engine); turns.observe(message); lastActivity = Date.now(); }
       if (control && message.method === "remoteControl/status/changed") return;
       // Server requests keep their own correlation; only notifications wait for a new thread's reply.
-      if (isId(message.id)) { await Promise.all(order.before(message).map(emit)); await emit(message); return; }
-      await Promise.all(order.admit(message).map(emit));
+      if (isId(message.id)) { await Promise.all(order.before(message).map(send)); await send(message); return; }
+      await Promise.all(order.admit(message).map(send));
     }, () => input.destroy(), configPath, signal);
   } catch (error) {
     control?.close(); turns.close(); unregisterActivity();
@@ -107,16 +114,20 @@ export async function shimSession(executable: string, args: string[], config: Ga
     for await (const line of jsonLines(input)) {
       let message: Message;
       try { message = object(JSON.parse(line)); }
-      catch { await emit({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
+      catch { await send({ id: null, error: { code: -32700, message: "Invalid client JSON" } }); continue; }
       lastActivity = Date.now();
       if (typeof message.method === "string" && isId(message.id)) {
         handled++;
         if (message.method === "initialize") { const info = object(object(message.params).clientInfo); telemetry("adapter_client", { client: typeof info.name === "string" ? info.name : "unknown", clientVersion: typeof info.version === "string" ? info.version : undefined }); }
-        if (tasks.size >= 256) { await emit({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
+        if (tasks.size >= 256) { await send({ id: message.id, error: { code: -32000, message: "Too many pending client requests" } }); continue; }
         const creating = order.begin(message.method, object(message.params));
         // Writes are queued synchronously, so held notifications follow the reply in SDK order.
-        const answer = (reply: Message, created?: string) => { const written = emit(reply); if (creating) for (const held of order.settle(created)) void emit(held).catch(() => {}); return written; };
-        const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(result => answer({ id: message.id, result }, typeof object(result.thread).id === "string" ? String(object(result.thread).id) : undefined), error => {
+        const answer = (reply: Message, created?: string) => { const written = send(reply); if (creating) for (const held of order.settle(created)) void send(held).catch(() => {}); return written; };
+        const task = compatible(message.method, object(message.params)).then(params => router!.request(message.method as string, params)).then(async result => {
+          await answer({ id: message.id, result }, typeof object(result.thread).id === "string" ? String(object(result.thread).id) : undefined);
+          const threadId = object(message.params).threadId;
+          if (message.method === "thread/resume" && typeof threadId === "string") void completionReplay.resume(threadId).catch(() => {});
+        }, error => {
           const failure = error as Error & { code?: number; data?: unknown };
           // Routing errors carry fixed gateway text; other failures are classified only.
           const routing = error instanceof AppServerRoutingError;
@@ -127,7 +138,7 @@ export async function shimSession(executable: string, args: string[], config: Ga
         });
         tasks.add(task); void task.finally(() => tasks.delete(task)).catch(stop);
       } else if (typeof message.method === "string") backends.notify(message);
-      else if (!backends.reply(message)) await emit({ id: isId(message.id) ? message.id : null, error: { code: -32600, message: "Invalid client message or unknown server request" } });
+      else if (!backends.reply(message)) await send({ id: isId(message.id) ? message.id : null, error: { code: -32600, message: "Invalid client message or unknown server request" } });
     }
   } catch (error) { if (!closing && !backends.native.closed) throw error; }
   finally {

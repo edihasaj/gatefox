@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Desktop adapters now replay one verified terminal completion after a chat
+  resumes from a sleep-time disconnect, so the current renderer can set its
+  unread dot and completion alert. A private bounded ledger proves the adapter
+  did not deliver the terminal to an app, and shared live/replay deduplication
+  prevents a duplicate event, tool action, or read-state change.
+
 ## 0.9.8 — 2026-10-26
 
 - Explicitly selected tools work with Chat Completions providers that end named tool calls with `stop`, including local Qwen through vLLM. Both Responses and Messages clients receive the validated tool call. Tool selection, call IDs, JSON, custom input, truncation, and stream-terminal checks remain enforced.

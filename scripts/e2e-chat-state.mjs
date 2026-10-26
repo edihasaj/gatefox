@@ -13,7 +13,7 @@ const { values } = parseArgs({ options: { package: { type: 'string' }, root: { t
   native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
   unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
   'executor-diagnostics': { type: 'boolean', default: false }, 'restart-discovery': { type: 'boolean', default: false },
-  'delayed-discovery': { type: 'boolean', default: false } } });
+  'delayed-discovery': { type: 'boolean', default: false }, 'replay-completion': { type: 'boolean', default: false } } });
 assert.ok(!values['delayed-discovery'] || values['restart-discovery'], '--delayed-discovery requires --restart-discovery');
 assert.ok(values.package && values.root, 'Pass --package INSTALLED_PACKAGE --root EVIDENCE_DIRECTORY');
 const source = resolve(values.code ?? fileURLToPath(new URL('..', import.meta.url))), pkg = resolve(values.package);
@@ -45,6 +45,7 @@ const { startGateway } = await load('server');
 const { writePrivateJson } = await load('config');
 const { configureTelemetry, flushTelemetry, readTelemetry } = await load('telemetry');
 const { ProviderError } = await load('providers/provider');
+const { CompletionReplay, completionReplayStorage } = await load('completion-replay');
 if (values['executor-diagnostics']) configureTelemetry(state, 'fixture');
 setExecutionHostRootForTests(join(fixture, 'x'));
 setNativeOwnerRootForTests(join(fixture, 'n'));
@@ -108,17 +109,19 @@ try {
   async function client(name) {
     phase = name + ':initialize';
     const events = [], methods = [];
+    let replay;
     const backend = await AppServerBackends.create(values['native-engine'] ?? sdk, ['app-server', '--listen', 'stdio://'], config, {}, overrides, catalog,
-      async message => { events.push(message); }, () => {}, configPath);
+      async message => { if (!replay || !replay.forward(message)) return; events.push(message); await replay.written(message); }, () => {}, configPath);
     backend.resolveRuntime = async () => runtime;
     const router = new AppServerRouter(config, (method, params, hint) => {
       methods.push(method); return backend.request(method, params, hint);
     }, join(state, 'fixture-catalog.json'), undefined, native, backend.identity);
+    replay = new CompletionReplay({ storage: completionReplayStorage(state), request: (method, params) => router.request(method, params), emit: async message => { events.push(message); } });
     clients.push(backend);
     await router.initialize();
     await router.request('initialize', { clientInfo: { name, version: '1' }, capabilities: { experimentalApi: true } });
     backend.notify({ method: 'initialized', params: {} });
-    return { backend, router, events, methods };
+    return { backend, router, events, methods, replay };
   }
   const writer = await client('chat_state_writer');
   const writerRpc = values.native ? (method, params) => writer.backend.native.request(method, params)
@@ -138,6 +141,25 @@ try {
     await writer.backend.stop();
     evidence.previousApplicationClientDisconnected = true;
   }
+  if (values['replay-completion']) {
+    assert.ok(!values.private && !values.native && !values.unread && !values['restart-discovery'] && !values['executor-diagnostics'], 'Completion replay requires shared gateway execution');
+    await writer.replay.settled(); await writer.backend.stop(); evidence.previousApplicationClientDisconnected = true;
+    phase = 'replay:offline-completion'; gate.resolve();
+    const reader = await client('completion_replay_reader');
+    await until(async () => (await reader.router.request('thread/turns/list', {threadId: id, limit: 1, sortDirection: 'desc', itemsView: 'notLoaded'})).data[0]?.status === 'completed', 'Offline completion');
+    // This fixture owns the router directly instead of shimSession's JSON pipe;
+    // awaiting its RPC is the same successful reply boundary before the shared
+    // CompletionReplay instance runs, without adding a second app-server layer.
+    const resume = async () => { await reader.router.request('thread/resume', {threadId: id}); await reader.replay.resume(id); };
+    phase = 'replay:resume'; await resume();
+    await until(() => reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length === 1, 'One replayed completion');
+    await resume();
+    assert.equal(reader.events.filter(message => message.method === 'turn/completed' && message.params.threadId === id && message.params.turn.id === active.turn.id).length, 1, 'A second resume must not replay');
+    assert.equal(calls, 2, 'Replay must not start inference');
+    evidence.replayedCompletionTurnId = active.turn.id;
+    evidence.replayedCompletionStatus = 'completed';
+    evidence.replayedCompletionEvents = 1;
+  } else {
   const phone = await client('chat_state_list_client');
   let restoreDiscovery;
   if (values['delayed-discovery']) {
@@ -264,6 +286,7 @@ try {
       evidence.readRefreshStayedRead = true;
       evidence.terminalReplayEvents = reconnected.events.filter(message => message.method === 'turn/completed').length;
     } finally { bridge.dispose(); }
+  }
   }
   evidence.mockInferenceRequests = calls;
   evidence.passed = true;
