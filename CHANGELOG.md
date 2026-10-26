@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.8 — 2026-10-26
+
+- Explicitly selected tools work with Chat Completions providers that end named tool calls with `stop`, including local Qwen through vLLM. Both Responses and Messages clients receive the validated tool call. Tool selection, call IDs, JSON, custom input, truncation, and stream-terminal checks remain enforced.
+
 ## 0.9.7 — 2026-10-25
 
 - Restarted desktop clients recover running indicators when their first shared-executor discovery or metadata read is unavailable. The adapter retries saved rows from the client's own chat list and sends verified status snapshots after the executor answers, without requiring a manual refresh or starting another turn. Newer SDK status events, native live rows, and pending approvals retain their authority. Thanks to Edi Hasaj for requesting automatic running-agent discovery after restarting ChatGPT.

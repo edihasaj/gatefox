@@ -202,7 +202,9 @@ export class ChatCompletionsAPI implements Provider {
         if (event.type === "chat.done") {
           const capped = context.clientProtocol === "messages" && finish === "length";
           const complete = !!finish && (["stop", "tool_calls"].includes(finish) || capped);
-          if (!complete || ((finish === "tool_calls") !== (calls.size > 0)) || (capped && calls.size > 0)) throw incomplete("Chat API response was incomplete or refused");
+          // vLLM ends an explicitly selected named-tool call with stop rather than tool_calls.
+          const namedToolStop = finish === "stop" && choice !== null && typeof choice === "object" && calls.size > 0;
+          if (!complete || (!namedToolStop && ((finish === "tool_calls") !== (calls.size > 0))) || (capped && calls.size > 0)) throw incomplete("Chat API response was incomplete or refused");
           if ((choice === "required" || typeof choice === "object") && !calls.size) throw new ProviderError("invalid_tool_call", "Chat API omitted the required tool");
           done = true;
           const noVisibleOutput = finish === "stop" && !calls.size && !textBytes && !toolFragments;

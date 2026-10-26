@@ -200,6 +200,14 @@ keep the Codex connection alive every fifteen seconds. They retain the response
 identity and sequence and contain no invented text or completion. Heartbeats stop
 on completion, failure, disconnect, or deadline.
 
+Chat Completions providers accept `finish_reason: "stop"` with tool calls only
+when the caller explicitly selects a named tool, matching vLLM's named-tool
+completion format. Every call still requires the selected tool identity, a
+unique nonempty ID, and valid object JSON; custom tools also require string
+`input`. Automatic, required, and disabled tool selection cannot complete with
+`stop` plus tool calls. Truncated streams and tool calls capped by `length`
+still fail. This applies to both Responses and Messages ingress.
+
 Provider failures emit `response.failed`, including failures before the first
 output delta. Nonstream requests retain the corresponding HTTP error status.
 Responses upstream `context_length_exceeded` errors keep that code so Codex's

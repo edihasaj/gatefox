@@ -8,6 +8,7 @@ import { writePrivateJson, loadConfig } from "../config.js";
 import { prepareDesktop } from "../desktop-launch.js";
 import { modelCatalog } from "../catalog.js";
 import { codexSettings, gatewayProviderTable } from "../codex-config.js";
+import { gatewayCommand } from "../command.js";
 import { apiModeActive, apiModeCatalogPath, apiModeReceiptPath, desktopApiMode, refreshApiModeCatalog, apiModeProvider } from "../desktop-api-mode.js";
 import { macDesktop, presetDesktopEnv } from "../mac-desktop.js";
 import { withLoginRegistrationLock } from "../login-registration-lock.js";
@@ -330,7 +331,7 @@ test("the shared provider builder keeps the adapter's settings exactly as they w
   assert.equal(settings.includes('model_provider = "subscription_gateway"'), true);
   assert.equal(settings.includes("[model_providers.subscription_gateway.auth]"), true);
   assert.equal(settings.includes("stream_idle_timeout_ms = 90000"), true);
-  assert.equal(settings.includes('args = ["token", "--config", "/state/gateway.json"]'), true);
+  assert.equal(settings.includes(`args = [${[...gatewayCommand().args, "token", "--config", "/state/gateway.json"].map(value => JSON.stringify(value)).join(", ")}]`), true);
 });
 
 /** A registration the daemon can preset: the receipt names a real, executable wrapper and the release runtime exists. */
