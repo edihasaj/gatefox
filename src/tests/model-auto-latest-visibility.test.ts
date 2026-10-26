@@ -10,7 +10,7 @@ import { gatewayModelList } from "../app-server-model-list.js";
 import { gatewayToken, type GatewayConfig, type ModelMetadata, type ProviderConfig } from "../config.js";
 import { nativeClaudeModels } from "../providers/claude-models.js";
 import { nativeCopilotModels } from "../providers/copilot-models.js";
-import { createGatewayHandler } from "../server.js";
+import { adoptGatewayHandler, createGatewayHandler } from "../server.js";
 import { maximumReleasedAt, minimumReleasedAt, normalizeReleasedAt, pickerHiddenAliases, releasedAtMetadata } from "../model-auto-latest/metadata.js";
 
 type ObjectValue = Record<string, unknown>;
@@ -133,7 +133,8 @@ test("/v1/models and gateway-info hide old models, the full catalog keeps them, 
   const directory = await mkdtemp(join(tmpdir(), "gateway-hidden-visibility-"));
   const models: string[] = [];
   const handler = await createGatewayHandler(config(directory), () => ({ async *infer(request: { model: string }) { models.push(request.model); yield { type: "text", text: "ok" }; yield { type: "done", usage }; } }));
-  const server = createServer(handler.handle); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  // Close through the gateway's drain so usage writes finish before the fixture directory is removed.
+  const server = adoptGatewayHandler(createServer(), handler); await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { Authorization: `Bearer ${await gatewayToken(directory)}`, "Content-Type": "application/json" };
   try {
