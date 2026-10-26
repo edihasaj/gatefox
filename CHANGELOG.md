@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.0.2 — 2026-10-26
+
+- Unix/SSH sessions no longer disconnect repeatedly when a newer release is
+  installed. The containing listener owns upgrade retirement; ending one session
+  cannot upgrade that already-running process. Existing sessions keep their
+  native executor, while stdio adapters retain their normal idle upgrade path.
+  Thanks to Edi Hasaj for reporting frequent connected-machine drops.
+- Connection diagnostics now distinguish local session completion or failure,
+  listener shutdown, protocol and queue limits, socket errors, and unclassified
+  transport closure. `gateway diagnostics` groups close causes and WebSocket codes
+  without recording close-reason text, exception messages, or request contents.
+- The experimental unread-receipt candidate has additional race and hydration
+  guards. It remains outside the installed client; this release does not modify
+  the signed ChatGPT app or claim that its unread UI has been verified.
+
 ## 1.0.1 — 2026-10-26
 
 - Stock desktop adapters no longer replay a historical completion when a chat resumes.
