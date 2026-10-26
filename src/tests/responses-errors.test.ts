@@ -5,6 +5,7 @@ import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
 import { responsesHttpError, responsesStreamError } from "../providers/responses-errors.js";
 import { streamFailureCode } from "../provider-failure.js";
+import { configureThrottleRetryTiming, resetThrottleRetryTiming } from "../providers/throttle-retry.js";
 
 const privateMessage = "upstream secret or caller prompt must not escape";
 async function failure(status: number, value: unknown): Promise<ProviderError> {
@@ -53,10 +54,14 @@ test("Responses authentication and capacity HTTP statuses cannot be replaced by 
 });
 
 test("Responses stream rate, quota, and authentication failures stay distinct", async () => {
-  for (const [code, expected, status] of [["rate_limit_exceeded", "rate_limit_exceeded", 429], ["insufficient_quota", "insufficient_quota", 429], ["invalid_api_key", "authentication", 401]] as const) {
-    const error = await failure(200, { type: "response.failed", response: { error: { code, message: privateMessage } } });
-    assert.equal(error.code, expected); assert.equal(error.status, status);
-  }
+  let now = 0;
+  configureThrottleRetryTiming({ now: () => now, random: () => 0.5, sleep: async ms => { now += ms; } });
+  try {
+    for (const [code, expected, status] of [["rate_limit_exceeded", "rate_limit_exceeded", 429], ["insufficient_quota", "insufficient_quota", 429], ["invalid_api_key", "authentication", 401]] as const) {
+      const error = await failure(200, { type: "response.failed", response: { error: { code, message: privateMessage } } });
+      assert.equal(error.code, expected); assert.equal(error.status, status);
+    }
+  } finally { resetThrottleRetryTiming(); }
 });
 
 test("stream quota classes in code or type stop retries across error envelopes", () => {
