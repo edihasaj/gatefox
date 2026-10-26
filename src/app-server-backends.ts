@@ -27,6 +27,7 @@ import { BoundedIdSet } from "./bounded-id-set.js";
 import { telemetry } from "./telemetry.js";
 import { NativeTurnTracker, nativeId } from "./native-turns.js";
 import { ChatIdentity, hasParent, legacyGatewayProvider, noSlugs, threadFacts, type ChatKind, type EngineHint, type IdentityCatalogs } from "./chat-identity.js";
+import { parentOf } from "./gateway-chat-classifier.js";
 import { executorOverrides, executorServesProvider, nativeEnvironment, newChatProvider } from "./executor-identity.js";
 import { ChatLoads, Reattacher, ReattachError, isHostFailure, markHostFailure } from "./executor-reattach.js";
 import { AppServerChatList, type ChatListDiscovery, type ChatListSource } from "./app-server-chat-list.js";
@@ -636,6 +637,22 @@ export class AppServerBackends {
     const record = await (await this.pool())?.find(threadId);
     return record ? this.shared(record) : undefined;
   }
+  /**
+   * The existing executor that owns a child's immediate parent. A V2 child can only
+   * resume through the loaded parent's SDK runtime, so selecting the current
+   * generation merely because the child itself is unloaded sends the request to the
+   * wrong owner. This looks only one parent deep and never loads or resumes it.
+   */
+  private async parentOwner(thread: unknown): Promise<{ engine: Engine; reserved: boolean } | undefined> {
+    const parentId = parentOf(threadFacts(thread) ?? {});
+    if (!parentId) return undefined;
+    const bound = this.bindings.get(parentId);
+    if (bound && !bound.connection.closed) return { engine: bound, reserved: false };
+    const owner = await this.owner(parentId);
+    if (!owner) return undefined;
+    if (owner.connection.closed) { owner.requests--; return undefined; }
+    return { engine: owner, reserved: true };
+  }
   private async gateway(): Promise<Engine> {
     if (this.closing) throw new Error("Codex desktop connection is closing");
     if (!this.catalog.current().models.length) await this.catalog.refresh(true);
@@ -920,8 +937,18 @@ export class AppServerBackends {
         if (!engine) {
           const probe = await this.nativeRequest("thread/read", { threadId: params.threadId, includeTurns: false })
             .catch(error => { if (nativeThreadAbsent(error, String(params.threadId))) return undefined; throw error; });
-          const found = probe && await this.verdict(probe.thread, params.threadId, method);
-          if (found && found.kind === "gateway") { await this.keep(probe!.thread, params.threadId, found.rule); engine = await this.gateway(); reserved = true; }
+          // The host's saved-thread store now serves several parents. Require the
+          // exact requested row and let the gateway classifier validate its ancestry
+          // before either the parent owner or a fresh generation can receive it.
+          const found = probe && object(probe.thread).id === params.threadId && await this.verdict(probe.thread, params.threadId, method);
+          if (found && found.kind === "gateway") {
+            await this.keep(probe!.thread, params.threadId, found.rule);
+            // Owner-mediated V2 resumes must stay with the loaded immediate parent's
+            // SDK. Prefer that generation over the adapter's current catalog generation.
+            const parent = method === "thread/resume" ? await this.parentOwner(probe!.thread) : undefined;
+            if (parent) { engine = parent.engine; reserved = parent.reserved; }
+            else { engine = await this.gateway(); reserved = true; }
+          }
         }
       }
     }

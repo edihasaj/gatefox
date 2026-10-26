@@ -39,6 +39,25 @@ privately across restart. A changed authentication-directory route (Claude), a r
 provider, or a changed credential (Codex) does not inherit an old row. Clients that only
 know Claude rows ignore the Codex rows.
 
+## Opening an unloaded subagent
+
+Multi-Agent V2 children resume through their loaded immediate parent's SDK.
+If a model catalog or role change created a newer executor generation, the
+adapter must still open an unloaded child on the parent's existing generation.
+Starting a current-generation executor instead can return `-32600`: “cannot
+resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent
+first, or use thread/read to inspect it”. The desktop then fails hydration even
+though the child's saved history remains readable. This affects local and API
+models alike.
+
+The adapter checks the saved child's identity and gateway classification, then
+uses the immediate parent's existing binding or shared owner for `thread/resume`.
+It does not load a parent, start a turn or change caller settings. If no parent
+is loaded, the SDK's existing refusal remains; `thread/read` and
+`thread/turns/list` can still inspect saved history. Paginated histories require
+the native `thread_history_1.sqlite` store as well as the rollout files when
+reproducing a read in an isolated home.
+
 ## Native picker selection
 
 `nativeModelPicker` in the gateway configuration optionally lists the exact

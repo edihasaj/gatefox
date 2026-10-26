@@ -1,0 +1,115 @@
+{
+  "checkedAt": "2026-10-26T18:03:44.629045+00:00",
+  "problem": "An unloaded V2 subagent was resumed on the current catalog generation although its parent was loaded on an older executor.",
+  "providerIndependent": true,
+  "liveOldAdapter": [
+    {
+      "loadedCount": 51,
+      "parentLoaded": true,
+      "childLoaded": false
+    },
+    {
+      "method": "thread/read",
+      "ms": 9,
+      "turns": 1,
+      "items": 4,
+      "types": [
+        "reasoning",
+        "commandExecution",
+        "agentMessage"
+      ]
+    },
+    {
+      "method": "thread/turns/list",
+      "ms": 899,
+      "turns": 1,
+      "items": 4,
+      "types": [
+        "reasoning",
+        "commandExecution",
+        "agentMessage"
+      ]
+    },
+    {
+      "method": "thread/resume",
+      "ms": 816,
+      "error": "cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it",
+      "code": -32600
+    }
+  ],
+  "livePatchedAdapter": [
+    {
+      "method": "thread/resume",
+      "ms": 208,
+      "model": "qwen/qwen3.8-flash-next",
+      "historyMode": "paginated",
+      "turns": 0,
+      "items": 0,
+      "types": []
+    },
+    {
+      "method": "thread/read",
+      "ms": 7,
+      "model": "qwen/qwen3.8-flash-next",
+      "historyMode": "paginated",
+      "turns": 1,
+      "items": 4,
+      "types": [
+        "reasoning",
+        "commandExecution",
+        "agentMessage"
+      ]
+    },
+    {
+      "method": "thread/turns/list",
+      "ms": 4,
+      "turns": 1,
+      "items": 4,
+      "types": [
+        "reasoning",
+        "commandExecution",
+        "agentMessage"
+      ]
+    }
+  ],
+  "originalReportedChild": {
+    "savedHistoryItems": 23,
+    "directParentOwnerResume": "succeeded",
+    "desktopLogAfterRecovery": [
+      "thread/resume success",
+      "thread/turns/list success"
+    ]
+  },
+  "readSnapshot": {
+    "historyStoreRequired": true,
+    "realChildItemCounts": [
+      115,
+      74,
+      17
+    ],
+    "rolloutOnlyInsufficient": true
+  },
+  "sdkFixture": {
+    "mode": "v2 openai cold mixed-identity",
+    "paidInferenceRequests": 0,
+    "passed": true
+  },
+  "activeUserWorkRestarted": false,
+  "noInferenceOnResume": true,
+  "validation": {
+    "build": "passed",
+    "typecheck": "passed",
+    "tests": {
+      "passed": 3492,
+      "skipped": 1,
+      "failed": 0
+    },
+    "claudeDesktopTests": {
+      "passed": 144,
+      "skipped": 1,
+      "failed": 0
+    },
+    "independentReview": "approved",
+    "sharedParentDiscoveryRegression": "included"
+  }
+}

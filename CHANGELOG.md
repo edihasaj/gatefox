@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.0.3 — 2026-10-26
+
+- Opening an unloaded subagent now reuses the loaded parent's executor, even
+  when model or role changes have created a newer catalog generation. This
+  prevents a blank subagent page caused by the SDK rejecting a resume on the
+  wrong engine. Opening the child preserves its model and permissions and starts
+  no inference. Thanks to Edi Hasaj for reporting the missing subagent content.
+
 ## 1.0.2 — 2026-10-26
 
 - Unix/SSH sessions no longer disconnect repeatedly when a newer release is

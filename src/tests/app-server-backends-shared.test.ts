@@ -30,15 +30,15 @@ async function fixture(featureVariant?: FeatureVariant, priority?: boolean, shar
   const sdk = join(directory, "codex");
   await writeFile(sdk, `#!${process.execPath}
 import {createServer} from 'node:http';
-import {readFileSync,writeFileSync,existsSync,chmodSync} from 'node:fs';
+import {readFileSync,writeFileSync,existsSync,chmodSync,appendFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
-import {WebSocketServer} from ${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)};
 if(process.argv.includes('--version')){console.log('codex-cli 0.162.0-alpha.17.2');process.exit(0);}
 const args=process.argv.slice(2);const root=args[args.indexOf('--fixture-root')+1];const saved=root+'/threads.json';const loaded=new Set();const turns=new Map();
 const cliFeatures={};for(let i=0;i<args.length;i++)if(args[i]==='-c'){const value=args[++i];const equal=value.indexOf('=');const key=value.slice(0,equal);if(key.startsWith('features.')){try{cliFeatures[key]=JSON.parse(value.slice(equal+1));}catch{}}}
 for(let i=0;i<args.length;i++){const arg=args[i];if((arg==='--enable'||arg==='--disable')&&args[i+1]==='fast_mode'){cliFeatures['features.fast_mode']=arg==='--enable';i++;}else if(arg==='--enable=fast_mode'||arg==='--disable=fast_mode')cliFeatures['features.fast_mode']=arg.startsWith('--enable');}
 function metadata(){return existsSync(saved)?JSON.parse(readFileSync(saved,'utf8')):{};}
 async function rpc(m,send,drop){if(m.id==null)return;let result={};
+if(listen.startsWith('unix://'))appendFileSync(root+'/rpc.jsonl',JSON.stringify({pid:process.pid,method:m.method,threadId:m.params?.threadId})+'\\n');
 if(m.method==='config/read')result={config:{agents:{max_concurrent_threads_per_session:30}}};
 if(m.method==='fixture/features')result={cliFeatures};
 if(m.method==='turn/start')result={wireServiceTier:cliFeatures['features.fast_mode']===false?null:m.params.serviceTier??null,effort:m.params.effort,approvalPolicy:m.params.approvalPolicy,sandboxPolicy:m.params.sandboxPolicy};
@@ -52,12 +52,13 @@ if(m.params.delayMs)await new Promise(r=>setTimeout(r,m.params.delayMs));
 const id=m.params.fixtureId;const thread={id,modelProvider:m.params.modelProvider||'subscription_gateway',model:m.params.model};
 const all=metadata();all[id]=thread;writeFileSync(saved,JSON.stringify(all));loaded.add(id);result={thread,model:m.params.model,modelProvider:thread.modelProvider,executorPid:process.pid,serviceTier:m.params.serviceTier??null};
 }
-if(m.method==='thread/resume'){const thread=metadata()[m.params.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}loaded.add(thread.id);result={thread,model:thread.model,modelProvider:m.params.modelProvider||thread.modelProvider,executorPid:process.pid};}
+if(m.method==='thread/resume'){const all=metadata();const thread=all[m.params.threadId];if(!thread){send({id:m.id,error:{code:-32600,message:'Unknown fixture thread'}});return;}const parentId=thread.parentThreadId??thread.source?.subAgent?.thread_spawn?.parent_thread_id;if(parentId&&!loaded.has(parentId)){send({id:m.id,error:{code:-32600,message:'cannot resume an unloaded multi-agent v2 sub-agent through its parent; resume the parent first, or use thread/read to inspect it'}});return;}loaded.add(thread.id);result={thread,model:thread.model,modelProvider:m.params.modelProvider||thread.modelProvider,executorPid:process.pid};}
 if(m.method==='thread/unsubscribe')loaded.delete(m.params.threadId);
 if(m.method==='fixture/disconnect'){drop();return;}
 send({id:m.id,result});}
 const listen=args.includes('--listen')?args[args.indexOf('--listen')+1]:'stdio://';
 if(listen.startsWith('unix://')){
+const {WebSocketServer}=await import(${JSON.stringify(pathToFileURL(resolve("node_modules/ws/wrapper.mjs")).href)});
 const socket=listen.slice(7);const server=createServer();const ws=new WebSocketServer({server});
 ws.on('connection',client=>client.on('message',bytes=>{void rpc(JSON.parse(bytes),m=>client.send(JSON.stringify(m)),()=>client.close(1000));}));
 server.listen(socket,()=>{chmodSync(socket,0o600);process.stdout.write('FIXTURE_READY\\n');});
@@ -132,7 +133,9 @@ process.on('SIGTERM',()=>{for(const c of ws.clients)c.terminate();server.close((
   };
   const backends = await createBackend();
   await backends.request("initialize", { clientInfo: { name: "fixture", version: "1" }, capabilities: { experimentalApi: true } }); backends.notify({ method: "initialized" });
-  return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; },
+  const rpcLog = async (): Promise<Message[]> => (await readFile(join(directory, "rpc.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
+  return { config, directory, nativeHome, nativeConfig, backends, control, events, nativeExits: () => nativeExits, next: () => { generation++; }, rpcLog,
+    save(thread: Message) { const path = join(directory, "threads.json"); return readFile(path, "utf8").catch(() => "{}").then(saved => writeFile(path, JSON.stringify({ ...JSON.parse(saved), [String(thread.id)]: thread }), { mode: 0o600 })); },
     async another(variant?: FeatureVariant) { const adapter = await createBackend(true, variant); await adapter.request("initialize", { clientInfo: { name: "second-fixture", version: "1" }, capabilities: { experimentalApi: true } }); adapter.notify({ method: "initialized" }); return adapter; },
     // `provider` is the id the chat is saved with; the gateway hint, not the id, sends the start to the shared executor.
     start: (id: string, delayMs = 0, provider = "subscription_gateway") => backends.request("thread/start", { fixtureId: id, delayMs, model: alias, modelProvider: provider }, { engine: "gateway" }),
@@ -239,6 +242,60 @@ test("shared gateway socket loss with unreadable turn state keeps native work an
     await f.backends.native.request("fixture/features", {});
     const second = await f.another(); const live = await second.request("thread/read", { threadId: "shared-loss-chat", includeTurns: true });
     assert.equal(live.executorPid, started.executorPid); assert.equal(((live.thread as Message).status as Message).type, "active");
+  } finally { await f.clean(); }
+});
+
+test("an unloaded gateway child resumes on its loaded parent's older generation without inference", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    const parent = await f.start("parent");
+    const child = { id: "child", model: alias, modelProvider: "subscription_gateway", source: { subAgent: { thread_spawn: { parent_thread_id: "parent", depth: 1 } } } };
+    await f.save(child);
+    f.next();
+    const newer = await f.start("newer-generation");
+    assert.notEqual(newer.executorPid, parent.executorPid, "the current catalog generation differs from the child's parent");
+
+    const resumed = await f.backends.request("thread/resume", { threadId: "child", excludeTurns: true });
+    assert.equal(resumed.executorPid, parent.executorPid, "the parent's existing SDK serves the child");
+    assert.equal((resumed.thread as Message).id, "child");
+    const calls = await f.rpcLog();
+    assert.equal(calls.some(call => call.method === "thread/resume" && call.threadId === "parent"), false, "the parent is never resumed");
+    assert.equal(calls.some(call => call.method === "thread/resume" && call.threadId === "child" && call.pid === parent.executorPid), true, "only the child resume reaches the parent's SDK");
+    const read = await f.backends.request("thread/read", { threadId: "child", includeTurns: false });
+    assert.equal(read.executorPid, parent.executorPid, "the resulting child binding stays on the parent's generation");
+    assert.equal(f.events.some(event => event.method === "turn/started"), false, "resuming the child starts no turn");
+
+    const native = await f.backends.request("thread/read", { threadId: "ordinary-native" });
+    assert.equal((native.thread as Message).modelProvider, "openai", "a missing native thread still reaches the native engine");
+    const topLevel = await f.start("top-level");
+    assert.equal(topLevel.executorPid, newer.executorPid, "a top-level gateway chat still follows the current generation");
+  } finally { await f.clean(); }
+});
+
+test("a second adapter opens an unloaded child on its parent's shared owner", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    const parent = await f.start("shared-parent");
+    await f.save({ id: "shared-child", model: alias, modelProvider: "openai", parentThreadId: "shared-parent" });
+    f.next();
+    const reader = await f.another();
+    const newer = await reader.request("thread/start", { fixtureId: "reader-generation", model: alias, modelProvider: "openai" }, { engine: "gateway" });
+    assert.notEqual(newer.executorPid, parent.executorPid);
+    const resumed = await reader.request("thread/resume", { threadId: "shared-child", excludeTurns: true });
+    assert.equal(resumed.executorPid, parent.executorPid, "shared discovery locates the parent's older writer");
+    const calls = await f.rpcLog();
+    assert.equal(calls.some(call => call.method === "thread/resume" && call.threadId === "shared-parent"), false);
+    assert.equal(f.events.some(event => event.method === "turn/started"), false);
+  } finally { await f.clean(); }
+});
+
+test("an unloaded gateway child with no loaded parent keeps the SDK refusal", { timeout: 20000 }, async () => {
+  const f = await fixture();
+  try {
+    await f.save({ id: "orphan", model: alias, modelProvider: "subscription_gateway", source: { subAgent: { thread_spawn: { parent_thread_id: "missing-parent", depth: 1 } } } });
+    await assert.rejects(f.backends.request("thread/resume", { threadId: "orphan" }), (error: Error & { code?: number }) =>
+      error.code === -32600 && /resume the parent first/.test(error.message));
+    assert.equal(f.events.some(event => event.method === "turn/started"), false);
   } finally { await f.clean(); }
 });
 
