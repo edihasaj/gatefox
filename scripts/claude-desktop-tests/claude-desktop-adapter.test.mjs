@@ -325,3 +325,176 @@ test("audits only known response model names", async () => {
   assert.equal(entries.every((entry) => entry.observedUpstreamResponseModel === "unexpected"), true);
   assert.equal(fs.readFileSync(started.auditFile, "utf8").includes(malicious), false);
 });
+
+const BRIDGE = "claude-opus-5[hg-route-42]";
+const LEGACY = "claude-hg-route-42";
+
+test("accepts only the native-control bridge ID shape", () => {
+  const config = (id) => ({
+    listenPort: 9, upstream: "http://127.0.0.1:9", tokenFile: "/tmp/t",
+    models: [{ id, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "high"] }],
+  });
+  assert.equal(validateConfig(config(BRIDGE)).models[0].id, BRIDGE);
+  assert.equal(validateConfig(config("claude-alias")).models[0].supportedEfforts.length, 2);
+  assert.throws(() => validateConfig(config("claude-opus-5[gpt-5]")), /id is invalid/);
+  assert.throws(() => validateConfig(config("claude-opus-5[hg-route-1][2]")), /id is invalid/);
+  assert.throws(() => validateConfig(config("claude-hg-route-1[a]")), /id is invalid/);
+  assert.throws(() => validateConfig(config("gpt-5[hg-route-1]")), /id is invalid/);
+  assert.throws(() => validateConfig(config("claude-opus-5[hg-route-]")), /id is invalid/);
+  assert.throws(() => validateConfig(config("claude-opus-5[hg-route-1x]")), /id is invalid/);
+  assert.throws(() => validateConfig({
+    listenPort: 9, upstream: "http://127.0.0.1:9", tokenFile: "/tmp/t",
+    models: [{ id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: [] }],
+  }), /supportedEfforts/);
+  for (const supportedEfforts of [["ultra"], ["high", "high"], ["low", 5], "low"]) {
+    assert.throws(() => validateConfig({
+      listenPort: 9, upstream: "http://127.0.0.1:9", tokenFile: "/tmp/t",
+      models: [{ id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts }],
+    }), /supportedEfforts/);
+  }
+  assert.deepEqual(validateConfig({
+    listenPort: 9, upstream: "http://127.0.0.1:9", tokenFile: "/tmp/t",
+    models: [{ id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["max", "low"] }],
+  }).models[0].supportedEfforts, ["low", "max"]);
+});
+
+test("clamps the native slider to the route's supported efforts without touching thinking", async () => {
+  const cases = [
+    { supported: ["low", "medium", "high", "xhigh"], sent: "max", expected: "xhigh", system: "xhigh" },
+    { supported: ["low", "high"], sent: "medium", expected: "low", system: "high" },
+    { supported: ["high", "xhigh"], sent: "low", expected: "high", system: "xhigh" },
+    { supported: ["medium", "max"], sent: "ultra", expected: "medium", system: "max" },
+    { supported: ["low", "medium", "high", "xhigh", "max"], sent: "max", expected: "max", system: "max" },
+  ];
+  for (const [index, testCase] of cases.entries()) {
+    let received;
+    const started = await adapter((req, res) => {
+      const chunks = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        received = JSON.parse(Buffer.concat(chunks));
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ type: "message", model: received.model, content: [] }));
+      });
+    }, { models: [{ id: `claude-opus-5[hg-route-${index}]`, upstream: `codex/gpt-${index}`, displayName: "GPT One", supportedEfforts: testCase.supported }] });
+    const reply = await request(started.port, {
+      path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+      body: JSON.stringify({
+        model: `claude-opus-5[hg-route-${index}]`, output_config: { effort: testCase.sent, other: "keep" },
+        thinking: { type: "adaptive", display: "omitted" }, max_tokens: 1024,
+        messages: [{ role: "system", content: "history", output_config: { effort: "max" } }, { role: "user", content: "go" }],
+      }),
+    });
+    assert.equal(reply.status, 200, testCase.sent);
+    assert.equal(received.model, `codex/gpt-${index}`);
+    assert.deepEqual(received.output_config, { effort: testCase.expected, other: "keep" });
+    assert.deepEqual(received.messages[0].output_config, { effort: testCase.system });
+    assert.equal(received.messages[1].output_config, undefined);
+    assert.deepEqual(received.thinking, { type: "adaptive", display: "omitted" });
+    assert.equal(JSON.parse(reply.body).model, `claude-opus-5[hg-route-${index}]`);
+  }
+});
+
+test("sends no effort the client did not choose and keeps an Auto review untouched", async () => {
+  let received;
+  const started = await adapter((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      received = JSON.parse(Buffer.concat(chunks));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "message", model: received.model, content: [] }));
+    });
+  }, { models: [
+    { id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "high"] },
+    { id: LEGACY, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "high"] },
+  ] });
+  const bare = await request(started.port, {
+    path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+    body: JSON.stringify({ model: BRIDGE, max_tokens: 64, messages: [{ role: "user", content: "go" }] }),
+  });
+  assert.equal(bare.status, 200);
+  assert.equal("output_config" in received, false);
+  // The saved-chat alias already names a native-shaped ID, so its review keeps its own controls.
+  const review = { model: LEGACY, max_tokens: 64, output_config: { effort: "max" }, thinking: { type: "disabled" },
+    stop_sequences: ["</severity>"], messages: [{ role: "user", content: "Review the action" }] };
+  const reviewed = await request(started.port, {
+    path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+    body: JSON.stringify(review),
+  });
+  assert.equal(reviewed.status, 200);
+  assert.deepEqual(received, { ...review, model: "codex/gpt" });
+});
+
+test("keeps an auxiliary review untouched on a bridge row and still clamps its ordinary requests", async () => {
+  let received;
+  const started = await adapter((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      received = JSON.parse(Buffer.concat(chunks));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "message", model: received.model, content: [] }));
+    });
+  }, { models: [{ id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "medium", "high", "xhigh"] }] });
+  const review = { model: BRIDGE, max_tokens: 64, output_config: { effort: "max" }, thinking: { type: "disabled" },
+    stop_sequences: ["</severity>"], messages: [{ role: "user", content: "Review the action" }] };
+  const reviewed = await request(started.port, {
+    path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+    body: JSON.stringify(review),
+  });
+  assert.equal(reviewed.status, 200);
+  // The app's own review keeps Max even though the row's slider stops at Extra high.
+  assert.deepEqual(received, { ...review, model: "codex/gpt" });
+  assert.equal(received.output_config.effort, "max");
+  assert.deepEqual(received.thinking, { type: "disabled" });
+  const ordinary = await request(started.port, {
+    path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+    body: JSON.stringify({ model: BRIDGE, max_tokens: 1024, thinking: { type: "adaptive" },
+      output_config: { effort: "max" }, messages: [{ role: "user", content: "go" }] }),
+  });
+  assert.equal(ordinary.status, 200);
+  assert.equal(received.model, "codex/gpt");
+  assert.equal(received.output_config.effort, "xhigh");
+  assert.deepEqual(received.thinking, { type: "adaptive" });
+});
+
+test("routes a saved chat on the retired opaque ID and reports the bridge ID in JSON and SSE", async () => {
+  const seen = [];
+  const started = await adapter((req, res) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => {
+      const payload = JSON.parse(Buffer.concat(chunks));
+      seen.push(payload);
+      if (payload.stream) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(`data: {"type":"message_start","message":{"model":"codex/gpt","id":"x"}}\n\n`);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "message", model: payload.model, content: [] }));
+    });
+  }, { models: [
+    { id: BRIDGE, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "high"] },
+    { id: LEGACY, upstream: "codex/gpt", displayName: "GPT One", supportedEfforts: ["low", "high"] },
+  ] });
+  const listed = await request(started.port, { path: "/v1/models", headers: credentials() });
+  assert.deepEqual(JSON.parse(listed.body).data.map((row) => row.id), [BRIDGE, LEGACY]);
+  const detail = await request(started.port, { path: `/v1/models/${encodeURIComponent(BRIDGE)}`, headers: credentials() });
+  assert.equal(JSON.parse(detail.body).id, BRIDGE);
+  for (const id of [BRIDGE, LEGACY]) {
+    const json = await request(started.port, {
+      path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+      body: JSON.stringify({ model: id, output_config: { effort: "xhigh" }, messages: [] }),
+    });
+    assert.equal(JSON.parse(json.body).model, id);
+    assert.equal(seen.at(-1).model, "codex/gpt");
+    assert.equal(seen.at(-1).output_config.effort, "high");
+    const stream = await request(started.port, {
+      path: "/v1/messages", method: "POST", headers: { ...credentials(), "content-type": "application/json" },
+      body: JSON.stringify({ model: id, stream: true, messages: [] }),
+    });
+    assert.match(stream.body, new RegExp(`"model":\\s*"${id.replace(/[\[\]()]/g, (char) => `\\${char}`)}"`));
+  }
+});

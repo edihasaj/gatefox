@@ -74,9 +74,14 @@ overrides for other installations. It refuses collisions, missing primary
 routes, invalid catalogs, and an upstream endpoint that loops back to itself.
 
 Native IDs map explicitly to the primary provider's public aliases. Secondary
-routes use `claude-hg-route-<decimal hash>` identifiers derived from their public
-aliases, with real `labelOverride` values. Secondary routes never claim a Claude
-family or an unverified 1M context capability. Future accounts such as
+routes are derived from their public aliases, with real `labelOverride` values:
+`claude-hg-route-<decimal hash>` for a route without reasoning levels, and
+`claude-opus-5[hg-route-<decimal hash>]` for one with them, because the app only
+shows its native effort slider for a model ID it recognizes. Both forms retain
+the configured provider and account; neither adds a Claude family-tier field.
+The second borrows the `claude-opus-5` ID shape for the control, which also makes
+the CLI assume a 1M context window; see the compaction limitation below. The
+label still names the real provider and model. Future accounts such as
 `Claude 2` remain separate routes.
 
 ## Apply and run
@@ -154,11 +159,33 @@ catalog. The profile lists exactly one picker row per model and never lists
 effort or speed variants as separate rows. Recognized Claude IDs show the app's
 native effort control; the profile writes an accurate `maxEffort` for them (the
 model's highest supported effort, bounded by any cap already in the profile, so
-a user's lower cap is kept). Opaque GPT, Qwen and secondary-account aliases
-carry no Claude family identity and expose no native effort control, because the
-app cannot learn their effort levels from its signed catalog. Their existing
-`maxEffort` of `high` is unchanged and does not add controls.
-These rows do not add Codex's Ultra agent orchestration to Claude Desktop.
+a user's lower cap is kept).
+
+A secondary route that advertises reasoning levels is exposed as
+`claude-opus-5[hg-route-<decimal>]` so Claude Desktop shows its native slider for
+it: the app recognizes the ID before the bracket, and the app rejects any ID that
+names GPT or Qwen, so the suffix stays opaque. The row's `labelOverride` still
+names the real provider and model, the row adds no Claude family-tier field, and
+the slider is capped at the route's top supported effort. Only a cap already
+recorded under that bridge name counts as a user choice; the automatic
+`maxEffort: "high"` written on the old opaque row does not suppress the higher
+levels the route newly advertises. The adapter clamps a level the route does not
+support — to the highest supported level below it, or the lowest supported one —
+in the request and in the system-message history a tool continuation carries, and
+never adds an effort the client did not send or change `thinking` for these rows.
+The ID a saved chat used, `claude-hg-route-<decimal>`, stays in the adapter
+configuration as a hidden compatibility alias for the same route. A route with no
+reasoning levels is unchanged: it keeps the opaque `claude-hg-route-<decimal>`
+row, where the app offers no effort control.
+
+These rows do not add Codex's Ultra agent orchestration to Claude Desktop, and
+Ultracode is not offered on the slider because the unmodified app never adds that
+stop to a third-party profile. Claude's CLI also treats a row with this ID shape
+as a 1M-token context. For a smaller upstream window, the client's normal
+proactive compaction threshold is too high. The gateway forwards a
+`prompt is too long` error that Claude can use for reactive recovery (see
+[context overflow](messages.md#context-overflow)); the ID mapping alone does not
+prove that a long real conversation can compact successfully.
 
 The adapter still accepts the deterministic explicit effort and speed aliases
 that earlier profiles listed, so chats saved against them keep working. They are

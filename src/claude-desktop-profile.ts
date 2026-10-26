@@ -16,6 +16,12 @@ const effortLabels: Record<VariantEffort, string> = { low: "Low", medium: "Mediu
 /** Transports that honor an explicit service tier. */
 const tierProviderTypes = new Set(["claude-subscription", "codex-subscription", "responses-api"]);
 const standardTier: VariantTier = { id: "default", name: "Standard" };
+/**
+ * A secondary route whose model advertises reasoning levels borrows this recognized Claude
+ * model ID shape, with an opaque bracketed suffix, so Claude Desktop shows its native effort
+ * slider for it. The name must never mention GPT or Qwen: the app rejects those IDs.
+ */
+const bridgeRouteBase = "claude-opus-5";
 
 export interface ClaudeDesktopProvider {
   id: string;
@@ -63,6 +69,8 @@ export interface ClaudeDesktopAdapterModel {
   displayName: string;
   contextWindow?: number;
   reasoningEffort?: VariantEffort;
+  /** Efforts this route accepts, ordered lowest to highest; the adapter clamps anything else. */
+  supportedEfforts?: VariantEffort[];
   serviceTier?: string;
   preserveOptionalToolArguments?: true;
 }
@@ -105,8 +113,18 @@ function validPort(port: number, description: string): void {
 }
 
 function stableRouteId(alias: string): string {
+  return `claude-hg-route-${stableRouteNumber(alias)}`;
+}
+
+/** The decimal part shared by the opaque route ID and the native-control bridge ID. */
+export function stableRouteNumber(alias: string): string {
   const number = createHash("sha256").update(alias, "utf8").digest().readBigUInt64BE(0);
-  return `claude-hg-route-${number}`;
+  return String(number);
+}
+
+/** The visible picker row ID for a secondary route that Claude Desktop should show effort controls for. */
+export function bridgeRouteName(alias: string): string {
+  return `${bridgeRouteBase}[hg-route-${stableRouteNumber(alias)}]`;
 }
 
 function catalogByAlias(catalog: ClaudeDesktopCatalog): Map<string, ClaudeDesktopCatalogModel> {
@@ -341,18 +359,35 @@ export function buildClaudeDesktopProfile(
     return { alias: route.alias, row, keepOptionalToolArguments: false, primary: true, efforts, tiers: variantTiers(row, aliases.get(route.alias)!.providerType) };
   });
   const usedIds = new Set(primaryEntries.map(entry => String(entry.name)));
+  // Adapter-only IDs from earlier profiles: they keep saved chats working but are never
+  // visible rows, so they must not count toward Claude Desktop's picker limit.
+  const hiddenIds = new Set<string>();
   const extras: Record<string, unknown>[] = [];
+  const hiddenCompat: ClaudeDesktopAdapterModel[] = [];
   for (const alias of [...aliases.keys()].filter(alias => !primary.has(alias)).sort()) {
-    const routeId = stableRouteId(alias);
-    if (usedIds.has(routeId)) fail(`Compatibility route ID collision for ${alias}: ${routeId}`);
-    usedIds.add(routeId);
     const row = catalogModels.get(alias)!;
+    const efforts = variantEfforts(row);
+    const compatId = stableRouteId(alias);
+    const routeId = efforts.length ? bridgeRouteName(alias) : compatId;
+    if (usedIds.has(routeId) || hiddenIds.has(routeId)) fail(`Compatibility route ID collision for ${alias}: ${routeId}`);
+    usedIds.add(routeId);
     const entry: Record<string, unknown> = { name: routeId, labelOverride: row.display_name };
-    if (supportsHigh(row)) entry.maxEffort = "high";
+    if (efforts.length) {
+      // A cap the user set on this row survives. An old opaque row's `maxEffort: "high"` was
+      // automatic, not a choice, so it must not hide the efforts this route newly advertises.
+      const prior = oldMetadata.get(routeId);
+      const maxEffort = boundedMaxEffort(prior && Object.hasOwn(prior, "maxEffort") ? prior.maxEffort : undefined, efforts);
+      if (maxEffort !== undefined) entry.maxEffort = maxEffort;
+    } else if (supportsHigh(row)) entry.maxEffort = "high";
     extras.push(entry);
     const owner = aliases.get(alias)!;
     const keepOptional = owner.providerType === "codex-subscription" || owner.providerType === "responses-api";
-    adapterModels.push(adapterModel(routeId, alias, row, keepOptional));
+    if (efforts.length) {
+      adapterModels.push({ ...adapterModel(routeId, alias, row, keepOptional), supportedEfforts: efforts });
+      if (usedIds.has(compatId) || hiddenIds.has(compatId)) fail(`Compatibility route ID collision for ${alias}: ${compatId}`);
+      hiddenIds.add(compatId);
+      hiddenCompat.push({ ...adapterModel(compatId, alias, row, keepOptional), supportedEfforts: efforts });
+    } else adapterModels.push(adapterModel(routeId, alias, row, keepOptional));
     variantBases.push({ alias, row, keepOptionalToolArguments: keepOptional, primary: false, efforts: variantEfforts(row), tiers: variantTiers(row, owner.providerType) });
   }
 
@@ -365,7 +400,7 @@ export function buildClaudeDesktopProfile(
   // profile. Each carries an explicit effort and/or tier and no family identity.
   for (const { base, spec } of selectVariants(variantBases)) {
     const routeId = variantRouteId(base.alias, spec.effort, spec.tier?.id);
-    if (usedIds.has(routeId)) fail(`Variant route ID collision for ${base.alias}: ${routeId}`);
+    if (usedIds.has(routeId) || hiddenIds.has(routeId)) fail(`Variant route ID collision for ${base.alias}: ${routeId}`);
     usedIds.add(routeId);
     const label = [base.row.display_name, spec.effort === undefined ? undefined : effortLabels[spec.effort], spec.tier?.name].filter(part => part !== undefined).join(" · ");
     adapterModels.push({
@@ -374,6 +409,8 @@ export function buildClaudeDesktopProfile(
       ...(spec.tier === undefined ? {} : { serviceTier: spec.tier.id }),
     });
   }
+  // Saved chats can still name the pre-bridge opaque ID of a route that now has a native slider.
+  adapterModels.push(...hiddenCompat);
 
   const profile: Record<string, unknown> = structuredClone(existingProfile);
   profile.inferenceGatewayBaseUrl = `http://127.0.0.1:${adapterPort}`;

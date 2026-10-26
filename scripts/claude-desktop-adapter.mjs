@@ -17,6 +17,13 @@ export const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const HOST = "127.0.0.1";
 const CREATED_AT = "2026-01-01T00:00:00Z";
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$/;
+// Claude Desktop shows its native effort slider for a recognized model ID, so a secondary route
+// with reasoning levels is exposed as `claude-opus-5[hg-route-<decimal>]`. Nothing else may use
+// brackets: the app normalizes the trailing bracket away and would then merge unrelated rows.
+const BRIDGE_MODEL_ID = /^claude-opus-5\[hg-route-[0-9]{1,20}\]$/;
+/** The native model ID the app sees once it drops the opaque bridge suffix. */
+const BRIDGE_BASE_ID = "claude-opus-5";
+const EFFORT_ORDER = ["low", "medium", "high", "xhigh", "max"];
 const HOP_HEADERS = new Set(["connection", "keep-alive", "proxy-authenticate",
   "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "content-length"]);
 const REQUEST_DROP = new Set(["host", "authorization", "x-api-key", ...HOP_HEADERS]);
@@ -52,7 +59,9 @@ export function validateConfig(raw) {
   const modelIndex = new Map();
   const models = raw.models.map((value, index) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid(`models[${index}] must be an object`);
-    if (typeof value.id !== "string" || !MODEL_ID.test(value.id)) invalid(`models[${index}].id is invalid`);
+    if (typeof value.id !== "string" || !(MODEL_ID.test(value.id) || BRIDGE_MODEL_ID.test(value.id))) {
+      invalid(`models[${index}].id is invalid`);
+    }
     if (modelIndex.has(value.id)) invalid(`duplicate model id '${value.id}'`);
     if (typeof value.upstream !== "string" || !value.upstream || /\s/.test(value.upstream)) {
       invalid(`models[${index}].upstream must be a non-empty model name`);
@@ -64,11 +73,21 @@ export function validateConfig(raw) {
     if (value.preserveOptionalToolArguments !== undefined && typeof value.preserveOptionalToolArguments !== "boolean") {
       invalid(`models[${index}].preserveOptionalToolArguments must be a boolean`);
     }
-    if (value.reasoningEffort !== undefined && !["low", "medium", "high", "xhigh", "max"].includes(value.reasoningEffort)) invalid(`models[${index}].reasoningEffort is invalid`);
+    if (value.reasoningEffort !== undefined && !EFFORT_ORDER.includes(value.reasoningEffort)) invalid(`models[${index}].reasoningEffort is invalid`);
+    let supportedEfforts;
+    if (value.supportedEfforts !== undefined) {
+      if (!Array.isArray(value.supportedEfforts) || value.supportedEfforts.length === 0
+          || value.supportedEfforts.some(effort => !EFFORT_ORDER.includes(effort))
+          || new Set(value.supportedEfforts).size !== value.supportedEfforts.length) {
+        invalid(`models[${index}].supportedEfforts must be a non-empty array of unique supported efforts`);
+      }
+      supportedEfforts = EFFORT_ORDER.filter(effort => value.supportedEfforts.includes(effort));
+    }
     if (value.serviceTier !== undefined && (typeof value.serviceTier !== "string" || !/^[a-z][a-z0-9_-]{0,127}$/.test(value.serviceTier))) invalid(`models[${index}].serviceTier is invalid`);
     const model = { id: value.id, upstream: value.upstream, displayName: value.displayName,
       ...(value.contextWindow === undefined ? {} : { contextWindow: value.contextWindow }),
       ...(value.reasoningEffort === undefined ? {} : { reasoningEffort: value.reasoningEffort }),
+      ...(supportedEfforts === undefined ? {} : { supportedEfforts }),
       ...(value.serviceTier === undefined ? {} : { serviceTier: value.serviceTier }),
       ...(value.preserveOptionalToolArguments === true ? { preserveOptionalToolArguments: true } : {}) };
     modelIndex.set(model.id, model);
@@ -143,6 +162,33 @@ function authentication(req, tokenFile) {
 function modelObject(model) {
   return { id: model.id, type: "model", display_name: model.displayName, created_at: CREATED_AT,
     ...(model.contextWindow === undefined ? {} : { context_window: model.contextWindow }) };
+}
+
+/** The highest supported effort below the requested one, else the lowest supported effort. */
+function clampEffort(requested, supported) {
+  if (supported.includes(requested)) return requested;
+  const rank = EFFORT_ORDER.indexOf(requested);
+  if (rank < 0) return supported[0];
+  const below = supported.filter(effort => EFFORT_ORDER.indexOf(effort) < rank);
+  return below.length > 0 ? below[below.length - 1] : supported[0];
+}
+
+/**
+ * A bridge row shows the app's own slider, whose options come from Claude's signed catalog and can
+ * exceed what this route supports. Clamp every effort the client sent, including the efforts kept
+ * in the history of a tool continuation, without adding one the client never chose.
+ */
+function clampPayloadEfforts(payload, supported) {
+  if (payload.output_config && typeof payload.output_config === "object" && !Array.isArray(payload.output_config)
+      && typeof payload.output_config.effort === "string") {
+    payload.output_config = { ...payload.output_config, effort: clampEffort(payload.output_config.effort, supported) };
+  }
+  if (Array.isArray(payload.messages)) {
+    payload.messages = payload.messages.map(message =>
+      message?.role === "system" && typeof message.output_config?.effort === "string"
+        ? { ...message, output_config: { ...message.output_config, effort: clampEffort(message.output_config.effort, supported) } }
+        : message);
+  }
 }
 
 function copyHeaders(headers, excluded) {
@@ -271,7 +317,12 @@ function forward(req, res, config, route, token, record) {
     }
     record.exposedModel = model.id;
     record.upstreamModel = model.upstream;
-    const auxiliaryReview = isNativeClassifierRequest(payload);
+    // The app normalizes a bridge row by dropping its bracketed suffix, so its auxiliary review
+    // arrives naming that ID. The shared predicate recognizes native IDs only, and a bridge ID is
+    // never a native model, so ask it about the ID the app itself sees. The route and the
+    // upstream request are unchanged, and an auxiliary review keeps its own generation controls.
+    const auxiliaryReview = isNativeClassifierRequest(
+      BRIDGE_MODEL_ID.test(model.id) ? { ...payload, model: BRIDGE_BASE_ID } : payload);
     payload.model = model.upstream;
     // Selecting a variant explicitly selects these controls, including across
     // tool continuations whose historical system messages retain older efforts.
@@ -283,6 +334,9 @@ function forward(req, res, config, route, token, record) {
       if (Array.isArray(payload.messages)) payload.messages = payload.messages.map(message =>
         message?.role === "system" && message.output_config?.effort !== undefined
           ? { ...message, output_config: { ...message.output_config, effort: model.reasoningEffort } } : message);
+    } else if (!auxiliaryReview && model.supportedEfforts !== undefined) {
+      // The slider offers the options from Claude's signed catalog, not this route's levels.
+      clampPayloadEfforts(payload, model.supportedEfforts);
     }
     if (!auxiliaryReview && model.serviceTier !== undefined) payload.service_tier = model.serviceTier;
     const optional = model.preserveOptionalToolArguments

@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildClaudeDesktopProfile, type ClaudeDesktopGatewaySource } from "../claude-desktop-profile.js";
+import {
+  bridgeRouteName,
+  buildClaudeDesktopProfile,
+  stableRouteNumber,
+  type ClaudeDesktopCatalog,
+  type ClaudeDesktopAdapterModel,
+  type ClaudeDesktopGatewaySource,
+} from "../claude-desktop-profile.js";
 
 const source: ClaudeDesktopGatewaySource = {
   port: 3457, stateDirectory: "/private/gateway",
@@ -21,6 +28,9 @@ const catalog = {
   ],
 };
 const options = { tokenFile: "/private/desktop/client-token", adapterRoot: "/private/desktop" };
+const opaqueRouteId = (alias: string) => `claude-hg-route-${stableRouteNumber(alias)}`;
+const visibleNames = (profile: Record<string, unknown>) => new Set((profile.inferenceModels as Array<Record<string, unknown>>).map(row => String(row.name)));
+const byId = (models: ClaudeDesktopAdapterModel[], id: string) => models.find(model => model.id === id)!;
 
 test("builds stable opaque routes for two GPT accounts and Qwen while preserving the primary identity", () => {
   const existing = { preserved: { enabled: true }, inferenceModels: [{ name: "claude-sonnet", maxEffort: "medium" }] };
@@ -31,12 +41,16 @@ test("builds stable opaque routes for two GPT accounts and Qwen while preserving
   assert.deepEqual(models.slice(0, 2).map(row => row.name), ["claude-fable-5-1", "claude-sonnet"]);
   assert.equal(models[1]!.maxEffort, "medium");
   assert.deepEqual(adapterConfig.models.slice(0, 2).map(row => [row.id, row.upstream]), [["claude-fable-5-1", "claude/claude-fable-5-1"], ["claude-sonnet", "claude/claude-sonnet"]]);
+  // The two routes with reasoning levels borrow the recognized Claude ID; the effort-less one stays opaque.
+  assert.deepEqual(models.slice(2).map(row => row.name), [bridgeRouteName("codex/gpt"), opaqueRouteId("codex/gpt-2"), bridgeRouteName("qwen/flash")]);
   const extras = adapterConfig.models.slice(2, 5);
   assert.equal(extras.length, 3);
-  assert.ok(extras.every(model => /^claude-hg-route-\d+$/.test(model.id)));
+  assert.ok(extras.every(model => /^(claude-opus-5\[hg-route-\d+\]|claude-hg-route-\d+)$/.test(model.id)));
+  assert.deepEqual(extras.map(model => model.supportedEfforts), [["high"], undefined, ["high"]]);
   assert.equal(extras.filter(model => model.preserveOptionalToolArguments).length, 2);
   assert.equal(extras.some(model => "supports1MContext" in model), false);
   assert.equal(extras.some(model => "anthropicFamilyTier" in model), false);
+  assert.equal(extras.some(model => "isFamilyDefault" in model), false);
   assert.equal(adapterConfig.endpoint, "http://127.0.0.1:3457");
   assert.deepEqual(source, before);
 });
@@ -88,15 +102,14 @@ test("lists one picker row per model and keeps effort and speed variants as hidd
   const base = buildClaudeDesktopProfile(variantSource, { models: variantCatalog.models.map(({ supported_reasoning_levels, service_tiers, ...row }) => row) }, {}, options);
   const built = buildClaudeDesktopProfile(variantSource, variantCatalog, {}, options);
   const originals = base.adapterConfig.models.length;
-  assert.deepEqual(built.adapterConfig.models.slice(0, originals), base.adapterConfig.models);
   // The profile has exactly the original rows (primary rows also carry an accurate maxEffort) and no variant.
   const profileRows = built.profile.inferenceModels as Array<Record<string, unknown>>;
-  const keyed = (rows: unknown) => (rows as Array<Record<string, unknown>>).map(row => [row.name, row.labelOverride]);
   assert.equal(profileRows.length, originals);
-  assert.deepEqual(keyed(profileRows), keyed(base.profile.inferenceModels));
+  assert.deepEqual(profileRows.map(row => row.labelOverride), (base.profile.inferenceModels as Array<Record<string, unknown>>).map(row => row.labelOverride));
   assert.deepEqual(profileRows.map(row => row.name), built.adapterConfig.models.slice(0, originals).map(row => row.id));
-  const variants = built.adapterConfig.models.slice(originals) as Row[];
   const visible = new Set(profileRows.map(row => row.name));
+  const hiddenCompat = new Set(["codex/gpt", "codex/gpt-2", "qwen/flash"].map(opaqueRouteId).filter(id => !visible.has(id)));
+  const variants = built.adapterConfig.models.filter(row => !visible.has(row.id) && !hiddenCompat.has(row.id)) as Row[];
   assert.ok(variants.length > 0 && variants.every(row => !visible.has(row.id)));
   const labelsFor = (alias: string) => variants.filter(row => row.upstream === alias).map(row => row.displayName);
   // Primary Claude keeps its native controls for Standard: only Fast x the five supported efforts
@@ -119,10 +132,11 @@ test("lists one picker row per model and keeps effort and speed variants as hidd
   const quick = variants.find(row => row.displayName === "Claude · Opus · High · Fast")!;
   assert.deepEqual([quick.reasoningEffort, quick.serviceTier], ["high", "priority"]);
   assert.ok(variants.every(row => /^claude-hg-route-\d+$/.test(row.id)));
-  // Opaque GPT and Qwen rows get no Claude-family identity or effort metadata beyond the existing high cap.
-  const opaque = profileRows.filter(row => ["codex/gpt", "codex/gpt-2", "qwen/flash"].includes(String(built.adapterConfig.models.find(model => model.id === row.name)!.upstream)));
-  assert.equal(opaque.length, 3);
-  assert.ok(opaque.every(row => !("anthropicFamilyTier" in row) && !("isFamilyDefault" in row) && (row.maxEffort === undefined || row.maxEffort === "high")));
+  // Secondary rows borrow the recognized ID shape for the native slider only: no Claude family identity.
+  const secondary = profileRows.slice(2);
+  assert.equal(secondary.length, 3);
+  assert.ok(secondary.every(row => !("anthropicFamilyTier" in row) && !("isFamilyDefault" in row)));
+  assert.deepEqual(secondary.map(row => row.maxEffort), ["high", undefined, "max"]);
   assert.equal(new Set(built.adapterConfig.models.map(row => row.id)).size, built.adapterConfig.models.length);
 });
 
@@ -189,7 +203,8 @@ test("counts only visible picker rows against the 200 limit", () => {
   // Hidden variants do not count: 18 tiered models plus 2 others stay 20 visible rows however many aliases they add.
   const small = bulkBuild(18, 1);
   assert.equal((small.profile.inferenceModels as unknown[]).length, 20);
-  assert.equal(small.adapterConfig.models.length, 20 + 18 * 10);
+  assert.equal(small.adapterConfig.models.filter(row => row.reasoningEffort !== undefined).length, 18 * 10);
+  assert.equal(small.adapterConfig.models.length, 20 + 18 * 10 + 18);
   // One primary row + 199 models without tiers or efforts = exactly 200 visible rows and no hidden alias.
   const built = bulkBuild(0, 199);
   const adapter = built.adapterConfig.models;
@@ -205,14 +220,69 @@ test("counts only visible picker rows against the 200 limit", () => {
 test("hidden compatibility aliases pass at 1000, fail above it, and never evict a saved route", () => {
   // Each tiered model has 5 efforts x (Standard + Fast) = 10 hidden aliases.
   const atLimit = bulkBuild(100, 0);
-  assert.equal(atLimit.adapterConfig.models.length - (atLimit.profile.inferenceModels as unknown[]).length, 1000);
+  assert.equal(atLimit.adapterConfig.models.filter(row => row.reasoningEffort !== undefined).length, 1000);
   assert.throws(() => bulkBuild(101, 0), /1010 hidden.*limit of 1000.*remove models or service tiers/);
   // A saved alias that sorts after 99 newer tiered models keeps all its routes at exactly 1000...
   const kept = bulkBuild(99, 0, true);
   assert.equal(kept.adapterConfig.models.filter(row => row.upstream === "codex/z-old" && row.reasoningEffort !== undefined).length, 10);
-  assert.equal(kept.adapterConfig.models.length - (kept.profile.inferenceModels as unknown[]).length, 1000);
+  assert.equal(kept.adapterConfig.models.filter(row => row.reasoningEffort !== undefined).length, 1000);
   // ...and one more earlier model makes the build fail instead of dropping the saved routes.
   assert.throws(() => bulkBuild(100, 0, true), /1010 hidden.*limit of 1000/);
+});
+
+test("secondary routes with reasoning levels show the native slider and keep their old ID as a hidden alias", () => {
+  const bridge: ClaudeDesktopGatewaySource = {
+    port: 3457, stateDirectory: "/private/gateway",
+    providers: [
+      { id: "claude", type: "claude-subscription", models: { "claude/claude-fable-5-1": "claude-fable-5-1" } },
+      { id: "codex", type: "codex-subscription", models: { "codex/full": "full", "codex/none": "none" } },
+    ],
+  };
+  const bridgeCatalog: ClaudeDesktopCatalog = { models: [
+    { slug: "claude/claude-fable-5-1", display_name: "Claude Fable 5.1" },
+    { slug: "codex/full", display_name: "GPT Full", supported_reasoning_levels: ["max", "none", "medium", "low"] },
+    { slug: "codex/none", display_name: "GPT Plain" },
+  ] };
+  const built = buildClaudeDesktopProfile(bridge, bridgeCatalog, {}, options);
+  const profileRows = built.profile.inferenceModels as Array<Record<string, unknown>>;
+  const bridgeId = bridgeRouteName("codex/full");
+  const legacyId = opaqueRouteId("codex/full");
+  assert.match(bridgeId, /^claude-opus-5\[hg-route-[0-9]+\]$/);
+  // One visible row per model: the recognized shape for the slider, the opaque ID for the route without levels.
+  assert.deepEqual(profileRows.map(row => row.name), ["claude-fable-5-1", bridgeId, opaqueRouteId("codex/none")]);
+  // The slider is capped at the route's highest supported effort; effort order is normalized.
+  assert.deepEqual(profileRows.map(row => row.maxEffort), [undefined, "max", undefined]);
+  assert.deepEqual(byId(built.adapterConfig.models, bridgeId), {
+    id: bridgeId, upstream: "codex/full", displayName: "GPT Full", supportedEfforts: ["low", "medium", "max"],
+    preserveOptionalToolArguments: true,
+  });
+  // The pre-bridge ID still resolves for a saved chat, with the same route, but is never visible.
+  assert.deepEqual(byId(built.adapterConfig.models, legacyId), {
+    id: legacyId, upstream: "codex/full", displayName: "GPT Full", supportedEfforts: ["low", "medium", "max"],
+    preserveOptionalToolArguments: true,
+  });
+  assert.equal(profileRows.some(row => row.name === legacyId), false);
+  assert.equal(byId(built.adapterConfig.models, opaqueRouteId("codex/none")).supportedEfforts, undefined);
+  // Primary rows are untouched: native ID, label, and no borrowed bracket suffix.
+  assert.deepEqual(profileRows[0], { name: "claude-fable-5-1", labelOverride: "Claude Fable 5.1" });
+  // A cap the user lowered on this row survives, and it only ever comes down.
+  const capFrom = (inferenceModels: Array<Record<string, unknown>>) =>
+    (buildClaudeDesktopProfile(bridge, bridgeCatalog, { inferenceModels }, options)
+      .profile.inferenceModels as Array<Record<string, unknown>>)[1]!.maxEffort;
+  assert.equal(capFrom([{ name: bridgeId, maxEffort: "medium" }]), "medium");
+  assert.equal(capFrom([{ name: bridgeId, maxEffort: "max" }]), "max");
+  assert.equal(capFrom([{ name: "codex/full", maxEffort: "low" }]), "max");
+  // The opaque row's `maxEffort: "high"` was automatic, not a user choice, so it caps nothing.
+  assert.equal(capFrom([{ name: legacyId, maxEffort: "high" }]), "max");
+  assert.equal(capFrom([{ name: legacyId, maxEffort: "low" }]), "max");
+  const upToExtraHigh: ClaudeDesktopCatalog = { models: structuredClone(bridgeCatalog.models).map(row => row.slug === "codex/full" ? { ...row, supported_reasoning_levels: ["low", "medium", "high", "xhigh"] } : row) };
+  const migrated = buildClaudeDesktopProfile(bridge, upToExtraHigh, { inferenceModels: [{ name: legacyId, maxEffort: "high" }] }, options);
+  assert.equal((migrated.profile.inferenceModels as Array<Record<string, unknown>>)[1]!.maxEffort, "xhigh");
+  // Deterministic: the ID depends only on the alias, so a rebuilt profile matches byte for byte.
+  const again = buildClaudeDesktopProfile(structuredClone(bridge), structuredClone(bridgeCatalog), {}, options);
+  assert.deepEqual(again.adapterConfig, built.adapterConfig);
+  assert.deepEqual(again.profile, built.profile);
+  assert.equal(bridgeRouteName("codex/full"), `claude-opus-5[hg-route-${stableRouteNumber("codex/full")}]`);
 });
 
 const variantEfforts = ["low", "medium", "high", "xhigh", "max"] as const;

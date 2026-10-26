@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A secondary route with reasoning levels now appears in Claude Desktop's picker as
+  `claude-opus-5[hg-route-<decimal>]`, keeping its real provider and model in the label, so the
+  app shows its native reasoning slider for GPT, Qwen and other routed models. The row is capped
+  at the route's highest supported level, the adapter clamps a level the route cannot serve
+  (including the levels kept in a tool continuation's history) without adding one the client never
+  chose, and the old `claude-hg-route-<decimal>` ID stays as a hidden alias so saved chats keep
+  working. Routes without reasoning levels keep their opaque IDs, and no route gains a Claude
+  account, family tier, or verified context window it does not have.
 - Desktop adapters now replay one verified terminal completion after a chat
   resumes from a sleep-time disconnect, so the current renderer can set its
   unread dot and completion alert. A private bounded ledger proves the adapter
