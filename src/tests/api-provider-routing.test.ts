@@ -22,13 +22,28 @@ test("OpenCode routing preserves caller conversation identity across model API f
 });
 
 test("provider-specific conversation headers never reach a different origin or API", () => {
-  for (const baseUrl of ["https://api.x.ai/v1", "https://openrouter.ai/api/v1", "https://opencode.ai.attacker.invalid/inference/openai/v1",
+  for (const baseUrl of ["https://api.x.ai/v1", "https://openrouter.ai.attacker.invalid/api/v1", "http://openrouter.ai/api/v1",
+    "https://user@openrouter.ai/api/v1", "https://openrouter.ai/api/v1?next=x", "https://openrouter.ai/api/v1#x", "https://openrouter.ai/other", "https://opencode.ai.attacker.invalid/inference/openai/v1",
     "http://opencode.ai/inference/openai/v1", "https://opencode.ai/other/v1", "https://opencode.ai/inference/openai/v1?next=x",
     "https://user@opencode.ai/inference/openai/v1"]) {
     assert.deepEqual(apiRoutingHeaders({ baseUrl }, { threadId: "thread_1" }), {});
   }
   assert.deepEqual(apiRoutingHeaders({ baseUrl: "https://opencode.ai/inference/openai/v1" }, { threadId: "line\nbreak", sessionId: " " }),
     { "User-Agent": "harness-gateway" });
+});
+
+test("OpenRouter uses the caller's cache identity for sticky routing from the first success", () => {
+  const provider = { baseUrl: "https://openrouter.ai/api/v1" };
+  const context = { threadId: "thread_1", sessionId: "window_1" };
+  assert.deepEqual(apiRoutingHeaders(provider, context), { "x-session-id": "thread_1" });
+  assert.deepEqual(apiRoutingHeaders(provider, { sessionId: "session_1" }), { "x-session-id": "session_1" });
+  assert.deepEqual(apiRoutingHeaders(provider, context, { prompt_cache_key: "shared:fork-cache" }), { "x-session-id": "shared:fork-cache" });
+  assert.deepEqual(apiRoutingHeaders(provider, context, { session_id: "explicit_session", prompt_cache_key: "other_cache" }), { "x-session-id": "explicit_session" });
+  assert.deepEqual(apiRoutingHeaders(provider, {}), {});
+  for (const value of ["", "line\nbreak", "unsafe\rvalue", "a".repeat(257), "unicode-\u2603", null, 7]) {
+    assert.deepEqual(apiRoutingHeaders(provider, context, { prompt_cache_key: value }), {}, "invalid explicit keys are not silently replaced");
+  }
+  assert.deepEqual(apiRoutingHeaders(provider, { threadId: "line\nbreak" }), {});
 });
 
 test("an opted-in session-affinity provider receives the caller's thread ID as session-id, and nothing else does", () => {
@@ -125,4 +140,29 @@ test("Grok Responses uses the existing API transport and preserves caller tools 
   assert.match(translated[0].name, /^[A-Za-z0-9_-]{1,64}$/);
   assert.deepEqual(translated[0].parameters, tools[0].parameters);
   assert.deepEqual(sent?.reasoning, { effort: "high" });
+});
+
+test("OpenRouter transports send session affinity while Responses retains explicit cache controls", async t => {
+  const key = "GATEWAY_OPENROUTER_ROUTING_FIXTURE"; const previous = process.env[key]; process.env[key] = "fixture-only";
+  t.after(() => { if (previous === undefined) delete process.env[key]; else process.env[key] = previous; });
+  const seen: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
+  let stream = responsesStream;
+  t.mock.method(globalThis, "fetch", async (url: string, options: RequestInit) => {
+    seen.push({ url: String(url), headers: new Headers(options.headers), body: JSON.parse(String(options.body)) });
+    return stream();
+  });
+  const config: ProviderConfig = { id: "openrouter", type: "responses-api", baseUrl: "https://openrouter.ai/api/v1",
+    apiKeyEnv: key, models: { alias: "fixture" } };
+  const request = { model: "fixture", input: "hello", prompt_cache_key: "caller_cache", prompt_cache_options: { mode: "implicit" } };
+  for await (const _ of new ResponsesAPI(config).infer(request, new AbortController().signal, { threadId: "thread_1" })) {}
+  assert.equal(seen[0].headers.get("x-session-id"), "caller_cache");
+  assert.equal(seen[0].headers.get("x-opencode-session"), null);
+  assert.equal(seen[0].body.prompt_cache_key, "caller_cache");
+  assert.deepEqual(seen[0].body.prompt_cache_options, { mode: "implicit" });
+  stream = chatStream;
+  for await (const _ of new ChatCompletionsAPI({ ...config, type: "chat-completions-api" }).infer(request, new AbortController().signal, { threadId: "thread_1" })) {}
+  assert.equal(seen[1].headers.get("x-session-id"), "caller_cache");
+  for await (const _ of new ChatCompletionsAPI({ ...config, type: "chat-completions-api" }).infer({ ...request, session_id: "explicit_session" }, new AbortController().signal)) {}
+  assert.equal(seen[2].headers.get("x-session-id"), "explicit_session");
+  assert.equal(request.prompt_cache_key, "caller_cache");
 });

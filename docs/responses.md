@@ -353,7 +353,9 @@ endpoint did not reuse its prompt cache: identical 27k-token requests stayed at
 identifiers of at most 128 characters are forwarded. Official OpenCode API
 routes also receive the caller's thread or session ID as `x-opencode-session`,
 along with the gateway's user agent, across all three API transports. Other
-Responses endpoints receive only the body key. See [API providers](api-providers.md).
+Responses endpoints receive only the body key, except official OpenRouter routes,
+which also receive their documented `x-session-id` affinity header. See
+[API providers](api-providers.md).
 
 The subscription endpoint also returns `x-codex-turn-state` on a new turn (about
 780 characters, verified live), which Codex echoes on the following requests of

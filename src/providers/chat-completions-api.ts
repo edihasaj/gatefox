@@ -180,7 +180,7 @@ export class ChatCompletionsAPI implements Provider {
       caller.throwIfAborted();
       let response: Response;
       try {
-        const headers = { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiRoutingHeaders(this.config, context) };
+        const headers = { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...apiRoutingHeaders(this.config, context, request) };
         response = this.tailnet ? await this.tailnet(url, { method: "POST", headers, body, signal })
           : await fetch(url, { method: "POST", redirect: "error", headers, body, signal });
       } catch (error) {

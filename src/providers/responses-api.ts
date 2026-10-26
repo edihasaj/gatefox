@@ -224,7 +224,7 @@ export class ResponsesAPI implements Provider {
     let response: Response;
     try {
       response = await fetch(`${base}/responses`, { method: "POST", redirect: "error", signal,
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context) : {}), ...routing }, body: JSON.stringify(outgoing) });
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${credential}`, ...(!plan ? apiRoutingHeaders(this.config, context, request) : {}), ...routing }, body: JSON.stringify(outgoing) });
     } catch (error) {
       throw networkProviderError(error, "connect") ?? error;
     }

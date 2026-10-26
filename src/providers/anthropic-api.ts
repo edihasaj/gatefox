@@ -95,7 +95,7 @@ export class AnthropicAPI implements Provider {
     };
     attachEphemeralCacheControl(body);
     const response = await fetch(`${this.config.baseUrl!.replace(/\/$/, "")}/messages`, {
-      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01", ...apiRoutingHeaders(this.config, context) },
+      method: "POST", redirect: "error", signal, headers: { "Content-Type": "application/json", "x-api-key": credential, "anthropic-version": "2023-06-01", ...apiRoutingHeaders(this.config, context, request) },
       body: JSON.stringify(body),
     });
     if (!response.ok) {

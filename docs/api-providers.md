@@ -93,8 +93,36 @@ gateway ingress are also accepted as caller session IDs. A request with no
 conversation ID does not invent one or group unrelated requests together.
 
 These headers are restricted to the official HTTPS OpenCode API routes; they are
-never added to xAI, OpenRouter or arbitrary custom origins. The gateway enables
+never added to xAI, OpenRouter or arbitrary custom origins. OpenRouter receives
+its own session header only at its official API endpoint, as described below. The gateway enables
 no provider-hosted search, shell or coding tools.
+
+## OpenRouter prompt-cache affinity
+
+DeepSeek and Z.AI/GLM use automatic prefix caching. They do not require
+Anthropic-style cache markers. On the official `https://openrouter.ai/api/v1`
+endpoint, all API transports send `x-session-id` from the caller's explicit
+`session_id`, then `prompt_cache_key`, then its existing thread/session ID.
+This preserves an explicit cache key's grouping, including shared fork keys.
+Missing or invalid identifiers do not create new identities or go into logs.
+The Responses transport also preserves the caller's body cache fields.
+
+OpenRouter documents this header for Chat and Responses. An explicit session
+activates provider stickiness on the first successful request, before a cache
+hit has been observed, and supplies Z.AI's session cache affinity. Without it,
+OpenRouter can fall back to a cache key or hashes of the opening messages.
+Manual provider order, endpoint eligibility and vendor cache expiry still apply;
+the gateway does not change provider selection or cache retention settings.
+
+`gateway diagnostics` reports `cacheHit` as cached input tokens divided by
+reported total input tokens, not the fraction of requests that hit a cache.
+Short/cold requests, new workers and changed prefixes can legitimately show
+zero. Longer cache lifetimes can charge more for writes, so the gateway leaves
+explicit TTL choices with the caller rather than forcing a long global TTL.
+
+Checked 26 October 2026 against [OpenRouter prompt caching](https://openrouter.ai/docs/guides/best-practices/prompt-caching),
+[Z.AI context caching](https://docs.z.ai/guides/capabilities/cache), and
+[OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching).
 
 ## Self-hosted session affinity
 

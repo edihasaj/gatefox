@@ -1,0 +1,308 @@
+{
+  "checkedAt": "2026-10-26T20:11:41.430018+00:00",
+  "metric": "Cached input tokens divided by reported total input tokens; not request hit frequency.",
+  "recentSixHourDiagnostics": [
+    {
+      "machine": "Studio",
+      "windowHours": 6,
+      "requests": {
+        "qwen/qwen3.8-flash-next": {
+          "completed": 1415,
+          "failed:invalid_tool_call": 16,
+          "failed:cancelled": 23,
+          "failed:timeout": 1,
+          "failed:invalid_request": 12,
+          "cacheHit": "87%",
+          "firstEventMsP50": 3216,
+          "firstEventMsP95": 112750
+        },
+        "codex-main/gpt-6.1-sol": {
+          "completed": 1873,
+          "failed:cancelled": 23,
+          "cacheHit": "99%",
+          "firstEventMsP50": 12108,
+          "firstEventMsP95": 34519
+        },
+        "codex/gpt-5.6-terra": {
+          "completed": 1887,
+          "failed:cancelled": 19,
+          "cacheHit": "98%",
+          "firstEventMsP50": 4477,
+          "firstEventMsP95": 11603
+        },
+        "codex/gpt-6.1-sol": {
+          "completed": 2388,
+          "failed:upstream_unavailable": 1,
+          "failed:cancelled": 14,
+          "failed:rate_limit_exceeded": 6,
+          "failed:upstream_rejected": 1,
+          "cacheHit": "99%",
+          "firstEventMsP50": 9503,
+          "firstEventMsP95": 30591
+        },
+        "claude-secondary/claude-opus-5-5": {
+          "completed": 807,
+          "cacheHit": "98%",
+          "firstEventMsP50": 5746,
+          "firstEventMsP95": 22032
+        },
+        "claude-primary/claude-opus-5-5": {
+          "failed:usage_limit": 1
+        },
+        "unknown": {
+          "failed:model_not_found": 12
+        },
+        "or-deepseek": {
+          "completed": 473,
+          "failed:invalid_request:invalid_provider_output": 1,
+          "failed:upstream_error": 59,
+          "cacheHit": "92%",
+          "firstEventMsP50": 2408,
+          "firstEventMsP95": 8013
+        },
+        "or-glm-pro": {
+          "completed": 2,
+          "cacheHit": "50%",
+          "firstEventMsP50": 2698,
+          "firstEventMsP95": 2698
+        },
+        "or-deepseek-pro": {
+          "completed": 307,
+          "failed:upstream_error": 58,
+          "cacheHit": "96%",
+          "firstEventMsP50": 2239,
+          "firstEventMsP95": 4808
+        },
+        "or-glm-flash": {
+          "completed": 11,
+          "cacheHit": "64%",
+          "firstEventMsP50": 5308,
+          "firstEventMsP95": 9635
+        },
+        "claude-primary/claude-sonnet-5-5": {
+          "failed:usage_limit": 2
+        }
+      },
+      "claudeSessions": {
+        "fallback:unexpected_tail": {
+          "count": 764,
+          "rewrites": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0
+        },
+        "fallback:warmup": {
+          "count": 4,
+          "rewrites": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0
+        },
+        "spawned": {
+          "count": 1,
+          "rewrites": 0,
+          "cacheReadTokens": 459173,
+          "cacheWriteTokens": 893
+        },
+        "continued": {
+          "count": 39,
+          "rewrites": 0,
+          "cacheReadTokens": 19370885,
+          "cacheWriteTokens": 75963
+        },
+        "closed:unexpected_tail": {
+          "count": 1,
+          "rewrites": 0,
+          "cacheReadTokens": 0,
+          "cacheWriteTokens": 0
+        }
+      },
+      "sessionAffinity": {
+        "qwen": true
+      }
+    },
+    {
+      "machine": "MacBook",
+      "windowHours": 6,
+      "requests": {
+        "or-glm-flash": {
+          "completed": 2,
+          "cacheHit": "0%",
+          "firstEventMsP50": 1270,
+          "firstEventMsP95": 1270
+        },
+        "or-deepseek": {
+          "completed": 2,
+          "cacheHit": "50%",
+          "firstEventMsP50": 1355,
+          "firstEventMsP95": 1355
+        },
+        "or-glm-pro": {
+          "completed": 2,
+          "cacheHit": "0%",
+          "firstEventMsP50": 1676,
+          "firstEventMsP95": 1676
+        },
+        "or-deepseek-pro": {
+          "completed": 2,
+          "cacheHit": "0%",
+          "firstEventMsP50": 3687,
+          "firstEventMsP95": 3687
+        }
+      },
+      "claudeSessions": {},
+      "sessionAffinity": {
+        "qwen": true
+      }
+    },
+    {
+      "machine": "MacBook-server",
+      "windowHours": 6,
+      "requests": {
+        "codex/gpt-6.1-sol": {
+          "completed": 19,
+          "failed:rate_limit_exceeded": 18,
+          "failed:cancelled": 1,
+          "cacheHit": "97%",
+          "firstEventMsP50": 7276,
+          "firstEventMsP95": 34277
+        },
+        "or-deepseek": {
+          "completed": 2,
+          "cacheHit": "50%",
+          "firstEventMsP50": 1622,
+          "firstEventMsP95": 1622
+        },
+        "or-glm-pro": {
+          "completed": 2,
+          "cacheHit": "49%",
+          "firstEventMsP50": 1132,
+          "firstEventMsP95": 1132
+        },
+        "or-glm-flash": {
+          "completed": 2,
+          "cacheHit": "50%",
+          "firstEventMsP50": 1417,
+          "firstEventMsP95": 1417
+        },
+        "or-deepseek-pro": {
+          "completed": 2,
+          "cacheHit": "49%",
+          "firstEventMsP50": 5487,
+          "firstEventMsP95": 5487
+        }
+      },
+      "claudeSessions": {},
+      "sessionAffinity": {
+        "qwen": false
+      }
+    }
+  ],
+  "localAffinityParity": [
+    {
+      "machine": "Studio",
+      "sessionAffinity": true,
+      "changed": false,
+      "otherConfigPreserved": true,
+      "liveConfigAccepted": true
+    },
+    {
+      "machine": "MacBook",
+      "sessionAffinity": true,
+      "changed": false,
+      "otherConfigPreserved": true,
+      "liveConfigAccepted": true
+    },
+    {
+      "machine": "MacBook-server",
+      "sessionAffinity": true,
+      "changed": true,
+      "otherConfigPreserved": true,
+      "liveConfigAccepted": true
+    }
+  ],
+  "liveSmallPrefix": [
+    {
+      "alias": "or-deepseek",
+      "request": 1,
+      "ms": 1084,
+      "inputTokens": 7248,
+      "cachedTokens": 0,
+      "outputTokens": 16
+    },
+    {
+      "alias": "or-deepseek",
+      "request": 2,
+      "ms": 733,
+      "inputTokens": 7248,
+      "cachedTokens": 7168,
+      "outputTokens": 15
+    },
+    {
+      "alias": "or-glm-flash",
+      "request": 1,
+      "ms": 973,
+      "inputTokens": 7428,
+      "cachedTokens": 0,
+      "outputTokens": 3
+    },
+    {
+      "alias": "or-glm-flash",
+      "request": 2,
+      "ms": 862,
+      "inputTokens": 7428,
+      "cachedTokens": 0,
+      "outputTokens": 3
+    }
+  ],
+  "liveLargerGLMPrefix": [
+    {
+      "alias": "or-glm-flash",
+      "request": 1,
+      "ms": 1778,
+      "inputTokens": 25259,
+      "cachedTokens": 0,
+      "outputTokens": 3
+    },
+    {
+      "alias": "or-glm-flash",
+      "request": 2,
+      "ms": 814,
+      "inputTokens": 25259,
+      "cachedTokens": 25216,
+      "outputTokens": 3
+    }
+  ],
+  "headerChange": "Official OpenRouter x-session-id uses explicit session_id, then existing prompt_cache_key, then existing thread/session identity. No invented IDs, provider-order changes or TTL changes.",
+  "sources": [
+    "https://openrouter.ai/docs/guides/best-practices/prompt-caching",
+    "https://docs.z.ai/guides/capabilities/cache",
+    "https://developers.openai.com/api/docs/guides/prompt-caching"
+  ],
+  "otherProviderAudit": {
+    "codex": "Caller cache key and session/thread headers retained; observed98\u201399% token reuse.",
+    "anthropic": "Existing explicit ephemeral breakpoints and cache read/write usage retained.",
+    "claude": "Stable replay prefix and CLI-owned caching; live mode retains intentional replay fallback on prefix divergence.",
+    "copilot": "Existing per-thread live sessions and native cache usage accounting.",
+    "grok": "Vendor-owned implicit caching; no recent successful live sample for a cache ratio."
+  },
+  "limitations": [
+    "Cache eligibility and lifetime depend on model/provider; short requests may have zero reuse.",
+    "Chat Completions cache-write telemetry remains less complete than cache-read telemetry; no cache-hit or savings figures are invented.",
+    "A higher hit ratio alone does not prove lower total cost; longer paid-write TTLs were not forced."
+  ],
+  "independentReview": "approved",
+  "routingTestsPassed": 8,
+  "fullGate": {
+    "build": "passed",
+    "typecheck": "passed",
+    "main": {
+      "passed": 3494,
+      "skipped": 1,
+      "failed": 0
+    },
+    "claudeDesktop": {
+      "passed": 144,
+      "skipped": 1,
+      "failed": 0
+    }
+  }
+}

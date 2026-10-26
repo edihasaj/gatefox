@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.0.4 — 2026-10-26
+
+- OpenRouter API routes now send their documented session-affinity header using
+  the caller's existing session or prompt-cache identity. This enables sticky
+  routing before the first cache hit and improves Z.AI/GLM cache affinity while
+  preserving caller cache fields, provider order and retention settings. The
+  header is restricted to OpenRouter's official HTTPS API endpoint.
+
 ## 1.0.3 — 2026-10-26
 
 - Opening an unloaded subagent now reuses the loaded parent's executor, even
