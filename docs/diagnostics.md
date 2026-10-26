@@ -176,6 +176,15 @@ mock inference. Add `--accounts` to require every bare-model child request to us
 the designated account while two Codex accounts offer the same model. This does
 not test real provider latency or the desktop's rendering.
 
+Add `--role-fork` with `--v2` to verify a named role selects its configured
+model during a full-history fork, without an explicit spawn-model override.
+The fixture keeps the default child model equal to the parent, requires a
+parent-only history marker in child inference, and checks real child tool work,
+saved model, reasoning and follow-up. It uses the installed SDK with local mock
+inference. Legacy MultiAgentV1 rejects named-role overrides on full-history forks.
+The [26 October 2026 receipt](evidence/subagent-role-fork-2026-10-26.json)
+records the installed SDK check and matching actual binary hashes on all three Macs.
+
 ## Gateway-rule refusals and dropped control items
 
 Two fixed fields describe how the gateway treated a Responses request before any provider ran

@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "verifiedOn": "2026-10-26",
+  "scope": "Installed Codex SDK with isolated homes and local mock inference; no production chat modified.",
+  "roleFullHistory": {
+    "passed": true,
+    "collaborationVersion": "v2",
+    "realGatewaySdk": true,
+    "paidInferenceRequests": 0,
+    "fullHistoryFork": true,
+    "parentModel": "fixture/parent",
+    "defaultSubagentModel": "fixture/parent",
+    "roleModel": "gpt-6.1-sol",
+    "spawnModelOverride": false,
+    "parentHistoryInherited": true,
+    "observedChildModel": "gpt-6.1-sol",
+    "observedChildUpstreamModel": "mock-child",
+    "childToolExecuted": true,
+    "savedReasoning": "high",
+    "implicitAndExplicitResume": true,
+    "followupToolExecuted": true,
+    "childContinued": true,
+    "savedIdentityPreserved": true,
+    "observedChildReasoningEffort": "high"
+  },
+  "freshChildBaseline": {
+    "passed": true,
+    "realGatewaySdk": true,
+    "paidInferenceRequests": 0,
+    "childToolExecuted": true,
+    "implicitAndExplicitResume": true,
+    "childContinued": true,
+    "savedIdentityPreserved": true
+  },
+  "sdk": {
+    "codexVersion": "0.163.0",
+    "revision": "83086188ae0614bd882818ff1aa23f3194962012",
+    "binarySha256": "326ef28559f5d1611a1d2500a929d93a8fcd36bd360ddf24bccfaf9f6206493b",
+    "fleetActualBinaryHashes": {
+      "MacBook": [
+        "326ef28559f5d1611a1d2500a929d93a8fcd36bd360ddf24bccfaf9f6206493b"
+      ],
+      "MacBook server": [
+        "326ef28559f5d1611a1d2500a929d93a8fcd36bd360ddf24bccfaf9f6206493b"
+      ],
+      "Studio": [
+        "326ef28559f5d1611a1d2500a929d93a8fcd36bd360ddf24bccfaf9f6206493b"
+      ]
+    }
+  },
+  "gates": {
+    "build": "passed",
+    "typecheck": "passed",
+    "coreTests": {
+      "total": 3486,
+      "passed": 3485,
+      "skipped": 1,
+      "failed": 0
+    },
+    "claudeDesktopTests": {
+      "total": 145,
+      "passed": 144,
+      "skipped": 1,
+      "failed": 0
+    }
+  },
+  "command": "node scripts/e2e-subagent-sidebar.mjs --package <installed-package> --code <installed-package> --v2 --openai --role-fork --root <temporary-evidence-directory>",
+  "legacyLimit": "MultiAgentV1 rejects named-role overrides on full-history forks."
+}

@@ -10,8 +10,10 @@ import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
-  v2: { type: 'boolean' }, accounts: { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
+  v2: { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
+assert.ok(!values['role-fork'] || values.v2, '--role-fork requires --v2');
+if (values['role-fork']) assert.ok(!values.accounts && !values.baseline, '--role-fork is incompatible with --accounts and --baseline');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
 const pkg = resolve(values.package), root = resolve(values.root), fixture = await mkdtemp('/tmp/gw-child-');
 const native = join(fixture, 'native'), state = join(fixture, 'state'), work = join(fixture, 'work');
@@ -43,6 +45,7 @@ setOwnPidForTests(process.pid + 1_000_000);
 const runtime = await gatewaySdkRuntime(pkg);
 assert.ok(runtime?.executorIdentity, 'Use a verified installed gateway SDK');
 const sdk = runtime.executable, alias = 'fixture/parent', childModel = 'gpt-6.1-sol';
+const role = 'role_fork_fixture', rolePath = join(native, 'role-fork.toml');
 const configPath = join(fixture, 'gateway.json');
 const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
   ...(values.openai ? { chatIdentity: 'openai' } : {}),
@@ -60,12 +63,18 @@ const until = async (check, label, ms = 30_000) => {
   while (Date.now() < end) { const result = await check(); if (result) return result; await delay(25); }
   throw Error(label + ' timed out');
 };
-let calls = 0, childCalls = 0, spawned = false, gateway, host, phase = 'setup', parentOperation;
+let calls = 0, childCalls = 0, spawned = false, gateway, host, phase = 'setup', parentOperation, nativeConfig;
 const clients = [];
 const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'subscription_gateway',
   realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1',
   ...(values.accounts ? { codexAccounts: 2, childAccount: 'selected' } : {}), passed: false };
+if (values['role-fork']) Object.assign(evidence, { mode: 'role-fork', fullHistoryFork: true,
+  parentModel: alias, defaultSubagentModel: alias, roleConfigPath: rolePath, roleModel: childModel,
+  roleReasoningEffort: 'high' });
 const taskProof = 'TASK_' + randomUUID(), fileProof = 'FILE_' + randomUUID();
+// A marker written only into the parent's own turn text, so its presence in a child inference
+// proves the full-history fork actually carried the parent turn.
+const forkMarker = values['role-fork'] ? 'FORK_HISTORY_' + randomUUID() : undefined;
 let requiredProof = taskProof, childCallId = 'fixture_child_read', queuedProof;
 const taskFile = join(work, 'delegation-proof.txt');
 await writeFile(taskFile, fileProof, { mode: 0o600 });
@@ -85,6 +94,11 @@ try {
       const childRequest = request.model === (values.accounts ? childModel : 'mock-child');
       if (childRequest) {
         childCalls++;
+        if (values['role-fork']) {
+          evidence.observedChildUpstreamModel = request.model;
+          evidence.observedChildReasoningEffort = request.reasoning?.effort;
+          assert.equal(request.reasoning?.effort, 'high', 'Every child inference must use the role reasoning effort');
+        }
         if (values.accounts) assert.equal(provider.id, 'selected', 'Every bare-model child inference uses the designated account');
       }
       if (request.model === 'mock-parent' && parentOperation) {
@@ -98,11 +112,21 @@ try {
         const tool = tools.find(tool => tool.name === 'spawn_agent');
         evidence.delegationExposed = !!tool;
         assert.ok(tool, 'The real SDK exposes its delegation tool');
-        yield callFor(tool, 'fixture_spawn', { task_name: 'sidebar_fixture',
+        const spawnArgs = { task_name: 'sidebar_fixture',
           message: values.v2 ? `Read ${taskFile} using exec_command. Return its value and ${taskProof}.` : 'Return the fixture marker.',
-          model: childModel, reasoning_effort: 'high', fork_turns: 'none' });
+          ...(values['role-fork'] ? { agent_type: role, fork_turns: 'all' }
+            : { model: childModel, reasoning_effort: 'high', fork_turns: 'none' }) };
+        if (values['role-fork']) {
+          evidence.spawnModelOverride = Object.hasOwn(spawnArgs, 'model');
+          assert.equal(evidence.spawnModelOverride, false, 'The role must select the model without a spawn override');
+        }
+        yield callFor(tool, 'fixture_spawn', spawnArgs);
       } else if (childRequest && values.v2) {
         const messages = responsesInputToMessages(request.input);
+        if (forkMarker && requiredProof === taskProof) {
+          evidence.parentHistoryInherited = messages.some(message => typeof message.content === 'string' && message.content.includes(forkMarker));
+          assert.ok(evidence.parentHistoryInherited, 'The child inference must contain the parent-only history marker');
+        }
         const delivered = messages.some(message => typeof message.content === 'string' && message.content.includes(requiredProof));
         evidence[requiredProof === taskProof ? 'taskPayloadDelivered' : 'followupPayloadDelivered'] = delivered;
         if (queuedProof) evidence.queuedMessagePayloadDelivered = messages.some(message => typeof message.content === 'string' && message.content.includes(queuedProof));
@@ -134,7 +158,13 @@ try {
   const nativeRow = { ...rows[0], slug: childModel, multi_agent_version: undefined, default_reasoning_level: 'low',
     supported_reasoning_levels: ['low', 'high'].map(effort => ({ effort, description: effort })) };
   await writePrivateJson(join(native, 'models.json'), { models: [nativeRow] });
-  await writeFile(join(native, 'config.toml'), `model = "${childModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`, { mode: 0o600 });
+  nativeConfig = `model = "${childModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
+  if (values['role-fork']) {
+    await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "high"\n`, { mode: 0o600 });
+    nativeConfig += `\n[agents]\ndefault_subagent_model = "${alias}"\n[agents.${role}]\ndescription = "Fixture worker"\nconfig_file = ${JSON.stringify(rolePath)}\n`;
+    assert.notEqual(childModel, alias, 'The role model must differ from both parent and default child models');
+  }
+  await writeFile(join(native, 'config.toml'), nativeConfig, { mode: 0o600 });
   const snapshot = { revision: 'a'.repeat(64), models: rows };
   const catalogPath = join(state, 'fixture-catalog.json');
   await writePrivateJson(catalogPath, { models: [nativeRow, ...rows] });
@@ -169,7 +199,8 @@ try {
   const writer = await client('subagent_sidebar_writer');
   const parent = await writer.router.request('thread/start', { model: alias, cwd: work, approvalPolicy: 'never', sandbox: 'read-only',
     config: { model_reasoning_effort: 'ultra' } });
-  await writer.router.request('turn/start', { threadId: parent.thread.id, effort: 'ultra', input: [{ type: 'text', text: 'Spawn the fixture child.' }] });
+  await writer.router.request('turn/start', { threadId: parent.thread.id, effort: 'ultra',
+    input: [{ type: 'text', text: 'Spawn the fixture child.' + (forkMarker ? ' ' + forkMarker : '') }] });
   const child = await until(async () => {
     const loaded = await writer.router.request('thread/loaded/list', {});
     for (const id of loaded.data) {
@@ -215,6 +246,7 @@ try {
   }
   const read = await reader.router.request('thread/read', { threadId: id, includeTurns: false });
   assert.equal(read.thread.model, childModel);
+  if (values['role-fork']) evidence.observedChildModel = read.thread.model;
   assert.equal(read.thread.modelProvider, evidence.identity);
   evidence.childStateReadable = true;
   const before = calls;
@@ -279,11 +311,11 @@ try {
     }
     const persisted = await reader.backend.native.request('thread/read', { threadId: id, includeTurns: false });
     assert.equal(persisted.thread.modelProvider, evidence.identity, 'The child keeps its saved provider on disk');
+    if (values['role-fork']) assert.equal(persisted.thread.model, childModel, 'Followup keeps the role model on disk');
     evidence.savedIdentityPreserved = true;
     evidence.passed = true;
   } else assert.ok(evidence.baselineRejection, 'Baseline must reproduce the original rejection');
-  assert.equal(await readFile(join(native, 'config.toml'), 'utf8'),
-    `model = "${childModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`);
+  assert.equal(await readFile(join(native, 'config.toml'), 'utf8'), nativeConfig);
   if (values.accounts) {
     assert.ok(childCalls >= 2, 'The real SDK child must infer and execute its tool through the selected account');
     evidence.childAccountVerified = true;
