@@ -5,6 +5,7 @@ import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
 import { responsesHttpError, responsesStreamError } from "../providers/responses-errors.js";
 import { streamFailureCode } from "../provider-failure.js";
+import { configureThrottleRetryTiming, resetThrottleRetryTiming } from "../providers/throttle-retry.js";
 
 const privateMessage = "upstream secret or caller prompt must not escape";
 async function failure(status: number, value: unknown): Promise<ProviderError> {
@@ -53,10 +54,14 @@ test("Responses authentication and capacity HTTP statuses cannot be replaced by 
 });
 
 test("Responses stream rate, quota, and authentication failures stay distinct", async () => {
-  for (const [code, expected, status] of [["rate_limit_exceeded", "rate_limit_exceeded", 429], ["insufficient_quota", "insufficient_quota", 429], ["invalid_api_key", "authentication", 401]] as const) {
-    const error = await failure(200, { type: "response.failed", response: { error: { code, message: privateMessage } } });
-    assert.equal(error.code, expected); assert.equal(error.status, status);
-  }
+  let now = 0;
+  configureThrottleRetryTiming({ now: () => now, random: () => 0.5, sleep: async ms => { now += ms; } });
+  try {
+    for (const [code, expected, status] of [["rate_limit_exceeded", "rate_limit_exceeded", 429], ["insufficient_quota", "insufficient_quota", 429], ["invalid_api_key", "authentication", 401]] as const) {
+      const error = await failure(200, { type: "response.failed", response: { error: { code, message: privateMessage } } });
+      assert.equal(error.code, expected); assert.equal(error.status, status);
+    }
+  } finally { resetThrottleRetryTiming(); }
 });
 
 test("stream quota classes in code or type stop retries across error envelopes", () => {
@@ -101,6 +106,12 @@ test("a named stream quota wins over throttles, while transient rate limits stay
       const error = responsesStreamError({ type: "error", error: { [field]: name, message: privateMessage } });
       assert.equal(error.code, "rate_limit_exceeded"); assert.equal(streamFailureCode(error), "rate_limit_exceeded");
     }
+  }
+  const typedThrottle = responsesStreamError({ type: "error", error: { code: "unknown_provider_code", type: "rate_limit_error", message: privateMessage } });
+  assert.equal(typedThrottle.code, "rate_limit_exceeded"); assert.equal(typedThrottle.upstream?.code, "rate_limit_exceeded");
+  for (const [code, expected] of [["invalid_api_key", "authentication"], ["context_length_exceeded", "context_length_exceeded"]] as const) {
+    const final = responsesStreamError({ type: "error", error: { code, type: "rate_limit_error", message: privateMessage } });
+    assert.equal(final.code, expected, `${code} must not be changed into a throttle`);
   }
   const plan = responsesStreamError({ type: "error", error: { type: "usage_not_included", message: privateMessage } });
   assert.equal(plan.code, "upstream_rejected"); assert.equal(streamFailureCode(plan), "usage_not_included");
@@ -226,6 +237,8 @@ test("A named non-OpenAI throttle stays retryable; a named quota class stays fin
     assert.equal(limit.code, "usage_limit", JSON.stringify(error)); assert.equal(streamFailureCode(limit), "invalid_prompt");
   }
   assert.equal((await http429({ code: "unrecognized_limit" })).code, "usage_limit", "an unknown name without a short wait stays final");
+  assert.equal((await http429({ type: "rate_limit_error" }, { "retry-after": "75" })).code, "rate_limit_exceeded", "a named throttle may use the full throttle budget");
+  assert.equal((await responsesHttpError(new Response("{}", { status: 429, headers: { "retry-after": "75" } }))).code, "usage_limit", "unnamed 429 compatibility remains capped at one minute");
 });
 
 test("a ChatGPT subscription usage limit is final with account guidance in every envelope", async () => {

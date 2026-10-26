@@ -11,7 +11,7 @@ export function errorClass(message: unknown): string {
   for (const [name, pattern] of [
     ["stream_disconnected", /stream disconnected|ended without completion|connection (reset|closed)/],
     ["idle_timeout", /idle timeout|timed out waiting/], ["deadline", /deadline|exceeded the gateway/],
-    ["usage_limit", /usage limit|rate limit|quota/], ["context_window", /context (window|length)|too long/],
+    ["usage_limit", /usage[ _-]limit|quota/], ["rate_limit", /rate[ _-]limit/], ["context_window", /context (window|length)|too long/],
     ["attachment", /attachment is invalid|could not read the local/], ["authentication", /login|unauthori[sz]ed|authentication/],
     // A status code stands alone; digits inside a thread id must not count as one.
     ["overloaded", /overload|server_error|unavailable|\b5\d\d\b/],

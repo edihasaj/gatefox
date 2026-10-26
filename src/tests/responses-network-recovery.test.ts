@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { ResponsesAPI } from "../providers/responses-api.js";
 import { ProviderError } from "../providers/provider.js";
+import { configureNetworkRetryTiming, resetNetworkRetryTiming } from "../providers/network-retry.js";
 
 const env = "GATEWAY_NETWORK_RECOVERY_FIXTURE_KEY";
 const reset = () => Object.assign(new Error("private socket detail"), { code: "ECONNRESET" });
@@ -17,17 +18,24 @@ async function mocked(sequence: (() => Promise<Response>)[]) {
   finally { globalThis.fetch = original; }
 }
 
-test("raw mocked fetch reset shares the existing two-attempt budget", async () => {
+test("a raw mocked fetch reset recovers on its retry and spends the outage budget otherwise", async () => {
   process.env[env] = "fixture";
+  // The connect budget runs on the suite's fake clock, so a 120 second outage costs no real seconds.
+  const state = { spent: 0, started: [] as number[] };
+  configureNetworkRetryTiming({ now: () => state.spent, random: () => 0.5, budgetMs: 120000, sleep: async ms => { state.spent += ms; } });
   try {
     const recovered = await mocked([async () => { throw reset(); }, async () => new Response(complete, { headers: { "content-type": "text/event-stream" } })]);
-    assert.equal(recovered.calls(), 2);
-    let calls = 0; const original = globalThis.fetch; globalThis.fetch = async () => { calls++; throw reset(); };
-    try { await assert.rejects(drain(provider()), (error: unknown) => error instanceof ProviderError && error.upstream?.code === "ECONNRESET"); assert.equal(calls, 2); }
+    assert.equal(recovered.calls(), 2); assert.equal(state.spent, 1000);
+    state.spent = 0;
+    const original = globalThis.fetch; globalThis.fetch = async () => { state.started.push(state.spent); throw reset(); };
+    try { await assert.rejects(drain(provider()), (error: unknown) => error instanceof ProviderError && error.upstream?.code === "ECONNRESET"); }
     finally { globalThis.fetch = original; }
-  } finally { delete process.env[env]; }
+    // The budget is spent on whole waits, so the last attempt still starts inside it, never at its edge.
+    assert.ok(state.started.length > 10, `the outage was not absorbed, saw ${state.started.length} attempts`);
+    assert.ok(state.started.every(at => at < 120000), `an attempt started at ${Math.max(...state.started)}`);
+    assert.ok(state.spent < 120000);
+  } finally { resetNetworkRetryTiming(); delete process.env[env]; }
 });
-
 test("a raw body reset before output retries once, while diagnostic and abort raw failures do not", async () => {
   process.env[env] = "fixture";
   const body = (error: Error) => new Response(new ReadableStream<Uint8Array>({ pull(controller) { controller.error(error); } }), { headers: { "content-type": "text/event-stream" } });

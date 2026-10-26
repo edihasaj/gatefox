@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyNetworkFailure } from "../provider-network.js";
+import { classifyNetworkFailure, networkCodesField } from "../provider-network.js";
 import { classifyProviderFailure, providerFailureDiagnostic } from "../provider-failure.js";
 const fault = (code: string, cause?: unknown) => Object.assign(new Error("private-diagnostic-and-address"), { code, ...(cause ? { cause } : {}) });
 
@@ -43,4 +43,33 @@ test("aggregate inspection never evaluates array accessors or hostile proxy prop
 test("mixed known transient aggregate codes remain eligible but unknown leaves veto recovery", () => {
   assert.equal(classifyNetworkFailure(new AggregateError([fault("ECONNRESET"), fault("ETIMEDOUT"), fault("EAI_AGAIN")])).kind, "transient");
   assert.notEqual(classifyNetworkFailure(new AggregateError([fault("ECONNRESET"), new Error("private-unknown")])).kind, "transient");
+});
+
+test("a mixed transient aggregate names every socket code it held", () => {
+  assert.deepEqual(classifyNetworkFailure(new AggregateError([fault("ECONNRESET"), fault("ETIMEDOUT"), fault("EAI_AGAIN")])).codes,
+    ["EAI_AGAIN", "ECONNRESET", "ETIMEDOUT"]);
+  // One code is the whole answer, so only a genuine mix is reported as a set, and a long one stays bounded.
+  assert.equal(classifyNetworkFailure(new AggregateError([fault("ECONNRESET"), fault("ECONNRESET")])).codes, undefined);
+  assert.equal(classifyNetworkFailure(new AggregateError([fault("ECONNRESET"), fault("ETIMEDOUT"), fault("EAI_AGAIN"), fault("EPIPE"), fault("ENETDOWN"), fault("EHOSTUNREACH")])).codes?.length, 4);
+});
+
+test("the network-code record is read once from own data properties and never through a method", () => {
+  const leak = "https://private.invalid/?token=private-and-address";
+  let reads = 0;
+  const accessor = ["ETIMEDOUT"]; accessor.length = 2;
+  Object.defineProperty(accessor, "1", { get() { reads++; return leak; }, configurable: true });
+  assert.equal(networkCodesField(accessor), undefined);
+  assert.ok(reads < 2, "an accessor was consulted more than once, so validation and output could disagree");
+  const overridden = ["ECONNRESET"];
+  Object.defineProperty(overridden, "every", { value: () => { throw new Error("private-method-side-effect"); } });
+  assert.equal(networkCodesField(overridden), undefined);
+  const iterator = ["ECONNRESET"];
+  Object.defineProperty(iterator, Symbol.iterator, { value: function* () { yield leak; } });
+  assert.equal(networkCodesField(iterator), undefined);
+  class list extends Array {}
+  assert.equal(networkCodesField(list.of("ETIMEDOUT")), undefined);
+  assert.equal(networkCodesField(new Proxy(["ETIMEDOUT"], { getOwnPropertyDescriptor() { throw new Error("private-descriptor"); } })), undefined);
+  // The plain path the classifier itself produces still records.
+  assert.equal(networkCodesField(["ETIMEDOUT", "EHOSTUNREACH"]), "EHOSTUNREACH,ETIMEDOUT");
+  assert.ok(!JSON.stringify([networkCodesField(accessor), networkCodesField(iterator)]).includes(leak));
 });

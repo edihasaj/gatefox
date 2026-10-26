@@ -49,7 +49,9 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       if (typeof event.nanoAiu === "number" && Number.isFinite(event.nanoAiu)) entry.nano = (entry.nano || 0) + event.nanoAiu;
       if (typeof event.firstEventMs === "number") (firstEvent[model] ||= []).push(event.firstEventMs);
     }
-    if (event.event === "provider_retry") bump(retries, event.upstreamCode ?? event.code);
+    // A retry that named more than one socket code is counted under those codes, so a mixed outage is
+    // separable from a reset on a single family.
+    if (event.event === "provider_retry") bump(retries, typeof event.networkCodes === "string" ? event.networkCodes : event.upstreamCode ?? event.code);
     if (event.event === "rpc_error") bump(rpcErrors, `${event.method} ${event.code} ${event.reason ?? (event.rejection && event.rejection !== "other" ? event.rejection : event.errorClass) ?? ""}`.trim());
     if (event.event === "component_exit") bump(components, `${event.component} exit ${event.code}`);
     if (event.event.startsWith("execution_host_") || event.event === "native_acquire") bump(host, `${event.event}${event.outcome ? ":" + event.outcome : ""}`);

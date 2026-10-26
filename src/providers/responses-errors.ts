@@ -52,6 +52,8 @@ const usageLimitMessage = (name: unknown) => name === "subscription_sharing_usag
   : "Provider usage limit reached";
 // Named per-minute throttles, including the names OpenAI-compatible Chat Completions servers use.
 const throttleClasses = new Set(["rate_limit_exceeded", "slow_down", "rate_limit_error", "too_many_requests", "limit_requests", "limit_burst_rate"]);
+// A throttle clears by itself; it is not a plan usage limit, so its message must not say so.
+export const throttleMessage = "Provider is temporarily rate limiting requests; retry shortly";
 
 /** Read only bounded error metadata. Upstream messages may contain caller data. */
 async function httpErrorFields(response: Response): Promise<{ code?: unknown; type?: unknown }> {
@@ -85,9 +87,11 @@ export async function responsesHttpError(response: Response): Promise<ProviderEr
     // A named quota class is a usage limit, which Codex treats as final, even with a short wait.
     // A named throttle, or any other 429 that asks for a wait of at most 60 s, clears by itself.
     const throttle = !names.some(name => quotaClasses.has(name)) && (short || names.some(name => throttleClasses.has(name)));
-    if (throttle) return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429,
+    // retryAfterMs is present only when the provider named a wait; otherwise the gateway's own schedule applies.
+    const named = milliseconds !== undefined && Number.isFinite(milliseconds);
+    if (throttle) return new ProviderError("rate_limit_exceeded", throttleMessage, 429,
       { code: typeof code === "string" && knownCodes.has(code) ? code : "rate_limit_exceeded", event: "http",
-        retryAfterMs: milliseconds !== undefined && Number.isFinite(milliseconds) ? Math.max(1000, milliseconds) : 1000 });
+        ...(named ? { retryAfterMs: Math.max(1000, milliseconds) } : {}) });
     const quota = names.find(name => quotaClasses.has(name));
     return new ProviderError("usage_limit", usageLimitMessage(quota), 429, {
       code: quota ?? names.find(name => knownCodes.has(name)) ?? "unknown", event: "http", httpStatus: 429, ...requestIdOf(response.headers.get("x-request-id")),
@@ -107,11 +111,18 @@ export function responsesStreamError(event: ObjectValue, requestId?: string): Pr
   const reason = object(response.incomplete_details).reason;
   // Providers may put exhaustion in type beside a generic or throttling code.
   // Read only fixed discriminants; event.type itself is the SSE envelope.
-  const quota = [responseError.code, responseError.type, eventError.code, eventError.type, event.code, reason]
+  const names = [responseError.code, responseError.type, eventError.code, eventError.type, event.code, reason];
+  const quota = names
     .find(value => typeof value === "string" && quotaClasses.has(value));
-  const rejection = [responseError.code, responseError.type, eventError.code, eventError.type, event.code, reason]
+  const rejection = names
     .find(value => typeof value === "string" && Object.hasOwn(rejections, value));
-  const code = quota ?? rejection ?? responseError.code ?? eventError.code ?? event.code ??
+  // A provider can pair an unknown code with its standard rate-limit type. Resolve the known
+  // throttle before an arbitrary code, while quota, permanent rejection, and an explicit
+  // authentication/context/server failure still take priority.
+  const throttle = names.find(value => typeof value === "string" && throttleClasses.has(value));
+  const primary = responseError.code ?? eventError.code ?? event.code;
+  const decisive = typeof primary === "string" && ["server_error", "server_is_overloaded", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized"].includes(primary) ? primary : undefined;
+  const code = quota ?? rejection ?? decisive ?? throttle ?? primary ??
     responseError.type ?? eventError.type ?? reason;
   const upstream = { code: typeof code === "string" && knownCodes.has(code) ? code : "unknown",
     event: ["error", "response.failed", "response.incomplete"].includes(String(event.type)) ? String(event.type) : "unknown", ...requestIdOf(requestId) };
@@ -120,7 +131,8 @@ export function responsesStreamError(event: ObjectValue, requestId?: string): Pr
   if (quota && quota !== "usage_not_included") return new ProviderError("insufficient_quota", "Provider credits or quota are exhausted", 429, upstream);
   if (code === "server_error" || code === "server_is_overloaded") return new ProviderError("upstream_unavailable", "Provider temporarily failed; retry when it is available", 503, upstream);
   if (code === "context_length_exceeded") return contextError();
-  if (typeof code === "string" && throttleClasses.has(code)) return new ProviderError("rate_limit_exceeded", "Provider usage limit reached", 429);
+  if (typeof code === "string" && throttleClasses.has(code)) return new ProviderError("rate_limit_exceeded", throttleMessage, 429,
+    { ...upstream, code: knownCodes.has(code) ? code : "rate_limit_exceeded" });
   if (["invalid_api_key", "authentication_error", "token_expired", "unauthorized"].includes(String(code))) {
     return new ProviderError("authentication", "Provider login is missing or expired", 401);
   }
