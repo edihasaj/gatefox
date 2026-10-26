@@ -45,7 +45,7 @@ export function shimSessionDevice(_relay?: { home: string; nativeHome: string })
 export async function shimSession(executable: string, args: string[], config: GatewayConfig,
   prepared: { path: string; settings: Message; native: Message[] }, overrides: Message,
   input: Readable, emit: (message: Message) => Promise<void>, signal: AbortSignal, configPath?: string, originalArgs = args,
-  relay?: { home: string; nativeHome: string }): Promise<number> {
+  relay?: { home: string; nativeHome: string }, upgradeOwner: "session" | "listener" = "session"): Promise<number> {
   const source = new DesktopCatalog(config, prepared.native, prepared.path);
   // Busy from the first moment: a session that is still initializing (or whose engines still start) must never read as idle.
   let started = false;
@@ -115,8 +115,9 @@ export async function shimSession(executable: string, args: string[], config: Ga
   };
   const stop = () => { closing = true; input.destroy(); void backends.stop(); };
   signal.addEventListener("abort", stop, { once: true });
-  // After an install, an idle adapter exits; the app starts a new one on the new release.
-  const stopWatching = watchForUpgrade("adapter", idle, () => { stop(); return true; });
+  // Only a process-per-session adapter can upgrade by exiting. A Unix reconnect returns to
+  // the same listener and the same loaded code, so session retirement would loop indefinitely.
+  const stopWatching = upgradeOwner === "session" ? watchForUpgrade("adapter", idle, () => { stop(); return true; }) : () => {};
   try {
     if (signal.aborted) return 0;
     await router.initialize();

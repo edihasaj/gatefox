@@ -27,6 +27,17 @@ test("diagnostics sum Copilot credits per model", () => {
   assert.equal(summary.requests["copilot/x"].credits, 3.5);
 });
 
+test("diagnostics separate local session ends from abnormal transport closes", () => {
+  const base = { at: new Date().toISOString(), host: "mac", component: "adapter", pid: 1 };
+  const summary = summarizeTelemetry([
+    { ...base, event: "unix_session_end", cause: "session_ended", closeCode: 1006 },
+    { ...base, event: "unix_session_end", cause: "transport_closed", closeCode: 1006 },
+    { ...base, event: "unix_session_end", cause: "transport_closed", closeCode: 1006 },
+    { ...base, event: "unix_session_end", cause: "transport_closed", closeCode: 1000 },
+  ], new Date(0)) as { connectionEnds: Record<string, number> };
+  assert.deepEqual(summary.connectionEnds, { "session_ended:1006": 1, "transport_closed:1006": 2, "transport_closed:1000": 1 });
+});
+
 // A retry that reported two socket families is counted apart from a single-code reset, so `gateway
 // diagnostics` can tell a mixed outage from a plain one instead of hiding both under the error code.
 test("diagnostics key a retry by its socket codes when an attempt reported more than one", () => {

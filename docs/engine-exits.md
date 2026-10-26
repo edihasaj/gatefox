@@ -8,6 +8,11 @@ read_when:
 
 # Engine exits and stream recovery
 
+For SSH/Unix connection drops, also inspect `unix_session_end` in the listener's
+telemetry. It identifies the local close path separately from an engine exit;
+an abnormal socket close does not prove that the shared executor died. See
+[SSH connection diagnosis](remote.md) for causes and upgrade ownership.
+
 The adapter launched the engine, so a recoverable stream problem must never
 kill it. Three stream faults are recorded and skipped instead of fatal, native
 turn tracking cannot grow into a self-inflicted stop, and every engine process

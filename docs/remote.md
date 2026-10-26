@@ -119,6 +119,22 @@ remote Mac, so the gateway models available in them come from that Mac's own
 The gateway listener on that Mac follows installs by itself: the first
 connection made after an update starts a listener on the new release, and any
 session already running finishes on the old one.
+Only the listener owns upgrade retirement for Unix sessions. A session cannot
+upgrade its containing process by disconnecting: reconnecting its native proxy
+would return to that same loaded listener. Per-session idle upgrade watches are
+therefore reserved for stdio adapters, whose parent actually starts a new process.
+Managed listeners retire when no sessions remain, or an installed-release
+bootstrap publishes a replacement alias without terminating existing sessions.
+
+For drop diagnosis, correlate client connection-state timestamps with the remote
+`unix_session_end` telemetry record. It includes a process-local `sessionId`,
+fixed `cause`, numeric WebSocket `closeCode`, and `durationMs`. Causes distinguish
+local session end/failure, listener shutdown, queue/protocol limits, socket errors,
+and an otherwise unclassified transport close. A `transport_closed`/1006 record
+alone does not prove a Wi-Fi, SSH, or peer fault; it requires client-side evidence.
+No close reason, exception text, address, RPC body, or tool arguments are logged.
+`gateway diagnostics --since 1` groups them under `connectionEnds` by cause and
+close code; use the underlying event timestamps to correlate both ends.
 After a reboot, it also recovers its own dead socket when macOS has changed the
 filesystem device number. See [automatic reboot recovery](reboot-recovery.md)
 for ownership checks and the separate desktop-startup boundary.

@@ -19,6 +19,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   const recent: Array<Record<string, unknown>> = [];
   // Every Auto-review request from a gateway executor (node_repl, shell, apply_patch, network, MCP, permissions).
   const autoReview: Counts = {};
+  const connectionEnds: Counts = {};
   for (const event of events) {
     const model = String(event.model ?? "unknown");
     // Turn outcomes the shared executor recorded itself, whether or not a window was connected.
@@ -63,6 +64,7 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
       entry.cacheReadTokens += tokens(event.cacheReadTokens); entry.cacheWriteTokens += tokens(event.cacheWriteTokens);
     }
     if (accountEvents.has(event.event)) bump(accounts, `${event.event}${event.reason ? ":" + event.reason : ""}`);
+    if (event.event === "unix_session_end") bump(connectionEnds, `${event.cause ?? "unknown"}:${event.closeCode ?? "unknown"}`);
     if (problems.has(event.event) && !(event.event === "request_failed" && event.code === "cancelled")) {
       const { at, host: machine, component, event: name, pid: _pid, ...fields } = event;
       recent.push({ at, machine, component, event: name, ...fields }); if (recent.length > 25) recent.shift();
@@ -75,5 +77,5 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
     turns, turnFailures, executorTurns, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
-    claudeSessions: sessions, accountEngines: accounts, recentProblems: recent };
+    claudeSessions: sessions, accountEngines: accounts, connectionEnds, recentProblems: recent };
 }

@@ -13,6 +13,7 @@ import { releasePattern, releaseState } from "./self-update.js";
 import { ownerStamp } from "./boot-identity.js";
 import { isManagedSshSocket, previousLease, repairSshLease, sweepSshLeftovers, type SshLeasePrevious, type SshSocketReplacement } from "./ssh-socket.js";
 import { DEVICE_HEADER, isDevicePseudonym } from "./ssh-proxy-header.js";
+import { telemetry } from "./telemetry.js";
 
 /** What the process owning a listener uses to retire it after an install. */
 export interface UnixListenerControl {
@@ -87,7 +88,7 @@ export async function serveUnix(path: string, signal: AbortSignal,
   const boundPath = unixSocketPath("unix://" + resolve(dirname(path), `.gw-${randomBytes(6).toString("hex")}`));
   const server = createServer((_req, res) => { res.writeHead(404); res.end(); });
   const sockets = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 * 1024, perMessageDeflate: false });
-  const active = new Set<Promise<unknown>>(); const controllers = new Set<AbortController>();
+  const active = new Set<Promise<unknown>>(); const shutdowns = new Set<() => void>(); let sessionSequence = 0;
   let retiring = false; let leaseTimer: NodeJS.Timeout | undefined; let inode: string | undefined; let device: string | undefined;
   server.on("upgrade", (req, socket, head) => {
     if (retiring || signal.aborted || active.size >= 8 || req.headers.origin || !["/", "/rpc"].includes(req.url || "")) { socket.destroy(); return; }
@@ -97,12 +98,18 @@ export async function serveUnix(path: string, signal: AbortSignal,
     }
     const clientDevice = supplied.length === 1 && isDevicePseudonym(supplied[0]) ? supplied[0] : undefined;
     sockets.handleUpgrade(req, socket, head, ws => {
-      const control = new AbortController(); controllers.add(control);
+      const control = new AbortController(); const sessionId = ++sessionSequence, started = performance.now();
+      let cause: "transport_closed" | "socket_error" | "binary_frame" | "output_limit" | "session_failed" | "session_ended" | "listener_shutdown" | undefined;
       const input = new Readable({ read() { ws.resume(); } });
-      ws.on("error", () => { control.abort(); input.destroy(); });
-      ws.on("close", () => { control.abort(); input.destroy(); });
+      const shutdown = () => { cause ??= "listener_shutdown"; control.abort(); input.destroy(); }; shutdowns.add(shutdown);
+      ws.on("error", () => { cause ??= "socket_error"; control.abort(); input.destroy(); });
+      ws.on("close", closeCode => {
+        cause ??= "transport_closed";
+        telemetry("unix_session_end", { sessionId, cause, closeCode, durationMs: performance.now() - started });
+        control.abort(); input.destroy();
+      });
       ws.on("message", (data, binary) => {
-        if (binary) { ws.close(1003, "Text JSON-RPC frames required"); return; }
+        if (binary) { cause ??= "binary_frame"; ws.close(1003, "Text JSON-RPC frames required"); return; }
         if (!input.push(Buffer.concat([Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer), Buffer.from("\n")]))) ws.pause();
       });
       // This private, post-upgrade notification is not a WebSocket frame supplied by the client.
@@ -110,15 +117,15 @@ export async function serveUnix(path: string, signal: AbortSignal,
       if (clientDevice) input.push(Buffer.from(JSON.stringify({ method: "gateway/client", params: { device: clientDevice } }) + "\n"));
       const emit = (message: Message) => new Promise<void>((resolve, reject) => {
         if (ws.readyState !== WebSocket.OPEN) { reject(new Error("Unix client disconnected")); return; }
-        if (ws.bufferedAmount > 16 * 1024 * 1024) { ws.close(1009, "Client output queue exceeded"); reject(new Error("Unix client output queue exceeded")); return; }
+        if (ws.bufferedAmount > 16 * 1024 * 1024) { cause ??= "output_limit"; ws.close(1009, "Client output queue exceeded"); reject(new Error("Unix client output queue exceeded")); return; }
         ws.send(JSON.stringify(message), error => error ? reject(error) : resolve());
       });
-      const task = session(input, emit, control.signal).catch(() => { ws.close(1011, "Gateway connection failed"); })
-        .finally(() => { controllers.delete(control); active.delete(task); input.destroy(); ws.terminate(); if (retiring && !active.size) close(); });
+      const task = session(input, emit, control.signal).catch(() => { cause ??= "session_failed"; ws.close(1011, "Gateway connection failed"); })
+        .finally(() => { cause ??= "session_ended"; shutdowns.delete(shutdown); active.delete(task); input.destroy(); ws.terminate(); if (retiring && !active.size) close(); });
       active.add(task);
     });
   });
-  const close = () => { for (const controller of controllers) controller.abort(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
+  const close = () => { for (const shutdown of shutdowns) shutdown(); for (const ws of sockets.clients) ws.terminate(); server.close(); };
   const retire = async () => {
     // Under the lock a bootstrap also takes, so a newer listener's alias is never removed here.
     // `gone`: the alias is already another listener's or was removed. `held`: the lock or the

@@ -157,7 +157,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   try {
     const session = async (input: NodeJS.ReadableStream, emit: typeof emitMessage, signal: AbortSignal) => {
       const tracked = activity?.open(emit);
-      try { return await shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, tracked?.emit ?? emit, signal, path, preflightArgs, relay); }
+      try { return await shimSession(executable, nativeArgs, config, prepared, overrides, input as typeof process.stdin, tracked?.emit ?? emit, signal, path, preflightArgs, relay, socketPath ? "listener" : "session"); }
       finally { tracked?.close(); }
     };
     if (socketPath) {

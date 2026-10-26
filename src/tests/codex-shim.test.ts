@@ -16,6 +16,7 @@ import { shortFolder } from "./short-folder.js";
 import { releaseState } from "../self-update.js";
 import { codexShim, serveWithRecovery } from "../codex-shim.js";
 import { isAppServerSession } from "../codex-invocation.js";
+import { SocketAppServerConnection } from "../socket-app-server-connection.js";
 
 import { shimFiles as files } from "./shim-fixture.js";
 
@@ -200,6 +201,44 @@ async function replacementEvents(stateDirectory: string, withinMs = 3000, event 
   }
   return events;
 }
+
+test("installing a release does not repeatedly close idle sessions inside the same Unix listener", { skip: process.platform === "win32", timeout: 30000 }, async () => {
+  const f = await files(); const control = await shortFolder("gw-upgrade-"); const release = await installedRelease("0.4.1");
+  const path = join(control.directory, "app-server-control/app-server-control.sock");
+  const child = spawn(process.execPath, [release.cli, "codex-shim", "--ssh", "--ssh-home", control.directory, "--config", f.config, "--codex", f.backend, "--", "app-server", "--listen", "unix://"],
+    { env: { ...f.env, GATEWAY_UPGRADE_CHECK_MS: "30", GATEWAY_SESSION_IDLE_MS: "0" }, stdio: "ignore" });
+  const exited = once(child, "close"); let connection: SocketAppServerConnection | undefined;
+  try {
+    for (let i = 0; i < 500 && !await lstat(path).then(() => true, () => false); i++) await delay(10);
+    connection = new SocketAppServerConnection(path, async () => {});
+    await connection.request("initialize", { clientInfo: { name: "upgrade_fixture", version: "1" } });
+    connection.send({ method: "initialized" });
+    const before = await connection.request("engine/info", {});
+    await release.install("0.4.2");
+    await delay(500); // More than two independent upgrade ticks while the session is idle.
+    assert.equal(connection.closed, false, "a reconnect would return to exactly the same old loaded listener");
+    assert.equal(child.exitCode, null);
+    assert.equal((await connection.request("engine/info", {})).pid, before.pid, "the original native executor is retained");
+    assert.deepEqual(await replacementEvents(f.value.stateDirectory, 50, "self_upgrade"), []);
+  } finally {
+    await connection?.stop(); child.kill("SIGTERM"); await exited; await release.remove(); await control.remove(); f.close();
+  }
+});
+
+test("an idle stdio adapter still exits once so its parent can start the installed release", { skip: process.platform === "win32", timeout: 20000 }, async () => {
+  const f = await files(); const release = await installedRelease("0.4.1");
+  const child = spawn(process.execPath, [release.cli, "codex-shim", "--config", f.config, "--codex", f.backend, "--", "app-server"],
+    { env: { ...f.env, GATEWAY_UPGRADE_CHECK_MS: "30", GATEWAY_SESSION_IDLE_MS: "0" }, stdio: ["pipe", "pipe", "ignore"] });
+  const exited = once(child, "close"); const lines = createInterface({ input: child.stdout });
+  try {
+    const initialized = new Promise<void>(resolve => lines.on("line", line => { if (JSON.parse(line).id === 7) resolve(); }));
+    child.stdin.write(JSON.stringify({ id: 7, method: "initialize", params: { clientInfo: { name: "stdio_upgrade_fixture", version: "1" } } }) + "\n");
+    await initialized; await release.install("0.4.2"); await exited;
+    assert.equal(child.exitCode, 0);
+    const events = await replacementEvents(f.value.stateDirectory, 100, "self_upgrade");
+    assert.equal(events.length, 1); assert.equal(events[0].component, "adapter");
+  } finally { lines.close(); child.kill("SIGTERM"); await exited; await release.remove(); f.close(); }
+});
 
 test("an SSH bootstrap logs a replaced listener exactly once, only after telemetry is configured", { skip: process.platform === "win32", timeout: 30000 }, async () => {
   const f = await files(); const control = await shortFolder("gw-ssh-log-");
