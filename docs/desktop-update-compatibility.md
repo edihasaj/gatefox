@@ -76,3 +76,14 @@ transport. The newer transport adds fallible auth-header construction, local
 daemon socket helpers and optional local WebSocket compression. These changes
 are separate from the relay's unchanged wire protocol. The signed engine must
 also pass the shared-native fixture before entering the host's verified list.
+
+Engine 0.165.0-alpha.1.2 corresponds to OpenAI commit
+`720fec862a608ae1e5878d1eecb04fb93192e93c`. Its remote-control wire types,
+registration, enrollment, persistence and client tracker match the linked
+0.163 transport. Relative to the admitted 0.164 engine, token storage and remote
+auth headers are unchanged; the auth manager extracts the existing owner-checked
+grant reader while retaining the refresh lock for leasing. Migration 62 adds a
+thread-parent column and index without changing registration SQL. The signed
+0.165 engine passed isolated stdio and Unix shared-native checks for reconnect,
+steering, Stop, command execution exactly once and pending approval recovery.
+Relay admission also requires its separately rebuilt relay fixture to pass.
