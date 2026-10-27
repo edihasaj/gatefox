@@ -24,11 +24,12 @@ Options:
   --previous-app /absolute/Harness Gateway.app  Signed app to upgrade (publish only)
   --installed-release /absolute/gateway-release Existing CLI release (publish only)
   --publish                                 Create and publish the GitHub draft release
+  --prerelease                              Publish for selected-machine rollout; automatic updaters ignore it
 `;
 
 export function parseArgs(argv) {
   const values = {
-    profile: 'asc-notary', publish: false,
+    profile: 'asc-notary', publish: false, prerelease: false,
     previousApp: join(homedir(), 'Applications/Harness Gateway.app'),
     installedRelease: join(homedir(), '.local/share/subscription-gateway/current'),
   };
@@ -47,10 +48,12 @@ export function parseArgs(argv) {
     else if (option === '--previous-app') values.previousApp = value();
     else if (option === '--installed-release') values.installedRelease = value();
     else if (option === '--publish') values.publish = true;
+    else if (option === '--prerelease') values.prerelease = true;
     else if (option === '--help') values.help = true;
     else throw new Error(`Unknown option: ${option}`);
   }
   if (values.help) return values;
+  if (values.prerelease && !values.publish) throw new Error('--prerelease requires --publish');
   for (const name of ['backendArchive', 'keychain', 'previousApp', 'installedRelease']) {
     if (values[name] && !isAbsolute(values[name])) throw new Error(`--${name.replace(/[A-Z]/g, value => `-${value.toLowerCase()}`)} must be an absolute path`);
   }
@@ -345,8 +348,9 @@ export function releaseAssets(run, tag, cwd) {
   if (probe.status === 0) throw new Error(`GitHub release ${tag} already exists; refusing to overwrite its assets`);
 }
 
-export function verifyUploadedAssets(run, tag, stage, cwd) {
-  const response = JSON.parse(output(run, 'gh', ['release', 'view', tag, '--json', 'isDraft,assets'], { cwd }));
+export function verifyUploadedAssets(run, tag, stage, cwd, prerelease = false) {
+  const response = JSON.parse(output(run, 'gh', ['release', 'view', tag, '--json', 'isDraft,isPrerelease,assets'], { cwd }));
+  if (prerelease && response.isPrerelease !== true) throw new Error('Selected-machine release must remain a prerelease');
   if (!response.isDraft || !Array.isArray(response.assets) || response.assets.length !== 4) {
     throw new Error('GitHub draft release does not contain exactly the expected assets');
   }
@@ -361,17 +365,17 @@ export function verifyUploadedAssets(run, tag, stage, cwd) {
   }
 }
 
-export function publishRelease({ version, head, stage, cwd = root, run = defaultRun, beforePublish = () => {} }) {
+export function publishRelease({ version, head, stage, cwd = root, run = defaultRun, beforePublish = () => {}, prerelease = false }) {
   const tag = `app-v${version}`;
   releaseAssets(run, tag, cwd);
   const notes = join(mkdtempSync(join(tmpdir(), 'harness-gateway-release-')), 'notes.md');
   try {
     writeFileSync(notes, `Harness Gateway macOS app ${version}\n`, { flag: 'wx', mode: 0o600 });
-    run('gh', ['release', 'create', tag, '--draft', '--target', head, '--notes-file', notes,
+    run('gh', ['release', 'create', tag, '--draft', ...(prerelease ? ['--prerelease', '--latest=false'] : []), '--target', head, '--notes-file', notes,
       stage.backend, stage.app, stage.metadata, stage.sums], { cwd });
-    verifyUploadedAssets(run, tag, stage, cwd);
+    verifyUploadedAssets(run, tag, stage, cwd, prerelease);
     beforePublish();
-    run('gh', ['release', 'edit', tag, '--draft=false'], { cwd });
+    run('gh', ['release', 'edit', tag, '--draft=false', ...(prerelease ? ['--prerelease', '--latest=false'] : [])], { cwd });
   } finally {
     rmSync(dirname(notes), { recursive: true, force: true });
   }
@@ -441,7 +445,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
     assertFreeSpace(join(cwd, '.state'), releaseDiskSpaceRequirements.releaseMacosApp, 'macOS app update fixture');
     e2e({ appArchive: stage.app, backendArchive: options.backendArchive, previousApp: options.previousApp,
       installedRelease: options.installedRelease, cwd, run });
-    publishRelease({ version, head, stage, cwd, run, beforePublish: () => {
+    publishRelease({ version, head, stage, cwd, run, prerelease: options.prerelease, beforePublish: () => {
       if (assertReleaseContext({ cwd, run }) !== head) throw new Error('Release HEAD changed before final publication');
       assertRemoteProduction(run, cwd, head);
       assertRemoteTag(run, cwd, `app-v${version}`, head);
@@ -449,7 +453,7 @@ export function releaseMacosApp(options, { cwd = root, run = defaultRun, e2e = r
       verifyStage(stage, { backendSha256: options.backendSha256, appSha256: stage.metadataValue.appSha256 });
     } });
   }
-  return { version, source: head, directory: stageDirectory, published: options.publish };
+  return { version, source: head, directory: stageDirectory, published: options.publish, prerelease: options.prerelease === true };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

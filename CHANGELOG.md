@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.0.5 — 2026-10-27
+
+- The Gateway app and CLI now ship together as version 1.0.5. Selected-machine
+  app releases can be published as prereleases, which automatic updaters ignore.
+  This rollout targets MacBook and macbook-server; Studio remains unchanged.
+
 - Harness Gateway has a read-only **Activity** screen and `gateway activity
   [--json]` command. They inspect existing executors and saved turns, including
   completions and failures that happened while the viewing app was disconnected.

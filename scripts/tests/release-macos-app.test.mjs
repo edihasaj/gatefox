@@ -111,6 +111,32 @@ test('requires absolute production inputs and keeps publishing opt-in', () => {
     '--identity', 'A'.repeat(40)]), /lowercase/);
 });
 
+test('selected-machine publication stays prerelease and fails closed if GitHub loses that flag', () => {
+  const inputs = ['--backend-archive', '/tmp/backend.tar.gz', '--backend-sha256', 'a'.repeat(64), '--identity', 'A'.repeat(40)];
+  assert.throws(() => parseArgs([...inputs, '--prerelease']), /requires --publish/);
+  assert.equal(parseArgs([...inputs, '--publish', '--prerelease']).prerelease, true);
+  const directory = mkdtempSync(join(tmpdir(), 'gateway-prerelease-'));
+  const stage = {};
+  for (const name of ['backend', 'app', 'metadata', 'sums']) { stage[name] = join(directory, name); write(stage[name], name); }
+  const assets = Object.entries(stage).map(([name, path]) => ({ name, size: readFileSync(path).length, digest: `sha256:${hash(readFileSync(path))}` }));
+  for (const retained of [true, false]) {
+    let created = false, published = false;
+    const fake = (command, args) => {
+      assert.equal(command, 'gh');
+      if (args[1] === 'view') return { status: created ? 0 : 1, stdout: JSON.stringify({ isDraft: true, isPrerelease: retained, assets }), stderr: '' };
+      if (args[1] === 'create' || args[1] === 'edit') {
+        assert.ok(args.includes('--prerelease')); assert.ok(args.includes('--latest=false'));
+        if (args[1] === 'create') created = true; else published = true;
+        return { status: 0, stdout: '', stderr: '' };
+      }
+      throw Error('Unexpected release operation');
+    };
+    const publish = () => publishRelease({ version: '1.0.5', head: 'a'.repeat(40), stage, cwd: directory, run: fake, prerelease: true });
+    if (retained) assert.doesNotThrow(publish); else assert.throws(publish, /remain a prerelease/);
+    assert.equal(published, retained);
+  }
+});
+
 test('refuses wrong branches, dirty source, and a missing fresh origin production ref', () => {
   const directory = repo();
   const head = assertReleaseContext({ cwd: directory, run });

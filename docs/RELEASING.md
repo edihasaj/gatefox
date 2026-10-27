@@ -49,6 +49,13 @@ untouched. This command never enables or dispatches GitHub Actions; follow the
 See [macOS app updates](macos-updates.md) for daily client activation and
 rollback behavior.
 
+For an explicitly selected-machine rollout, add `--prerelease` to `--publish`.
+The release is created as a prerelease before upload and stays a prerelease
+when its draft is published. The publisher verifies that state alongside asset
+digests and never marks it latest. Automatic app updaters ignore prereleases;
+deploy the verified assets only to the approved machines. Publish the CLI tag
+as a prerelease too. Do not expose a stable app release for a restricted rollout.
+
 Omit `--publish` only to exercise the local build, signing, and archive gates.
 It leaves the versioned stage in place and deliberately cannot resume it as a
 later publication. For an actual distribution, rerun only after moving that
