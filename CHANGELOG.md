@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- SSH proxy output now crosses fresh child pipes with backpressure and complete
+  draining. This prevents macOS error 35 from ending otherwise healthy Studio
+  connections when the client briefly stops reading a large response.
+
 ## 1.1.0 — 2026-10-27
 
 - Native sharing and the remote relay accept the verified Codex app engine
