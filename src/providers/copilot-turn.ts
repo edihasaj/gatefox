@@ -21,10 +21,12 @@ export function nativeCopilotCalls(value: unknown, tools: OpenAITool[] | Map<str
     if (typeof call.toolCallId === "string" && ids.has(call.toolCallId)) throw invalidCall("duplicate_tool_id", "Copilot returned a duplicate tool call ID");
     // Copilot's protocol defaults an omitted type to "function". Every tool we declared is an external function.
     if ((call.type !== undefined && call.type !== "function") || typeof call.toolCallId !== "string" || !call.toolCallId) throw invalidCall("malformed_tool_call", "Copilot returned a malformed tool call");
-    if (!call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) throw invalidCall("invalid_tool_arguments", "Copilot returned invalid tool argument structure");
+    // The protocol also leaves `arguments` optional; an omitted payload means no arguments.
+    const args = call.arguments === undefined ? {} : call.arguments;
+    if (typeof args !== "object" || args === null || Array.isArray(args)) throw invalidCall("invalid_tool_arguments", "Copilot returned invalid tool argument structure");
     ids.add(call.toolCallId);
-    if (definition.responseTool?.type === "custom" && typeof record(call.arguments).input !== "string") throw invalidCall("nontext_custom_input", "Free-form input must be a string");
-    return { id: call.toolCallId, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(call.arguments) } };
+    if (definition.responseTool?.type === "custom" && typeof record(args).input !== "string") throw invalidCall("nontext_custom_input", "Free-form input must be a string");
+    return { id: call.toolCallId, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(args) } };
   });
 }
 

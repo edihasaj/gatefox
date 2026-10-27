@@ -1,2 +1,2 @@
 // Generated from CLI adapter sources by scripts/sync-provider-tool-contract.mjs.
-export const providerToolContract = "gateway-provider-clis-v1-eb517053e730325390e546dafbdf2c4c38e9814184862322d1f798d8e587ade7";
+export const providerToolContract = "gateway-provider-clis-v1-806cf2a94d14dcf929291bedd3f09f506670404d12ef1b4789fd3fd31821f44f";

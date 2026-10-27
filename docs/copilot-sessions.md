@@ -88,6 +88,9 @@ execution. Explicit non-function types remain rejected because the gateway decla
 only external functions. Treating a missing type as malformed previously failed
 valid tool calls and made Codex retry their response streams. This matches the
 [official SDK event contract for CLI 1.0.97](https://github.com/github/copilot-sdk/blob/9782624309a2366f6cbe2141ee7b2289b5d94136/nodejs/src/generated/session-events.ts).
+`arguments` is likewise optional there: a call that omits it is forwarded with no
+arguments, while an explicit non-object payload (including custom tools missing
+their string input) remains rejected.
 
 - **Spawn:** the thread has no session. A new process starts and the history is sent once.
   Telemetry reports `spawned`.
