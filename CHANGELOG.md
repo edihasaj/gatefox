@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.0.6 — 2026-10-27
+
+- Managed Macs prefer the verified, Developer ID-signed gateway executor for
+  MCP Keychain access. The executor retains release compatibility checks and
+  safely falls back to the matching CLI during app updates. Keychain approval
+  persistence still requires verification on the target Mac.
+
 ## 1.0.5 — 2026-10-27
 
 - The Gateway app and CLI now ship together as version 1.0.5. Selected-machine
