@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.0.7 — 2026-10-27
+
+- Copilot tool calls now accept the SDK's documented default function type when
+  the optional type field is absent. Exact catalog matching, unique call IDs,
+  argument validation, and client-owned execution remain enforced. This fixes a
+  compatibility error that could trigger repeated response-stream reconnects.
+- The app adds Diagnostics for cache reads, writes and hit coverage, Copilot
+  session rebuilds, provider failures and retry signals. Missing cache reports
+  stay distinct from measured zero across provider adapters. New Copilot tool
+  failures record fixed structural reasons without storing prompts or arguments.
+- Loaded gateway chats retain compatible picker aliases after a Codex account
+  rename, and the account-name verification checks saved-chat resume behavior.
+
 ## 1.0.6 — 2026-10-27
 
 - Managed Macs prefer the verified, Developer ID-signed gateway executor for
