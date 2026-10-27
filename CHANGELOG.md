@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-10-27
+
 - Native sharing and the remote relay accept the verified Codex app engine
   0.165.0-alpha.1.2 after separate source review and signed-engine checks.
 
