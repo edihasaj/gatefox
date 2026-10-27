@@ -81,6 +81,14 @@ what the model sees.
 
 ## How a request is served
 
+Copilot's SDK protocol defines an omitted `assistant.message.toolRequests[].type`
+as `function`. The gateway accepts that documented default while retaining exact
+catalog-name matching, distinct call IDs, object argument checks and client-owned
+execution. Explicit non-function types remain rejected because the gateway declares
+only external functions. Treating a missing type as malformed previously failed
+valid tool calls and made Codex retry their response streams. This matches the
+[official SDK event contract for CLI 1.0.97](https://github.com/github/copilot-sdk/blob/9782624309a2366f6cbe2141ee7b2289b5d94136/nodejs/src/generated/session-events.ts).
+
 - **Spawn:** the thread has no session. A new process starts and the history is sent once.
   Telemetry reports `spawned`.
 - **Continue:** the request carries the history the session already has plus new items.
@@ -244,6 +252,13 @@ ends the request normally; the session then closes (`idle_missing`).
   ledger.
 
 ## Billing and diagnostics
+
+The app's Diagnostics screen and `gateway diagnostics` now summarize Copilot
+session outcomes, rebuild reasons and cache coverage. New session events include
+provider and model identity. Tool-call failures carry fixed structural reasons,
+so an unknown tool, duplicate call ID, malformed call and invalid argument shape
+are distinguishable without storing tool arguments. Historical generic failures
+retain their original level of detail. See [diagnostics](diagnostics.md).
 
 The usage ledger records one row per gateway request with that request's own cache read,
 cache write, reasoning and nano-AIU totals, so the saving shows directly in the cache-read

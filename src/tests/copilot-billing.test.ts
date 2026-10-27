@@ -42,7 +42,7 @@ test("Copilot marks the credit total partial when only some calls were priced or
     mode("mixed");
     const mixed = (await collect(adapter.infer(request, new AbortController().signal))).at(-1);
     assert.ok(mixed?.type === "done");
-    assert.deepEqual(mixed.accounting, { cacheWriteTokens: 0, reasoningTokens: 0, nanoAiu: 2e9, nanoAiuStatus: "partial" });
+    assert.deepEqual(mixed.accounting, { reasoningTokens: 0, nanoAiu: 2e9, nanoAiuStatus: "partial" });
     mode("partial");
     const partial = (await collect(adapter.infer(request, new AbortController().signal))).at(-1);
     assert.ok(partial?.type === "done");

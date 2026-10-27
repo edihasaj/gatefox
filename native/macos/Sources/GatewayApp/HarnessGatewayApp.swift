@@ -108,6 +108,7 @@ final class GatewayNavigation: ObservableObject {
     enum Section: Hashable {
         case overview
         case activity
+        case diagnostics
         case connections
         case settings
     }

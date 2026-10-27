@@ -94,7 +94,7 @@ function respond(text: string): void {
   const count = foreign ? 1 : Number(/\[tools:(\d+)\]/.exec(text)?.[1] ?? (marker("tool") ? 1 : 0));
   if (marker("next") || count) {
     const ids = Array.from({ length: marker("next") ? 1 : count }, () => `call_${process.pid}_${++sequence}`);
-    message({ toolRequests: ids.map(toolCallId => ({ toolCallId, name: toolName(), arguments: { id: toolCallId }, type: "function" })) });
+    message({ toolRequests: ids.map(toolCallId => ({ toolCallId, name: toolName(), arguments: { id: toolCallId }, ...(marker("omittype") ? {} : { type: "function" }) })) });
     // A request for a call the model never announced, ahead of the announced ones.
     if (marker("extrareq")) event("external_tool.requested", { requestId: `rq_extra_${process.pid}`, toolCallId: "call_extra", toolName: toolName(), arguments: {} });
     for (const toolCallId of ids) {

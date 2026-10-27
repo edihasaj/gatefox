@@ -18,7 +18,7 @@ test("Claude history grows by appending content blocks, so earlier blocks stay c
   const directory = await mkdtemp(join(tmpdir(), "gateway-claude-cache-"));
   const capture = join(directory, "input.jsonl");
   const script = `#!${process.execPath}\nimport {appendFileSync} from 'node:fs';let input='';for await(const chunk of process.stdin)input+=chunk;appendFileSync(${JSON.stringify(capture)},input.trim()+'\\n');
-console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',result:'ok',usage:{input_tokens:2,cache_read_input_tokens:40,output_tokens:1}}));\n`;
+console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',result:'ok',usage:{input_tokens:2,cache_read_input_tokens:40,cache_creation_input_tokens:0,output_tokens:1}}));\n`;
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
   try {

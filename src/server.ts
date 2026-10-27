@@ -322,10 +322,10 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       clientProtocol: messagesProtocol ? "messages" : "responses",
       firstEventMs: firstEventAt ? firstEventAt - (admittedAt || startedAt) : undefined, events, toolCalls: tools, inputTokens: usage?.input_tokens,
       cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens,
-      providerType, cacheWriteTokens: accounting?.cacheWriteTokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined }; };
+      providerType, cacheWriteTokens: accounting?.cacheWriteTokens ?? usage?.input_tokens_details?.cache_creation_tokens, reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus, initiator: accounting?.initiator, session: !!routing.sessionId, turnStateEchoed: !!routing.turnState, turnStateReturned, droppedControlItems: droppedControlItems || undefined }; };
     // Content-free record of what the request cost, appended once per finished request.
     const ledger = (status: LedgerStatus) => recordUsage(config.stateDirectory, { requestId, responseId, provider: providerId, providerType, model, status,
-      inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens,
+      inputTokens: usage?.input_tokens, cachedTokens: usage?.input_tokens_details?.cached_tokens, outputTokens: usage?.output_tokens, cacheWriteTokens: accounting?.cacheWriteTokens ?? usage?.input_tokens_details?.cache_creation_tokens,
       reasoningTokens: accounting?.reasoningTokens, nanoAiu: accounting?.nanoAiu, nanoAiuStatus: accounting?.nanoAiuStatus }, new Date(), new Map(current.providers.map(entry => [entry.id, entry.type])));
     // The record of a failed request: telemetry, the ledger row with the usage reported so far, and the diagnostic line. Once per request.
     const recordFailure = (error: unknown): ProviderError => {

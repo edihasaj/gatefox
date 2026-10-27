@@ -229,7 +229,7 @@ function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiv
     begin, prefix, turn, signal,
     onEnd: end => {
       const done = turn.done() as Extract<InferenceEvent, { type: "done" }>;
-      telemetry("copilot_session", { ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined, liveSessions: reg.sessions.size,
+      telemetry("copilot_session", { ...decision, provider: input.config.id, model: input.model, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined, liveSessions: reg.sessions.size,
         inputTokens: done.usage.input_tokens, cacheReadTokens: done.usage.input_tokens_details?.cached_tokens, cacheWriteTokens: done.accounting?.cacheWriteTokens,
         outputTokens: done.usage.output_tokens, reasoningTokens: done.accounting?.reasoningTokens, nanoAiu: done.accounting?.nanoAiu, initiator: done.accounting?.initiator, toolCalls: turn.calls.length });
     },
@@ -243,5 +243,5 @@ function ended(reg: Registry, session: CopilotLiveSession, outcome: SessionEnd, 
   // Remember why the thread has no session, so its next spawn reports it.
   const why = endReason({ outcome, reason });
   if (why && !reg.sessions.has(session.key)) { reg.ended.delete(session.key); reg.ended.set(session.key, why); if (reg.ended.size > 256) reg.ended.delete(reg.ended.keys().next().value!); }
-  telemetry("copilot_session", { outcome, missReason: reason, threadKey: session.key.slice(0, 8), liveSessions: reg.sessions.size, parkedMs: Date.now() - session.lastUse });
+  telemetry("copilot_session", { outcome, missReason: reason, provider: session.providerId, model: session.model, threadKey: session.key.slice(0, 8), liveSessions: reg.sessions.size, parkedMs: Date.now() - session.lastUse });
 }

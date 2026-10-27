@@ -15,7 +15,7 @@ async function closed(h: Harness, pid: number): Promise<void> {
 test("a permission request, a foreign tool or a native tool call is rejected and ends the session completely", { timeout: 30000 }, async () => {
   // The event router kills the session the moment the CLI asks for permission or uses another tool, and says why; a native
   // call announced only in the model's message fails the request when it is read.
-  const reasons: Array<[string, string]> = [["permission", "permission"], ["native", "foreign_tool"], ["nativemsg", "invalid_tool_call"], ["foreignreq", "foreign_tool"], ["foreignstart", "foreign_tool"]];
+  const reasons: Array<[string, string]> = [["permission", "permission"], ["native", "foreign_tool"], ["nativemsg", "unknown_tool"], ["foreignreq", "foreign_tool"], ["foreignstart", "foreign_tool"]];
   for (const [marker, reason] of reasons) {
     const h = await harness();
     try {

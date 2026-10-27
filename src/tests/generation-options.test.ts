@@ -109,7 +109,7 @@ test("API adapters validate and forward Messages generation options", async () =
 
     anthropicStop = "stop_sequence";
     const stopped = await drain(anthropic.infer({ model: "anthropic-model", input: "hello" }, new AbortController().signal, { clientProtocol: "messages" }));
-    assert.deepEqual(stopped.at(-1), { type: "done", usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15, input_tokens_details: { cached_tokens: 2, cache_creation_tokens: 3 } }, stopReason: "stop_sequence", stopSequence: "END" });
+    assert.deepEqual(stopped.at(-1), { type: "done", usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15, input_tokens_details: { cached_tokens: 2, cache_creation_tokens: 3 } }, accounting: { cacheWriteTokens: 3 }, stopReason: "stop_sequence", stopSequence: "END" });
 
     chatFinish = "length";
     const chatCapped = await drain(chat.infer({ model: "chat-model", input: "hello" }, new AbortController().signal, { clientProtocol: "messages" }));

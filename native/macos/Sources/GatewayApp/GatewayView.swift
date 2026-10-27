@@ -16,6 +16,8 @@ struct GatewayView: View {
                     OverviewView(model: model)
                 case .activity:
                     GatewayActivityView(gateway: model)
+                case .diagnostics:
+                    GatewayDiagnosticsView(gateway: model)
                 case .connections:
                     ConnectionsView(gateway: model, connections: connections) {
                         navigation.showSetup = true
@@ -56,6 +58,9 @@ struct GatewayView: View {
                 Label("Activity", systemImage: "clock.arrow.circlepath")
                     .tag(GatewayNavigation.Section.activity)
                     .accessibilityIdentifier("sidebar.activity")
+                Label("Diagnostics", systemImage: "chart.bar.xaxis")
+                    .tag(GatewayNavigation.Section.diagnostics)
+                    .accessibilityIdentifier("sidebar.diagnostics")
                 Label("Connections", systemImage: "point.3.connected.trianglepath.dotted")
                     .tag(GatewayNavigation.Section.connections)
                     .accessibilityLabel("Connections")

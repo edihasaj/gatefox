@@ -108,6 +108,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
     let nativeModelPickerPlacement: String?
     /// Requested state for the `auto-latest` operation.
     let enabled: Bool?
+    let sinceHours: Int?
 
     init(
         operation: String,
@@ -121,7 +122,8 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         label: String? = nil,
         providerIds: [String]? = nil,
         nativeModelPickerPlacement: String? = nil,
-        enabled: Bool? = nil
+        enabled: Bool? = nil,
+        sinceHours: Int? = nil
     ) {
         self.operation = operation
         self.configPath = configPath
@@ -135,6 +137,7 @@ struct ManagementRequest: Codable, Sendable, Equatable {
         self.providerIds = providerIds
         self.nativeModelPickerPlacement = nativeModelPickerPlacement
         self.enabled = enabled
+        self.sinceHours = sinceHours
     }
 }
 
@@ -177,6 +180,7 @@ struct AutoLatestStatus: Codable, Sendable, Equatable {
 }
 
 struct ManagementResult: Codable, Sendable, Equatable {
+    let diagnostics: GatewayDiagnosticsReport?
     let activity: GatewayActivityReport?
     let configPath: String?
     let revision: String?
@@ -202,7 +206,8 @@ struct ManagementResult: Codable, Sendable, Equatable {
         sharedGateway: SharedGatewaySnapshot? = nil,
         nativeModelPickerPlacement: String? = nil,
         autoLatest: AutoLatestStatus? = nil,
-        activity: GatewayActivityReport? = nil
+        activity: GatewayActivityReport? = nil,
+        diagnostics: GatewayDiagnosticsReport? = nil
     ) {
         self.configPath = configPath
         self.revision = revision
@@ -216,6 +221,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
         self.nativeModelPickerPlacement = nativeModelPickerPlacement
         self.autoLatest = autoLatest
         self.activity = activity
+        self.diagnostics = diagnostics
     }
 }
 

@@ -108,16 +108,21 @@ export class AnthropicAPI implements Provider {
     const blocks = new Map<number, { id: string; name: string; input: unknown; partial: string }>();
     const indices = new Set<number>(); const callIds = new Set<string>();
     const usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+    let cacheWriteTokens: number | undefined;
     let stopReason: string | undefined; let stopSequence: unknown; let done = false;
     for await (const event of readEvents(response.body)) {
       if (event.type === "message_start") {
         const message = event.message as { usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number } };
-        const cacheRead = message.usage?.cache_read_input_tokens || 0;
-        const cacheCreation = message.usage?.cache_creation_input_tokens || 0;
-        usage.input_tokens = (message.usage?.input_tokens || 0) + cacheCreation + cacheRead;
-        if (cacheRead || cacheCreation) usage.input_tokens_details = {
+        const cacheReported = typeof message.usage?.cache_read_input_tokens === "number" && Number.isFinite(message.usage.cache_read_input_tokens) && message.usage.cache_read_input_tokens >= 0;
+        const writesReported = typeof message.usage?.cache_creation_input_tokens === "number" && Number.isFinite(message.usage.cache_creation_input_tokens) && message.usage.cache_creation_input_tokens >= 0;
+        const inputReported = typeof message.usage?.input_tokens === "number" && Number.isFinite(message.usage.input_tokens) && message.usage.input_tokens >= 0;
+        const cacheRead = cacheReported ? message.usage!.cache_read_input_tokens! : 0;
+        const cacheCreation = writesReported ? message.usage!.cache_creation_input_tokens! : 0;
+        cacheWriteTokens = writesReported ? cacheCreation : undefined;
+        usage.input_tokens = (inputReported ? message.usage!.input_tokens! : 0) + cacheCreation + cacheRead;
+        if (cacheReported && writesReported && inputReported) usage.input_tokens_details = {
           cached_tokens: cacheRead,
-          ...(cacheCreation ? { cache_creation_tokens: cacheCreation } : {}),
+          ...(writesReported ? { cache_creation_tokens: cacheCreation } : {}),
         };
       } else if (event.type === "content_block_start") {
         const block = event.content_block as { type: string; id: string; name: string; input: unknown };
@@ -173,7 +178,7 @@ export class AnthropicAPI implements Provider {
         if ((choice === "required" || typeof choice === "object") && !callIds.size) throw new ProviderError("invalid_tool_call", "Anthropic did not return the required tool call");
         usage.total_tokens = usage.input_tokens + usage.output_tokens;
         const nativeStopSequence = stopped ? stopSequence as string : undefined;
-        done = true; yield { type: "done", usage,
+        done = true; yield { type: "done", usage, ...(cacheWriteTokens === undefined ? {} : { accounting: { cacheWriteTokens } }),
           ...(capped ? { stopReason: "max_tokens" as const } : {}),
           ...(stopped ? { stopReason: "stop_sequence" as const, stopSequence: nativeStopSequence! } : {}),
         }; break;

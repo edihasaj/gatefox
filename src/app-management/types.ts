@@ -3,8 +3,9 @@ import type { AccessTokenOptions } from "../auth/chatgpt.js";
 import type { ProviderConfig, ProviderKind } from "../config.js";
 import type { AutoLatestStatus } from "../model-auto-latest/types.js";
 import type { ActivityReport } from "../activity.js";
+import type { DiagnosticsReport } from "../diagnostics-details.js";
 
-export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "reorder" | "native-picker" | "remove" | "discard" | "auto-latest" | "auto-latest-check" | "activity";
+export type ManagementOperation = "inspect" | "prepare" | "authenticate" | "discover" | "commit" | "models" | "rename" | "reorder" | "native-picker" | "remove" | "discard" | "auto-latest" | "auto-latest-check" | "activity" | "diagnostics";
 
 export interface ProviderInput {
   id?: string;
@@ -31,6 +32,7 @@ export interface ManagementRequest {
   nativeModelPickerPlacement?: string;
   /** The `auto-latest` operation: whether automatic newest-model upkeep is on. Requires `revision`. */
   enabled?: boolean;
+  sinceHours?: number;
 }
 
 /** `releasedAt` is the vendor release time in UTC seconds, present only when the catalog states one. */
@@ -58,6 +60,7 @@ export interface SharedGateway {
   providers: SharedGatewayProvider[];
 }
 export interface ManagementResult {
+  diagnostics?: DiagnosticsReport;
   activity?: ActivityReport;
   configPath?: string;
   revision?: string;

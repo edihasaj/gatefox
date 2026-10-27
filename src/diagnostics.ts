@@ -1,4 +1,5 @@
 import type { TelemetryEvent } from "./telemetry.js";
+import { diagnosticDetails } from "./diagnostics-details.js";
 
 // The service's own self-heal reports count too: a child that keeps exiting at once, a running host that failed two probes,
 // a status file that could not be written, and a change to gateway.json the server refused to apply.
@@ -12,6 +13,7 @@ const percentile = (values: number[], p: number) => { if (!values.length) return
 
 /** Aggregates local telemetry into counts per model and a short list of recent problems. */
 export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Record<string, unknown> {
+  const details = diagnosticDetails(events);
   const turns: Record<string, Counts> = {}; const turnFailures: Counts = {}; const executorTurns: Counts = {};
   const requests: Record<string, Counts & { input?: number; cached?: number; nano?: number }> = {}; const firstEvent: Record<string, number[]> = {};
   const retries: Counts = {}; const rpcErrors: Counts = {}; const components: Counts = {}; const host: Counts = {}; const claude: Counts = {};
@@ -72,10 +74,12 @@ export function summarizeTelemetry(events: TelemetryEvent[], since: Date): Recor
   }
   const requestSummary = Object.fromEntries(Object.entries(requests).map(([model, entry]) => {
     const { input, cached, nano, ...counts } = entry;
-    return [model, { ...counts, ...(nano === undefined ? {} : { credits: Math.round(nano / 1e6) / 1000 }), cacheHit: input ? `${Math.round(100 * (cached || 0) / input)}%` : undefined,
+    const hit = details.cacheUsage[model]?.cacheHitPercent;
+    return [model, { ...counts, ...(nano === undefined ? {} : { credits: Math.round(nano / 1e6) / 1000 }), cacheHit: hit === undefined ? undefined : `${Math.round(hit)}%`,
       firstEventMsP50: percentile(firstEvent[model] || [], 0.5), firstEventMsP95: percentile(firstEvent[model] || [], 0.95) }];
   }));
   return { since: since.toISOString(), events: events.length, machines: [...new Set(events.map(event => event.host))],
     turns, turnFailures, executorTurns, requests: requestSummary, autoReview, providerRetries: retries, rpcErrors, componentExits: components, executionHost: host, claudeCli: claude,
-    claudeSessions: sessions, accountEngines: accounts, connectionEnds, recentProblems: recent };
+    claudeSessions: sessions, copilotSessions: details.copilotSessions, cacheUsage: details.cacheUsage, issues: details.issues,
+    accountEngines: accounts, connectionEnds, recentProblems: recent };
 }

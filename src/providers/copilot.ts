@@ -117,9 +117,9 @@ export class CopilotSubscription implements Provider {
           // A session that dies before its first event falls back to one-shot. Limits, cancellation and caller errors would only repeat.
           if (signal.aborted) throw cancelled();
           if (yielded || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
-          telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", threadKey });
+          telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", provider: this.config.id, model: request.model, threadKey });
         }
-      } else telemetry("copilot_session", { outcome: "fallback", missReason: outcome.reason, threadKey });
+      } else telemetry("copilot_session", { outcome: "fallback", missReason: outcome.reason, provider: this.config.id, model: request.model, threadKey });
     }
     yield* this.oneShot(run);
   }

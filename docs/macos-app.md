@@ -48,6 +48,11 @@ window is open. Provider rows show configured routes and
 model counts; they do not claim a working provider login. Use `gateway doctor`
 to check those registrations.
 
+**Diagnostics** shows this Mac's per-model cache use, Copilot session rebuilds,
+provider failures and reconnect signals over a selected time window. Missing
+usage is displayed as unreported, and older generic failures stay generic. See
+[diagnostics](diagnostics.md) for coverage and privacy limits.
+
 The wizard opens browser sign-in and reports missing provider prerequisites.
 Claude and Copilot subscriptions need their official CLIs. The bundled runtime
 supports API and local-server setup without a separate Node installation.

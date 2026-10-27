@@ -5,25 +5,31 @@ import { copilotContextFailure } from "./context-errors.js";
 import { ProviderError } from "./provider.js";
 
 type Message = Record<string, unknown>;
+const invalidCall = (code: string, message: string) => new ProviderError("invalid_tool_call", message, 502, { code, event: "copilot.tool_use" });
 
 /** The caller's tools by the names the CLI sees (copilot-render.ts nativeCatalog). */
 export const nativeToolMap = (tools: OpenAITool[]): Map<string, OpenAITool> => new Map(nativeCatalog(tools).map(({ name, tool }) => [name, tool]));
 
 export function nativeCopilotCalls(value: unknown, tools: OpenAITool[] | Map<string, OpenAITool>): OpenAIToolCall[] {
-  if (!Array.isArray(value)) throw new ProviderError("invalid_tool_call", "Copilot returned invalid tool requests");
+  if (!Array.isArray(value)) throw invalidCall("malformed_tool_call", "Copilot returned invalid tool requests");
   const names = tools instanceof Map ? tools : nativeToolMap(tools);
   const ids = new Set<string>();
   return value.map(raw => {
     const call = record(raw);
     const definition = typeof call.name === "string" ? names.get(call.name)?.function : undefined;
-    if (!definition || call.type !== "function" || typeof call.toolCallId !== "string" || !call.toolCallId || ids.has(call.toolCallId) || !call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) throw new ProviderError("invalid_tool_call", "Copilot returned an unknown, duplicate, or malformed tool call");
+    if (!definition) throw invalidCall("unknown_tool", "Copilot returned an unknown tool call");
+    if (typeof call.toolCallId === "string" && ids.has(call.toolCallId)) throw invalidCall("duplicate_tool_id", "Copilot returned a duplicate tool call ID");
+    // Copilot's protocol defaults an omitted type to "function". Every tool we declared is an external function.
+    if ((call.type !== undefined && call.type !== "function") || typeof call.toolCallId !== "string" || !call.toolCallId) throw invalidCall("malformed_tool_call", "Copilot returned a malformed tool call");
+    if (!call.arguments || typeof call.arguments !== "object" || Array.isArray(call.arguments)) throw invalidCall("invalid_tool_arguments", "Copilot returned invalid tool argument structure");
     ids.add(call.toolCallId);
-    if (definition.responseTool?.type === "custom" && typeof record(call.arguments).input !== "string") throw new ProviderError("invalid_tool_call", "Free-form input must be a string");
+    if (definition.responseTool?.type === "custom" && typeof record(call.arguments).input !== "string") throw invalidCall("nontext_custom_input", "Free-form input must be a string");
     return { id: call.toolCallId, type: "function", responseTool: definition.responseTool, function: { name: definition.name, arguments: JSON.stringify(call.arguments) } };
   });
 }
 
 const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+const reportedCount = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
 
 export interface CopilotTurnOptions {
   /** The model the caller asked for; Copilot must answer with exactly it. */
@@ -57,7 +63,7 @@ export class CopilotTurn {
   /** Who started the request's first model call, `user` or `agent`; `mixed` once the calls disagree. */
   private initiator?: "user" | "agent" | "mixed";
   // One gateway request can contain several model calls; their counts add up.
-  private readonly totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0, nanoAiu: 0, priced: 0, partial: false, calls: 0 };
+  private readonly totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheReadSamples: 0, cacheWriteSamples: 0, reasoning: 0, nanoAiu: 0, priced: 0, partial: false, calls: 0 };
   private usage: Usage = { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
   private accounting: UsageAccounting = {};
   constructor(private readonly options: CopilotTurnOptions) { this.names = nativeToolMap(options.tools); }
@@ -69,7 +75,7 @@ export class CopilotTurn {
   accept(event: Message): CopilotStep {
     const data = record(event.data); const { options } = this; const events: InferenceEvent[] = [];
     if (event.agentId) throw new ProviderError("invalid_stream", "Copilot emitted an unexpected sub-agent event");
-    if (event.type === "permission.requested" || event.type === "external_tool.requested") throw new ProviderError("invalid_tool_call", "Copilot requested execution beyond caller-dispatched inference");
+    if (event.type === "permission.requested" || event.type === "external_tool.requested") throw invalidCall("native_builtin_tool", "Copilot requested execution beyond caller-dispatched inference");
     if (event.type === "session.error") {
       const context = copilotContextFailure(data); if (context) throw context;
       const diagnostic = typeof data.message === "string" ? data.message : "";
@@ -100,14 +106,14 @@ export class CopilotTurn {
       this.final = true;
       if (Array.isArray(data.toolRequests) && data.toolRequests.length) {
         // The catalog is always whole, so the choice is enforced here: a model that ignores it fails the request.
-        if (options.choice === "none") throw new ProviderError("invalid_tool_call", "Copilot returned a tool call although tool calls were disabled");
+        if (options.choice === "none") throw invalidCall("tool_choice_none", "Copilot returned a tool call although tool calls were disabled");
         this.calls = nativeCopilotCalls(data.toolRequests, this.names);
         const chosen = typeof options.choice === "object" ? options.choice.function.name : undefined;
-        if (chosen !== undefined && this.calls.some(call => call.function.name !== chosen)) throw new ProviderError("invalid_tool_call", "Copilot returned a tool other than the required one");
+        if (chosen !== undefined && this.calls.some(call => call.function.name !== chosen)) throw invalidCall("forced_tool_mismatch", "Copilot returned a tool other than the required one");
         for (const call of this.calls) events.push({ type: "tool", call });
         return { events, end: "tools" };
       }
-      if (options.choice === "required" || typeof options.choice === "object") throw new ProviderError("invalid_tool_call", "Copilot did not return the required tool call");
+      if (options.choice === "required" || typeof options.choice === "object") throw invalidCall("required_tool_missing", "Copilot did not return the required tool call");
     }
     if (event.type === "assistant.idle") {
       if (!this.final) throw new ProviderError("incomplete", "Copilot became idle without a final response");
@@ -126,12 +132,15 @@ export class CopilotTurn {
     const { totals } = this; const nanoAiu = record(data.copilotUsage).totalNanoAiu;
     totals.input += count(data.inputTokens); totals.output += count(data.outputTokens); totals.cacheRead += count(data.cacheReadTokens);
     totals.cacheWrite += count(data.cacheWriteTokens); totals.reasoning += count(data.reasoningTokens); totals.calls++;
+    if (reportedCount(data.cacheReadTokens) && reportedCount(data.inputTokens) && data.cacheReadTokens <= data.inputTokens) totals.cacheReadSamples++;
+    if (reportedCount(data.cacheWriteTokens)) totals.cacheWriteSamples++;
     // `partial` means some amounts are missing from a call's figure, so the sum is a floor.
     if (data.aiCreditsStatus === "partial") totals.partial = true;
     if (typeof nanoAiu === "number" && Number.isFinite(nanoAiu) && nanoAiu >= 0 && data.aiCreditsStatus !== "unavailable") { totals.priced++; totals.nanoAiu += nanoAiu; }
-    this.usage = { input_tokens: totals.input, output_tokens: totals.output, total_tokens: totals.input + totals.output, input_tokens_details: { cached_tokens: totals.cacheRead } };
+    this.usage = { input_tokens: totals.input, output_tokens: totals.output, total_tokens: totals.input + totals.output,
+      ...(totals.cacheReadSamples === totals.calls ? { input_tokens_details: { cached_tokens: totals.cacheRead } } : {}) };
     if (data.initiator === "user" || data.initiator === "agent") this.initiator = !this.initiator || this.initiator === data.initiator ? data.initiator : "mixed";
-    this.accounting = { cacheWriteTokens: totals.cacheWrite, reasoningTokens: totals.reasoning, ...(totals.priced ? { nanoAiu: totals.nanoAiu } : {}), ...(this.initiator ? { initiator: this.initiator } : {}),
+    this.accounting = { ...(totals.cacheWriteSamples === totals.calls ? { cacheWriteTokens: totals.cacheWrite } : {}), reasoningTokens: totals.reasoning, ...(totals.priced ? { nanoAiu: totals.nanoAiu } : {}), ...(this.initiator ? { initiator: this.initiator } : {}),
       nanoAiuStatus: !totals.priced ? "unavailable" : totals.priced === totals.calls && !totals.partial ? "complete" : "partial" };
     // The server records this before any later check can reject the call, so spend is never lost.
     return { type: "usage", usage: this.usage, accounting: this.accounting };

@@ -16,6 +16,31 @@ is the contract for each harness, and the checklist for a new one.
 
 ## Codex: `subscription_gateway` by default, `openai` as an opt-in
 
+### Account names and saved chats
+
+Gateway subscription account IDs, such as `codex-primary` and `codex-secondary`,
+are separate from the harness provider identity described below. Renaming an
+account must preserve its credential binding, every existing model alias, and
+`chatIdentity`. Never rewrite saved chats or the native account configuration.
+
+Keep existing picker aliases and their visibility unchanged when renaming account
+IDs. Running executors freeze their alias catalog, while the picker refreshes its
+catalog: exposing replacement aliases can make them selectable but unusable by
+loaded chats. Canonical duplicates may be added as hidden routes for new clients;
+keep every old and new alias routable indefinitely. Check the private alias
+reservation ledger for collisions and migrate only exact matching route identities,
+including retired aliases. Move the automatic-model-update scope with the ID.
+
+Live configuration deliberately refuses provider-ID rebinding. Activation requires
+a fresh inference process. In a managed service, the inference child's verified
+`SIGUSR2` handler restarts only when idle; do not restart the supervisor or chat
+executors to change names. A busy child leaves activation pending.
+
+`scripts/e2e-codex-account-names.mjs` checks loaded-chat continuation, cold resume,
+account separation, and model switching with the real signed SDK and mock inference.
+Its adapter scenario reproduces a refreshed picker advertising an alias absent
+from a loaded executor, then verifies switching through the stable picker aliases.
+
 Release 0.4.7 keeps recording new gateway chats with the provider id
 `subscription_gateway`, as every release before it. A Mac can opt in to the native
 identity, `openai`, with `"chatIdentity": "openai"` in its gateway configuration.

@@ -51,6 +51,10 @@ test("Copilot native calls preserve custom-tool identities and reject native act
   const tools = [{ type: "function" as const, function: { name: "tools.patch", responseTool: { type: "custom" as const, name: "patch", namespace: "tools" } } }];
   const call = { name: claudeToolName(tools[0]), type: "function", toolCallId: "call1", arguments: { input: "patch" } };
   assert.deepEqual(nativeCopilotCalls([call], tools)[0].responseTool, tools[0].function.responseTool);
+  const { type: _type, ...withoutType } = call;
+  assert.deepEqual(nativeCopilotCalls([withoutType], tools)[0], nativeCopilotCalls([call], tools)[0], "Copilot defaults an absent type to function");
+  assert.throws(() => nativeCopilotCalls([{ ...call, type: null }], tools), /malformed/);
+  assert.throws(() => nativeCopilotCalls([{ ...call, type: "custom" }], tools), /malformed/);
   assert.throws(() => nativeCopilotCalls([{ ...call, name: "shell" }], tools), /unknown/);
   assert.throws(() => nativeCopilotCalls([call, call], tools), /duplicate/);
   assert.throws(() => nativeCopilotCalls([{ ...call, arguments: { input: {} } }], tools), /string/);

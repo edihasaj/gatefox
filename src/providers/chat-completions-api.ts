@@ -43,11 +43,14 @@ const zeroUsage = (): Usage => ({ input_tokens: 0, output_tokens: 0, total_token
 function addUsage(left: Usage, right: Usage): Usage {
   const cached = (left.input_tokens_details?.cached_tokens || 0) + (right.input_tokens_details?.cached_tokens || 0);
   const created = (left.input_tokens_details?.cache_creation_tokens || 0) + (right.input_tokens_details?.cache_creation_tokens || 0);
+  const cacheReported = (left.input_tokens === 0 || left.input_tokens_details !== undefined)
+    && (right.input_tokens === 0 || right.input_tokens_details !== undefined)
+    && (left.input_tokens_details !== undefined || right.input_tokens_details !== undefined);
   return {
     input_tokens: left.input_tokens + right.input_tokens,
     output_tokens: left.output_tokens + right.output_tokens,
     total_tokens: left.total_tokens + right.total_tokens,
-    ...(cached || created ? { input_tokens_details: { cached_tokens: cached, ...(created ? { cache_creation_tokens: created } : {}) } } : {}),
+    ...(cacheReported ? { input_tokens_details: { cached_tokens: cached, ...(created ? { cache_creation_tokens: created } : {}) } } : {}),
   };
 }
 function timeoutError(): ProviderError { return new ProviderError("timeout", "Chat API inference timed out", 504); }
@@ -222,9 +225,9 @@ export class ChatCompletionsAPI implements Provider {
           }
           // vLLM and OpenAI report prefix-cache reuse as prompt_tokens_details.cached_tokens; carry it so cache hits are visible.
           const wireCached = wireUsage.prompt_tokens_details?.cached_tokens;
-          const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached > 0 ? Math.min(Math.floor(wireCached), wireUsage.prompt_tokens || 0) : 0;
+          const cached = typeof wireCached === "number" && Number.isFinite(wireCached) && wireCached >= 0 ? Math.min(Math.floor(wireCached), wireUsage.prompt_tokens || 0) : undefined;
           usage = { input_tokens: wireUsage.prompt_tokens || 0, output_tokens: wireUsage.completion_tokens || 0, total_tokens: wireUsage.total_tokens || 0,
-            ...(cached ? { input_tokens_details: { cached_tokens: cached } } : {}) };
+            ...(cached === undefined ? {} : { input_tokens_details: { cached_tokens: cached } }) };
           if (reportUsage) yield { type: "usage", usage };
         }
         const choices = event.choices as Array<{ index: number; delta?: { role?: unknown; content?: unknown; reasoning_content?: unknown; reasoning?: unknown; tool_calls?: Array<{ index: number; id?: string; function?: { name?: string; arguments?: string } }> }; finish_reason?: string | null }>;

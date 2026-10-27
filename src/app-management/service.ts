@@ -1,5 +1,6 @@
 import { readCredentials, signIn as defaultSignIn } from "../auth/chatgpt.js";
 import { readActivity } from "../activity.js";
+import { readDiagnostics } from "../diagnostics-details.js";
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { mutateConfig, readSnapshot, type ConfigSnapshot } from "./storage.js";
 import { ManagementError, safeFailure, throwIfCancelled } from "./errors.js";
@@ -18,7 +19,7 @@ import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
-const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check", "activity"]);
+const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check", "activity", "diagnostics"]);
 
 function request(value: unknown): ManagementRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ManagementError("invalid_request");
@@ -51,6 +52,12 @@ export class ManagementService {
 
   private async dispatch(value: ManagementRequest): Promise<ManagementResult> {
     switch (value.operation) {
+      case "diagnostics": {
+        const hours = value.sinceHours ?? 1;
+        if (![1, 6, 24].includes(hours)) throw new ManagementError("invalid_request");
+        const snapshot = await readSnapshot(value.configPath); if (!snapshot) throw new ManagementError("not_found");
+        return { configPath: value.configPath, diagnostics: await readDiagnostics(snapshot.config.stateDirectory, hours, this.deps.now?.()) };
+      }
       case "activity": {
         const snapshot = await readSnapshot(value.configPath);
         if (!snapshot) throw new ManagementError("invalid_configuration");
