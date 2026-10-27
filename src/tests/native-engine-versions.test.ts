@@ -17,7 +17,7 @@ import { isolateExecutionRoots } from "./isolated-execution-roots.js";
 isolateExecutionRoots(); // The SDK rendezvous and host and native homes stay in this file's own folder.
 hostRunsInThisProcess(); // This file's host runs inside the test process: see src/tests/in-process-host.ts.
 
-const app16411_1 = "codex-cli 0.164.0-alpha.11.1", app16311_2 = "codex-cli 0.163.0-alpha.11.2", app16311_1 = "codex-cli 0.163.0-alpha.11.1", app16311 = "codex-cli 0.163.0-alpha.11", app163 = "codex-cli 0.163.0-alpha.10.2", app162 = "codex-cli 0.162.0-alpha.17.2";
+const app1651_2 = "codex-cli 0.165.0-alpha.1.2", app16411_1 = "codex-cli 0.164.0-alpha.11.1", app16311_2 = "codex-cli 0.163.0-alpha.11.2", app16311_1 = "codex-cli 0.163.0-alpha.11.1", app16311 = "codex-cli 0.163.0-alpha.11", app163 = "codex-cli 0.163.0-alpha.10.2", app162 = "codex-cli 0.162.0-alpha.17.2";
 const repository = (path: string) => new URL(`../../${path}`, import.meta.url);
 const installedApp = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex";
 
@@ -33,17 +33,17 @@ test("the relay and native host accept each verified app engine while gateway ch
   try {
     // 0.163.0-alpha.11.2 entered the relay list on byte-identical app-server-transport source, and joined the host list only
     // after scripts/e2e-shared-native.mjs passed against the signed engine on a Mac that runs it.
-    assert.deepEqual([...relayAcceptedAppEngines], ["0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
-    assert.deepEqual([...hostVerifiedAppEngines], ["0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
+    assert.deepEqual([...relayAcceptedAppEngines], ["0.165.0-alpha.1.2", "0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
+    assert.deepEqual([...hostVerifiedAppEngines], ["0.165.0-alpha.1.2", "0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.equal(gatewayEngineVersions.includes("0.162.0-alpha.17.2"), true);
-    for (const version of [app16411_1, app16311_2, app16311_1, app16311, app163, app162]) await validateNativeEngine(await engine(directory, version));
+    for (const version of [app1651_2, app16411_1, app16311_2, app16311_1, app16311, app163, app162]) await validateNativeEngine(await engine(directory, version));
     await validateExecutionSdk(await engine(directory, app162));
-    for (const version of ["codex-cli 0.164.0", "codex-cli 0.163.0-alpha.11.2-dirty", "codex-cli 0.163.0-alpha.11.2.1", "codex-cli 0.163.0-alpha.11-dirty", "codex-cli 0.163.0-alpha.11.1-dirty", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
+    for (const version of ["codex-cli 0.165.0-alpha.1.2-dirty", "codex-cli 0.165.0-alpha.1.3", "codex-cli 0.164.0", "codex-cli 0.163.0-alpha.11.2-dirty", "codex-cli 0.163.0-alpha.11.2.1", "codex-cli 0.163.0-alpha.11-dirty", "codex-cli 0.163.0-alpha.11.1-dirty", "codex-cli 0.162.0-alpha.17", "codex-cli 0.162.0-alpha.17.2-dirty", "0.162.0-alpha.17.2", ""]) {
       const refusal = await refusalOf(validateNativeEngine(await engine(directory, version)));
       assert.ok(refusal, `the host accepted ${JSON.stringify(version)}`);
       assert.equal(nativeUnavailableReason(refusal), "sdk_version");
     }
-    for (const version of [app16411_1, app16311_2, app16311_1, app16311, app163]) await assert.rejects(validateExecutionSdk(await engine(directory, version)), /requires the pinned Codex SDK version/);
+    for (const version of [app1651_2, app16411_1, app16311_2, app16311_1, app16311, app163]) await assert.rejects(validateExecutionSdk(await engine(directory, version)), /requires the pinned Codex SDK version/);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -54,7 +54,7 @@ test("a native-only host shares each verified app engine without requiring the g
   const home = executionHostHome(configPath, nativeHome);
   const options = (codex: string) => ({ config, configPath, nativeHome, codex, capabilities: ["native" as const], nativeSdkVerifier });
   try {
-    for (const version of [app16411_1, app16311_2, app16311_1, app16311, app163, app162]) {
+    for (const version of [app1651_2, app16411_1, app16311_2, app16311_1, app16311, app163, app162]) {
       const host = await startExecutionHost(options(await engine(directory, version)));
       try { assert.deepEqual((await readOwner(join(home, "owner.json")))?.capabilities, ["native"]); }
       finally { await host.close(); }
