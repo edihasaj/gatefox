@@ -86,7 +86,8 @@ function sameSnapshot(left: ExecutionProbeHostSnapshot, right: ExecutionProbeHos
 }
 
 function sameRuntime(left: GatewaySdkRuntime, right: GatewaySdkRuntime): boolean {
-  return resolve(left.executable) === resolve(right.executable) && left.binarySha256 === right.binarySha256;
+  return resolve(left.executable) === resolve(right.executable) && left.binarySha256 === right.binarySha256
+    && left.executableSha256 === right.executableSha256 && left.identityExecutable === right.identityExecutable;
 }
 
 function report(reason: ExecutionProbeReason, checkedAt: string, snapshot?: ExecutionProbeHostSnapshot, runtime?: GatewaySdkRuntime, result?: ExecutionProbeChildResult): ScrubbedExecutionProbeReport {
@@ -232,7 +233,7 @@ export class ExecutionProbeManager {
       const [runtime, snapshot] = initial.value;
       if (!runtime || !sha.test(runtime.binarySha256)) return report("runtime_unavailable", checkedAt);
       if (!validSnapshot(snapshot)) return report("identity_unavailable", checkedAt, undefined, runtime);
-      const packageDirectory = dirname(dirname(resolve(runtime.executable)));
+      const packageDirectory = dirname(dirname(resolve(runtime.identityExecutable ?? runtime.executable)));
       let root: string | undefined;
       let result: ExecutionProbeChildResult;
       try {

@@ -117,7 +117,7 @@ test("a loaded module can recover after its own managed release directory is pru
   const oldDist = join(old, "dist"); await mkdir(oldDist, { recursive: true, mode: 0o700 });
   await writeFile(join(old, "package.json"), JSON.stringify({ version: "0.2.20", type: "module" }), { mode: 0o600 });
   await writeFile(join(f.root, "releases", "0.2.20", ".gateway-release"), "0.2.20\n", { mode: 0o600 });
-  for (const name of ["gateway-sdk-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
+  for (const name of ["gateway-sdk-runtime.js", "gateway-signed-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
     await writeFile(join(oldDist, name), await readFile(new URL(`../${name}`, import.meta.url)));
   }
   const loaded = await import(`${pathToFileURL(join(oldDist, "gateway-sdk-runtime.js")).href}?managed-recovery`);

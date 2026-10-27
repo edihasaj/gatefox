@@ -61,6 +61,21 @@ test("execution probe refuses a host identity that changed during the canary", a
   await manager.close();
 });
 
+test("the signed executor probe resolves through its original managed package", async () => {
+  const original = runtime();
+  const signed = { ...original, executable: "/private/Harness Gateway.app/Contents/Resources/backend/package/gateway-sdk/gateway-codex",
+    identityExecutable: original.executable, executableSha256: "b".repeat(64) };
+  const manager = new ExecutionProbeManager({ runtime: async () => signed, snapshot: async () => snapshot(),
+    runChild: async input => {
+      assert.equal(input.packageDirectory, "/private/release-a/package");
+      assert.equal(input.executable, signed.executable);
+      assert.equal(input.sdkSha256, original.binarySha256);
+      return passed;
+    } });
+  assert.equal((await manager.run()).ready, true);
+  await manager.close();
+});
+
 test("execution probe refuses a selected runtime that changed while the child ran", async () => {
   let read = 0;
   const manager = new ExecutionProbeManager({

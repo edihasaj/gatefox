@@ -103,7 +103,7 @@ async function prunedManagedResolver(t: { after(fn: () => Promise<void>): void }
     return packageDirectory;
   };
   const old = await prepare(oldVersion, true); const current = await prepare(currentVersion);
-  for (const name of ["gateway-sdk-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
+  for (const name of ["gateway-sdk-runtime.js", "gateway-signed-runtime.js", "gateway-sdk-build-pins.js", "gateway-sdk-pin.json"]) {
     await writeFile(join(old, "dist", name), await readFile(new URL(`../${name}`, import.meta.url)), { mode: 0o600 });
   }
   await writeFile(join(root, ".gateway-installation"), "subscription-gateway\n", { mode: 0o600 });

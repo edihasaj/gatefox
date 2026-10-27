@@ -120,15 +120,18 @@ export async function startExecutionHost(options: ExecutionHostOptions): Promise
   const selectedRuntime = async (): Promise<GatewaySdkRuntime | undefined> => {
     if (!runtime) return;
     const fresh = await resolveRuntime();
-    if (!fresh || resolve(fresh.executable) !== resolve(runtime.executable) || fresh.binarySha256 !== runtime.binarySha256) return;
-    return runtime;
+    if (!fresh || fresh.binarySha256 !== runtime.binarySha256 || fresh.codeModeHost !== runtime.codeModeHost) return;
+    // A signed app may be atomically replaced while this host is busy. Its verified same-release CLI remains a safe fallback.
+    if (resolve(fresh.executable) !== resolve(runtime.executable)
+      && (!runtime.identityExecutable || resolve(fresh.executable) !== resolve(runtime.identityExecutable))) return;
+    return fresh;
   };
   // Gateway generations run the checked runtime, independently of the app's
   // native SDK.  This also lets a combined host retain its gateway identity
   // while ChatGPT atomically replaces (or temporarily removes) its bundle.
   // Native sharing is checked separately below against the app executable.
   const sdk = runtime
-    ? { codex: runtime.executable, sdkSha256: runtime.binarySha256 }
+    ? { codex: runtime.identityExecutable ?? runtime.executable, sdkSha256: runtime.binarySha256 }
     : await sdkCheck(() => sdkIdentity(options.codex));
   // Gateway and native engines have independent pins. A native-only host is
   // verified by the signed native SDK verifier below, not the gateway SDK pin.

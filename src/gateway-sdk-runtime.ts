@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import pin from "./gateway-sdk-pin.json" with { type: "json" };
 import { gatewaySdkPatchSha256, gatewaySdkLockRepairSha256, gatewaySdkSourceSha256 } from "./gateway-sdk-build-pins.js";
+import { signedGatewayRuntime } from "./gateway-signed-runtime.js";
 
 export const gatewaySdkRevision = pin.revision;
 export { gatewaySdkPatchSha256 };
@@ -23,7 +24,7 @@ const releaseVersion = (value: string): boolean => /^\d+\.\d+\.\d+$/.test(value)
  * loopback provider, so new gateway chats can be recorded as `openai` (see docs/harness-identity.md).
  * `codeModeHost`: the verified receipt pinned this package's `codex-code-mode-host`, so Code Mode runs here.
  */
-export interface GatewaySdkRuntime { executable: string; binarySha256: string; selectedModelCompaction: true; executorIdentity: true; codeModeHost: boolean }
+export interface GatewaySdkRuntime { executable: string; binarySha256: string; executableSha256?: string; identityExecutable?: string; selectedModelCompaction: true; executorIdentity: true; codeModeHost: boolean }
 /** The gateway patch capability, independent of the upstream Codex version. */
 export const gatewaySdkCapability = "gateway-executor-v3";
 
@@ -216,7 +217,16 @@ export async function gatewaySdkRuntime(packageDirectory = fileURLToPath(new URL
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   });
-  if (source) return directGatewaySdkRuntime(checked);
+  if (source) {
+    const original = await directGatewaySdkRuntime(checked);
+    const layout = managedPackageLayout(checked);
+    if (original && layout && process.platform === "darwin") {
+      return await signedGatewayRuntime(layout.root, original, directGatewaySdkRuntime) ?? original;
+    }
+    return original;
+  }
   const layout = managedPackageLayout(checked);
-  return layout ? recoveredManagedRuntime(layout) : undefined;
+  if (!layout) return undefined;
+  const original = await recoveredManagedRuntime(layout);
+  return process.platform === "darwin" ? await signedGatewayRuntime(layout.root, original, directGatewaySdkRuntime) ?? original : original;
 }

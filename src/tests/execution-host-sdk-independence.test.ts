@@ -87,6 +87,28 @@ test("the host validates the gateway runtime it spawns, not a newer native codex
   } finally { await client?.close(); await host?.close(); await f.clean(); }
 });
 
+test("a signed derivative keeps the real executable hash for a combined native and gateway host", { timeout: 30000 }, async () => {
+  const f = await fixture(); let host; let client;
+  try {
+    const original = f.runtime.executable;
+    const signed = join(f.directory, "signed-gateway-codex");
+    await writeFile(signed, `${await readFile(original, "utf8")}\n// signed fixture\n`, { mode: 0o700 });
+    const actual = (await sdkIdentity(signed)).sdkSha256;
+    const runtime = { ...f.runtime, executable: signed, executableSha256: actual, identityExecutable: original };
+    let selected: GatewaySdkRuntime = runtime;
+    const nativeSdkVerifier = async () => ({ nativeSdkExecutable: original, nativeSdkSha256: f.runtime.binarySha256 });
+    host = await startExecutionHost({ ...f.options, gatewayRuntime: async () => selected, capabilities: ["native", "gateway"], nativeSdkVerifier });
+    client = await control(join(f.hostHome, "host.sock"));
+    const native = await client.request<{ pid: number }>("native/acquire", { args: ["app-server", "--fixture-state", join(f.directory, "native.state")], cwd: f.directory });
+    assert.ok(native.pid > 0);
+    const descriptor = { ...f.descriptor(), gatewaySdkSha256: runtime.binarySha256 };
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor })).revision, descriptor.revision);
+    assert.equal((await readOwner(join(f.hostHome, "owner.json")))?.sdkSha256, f.runtime.binarySha256);
+    selected = f.runtime; // The app was replaced; the original verified release remains available.
+    assert.equal((await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor(true, "b") })).revision, "b".repeat(64));
+  } finally { await client?.close(); await host?.close(); await f.clean(); }
+});
+
 test("a verified gateway runtime does not gain Code Mode from an adjacent added helper", { timeout: 30000 }, async () => {
   const f = await fixture(); let host; let client;
   try {

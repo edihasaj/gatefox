@@ -4,6 +4,7 @@ read_when:
   - Changing scripts/release-components.mjs or scripts/build-release.mjs reuse flags
   - Publishing a release that reuses the native relay or the gateway SDK
   - Debugging a gateway SDK that refuses to load after a component reuse
+  - Changing the signed gateway executor selected for macOS Keychain access
 ---
 
 # Component origins
@@ -53,3 +54,19 @@ at its own archive:
   `origin` fails closed, with no fallback.
 - Receipts and binaries are copied byte for byte. Re-copied files are re-hashed
   against the verified digest before they reach the stage.
+
+## Signed macOS executor
+
+Managed macOS installations prefer the signed gateway SDK inside the app when its
+signed receipt identifies the exact original executor and Code Mode companion in
+the selected CLI release. The app and helper must pass Developer ID and fixed
+identifier checks, and the signed package is verified before and after signature
+validation. The executor path is stable across app releases; its Developer ID
+identity allows macOS to recognize Keychain access grants across updates. The
+original CLI checksum remains the compatibility identity exchanged by clients
+and the service. A missing, changed or mismatched app falls back to the verified
+CLI executor, preserving CLI-only installations and release-skew behavior.
+
+This does not prove that Keychain will retain an existing grant: confirm an
+approval on the signed executor and check a later restart and app update on the
+unlocked Mac. macOS can ask again for other credentials or changed access rules.
