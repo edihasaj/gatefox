@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.1 — 2026-10-27
+
 - SSH proxy output now crosses fresh child pipes with backpressure and complete
   draining. This prevents macOS error 35 from ending otherwise healthy Studio
   connections when the client briefly stops reading a large response.
