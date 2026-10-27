@@ -57,7 +57,7 @@ test("a foreign tool fails at its content block start, before any input arrives"
 
 test("a text turn takes output tokens from message_delta, not the turn total in result.usage", () => {
   const stream = new ClaudeMessageStream({ tools: [], summaryVisible: false });
-  const messages = [event({ type: "message_start", message: { id: "msg_t", usage: { input_tokens: 3, cache_read_input_tokens: 7, output_tokens: 2 } } }),
+  const messages = [event({ type: "message_start", message: { id: "msg_t", usage: { input_tokens: 3, cache_read_input_tokens: 7, cache_creation_input_tokens: 0, output_tokens: 2 } } }),
     event({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hidden" } }),
     event({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "Hel" } }), event({ type: "content_block_delta", index: 1, delta: { type: "text_delta", text: "lo" } }),
     event({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 12 } }), event({ type: "message_stop" }),
@@ -67,7 +67,7 @@ test("a text turn takes output tokens from message_delta, not the turn total in 
   assert.deepEqual(steps.at(-1)!.end?.usage, { input_tokens: 10, output_tokens: 12, total_tokens: 22, input_tokens_details: { cached_tokens: 7 } });
   const bare = new ClaudeMessageStream({ tools: [], summaryVisible: true });
   assert.deepEqual(bare.accept({ type: "result", subtype: "success", is_error: false, result: "ok", usage: { input_tokens: 2, output_tokens: 1 } }).end?.usage,
-    { input_tokens: 2, output_tokens: 1, total_tokens: 3, input_tokens_details: { cached_tokens: 0 } }, "without stream events the result usage is used");
+    { input_tokens: 2, output_tokens: 1, total_tokens: 3 }, "without stream events the result usage is used without inventing cache counts");
   assert.throws(() => new ClaudeMessageStream({ tools: [], summaryVisible: true }).accept({ type: "result", subtype: "error_max_turns", is_error: true, result: "private" }), (error: unknown) => error instanceof ProviderError && error.upstream?.subtype === "error_max_turns");
 });
 

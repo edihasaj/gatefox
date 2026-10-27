@@ -245,6 +245,13 @@ ends the request normally; the session then closes (`idle_missing`).
 
 ## Billing and diagnostics
 
+The app's Diagnostics screen and `gateway diagnostics` now summarize Copilot
+session outcomes, rebuild reasons and cache coverage. New session events include
+provider and model identity. Tool-call failures carry fixed structural reasons,
+so an unknown tool, duplicate call ID, malformed call and invalid argument shape
+are distinguishable without storing tool arguments. Historical generic failures
+retain their original level of detail. See [diagnostics](diagnostics.md).
+
 The usage ledger records one row per gateway request with that request's own cache read,
 cache write, reasoning and nano-AIU totals, so the saving shows directly in the cache-read
 share of `inputTokens` and in `nanoAiu` per request; see [diagnostics](diagnostics.md).

@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { handleManagement } from "../app-management.js";
 import { mutateConfig } from "../app-management/storage.js";
+import { configureTelemetry, flushTelemetry, telemetry } from "../telemetry.js";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "gateway-management-")); const path = join(root, "gateway.json");
@@ -17,6 +18,27 @@ async function fixture() {
   return { path, baseUrl: `http://127.0.0.1:${port}/v1`, close: () => new Promise<void>(resolve => server.close(() => resolve())) };
 }
 const dependencies = { lookupCli: async () => true };
+
+test("diagnostics reads the selected local telemetry without changing configuration", async () => {
+  const f = await fixture();
+  try {
+    const state = join(dirname(f.path), "state");
+    const config = JSON.stringify({ version: 1, port: 3457, clientOnly: true, stateDirectory: state, providers: [] });
+    await writeFile(f.path, config, { mode: 0o600 });
+    configureTelemetry(state, "test");
+    telemetry("request_failed", { model: "copilot/sonnet", code: "invalid_tool_call", upstreamCode: "unknown_tool", inputTokens: 100, cachedTokens: 90 });
+    await flushTelemetry();
+    const response = await handleManagement({ operation: "diagnostics", configPath: f.path, sinceHours: 1 });
+    assert.ok(response.ok);
+    if (response.ok) {
+      assert.equal(response.result.diagnostics?.models[0].cacheHitPercent, 90);
+      assert.equal(response.result.diagnostics?.issues[0].code, "unknown_tool");
+      assert.equal(response.result.diagnostics?.hours, 1);
+    }
+    assert.equal(await readFile(f.path, "utf8"), config);
+    for (const sinceHours of [0, 2, 1000, "1"]) assert.equal((await handleManagement({ operation: "diagnostics", configPath: f.path, sinceHours })).ok, false);
+  } finally { await f.close(); }
+});
 
 test("activity is read-only and reports unknown when the selected host is unavailable", async () => {
   const f = await fixture();

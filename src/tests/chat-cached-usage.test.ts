@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProviderConfig } from "../config.js";
 import { ChatCompletionsAPI } from "../providers/chat-completions-api.js";
+import { diagnosticDetails } from "../diagnostics-details.js";
 
 const stream = (usage: Record<string, unknown>) => new Response([
   { model: "fixture", choices: [{ index: 0, delta: { content: "answer" }, finish_reason: null }] },
@@ -27,7 +28,12 @@ test("chat usage carries vLLM prompt_tokens_details.cached_tokens as input_token
   const hit = await done({ ...base, prompt_tokens_details: { cached_tokens: 4800, created_cache_tokens: 0, multimodal_tokens: null } });
   assert.equal(hit.input_tokens, 7556);
   assert.deepEqual(hit.input_tokens_details, { cached_tokens: 4800 });
-  assert.equal((await done({ ...base, prompt_tokens_details: { cached_tokens: 0 } })).input_tokens_details, undefined, "a cold cache adds no details");
+  const cold = await done({ ...base, prompt_tokens_details: { cached_tokens: 0 } });
+  assert.deepEqual(cold.input_tokens_details, { cached_tokens: 0 }, "a measured cold cache is distinct from missing cache data");
+  const hot = await done({ ...base, prompt_tokens_details: { cached_tokens: base.prompt_tokens } });
+  const diagnostics = diagnosticDetails([cold, hot].map(usage => ({ at: new Date().toISOString(), host: "test", component: "test", pid: 1,
+    event: "request_completed", model: "qwen/flash", inputTokens: usage.input_tokens, cachedTokens: usage.input_tokens_details?.cached_tokens })));
+  assert.equal(diagnostics.cacheUsage["qwen/flash"].cacheHitPercent, 50);
   assert.equal((await done(base)).input_tokens_details, undefined, "a server without details is unchanged");
   for (const cached_tokens of [-5, "4800", Number.NaN, null]) {
     assert.equal((await done({ ...base, prompt_tokens_details: { cached_tokens } })).input_tokens_details, undefined, String(cached_tokens));

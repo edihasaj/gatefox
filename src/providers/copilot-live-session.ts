@@ -118,6 +118,8 @@ export class CopilotLiveSession {
 
   get pid(): number | undefined { return this.client?.rpc.pid; }
   get directory(): string | undefined { return this.client?.directory; }
+  get providerId(): string { return this.options.config.id; }
+  get model(): string { return String(this.options.create.model); }
 
   /** Spawns, authenticates and creates the session; a failure leaves no process or directory behind. */
   static async start(options: SessionOptions, signal: AbortSignal): Promise<CopilotLiveSession> {
@@ -298,8 +300,8 @@ export class CopilotLiveSession {
     const ids = attached.live.turn.calls.map(call => call.id);
     const announced = await this.hasRequests(ids, sessionLimits.requestsMs);
     if (attached.error) throw attached.error;
-    if (!announced) throw new ProviderError("invalid_tool_call", "Copilot did not hand over its tool requests", 502);
-    if ([...this.requests.keys()].some(id => !ids.includes(id))) throw new ProviderError("invalid_tool_call", "Copilot requested a tool call it did not announce", 502);
+    if (!announced) throw new ProviderError("invalid_tool_call", "Copilot did not hand over its tool requests", 502, { code: "tool_request_missing", event: "copilot.tool_use" });
+    if ([...this.requests.keys()].some(id => !ids.includes(id))) throw new ProviderError("invalid_tool_call", "Copilot requested a tool call it did not announce", 502, { code: "unannounced_tool", event: "copilot.tool_use" });
   }
 
   private finish(attached: Attached, closeWith?: string): void {

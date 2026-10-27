@@ -10,6 +10,42 @@ read_when:
 The gateway keeps a private event log on every Mac and sends only exceptions to
 the private GlitchTip project. Neither runs on a request path.
 
+## Cache and failure screen
+
+The native app's **Diagnostics** screen reads local telemetry over the last 1, 6
+or 24 hours. It shows input tokens, cache reads and writes, failed requests per
+model, Copilot session reuse/rebuild reasons, and the latest provider failures
+and reconnect signals. It names the Mac being inspected; a client-only setup
+does not silently present another host's usage as local data.
+
+`gateway diagnostics --since HOURS` includes the same `cacheUsage`,
+`copilotSessions` and `issues` fields alongside its existing summary. Cache hit
+percentages use the input tokens of requests that actually reported cache reads.
+Explicit zero means a measured cold cache; absent or incomplete counts remain
+unreported. Sample counts show partial coverage. Failed requests retain whatever
+usage the provider reported before failing. Copilot requests with multiple model
+calls report cache totals only when every call supplied those counts. Claude
+cache percentages also require its native input, read and write counts because
+native input excludes both kinds of cache tokens.
+Historical records from older versions may already have normalized missing
+counts to zero; that original observation coverage cannot be recovered.
+Copilot session token totals have separate read/write sample counts; a total of
+zero with no samples is unreported usage, not a measured cold cache.
+
+New Copilot failures record fixed discriminants such as `unknown_tool`,
+`duplicate_tool_id`, `malformed_tool_call`, `invalid_tool_arguments`,
+`nontext_custom_input` and `tool_request_missing`. They preserve the existing
+tool checks and retry behavior. No tool names, arguments, prompts or private error
+prose are added. Old generic `invalid_tool_call` records cannot be reconstructed;
+the app labels those as lacking a detailed reason. Routine filesystem lookup
+errors remain in the CLI's existing `recentProblems` rather than burying provider
+failures in the app. A retrying turn and a failed provider request are separate
+signals; the screen does not claim they are correlated without a shared identifier.
+
+The [native view render](evidence/gateway-diagnostics-2026-10-27.png) uses sampled
+server telemetry for visual QA. It does not establish deployment or retrospective
+recovery of missing error details.
+
 ## Local telemetry
 
 Each process appends one JSON line per event to

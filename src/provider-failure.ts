@@ -16,7 +16,7 @@ const upstreamCodes = new Set([
   "rate_limit_exceeded", "slow_down", "insufficient_quota", "invalid_prompt", "invalid_encrypted_content", "invalid_request_error", "max_output_tokens",
   "content_filter", "context_length_exceeded", "invalid_api_key", "authentication_error", "token_expired", "unauthorized", "credit_balance_exhausted",
   "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "native_tool_search", "native_mcp_wait", "unknown_tool", "unavailable_gateway_tool",
-  "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "nontext_custom_input", "required_tool_missing",
+  "native_builtin_tool", "malformed_tool_call", "duplicate_tool_id", "invalid_tool_arguments", "nontext_custom_input", "required_tool_missing", "tool_request_missing", "unannounced_tool",
   "cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "forced_tool_mismatch", "tool_choice_none",
   "usage_limit_reached", "subscription_sharing_usage_limit_exceeded", "subscription_sharing_unsupported_capability", "billing_hard_limit_reached", "billing_not_active",
 ]);
@@ -125,7 +125,7 @@ export function providerFailureDiagnostic(input: ProviderFailureDiagnosticInput)
   if (upstream) {
     const upstreamCode = own(upstream, "code"); const event = own(upstream, "event"); const subtype = own(upstream, "subtype"); const upstreamRequestId = own(upstream, "requestId");
     if (typeof upstreamCode === "string" && (upstreamCodes.has(upstreamCode) || networkCodes.has(upstreamCode) || (event === "oauth_refresh" && (oauthErrorCodes.has(upstreamCode) || upstreamCode === "other" || upstreamCode === "none")))) result.upstreamCode = upstreamCode;
-    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
+    if (typeof event === "string" && ["error", "response.failed", "response.incomplete", "unknown", "http", "eof", "network", "oauth_refresh", "claude.tool_use", "claude.assistant", "claude.result", "copilot.tool_use", "grok.tool_use", "grok.assistant", "grok.result"].includes(event)) result.upstreamEvent = event;
     const stage = own(upstream, "stage");
     if (event === "network" && (stage === "connect" || stage === "stream" || stage === "unknown")) result.upstreamStage = stage;
     const codes = networkCodesField(own(upstream, "networkCodes"));

@@ -8,7 +8,7 @@ import { claudeContextFailure } from "./context-errors.js";
 import { claudeUsageEvent, type ClaudeLimit } from "./claude-usage.js";
 
 /** Native token counts of one API message. */
-export interface ClaudeTokens { input: number; cacheRead: number; cacheWrite: number; output: number }
+export interface ClaudeTokens { input?: number; cacheRead?: number; cacheWrite?: number; output: number }
 export type ClaudeStreamEnd =
   | { kind: "tool_use"; calls: OpenAIToolCall[]; usage: Usage; tokens: ClaudeTokens }
   /** A text turn complete at its message_delta (endTurn streams only). */
@@ -26,18 +26,19 @@ const maxText = 8 * 1024 * 1024;
 const fastStates = new Set(["on", "off", "cooldown"]);
 const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 type NativeUsage = { input_tokens?: unknown; cache_read_input_tokens?: unknown; cache_creation_input_tokens?: unknown; output_tokens?: unknown };
-function tokensOf(usage: unknown, base: ClaudeTokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 }): ClaudeTokens {
+function tokensOf(usage: unknown, base: ClaudeTokens = { output: 0 }): ClaudeTokens {
   const value = (usage && typeof usage === "object" ? usage : {}) as NativeUsage;
   return { input: count(value.input_tokens) ?? base.input, cacheRead: count(value.cache_read_input_tokens) ?? base.cacheRead,
     cacheWrite: count(value.cache_creation_input_tokens) ?? base.cacheWrite, output: count(value.output_tokens) ?? base.output };
 }
 /** Cache reads are reported the Responses way so callers can see actual cache reuse. */
 export function claudeUsage(tokens: ClaudeTokens): Usage {
-  const input = tokens.input + tokens.cacheRead + tokens.cacheWrite;
-  return { input_tokens: input, output_tokens: tokens.output, total_tokens: input + tokens.output, input_tokens_details: {
-    cached_tokens: tokens.cacheRead,
+  const input = (tokens.input ?? 0) + (tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0);
+  const complete = tokens.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
+  return { input_tokens: input, output_tokens: tokens.output, total_tokens: input + tokens.output, ...(!complete ? {} : { input_tokens_details: {
+    cached_tokens: tokens.cacheRead!,
     ...(tokens.cacheWrite ? { cache_creation_tokens: tokens.cacheWrite } : {}),
-  } };
+  } }) };
 }
 
 /** Maps an unsuccessful CLI result; private result text is only classified, never returned. */
