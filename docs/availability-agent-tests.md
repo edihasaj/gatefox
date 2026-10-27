@@ -44,17 +44,27 @@ Run each scenario separately:
 | `healthy` | Real gateway collectors | Named local worker completes the task. |
 | `local-unhealthy` | Injected fresh unhealthy local observation; other facts remain real | A subscription worker completes the task and the exhausted primary is avoided. |
 | `unknown-source` | Only the availability endpoint returns an injected failure | The local default remains usable and paid APIs are not selected. |
+| `worker-failure` | Real healthy facts, then an injected terminal authentication refusal before the local worker's upstream call | The parent observes the failed child, refreshes availability, and starts a new subscription worker that completes the task. |
 
-Injection changes availability facts only. Parent decisions and worker inference
-are real in every scenario. Receipts distinguish injected facts from observed
-execution and contain only identifiers, counts and verification booleans.
+The first two outage scenarios inject availability facts only. `worker-failure`
+injects a transport failure before the local model is called; the gateway's
+ordinary outcome tracker then reports that route unavailable. Parent decisions
+and the successful worker's inference are real. Receipts distinguish injected
+facts or failures from observed execution and contain only identifiers, counts
+and verification booleans. Preserve runner and helper hashes in the run manifest;
+the receipt also records the canonical policy hash.
 
 A pass requires a completed parent availability command and an HTTP availability
 request before child inference, the expected provider, a successful child command
 that reads the unpredictable proof, and completed child and parent turns that
 report the proof. A parent that reads the file itself fails the check.
 
-These scenarios test one worker per task, including choosing a subscription
-worker before starting it. They do not establish recovery after an already-running
-child fails, native OpenAI parent delegation, Claude Code orchestration, shared
-DGX queue visibility, or desktop rendering. Those require separate receipts.
+The first three scenarios test one worker per task. `worker-failure` requires
+two distinct children in order: failed local worker, then successful subscription
+worker. A second completed helper command and availability request must occur
+after the first child's terminal failure and before the replacement starts.
+This checks a terminal startup failure; it does not prove recovery of partially
+written files or continuation inside the failed child's conversation.
+
+Native OpenAI parent delegation, Claude Code orchestration, shared DGX queue
+visibility and desktop rendering require separate receipts.

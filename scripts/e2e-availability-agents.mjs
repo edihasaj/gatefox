@@ -8,7 +8,7 @@ import { constants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const { values } = parseArgs({ options: {
@@ -16,7 +16,7 @@ const { values } = parseArgs({ options: {
   model: { type: 'string' }, context: { type: 'string' }, policy: { type: 'string' }, scenario: { type: 'string', default: 'healthy' },
 } });
 for (const key of ['package', 'config', 'root', 'model', 'context', 'policy']) assert.ok(values[key], `Pass --${key}`);
-assert.ok(['healthy', 'local-unhealthy', 'unknown-source'].includes(values.scenario), '--scenario must be healthy, local-unhealthy, or unknown-source');
+assert.ok(['healthy', 'local-unhealthy', 'unknown-source', 'worker-failure'].includes(values.scenario), '--scenario must be healthy, local-unhealthy, unknown-source, or worker-failure');
 
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
 const packagePath = resolve(values.package), sourceConfigPath = resolve(values.config), root = resolve(values.root);
@@ -59,6 +59,7 @@ const { AppServerBackends } = await load('app-server-backends');
 const { AppServerRouter } = await load('app-server-router');
 const { modelCatalog } = await load('catalog');
 const { startGateway, createProvider } = await load('server');
+const { ProviderError } = await load('providers/provider');
 const { AvailabilityService } = await load('availability/service');
 const { setNativeRuntimeRootForTests } = await load('native-runtime-status');
 setNativeRuntimeRootForTests(join(fixture, 'runtime'));
@@ -116,6 +117,7 @@ await writeFile(proofFile, proof, { mode: 0o600 });
 
 const helperCommand = `${JSON.stringify(pythonPath)} ${JSON.stringify(helperPath)} --config ${JSON.stringify(configPath)} --roles-dir ${JSON.stringify(roleDirectory)}`;
 const canonicalPolicy = await readFile(policyPath, 'utf8');
+const policySha = createHash('sha256').update(canonicalPolicy).digest('hex');
 const renderedPolicy = canonicalPolicy.replace(
   /python3 "\$HOME\/Projects\/manager\/scripts\/macos\/model-availability-context\.py"/g,
   helperCommand,
@@ -123,7 +125,10 @@ const renderedPolicy = canonicalPolicy.replace(
 assert.notEqual(renderedPolicy, canonicalPolicy, 'Policy must contain the canonical availability helper command');
 const nativeConfig = `model = ${JSON.stringify(parentAlias)}\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\ndeveloper_instructions = ${JSON.stringify(renderedPolicy)}\n[features]\nremote_control = false\n[analytics]\nenabled = false\n[agents]\ndefault_subagent_model = ${JSON.stringify(parentAlias)}\n${requiredRoles.map(role => `[agents.${role}]\ndescription = ${JSON.stringify(`Canonical ${role} fixture role`)}\nconfig_file = ${JSON.stringify(join(roleDirectory, `${role}.toml`))}\n`).join('')}`;
 
-const evidence = { scenario, parentModel: parentAlias, realGatewaySdk: true, syntheticAvailabilityInjection: scenario !== 'healthy',
+const workerFailure = scenario === 'worker-failure';
+const evidence = { scenario, parentModel: parentAlias, realGatewaySdk: true, syntheticAvailabilityInjection: scenario === 'local-unhealthy' || scenario === 'unknown-source',
+  syntheticFailureInjection: workerFailure,
+  policySha,
   availabilityWarmed: false, warmedLocalModel: 'unknown', warmedSubscriptionFacts: 'unknown', availabilityRequestsAfterParent: 0,
   helperCommands: 0, childStartedAfterHelper: false, childCommandItems: 0,
   parentCompleted: false, childCompleted: false, parentReportedProof: false, childReportedProof: false,
@@ -134,8 +139,11 @@ evidence.helperInterpreterResolved = true;
 evidence.helperInterpreterModern = true;
 let gateway, proxy, backend, proxyPort, phase = 'setup', parentThreadId, childInferenceStarted = false;
 let parentCompletion;
-let parentTurnStarted = false, sourceRequestedAt, firstChildAt;
+let parentTurnStarted = false, latestSourceRequestedAt = 0, firstChildAt;
 const childThreads = new Set();
+const injectedChildThreads = new Set();
+let helperChecksAtPreviousChild = 0, sourceGetsAtPreviousChild = 0;
+let latestHelperCompletedAt = 0, failedWorkerTerminalAt = 0;
 const progress = stage => console.log(`availability_e2e:${stage}`);
 
 function forward(req, res, targetPort) {
@@ -148,14 +156,20 @@ function forward(req, res, targetPort) {
 async function availabilityOverride(req, res, targetPort) {
   if (parentTurnStarted) {
     evidence.availabilityRequestsAfterParent++;
-    sourceRequestedAt ??= Date.now();
+    latestSourceRequestedAt = Date.now();
   }
   if (scenario === 'unknown-source') { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'availability_source_unreachable' } })); return; }
-  if (scenario === 'healthy') { forward(req, res, targetPort); return; }
+  if (scenario === 'healthy' || (workerFailure && !evidence.injectedFailureAttempted)) { forward(req, res, targetPort); return; }
   const response = await fetch(`http://127.0.0.1:${targetPort}${req.url}`, { headers: req.headers });
   const report = await response.json();
   const local = report.providers?.find(row => row.id === providersByRole.get('implementer').id);
   assert.ok(local, 'The actual availability response must name the local primary provider');
+  if (workerFailure) {
+    assert.ok(evidence.injectedFailureAttempted, 'The fallback availability read must follow the injected local failure');
+    evidence.injectedFaultReflected = local.status === 'unavailable' && local.reasons?.includes('authentication');
+    assert.ok(evidence.injectedFaultReflected, 'The real availability snapshot must reflect the injected authentication failure');
+    res.writeHead(response.status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(report)); return;
+  }
   local.status = 'unavailable'; local.reasons = ['unhealthy'];
   local.health = { status: 'unhealthy', observedAt: new Date().toISOString(), fresh: true,
     endpoints: { healthy: 0, total: 2 }, servedModels: [], missingModels: [] };
@@ -202,18 +216,37 @@ try {
     return { emitsTransport: delegate.emitsTransport, async *infer(...args) {
       const [request, , context] = args;
       const isParent = provider.id === parentProvider.id && request.model === parentUpstream;
-      const record = { provider: provider.id, model: request.model, parent: isParent };
+      const childKey = context?.threadId ?? context?.sessionId ?? 'unidentified-child';
+      const localWorker = provider.id === providersByRole.get('implementer').id && request.model === provider.models[roleModels.get('implementer')];
+      const injected = workerFailure && !isParent && localWorker;
+      const record = { provider: provider.id, model: request.model, parent: isParent, ...(injected ? { injectedFailure: true } : {}) };
       evidence.routed.push(record);
       if (provider.id === 'openrouter') evidence.paidOpenRouterCalls++;
       if (!isParent) {
-        const childKey = context?.threadId ?? context?.sessionId ?? 'unidentified-child';
         if (!childThreads.has(childKey)) {
+          assert.notEqual(childKey, 'unidentified-child', 'Worker continuity needs a real SDK child context id');
           childThreads.add(childKey); progress(`first_child:${provider.id}/${request.model}`);
-          childInferenceStarted = true; firstChildAt ??= Date.now(); evidence.childStartedAfterHelper = evidence.helperCommands > 0 && sourceRequestedAt !== undefined && sourceRequestedAt <= firstChildAt;
+          assert.ok(childThreads.size <= (workerFailure ? 2 : 1), 'This scenario may not start more workers');
+          childInferenceStarted = true; const childStartedAt = Date.now(); firstChildAt ??= childStartedAt;
+          evidence.childStartedAfterHelper = evidence.helperCommands > helperChecksAtPreviousChild && evidence.availabilityRequestsAfterParent > sourceGetsAtPreviousChild && latestSourceRequestedAt <= childStartedAt;
           assert.ok(evidence.childStartedAfterHelper, 'Parent must execute the availability helper before child inference');
           const allowedChildRoutes = new Set(['implementer', 'tester', 'other_implementer'].map(role => `${providersByRole.get(role).id}\u0000${providersByRole.get(role).models[roleModels.get(role)]}`));
           assert.ok(allowedChildRoutes.has(`${provider.id}\u0000${request.model}`), 'Only the bounded Qwen or Terra child routes may infer');
+          if (workerFailure && childThreads.size === 1) assert.ok(localWorker, 'The first worker-failure child must be Qwen');
+          if (workerFailure && childThreads.size === 2) {
+            const terraProvider = providersByRole.get('other_implementer');
+            assert.ok(evidence.injectedFailureAttempted && failedWorkerTerminalAt > 0, 'Terra may start only after the injected Qwen worker terminally fails');
+            assert.equal(`${provider.id}\u0000${request.model}`, `${terraProvider.id}\u0000${terraProvider.models[roleModels.get('other_implementer')]}`, 'The second worker-failure child must be Terra');
+            assert.ok(latestHelperCompletedAt >= failedWorkerTerminalAt && latestSourceRequestedAt >= failedWorkerTerminalAt && latestSourceRequestedAt <= childStartedAt,
+              'The fallback must recheck availability after the failed worker');
+            evidence.fallbackRecheckAfterFailure = true;
+          }
+          helperChecksAtPreviousChild = evidence.helperCommands; sourceGetsAtPreviousChild = evidence.availabilityRequestsAfterParent;
         }
+      }
+      if (injected) {
+        injectedChildThreads.add(childKey); evidence.injectedFailureAttempted = true; evidence.injectedProvider = provider.id;
+        throw new ProviderError('authentication', 'Injected local authentication refusal', 401);
       }
       yield* delegate.infer(...args);
     } };
@@ -229,7 +262,7 @@ try {
   evidence.warmedSubscriptionFacts = warmReport.providers?.some(row => subscriptionIds.has(row.id) && row.quota?.fresh === true) ? 'available' : 'unknown';
   evidence.warmedQuotaRows = quotaSummary(warmReport);
   evidence.availabilityWarmed = true;
-  if (scenario === 'local-unhealthy') {
+  if (scenario === 'local-unhealthy' || workerFailure) {
     const fallbackProvider = providersByRole.get('other_implementer').id;
     const exhaustedPrimary = providersByRole.get('fallback_implementer').id;
     const fresh = await until(async () => {
@@ -277,12 +310,19 @@ try {
   backend = await AppServerBackends.create(runtime.executable, ['app-server', '--listen', 'stdio://'], clientConfig, backendSettings, overrides, catalog,
     async event => {
       const item = event.params?.item;
-      if (event.method === 'item/completed' && item?.type === 'commandExecution' && commandThreadId(event, item) === parentThreadId && !childInferenceStarted && itemHasHelper(item) && commandExitCode(item) === 0) {
+      if (event.method === 'item/completed' && item?.type === 'commandExecution' && commandThreadId(event, item) === parentThreadId && itemHasHelper(item) && commandExitCode(item) === 0) {
         evidence.helperCommands++;
+        latestHelperCompletedAt = Date.now();
         evidence.helperCommandFlags = { config: commandText(item).includes('--config'), input: commandText(item).includes('--input'), help: commandText(item).includes('--help') };
         evidence.helperOutcome = helperOutcome(item.aggregatedOutput);
       }
-      if (event.method === 'turn/completed' && event.params?.turn?.id) parentCompletion = { id: event.params.turn.id, status: event.params.turn.status };
+      if (event.method === 'turn/completed' && event.params?.turn?.id) {
+        const threadId = event.params.threadId ?? event.params.thread_id;
+        if (workerFailure && event.params.turn.status === 'failed' && injectedChildThreads.has(threadId)) {
+          failedWorkerTerminalAt = Date.now(); evidence.failedWorkerTerminal = true;
+        }
+        parentCompletion = { id: event.params.turn.id, status: event.params.turn.status };
+      }
     }, () => {}, configPath);
   backend.resolveRuntime = async () => runtime;
   const router = new AppServerRouter(clientConfig, (method, params, hint) => backend.request(method, params, hint), catalogPath, catalog, native, backend.identity);
@@ -297,8 +337,8 @@ try {
   const parentThread = await router.request('thread/start', { model: parentAlias, cwd: work, sandbox: 'workspace-write', approvalPolicy: 'never',
     config: { model_reasoning_effort: 'ultra', sandbox_workspace_write: { network_access: true } } });
   parentThreadId = parentThread.thread.id;
-  const prompt = `Delegate this bounded read-only task to exactly one appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. Wait for the worker and report its result.`;
-  evidence.availabilityRequestsAfterParent = 0; sourceRequestedAt = undefined; firstChildAt = undefined; parentTurnStarted = true;
+  const prompt = `Delegate this bounded read-only task to the appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. If the worker reaches a terminal failure, the configured policy may make one appropriate fallback attempt. Wait for the result and report it.`;
+  evidence.availabilityRequestsAfterParent = 0; latestSourceRequestedAt = 0; latestHelperCompletedAt = 0; failedWorkerTerminalAt = 0; firstChildAt = undefined; helperChecksAtPreviousChild = 0; sourceGetsAtPreviousChild = 0; parentTurnStarted = true;
   progress('parent_started');
   const turn = await router.request('turn/start', { threadId: parentThreadId, effort: 'ultra', input: [{ type: 'text', text: prompt }] });
   const complete = await until(() => parentCompletion?.id === turn.turn.id ? parentCompletion : undefined, 'Parent completion');
@@ -306,16 +346,16 @@ try {
   phase = 'inspect';
   progress('inspect');
   const loaded = await router.request('thread/loaded/list', {});
-  const childIds = [];
-  let child;
+  const children = [];
   for (const id of loaded.data.filter(id => id !== parentThreadId)) {
     const result = await router.request('thread/read', { threadId: id, includeTurns: true });
-    if ((result.thread.parentThreadId ?? result.thread.source?.subAgent?.thread_spawn?.parent_thread_id) === parentThreadId) { childIds.push(id); child ??= result.thread; }
+    if ((result.thread.parentThreadId ?? result.thread.source?.subAgent?.thread_spawn?.parent_thread_id) === parentThreadId) children.push(result.thread);
   }
-  evidence.childCount = childIds.length;
-  assert.equal(evidence.childCount, 1, 'This bounded scenario requires exactly one child');
-  assert.ok(child, 'The real parent must create one child');
+  evidence.childCount = children.length;
+  assert.equal(evidence.childCount, workerFailure ? 2 : 1, 'This scenario has the expected worker count');
   assert.ok(childInferenceStarted, 'The child must make a real inference request');
+  const child = children.find(thread => thread.turns.flatMap(turn => turn.items).some(item => item.type === 'commandExecution' && commandReadProof(item)));
+  assert.ok(child, 'A real child must successfully read the proof');
   const childItems = child.turns.flatMap(turn => turn.items);
   const parentItems = (await router.request('thread/read', { threadId: parentThreadId, includeTurns: true })).thread.turns.flatMap(turn => turn.items);
   evidence.childCommandItems = childItems.filter(item => item.type === 'commandExecution').length;
@@ -331,14 +371,27 @@ try {
   assert.ok(evidence.childReportedProof && evidence.parentReportedProof, 'Child and parent must report the unpredictable proof');
   assert.ok(evidence.childCompleted, 'The child last turn must complete');
   assert.equal(evidence.paidOpenRouterCalls, 0, 'No paid OpenRouter inference is allowed');
-  const childRoute = evidence.routed.find(route => !route.parent);
-  assert.ok(childRoute, 'A child route must be observed');
   const chosenRole = requiredRoles.find(role => roleModels.get(role) === child.model);
+  assert.ok(chosenRole, 'The successful child must use a registered role');
+  const childRoute = evidence.routed.find(route => !route.parent && !route.injectedFailure && route.model === providersByRole.get(chosenRole).models[child.model]);
+  assert.ok(childRoute, 'A child route must be observed');
   evidence.childRole = chosenRole ?? 'unknown'; evidence.childModel = child.model;
   if (scenario === 'healthy') assert.equal(childRoute.provider, providersByRole.get('implementer').id, 'Healthy availability selects the named Qwen implementer');
   if (scenario === 'local-unhealthy') {
     assert.equal(childRoute.provider, providersByRole.get('other_implementer').id, 'An injected unhealthy local route falls back to Terra');
     assert.notEqual(childRoute.provider, providersByRole.get('fallback_implementer').id, 'An exhausted Claude primary must not receive the fallback task');
+    evidence.exhaustedPrimarySkipped = true;
+  }
+  if (workerFailure) {
+    const failed = children.find(thread => injectedChildThreads.has(thread.id));
+    assert.ok(failed && failed.turns.at(-1)?.status === 'failed', 'The injected Qwen child must terminally fail');
+    assert.equal(child.model, roleModels.get('other_implementer'), 'The successful fallback must use Terra');
+    assert.equal(childRoute.provider, providersByRole.get('other_implementer').id, 'The successful fallback must route through Terra subscription');
+    assert.ok(evidence.injectedFailureAttempted && evidence.failedWorkerTerminal && evidence.injectedFaultReflected, 'The injected local failure must be observed in availability');
+    assert.ok(evidence.helperCommands >= 2 && evidence.availabilityRequestsAfterParent >= 2, 'Fallback requires a second real availability check');
+    assert.ok(evidence.chosenSubscriptionHeadroomKnown && evidence.exhaustedPrimaryObserved, 'Fallback requires fresh Terra headroom and exhausted Claude evidence');
+    assert.notEqual(childRoute.provider, providersByRole.get('fallback_implementer').id, 'The exhausted Claude primary must be avoided');
+    assert.ok(evidence.fallbackRecheckAfterFailure, 'Fallback must have a post-failure recheck');
     evidence.exhaustedPrimarySkipped = true;
   }
   if (scenario === 'unknown-source') assert.equal(childRoute.provider, providersByRole.get('implementer').id, 'Unknown availability keeps the local default worker');
