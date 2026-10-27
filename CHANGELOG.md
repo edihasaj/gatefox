@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Desktop app distribution now requires both the native relay and gateway
+  executor in its verified backend archive, preventing an incomplete desktop
+  update from being signed and published.
+
 ## 1.0.5 — 2026-10-27
 
 - The Gateway app and CLI now ship together as version 1.0.5. Selected-machine

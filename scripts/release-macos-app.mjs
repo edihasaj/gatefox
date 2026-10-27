@@ -133,6 +133,11 @@ export function validateBackendArchive({ archive, sha256, version, source, direc
   const extraction = mkdtempSync(join(directory, '.backend-'));
   try {
     const backend = extractProductionBackend({ archive, sha256, version, source, destination: join(extraction, 'backend') });
+    for (const component of ['native/gateway-native-relay', 'gateway-sdk/gateway-codex']) {
+      if (!backend.entries.has(`package/${component}`)) {
+        throw new Error('App distribution requires the native relay and gateway SDK; build the backend with --with-native --with-gateway-sdk');
+      }
+    }
     return { version: backend.version };
   } finally {
     // This private scratch directory holds only checked release payload bytes.
