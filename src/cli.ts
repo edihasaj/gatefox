@@ -48,6 +48,7 @@ import { providerCommand } from "./provider-tool-runtime.js";
 import { retainCliEntryPoint } from "./release-retention.js";
 import { runAutoLatestCli } from "./auto-latest-cli.js";
 import { availabilityCommand } from "./availability/cli.js";
+import { activityCommand } from "./activity-cli.js";
 
 // This happens before command dispatch. A managed release remains visible to the
 // installer even when an app-owned Node executes this file through `current`.
@@ -78,6 +79,7 @@ const help = `gateway — local subscription and API inference
   gateway catalog [--config PATH] [--model ALIAS]
   gateway tool-search [on|off|status] [--config PATH]   Codex tool search through the gateway (opt-in bridge; default off)
   gateway diagnostics [--since HOURS] [--config PATH]   Summarize local telemetry: turns, failures, cache hits, restarts
+  gateway activity [--json] [--config PATH]   Inspect this execution host without resuming or changing chats
   gateway versions [--json] [--check]   Real release of each running gateway process; --check exits 1 if any lags, 2 with no release to compare.
   gateway health [--json] [--push] [--smoke]   Watchdog verdict: app update, releases, service, inference, failures. --push alerts a monitor; exit 0 ok, 1 warn, 2 fail, 3 push failed.
   gateway rollout [--json] [--verify] [--config PATH]   Release readiness from loaded process, service, inference, execution-host and tool-canary evidence.
@@ -110,6 +112,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv[0] === "auto-latest") { process.exitCode = await runAutoLatestCli(argv.slice(1)); return; }
   if (argv[0] === "rollout") { process.exitCode = await rolloutCommand(argv.slice(1)); return; }
   if (argv[0] === "availability") { process.exitCode = await availabilityCommand(argv.slice(1)); return; }
+  if (argv[0] === "activity") { process.exitCode = await activityCommand(argv.slice(1)); return; }
   if (argv.includes("--help") || argv.includes("-h")) { process.stdout.write(help); return; }
   if (argv.includes("--version")) { process.stdout.write(JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")).version + "\n"); return; }
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, strict: true, options: {

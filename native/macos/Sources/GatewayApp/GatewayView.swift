@@ -14,6 +14,8 @@ struct GatewayView: View {
                 switch navigation.selection ?? .overview {
                 case .overview:
                     OverviewView(model: model)
+                case .activity:
+                    GatewayActivityView(gateway: model)
                 case .connections:
                     ConnectionsView(gateway: model, connections: connections) {
                         navigation.showSetup = true
@@ -51,6 +53,9 @@ struct GatewayView: View {
                 Label("Overview", systemImage: "rectangle.grid.1x2")
                     .tag(GatewayNavigation.Section.overview)
                     .accessibilityLabel("Overview")
+                Label("Activity", systemImage: "clock.arrow.circlepath")
+                    .tag(GatewayNavigation.Section.activity)
+                    .accessibilityIdentifier("sidebar.activity")
                 Label("Connections", systemImage: "point.3.connected.trianglepath.dotted")
                     .tag(GatewayNavigation.Section.connections)
                     .accessibilityLabel("Connections")

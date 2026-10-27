@@ -107,6 +107,7 @@ struct HarnessGatewayApp: App {
 final class GatewayNavigation: ObservableObject {
     enum Section: Hashable {
         case overview
+        case activity
         case connections
         case settings
     }

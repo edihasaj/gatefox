@@ -1,0 +1,57 @@
+{
+  "checkedAt": "2026-10-27T09:03:05.698950+00:00",
+  "scope": "Gateway-owned Activity view and CLI only; this execution host, bounded snapshots, no Codex modifications.",
+  "review": "Approved by independent verifier; 10/10 focused tests independently passed.",
+  "nativeApp": {
+    "swiftTestsPassed": 113,
+    "packagingTestsPassed": 85,
+    "build": "passed; isolated unsigned QA bundle only",
+    "rendered": {
+      "recordedFailure": true,
+      "recordedCompletion": true,
+      "historicalObservationTimestamp": true,
+      "unverifiedRuntimeLabel": true,
+      "syntheticDataOnly": true,
+      "note": "Captured the isolated Activity screen with recorded completed and failed synthetic outcomes. A later display-only thread-ID abbreviation change passed native tests; no signed app was installed."
+    },
+    "signedOrInstalled": false
+  },
+  "realSdk": {
+    "engine": "shared-gateway",
+    "realGatewaySdk": true,
+    "paidInferenceRequests": 0,
+    "passed": true,
+    "nativeListWasNotLoaded": true,
+    "runningVisibleWithoutResume": true,
+    "loadedListIncludesGateway": true,
+    "gatewayActivityVerifiedRunning": true,
+    "completionStatusDelivered": true,
+    "passiveClientReceivedNoTurnContent": true,
+    "nativeConfigurationUnchanged": true,
+    "gatewayActivityOfflineCompletion": true,
+    "gatewayActivityOfflineFailure": true,
+    "gatewayActivityNoInferenceOrClientMutation": true,
+    "mockInferenceRequests": 4
+  },
+  "physicalSleepVerified": false,
+  "fleetRollout": "not performed",
+  "nativeCodexUnreadDots": "unchanged; not claimed fixed",
+  "validation": {
+    "build": "passed",
+    "typecheck": "passed",
+    "coreAndDesktopFullGate": [
+      "\u2139 tests 3519",
+      "\u2139 pass 3518",
+      "\u2139 fail 0",
+      "\u2139 skipped 1",
+      "\u2139 duration_ms 611626.013416",
+      "\u2139 tests 145",
+      "\u2139 pass 144",
+      "\u2139 fail 0",
+      "\u2139 skipped 1",
+      "\u2139 duration_ms 5247.296167"
+    ],
+    "focusedActivityTests": 10,
+    "managementAndActivityFocusedTests": 21
+  }
+}

@@ -159,7 +159,9 @@ output and raw exceptions are not displayed or logged.
 
 The operations are `inspect`, `prepare`, `authenticate`, `discover`, `commit`,
 `models`, `rename`, `reorder`, `native-picker`, `auto-latest`, `auto-latest-check`,
-`remove`, and `discard`. `auto-latest` saves a boolean `enabled` with the reviewed
+`remove`, `discard`, and the read-only `activity` operation. Activity reports
+existing local executors and saved outcomes without starting or resuming a chat;
+see [execution activity](activity.md). `auto-latest` saves a boolean `enabled` with the reviewed
 revision, capturing today's selected families without changing model selection.
 `auto-latest-check` uses the reviewed revision to run one metadata-only check.
 Both report the effective policy and bounded check/scheduling status.

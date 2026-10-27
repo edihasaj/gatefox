@@ -1,4 +1,5 @@
 import { readCredentials, signIn as defaultSignIn } from "../auth/chatgpt.js";
+import { readActivity } from "../activity.js";
 import type { GatewayConfig, ProviderConfig } from "../config.js";
 import { mutateConfig, readSnapshot, type ConfigSnapshot } from "./storage.js";
 import { ManagementError, safeFailure, throwIfCancelled } from "./errors.js";
@@ -17,7 +18,7 @@ import { effectivePlacement, setNativePickerPlacement } from "./native-picker.js
 import { isApiKind, managedModels, managedProvider, providerPrerequisites, runSubscriptionLogin, validModelId } from "./providers.js";
 import type { CatalogEntry, DraftRecord, ManagementDependencies, ManagementRequest, ManagementResponse, ManagementResult, ProviderInput } from "./types.js";
 
-const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check"]);
+const operations = new Set(["inspect", "prepare", "authenticate", "discover", "commit", "models", "rename", "reorder", "native-picker", "remove", "discard", "auto-latest", "auto-latest-check", "activity"]);
 
 function request(value: unknown): ManagementRequest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ManagementError("invalid_request");
@@ -50,6 +51,12 @@ export class ManagementService {
 
   private async dispatch(value: ManagementRequest): Promise<ManagementResult> {
     switch (value.operation) {
+      case "activity": {
+        const snapshot = await readSnapshot(value.configPath);
+        if (!snapshot) throw new ManagementError("invalid_configuration");
+        return { configPath: value.configPath, activity: await readActivity(value.configPath, snapshot.config.stateDirectory,
+          { nativeHome: this.deps.nativeHome, signal: this.deps.signal }) };
+      }
       case "inspect": return this.inspect(value.configPath);
       case "prepare": return this.prepare(value.configPath, input(value.provider));
       case "authenticate": return this.authenticate(value);

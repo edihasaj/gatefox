@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Harness Gateway has a read-only **Activity** screen and `gateway activity
+  [--json]` command. They inspect existing executors and saved turns, including
+  completions and failures that happened while the viewing app was disconnected.
+  Unavailable execution remains **unknown**, and recorded outcomes never imply
+  that work is currently running. No Codex application, read receipt, model,
+  permission or turn is changed. This does not repair Codex's native unread dots.
+  Thanks to Edi Hasaj for reporting the missing outcomes after closing his laptop.
+
 - `GET /v1/availability` and `gateway availability [--json]` report what each
   provider can serve right now: local model server health per router address,
   this Mac's queue load, subscription quota (from Spendwatch when

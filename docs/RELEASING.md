@@ -113,6 +113,11 @@ JavaScript. Installing a CLI update preserves the registration. See
    state. By default it checks the checkout's compiled adapter with the package's
    verified SDK; pass `--code INSTALLED_PACKAGE` to check the packaged adapter too.
    These checks do not prove the phone's unread rendering.
+   For Gateway-owned execution reporting, also run the fixture with `--activity`.
+   Require the same running turn, a saved completion and a provider failure after
+   both application clients disconnect, with no repeated inference or native
+   configuration changes. Verify the Gateway Activity screen separately; neither
+   this fixture nor this screen establishes Codex unread-dot behavior.
    For shared execution changes, run `scripts/e2e-shared-execution.mjs` with the
    installed command, isolated native home, and isolated client configuration.
    Start without `--inference`, then enable real provider turns and image history.

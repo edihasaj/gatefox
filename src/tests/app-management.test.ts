@@ -18,6 +18,22 @@ async function fixture() {
 }
 const dependencies = { lookupCli: async () => true };
 
+test("activity is read-only and reports unknown when the selected host is unavailable", async () => {
+  const f = await fixture();
+  try {
+    const config = JSON.stringify({ version: 1, port: 3457, clientOnly: true, stateDirectory: join(dirname(f.path), "state"), providers: [] });
+    await writeFile(f.path, config, { mode: 0o600 });
+    const response = await handleManagement({ operation: "activity", configPath: f.path }, { nativeHome: join(dirname(f.path), "isolated-native") });
+    assert.equal(response.ok, true);
+    if (response.ok) {
+      assert.equal(response.result.configPath, f.path);
+      assert.equal(response.result.activity?.coverage, "unavailable");
+      assert.deepEqual(response.result.activity?.rows, []);
+    }
+    assert.equal(await readFile(f.path, "utf8"), config);
+  } finally { await f.close(); }
+});
+
 test("prepares, discovers, and commits a loopback API connection without exposing its key", async () => {
   const f = await fixture();
   try {

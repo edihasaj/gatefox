@@ -177,6 +177,7 @@ struct AutoLatestStatus: Codable, Sendable, Equatable {
 }
 
 struct ManagementResult: Codable, Sendable, Equatable {
+    let activity: GatewayActivityReport?
     let configPath: String?
     let revision: String?
     let providers: [ManagedProvider]?
@@ -200,7 +201,8 @@ struct ManagementResult: Codable, Sendable, Equatable {
         removed: Bool? = nil,
         sharedGateway: SharedGatewaySnapshot? = nil,
         nativeModelPickerPlacement: String? = nil,
-        autoLatest: AutoLatestStatus? = nil
+        autoLatest: AutoLatestStatus? = nil,
+        activity: GatewayActivityReport? = nil
     ) {
         self.configPath = configPath
         self.revision = revision
@@ -213,6 +215,7 @@ struct ManagementResult: Codable, Sendable, Equatable {
         self.sharedGateway = sharedGateway
         self.nativeModelPickerPlacement = nativeModelPickerPlacement
         self.autoLatest = autoLatest
+        self.activity = activity
     }
 }
 

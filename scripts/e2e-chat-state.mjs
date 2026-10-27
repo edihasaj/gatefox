@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const { values } = parseArgs({ options: { package: { type: 'string' }, root: { type: 'string' },
   native: { type: 'boolean', default: false }, private: { type: 'boolean', default: false }, code: { type: 'string' },
-  unread: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
+  unread: { type: 'boolean', default: false }, activity: { type: 'boolean', default: false }, 'native-engine': { type: 'string' },
   'executor-diagnostics': { type: 'boolean', default: false }, 'restart-discovery': { type: 'boolean', default: false },
   'delayed-discovery': { type: 'boolean', default: false }, 'replay-completion': { type: 'boolean', default: false } } });
 assert.ok(!values['delayed-discovery'] || values['restart-discovery'], '--delayed-discovery requires --restart-discovery');
@@ -208,6 +208,14 @@ try {
   const loaded = await phone.router.request('thread/loaded/list', { limit: 100 });
   assert.ok(loaded.data.includes(id), 'The loaded list must include gateway chats');
   evidence.loadedListIncludesGateway = true;
+  if (values.activity) {
+    const { readActivity } = await load('activity');
+    const report = await readActivity(configPath, state, { nativeHome: native });
+    const row = report.rows.find(row => row.threadId === id);
+    assert.equal(row?.state, 'running');
+    assert.equal(row.turn.id, active.turn.id);
+    evidence.gatewayActivityVerifiedRunning = true;
+  }
   const offset = phone.events.length;
   phase = 'chat:completion';
   gate.resolve();
@@ -228,6 +236,40 @@ try {
   evidence.completionStatusDelivered = true;
   evidence.passiveClientReceivedNoTurnContent = true;
   evidence.nativeConfigurationUnchanged = true;
+  if (values.activity) {
+    assert.ok(!values.native && !values.private && !values.unread && !values['executor-diagnostics'], 'Activity uses a shared gateway fixture');
+    const { readActivity } = await load('activity');
+    let report = await readActivity(configPath, state, { nativeHome: native });
+    assert.equal(report.rows.find(row => row.threadId === id)?.state, 'completed');
+    gate = deferred();
+    const offline = await writerRpc('turn/start', { threadId: id, input: [{ type: 'text', text: 'Synthetic offline completion for Gateway activity.' }] });
+    await until(() => calls === 3, 'Held activity completion request');
+    await phone.backend.stop(); await writer.backend.stop();
+    gate.resolve();
+    await until(async () => {
+      const snapshot = await readActivity(configPath, state, { nativeHome: native });
+      return snapshot.rows.some(row => row.threadId === id && row.turn?.id === offline.turn.id && row.state === 'completed');
+    }, 'Gateway activity sees completion after both clients disappear');
+    evidence.gatewayActivityOfflineCompletion = true;
+    const controller = await client('activity_failure_controller');
+    await controller.router.request('thread/resume', { threadId: id });
+    gate = deferred(); failNext = true;
+    const failed = await controller.router.request('turn/start', { threadId: id, input: [{ type: 'text', text: 'Synthetic offline failure for Gateway activity.' }] });
+    await until(() => calls === 4, 'Held activity failure request');
+    await controller.backend.stop();
+    gate.resolve();
+    report = await until(async () => {
+      const snapshot = await readActivity(configPath, state, { nativeHome: native });
+      return snapshot.rows.some(row => row.threadId === id && row.turn?.id === failed.turn.id && row.state === 'failed') ? snapshot : undefined;
+    }, 'Gateway activity sees failure after all app clients disappear');
+    assert.equal(report.rows.find(row => row.threadId === id).turn.errorClass, 'usage_limit');
+    report = await readActivity(configPath, state, { nativeHome: native });
+    assert.equal(report.rows.find(row => row.threadId === id).state, 'failed', 'Refreshing does not hide a persisted failure');
+    assert.equal(calls, 4, 'Activity never starts or retries inference');
+    assert.equal(await readFile(join(native, 'config.toml'), 'utf8'), nativeConfig);
+    evidence.gatewayActivityOfflineFailure = true;
+    evidence.gatewayActivityNoInferenceOrClientMutation = true;
+  }
   if (values['executor-diagnostics']) {
     assert.ok(!values.private && !values.native && !values.unread, 'Diagnostics fixture requires shared gateway execution');
     phase = 'diagnostics:initial-census';

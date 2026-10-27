@@ -122,6 +122,11 @@ explicit continuation. The gateway never replays uncertain side effects.
 
 ## Unread dot after sleep
 
+For Gateway-owned reporting that does not depend on receiving a live completion
+in the Codex window, use [Activity](activity.md). It distinguishes sampled SDK
+state from recorded outcomes and unknown execution. It does not change Codex's
+unread state or automatically continue failed work.
+
 The desktop renderer sets its unread dot and completion alert only when it
 receives a live terminal event for a loaded thread. After sleep, it resumes the
 thread but can miss a terminal that the shared executor emitted while no app
