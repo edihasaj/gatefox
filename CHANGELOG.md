@@ -2,9 +2,17 @@
 
 ## Unreleased
 
+## 1.0.9 — 2026-10-27
+
 - Desktop app distribution now requires both the native relay and gateway
   executor in its verified backend archive, preventing an incomplete desktop
   update from being signed and published.
+- The complete desktop bundle restores the signed gateway executor and native
+  relay omitted from 1.0.8. That incomplete release was removed from the stable
+  update channel. All Copilot and Diagnostics fixes from 1.0.7 remain included.
+- Copilot zero-parameter function calls accept omitted arguments as an empty
+  object, matching the provider protocol. Explicit invalid arguments still fail
+  validation, and custom tools continue to require their declared input.
 
 ## 1.0.7 — 2026-10-27
 
