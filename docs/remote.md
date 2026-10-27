@@ -138,6 +138,16 @@ close code; use the underlying event timestamps to correlate both ends.
 After a reboot, it also recovers its own dead socket when macOS has changed the
 filesystem device number. See [automatic reboot recovery](reboot-recovery.md)
 for ownership checks and the separate desktop-startup boundary.
+
+On macOS, the SSH proxy gives the original Codex byte copier fresh stdout and
+stderr pipes. Node forwards their opaque bytes with backpressure and waits for
+output to drain before returning the native exit status. Inheriting a descriptor
+Node already made nonblocking could make the native copier fail with
+`Resource temporarily unavailable (os error 35)` when its output filled, producing
+an abnormal WebSocket close even though the listener and shared engines survived.
+The regression pauses the caller while the real signed native proxy sends a
+4 MiB stream, then verifies every byte and its successful exit. No protocol frames,
+tool calls or reconnects are replayed by this forwarding.
 The app's Unix socket and native proxy must reach the gateway adapter on that
 machine; the built-in Control other devices connection currently bypasses it. See
 [the adapter setup](app-server.md) for command protection and removal.

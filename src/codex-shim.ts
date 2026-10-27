@@ -1,6 +1,7 @@
 import { codexStreamIdleTimeoutMs } from "./codex-config.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { pipeline } from "node:stream/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -24,10 +25,19 @@ import { sshProxyDeviceHeader } from "./ssh-proxy-header.js";
 
 export { appServerIndex } from "./codex-invocation.js";
 
-type ProxyChild = Pick<ChildProcess, "stdin" | "once">;
+type ProxyChild = Pick<ChildProcess, "stdin" | "once"> & { outputDrained?: Promise<void> };
+
+/** Node may mark its inherited stdout nonblocking. Rust's blocking stdio copy then fails with EAGAIN under pressure. */
+function spawnNativeProxy(command: string, args: string[], options: { env: NodeJS.ProcessEnv }): ProxyChild {
+  const child = spawn(command, args, { ...options, stdio: ["pipe", "pipe", "pipe"] });
+  const copy = (source: NonNullable<ChildProcess["stdout"]>, target: NodeJS.WritableStream) =>
+    pipeline(source, target, { end: false }).catch(() => { child.stdin.destroy(); });
+  // Fresh child pipes keep the native ends blocking; Node owns backpressure on the actual SSH output.
+  return Object.assign(child, { outputDrained: Promise.all([copy(child.stdout, process.stdout), copy(child.stderr, process.stderr)]).then(() => undefined) });
+}
 /** The native proxy is a byte pipe. Its optional identity belongs in the opening HTTP upgrade. */
 export async function proxyNative(executable: string, args: string[], env: NodeJS.ProcessEnv, input: NodeJS.ReadableStream,
-  device: string | undefined, spawnNative: (command: string, childArgs: string[], options: { stdio: ["pipe", "inherit", "inherit"]; env: NodeJS.ProcessEnv }) => ProxyChild = spawn as never): Promise<[unknown, unknown]> {
+  device: string | undefined, spawnNative: (command: string, childArgs: string[], options: { stdio: ["pipe", "inherit", "inherit"]; env: NodeJS.ProcessEnv }) => ProxyChild = spawnNativeProxy): Promise<[unknown, unknown]> {
   const child = spawnNative(executable, args, { stdio: ["pipe", "inherit", "inherit"], env });
   child.once("error", () => { process.stderr.write("gateway: Original Codex executable is unavailable\n"); });
   const stdin = child.stdin;
@@ -44,6 +54,7 @@ export async function proxyNative(executable: string, args: string[], env: NodeJ
   try {
     if (!stopped) input.pipe(header || stdin); if (header) header.pipe(stdin);
     const [code, signal] = await once(child as unknown as NodeJS.EventEmitter, "exit");
+    await child.outputDrained;
     return [code, signal];
   } finally {
     // A final buffered EPIPE can arrive after `exit`; keep both swallowers through process teardown.
