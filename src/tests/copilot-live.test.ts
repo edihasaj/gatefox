@@ -10,6 +10,20 @@ const operations = (entries: Entry[]) => entries.map(entry => entry.op).filter(o
 const outcomes = (events: Entry[]) => events.map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 const imageUser = (text: string) => ({ type: "message" as const, role: "user" as const, content: [{ type: "input_text" as const, text }, { type: "input_image" as const, image_url: png }] });
 
+test("Copilot's omitted function type completes a live tool loop without a session failure", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(); const first = [user("start [tool][omittype]")];
+    const result = await turn(provider, first);
+    assert.equal(callIds(result.output).length, 1);
+    const followup = await turn(provider, [...first, ...result.output, ...outputFor(result.output, "plain")]);
+    assert.match(followup.text, /^answer/);
+    assert.equal((await h.pids()).length, 1);
+    assert.ok(!(await h.sessions()).some(event => event.outcome === "crashed" || event.failed === true));
+    assert.equal((await h.log()).filter(event => event.op === "deliver").length, 1);
+  } finally { await h.restore(); }
+});
+
 test("a tool loop keeps one CLI process, answers the waiting call and bills each request on its own", { timeout: 30000 }, async () => {
   const h = await harness();
   try {

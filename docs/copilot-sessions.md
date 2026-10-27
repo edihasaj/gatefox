@@ -81,6 +81,14 @@ what the model sees.
 
 ## How a request is served
 
+Copilot's SDK protocol defines an omitted `assistant.message.toolRequests[].type`
+as `function`. The gateway accepts that documented default while retaining exact
+catalog-name matching, distinct call IDs, object argument checks and client-owned
+execution. Explicit non-function types remain rejected because the gateway declares
+only external functions. Treating a missing type as malformed previously failed
+valid tool calls and made Codex retry their response streams. This matches the
+[official SDK event contract for CLI 1.0.97](https://github.com/github/copilot-sdk/blob/9782624309a2366f6cbe2141ee7b2289b5d94136/nodejs/src/generated/session-events.ts).
+
 - **Spawn:** the thread has no session. A new process starts and the history is sent once.
   Telemetry reports `spawned`.
 - **Continue:** the request carries the history the session already has plus new items.
