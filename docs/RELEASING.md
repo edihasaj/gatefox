@@ -21,7 +21,9 @@ shipping a Developer ID signed app and its startup launcher.
 
 ## macOS app distribution
 
-Build the matching canonical CLI archive first. From a clean, committed local
+Build the matching canonical CLI archive with `--with-native --with-gateway-sdk`
+first. The app distributor refuses an archive missing either bundled component;
+a minimal CLI archive is not a complete desktop release. From a clean, committed local
 `production` checkout whose `package.json` and lockfile have the exact release
 version. After the source, backend archive, and local gates are reviewed, run
 the one-pass distribution command:

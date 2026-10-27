@@ -56,7 +56,7 @@ function repo() {
   return directory;
 }
 
-function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40) } = {}) {
+function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40), components = ['native', 'gateway-sdk'] } = {}) {
   const payload = join(directory, 'payload', `harness-gateway-${version}-macos-arm64`);
   const files = {
     install: '#!/bin/sh\n',
@@ -65,6 +65,12 @@ function backendArchive(directory, { version = '0.5.4', source = 'a'.repeat(40) 
     'package/release.json': JSON.stringify({ version, source, node: '24.21.0' }),
     'runtime/bin/node': 'node', 'runtime/LICENSE': 'node license',
   };
+  for (const component of components) {
+    const binary = component === 'native' ? 'gateway-native-relay' : 'gateway-codex';
+    for (const name of ['CODEX-LICENSE', 'CODEX-NOTICE', 'NOTICE', 'build.json', 'dependencies.json', binary]) {
+      files[`package/${component}/${name}`] = name.endsWith('.json') ? '{}' : name;
+    }
+  }
   for (const [name, value] of Object.entries(files)) write(join(payload, name), value);
   chmodSync(join(payload, 'install'), 0o700);
   chmodSync(join(payload, 'runtime/bin/node'), 0o700);
@@ -165,6 +171,15 @@ test('verifies backend archive hash, payload, version, and production source', (
   assert.equal(validateBackendArchive({ ...fixture, version: '0.5.4', source, directory, run }).version, '0.5.4');
   assert.throws(() => validateBackendArchive({ ...fixture, sha256: '0'.repeat(64), version: '0.5.4', source, directory, run }), /SHA-256/);
   assert.throws(() => validateBackendArchive({ ...fixture, version: '0.5.4', source: 'c'.repeat(40), directory, run }), /source/);
+});
+
+test('refuses app distribution archives missing either bundled executor component', () => {
+  const source = 'b'.repeat(40);
+  for (const components of [[], ['native'], ['gateway-sdk']]) {
+    const directory = mkdtempSync(join(tmpdir(), 'gateway-app-release-components-'));
+    const fixture = backendArchive(directory, { source, components });
+    assert.throws(() => validateBackendArchive({ ...fixture, version: '0.5.4', source, directory }), /--with-native --with-gateway-sdk/);
+  }
 });
 
 test('stops before publishing when signing fails', () => {

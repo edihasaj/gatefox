@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Desktop app distribution now requires both the native relay and gateway
+  executor in its verified backend archive, preventing an incomplete desktop
+  update from being signed and published.
+
 ## 1.0.7 — 2026-10-27
 
 - Copilot tool calls now accept the SDK's documented default function type when
