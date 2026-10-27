@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Native sharing and the remote relay accept the verified Codex app engine
+  0.165.0-alpha.1.2 after separate source review and signed-engine checks.
+
 - Desktop app distribution now requires both the native relay and gateway
   executor in its verified backend archive, preventing an incomplete desktop
   update from being signed and published.

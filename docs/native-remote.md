@@ -40,6 +40,7 @@ separate lists in `src/native-engine-versions.ts`:
 
 | App engine | Relay (`relayAcceptedAppEngines`) | Shared native host (`hostVerifiedAppEngines`) |
 | --- | --- | --- |
+| `codex-cli 0.165.0-alpha.1.2` | Requires the rebuilt relay and the unchanged remote-control wire contract | Verified with the signed engine through the stdio and Unix shared-native fixtures |
 | `codex-cli 0.164.0-alpha.11.1` | Runs with the linked transport after separate wire-contract review and relay tests | Shared after the signed SDK passed stdio and Unix reconnect, steering, Stop, once-only command and pending-approval checks |
 | `codex-cli 0.163.0-alpha.11.2` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed M5 SDK passed both stdio and Unix native/gateway disconnect, reconnect, steering, Stop, once-only command, and pending-approval checks |
 | `codex-cli 0.163.0-alpha.11.1` | Runs with the linked 0.163.0-alpha.10.2 transport | Shared after the signed SDK passed the native disconnect, reconnect, steering, Stop, command, and approval checks |
