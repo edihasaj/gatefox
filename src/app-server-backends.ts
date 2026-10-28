@@ -1,4 +1,5 @@
 import { dirname, resolve } from "node:path";
+import { ProjectTrustPolicy } from "./project-trust-policy.js";
 import { createHash } from "node:crypto";
 import { writePrivateJson, type GatewayConfig } from "./config.js";
 import { AppServerConnection, isId, object, type EngineStopReason, type Id, type Message } from "./app-server-connection.js";
@@ -42,7 +43,7 @@ type RpcConnection = AppServerConnection | SocketAppServerConnection | NativeRpc
  * `creating` counts this connection's thread/start and thread/fork requests the engine has not finished answering. `provider` is
  * the provider id the engine was launched to record new chats with, when this connection launched or acquired it.
  */
-interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string; socket?: SocketIdentity }
+interface Engine { connection: RpcConnection; revision: string; aliases: Set<string>; threads: Set<string>; active: Map<string, string>; requests: number; creating?: number; shared?: boolean; detaching?: boolean; compaction?: GatewayCompactionSession; exitPending?: Promise<void>; provider?: string; socket?: SocketIdentity; defaultCwd?: string }
 /** A server request awaiting (or recently given) an answer. `replayable` marks a threaded callback (approval or dynamic tool call) a warm resume may replay. */
 interface Approval { connection: RpcConnection; id: Id; fingerprint: string; replayable: boolean; socket?: SocketIdentity; threadId?: string }
 interface CompactionSnapshot { models: Message[]; settings: Message; args: string[] }
@@ -88,6 +89,7 @@ export class AppServerBackends {
   /** One automatic recovery per turn/socket loss; a second loss reports normally instead of retrying in a loop. */
   private readonly recoveringTurns = new BoundedIdSet(4096);
   private readonly nativeTurns = new NativeTurnTracker();
+  private readonly projectTrust = new WeakMap<RpcConnection, ProjectTrustPolicy>();
   private nativeExitPending?: Promise<void>;
   private leaseReleased?: Promise<void>;
   private finishNativeClosing!: () => void;
@@ -261,11 +263,22 @@ export class AppServerBackends {
     // itself: when the socket died first, its exit path is the one that needs bounding.
     setTimeout(() => this.finishHostControlDrain(), hostControlDrainMs).unref();
   }
+  private trustedRequest(connection: RpcConnection, method: string, params: Message, send: () => Promise<Message>, defaultCwd?: string): Promise<Message> {
+    if (this.config.trustAllProjects !== true) return send();
+    let policy = this.projectTrust.get(connection);
+    if (!policy) {
+      policy = new ProjectTrustPolicy((method, params) => connection.request(method, params), defaultCwd);
+      this.projectTrust.set(connection, policy);
+    }
+    return policy.request(method, params, send);
+  }
   private async nativeRequest(method: string, params: Message): Promise<Message> {
     const revision = this.nativeTurns.revision;
     // A service-owned SDK lacks the desktop app's file grants, so attachments are staged for it.
     const native = this.native;
-    const result = native.shared ? await withStagedQueueInput(this.config.stateDirectory, method, params, staged => native.request(method, staged)) : await native.request(method, params);
+    const result = await this.trustedRequest(native, method, params, () => native.shared
+      ? withStagedQueueInput(this.config.stateDirectory, method, params, staged => native.request(method, staged))
+      : native.request(method, params), process.cwd());
     this.identity.learnReply(method, result);
     if (["thread/unsubscribe", "thread/delete", "thread/archive"].includes(method) && nativeId(params.threadId)) {
       this.nativeTurns.delete(params.threadId); this.nativeTurns.revision++;
@@ -594,7 +607,7 @@ export class AppServerBackends {
         }
       }
       const socket = await socketIdentity(record.socketPath);
-      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, ...(socket ? { socket } : {}), ...(provider ? { provider } : {}) };
+      const engine: Engine = { connection: undefined!, revision: record.revision, aliases: new Set(record.aliases), threads: new Set(), active: new Map(), requests: 1, shared: true, defaultCwd: record.defaultCwd, ...(socket ? { socket } : {}), ...(provider ? { provider } : {}) };
       const connection: SocketAppServerConnection = new SocketAppServerConnection(record.socketPath, message => this.forward(connection, message), () => {
         engine.exitPending = (async () => {
           await Promise.race([connection.drained, this.nativeClosing]);
@@ -1010,7 +1023,9 @@ export class AppServerBackends {
       if (compaction?.intercepted) return compaction.result || {};
       const loaded = typeof params.threadId === "string" && engine.threads.has(params.threadId);
       const target = engine;
-      const send = (sent: Message) => target.shared ? withStagedQueueInput(this.config.stateDirectory, method, sent, staged => target.connection.request(method, staged)) : target.connection.request(method, sent);
+      const send = (sent: Message) => this.trustedRequest(target.connection, method, sent, () => target.shared
+        ? withStagedQueueInput(this.config.stateDirectory, method, sent, staged => target.connection.request(method, staged))
+        : target.connection.request(method, sent), target.shared ? target.defaultCwd : process.cwd());
       // Retry inside the request accounting and compaction hooks above and below, so each runs once.
       const sent = await sendWithStrictFeatureRetry(method, params, send);
       const result = sent.result; params = sent.params;

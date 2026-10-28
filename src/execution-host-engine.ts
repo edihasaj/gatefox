@@ -16,7 +16,7 @@ import { trackExecutorTurns, type TurnTracker } from "./execution-host-turns.js"
 import gatewaySdkPin from "./gateway-sdk-pin.json" with { type: "json" };
 
 export interface ExecutionDescriptor { revision: string; args: string[]; settings: Message; catalog: { models: Message[] }; aliases: string[]; gatewaySdkSha256?: string }
-export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true }
+export interface ExecutionRecord { revision: string; socketPath: string; aliases: string[]; selectedModelCompaction?: true; defaultCwd?: string }
 /** Which side of a refused gateway SDK mismatch runs the newer release: the adapter (the service has not moved yet) or the service. */
 export type SkewDirection = "adapter_newer" | "adapter_older";
 /**
@@ -112,7 +112,7 @@ export class ExecutionEngine {
    */
   constructor(readonly descriptor: ExecutionDescriptor, private identity: HostIdentity, hostHome: string, private readonly resolveRuntime: () => Promise<GatewaySdkRuntime | undefined> = gatewaySdkRuntime,
     private readonly codexValidated = true) {
-    this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases] };
+    this.record = { revision: descriptor.revision, socketPath: resolve(hostHome, `e-${descriptor.revision.slice(0, 16)}.sock`), aliases: [...descriptor.aliases], defaultCwd: process.cwd() };
     this.owner = { revision: descriptor.revision, socketPath: this.record.socketPath, pid: 0 };
     this.fingerprint = descriptorFingerprint(descriptor);
   }
@@ -159,7 +159,7 @@ export class ExecutionEngine {
     if (this.stopped) throw new Error("Execution host is closing");
     const occupied = await lstat(this.record.socketPath).catch(error => { if (error.code === "ENOENT") return; throw error; });
     if (occupied) throw new Error("Execution generation socket is occupied; its listener was preserved");
-    const child = spawn(runtime?.executable || this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", env: gatewayEnvironment(home), detached: false });
+    const child = spawn(runtime?.executable || this.identity.codex, executionArgs(descriptor.args, this.record.socketPath, catalog, descriptor.settings), { stdio: "ignore", cwd: this.record.defaultCwd, env: gatewayEnvironment(home), detached: false });
     this.child = child;
     this.exited = new Promise(resolve => {
       child.once("error", () => { this.closed = true; });
