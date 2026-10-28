@@ -128,7 +128,12 @@ test("combined catalog preserves public native capabilities and excludes cache i
   assert.equal(merged.identity, undefined);
   source.models.push({ slug: "claude/model" }); await writeFile(catalog, JSON.stringify(source));
   await assert.rejects(combinedNativeCatalog(backend, ["app-server"], await loadConfig(config)), /collides with a native model ID/);
-  await writeFile(catalog, JSON.stringify({ models: [{ slug: "other" }] }));
+  // A cache that lacks an engine model no longer stops startup; the gateway rows still follow the cache rows.
+  await writeFile(catalog, JSON.stringify({ identity: "excluded-native-cache-identity", models: [{ slug: "other" }] }));
+  const partial = JSON.parse(await readFile(await combinedNativeCatalog(backend, ["app-server"], await loadConfig(config)), "utf8"));
+  assert.deepEqual(partial.models.map((model: { slug: string }) => model.slug), ["other", "claude/model"]);
+  assert.equal(partial.identity, undefined);
+  await writeFile(catalog, JSON.stringify({ models: [{ slug: "a" }, { slug: "a" }] }));
   await assert.rejects(combinedNativeCatalog(backend, ["app-server"], await loadConfig(config)), /does not match/);
 });
 
