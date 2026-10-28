@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import ts from 'typescript';
 import { createReceiptRegistry } from './receipt-registry.mjs';
+import { createReceiptCheckpoints } from './receipt-checkpoints.mjs';
 
 export const supportedUnreadTrial = Object.freeze({
   version: '26.1021.31345',
@@ -36,7 +37,7 @@ function embeddedBridge(source) {
 }
 
 /** Locate structural hooks rather than depending on minified class names. A changed or ambiguous app refuses the patch. */
-export function patchUnreadRenderer(source, bridgeSource) {
+export function patchUnreadRenderer(source, bridgeSource, { checkpoints = false } = {}) {
   if (typeof source !== 'string' || typeof bridgeSource !== 'string') throw new Error('Unread trial requires JavaScript source');
   if (source.includes(marker)) throw new Error('Unread trial renderer is already patched');
   const ast = parse(source, 'renderer.mjs');
@@ -72,13 +73,27 @@ export function patchUnreadRenderer(source, bridgeSource) {
   const ctor = constructors[0], dispatcher = dispatchers[0];
   if (!ctor.body || dispatcher.parameters.slice(0, 3).some(parameter => !ts.isIdentifier(parameter.name))) throw new Error('Unread trial hook signature changed');
   const [context, method, params] = dispatcher.parameters.map(parameter => parameter.name.getText(ast));
-  const prefix = `/*${marker}*/const ${marker}=(()=>{${embeddedBridge(bridgeSource)}\nreturn (${createReceiptRegistry.toString()})(installReadStateBridge);})();\n`;
+  const prefix = `/*${marker}*/const ${marker}=(()=>{${embeddedBridge(bridgeSource)}\nreturn (${createReceiptRegistry.toString()})(installReadStateBridge${checkpoints ? `,(${createReceiptCheckpoints.toString()})` : ''});})();\n`;
   const edits = [
     { at: ctor.body.end - 1, text: `;${marker}.install(this);` },
     { at: dispatcher.body.getStart(ast) + 1, text: `${marker}.observe(${context}.manager,{method:${method},params:${params}});` },
     ...readActions.map(({method, unread}) => ({at: method.body.end - 1,
       text: `;${marker}.mark(this,${method.parameters[0].name.getText(ast)},${unread});`})),
   ].sort((left, right) => right.at - left.at);
+  if (checkpoints) {
+    const facades = [];
+    const findFacade = node => {
+      if (ts.isMethodDeclaration(node) && node.name?.getText(ast) === 'forHost' && node.body &&
+          node.getText(ast).includes('Thread read state is unavailable for this account and host')) facades.push(node);
+      ts.forEachChild(node, findFacade);
+    };
+    findFacade(ast);
+    if (facades.length !== 1 || !facades[0].getText(ast).includes('let n=this.#a,r=this.executionHostKey(e)')) throw Error('Unread checkpoint identity hook changed');
+    const returns = facades[0].body.statements.filter(node => ts.isReturnStatement(node) && node.expression && ts.isObjectLiteralExpression(node.expression));
+    if (returns.length !== 1 || !['isReady', 'has', 'set', 'subscribe'].every(name => returns[0].expression.properties.some(p => p.name?.getText(ast) === name))) throw Error('Unread checkpoint facade changed');
+    edits.push({ at: returns[0].expression.getStart(ast) + 1, text: 'receiptCheckpointScope:()=>c()&&(n??this.#a)!=null?JSON.stringify([n??this.#a,r]):null,' });
+    edits.sort((left, right) => right.at - left.at);
+  }
   let next = source;
   for (const edit of edits) next = next.slice(0, edit.at) + edit.text + next.slice(edit.at);
   next = prefix + next;
@@ -91,7 +106,7 @@ export function patchPinnedUnreadRenderer(source, bridgeSource, version) {
   if (version !== supportedUnreadTrial.version || createHash('sha256').update(source).digest('hex') !== supportedUnreadTrial.assetSha256) {
     throw new Error('No verified unread trial patch exists for this app version or asset');
   }
-  return patchUnreadRenderer(source, bridgeSource);
+  return patchUnreadRenderer(source, bridgeSource, { checkpoints: true });
 }
 
 /** Gate the stock automatic read with a receipt/history proof, retaining its focus policy. */
@@ -140,7 +155,7 @@ export function patchPinnedUnreadBundle({ renderer, conversation, bridgeSource, 
       createHash('sha256').update(conversation).digest('hex') !== supportedUnreadTrial.conversationSha256) {
     throw Error('No verified unread bundle patch exists for these app bytes');
   }
-  const patchedRenderer = patchUnreadRenderer(renderer, bridgeSource) + `\nexport{${marker},K2n as ${marker}History};\n`;
+  const patchedRenderer = patchUnreadRenderer(renderer, bridgeSource, { checkpoints: true }) + `\nexport{${marker},K2n as ${marker}History};\n`;
   const patchedConversation = patchUnreadConversation(conversation);
   parse(patchedRenderer, 'paired-renderer.mjs');
   return { renderer: patchedRenderer, conversation: patchedConversation };

@@ -1,5 +1,5 @@
 /** Client-local receipt signals. Hosts and manager generations never share pending actions. */
-export function createReceiptRegistry(installBridge) {
+export function createReceiptRegistry(installBridge, createCheckpoints) {
   const managers = new WeakMap(), hosts = new Map(), listeners = new Map(), pending = new Map();
   const queue = (host, id, entry) => {
     if (hosts.get(host) !== entry || !listeners.has(id)) return;
@@ -29,7 +29,14 @@ export function createReceiptRegistry(installBridge) {
       }
       // Retire before wrapping a possibly shared request client or saved facade again.
       hosts.get(host)?.retire();
-      const bridge = installBridge({ client, saved, notify: (id, unread) => manager.applySavedConversationReadState(id, unread) });
+      let checkpoints;
+      if (createCheckpoints) {
+        // The legacy local-only facade has no account identity. Never fall back to host id.
+        if (typeof saved.receiptCheckpointScope !== 'function') return;
+        try { checkpoints = createCheckpoints({ scope: saved.receiptCheckpointScope }); }
+        catch { return; } // Unavailable persistence preserves the native client's behavior.
+      }
+      const bridge = installBridge({ client, saved, checkpoints, notify: (id, unread) => manager.applySavedConversationReadState(id, unread) });
       if (typeof bridge.snapshot !== 'function' || typeof bridge.subscribe !== 'function') {
         bridge.dispose?.(); throw Error('Unread trial receipt signal contract changed');
       }

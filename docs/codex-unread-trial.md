@@ -32,6 +32,35 @@ Current renderer   → ignores receipt → no blue dot
 Prototype bridge   → consumes receipt → existing unread store
 ```
 
+### Sleep/wake diagnosis against the installed client
+
+On October 28, the installed Studio and MacBook renderers both matched the exact
+`26.1021.31345` asset hash below. The stock list paginator (`ptn` in this pinned
+asset) appends only each reply's `data` rows and returns that array. It discards
+the accompanying `readStates` map. The store's `getThreadHasUnreadTurn` checks the
+saved local value first, so a saved `false` continues to hide attention after a
+completion that happened while the client was disconnected.
+
+`codex-unread-wake-diagnosis.test.mjs` executes those two extracted stock
+functions in memory and reproduces the missing dot from a valid offline unread
+receipt. Wrapping that same request with the uninstalled bridge restores the
+stock getter without replaying a terminal or acknowledging a read. The separate
+stock automatic-read regression still reproduces the earlier stuck-dot race.
+These checks isolate the client-state failure; they do not simulate physical
+sleep or verify a rendered application window.
+
+The earlier replay attempt was introduced in `d5e3130`, made device-specific in
+`0f7b6f5`, and disconnected from stock resume in `93afa8c`. The guarded client
+candidate in `5f94e85` remains uninstalled. No app, running process or receipt
+was changed to perform the October 28 diagnosis.
+
+A read-only comparison also found eight of ten sampled SDK-unread chat IDs absent
+from the MacBook's saved Studio-host unread set. The client does not acknowledge
+those SDK receipts, so this mismatch can include chats already read locally; it
+does not prove that all eight contain unseen work. The current candidate preserves
+each native choice on first observation and reconciles subsequent revision changes.
+It cannot retrospectively classify that ambiguous, pre-installation attention.
+
 Replaying arbitrary old completion events is not a safe substitute. The renderer
 has no general completion-ID deduplication before unread and notification side
 effects; replay could mark an already-read chat unread or repeat an alert. The
@@ -58,6 +87,48 @@ at most 200 threads. Eviction conservatively rejects old in-flight snapshots
 until a later refresh. Missing or malformed receipts retain legacy behavior.
 It does not invent turns, execute tools, or change inference or permissions.
 
+## Durable migration and wake reconciliation
+
+The paired candidate journals receipt revisions in IndexedDB. Its scope is a
+SHA-256 hash of the native durable account identity and execution-host token,
+obtained through the native facade's own lifecycle guard. Host display names and
+random manager generations are never persistence identities. The account-unaware
+legacy facade, missing WebCrypto/IndexedDB, storage failure, or a retired scope
+leaves the native behavior in place.
+
+| Observation | Local projection |
+| --- | --- |
+| First receipt for an existing chat | Preserve the native read/unread choice; save its revision without sending an ACK. |
+| Same revision after reload or wake | Use the saved projection. |
+| Later SDK revision | Reconcile its unread state, including completions missed while disconnected. |
+| Successful durable start/fork | Register a fresh chat so its first completion is not treated as legacy history. |
+| Semantic read/unread already satisfied by the SDK | Persist the explicit local choice without an unnecessary SDK mutation. |
+
+**Migration limit:** the native ready facade returns `false` for any ID absent
+from its unread set, including a chat it has never seen. SDK unread alone cannot
+distinguish a previously read chat from a new chat created elsewhere. A first-seen
+chat created on another device therefore also keeps that native choice; its next
+receipt revision reconciles normally. Only a start/fork response witnessed by
+this client establishes a safe fresh baseline. A complete cross-device rollout
+needs an explicit initial catalog/migration contract; this candidate does not
+guess creation times or claim to repair that ambiguity.
+
+Each scope retains up to 10,000 chat checkpoints. Capacity failure preserves
+native behavior instead of evicting unseen attention. Successful deletes remove
+the chat's checkpoint. Rows contain only a scope hash, chat ID, opaque revision,
+boolean, and journal sequence; account identities and message content are not
+stored in this database.
+
+A shared transactional sequence is captured before metadata requests. A delayed
+reply cannot replace a newer checkpoint written by another window. Push events
+request fresh metadata rather than trusting their arrival order. Local action
+generations abort pending IndexedDB projections that race with a read/unread action,
+including their disk writes. Failed explicit no-op choices remain bound to their
+captured revision until a later action or refresh retries them. They never retarget
+a read onto newer attention. Persistence
+operations have a two-second deadline and cannot fail the caller's successful SDK
+response. Historical completion events are never replayed.
+
 ## Guarded automatic read
 
 The stock hook deduplicates reads by request ID, last turn ID/status, and a
@@ -67,7 +138,7 @@ keys. Merely adding the receipt revision is unsafe too: first unread can remain
 A while a newer, unseen B changes the revision.
 
 The paired candidate requires a stable receipt, a matching latest terminal turn
-in fully loaded native history, and a still-focused, mounted chat on the same
+with fully loaded items, and a still-focused, mounted chat on the same
 host before invoking the stock semantic read. Its acknowledgement uses the
 captured revision, never a blindly retargeted conflict revision. Every newer
 SDK attention publication changes that revision, even if first unread stays
@@ -98,11 +169,13 @@ for its CAS. It must become `threadStart`; an existing turn-based unread receipt
 does not satisfy manual intent. Transport failure retains that intent until a
 later refresh or explicit action retries it.
 
-**Conservative limitation:** native `isComplete` requires complete history and
-item pagination. A long, partially loaded chat may retain its dot until full
-hydration. Selection, summary metadata, or `thread/resume` alone never prove
-reading. This candidate is not yet a complete solution for every paginated
-native-window lifecycle.
+The native latest turn retains its item-pagination proof even when older thread
+pages are absent. The candidate accepts that turn only when its oldest item page
+is loaded, its older cursor is exhausted, and it is neither loading, evicted,
+nor reconnecting. The latest SDK turn ID/status must still match. This permits a
+read in a long chat without fetching every older turn. Missing or partial latest
+items retain the dot. Selection, summary metadata, or `thread/resume` alone never
+prove reading. Native-window lifecycle verification remains required.
 
 Prepare paired assets and a rollback manifest without touching an app:
 
@@ -111,7 +184,7 @@ node scripts/codex-unread-trial/prepare.mjs /Applications/ChatGPT.app
 ```
 
 The printed `/tmp/hg-unread-candidate-*/manifest.json` records source and asset
-hashes and the uninstalled/unverified status. An app update invalidates the pins
+hashes, checkpoint migration/scoping, and the uninstalled/unverified status. An app update invalidates the pins
 and refuses preparation. Rollback from an authorized trial is to discard its
 disposable app copy; the original signed application remains unchanged.
 
@@ -127,6 +200,21 @@ Run the isolated regression tests with:
 node --test scripts/claude-desktop-tests/codex-unread-*.test.mjs \
   scripts/claude-desktop-tests/codex-read-state-bridge.test.mjs
 ```
+
+Run the real-IndexedDB checks with `abx` installed:
+
+```sh
+node scripts/codex-unread-trial/verify-checkpoints.mjs
+```
+
+This creates its own localhost origin and isolated `BROWSE_STATE_FILE` under
+`/tmp/hg-checkpoint-browser-*`, then stops only that browser daemon. It does not
+connect to ChatGPT or the gateway. Checks cover first-sync choices, new chats,
+semantic read persistence, account/host isolation, retired scopes, capacity and
+storage errors, document reload, and stale/concurrent replies from separate
+same-origin documents with real IndexedDB connections. Its `report.json` records
+only synthetic test results. These checks do not reproduce physical Mac sleep
+or verify the installed app's rendered dot, and they do not change the mobile client.
 
 The existing synthetic chat-state fixture also has an optional `--unread`
 check. It acknowledges an initial receipt, disconnects the reader, completes
@@ -168,3 +256,14 @@ pending manual unread, stale manager overlap, invalidated proofs, and close/reop
 of the same chat. The build and type check passed; 3,485 core tests and 144
 desktop tests passed, with two optional skips and no failures. Native-window
 verification remains pending.
+
+On October 28, 2026, the migration/checkpoint candidate passed build, type check,
+3,557 core tests and 160 desktop tests, with two optional skips and no failures.
+Ten real-browser IndexedDB checks passed, including transaction rollback after a
+semantic read during first-sync writes, separate-document concurrency and reload.
+Independent review found and verified corrections for the first-sync disk race,
+failed/duplicate no-op choices, and stale cross-window choice revisions. The
+real-SDK fixture also passed with three synthetic requests, zero paid inference,
+and zero replayed completions; that protocol fixture uses a synthetic store and
+does not exercise IndexedDB. The candidate remains local and uninstalled. Mobile,
+physical sleep/wake, and native-window verification remain outside this evidence.

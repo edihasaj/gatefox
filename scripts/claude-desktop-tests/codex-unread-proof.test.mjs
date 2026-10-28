@@ -93,3 +93,21 @@ test('asynchronous history capabilities are disposed and a hydration change inva
   assert.equal(await proof, false); assert.equal(disposed, 1);
   assert.equal(f.calls.some(call => call.method === 'thread/readState/update'), false); f.bridge.dispose();
 });
+
+test('fully loaded latest-turn items prove reading without loading every older turn', async () => {
+  const f = await fixture();
+  f.state.view.history = { isComplete: false, turns: [{ turnId: 'A', status: 'completed',
+    itemsPagination: { hasLoadedOldest: true, olderCursor: null, isLoadingOlder: false } }] };
+  assert.equal(await f.prove(), true); await tick();
+  assert.equal(f.state.receipt.firstUnread, null); f.bridge.dispose();
+});
+
+test('incomplete, evicted or reconnecting latest items never acknowledge a partial transcript', async () => {
+  for (const change of [{ hasLoadedOldest: false }, { olderCursor: 'older' }, { isLoadingOlder: true }, { evicted: true }, { reconnect: {} }]) {
+    const f = await fixture();
+    f.state.view.history = { isComplete: false, turns: [{ turnId: 'A', status: 'completed',
+      itemsPagination: { hasLoadedOldest: true, olderCursor: null, isLoadingOlder: false, ...change } }] };
+    assert.equal(await f.prove(), false);
+    assert.equal(f.calls.some(call => call.method === 'thread/readState/update'), false); f.bridge.dispose();
+  }
+});

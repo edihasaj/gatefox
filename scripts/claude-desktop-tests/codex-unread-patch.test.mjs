@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import ts from 'typescript';
 import { readAsarFile } from '../claude-native-trial/asar.mjs';
 import { patchUnreadRenderer, patchPinnedUnreadRenderer, supportedUnreadTrial } from '../codex-unread-trial/patch.mjs';
 
@@ -112,4 +113,41 @@ test('installed renderer matches the pin and patches in memory without changing 
   assert.ok(patched.length>source.length);
   assert.equal((patched.match(/\.install\(this\)/g)||[]).length,1);
   assert.equal(createHash('sha256').update(await readFile('/Applications/ChatGPT.app/Contents/Resources/app.asar')).digest('hex'),before);
+});
+
+test('pinned native facade scopes checkpoints to durable identity and host, and retires on lifecycle changes', async t => {
+  let archive;
+  try { archive = await readFile('/Applications/ChatGPT.app/Contents/Resources/app.asar'); }
+  catch (error) { if (error.code === 'ENOENT') return t.skip('Installed app unavailable'); throw error; }
+  const version = JSON.parse(readAsarFile(archive, 'package.json')).version;
+  if (version !== supportedUnreadTrial.version) return t.skip('No pinned native facade');
+  const bridgeSource = await readFile(new URL('../codex-unread-trial/read-state-bridge.mjs', import.meta.url), 'utf8');
+  const source = patchPinnedUnreadRenderer(readAsarFile(archive, supportedUnreadTrial.asset).toString(), bridgeSource, version);
+  const ast = ts.createSourceFile('patched.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  let method;
+  const find = node => {
+    if (ts.isMethodDeclaration(node) && node.name?.getText(ast) === 'forHost' && node.getText(ast).includes('receiptCheckpointScope')) method = node.getText(ast);
+    ts.forEachChild(node, find);
+  };
+  find(ast); assert.ok(method);
+  // Execute only the extracted facade in a synthetic private-field controller.
+  const Controller = Function('Ie', `return class {
+    #e={}; #a; #o=crypto.randomUUID(); #s={}; #d=false; #c={host:'executor-token',other:'other-token'}; #t; #n={host:[],other:[]}; #i=new Set(); #_(){}
+    constructor(identity){this.#a=identity} executionHostKey(host){return this.#c[host]}
+    identity(value){this.#a=value} retire(){this.#o=crypto.randomUUID()} replaceHost(){this.#c.host='replacement'}
+    ${method}
+  }`)((a, b) => JSON.stringify(a) === JSON.stringify(b));
+  const identity = { account: 'synthetic-account' }, first = new Controller(identity), second = new Controller(identity);
+  const facade = first.forHost('host');
+  assert.equal(facade.isReady(), true); assert.equal(facade.has('never-observed'), false);
+  assert.equal(facade.receiptCheckpointScope(), second.forHost('host').receiptCheckpointScope());
+  assert.notEqual(facade.receiptCheckpointScope(), first.forHost('other').receiptCheckpointScope());
+  first.replaceHost(); assert.equal(facade.receiptCheckpointScope(), null);
+  const logout = new Controller(identity), logged = logout.forHost('host'); logout.identity({ account: 'another' });
+  assert.equal(logged.receiptCheckpointScope(), null);
+  const retired = second.forHost('host'); second.retire(); assert.equal(retired.receiptCheckpointScope(), null);
+  const late = new Controller(undefined), lateFacade = late.forHost('host');
+  assert.equal(lateFacade.receiptCheckpointScope(), null); late.identity(identity);
+  assert.equal(lateFacade.receiptCheckpointScope(), JSON.stringify([identity, 'executor-token']));
+  const unsubscribe = lateFacade.subscribe(() => {}); unsubscribe(); assert.equal(lateFacade.receiptCheckpointScope(), null);
 });
