@@ -280,16 +280,21 @@ before the migration.
 
 On startup, a bounded native app-server process refreshes its own model metadata.
 The adapter copies only public model rows from that engine's configured catalog
-or model cache. It validates that the rows cover the engine's available models
-and writes a combined catalog. Cache identity and authentication are excluded.
+or model cache. It validates that the rows are well formed and writes a combined
+catalog. Cache identity and authentication are excluded.
 The public rows form a combined catalog for gateway executors. The original
 native process keeps its native model and account defaults. The adapter registers
 only the added `subscription_gateway` provider through process arguments, so
 saved gateway chats can resolve that provider when read or resumed. Gateway
 executors get it too, and serve `openai` as a second name for it
 ([harness identity](harness-identity.md)). It does not
-write the native configuration. A mismatched or
-unavailable cache prevents startup.
+write the native configuration. An unavailable or structurally invalid cache
+prevents startup. A cache that lacks models the engine lists starts anyway; this
+happens, for example, when another Codex version wrote the cache or the engine
+could not refresh its models. Gateway chats get no native metadata for those
+models, the adapter writes one line to standard error, and it records
+`native_catalog_incomplete`. A gateway alias that equals any model ID the engine
+lists is still refused, whether or not the cache has a row for it.
 
 The adapter normalizes three retired feature keys in app-server CLI flags,
 thread start/resume/fork overrides, runtime enablement maps, and private snapshots.

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- The desktop adapter no longer refuses to start when the native model cache lacks
+  a model the engine lists. This happens when another Codex version wrote the cache
+  or the engine could not refresh its models. Gateway chats start without native
+  metadata for those models, the adapter records `native_catalog_incomplete`, and a
+  corrupt cache or a gateway alias that equals an engine model ID is still refused.
+
 ## 1.1.1 — 2026-10-27
 
 - SSH proxy output now crosses fresh child pipes with backpressure and complete
