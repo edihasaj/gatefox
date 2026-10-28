@@ -1,5 +1,5 @@
 import { lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { nativeEngineExecutable, nativeOwnerEngineExecutable } from "./native-engine-path.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { executionHostHome, executionCapabilities, readOwnerRecord, receiptPidAlive, socketIdentity, socketAnswers, sameSocketIdentity, type ExecutionCapability } from "./execution-host-storage.js";
@@ -140,7 +140,8 @@ export class ExecutionHostClient {
   }
   private record(value: Message): ExecutionRecord {
     if (typeof value.revision !== "string" || !/^[a-f0-9]{64}$/.test(value.revision) || value.socketPath !== resolve(this.home, `e-${value.revision.slice(0, 16)}.sock`) || !Array.isArray(value.aliases) || !value.aliases.length || value.aliases.length > 256 || value.aliases.some(alias => typeof alias !== "string" || !alias || alias.length > 1024)
-      || (value.selectedModelCompaction !== undefined && value.selectedModelCompaction !== true)) throw new Error("Shared executor returned invalid generation metadata");
+      || (value.selectedModelCompaction !== undefined && value.selectedModelCompaction !== true)
+      || (value.defaultCwd !== undefined && (typeof value.defaultCwd !== "string" || !isAbsolute(value.defaultCwd) || value.defaultCwd.length > 4096 || /[\0\r\n]/.test(value.defaultCwd)))) throw new Error("Shared executor returned invalid generation metadata");
     return value as unknown as ExecutionRecord;
   }
   async acquire(descriptor: ExecutionDescriptor): Promise<ExecutionRecord> {

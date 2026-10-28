@@ -6,6 +6,12 @@ const claude = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "
 const codex = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", credentialFile: "codex.json", models: { "codex/sol": "sol" }, ...extra });
 const config = (providers: unknown[], extra: Record<string, unknown> = {}) => validateConfig({ version: 1, port: 1, stateDirectory: "/tmp/state", providers, ...extra }, "/tmp");
 
+test("automatic project trust requires an explicit boolean operator choice", () => {
+  assert.equal(config([codex()]).trustAllProjects, undefined);
+  for (const value of [true, false]) assert.equal(config([codex()], { trustAllProjects: value }).trustAllProjects, value);
+  for (const value of [null, "true", 1, [], {}]) assert.throws(() => config([codex()], { trustAllProjects: value }), /trustAllProjects must be boolean/);
+});
+
 test("bare-model defaults require subscription accounts and one boolean designation per vendor", () => {
   const first = codex({ defaultForBareModels: true });
   const second = codex({ id: "personal", models: { "personal/sol": "sol" }, defaultForBareModels: false });

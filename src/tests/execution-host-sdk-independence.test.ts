@@ -82,6 +82,7 @@ test("the host validates the gateway runtime it spawns, not a newer native codex
     assert.deepEqual((await client.request<{ capabilities: string[] }>("execution/status")).capabilities, ["gateway"]);
     const record = await client.request<ExecutionRecord>("execution/acquire", { descriptor: f.descriptor() });
     assert.equal(record.selectedModelCompaction, true);
+    assert.equal(record.defaultCwd, process.cwd(), "the host reports the actual directory its executor inherits");
     assert.equal(await readFile(join(f.directory, "engine-a.state"), "utf8"), "runtime");
     assert.equal((await readOwner(join(f.hostHome, "owner.json")))?.capabilities?.join(), "gateway");
   } finally { await client?.close(); await host?.close(); await f.clean(); }

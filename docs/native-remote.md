@@ -108,6 +108,48 @@ app lets the chat go (it closes the chat's engine, for example by quitting), the
 continues it. Gateway chats use the host when the plan shares gateway executors, and
 otherwise private gateway engines under the same lock.
 
+## Project trust on mobile
+
+A project appearing in the picker does not prove that its original folder has a
+saved trust decision. This affects both new chats and existing chats. A trusted
+child repository does not trust its parent folder, and a `projects."/"` entry is
+not a wildcard. Mobile can refuse the turn before `turn/start`, with
+"Can't verify project trust". Check the native engine's `config/read` response
+with the selected `cwd` and `includeLayers: true`; use the native user layer,
+not a gateway executor's private configuration snapshot.
+
+An operator who wants all selected folders trusted can explicitly set
+`"trustAllProjects": true` in that machine's gateway configuration. This is off
+by default and applies when an adapter process loads that configuration. Existing
+listeners keep their loaded choice until they retire normally. The
+adapter saves real, version-guarded native trust entries for registered project
+roots and requested working directories. New project creation and chat
+start/resume/fork also establish trust before the result reaches the client or
+the chat loads. Gateway executors receive the same policy in their own private
+configuration, so an older snapshot does not lose the choice.
+Existing aliases are resolved and both spellings are trusted, so a canonical
+untrusted entry cannot defeat the selected folder's trust. Starts without a
+working directory use the engine's reported default before loading settings.
+A shared host from an older release that cannot report its default requires an
+explicit folder for such a start until that host upgrades normally.
+
+This policy accepts every selected folder, including a folder previously marked
+untrusted. Repository instructions, project configuration and enabled hooks may
+therefore load automatically. Command approval and sandbox settings remain the
+caller's choices. The adapter returns the engine's actual configuration and layer
+provenance; a managed override or failed write remains a failure. It does not
+manufacture a trusted response or start a separate maintenance job.
+
+Clearing the flag stops automatic trust after the adapter processes reload. Trust decisions
+already saved remain in Codex's user configuration until the operator changes
+them. A gateway release that predates this option must first adopt a release
+that implements it; editing configuration alone cannot add the behavior.
+
+Run `node scripts/e2e-project-trust.mjs --root /tmp/TASK/project-trust` to verify
+the policy through the signed native engine and both adapter execution paths.
+The fixture uses private homes, a local model catalog and one localhost mock
+turn, with no external provider inference.
+
 ## Activation
 
 The old transport and the relay cannot own the same machine concurrently. Quit

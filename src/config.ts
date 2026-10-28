@@ -118,6 +118,8 @@ export interface GatewayConfig {
   maxConcurrent?: number;
   timeoutMs?: number;
   clientOnly?: boolean;
+  /** Explicit operator policy: persist trust for every selected or created Codex project folder. Off by default. */
+  trustAllProjects?: boolean;
   accountEngines?: AccountEngineConfig[];
   /**
    * The provider id new gateway chats are recorded with: `legacy` (the default) for `subscription_gateway`, or `openai`, an
@@ -174,6 +176,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.version !== 1) throw new Error("Unsupported configuration version; expected 1");
   if (!Number.isInteger(config.port) || config.port < 0 || config.port > 65535) throw new Error("port must be 0 through 65535");
   if (config.clientOnly !== undefined && typeof config.clientOnly !== "boolean") throw new Error("clientOnly must be boolean");
+  if (config.trustAllProjects !== undefined && typeof config.trustAllProjects !== "boolean") throw new Error("trustAllProjects must be boolean");
   if (!Array.isArray(config.providers) || (!config.clientOnly && !config.providers.length)) throw new Error("At least one provider is required");
   if (config.clientOnly && (config.providers.length || !config.port)) throw new Error("Remote clients require a fixed forwarded port and no local providers");
   if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
@@ -270,6 +273,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   }
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
+    ...(config.trustAllProjects === undefined ? {} : { trustAllProjects: config.trustAllProjects }),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),
     ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}),
     ...(autoLatestModels ? { autoLatestModels } : {}), ...(availability ? { availability } : {}) };
