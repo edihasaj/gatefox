@@ -161,11 +161,11 @@ test("staging an image into a folder that was removed fails and recreates nothin
   try {
     const gone = join(folder.directory, "removed");
     const run = copilotRun({ ...config, copilotSessions: { mode: "oneshot" } }, { model: "fixture", input: withImages(2, 1000) }, new AbortController().signal);
-    await assert.rejects(copilotPrompts(run.conversation, run.images, 0, undefined, gone), error => error instanceof ProviderError && error.code === "cli_failed");
+    await assert.rejects(copilotPrompts(run.conversation, run.images, 0, undefined, gone, run.native), error => error instanceof ProviderError && error.code === "cli_failed");
     assert.equal(await exists(gone), false, "the folder was not created again");
     // A folder that exists gets its images folder, and staging into it twice (the folder is already there the second time) works.
     const there = join(folder.directory, "there"); await mkdir(there);
-    const [first] = await copilotPrompts(run.conversation, run.images, 0, undefined, there);
+    const [first] = await copilotPrompts(run.conversation, run.images, 0, undefined, there, run.native);
     assert.equal(first.attachments?.length, 2); assert.deepEqual((await readdir(join(there, "images"))).sort(), ["conversation-message-1-part-2.png", "conversation-message-1-part-3.png"]);
   } finally { await folder.remove(); }
 });
@@ -174,7 +174,7 @@ test("a request that is already over renders no image", async () => {
   const folder = await shortFolder("gw-stage-");
   try {
     const run = copilotRun(config, { model: "fixture", input: withImages(2, 1000) }, new AbortController().signal);
-    await assert.rejects(copilotPrompts(run.conversation, run.images, 0, undefined, folder.directory, () => true), error => error instanceof ProviderError && error.code === "cancelled");
+    await assert.rejects(copilotPrompts(run.conversation, run.images, 0, undefined, folder.directory, run.native, () => true), error => error instanceof ProviderError && error.code === "cancelled");
     assert.deepEqual(await readdir(folder.directory), [], "nothing was written");
   } finally { await folder.remove(); }
 });

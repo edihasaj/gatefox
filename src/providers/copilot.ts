@@ -179,7 +179,7 @@ export class CopilotSubscription implements Provider {
       if (signal.aborted) throw cancelled();
       await ask("session.create", { sessionId, ...create, workingDirectory: client.directory, configDir: client.directory });
       // Rendering the messages can take a while (images are written to files), and the abort can come during it.
-      const render = copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory, () => signal.aborted || ending !== undefined);
+      const render = copilotPrompts(conversation, images, 0, choiceLine(choice, native), client.directory, native, () => signal.aborted || ending !== undefined);
       rendering = render.then(() => {}, () => {});
       const messages = await render;
       await ask("session.sendMessages", { sessionId, messages }, 30000);
