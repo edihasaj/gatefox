@@ -87,9 +87,9 @@ test("a saturated provider does not delay another provider, and health sums thei
 });
 
 test("a provider override admits its own limit, validates its range, and updates live", { timeout: 10000 }, async () => {
-  for (const maxConcurrent of [0, 17, 1.5]) assert.throws(() => validateConfig({
+  for (const maxConcurrent of [0, 65, 1.5]) assert.throws(() => validateConfig({
     version: 1, port: 0, stateDirectory: "/tmp/state", providers: [provider("a", maxConcurrent)],
-  }), /a: maxConcurrent must be 1 through 16/);
+  }), /a: maxConcurrent must be 1 through 64/);
   let release = () => {}; const held = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
   const initial: GatewayConfig = { version: 1, port: 0, stateDirectory: "/unused", maxConcurrent: 1, providers: [provider("a", 2)] };
@@ -111,6 +111,53 @@ test("a provider override admits its own limit, validates its range, and updates
   } finally {
     release(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("admission settings accept twenty and sixty-four while rejecting invalid bounds", () => {
+  for (const maxConcurrent of [20, 64]) {
+    const config = validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/state", maxConcurrent,
+      providers: [provider("a", maxConcurrent)] });
+    assert.equal(config.maxConcurrent, maxConcurrent);
+    assert.equal(config.providers[0]!.maxConcurrent, maxConcurrent);
+  }
+  for (const maxConcurrent of [0, 65, 1.5]) assert.throws(() => validateConfig({
+    version: 1, port: 0, stateDirectory: "/tmp/state", maxConcurrent, providers: [provider("a")],
+  }), /maxConcurrent must be 1 through 64/);
+});
+
+test("twenty-slot provider stays available at sixteen and queues only after twenty", { timeout: 15000 }, async () => {
+  let release = () => {}; const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const configured = validateConfig({ version: 1, port: 0, stateDirectory: "/tmp/state", maxConcurrent: 8,
+    providers: [provider("a", 20), provider("b")] });
+  const g = await gateway(configured.providers, () => ({ async *infer() {
+    calls++; await held; yield { type: "text", text: "done" }; yield { type: "done", usage };
+  } }), undefined, configured.maxConcurrent);
+  const pending: Promise<Response>[] = [];
+  const availability = async () => (await (await fetch(g.base + "/v1/availability", { headers: g.headers })).json()) as {
+    providers: { id: string; status: string; load: { running: number; queued: number; limit: number } }[];
+  };
+  try {
+    pending.push(...Array.from({ length: 16 }, () => g.post("a")));
+    await eventually(() => calls === 16, "all sixteen requests must run");
+    let report = await availability();
+    assert.equal(report.providers.find(row => row.id === "a")!.status, "available");
+    assert.equal(report.providers.find(row => row.id === "b")!.load.limit, 8);
+    pending.push(...Array.from({ length: 4 }, () => g.post("a")));
+    await eventually(() => calls === 20, "all twenty requests must run");
+    report = await availability();
+    const row = report.providers.find(row => row.id === "a")!;
+    assert.equal(row.status, "busy");
+    assert.deepEqual(row.load, { running: 20, queued: 0, limit: 20 });
+    pending.push(g.post("a"));
+    await eventually(async () => (await g.health()).queued === 1, "request twenty-one must queue");
+    assert.equal(calls, 20);
+    release();
+    const responses = await Promise.all(pending);
+    assert.ok(responses.every(response => response.status === 200));
+    await Promise.all(responses.map(response => response.text()));
+    assert.equal(calls, 21);
+  } finally { release(); await g.close(); }
 });
 
 test("a full provider queue returns 429 without consuming another provider's capacity", { timeout: 15000 }, async () => {
