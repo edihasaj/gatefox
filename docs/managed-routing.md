@@ -84,6 +84,14 @@ recovery. Gateway never silently drops,
 summarizes or changes caller messages, tool results, instructions or permissions.
 The client must compact its own context or start a fresh bounded worker.
 
+A request marked `compaction` has a separate recovery allowance of four times
+`maxContextBytes`, capped at 4 MiB. It requires an existing durable worker pin
+and uses that same provider with the same capacity checks. It cannot establish a
+new binding or bypass an unavailable provider. Requests beyond the recovery
+allowance still fail before inference; subsequent ordinary turns retain the
+original byte limit. This makes room for the client to summarize accumulated
+history without increasing its normal worker context budget.
+
 The persisted pin avoids model/account churn and preserves the opportunity to
 reuse the same provider's prefix cache. For a local Chat Completions model,
 configure the existing `sessionAffinity: true` option so the worker's identifier

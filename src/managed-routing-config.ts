@@ -14,7 +14,7 @@ export interface ManagedRoutingSettings { routes: Record<string, ManagedRoutePol
 
 const aliasPattern = /^managed\/[a-z][a-z0-9-]{0,31}$/;
 const candidatePattern = /^[A-Za-z0-9_:/.-]{1,160}$/;
-const flashPattern = /^deepseek\/deepseek-v4-flash(?:[:.-][a-z0-9-]+)?$/i;
+const flashPattern = /^deepseek\/deepseek-v4(?:\.\d+)?-flash((?:[:.-][a-z0-9-]+)?)$/i;
 const forbiddenSuffix = /(?:^|[:.-])(?:pro|glm)(?=$|[:.-])/i;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const rank: Record<ManagedCandidateKind, number> = { local: 0, subscription: 1, "paid-flash": 2 };
@@ -35,8 +35,9 @@ export function managedCandidateKind(provider: Pick<ProviderConfig, "type" | "ba
   const base = url(provider.baseUrl);
   if (!base || base.username || base.password) return undefined;
   if (base.protocol === "https:" && base.hostname === "openrouter.ai" && base.port === "") {
-    if (typeof upstream !== "string" || !flashPattern.test(upstream)) return undefined;
-    const suffix = upstream.slice("deepseek/deepseek-v4-flash".length);
+    const match = typeof upstream === "string" ? flashPattern.exec(upstream) : null;
+    if (!match) return undefined;
+    const suffix = match[1]!;
     return forbiddenSuffix.test(suffix) ? undefined : "paid-flash";
   }
   if (provider.type !== "chat-completions-api") return undefined;

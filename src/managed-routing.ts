@@ -70,7 +70,13 @@ export class ManagedRouter {
     const identity = context.threadId ?? context.sessionId;
     if (!identity) failure("managed_route_identity_required", "Managed routing requires a stable worker thread or session identifier", 400);
     const contextBytes = Buffer.byteLength(JSON.stringify(request), "utf8");
-    if (contextBytes > policy.maxContextBytes) failure("context_length_exceeded", "Managed worker context exceeds its byte budget; compact it in the client or start a fresh bounded worker", 400);
+    // Summarizing accumulated history needs more room than an ordinary turn. This
+    // allowance never creates a binding or moves an existing worker to another provider.
+    const compacting = context.requestKind === "compaction";
+    const byteLimit = compacting ? Math.min(4 * policy.maxContextBytes, 4194304) : policy.maxContextBytes;
+    if (contextBytes > byteLimit) failure("context_length_exceeded", compacting
+      ? "Managed compaction exceeds its recovery byte budget; start a fresh bounded worker with an explicit handoff"
+      : "Managed worker context exceeds its byte budget; compact it in the client or start a fresh bounded worker", 400);
     const candidates = policy.candidates.map(alias => ({ alias, provider: config.providers.find(p => Object.hasOwn(p.models, alias)) }));
     if (candidates.some(c => !c.provider)) failure("managed_route_unavailable", "A managed route candidate was removed; a fresh configuration is required");
     const rows = new Map((Array.isArray(report.providers) ? report.providers : []).map(v => { const row = object(v); return [row.id, row] as const; }));
@@ -91,6 +97,7 @@ export class ManagedRouter {
           if (!allowed(candidate.alias, candidate.provider, true)) return failure("managed_route_unavailable", "The pinned worker route is unavailable; retry it or start a fresh worker with a bounded handoff");
           return { alias: candidate.alias, providerId: candidate.provider.id, reused: true, contextBytes };
         }
+        if (compacting) return failure("managed_route_state_unbound", "Managed compaction needs an existing worker binding; start a fresh worker with a plaintext handoff", 400);
         // Opaque provider state cannot be assigned a new account without an existing pin.
         if (request.previous_response_id || /"encrypted_content"|"encryptedFunctionArgs"/.test(JSON.stringify(request.input)))
           return failure("managed_route_state_unbound", "Provider-specific continuation needs its original managed pin; start a fresh worker with a plaintext handoff", 400);

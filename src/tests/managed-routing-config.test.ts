@@ -117,11 +117,11 @@ test("candidate kinds follow location, vendor and exact paid model", () => {
   for (const type of ["codex-subscription", "claude-subscription"] as const) assert.equal(managedCandidateKind({ type }, "any"), "subscription");
   for (const type of ["copilot-subscription", "grok-subscription", "anthropic-api"] as const) assert.equal(managedCandidateKind({ type, baseUrl: "https://openrouter.ai/api/v1" }, "deepseek/deepseek-v4-flash"), undefined);
   const paid = (upstream: string, type: "responses-api" | "chat-completions-api" = "responses-api", baseUrl = "https://openrouter.ai/api/v1") => managedCandidateKind({ type, baseUrl }, upstream);
-  for (const upstream of ["deepseek/deepseek-v4-flash", "DeepSeek/DeepSeek-V4-Flash", "deepseek/deepseek-v4-flash:free", "deepseek/deepseek-v4-flash-0501", "deepseek/deepseek-v4-flash.1"]) {
+  for (const upstream of ["deepseek/deepseek-v4-flash", "DeepSeek/DeepSeek-V4-Flash", "deepseek/deepseek-v4-flash:free", "deepseek/deepseek-v4-flash-0501", "deepseek/deepseek-v4-flash.1", "deepseek/deepseek-v4.1-flash-1017"]) {
     assert.equal(paid(upstream), "paid-flash", upstream);
     assert.equal(paid(upstream, "chat-completions-api"), "paid-flash", upstream);
   }
-  for (const upstream of ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash-pro", "deepseek/deepseek-v4-flash:glm", "z-ai/glm-5", "deepseek/deepseek-v4-flashx", "deepseek/deepseek-v4", "other/deepseek/deepseek-v4-flash"]) assert.equal(paid(upstream), undefined, upstream);
+  for (const upstream of ["deepseek/deepseek-v4-pro", "deepseek/deepseek-v4-flash-pro", "deepseek/deepseek-v4-flash:glm", "deepseek/deepseek-v4.1-pro-1017", "deepseek/deepseek-v4.1-flash-pro", "deepseek/deepseek-v4.1-flash:glm", "deepseek/deepseek-v5-flash", "z-ai/glm-5", "deepseek/deepseek-v4-flashx", "deepseek/deepseek-v4", "other/deepseek/deepseek-v4-flash"]) assert.equal(paid(upstream), undefined, upstream);
   for (const baseUrl of ["http://openrouter.ai/api/v1", "https://openrouter.ai.evil.example/v1", "https://evilopenrouter.ai/v1", "https://openrouter.ai:8443/v1", "https://user:pw@openrouter.ai/v1", "https://example.com/v1"]) {
     assert.equal(paid("deepseek/deepseek-v4-flash", "responses-api", baseUrl), undefined, baseUrl);
   }
