@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 — 2026-10-29
 
 - Opt-in managed worker aliases now enforce provider selection, fresh capacity
   checks, subscription reserves, permitted DeepSeek V4 Flash fallback and durable
