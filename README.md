@@ -235,10 +235,15 @@ work through the gateway's login, which refuses the `tool_search` tool type. The
 restart. See [tool search](docs/responses.md#tool-search-on-the-codex-subscription-route).
 
 The gateway translates subscription and API inference into the caller's Responses or Messages
-protocol. The client owns agent roles, delegation, model selection, permissions,
-tool execution, and chat names. The gateway adds no role instructions, default
-worker, or agent-only tools. Saved gateway chats remain readable before model
-discovery and resume through the registered provider.
+protocol. The client owns agent roles, delegation, permissions, tool execution,
+and chat names. Ordinary aliases and explicit model choices keep their exact
+bindings, and the gateway adds no role instructions, default worker, or
+agent-only tools. Opt-in [managed worker aliases](docs/managed-routing.md) are
+the one deliberate exception: when a caller selects one, Gateway code chooses
+among that route's configured candidates before inference, while task scope,
+permissions, tool execution and context stay with the client. Saved gateway
+chats remain readable before model discovery and resume through the registered
+provider.
 
 `gateway uninstall` moves the installed files to Trash, removes managed services
 and desktop registration, and preserves the data directory and credentials. On
