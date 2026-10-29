@@ -402,3 +402,10 @@ Provider version maintenance runs on the build host, outside inference and
 session ownership. [Stable update validation](provider-updates.md) prepares
 isolated candidates and advances generated source pins only after compatibility
 checks pass. Installed engines continue through the normal gateway release path.
+
+The app-owned supervisor can also replace its versioned controller in process.
+The root retains its lock, signal handlers, children and execution host; the new
+controller receives the same ownership broker. Child exit observers dispatch to
+the current controller, preserving backoff across a handover. See
+[live supervisor updates](services.md#live-supervisor-controller-updates) for
+bootstrap, strict host-idle replacement and readiness limits.

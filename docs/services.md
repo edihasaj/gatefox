@@ -54,6 +54,50 @@ output, timeouts, unexpected exits, and unknown or reused process identities
 remain refusals. This exception does not enable automatic restarts with Claude
 components configured.
 
+## Live supervisor controller updates
+
+After one service start on a release with supervisor runtime ABI 1, compatible
+installed releases can replace supervisor control in the existing process.
+The minute watcher stages the new immutable module and waits for two checks.
+It verifies the selected release and exact canonical service plan again before
+committing. A changed plan or incompatible ABI stays pending for a natural start;
+it never activates staged sharing or consolidation as a side effect.
+
+```text
+One signed app-owned root: same PID, lock and signal handlers
+  → new supervisor controller
+  → same child handles, exit observers, retries and paused slots
+  → same live execution host, Claude requests, relays and SSH connections
+```
+
+Controller retirement stops only its recurring control schedules. It does not
+send a stop signal, close a transport or replay an inference. A failed activation
+restores the old controller and schedules. Release leases retain code still used
+by inherited callbacks until this root eventually stops. There is no additional
+LaunchAgent, Login Item or maintenance job.
+
+`gateway service status --json` reports `runtime.controllerRelease` separately
+from `runtime.runningRelease`, the root's immutable bootstrap release. Retained
+host and native components keep their actual provenance. A live controller
+change is not proof of complete rollout readiness, and the strict rollout gate
+continues to report those pending components.
+
+The retained host is offered the new implementation through its strict idle gate
+without restarting the supervisor or its other children. Adapter leases and
+loaded chats keep it pending; a window with no current turn is not necessarily
+strictly idle. Once that gate accepts, the host closes and starts under the new
+implementation. This path does not use the older quiet snapshot rule, which
+cannot atomically block a new turn on an existing engine socket.
+
+Older already-running supervisors cannot acquire this loader by moving the
+`current` link. They need one initial natural login/reboot or an explicitly
+authorized controlled restart. Installation alone does not remove that bootstrap
+requirement. ABI 1 retains the original host-keeper object and child observer
+closures as the stable ownership layer; future changes to that layer can require
+a new ABI and one natural root restart. The new controller and host factory do
+not relabel that older code as fully replaced. Use normal lifecycle guards; never force-stop active work to make
+a version receipt current.
+
 ## The name macOS shows
 
 For CLI-only installations, macOS names a LaunchAgent item after the first `ProgramArguments`

@@ -77,7 +77,7 @@ export function pendingGatewaySdkReader(moduleUrl = import.meta.url, state: () =
  * How a process moved to a newer release: `idle` (nothing connected or loaded), the service's `quiet` rule, or the service's
  * `skew` rule (an adapter of the installed release was refused by this older host, so the move was urgent).
  */
-export type UpgradeMode = "idle" | "quiet" | "skew";
+export type UpgradeMode = "idle" | "quiet" | "skew" | "live";
 /** What an accepted upgrade reports for `self_upgrade`; `loadedChats` (a count) only for a quiet or skew one. Plain `true` means idle. */
 export interface UpgradeOutcome { mode: UpgradeMode; loadedChats?: number }
 
@@ -125,7 +125,7 @@ export function watchForUpgrade(component: string, isIdle: () => boolean | Promi
           clearInterval(timer); clearInterval(urgentTimer);
           const outcome: UpgradeOutcome = started === true ? { mode: "idle" } : started;
           telemetry("self_upgrade", { component, from: state!.running, to: state!.installed, mode: outcome.mode,
-            ...(outcome.mode !== "idle" ? { loadedChats: outcome.loadedChats ?? 0 } : {}) });
+            ...(["quiet", "skew"].includes(outcome.mode) ? { loadedChats: outcome.loadedChats ?? 0 } : {}) });
         }
         else { done = false; idleChecks = 0; }
       });

@@ -64,8 +64,21 @@ export class ServiceHostKeeper {
   private hostGeneration = 0;
   private sdkBaseline: SdkBaseline = {};
   private stopKickWatch?: () => void;
-  constructor(private readonly context: HostKeeperContext) {}
+  constructor(private context: HostKeeperContext) {}
 
+  /** A controller switch never races a host start, probe, retry or restart. The host itself stays owned. */
+  canHandover(): boolean { return !this.hostAttempt && !this.hostChecking && !this.hostRestarting && !this.registrationChecking; }
+  private registrationChecking = 0;
+  private pendingContext?: HostKeeperContext;
+  private releaseUpdatePending = false;
+  /** Stage new host policy until every old keeper operation has finished. Active engines remain untouched. */
+  adoptRuntime(next: ServiceHostKeeper): void { this.pendingContext = next.context; this.applyPendingRuntime(); }
+  private applyPendingRuntime(): void {
+    if (!this.pendingContext || !this.canHandover()) return;
+    this.context = this.pendingContext; this.pendingContext = undefined;
+    this.releaseUpdatePending = true;
+    if (this.executionState?.state === "running" && !this.hostRestartReason) this.hostRestartReason = "release_update";
+  }
   /** Starts the host of a plan that shares executors or native chats, then its kick watcher and probe. Throws on a mismatched state. */
   async start(): Promise<void> {
     const { plan } = this.context;
@@ -97,6 +110,7 @@ export class ServiceHostKeeper {
    * is not a kick's begins a new backoff step, which gives kicks their one extra start back.
    */
   private async startExecutionHost(kicked = false): Promise<void> {
+    this.applyPendingRuntime();
     if (this.context.stopping() || !this.executionState || !this.hostConfig || !this.hostPaths || this.hostAttempt || this.hostCloseFailed) return;
     clearTimeout(this.hostRetry); this.hostRetry = undefined;
     if (!kicked) this.hostKickUsed = false;
@@ -117,7 +131,7 @@ export class ServiceHostKeeper {
       await starting;
       if (this.hostFailures) telemetry("execution_host_recovered", { failures: this.hostFailures });
       this.hostFailures = 0; this.hostFailureDeterministic = false; this.hostOwnsRelay = owns; this.hostUnhealthy = undefined; this.hostRestartReason = undefined; this.sdkBaseline = {};
-      this.hostGeneration++; this.hostProbeFailures = 0;
+      this.hostGeneration++; this.hostProbeFailures = 0; this.releaseUpdatePending = false;
       execution.state = "running"; await this.context.publish();
       // The relay was registered while this start was in the air without the host knowing: ask again now it is running.
       if (!owns) void this.restartForRegistration();
@@ -159,6 +173,7 @@ export class ServiceHostKeeper {
    * A verdict about a host that another start replaced while the probe was out is dropped: it says nothing about the new one.
    */
   async checkHost(): Promise<void> {
+    this.applyPendingRuntime();
     const execution = this.executionState;
     if (!execution || this.context.stopping() || this.context.restarting() || this.hostChecking || this.hostAttempt || this.hostRestarting || execution.state !== "running") return;
     this.hostChecking = true; const generation = this.hostGeneration;
@@ -173,7 +188,7 @@ export class ServiceHostKeeper {
   private probed(reason: HostProbeReason | undefined): void {
     if (!reason) {
       this.hostProbeFailures = 0;
-      if (this.hostUnhealthy && this.hostRestartReason === this.hostUnhealthy) this.hostRestartReason = undefined;
+      if (this.hostUnhealthy && this.hostRestartReason === this.hostUnhealthy) this.hostRestartReason = this.releaseUpdatePending ? "release_update" : undefined;
       this.hostUnhealthy = undefined; return;
     }
     if (++this.hostProbeFailures < hostProbeStrikes) return;
@@ -188,9 +203,13 @@ export class ServiceHostKeeper {
    */
   async restartForRegistration(): Promise<void> {
     const execution = this.executionState;
-    if (this.context.plan.sharedNativeExecutor !== true || this.hostOwnsRelay || !execution || execution.state !== "running" || this.hostRestartReason === "relay_registered") return;
-    if (!await this.context.registered().catch(() => false)) return;
-    this.requestHostRestart("relay_registered");
+    if (this.registrationChecking || this.context.plan.sharedNativeExecutor !== true || this.hostOwnsRelay || !execution || execution.state !== "running" || this.hostRestartReason === "relay_registered") return;
+    if (await this.registrationEnabled(false)) this.requestHostRestart("relay_registered");
+  }
+  private async registrationEnabled(onFailure: boolean): Promise<boolean> {
+    this.registrationChecking++;
+    try { return await this.context.registered().catch(() => onFailure); }
+    finally { this.registrationChecking--; }
   }
   private requestHostRestart(reason: HostRestartReason): void {
     if (this.hostRestartReason !== "relay_registered") this.hostRestartReason = reason;
@@ -203,11 +222,12 @@ export class ServiceHostKeeper {
    * re-check asks again.
    */
   async restartHostWhenIdle(): Promise<void> {
+    this.applyPendingRuntime();
     const reason = this.hostRestartReason; const execution = this.executionState;
     if (!reason || !execution || this.context.stopping() || this.context.restarting() || this.hostRestarting || this.hostAttempt || this.hostChecking || execution.state !== "running") return;
     // A host that already stands down needs no restart for the registration.
     // A registration that was withdrawn since (a refused activation removes its pending record) needs none either.
-    if (reason === "relay_registered" && (this.hostOwnsRelay || !await this.context.registered().catch(() => false))) { this.hostRestartReason = undefined; return; }
+    if (reason === "relay_registered" && (this.hostOwnsRelay || !await this.registrationEnabled(false))) { this.hostRestartReason = this.releaseUpdatePending ? "release_update" : undefined; return; }
     const wait = this.hostLastStart + this.context.heal.kickGapMs - performance.now();
     if (wait > 0) {
       if (!this.hostRestartTimer) { this.hostRestartTimer = setTimeout(() => { this.hostRestartTimer = undefined; void this.restartHostWhenIdle(); }, wait); this.hostRestartTimer.unref(); }
@@ -252,6 +272,6 @@ export class ServiceHostKeeper {
     if (this.context.plan.sharedNativeExecutor !== true) return false;
     // A question that cannot be answered is not an answer, so the start is left as it would have
     // been; only a record that really says otherwise takes ownership away from the relay.
-    return await this.context.registered().catch(() => true);
+    return await this.registrationEnabled(true);
   }
 }

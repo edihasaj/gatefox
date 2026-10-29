@@ -5,13 +5,12 @@ import { mkdir, open, readFile, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { writePrivateJson } from "./config.js";
-import { withPrivateFileLock } from "./private-file-lock.js";
-import { serviceStatusPath, type ServiceComponent, type ServicePlan } from "./service-plan.js";
+import { serviceStatusPath, readServicePlan, type ServiceComponent, type ServicePlan } from "./service-plan.js";
 import { startExecutionHost, type QuietWait } from "./execution-host.js";
 import { serviceTunnelArguments, staleForwardCleanup } from "./service-tunnel.js";
-import { configureTelemetry, telemetry } from "./telemetry.js";
-import { reportException, startErrorReports } from "./error-report.js";
-import { watchForUpgrade, type PendingRelease, type UpgradeOutcome } from "./self-update.js";
+import { telemetry } from "./telemetry.js";
+import { reportException } from "./error-report.js";
+import { watchForUpgrade, releaseState, type PendingRelease, type UpgradeOutcome } from "./self-update.js";
 import { componentStopMs, inferenceStopGraceMs } from "./runtime-activity.js";
 import { chatGptAppRunning, nativeRegistrationClaimed, nativeRegistrationEnabled, relayFingerprint } from "./native-pause.js";
 import { defaultHealing, exitReason, failingStreak, quickExitMs, statusFailureGapMs, statusWriteCode, upgradeGraceMs, upgradeQuietMs, type SupervisorHealing } from "./service-heal.js";
@@ -19,6 +18,8 @@ import { ServiceHostKeeper, type ExecutionHost } from "./service-host-keeper.js"
 import { followCurrentRelease } from "./service-relay-path.js";
 import { startAppUpdateScheduler, type AppUpdateSchedule } from "./app-updates/scheduler.js";
 import { hostAutoLatestMaintenance } from "./model-auto-latest/hosting.js";
+import { installedSupervisorRuntime, supervisorRuntimeVersion } from "./service-supervisor-runtime.js";
+import { retainRunningRelease, type ReleaseLease } from "./release-retention.js";
 import { isClaudeComponent } from "./service-claude-activity.js";
 export type { SupervisorHealing } from "./service-heal.js";
 
@@ -37,12 +38,7 @@ export interface NativeProbes {
   appRunning: () => Promise<boolean>;
 }
 export const nativeProbes: NativeProbes = { registered: nativeRegistrationEnabled, claimed: nativeRegistrationClaimed, fingerprint: relayFingerprint, appRunning: chatGptAppRunning };
-/**
- * A relay that dies within a minute three times in a row cannot run here; it is left paused.
- * A resumed relay is given a single start, not a fresh three-strike budget, and a relay paused
- * for failing is tried again every half hour even when nothing changed, so a brief start-up
- * problem never pauses it for good: a broken relay costs at most two starts an hour.
- */
+/** Pause a repeatedly failing optional relay; a resumed relay gets one attempt before its next quiet retry. */
 const nativeQuickFailureMs = 60000; const nativeQuickFailureLimit = 3; const nativeRecheckMs = 300000; const nativeBlindRetryMs = 1800000;
 /**
  * A paused relay notices a new registration this soon. `gateway native install` registers the relay while ChatGPT is closed;
@@ -63,8 +59,22 @@ function within(done: Promise<unknown> | undefined, ms: number): Promise<unknown
 }
 export class ServiceSupervisor {
   private stopping = false;
+  private retired = false;
+  private controlInFlight = 0;
+  private ownership: { current: ServiceSupervisor; leases: ReleaseLease[]; writes: Promise<void> } = { current: this, leases: [], writes: Promise.resolve() };
+  private controllerRelease?: string;
+  private controlLease?: ReleaseLease;
+  private controlUpdate?: () => Promise<boolean>;
+  private get inactive(): boolean { return this.stopping || this.retired; }
+  current(): ServiceSupervisor { return this.ownership.current; }
+  private track(operation: () => Promise<unknown>): void {
+    if (this.inactive) return;
+    this.controlInFlight++;
+    void Promise.resolve().then(operation).catch(() => {}).finally(() => { this.controlInFlight--; });
+  }
   private slots: Slot[];
-  private writes: Promise<void> = Promise.resolve();
+  private get writes(): Promise<void> { return this.ownership.writes; }
+  private set writes(value: Promise<void>) { this.ownership.writes = value; }
   private heartbeat?: NodeJS.Timeout;
   private stopDone?: Promise<void>;
   private restarting = false;
@@ -77,9 +87,9 @@ export class ServiceSupervisor {
   private registrationSeen?: string;
   private readonly heal: SupervisorHealing;
   /** The release this supervisor loaded. Capture once: `current` can move while it keeps serving. */
-  private readonly runningRelease?: string;
+  private runningRelease?: string;
   /** The shared execution host's start, backoff, kick, probe and host-only restart (src/service-host-keeper.ts). */
-  private readonly host: ServiceHostKeeper;
+  private host: ServiceHostKeeper;
   private stopHealth?: () => void;
   private appUpdates?: AppUpdateSchedule;
   private modelMaintenance?: { stop(): void | Promise<void> };
@@ -89,28 +99,26 @@ export class ServiceSupervisor {
   /** Makes the upgrade watcher look now (an urgent move, when the host says one is waiting); set while the watcher runs. */
   private nudgeUpgrade?: () => void;
   private stoppedResolve: () => void = () => {};
-  readonly stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
+  stopped = new Promise<void>(resolve => { this.stoppedResolve = resolve; });
   constructor(private plan: ServicePlan, private state: string, private retryBaseMs = 1000, startHost: typeof startExecutionHost = startExecutionHost,
     private readonly probes: NativeProbes = nativeProbes, private readonly recheckMs = nativeRecheckMs, private readonly blindRetryMs = nativeBlindRetryMs,
     healing: Partial<SupervisorHealing> = {}, private readonly registrationPollMs = nativeRegistrationPollMs,
     private readonly cleanStaleForward: StaleForwardCleaner = clearStaleForward) {
     this.heal = { ...defaultHealing, ...healing };
     const running = this.heal.releaseState()?.running;
-    if (running && canonicalRelease.test(running)) this.runningRelease = running;
+    if (running && canonicalRelease.test(running)) this.runningRelease = this.controllerRelease = running;
     // A host that refused a newer adapter says when no turn runs, so the urgent move is tried in that gap (see skewIdle).
-    const signalling: typeof startExecutionHost = options => startHost({ ...options, onSkewIdle: () => this.nudgeUpgrade?.() });
+    const signalling: typeof startExecutionHost = options => startHost({ ...options, onSkewIdle: () => this.current().nudgeUpgrade?.() });
     this.host = new ServiceHostKeeper({ plan, state, retryBaseMs, startHost: signalling, heal: this.heal,
       registered: () => (this.probes.claimed ?? this.probes.registered)(this.state),
-      stopping: () => this.stopping, restarting: () => this.restarting, publish: () => this.publish(),
-      restartWhenIdle: () => this.restartWhenIdle() });
+      stopping: () => this.current().inactive, restarting: () => this.current().restarting, publish: () => this.current().publish(),
+      restartWhenIdle: () => this.current().restartWhenIdle() });
     this.slots = plan.components.map(component => followCurrentRelease(component)).map(definition => ({ definition, state: { id: definition.id, kind: definition.kind, state: "starting", restarts: 0 }, failures: 0, startedAt: 0, quickFailures: 0, quickExits: 0, pausedAt: 0, resumedOnce: false }));
   }
-  /**
-   * Writes the status file. It is advisory: a write that fails (a full disk, a folder that turned read-only) never stops
-   * the service, is reported at most once a minute, and the next heartbeat simply writes again. The promise never rejects.
-   */
+  /** One advisory status queue belongs to the shared ownership broker across all controllers. */
   private publish(): Promise<void> {
-    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), stopping: this.stopping, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
+    if (this.retired) return this.writes;
+    const snapshot = { version: 1, pid: process.pid, updatedAt: new Date().toISOString(), ...(this.runningRelease ? { runningRelease: this.runningRelease } : {}), ...(this.controllerRelease ? { controllerRelease: this.controllerRelease } : {}), stopping: this.inactive, components: this.slots.map(slot => ({ ...slot.state })), ...(this.host.executionState ? { executionHost: { ...this.host.executionState } } : {}) };
     this.writes = this.writes.then(() => writePrivateJson(serviceStatusPath(this.state), snapshot)).catch(error => this.statusWriteFailed(error));
     return this.writes;
   }
@@ -121,28 +129,32 @@ export class ServiceSupervisor {
     telemetry("status_write_failed", { code: statusWriteCode(error) });
   }
   async start(): Promise<void> {
-    if (this.stopping) return;
+    if (this.inactive) return;
     if (this.plan.sharedExecutors || this.plan.sharedNativeExecutor) {
       await this.host.start();
-      if (this.stopping) return;
+      if (this.inactive) return;
     }
     for (const slot of this.slots) await this.startSlot(slot);
-    if (this.stopping) return;
+    if (this.inactive) return;
+    await this.startControl();
+  }
+  private async startControl(): Promise<void> {
+    if (this.inactive) return;
     this.heartbeat = setInterval(() => { void this.publish(); }, 5000);
     this.lastTick = Date.now(); this.wakeWatch = setInterval(() => this.checkWake(Date.now()), 5000);
     // The relay is optional, so a paused one is only tried again quietly, every five minutes.
     if (this.slots.some(slot => slot.definition.kind === "native")) {
       // A re-check that cannot be answered is handled inside resumePaused; it never stops the service. The same tick
       // retries a host restart a busy host refused (see restartHostWhenIdle).
-      this.pauseWatch = setInterval(() => { void this.resumePaused().catch(() => undefined); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
+      this.pauseWatch = setInterval(() => { this.track(() => this.resumePaused()); void this.host.restartHostWhenIdle(); }, this.recheckMs); this.pauseWatch.unref();
       // A relay set aside as unregistered starts the moment a registration appears, not at the next re-check, and a shared host
       // that started before the registration is asked to restart (when idle) so its native engine stands down too.
-      this.registrationWatch = setInterval(() => { void this.resumeOnRegistration(); void this.host.restartForRegistration().catch(() => undefined); void this.observeRelay(); }, this.registrationPollMs); this.registrationWatch.unref();
+      this.registrationWatch = setInterval(() => { this.track(() => this.resumeOnRegistration()); void this.host.restartForRegistration().catch(() => undefined); this.track(() => this.observeRelay()); }, this.registrationPollMs); this.registrationWatch.unref();
     }
     // The service moves to a newly installed release when fully idle (no app connected and no chat loaded), or, once the
     // release has waited out the grace, when quiet (see upgrade); until then it keeps the previous one. A newer adapter that this
     // host has refused (release skew) makes the move urgent: no grace, and only a running turn or terminal holds it back.
-    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.stopping && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
+    this.stopUpgradeWatch = watchForUpgrade("service", () => !this.inactive && !this.restarting && !this.host.hostRestarting, pending => this.upgrade(pending),
       { state: this.heal.releaseState, urgent: to => this.skewWaiting(to), bind: nudge => { this.nudgeUpgrade = nudge; } });
     // The watchdog heartbeat; it stands down while this Mac has no monitor URL.
     this.stopHealth = this.heal.healthSchedule(this.state, this.plan.config);
@@ -150,7 +162,7 @@ export class ServiceSupervisor {
     // LaunchAgent and the scheduler itself refuses checkout/test modules.
     this.appUpdates = await startAppUpdateScheduler(this.plan.config);
     // Inference servers own their hot-swappable timer. Client-only plans use this existing service instead.
-    if (!this.stopping && !this.slots.some(slot => slot.definition.kind === "inference")) {
+    if (!this.inactive && !this.slots.some(slot => slot.definition.kind === "inference")) {
       this.modelMaintenance = hostAutoLatestMaintenance(this.plan.config, "service");
     }
     await this.publish();
@@ -165,7 +177,7 @@ export class ServiceSupervisor {
    */
   checkWake(now: number): void {
     const gap = now - this.lastTick; this.lastTick = now;
-    if (this.stopping || gap < 30000) return;
+    if (this.inactive || gap < 30000) return;
     telemetry("system_wake", { sleptSeconds: Math.round(gap / 1000) });
     for (const slot of this.slots) {
       // The adopted Claude forwards can carry a request even when the app is closed. Their pinned runtime has no
@@ -179,7 +191,7 @@ export class ServiceSupervisor {
   private async startSlot(slot: Slot): Promise<void> {
     // One start per slot at a time: a tunnel's stale-listener cleanup can take seconds, and a
     // wake during it must not spawn a second process for the same forwarded port.
-    if (this.stopping || slot.starting || slot.child) return;
+    if (this.inactive || slot.starting || slot.child) return;
     slot.starting = true;
     try {
       // An unregistered relay is never started: ChatGPT keeps its own remote control. An unreadable
@@ -190,7 +202,7 @@ export class ServiceSupervisor {
     } catch (error) {
       // A relay whose log cannot even be opened is a relay that cannot run: it is set aside with
       // the other broken ones. Nothing here may take inference, tunnels or the app down.
-      if (slot.definition.kind !== "native" || this.stopping) throw error;
+      if (slot.definition.kind !== "native" || this.inactive) throw error;
       reportException(error, "service_native_spawn");
       await this.pause(slot, "failing");
     } finally { slot.starting = false; }
@@ -201,20 +213,14 @@ export class ServiceSupervisor {
     // What is installed right now is what a later restart has to differ from, so it is read
     // before the slot is ever visible as paused.
     const fingerprint = await this.probes.fingerprint(slot.definition, this.state).catch(() => undefined);
-    if (this.stopping || slot.child) return;
+    if (this.retired) return this.current().pause(slot, reason);
+    if (this.inactive || slot.child) return;
     if (slot.timer) { clearTimeout(slot.timer); slot.timer = undefined; }
     slot.state.state = "paused"; slot.state.pausedReason = reason; slot.state.pausedAt = new Date().toISOString(); slot.fingerprint = fingerprint; slot.pausedAt = Date.now(); slot.resumedOnce = false;
     delete slot.state.nextRestartAt;
     telemetry("component_paused", { component: slot.state.id, kind: slot.state.kind, reason });
     await this.publish();
   }
-  /**
-   * Re-checks the relay slots a timer put aside. It starts one again only when the relay is
-   * registered, either its binaries or receipt changed since the pause or the half-hourly blind
-   * retry is due, and no ChatGPT app is open to compete with it; a relay that connects later is
-   * picked up by the next adapter or listener. Nothing here stops the service: an answer that never
-   * arrives leaves the slot paused with reason `failing`, announced once.
-   */
   /**
    * Notes the last time the running relay was connected, from its own status file, so a health check can tell a relay that has
    * been down for minutes from one that only flickered. The relay rewrites that file on every status change, so its age says
@@ -234,7 +240,7 @@ export class ServiceSupervisor {
   }
   private async resumeOnRegistration(): Promise<void> {
     const slot = this.slots.find(candidate => candidate.definition.kind === "native" && candidate.state.state === "paused");
-    if (!slot || this.registrationChecking || this.stopping || this.restarting) return;
+    if (!slot || this.registrationChecking || this.inactive || this.restarting) return;
     this.registrationChecking = true;
     try {
       // Only a change to what the relay would restart into (its binaries or the registration record) is worth a re-check now;
@@ -246,7 +252,7 @@ export class ServiceSupervisor {
     finally { this.registrationChecking = false; }
   }
   async resumePaused(): Promise<void> {
-    if (this.stopping || this.restarting) return;
+    if (this.inactive || this.restarting) return;
     for (const slot of this.slots) {
       if (slot.state.state !== "paused" || slot.definition.kind !== "native") continue;
       try {
@@ -269,7 +275,7 @@ export class ServiceSupervisor {
         continue;
       }
       // Stop or a restart may have happened while one of the probes above was in the air.
-      if (this.stopping || this.restarting || slot.state.state !== "paused") return;
+      if (this.inactive || this.restarting || slot.state.state !== "paused") return;
       slot.failures = 0; slot.quickFailures = 0; slot.resumedOnce = true; delete slot.state.pausedReason; delete slot.state.pausedAt; delete slot.state.nextRestartAt;
       slot.state.state = "starting";
       telemetry("component_resumed", { component: slot.state.id, kind: slot.state.kind });
@@ -284,7 +290,7 @@ export class ServiceSupervisor {
     try {
       const info = await log.stat();
       if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o077)) throw new Error("Service component log must be private");
-      if (this.stopping) return;
+      if (this.inactive) return;
       const args = component.kind === "tunnel" && component.command === "/usr/bin/ssh" ? serviceTunnelArguments(component.args) : component.args;
       // The adopted `-R` Claude forward must not run the generic listener cleanup: it can kill any same-user sshd
       // listener on its port, without proving that listener belongs to this component.
@@ -292,46 +298,51 @@ export class ServiceSupervisor {
       if (cleanup) {
         const freed = await this.cleanStaleForward(component, cleanup);
         if (freed) telemetry("tunnel_stale_listener_cleared", { component: component.id, processes: freed });
-        if (this.stopping) return;
+        if (this.inactive) return;
       }
       const child = spawn(component.command, args, { stdio: ["ignore", log.fd, log.fd], env: { ...process.env, ...component.environment }, ...(component.workingDirectory ? { cwd: component.workingDirectory } : {}) });
       slot.child = child; slot.startedAt = Date.now();
       slot.exited = new Promise(resolve => child.once("close", () => resolve()));
+      const ownership = this.ownership;
       let handled = false;
       const ended = (code: number | null, signal?: NodeJS.Signals | null) => {
-        if (handled) return; handled = true; slot.child = undefined; delete slot.state.pid;
-        if (!this.stopping && !(component.kind === "desktop" && code === 0)) telemetry("component_exit", { component: component.id, kind: component.kind, code, uptimeMs: Date.now() - slot.startedAt, restarts: slot.state.restarts });
-        if (this.stopping) slot.state.state = "stopped";
-        else if (component.kind === "desktop" && code === 0) slot.state.state = "complete";
-        else if (!this.restarting || component.kind !== "inference") {
-          const uptime = Date.now() - slot.startedAt;
-          slot.failures = uptime >= 60000 ? 1 : slot.failures + 1;
-          // Five quick exits in a row are reported once per streak; the component keeps its backoff, so a passing fault
-          // (a port still held, a network that is not up yet) heals on its own.
-          if (component.kind === "inference" || component.kind === "tunnel") {
-            slot.quickExits = uptime < quickExitMs ? slot.quickExits + 1 : 0;
-            if (slot.quickExits === failingStreak) telemetry("component_failing", { component: component.id, kind: component.kind, failures: slot.quickExits, reason: exitReason(code, signal) });
-          }
-          if (component.kind === "native") {
-            // A relay the app's new engine rejects exits at once; retrying it every 30 s only fills
-            // the log. A death by signal, or one that never spawned at all (code null), counts too,
-            // so a missing binary is set aside instead of retried once a minute forever.
-            const quick = code !== 0 && Date.now() - slot.startedAt < nativeQuickFailureMs;
-            slot.quickFailures = quick ? slot.quickFailures + 1 : 0;
-            // A relay that ran past its first minute earned a fresh three-strike budget, resumed or not.
-            if (!quick) slot.resumedOnce = false;
-            // A resumed relay is out of retries: one more quick failure sets it aside again at once.
-            if (slot.quickFailures >= (slot.resumedOnce ? 1 : nativeQuickFailureLimit)) { void this.pause(slot, "failing"); return; }
-          }
-          const retry = Math.min(30000, this.retryBaseMs * 2 ** Math.min(slot.failures - 1, 10));
-          slot.state.state = "waiting"; slot.state.restarts++; slot.state.nextRestartAt = new Date(Date.now() + retry).toISOString();
-          slot.timer = setTimeout(() => { slot.timer = undefined; delete slot.state.nextRestartAt; void this.startSlot(slot).catch(() => { void this.stop(); }); }, retry);
-        }
-        void this.publish();
+        if (handled) return; handled = true;
+        ownership.current.childEnded(slot, component, code, signal);
       };
       child.once("error", () => ended(null)); child.once("close", (code, signal) => ended(code, signal));
-      child.once("spawn", () => { slot.state.state = "running"; slot.state.pid = child.pid; slot.state.startedAt = new Date().toISOString(); void this.publish(); });
+      child.once("spawn", () => { slot.state.state = "running"; slot.state.pid = child.pid; slot.state.startedAt = new Date().toISOString(); void ownership.current.publish(); });
     } finally { await log.close(); }
+  }
+  private childEnded(slot: Slot, component: ServiceComponent, code: number | null, signal?: NodeJS.Signals | null): void {
+    slot.child = undefined; delete slot.state.pid;
+    if (!this.inactive && !(component.kind === "desktop" && code === 0)) telemetry("component_exit", { component: component.id, kind: component.kind, code, uptimeMs: Date.now() - slot.startedAt, restarts: slot.state.restarts });
+    if (this.inactive) slot.state.state = "stopped";
+    else if (component.kind === "desktop" && code === 0) slot.state.state = "complete";
+    else if (!this.restarting || component.kind !== "inference") {
+      const uptime = Date.now() - slot.startedAt;
+      slot.failures = uptime >= 60000 ? 1 : slot.failures + 1;
+      // Five quick exits in a row are reported once per streak; the component keeps its backoff, so a passing fault
+      // (a port still held, a network that is not up yet) heals on its own.
+      if (component.kind === "inference" || component.kind === "tunnel") {
+        slot.quickExits = uptime < quickExitMs ? slot.quickExits + 1 : 0;
+        if (slot.quickExits === failingStreak) telemetry("component_failing", { component: component.id, kind: component.kind, failures: slot.quickExits, reason: exitReason(code, signal) });
+      }
+      if (component.kind === "native") {
+        // A relay the app's new engine rejects exits at once; retrying it every 30 s only fills
+        // the log. A death by signal, or one that never spawned at all (code null), counts too,
+        // so a missing binary is set aside instead of retried once a minute forever.
+        const quick = code !== 0 && Date.now() - slot.startedAt < nativeQuickFailureMs;
+        slot.quickFailures = quick ? slot.quickFailures + 1 : 0;
+        // A relay that ran past its first minute earned a fresh three-strike budget, resumed or not.
+        if (!quick) slot.resumedOnce = false;
+        // A resumed relay is out of retries: one more quick failure sets it aside again at once.
+        if (slot.quickFailures >= (slot.resumedOnce ? 1 : nativeQuickFailureLimit)) { this.track(() => this.pause(slot, "failing")); return; }
+      }
+      const retry = Math.min(30000, this.retryBaseMs * 2 ** Math.min(slot.failures - 1, 10));
+      slot.state.state = "waiting"; slot.state.restarts++; slot.state.nextRestartAt = new Date(Date.now() + retry).toISOString();
+      slot.timer = setTimeout(() => { slot.timer = undefined; delete slot.state.nextRestartAt; void this.current().startSlot(slot).catch(() => { void this.current().stop(); }); }, retry);
+    }
+    void this.publish();
   }
   /**
    * The strict idle restart: `gateway service restart` (SIGUSR2), a failed host close and the first try of every upgrade. The
@@ -339,35 +350,26 @@ export class ServiceSupervisor {
    * (their pinned runtimes answer no idle signal of their own), then inference must accept its own idle guard.
    */
   async restartWhenIdle(): Promise<boolean> { return "loadedChats" in await this.restartAfter(async (host): Promise<RestartResult> => await host.prepareStop() ? { loadedChats: 0 } : {}); }
-  /**
-   * The move to a newer release. The strict idle restart is tried first. Once the release has been installed for
-   * `upgradeGraceMs` (15 min of awake time) and that still refuses (a remote app that stays connected for days keeps a lease
-   * and its chats loaded), the service restarts when quiet instead: the host's quiet check (no turn running in any engine, no
-   * background terminal, none ended in the last `upgradeQuietMs`, 5 min), then the same inference guard, so inference with
-   * requests running still refuses. The host then closes like a restarted host: adapters kick, wait for the new one and
-   * resume their chats. Each reason a quiet attempt waited is logged once per pending release as `self_upgrade_waiting`.
-   * When the host has refused an adapter of the pending release (release skew), the move is urgent: no grace, and the quiet
-   * check ignores recently ended turns (quiet time 0), so only a running turn, a background terminal or busy inference holds
-   * it back; it is logged as `self_upgrade` with `mode: "skew"`.
-   */
+  /** Installed services swap compatible controllers. Legacy direct instances retain their old idle/quiet restart policy. */
   private async upgrade(pending: PendingRelease): Promise<UpgradeOutcome | false> {
+    if (this.controlUpdate) return await this.controlUpdate() ? { mode: "live" } : false;
     // An urgent move (a newer adapter is refused by this host) is the quiet check without its waits: no grace, and a turn that
     // ended moments ago does not hold it back, because that adapter cannot run anything until the service has moved. The strict
     // idle check is a subset of it, so it is not tried first.
     if (!pending.urgent && await this.restartWhenIdle()) return { mode: "idle" };
-    if (this.stopping || !pending.urgent && pending.pendingMs < upgradeGraceMs()) return false;
+    if (this.inactive || !pending.urgent && pending.pendingMs < upgradeGraceMs()) return false;
     const quietMs = pending.urgent ? 0 : upgradeQuietMs();
     const result = await this.restartAfter(async host => await host.prepareQuietStop?.(quietMs) ?? {});
     if ("loadedChats" in result) return { mode: pending.urgent ? "skew" : "quiet", loadedChats: result.loadedChats };
     const key = `${pending.to}\0${result.wait}`;
-    if (result.wait && !this.stopping && !this.upgradeWaits.has(key)) {
+    if (result.wait && !this.inactive && !this.upgradeWaits.has(key)) {
       this.upgradeWaits.add(key); telemetry("self_upgrade_waiting", { component: "service", from: pending.from, to: pending.to, reason: result.wait });
     }
     return false;
   }
   /** Whether the running host has refused an adapter of the installed release `to` (release skew), which makes moving to it urgent. */
   private async skewWaiting(to: string): Promise<boolean> {
-    if (this.stopping || this.host.hostCloseFailed) return false;
+    if (this.inactive || this.host.hostCloseFailed) return false;
     const host: ExecutionHost | undefined = await this.host.executionStarting?.catch(() => undefined);
     return host?.skewRefused?.(to) === true;
   }
@@ -380,7 +382,7 @@ export class ServiceSupervisor {
    */
   private async restartAfter(hostReady: (host: ExecutionHost) => Promise<RestartResult>): Promise<RestartResult> {
     // A host-only restart in progress is finished first; the service restart is asked again later.
-    if (this.stopping || this.restarting || this.host.hostRestarting) return {};
+    if (this.inactive || this.restarting || this.host.hostRestarting) return {};
     // This checks definitions rather than process state. A Claude child that is spawning, retrying, or has no pid can still
     // admit work before a later stop, and neither lsof nor a second pid check closes that race.
     if (this.slots.some(slot => isClaudeComponent(slot.definition))) return { wait: "claude_busy" };
@@ -405,14 +407,73 @@ export class ServiceSupervisor {
     if (exited) { await this.stop(); return { loadedChats }; }
     executionHost?.resume(); this.restarting = false; return { wait: "inference_busy" };
   }
-  stop(): Promise<void> { return this.stopDone ||= this.stopAll(); }
-  private async stopAll(): Promise<void> {
-    this.stopping = true; clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); clearInterval(this.registrationWatch); this.stopUpgradeWatch?.();
-    this.host.stopWatching();
-    // Stops the watchdog heartbeat and aborts a compatibility check it is still running.
-    this.stopHealth?.();
-    this.appUpdates?.stop();
+  /** Enables the immutable installed-release loader only in the app-owned outer lifecycle. */
+  enableLiveUpdates(): void {
+    if (!this.controlLease) { this.controlLease = this.acquireCodeLease(); this.ownership.leases.push(this.controlLease); }
+    this.controlUpdate = async () => {
+      const selected = releaseState()?.installed;
+      const plan = await readServicePlan(this.state);
+      if (!plan || JSON.stringify(plan) !== JSON.stringify(this.plan)) return false;
+      const candidate = await installedSupervisorRuntime();
+      if (candidate?.supervisorRuntimeVersion !== supervisorRuntimeVersion) return false;
+      try {
+        const next = candidate.createSupervisor(plan, this.state);
+        return await this.handover(next, async () => {
+          const latest = await readServicePlan(this.state);
+          return !!latest && JSON.stringify(latest) === JSON.stringify(plan) && releaseState()?.installed === selected;
+        });
+      } finally { candidate.release(); }
+
+    };
+  }
+  private acquireCodeLease(): ReleaseLease { return retainRunningRelease(import.meta.url); }
+  /** Version-one controller handover retains ownership, exit observers, queues, children and host verbatim. */
+  async handover(next: ServiceSupervisor, unchanged: () => Promise<boolean> = async () => true): Promise<boolean> {
+    if (next === this || next.inactive || next.heartbeat || next.slots.some(slot => slot.child || slot.starting || slot.timer)
+      || this.inactive || this.restarting || this.controlInFlight || this.registrationChecking || !this.host.canHandover()
+      || this.slots.some(slot => slot.starting) || JSON.stringify(this.plan) !== JSON.stringify(next.plan) || this.state !== next.state) return false;
+    if (!await unchanged()) return false;
+    await this.writes;
+    if (!await unchanged()) return false;
+    if (this.inactive || this.restarting || this.controlInFlight || this.registrationChecking || !this.host.canHandover() || this.slots.some(slot => slot.starting)) return false;
+    const nextHostRuntime = next.host;
+    next.slots = this.slots; next.host = this.host; next.ownership = this.ownership; next.writes = this.writes;
+    next.runningRelease = this.runningRelease; next.stopped = this.stopped; next.stoppedResolve = this.stoppedResolve;
+    next.registrationSeen = this.registrationSeen; next.lastTick = this.lastTick;
+    const stagedLease = next.controlLease ??= next.acquireCodeLease();
+    this.ownership.leases.push(stagedLease);
+    this.retired = true; this.ownership.current = next;
+    try {
+      await this.stopControl();
+      if (next.inactive) return true;
+      if (this.controlUpdate) next.enableLiveUpdates();
+      await next.startControl();
+      if (!next.inactive) { next.host.adoptRuntime(nextHostRuntime); void next.host.restartHostWhenIdle(); }
+      return true;
+    } catch {
+      await next.stopControl();
+      if (next.stopping) return true;
+      next.retired = true; this.retired = false; this.ownership.current = this;
+      while (next.controlInFlight || this.slots.some(slot => slot.starting)) await delay(10);
+      await this.writes;
+      if (!this.inactive) {
+        for (const slot of this.slots) if (!slot.child && !slot.timer && slot.state.state !== "paused" && slot.state.state !== "complete") await this.startSlot(slot);
+        await this.startControl();
+      }
+      return false;
+    }
+  }
+  private async stopControl(): Promise<void> {
+    clearInterval(this.heartbeat); clearInterval(this.wakeWatch); clearInterval(this.pauseWatch); clearInterval(this.registrationWatch);
+    this.stopUpgradeWatch?.(); this.stopHealth?.(); this.appUpdates?.stop();
     await this.modelMaintenance?.stop();
+
+  }
+  stop(): Promise<void> { return this.retired ? this.current().stop() : this.stopDone ||= this.stopAll(); }
+  private async stopAll(): Promise<void> {
+    this.stopping = true;
+    await this.stopControl();
+    this.host.stopWatching();
     // Inference lets running streams finish before it exits, so it gets its drain on top of the usual grace. The private Claude
     // inference gets the same longer wait before SIGKILL, but only as a wait: its own close aborts running requests, so the
     // larger grace guarantees nothing about them. No idle guard runs on this path; the sockets guard belongs to automatic
@@ -438,20 +499,8 @@ export class ServiceSupervisor {
       const failure = await executionStopped;
       if (this.host.executionState) this.host.executionState.state = failure ? "failed" : "stopped";
       await this.publish(); if (failure) throw failure;
-    } finally { this.stoppedResolve(); }
+    } finally { for (const lease of this.ownership.leases) lease.release(); this.ownership.leases.length = 0; this.stoppedResolve(); }
   }
 }
 
-export async function runServiceSupervisor(plan: ServicePlan, state: string): Promise<void> {
-  await mkdir(state, { recursive: true, mode: 0o700 });
-  configureTelemetry(state, "service"); startErrorReports(state, "service");
-  await withPrivateFileLock(serviceStatusPath(state), async () => {
-    const supervisor = new ServiceSupervisor(plan, state);
-    const stop = () => { void supervisor.stop(); };
-    const restart = () => { void supervisor.restartWhenIdle(); };
-    process.once("SIGINT", stop); process.once("SIGTERM", stop);
-    if (process.platform !== "win32") process.on("SIGUSR2", restart);
-    try { await supervisor.start(); await supervisor.stopped; }
-    finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); process.off("SIGUSR2", restart); await supervisor.stop(); }
-  });
-}
+export { runServiceSupervisor } from "./service-supervisor-run.js";
