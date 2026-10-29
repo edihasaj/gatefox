@@ -298,6 +298,10 @@ try {
   await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: false,
     components: [{ id: 'native', kind: 'native', command: runtime.executable, args: ['--codex', runtime.executable, '--native-home', native], log: join(state, 'native.log') }] });
   const rows = modelCatalog(clientConfig).models;
+  if (values['child-status']) {
+    evidence.localCollaborationVersion = rows.find(model => model.slug === roleModels.get('implementer'))?.multi_agent_version ?? null;
+    assert.equal(evidence.localCollaborationVersion, 'v2', 'The fixture must preserve the configured local child collaboration capability');
+  }
   const row = rows.find(model => model.slug === parentAlias); assert.ok(row, 'Parent model catalog row');
   const nativeRow = { ...row, slug: parentUpstream, multi_agent_version: undefined };
   const catalogPath = join(state, 'catalog.json');
