@@ -13,10 +13,10 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const { values } = parseArgs({ options: {
   package: { type: 'string' }, code: { type: 'string' }, config: { type: 'string' }, root: { type: 'string' },
-  model: { type: 'string' }, context: { type: 'string' }, policy: { type: 'string' }, scenario: { type: 'string', default: 'healthy' },
+  model: { type: 'string' }, 'child-status': { type: 'boolean' }, context: { type: 'string' }, policy: { type: 'string' }, scenario: { type: 'string', default: 'healthy' },
 } });
 for (const key of ['package', 'config', 'root', 'model', 'context', 'policy']) assert.ok(values[key], `Pass --${key}`);
-assert.ok(['healthy', 'local-unhealthy', 'unknown-source', 'worker-failure'].includes(values.scenario), '--scenario must be healthy, local-unhealthy, unknown-source, or worker-failure');
+assert.ok(['healthy', 'held-worker', 'local-unhealthy', 'unknown-source', 'worker-failure'].includes(values.scenario), '--scenario must be healthy, held-worker, local-unhealthy, unknown-source, or worker-failure');
 
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
 const packagePath = resolve(values.package), sourceConfigPath = resolve(values.config), root = resolve(values.root);
@@ -98,7 +98,7 @@ const selectedProviders = original.providers.flatMap(source => {
     const isParent = source.id === parentProvider.id && alias === parentAlias;
     metadata[alias] = { ...source.modelMetadata?.[alias], contextWindow: 100_000,
       reasoningEfforts: isParent ? ['low', 'medium', 'high', 'ultra'] : ['low', 'medium', 'high'],
-      multiAgentVersion: isParent ? 'v2' : undefined, multiAgentReasoningEffort: isParent ? 'low' : undefined, useResponsesLite: true };
+      multiAgentVersion: isParent ? 'v2' : source.modelMetadata?.[alias]?.multiAgentVersion, multiAgentReasoningEffort: isParent ? 'low' : undefined, useResponsesLite: true };
   }
   provider.models = models; provider.modelMetadata = metadata;
   return [provider];
@@ -159,7 +159,7 @@ async function availabilityOverride(req, res, targetPort) {
     latestSourceRequestedAt = Date.now();
   }
   if (scenario === 'unknown-source') { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code: 'availability_source_unreachable' } })); return; }
-  if (scenario === 'healthy' || (workerFailure && !evidence.injectedFailureAttempted)) { forward(req, res, targetPort); return; }
+  if (scenario === 'healthy' || scenario === 'held-worker' || (workerFailure && !evidence.injectedFailureAttempted)) { forward(req, res, targetPort); return; }
   const response = await fetch(`http://127.0.0.1:${targetPort}${req.url}`, { headers: req.headers });
   const report = await response.json();
   const local = report.providers?.find(row => row.id === providersByRole.get('implementer').id);
@@ -218,6 +218,10 @@ try {
       const isParent = provider.id === parentProvider.id && request.model === parentUpstream;
       const childKey = context?.threadId ?? context?.sessionId ?? 'unidentified-child';
       const localWorker = provider.id === providersByRole.get('implementer').id && request.model === provider.models[roleModels.get('implementer')];
+      if (localWorker && !isParent) {
+        const names = (request.input ?? []).filter(item => item.type === 'function_call').map(item => [item.namespace, item.name].filter(Boolean).join('.'));
+        evidence.localToolNames = [...new Set([...(evidence.localToolNames ?? []), ...names])];
+      }
       const injected = workerFailure && !isParent && localWorker;
       const record = { provider: provider.id, model: request.model, parent: isParent, ...(injected ? { injectedFailure: true } : {}) };
       evidence.routed.push(record);
@@ -293,7 +297,7 @@ try {
   else assert.equal(preflightOutcome.status, 'available', 'The direct helper preflight must read the isolated availability endpoint');
   await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: false,
     components: [{ id: 'native', kind: 'native', command: runtime.executable, args: ['--codex', runtime.executable, '--native-home', native], log: join(state, 'native.log') }] });
-  const rows = modelCatalog(clientConfig).models.map(model => model.slug === parentAlias ? model : { ...model, multi_agent_version: undefined });
+  const rows = modelCatalog(clientConfig).models;
   const row = rows.find(model => model.slug === parentAlias); assert.ok(row, 'Parent model catalog row');
   const nativeRow = { ...row, slug: parentUpstream, multi_agent_version: undefined };
   const catalogPath = join(state, 'catalog.json');
@@ -337,7 +341,9 @@ try {
   const parentThread = await router.request('thread/start', { model: parentAlias, cwd: work, sandbox: 'workspace-write', approvalPolicy: 'never',
     config: { model_reasoning_effort: 'ultra', sandbox_workspace_write: { network_access: true } } });
   parentThreadId = parentThread.thread.id;
-  const prompt = `Delegate this bounded read-only task to the appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. If the worker reaches a terminal failure, the configured policy may make one appropriate fallback attempt. Wait for the result and report it.`;
+  const statusInstruction = values['child-status'] ? ' The worker must first send a brief status message to canonical parent path /root using its exposed collaboration send_message tool, then read the file. A status transport error must be reported separately and is not evidence the model cannot perform the read.' : '';
+  const holdInstruction = scenario === 'held-worker' ? ' Initially put the worker on HOLD: it must acknowledge waiting without reading the file. After its held report, explicitly resume that same worker with the current working directory and proof-reading task. Keep the same worker through hold and resume.' : '';
+  const prompt = `Delegate this bounded read-only task to the appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. If the worker reaches a terminal failure, the configured policy may make one appropriate fallback attempt. Wait for the result and report it.${statusInstruction}${holdInstruction}`;
   evidence.availabilityRequestsAfterParent = 0; latestSourceRequestedAt = 0; latestHelperCompletedAt = 0; failedWorkerTerminalAt = 0; firstChildAt = undefined; helperChecksAtPreviousChild = 0; sourceGetsAtPreviousChild = 0; parentTurnStarted = true;
   progress('parent_started');
   const turn = await router.request('turn/start', { threadId: parentThreadId, effort: 'ultra', input: [{ type: 'text', text: prompt }] });
@@ -357,6 +363,19 @@ try {
   const child = children.find(thread => thread.turns.flatMap(turn => turn.items).some(item => item.type === 'commandExecution' && commandReadProof(item)));
   assert.ok(child, 'A real child must successfully read the proof');
   const childItems = child.turns.flatMap(turn => turn.items);
+  if (scenario === 'held-worker') {
+    evidence.heldWorkerResumed = child.turns.length >= 2;
+    evidence.heldTurnReadProof = child.turns[0].items.some(item => item.type === 'commandExecution' && commandReadProof(item));
+    evidence.heldAcknowledged = child.turns[0].items.some(item => item.type === 'agentMessage' && /hold|held|waiting|paused/i.test(item.text ?? ''));
+    assert.ok(evidence.heldWorkerResumed && evidence.heldAcknowledged && !evidence.heldTurnReadProof, 'The same held worker must resume without executing the held assignment early');
+  }
+  if (values['child-status']) {
+    const statusItems = childItems.filter(item => item.type === 'subAgentActivity' && item.kind === 'interacted' && item.agentThreadId === parentThreadId);
+    evidence.childStatusCalls = statusItems.length;
+    evidence.childStatusSucceeded = statusItems.length > 0;
+    evidence.localFinalReportsCoordinationFailure = messages(child).some(text => /unsupported|unavailable|cannot.*message|not.*exposed/i.test(text));
+    assert.ok(evidence.childStatusSucceeded, 'The live local child must successfully message its parent');
+  }
   const parentItems = (await router.request('thread/read', { threadId: parentThreadId, includeTurns: true })).thread.turns.flatMap(turn => turn.items);
   evidence.childCommandItems = childItems.filter(item => item.type === 'commandExecution').length;
   evidence.childProofCommand = childItems.some(item => item.type === 'commandExecution' && commandReadProof(item));
@@ -376,7 +395,7 @@ try {
   const childRoute = evidence.routed.find(route => !route.parent && !route.injectedFailure && route.model === providersByRole.get(chosenRole).models[child.model]);
   assert.ok(childRoute, 'A child route must be observed');
   evidence.childRole = chosenRole ?? 'unknown'; evidence.childModel = child.model;
-  if (scenario === 'healthy') assert.equal(childRoute.provider, providersByRole.get('implementer').id, 'Healthy availability selects the named Qwen implementer');
+  if (scenario === 'healthy' || scenario === 'held-worker') assert.equal(childRoute.provider, providersByRole.get('implementer').id, 'Healthy availability selects the named Qwen implementer');
   if (scenario === 'local-unhealthy') {
     assert.equal(childRoute.provider, providersByRole.get('other_implementer').id, 'An injected unhealthy local route falls back to Terra');
     assert.notEqual(childRoute.provider, providersByRole.get('fallback_implementer').id, 'An exhausted Claude primary must not receive the fallback task');

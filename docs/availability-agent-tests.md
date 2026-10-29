@@ -68,3 +68,35 @@ written files or continuation inside the failed child's conversation.
 
 Native OpenAI parent delegation, Claude Code orchestration, shared DGX queue
 visibility and desktop rendering require separate receipts.
+
+## Child-to-parent status and task holds
+
+A model selected as a V2 child must declare `multiAgentVersion: "v2"` in its
+Gateway metadata. The SDK's root and child admission checks differ: a root can
+expose collaboration while a child whose model lacks that field has no native
+collaboration handler. This can surface as `unsupported call` when the child
+uses a collaboration declaration inherited from its parent. Correct the model
+capability; do not classify failed status delivery as a model coding failure.
+
+The real-SDK fixture checks both the old failure and successful delivery to the
+parent without any provider inference:
+
+```sh
+node scripts/e2e-subagent-sidebar.mjs --package INSTALLED_PACKAGE \
+  --root /tmp/child-status-baseline --v2 --child-status --expect-status-unavailable
+node scripts/e2e-subagent-sidebar.mjs --package INSTALLED_PACKAGE \
+  --root /tmp/child-status-fixed --v2 --child-status
+```
+
+Repeat the fixed case with `--private`. The fixture also retains queued-message,
+follow-up, child history and saved identity checks. `--child-status` on the live
+availability check additionally requires the actual local worker to message its
+parent and then complete the bounded proof-reading task.
+
+Client routing guidance treats held, research-only and authorized implementation
+assignments separately. A parent-issued hold suspends the implementation budget;
+resume explicitly with current ownership and the acceptance check before
+expecting edits. Subscription escalation requires a task-specific capability
+requirement or observed blocker, and never follows merely from a broken status
+channel or extra desired parallelism. The Gateway continues to report provider
+facts and preserve the caller's chosen model; these rules stay in client policy.
