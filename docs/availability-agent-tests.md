@@ -101,7 +101,11 @@ local status scenario has no V2 capability.
 Client routing guidance treats held, research-only and authorized implementation
 assignments separately. A parent-issued hold suspends the implementation budget;
 resume explicitly with current ownership and the acceptance check before
-expecting edits. Subscription escalation requires a task-specific capability
+expecting edits. The held-worker check uses separate hold and authorized-resume
+user turns, verifies successful SDK delivery to the same child, rejects work
+tools before that delivery regardless of path spelling, and waits for natural
+child terminal completion. Status messages and earlier held results are not
+current-task completion; routine cleanup must not interrupt an active worker. Subscription escalation requires a task-specific capability
 requirement or observed blocker, and never follows merely from a broken status
 channel or extra desired parallelism. The Gateway continues to report provider
 facts and preserve the caller's chosen model; these rules stay in client policy.

@@ -112,6 +112,7 @@ const serverConfig = { version: 1, port: 0, stateDirectory: state, timeoutMs: 24
   availability: { spendwatch: originalSpendwatch }, providers: selectedProviders };
 const clientConfig = structuredClone(serverConfig);
 const configPath = join(fixture, 'gateway.json');
+const resumeMarker = `RESUME_${randomUUID()}`;
 const proof = `PROOF_${randomUUID()}`, proofFile = join(work, 'worker-only-proof.txt');
 await writeFile(proofFile, proof, { mode: 0o600 });
 
@@ -141,6 +142,7 @@ let gateway, proxy, backend, proxyPort, phase = 'setup', parentThreadId, childIn
 let parentCompletion;
 let parentTurnStarted = false, latestSourceRequestedAt = 0, firstChildAt;
 const childThreads = new Set();
+const heldStatusCalls = new Set(), resumeCalls = new Set();
 const injectedChildThreads = new Set();
 let helperChecksAtPreviousChild = 0, sourceGetsAtPreviousChild = 0;
 let latestHelperCompletedAt = 0, failedWorkerTerminalAt = 0;
@@ -252,7 +254,20 @@ try {
         injectedChildThreads.add(childKey); evidence.injectedFailureAttempted = true; evidence.injectedProvider = provider.id;
         throw new ProviderError('authentication', 'Injected local authentication refusal', 401);
       }
-      yield* delegate.infer(...args);
+      for await (const event of delegate.infer(...args)) {
+        if (scenario === 'held-worker' && event.type === 'tool') {
+          const tool = event.call.responseTool?.name ?? event.call.function.name.split('.').at(-1);
+          let params; try { params = JSON.parse(event.call.function.arguments); } catch { params = {}; }
+          if (localWorker && tool === 'send_message' && /hold|held|waiting|paused/i.test(params.message ?? '') && !evidence.resumeDelivered) heldStatusCalls.add(event.call.id);
+          if (isParent && ['send_message', 'followup_task'].includes(tool) && (params.message ?? '').includes(resumeMarker)) {
+            evidence.resumeIssuedAfterAcknowledgement = evidence.heldAcknowledged === true;
+            evidence.resumeIssued = true; resumeCalls.add(event.call.id);
+          }
+          if (localWorker && tool !== 'send_message' && !evidence.resumeDelivered) evidence.workerToolWhileHeld = true;
+          if (localWorker && tool === 'exec_command') evidence.workerCommandAfterResume = evidence.resumeDelivered === true;
+        }
+        yield event;
+      }
     } };
   }, undefined, { availability, copilotTempBase: join(fixture, 'provider-tmp'), onFailure: () => progress('provider_fault') });
   const gatewayPort = gateway.address().port;
@@ -298,7 +313,7 @@ try {
   await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: false,
     components: [{ id: 'native', kind: 'native', command: runtime.executable, args: ['--codex', runtime.executable, '--native-home', native], log: join(state, 'native.log') }] });
   const rows = modelCatalog(clientConfig).models;
-  if (values['child-status']) {
+  if (values['child-status'] || scenario === 'held-worker') {
     evidence.localCollaborationVersion = rows.find(model => model.slug === roleModels.get('implementer'))?.multi_agent_version ?? null;
     assert.equal(evidence.localCollaborationVersion, 'v2', 'The fixture must preserve the configured local child collaboration capability');
   }
@@ -318,6 +333,14 @@ try {
   backend = await AppServerBackends.create(runtime.executable, ['app-server', '--listen', 'stdio://'], clientConfig, backendSettings, overrides, catalog,
     async event => {
       const item = event.params?.item;
+      if (scenario === 'held-worker' && event.method === 'item/completed' && item?.type === 'subAgentActivity' && item.kind === 'interacted') {
+        if (heldStatusCalls.has(item.id) && item.agentThreadId === parentThreadId) evidence.heldAcknowledged = true;
+        if (resumeCalls.has(item.id) && commandThreadId(event, item) === parentThreadId && childThreads.has(item.agentThreadId)) {
+          evidence.resumeDelivered = true;
+          evidence.resumeTargetMatched = true;
+          evidence.resumeDeliveredAfterAcknowledgement = evidence.heldAcknowledged === true;
+        }
+      }
       if (event.method === 'item/completed' && item?.type === 'commandExecution' && commandThreadId(event, item) === parentThreadId && itemHasHelper(item) && commandExitCode(item) === 0) {
         evidence.helperCommands++;
         latestHelperCompletedAt = Date.now();
@@ -346,21 +369,36 @@ try {
     config: { model_reasoning_effort: 'ultra', sandbox_workspace_write: { network_access: true } } });
   parentThreadId = parentThread.thread.id;
   const statusInstruction = values['child-status'] ? ' The worker must first send a brief status message to canonical parent path /root using its exposed collaboration send_message tool, then read the file. A status transport error must be reported separately and is not evidence the model cannot perform the read.' : '';
-  const holdInstruction = scenario === 'held-worker' ? ' Initially put the worker on HOLD: it must acknowledge waiting without reading the file. After its held report, explicitly resume that same worker with the current working directory and proof-reading task. Keep the same worker through hold and resume.' : '';
-  const prompt = `Delegate this bounded read-only task to the appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. If the worker reaches a terminal failure, the configured policy may make one appropriate fallback attempt. Wait for the result and report it.${statusInstruction}${holdInstruction}`;
+  const normalPrompt = `Delegate this bounded read-only task to the appropriate configured worker according to the configured policy: use exec_command to read ${proofFile} and report its full value. Do not read that file yourself, edit files, or use OpenRouter. If the worker reaches a terminal failure, the configured policy may make one appropriate fallback attempt. Wait for the result and report it.${statusInstruction}`;
+  const heldPrompt = `Delegate a bounded task to the appropriate configured worker, but place it on HOLD now. Its future task is to read ${proofFile} with exec_command and report the full value. It must NOT read that file yet: it should only send a held/waiting acknowledgement to parent path /root and return a held report. Wait for that acknowledgement, then report the held state. Do not resume it, replace it, read the file yourself, or use OpenRouter. A later user message will authorize the same worker to continue.`;
+  const prompt = scenario === 'held-worker' ? heldPrompt : normalPrompt;
   evidence.availabilityRequestsAfterParent = 0; latestSourceRequestedAt = 0; latestHelperCompletedAt = 0; failedWorkerTerminalAt = 0; firstChildAt = undefined; helperChecksAtPreviousChild = 0; sourceGetsAtPreviousChild = 0; parentTurnStarted = true;
   progress('parent_started');
-  const turn = await router.request('turn/start', { threadId: parentThreadId, effort: 'ultra', input: [{ type: 'text', text: prompt }] });
+  let turn = await router.request('turn/start', { threadId: parentThreadId, effort: 'ultra', input: [{ type: 'text', text: prompt }] });
+  if (scenario === 'held-worker') {
+    await until(() => parentCompletion?.id === turn.turn.id ? parentCompletion : undefined, 'Held parent completion');
+    await until(() => evidence.heldAcknowledged, 'Local worker held acknowledgement');
+    assert.ok(!evidence.workerToolWhileHeld, 'A held worker acknowledges without executing work tools before authorization');
+    evidence.sameChildBeforeResume = childThreads.size === 1;
+    turn = await router.request('turn/start', { threadId: parentThreadId, effort: 'ultra', input: [{ type: 'text', text:
+      `Resume that same held worker now. Use a followup_task message containing ${resumeMarker}, the current working directory ${work}, and authorization to read ${proofFile} with exec_command. Wait for the actual file proof and the current child task's terminal completion; an earlier held/status report is not completion. Do not interrupt or cancel the worker for cleanup, even if its progress message already contains the proof. Do not create another worker, read the file yourself, edit files, or use OpenRouter.` }] });
+  }
   const complete = await until(() => parentCompletion?.id === turn.turn.id ? parentCompletion : undefined, 'Parent completion');
   assert.equal(complete.status, 'completed'); evidence.parentCompleted = true;
   phase = 'inspect';
   progress('inspect');
-  const loaded = await router.request('thread/loaded/list', {});
-  const children = [];
-  for (const id of loaded.data.filter(id => id !== parentThreadId)) {
-    const result = await router.request('thread/read', { threadId: id, includeTurns: true });
-    if ((result.thread.parentThreadId ?? result.thread.source?.subAgent?.thread_spawn?.parent_thread_id) === parentThreadId) children.push(result.thread);
-  }
+  // A parent can receive the proof through a status message before the child's
+  // final model stream ends. Wait for its real terminal turn; never cancel it
+  // merely because the parent's answer arrived first.
+  const children = await until(async () => {
+    const loaded = await router.request('thread/loaded/list', {}); const observed = [];
+    for (const id of loaded.data.filter(id => id !== parentThreadId)) {
+      const result = await router.request('thread/read', { threadId: id, includeTurns: true });
+      if ((result.thread.parentThreadId ?? result.thread.source?.subAgent?.thread_spawn?.parent_thread_id) === parentThreadId) observed.push(result.thread);
+    }
+    evidence.childLastTurnStatuses = observed.map(thread => thread.turns.at(-1)?.status ?? 'unknown');
+    return observed.length && !evidence.childLastTurnStatuses.includes('inProgress') ? observed : undefined;
+  }, 'Child task finalization', 60_000);
   evidence.childCount = children.length;
   assert.equal(evidence.childCount, workerFailure ? 2 : 1, 'This scenario has the expected worker count');
   assert.ok(childInferenceStarted, 'The child must make a real inference request');
@@ -368,19 +406,20 @@ try {
   assert.ok(child, 'A real child must successfully read the proof');
   const childItems = child.turns.flatMap(turn => turn.items);
   if (scenario === 'held-worker') {
-    evidence.heldWorkerResumed = child.turns.length >= 2;
-    evidence.heldTurnReadProof = child.turns[0].items.some(item => item.type === 'commandExecution' && commandReadProof(item));
-    evidence.heldAcknowledged = child.turns[0].items.some(item => item.type === 'agentMessage' && /hold|held|waiting|paused/i.test(item.text ?? ''));
-    assert.ok(evidence.heldWorkerResumed && evidence.heldAcknowledged && !evidence.heldTurnReadProof, 'The same held worker must resume without executing the held assignment early');
+    evidence.heldWorkerResumed = evidence.resumeDelivered === true && evidence.workerCommandAfterResume === true;
+    assert.ok(evidence.heldWorkerResumed && evidence.sameChildBeforeResume && evidence.heldAcknowledged && evidence.resumeTargetMatched && evidence.resumeDeliveredAfterAcknowledgement && !evidence.workerToolWhileHeld,
+      'The same held worker must acknowledge the hold, receive explicit resume, and only then read the proof');
   }
   if (values['child-status']) {
     const statusItems = childItems.filter(item => item.type === 'subAgentActivity' && item.kind === 'interacted' && item.agentThreadId === parentThreadId);
     evidence.childStatusCalls = statusItems.length;
     evidence.childStatusSucceeded = statusItems.length > 0;
-    evidence.localFinalReportsCoordinationFailure = messages(child).some(text => /unsupported|unavailable|cannot.*message|not.*exposed/i.test(text));
     assert.ok(evidence.childStatusSucceeded, 'The live local child must successfully message its parent');
   }
   const parentItems = (await router.request('thread/read', { threadId: parentThreadId, includeTurns: true })).thread.turns.flatMap(turn => turn.items);
+  evidence.parentInterruptions = parentItems.filter(item => item.type === 'subAgentActivity' && item.kind === 'interrupted').length;
+  evidence.childTurns = child.turns.map(turn => ({ status: turn.status, proofCommand: turn.items.some(item => item.type === 'commandExecution' && commandReadProof(item)), proofReported: turn.items.some(item => item.type === 'agentMessage' && item.text?.includes(proof)) }));
+  if (scenario === 'held-worker') assert.equal(evidence.parentInterruptions, 0, 'A held/resumed worker must finish naturally without cleanup interruption');
   evidence.childCommandItems = childItems.filter(item => item.type === 'commandExecution').length;
   evidence.childProofCommand = childItems.some(item => item.type === 'commandExecution' && commandReadProof(item));
   evidence.childReportedProof = messages(child).some(text => text.includes(proof));
