@@ -186,6 +186,27 @@ test("a resolver that never answers is cut off by the probe deadline", async () 
   assert.ok(Date.now() - started < 1500, `bounded, took ${Date.now() - started} ms`);
 });
 
+test("refused public IP literals neither connect nor leave an unhandled deadline rejection", async () => {
+  let dialed = 0;
+  for (const baseUrl of ["http://203.0.113.5:4000/v1", "http://[2001:db8::1]:4000/v1"]) {
+    const fact = await probeUpstreamCapacity(provider({ tailnet: true, baseUrl }), {
+      dial: () => { dialed++; return { host: "127.0.0.1", port: 1 }; },
+    });
+    assert.equal(fact, undefined);
+  }
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(dialed, 0);
+});
+
+test("a rejected HTTP response never waits for stalled body cancellation", { timeout: 1500 }, async () => {
+  const fetch: typeof globalThis.fetch = async () => new Response(new ReadableStream({
+    cancel: () => new Promise<void>(() => {}),
+  }), { status: 503 });
+  const began = Date.now();
+  assert.equal(await probeUpstreamCapacity(provider(), { fetch }, 30), undefined);
+  assert.ok(Date.now() - began < 1000);
+});
+
 test("a stalled fetch or response body is bounded by the same deadline", async () => {
   const hungFetch: typeof globalThis.fetch = () => new Promise<Response>(() => {});
   for (const fetch of [hungFetch, (async () => new Response(new ReadableStream<Uint8Array>({ start() {}, cancel() {} }))) as typeof globalThis.fetch]) {

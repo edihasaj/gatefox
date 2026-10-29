@@ -51,10 +51,12 @@ not a reason: no data means no claim, never "has headroom".
 
 ## Collection
 
-Collection starts with the first availability request and stops after 30 minutes
-without one, so a gateway nobody asks makes no extra calls. Requests read the
-in-memory snapshot only. `?wait=MS` (at most 5000) lets a cold request wait for the
-first round; the CLI waits 2500 ms by default.
+Availability's health, quota and balance collection starts with the first request
+and stops after 30 minutes without one. Requests read the in-memory snapshot
+only. `?wait=MS` (at most 5000) lets a cold request wait for the first round; the
+CLI waits 2500 ms by default. Opt-in admission capacity discovery separately
+refreshes inside the serving handler while its provider stays enabled, so queue
+limits can update before anyone requests an availability report.
 
 | Source | Every | Bound |
 |---|---|---|
