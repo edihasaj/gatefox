@@ -7,8 +7,8 @@ For managed desktop deployments, deployment is complete only when `gateway rollo
 Keep exactly one macOS gateway background job, owned by the signed Harness Gateway.app with its icon. This includes Claude Desktop adapters, private inference and SSH forwards, even when their labels say `claude-*` instead of `gateway`. Run recurring model discovery, updates and maintenance inside that existing service tree; never add separate maintenance LaunchAgents, Login Items or cron jobs. Never reset global macOS background-task or privacy databases to hide historical rows. See `docs/macos-background-item.md` and `docs/services.md`.
 Clean verified, owned updater download/extraction staging after successful transaction finalization. Preserve pending work, rollback bundles and in-use releases; never accumulate successful-update staging. See `docs/macos-updates.md`.
 Keep provider authentication separate from Responses translation and routing.
-The gateway owns translation and transport, not agent orchestration or task policy.
-Preserve caller instructions, roles, model choices and permissions; do not invent them.
+The gateway owns translation and transport, not agent orchestration or task policy. Opt-in managed aliases select a provider inside Gateway code before inference (see `docs/managed-routing.md`); that admission is not orchestration and never changes task scope, permissions, tool execution or review roles.
+Preserve caller instructions, roles, explicit model choices and permissions; do not invent them. A fixed alias stays fixed; only a deliberately selected managed alias is resolved by Gateway routing.
 The client owns tool execution. Inference providers must not execute native tools.
 Never log tokens, request bodies, tool arguments, or environment values.
 Versioning: minor and patch top out at 9; after x.y.9 increment the minor, and after x.9.9 release (x+1).0.0. Use `npm run version:next`.

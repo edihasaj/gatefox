@@ -6,3 +6,6 @@ export type { ResponsesRequest, InferenceEvent } from "./protocol/types.js";
 export { messagesToResponses } from "./protocol/messages-request.js";
 export { MessagesWriter } from "./protocol/messages.js";
 export { claudeSettings, remoteClaudeSettings } from "./claude-config.js";
+export { ManagedRouter } from "./managed-routing.js";
+export { validateManagedRouting } from "./managed-routing-config.js";
+export type { ManagedRoutingSettings, ManagedRoutePolicy } from "./managed-routing-config.js";

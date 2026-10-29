@@ -104,9 +104,9 @@ test('installed renderer matches the pin and patches in memory without changing 
   let archive;
   try { archive=await readFile('/Applications/ChatGPT.app/Contents/Resources/app.asar'); }
   catch(error){if(error.code==='ENOENT')return t.skip('Installed app unavailable');throw error;}
-  const source=readAsarFile(archive,supportedUnreadTrial.asset).toString('utf8');
   const version=JSON.parse(readAsarFile(archive,'package.json')).version;
   if(version!==supportedUnreadTrial.version)return t.skip('App version has no verified experimental patch');
+  const source=readAsarFile(archive,supportedUnreadTrial.asset).toString('utf8');
   const before=createHash('sha256').update(archive).digest('hex');
   const actualBridge=await readFile(new URL('../codex-unread-trial/read-state-bridge.mjs',import.meta.url),'utf8');
   const patched=patchPinnedUnreadRenderer(source,actualBridge,version);
