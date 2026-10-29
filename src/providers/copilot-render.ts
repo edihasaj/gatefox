@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ChatToolSelection, OpenAITool } from "../protocol/types.js";
-import { claudeToolName } from "./claude-tool-names.js";
+import { claudeToolBindings, claudeToolName } from "./claude-tool-names.js";
 import { itemText, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { ProviderError } from "./provider.js";
 
@@ -30,6 +30,7 @@ export function copilotSystem(caller: string[], catalog: NativeTool[]): string {
   return [
     guidance,
     `Tool names: ${JSON.stringify(catalog.map(({ name, tool }) => ({ caller: tool.function.name, native: name })))}`,
+    "Request tools by their native names in the current declarations. Historical tool calls do not declare tools.",
     "Conversation items arrive as user messages, oldest first, one item per message. Each message starts with an <<item>> header line and ends with a <</item>> line; everything between them is the item's exact content. Results of your tool calls arrive as tool results.",
     ...caller.filter(Boolean).map((text, index) => index === 0 ? `Caller instructions:\n${text}` : text),
   ].join("\n\n");
@@ -86,8 +87,9 @@ async function stage(directory: string, { label, image }: ClaudeImages[number]):
  * `stopped` is asked before each image is written: once it says yes the rendering fails as cancelled, so a request that ended
  * (and whose folder is about to be removed) never keeps writing into it.
  */
-export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string, stopped: () => boolean = () => false): Promise<Prompt[]> {
+export async function copilotPrompts(conversation: ClaudeConversation, images: ClaudeImages, from: number, line: string | undefined, directory: string, catalog: NativeTool[], stopped: () => boolean = () => false): Promise<Prompt[]> {
   const owned = imagesByItem(images);
+  const bindings = claudeToolBindings(catalog.map(({ tool }) => tool));
   const prompts: Prompt[] = [];
   for (const [offset, item] of conversation.slice(from).entries()) {
     const attachments: Attachment[] = [];
@@ -95,7 +97,13 @@ export async function copilotPrompts(conversation: ClaudeConversation, images: C
       if (stopped()) throw new ProviderError("cancelled", "Request cancelled", 499);
       attachments.push(await stage(directory, image));
     }
-    prompts.push({ prompt: itemText(item, from + offset + 1), ...(attachments.length ? { attachments } : {}) });
+    // Render declared historical calls with the same names as the CLI's tool declarations. Keep the caller's
+    // conversation untouched: the live ledger and returned calls use its original identities.
+    const replay = item.tool_calls ? { ...item, tool_calls: item.tool_calls.map(call => {
+      const tool = bindings.get(call.function.name);
+      return tool ? { ...call, function: { ...call.function, name: claudeToolName(tool) } } : call;
+    }) } : item;
+    prompts.push({ prompt: itemText(replay, from + offset + 1), ...(attachments.length ? { attachments } : {}) });
   }
   if (!prompts.length) prompts.push({ prompt: "(the conversation has no items)" });
   if (line) prompts[prompts.length - 1].prompt += `\n${line}`;

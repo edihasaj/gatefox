@@ -222,7 +222,7 @@ function toolResults(input: CopilotLiveInput, entries: Extract<Plan, { kind: "co
 function start(reg: Registry, settings: CopilotLiveSettings, session: CopilotLiveSession, input: CopilotLiveInput, prefix: string[],
   plan: Plan, outputs: Map<string, string | ToolResult> | undefined, signal: AbortSignal, decision: Record<string, unknown>): AsyncIterable<InferenceEvent> {
   const begin = plan.kind === "continue_outputs" ? { outputs: outputs ?? toolResults(input, plan.outputs) }
-    : { prompts: (directory: string, stopped: () => boolean) => copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native), directory, stopped) };
+    : { prompts: (directory: string, stopped: () => boolean) => copilotPrompts(input.conversation, input.images, plan.kind === "continue_user" ? plan.from : 0, choiceLine(input.choice, input.native), directory, input.native, stopped) };
   session.timers(settings.parkMinutes * 60000, settings.toolWaitMinutes * 60000);
   const turn = input.newTurn();
   return session.run({

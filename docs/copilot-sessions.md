@@ -58,7 +58,11 @@ what the model sees.
   leading system and developer messages. It is fixed for the session's life.
 - **History:** one user message per conversation item, oldest first, each between
   `<<item N role>>` and `<</item>>` lines. A seed sends all items with
-  `session.sendMessages`; a continuation sends only the new ones.
+  `session.sendMessages`; a continuation sends only the new ones. Replayed calls
+  to a currently declared tool use its same native name as the tool declaration.
+  Arguments, custom input, call IDs and results stay unchanged, and the live
+  ledger keeps the caller's original identities. Ambiguous or unavailable old
+  tool names remain historical names; replay never makes them available.
 - **Images:** a history item's images are written (mode 0600) to the `images` folder of
   the CLI's private folder and attached to the item's message as `file` attachments; the
   message text names each one. Their bytes never travel inside a message, because one
@@ -304,6 +308,9 @@ same `initiator`, `cacheWriteTokens`, `reasoningTokens` and `nanoAiu` for every 
 request.
 
 ## Restarts and upgrades
+
+Upgrading from a release that replayed caller tool names rebuilds each live
+session once because the system message's tool-name guidance changed.
 
 An in-place upgrade keeps the sessions: the registry lives on the versioned global
 symbol `harness-gateway/copilot-sessions/v1`, so the new runtime adopts the one it finds,
