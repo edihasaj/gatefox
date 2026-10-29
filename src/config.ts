@@ -179,7 +179,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   if (config.trustAllProjects !== undefined && typeof config.trustAllProjects !== "boolean") throw new Error("trustAllProjects must be boolean");
   if (!Array.isArray(config.providers) || (!config.clientOnly && !config.providers.length)) throw new Error("At least one provider is required");
   if (config.clientOnly && (config.providers.length || !config.port)) throw new Error("Remote clients require a fixed forwarded port and no local providers");
-  if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 16)) throw new Error("maxConcurrent must be 1 through 16");
+  if (config.maxConcurrent !== undefined && (!Number.isInteger(config.maxConcurrent) || config.maxConcurrent < 1 || config.maxConcurrent > 64)) throw new Error("maxConcurrent must be 1 through 64");
   if (config.timeoutMs !== undefined && (!Number.isInteger(config.timeoutMs) || config.timeoutMs < 1000 || config.timeoutMs > 600000)) throw new Error("timeoutMs must be 1000 through 600000");
   if (config.chatIdentity !== undefined && config.chatIdentity !== "openai" && config.chatIdentity !== "legacy") throw new Error("chatIdentity must be openai or legacy");
   const nativeModelPicker = config.nativeModelPicker === undefined ? undefined : validateNativeModelPicker(config.nativeModelPicker);
@@ -193,7 +193,7 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (ids.has(provider.id)) throw new Error(`Duplicate provider ID: ${provider.id}`);
     ids.add(provider.id);
     if (!["claude-subscription", "codex-subscription", "copilot-subscription", "responses-api", "anthropic-api", "chat-completions-api", "grok-subscription"].includes(provider.type)) throw new Error(`Unsupported provider type: ${provider.type}`);
-    if (provider.maxConcurrent !== undefined && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 16)) throw new Error(`${provider.id}: maxConcurrent must be 1 through 16`);
+    if (provider.maxConcurrent !== undefined && (!Number.isInteger(provider.maxConcurrent) || provider.maxConcurrent < 1 || provider.maxConcurrent > 64)) throw new Error(`${provider.id}: maxConcurrent must be 1 through 64`);
     if (!provider.models || typeof provider.models !== "object" || Array.isArray(provider.models) || !Object.keys(provider.models).length) throw new Error(`${provider.id}: models must be a non-empty alias map`);
     for (const [alias, model] of Object.entries(provider.models)) {
       if (!alias || typeof model !== "string" || !model) throw new Error(`${provider.id}: model aliases and IDs must be non-empty strings`);

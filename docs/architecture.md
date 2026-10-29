@@ -38,6 +38,13 @@ plus 32 requests, so a lower provider override does not reduce the previous capa
 `/health` reports the running and queued totals
 across all provider queues.
 
+Both admission settings accept integers from 1 through 64. For a local inference
+farm with twenty qualified slots, set only that provider's `maxConcurrent` to 20;
+other providers keep their own limits or the gateway-wide default. This is a
+per-Gateway admission limit, not a shared reservation across machines or a
+measurement of the upstream farm's load. Availability reports this local limit
+and marks the provider busy when it is reached or requests are queued.
+
 On a live configuration reload, existing queues keep their in-flight work, changed
 limits take effect immediately, and new providers receive new queues. A removed
 provider's queue remains until it is idle and no live request snapshot refers to it,
