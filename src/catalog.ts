@@ -6,6 +6,7 @@ import { apiCredential, bridgesToolSearch, capContextWindow, type GatewayConfig,
 import { publicServiceTierFields, readPublicServiceTierMetadata, readServiceTierMetadata } from "./model-service-tiers.js";
 import { upstreamSlugField } from "./codex-native-rows.js";
 import { pickerHidden, releasedAtMetadata } from "./model-auto-latest/metadata.js";
+import { managedCatalog } from "./managed-routing-catalog.js";
 
 /** Honest startup metadata for Codex's native model picker and reasoning control. */
 export function modelCatalog(config: GatewayConfig): { models: Array<Record<string, unknown>> } {
@@ -54,7 +55,7 @@ export function modelCatalog(config: GatewayConfig): { models: Array<Record<stri
       ...(metadata?.supportsReasoningEffortUpdates ? { supports_reasoning_effort_updates: true } : {}),
     };
   }));
-  return { models: models.sort((a, b) => groups.get(a.slug)! - groups.get(b.slug)! || a.priority - b.priority || a.slug.localeCompare(b.slug)).map((model, priority) => ({ ...model, priority })) };
+  return { models: [...models.sort((a, b) => groups.get(a.slug)! - groups.get(b.slug)! || a.priority - b.priority || a.slug.localeCompare(b.slug)), ...managedCatalog(config)].map((model, priority) => ({ ...model, priority })) };
 }
 
 export interface DiscoveredModel { model: string; metadata: ModelMetadata }

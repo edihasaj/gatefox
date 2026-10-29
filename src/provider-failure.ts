@@ -10,6 +10,7 @@ const diagnosticCodes = new Set([
   "upstream_error", "upstream_unavailable", "provider_failed", "inference_failed", "incomplete", "invalid_tool_call", "cli_failed", "output_too_large",
   "inconsistent_stream", "unsupported_protocol", "invalid_stream", "invalid_output", "context_length_exceeded", "rate_limit_exceeded", "insufficient_quota",
   "upstream_rejected", "provider_unreachable",
+  "managed_route_identity_required", "managed_route_unavailable", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable",
 ]);
 const upstreamCodes = new Set([
   "unknown", "missing_terminal", "server_error", "server_is_overloaded", "rate_limit", "authentication_failed", "billing_error", "invalid_request",
@@ -44,6 +45,7 @@ function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | und
 // as final. These failures repeat identically, so the stream reports such a code and
 // the turn stops at once instead of re-running inference.
 const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota"]);
+for (const code of ["managed_route_identity_required", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable"]) permanentCodes.add(code);
 const finalUpstreamCodes = new Set(["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]);
 const rejectedStatuses = new Set([400, 404, 413, 422]);
 /** The error code a failed stream sends to Codex. */

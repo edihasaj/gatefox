@@ -45,10 +45,12 @@ import { pickerHiddenAliases } from "./model-auto-latest/metadata.js";
 import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
 import { AvailabilityService } from "./availability/service.js";
 import { availabilityPath, serveAvailability } from "./availability/http.js";
+import { ManagedRouter } from "./managed-routing.js";
+import { resolveManagedRequest } from "./server-managed-routing.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
 /** What this release guarantees on the wire; `/health` advertises it so operators can tell an old daemon from a new one. */
-export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1"];
+export const gatewayFeatures = ["responses-ws-426", "openai-internal-strip", "native-identity-v1", "managed-worker-routing-v1"];
 const waitForDrain = (res: ServerResponse, signal: AbortSignal) => new Promise<void>(resolve => {
   const finished = () => { res.off("drain", finished); res.off("close", finished); signal.removeEventListener("abort", finished); resolve(); };
   res.once("drain", finished); res.once("close", finished); signal.addEventListener("abort", finished, { once: true });
@@ -243,6 +245,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   };
   const capacity = new UpstreamCapacityWatcher((id, fact) => admissions.setDiscoveredLimit(id, fact?.limit, fact?.observedAt), options.upstreamCapacity);
   const availability = options.availability ?? new AvailabilityService();
+  const managedRouter = new ManagedRouter(config.stateDirectory);
   availability.configure(config);
   const buildRoutes = (current: GatewayConfig) => {
     admissions.configure(current);
@@ -313,7 +316,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         if (info) send(res, 200, info); else fail(503, "catalog_unavailable", "The gateway catalog does not fit the shared-catalog protocol");
       } finally { state.release(); } return;
     }
-    if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...[...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })), ...Object.keys(state.config.managedRouting?.routes ?? {}).map(id => ({ id, object: "model", owned_by: "managed" }))] }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === availabilityPath) {
@@ -401,7 +404,14 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // Sub-agents that Codex spawns from a gateway chat inherit the gateway provider
       // but take a bare model name from the user's agent roles. Serve that same model
       // through its vendor's subscription route when exactly one alias matches.
-      const alias = state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model);
+      const managed = await resolveManagedRequest({ config: state.config, request, context, router: managedRouter, availability, signal: controller.signal,
+        report: () => availability.report(state.config, id => ({ ...admissions.load(id), limit: admissions.limit(id) }), providerUsage.snapshot(state.config.providers), pickerHiddenAliases(state.config)) });
+      if (managed) {
+        res.setHeader("X-Gateway-Managed-Route", managed.alias);
+        res.setHeader("X-Gateway-Managed-Reused", String(managed.reused));
+        telemetry("managed_route_selected", { logicalAlias: request.model, alias: managed.alias, providerId: managed.providerId, reused: managed.reused, contextBytes: managed.contextBytes });
+      }
+      const alias = managed?.alias ?? (state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model));
       const route = (alias ? state.routes.get(alias) : undefined) ?? state.reviewers.get(request.model);
       // Only an allowlisted reviewer slug is recorded for a request that has no route; any other name stays out of telemetry.
       if (!route && isAutoReviewModel(request.model)) model = request.model;

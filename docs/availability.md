@@ -10,8 +10,10 @@ read_when:
 
 `GET /v1/availability` reports what this gateway can serve right now, so an agent
 or script can keep working when one account or server is used up or down. It
-reports facts only. The gateway never picks a model, changes a route or reorders
-the catalog because of these facts; the caller makes every choice.
+reports facts only. Fixed model aliases do not switch providers because of these
+facts. Explicit [managed worker routes](managed-routing.md) consume the facts in
+their separate admission policy; callers opt into them by selecting a managed
+alias. The endpoint itself never mutates a route or reorders the catalog.
 
 The endpoint needs the gateway client token, like every other non-health route.
 `gateway availability [--json] [--wait MS]` prints the same report for this Mac.

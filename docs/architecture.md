@@ -17,8 +17,11 @@ the caller's native JSON or streamed output. Each client executes its file and
 command tools; providers receive their results through replay. See
 [Messages compatibility](messages.md) for Claude Code setup and protocol limits.
 
-The gateway does not assign agent jobs, select worker models, inject task
-instructions, or execute caller tools. The client owns orchestration, permissions,
+For fixed aliases, the gateway does not assign agent jobs, select worker models,
+inject task instructions, or execute caller tools. Explicitly configured
+[managed worker aliases](managed-routing.md) opt into code-enforced provider
+selection, context budgets and durable provider affinity before inference. They
+do not inspect task prose to invent capability requirements. The client owns orchestration, permissions,
 chat naming, and conversation lifecycle. The desktop adapter forwards those client
 operations and isolates account configuration; its session ownership machinery
 prevents competing writers rather than deciding what work an agent performs.

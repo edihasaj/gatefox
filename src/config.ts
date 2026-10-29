@@ -7,6 +7,7 @@ import { readServiceTierMetadata, type ModelServiceTierMetadata } from "./model-
 import { validateAutoLatestSettings } from "./model-auto-latest/settings.js";
 import type { AutoLatestSettings } from "./model-auto-latest/types.js";
 import { maximumReleasedAt, minimumReleasedAt } from "./model-auto-latest/metadata.js";
+import { validateManagedRouting, type ManagedRoutingSettings } from "./managed-routing-config.js";
 
 export type ProviderKind = "claude-subscription" | "codex-subscription" | "copilot-subscription" | "responses-api" | "anthropic-api" | "chat-completions-api" | "grok-subscription";
 export interface ProviderConfig {
@@ -145,6 +146,8 @@ export interface GatewayConfig {
   autoLatestModels?: AutoLatestSettings;
   /** Optional sources for `/v1/availability`. See docs/availability.md. */
   availability?: AvailabilitySettings;
+  /** Explicit managed worker aliases; fixed provider/model aliases remain unchanged. */
+  managedRouting?: ManagedRoutingSettings;
 }
 /** `spendwatch` is the absolute path of a Spendwatch executable whose `capacity-current` reports subscription quota. */
 export interface AvailabilitySettings { spendwatch?: string }
@@ -280,12 +283,13 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
   for (const type of ["codex-subscription", "claude-subscription"] as const) {
     if (providers.filter(provider => provider.type === type && provider.defaultForBareModels === true).length > 1) throw new Error(`Only one ${type} provider may set defaultForBareModels`);
   }
+  const managedRouting = config.managedRouting === undefined ? undefined : validateManagedRouting(config.managedRouting, providers);
   return { version: 1, port: config.port, stateDirectory, providers,
     maxConcurrent: config.maxConcurrent || 4, timeoutMs: config.timeoutMs || 600000, ...(config.clientOnly ? { clientOnly: true } : {}), ...(accountEngines ? { accountEngines } : {}),
     ...(config.trustAllProjects === undefined ? {} : { trustAllProjects: config.trustAllProjects }),
     ...(config.chatIdentity ? { chatIdentity: config.chatIdentity } : {}), ...(nativeModelPicker ? { nativeModelPicker } : {}),
     ...(config.nativeModelPickerPlacement ? { nativeModelPickerPlacement: config.nativeModelPickerPlacement } : {}),
-    ...(autoLatestModels ? { autoLatestModels } : {}), ...(availability ? { availability } : {}) };
+    ...(autoLatestModels ? { autoLatestModels } : {}), ...(availability ? { availability } : {}), ...(managedRouting ? { managedRouting } : {}) };
 }
 
 /**
@@ -320,13 +324,13 @@ function validateAccountEngines(value: unknown, providers: ProviderConfig[]): Ac
 }
 
 /** Every alias the configuration routes, across providers. */
-const configuredAliases = (config: Pick<GatewayConfig, "providers">): string[] => config.providers.flatMap(provider => Object.keys(provider.models));
+const configuredAliases = (config: Pick<GatewayConfig, "providers"> & Partial<Pick<GatewayConfig, "managedRouting">>): string[] => [...config.providers.flatMap(provider => Object.keys(provider.models)), ...Object.keys(config.managedRouting?.routes ?? {})];
 
 /**
  * Once the native catalog is known, an alias that equals one of its slugs is refused: chat classification lets the native
  * slug win such a tie, so the alias could never start a gateway chat, and its chats would run on the native engine.
  */
-export function validateAliasesAgainstNative(config: Pick<GatewayConfig, "providers">, nativeSlugs: ReadonlySet<string>): void {
+export function validateAliasesAgainstNative(config: Pick<GatewayConfig, "providers"> & Partial<Pick<GatewayConfig, "managedRouting">>, nativeSlugs: ReadonlySet<string>): void {
   if (configuredAliases(config).some(alias => nativeSlugs.has(alias))) throw new Error("A gateway model alias collides with a native model ID; rename that alias");
 }
 
