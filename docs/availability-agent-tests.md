@@ -42,6 +42,7 @@ Run each scenario separately:
 | Scenario | Availability source | Expected task execution |
 | --- | --- | --- |
 | `healthy` | Real gateway collectors | Named local worker completes the task. |
+| `held-worker` | Real gateway collectors | The same local worker acknowledges a hold, then resumes and completes the task without early proof access or subscription escalation. |
 | `local-unhealthy` | Injected fresh unhealthy local observation; other facts remain real | A subscription worker completes the task and the exhausted primary is avoided. |
 | `unknown-source` | Only the availability endpoint returns an injected failure | The local default remains usable and paid APIs are not selected. |
 | `worker-failure` | Real healthy facts, then an injected terminal authentication refusal before the local worker's upstream call | The parent observes the failed child, refreshes availability, and starts a new subscription worker that completes the task. |
@@ -59,7 +60,7 @@ request before child inference, the expected provider, a successful child comman
 that reads the unpredictable proof, and completed child and parent turns that
 report the proof. A parent that reads the file itself fails the check.
 
-The first three scenarios test one worker per task. `worker-failure` requires
+The healthy, held-worker and availability-outage scenarios test one worker per task. `worker-failure` requires
 two distinct children in order: failed local worker, then successful subscription
 worker. A second completed helper command and availability request must occur
 after the first child's terminal failure and before the replacement starts.
@@ -91,7 +92,11 @@ node scripts/e2e-subagent-sidebar.mjs --package INSTALLED_PACKAGE \
 Repeat the fixed case with `--private`. The fixture also retains queued-message,
 follow-up, child history and saved identity checks. `--child-status` on the live
 availability check additionally requires the actual local worker to message its
-parent and then complete the bounded proof-reading task.
+parent and then complete the bounded proof-reading task. Use
+`--scenario held-worker --child-status` to check explicit hold/resume on the same
+local child. The live fixture preserves each configured child capability rather
+than stripping `multi_agent_version`; preflight fails before inference if the
+local status scenario has no V2 capability.
 
 Client routing guidance treats held, research-only and authorized implementation
 assignments separately. A parent-issued hold suspends the implementation budget;
