@@ -97,6 +97,22 @@ plaintext handoff. A paid pin also refuses when its prerequisite subscription
 blockers no longer hold. Provider-specific opaque state cannot start an unbound
 managed worker. A changed policy or provider binding requires a fresh worker.
 
+## Rollout
+
+Release the reviewed Gateway change before enabling managed aliases. On each
+target machine, require `gateway rollout --verify --json` to report ready and
+the authenticated `/health` response to advertise `managed-worker-routing-v1`.
+Then add the explicit route configuration and verify both `/v1/models` and
+`/v1/model-catalog` advertise the managed aliases. Do not add another daemon or
+force-restart active chats to enable this feature.
+
+For future client workers, select `managed/routine` in the implementation/test
+role's model setting. Preserve that role's instructions, sandbox, tool access
+and permissions. Existing workers keep their loaded model; a new worker or
+engine picks up the managed alias and its bounded context metadata. Keep main
+chat models and independent reviewer roles explicit. Selecting a fixed alias
+continues to bypass managed selection deliberately.
+
 Pins bind the configured provider, credential source and model. They do not
 inspect login or API-key file contents to audit an account replacement in
 place; an operator replacing an account must start fresh managed workers.
