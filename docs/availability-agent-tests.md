@@ -12,11 +12,17 @@ The gateway reports provider facts. For fixed aliases and explicit model
 requests the client owns delegation and model choice; opt-in
 [managed worker aliases](managed-routing.md) are the separate code-enforced
 route documented there.
-The managed client policy reads Manager's `scripts/macos/model-availability-context.py`
+The retained fixed-alias client policy reads Manager's `scripts/macos/model-availability-context.py`
 before the first worker and again before a fallback. That helper joins exact role
 aliases to configured providers and reports freshness separately for health,
 quota and balance. An `available` route with no quota observation has unknown
 subscription headroom. Missing data never authorizes paid API escalation.
+
+These are historical fixed-alias scenarios. Reproducing their original
+instruction behavior requires the retained policy from the corresponding
+evidence revision. The current Manager policy delegates managed admission to
+Gateway code and does not require a manual availability query before every
+managed worker.
 
 `scripts/e2e-availability-agents.mjs` checks the complete client path with real
 model inference and a verified installed gateway SDK. It creates private homes,
@@ -36,7 +42,7 @@ node scripts/e2e-availability-agents.mjs \
   --config /absolute/private/gateway.json \
   --model codex/gpt-6-luna \
   --context /absolute/manager/scripts/macos/model-availability-context.py \
-  --policy /absolute/manager/configs/codex/routing-instructions.md \
+  --policy /absolute/retained/fixed-alias-routing-instructions.md \
   --root /tmp/availability-agent-evidence \
   --scenario healthy
 ```
@@ -76,7 +82,8 @@ visibility and desktop rendering require separate receipts.
 ## Coverage split with managed routing
 
 These live checks exercise the legacy instruction-policy path: the runner
-renders Manager's `configs/codex/routing-instructions.md` into the parent's
+renders the supplied fixed-alias policy (historically Manager's
+`configs/codex/routing-instructions.md`) into the parent's
 `developer_instructions` and verifies that an instruction-following client
 consults availability before delegating. They do not exercise managed aliases.
 Managed alias admission is code-enforced and is covered by the unit, reload,
