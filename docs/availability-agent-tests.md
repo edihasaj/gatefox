@@ -3,11 +3,15 @@ summary: 'Live agent task checks for availability consumption, local workers and
 read_when:
   - Testing whether an agent consults availability before choosing a worker
   - Changing availability client policy, worker roles or the live delegation check
+  - Deciding whether a change is covered by these live checks or by the managed routing suites
 ---
 
 # Availability and agent tasks
 
-The gateway reports provider facts. The client owns delegation and model choice.
+The gateway reports provider facts. For fixed aliases and explicit model
+requests the client owns delegation and model choice; opt-in
+[managed worker aliases](managed-routing.md) are the separate code-enforced
+route documented there.
 The managed client policy reads Manager's `scripts/macos/model-availability-context.py`
 before the first worker and again before a fallback. That helper joins exact role
 aliases to configured providers and reports freshness separately for health,
@@ -70,6 +74,23 @@ written files or continuation inside the failed child's conversation.
 Native OpenAI parent delegation, Claude Code orchestration, shared DGX queue
 visibility and desktop rendering require separate receipts.
 
+## Coverage split with managed routing
+
+These live checks exercise the legacy instruction-policy path: the runner
+renders Manager's `configs/codex/routing-instructions.md` into the parent's
+`developer_instructions` and verifies that an instruction-following client
+consults availability before delegating. They do not exercise managed aliases.
+Managed alias admission is code-enforced and is covered by the unit, reload,
+pin and HTTP suites instead: `src/tests/managed-routing.test.ts`,
+`src/tests/managed-routing-config.test.ts`,
+`src/tests/managed-routing-reload.test.ts`,
+`src/tests/managed-route-pins.test.ts`,
+`src/tests/managed-routing-http.test.ts` and
+`src/tests/server-managed-routing.test.ts`, all run under `npm test`. Consult
+[managed worker routing](managed-routing.md) for the admission rules those
+tests enforce; a change to those rules needs those suites, not an additional
+instruction-policy fixture.
+
 ## Child-to-parent status and task holds
 
 A model selected as a V2 child must declare `multiAgentVersion: "v2"` in its
@@ -108,4 +129,6 @@ child terminal completion. Status messages and earlier held results are not
 current-task completion; routine cleanup must not interrupt an active worker. Subscription escalation requires a task-specific capability
 requirement or observed blocker, and never follows merely from a broken status
 channel or extra desired parallelism. The Gateway continues to report provider
-facts and preserve the caller's chosen model; these rules stay in client policy.
+facts and preserve an explicit fixed alias exactly; the instruction rules above
+stay in client policy, while a deliberately selected managed alias is resolved
+in Gateway code per [managed worker routing](managed-routing.md).
