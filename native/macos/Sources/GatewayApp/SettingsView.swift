@@ -10,6 +10,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 30) {
                 header
+                GatewayPermissionsView()
                 updateSettings
                 settingsPath
                 connection

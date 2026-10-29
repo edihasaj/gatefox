@@ -8,6 +8,7 @@ struct HarnessGatewayApp: App {
     @StateObject private var model: GatewayModel
     @StateObject private var connections: GatewayConnectionsModel
     @StateObject private var updates: GatewayUpdatesModel
+    @StateObject private var permissions: GatewayPermissions
     @StateObject private var navigation = GatewayNavigation()
 
     init() {
@@ -27,6 +28,7 @@ struct HarnessGatewayApp: App {
             bridge: GatewayManagementCommand(homeDirectory: launch.homeDirectory)
         ))
         _updates = StateObject(wrappedValue: GatewayUpdatesModel())
+        _permissions = StateObject(wrappedValue: GatewayPermissions(defaults: launch.defaults))
     }
 
     var body: some Scene {
@@ -34,6 +36,7 @@ struct HarnessGatewayApp: App {
             GatewayView(model: model, connections: connections)
                 .environmentObject(navigation)
                 .environmentObject(updates)
+                .environmentObject(permissions)
                 .frame(minWidth: 800, minHeight: 600)
                 .preferredColorScheme(.light)
                 .onAppear {
@@ -42,7 +45,9 @@ struct HarnessGatewayApp: App {
                     lifecycle.updates = updates
                 }
                 .onDisappear { Task { await connections.endWizardSession() } }
-                .sheet(isPresented: $navigation.showSetup) {
+                .sheet(isPresented: $navigation.showSetup, onDismiss: {
+                    permissions.offerIfNeeded(setupPresented: navigation.showSetup)
+                }) {
                     SetupWizardView(
                         gateway: model,
                         connections: connections,
@@ -62,6 +67,7 @@ struct HarnessGatewayApp: App {
                     if !model.hasConfig { navigation.showSetup = true }
                     await model.associateBackgroundItem()
                     await connections.refresh()
+                    permissions.offerIfNeeded(setupPresented: navigation.showSetup)
                     while !Task.isCancelled {
                         if !connections.isBusy { await model.refresh() }
                         do { try await Task.sleep(for: .seconds(30)) }
