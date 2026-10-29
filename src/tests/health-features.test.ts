@@ -16,7 +16,7 @@ test("/health advertises the features this release guarantees", async () => {
     const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/health`);
     assert.equal(response.status, 200);
     const health = await response.json() as Record<string, unknown>;
-    assert.deepEqual(health.features, ["responses-ws-426", "openai-internal-strip", "native-identity-v1"]);
+    assert.deepEqual(health.features, ["responses-ws-426", "openai-internal-strip", "native-identity-v1", "managed-worker-routing-v1"]);
     assert.deepEqual(gatewayFeatures, health.features, "the advertised list is the exported one");
     assert.equal(health.status, "ok");
     assert.equal(health.idleRestart, true); assert.equal(health.idleUpgrade, true);

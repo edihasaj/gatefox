@@ -1,0 +1,88 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { ManagedRouter } from "../managed-routing.js";
+import { managedFixture, managedFacts, managedNow, managedRequest, factsRows } from "./managed-routing-fixture.js";
+async function fixture(run: (root: string, router: ManagedRouter) => Promise<void>) {
+  const root = await mkdtemp(join(tmpdir(), "managed-route-"));
+  try { await run(root, new ManagedRouter(root, () => managedNow)); } finally { await rm(root, { recursive: true, force: true }); }
+}
+test("managed routine uses local capacity, persists its affinity and never reorders an explicit model", () => fixture(async (root, router) => {
+  const config = managedFixture(root), report = managedFacts(), request = managedRequest({ instructions: "Do not change my permissions", tools: [] });
+  const original = structuredClone(request);
+  assert.deepEqual(await router.resolve(config, { ...request, model: "sub/sol" }, {}, report), undefined);
+  assert.equal((await router.resolve(config, request, { threadId: "worker-a" }, report))?.alias, "local/qwen");
+  const next = new ManagedRouter(root, () => managedNow); factsRows(report)[0].status = "busy";
+  assert.deepEqual(await next.resolve(config, request, { threadId: "worker-a" }, report), { alias: "local/qwen", providerId: "local", reused: true, contextBytes: Buffer.byteLength(JSON.stringify(request)) });
+  assert.deepEqual(request, original);
+  for (const name of await readdir(join(root, "managed-route-pins"))) {
+    assert.ok(!(await readFile(join(root, "managed-route-pins", name), "utf8")).includes("worker-a"));
+  }
+}));
+test("a new bounded worker selects subscriptions when local capacity is busy", () => fixture(async (root, router) => {
+  const facts = managedFacts(); factsRows(facts)[0].status = "busy";
+  assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "new-worker" }, facts))?.alias, "sub/sol");
+}));
+test("subscription reserve and stale quota select the next known subscription, not paid capacity", () => fixture(async (root, router) => {
+  const facts = managedFacts(), rows = factsRows(facts); rows[0].status = "unavailable";
+  rows[1].quota = { fresh: true, observedAt: new Date(managedNow).toISOString(), remainingPercent: 2 };
+  assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "reserve" }, facts))?.alias, "sub2/sonnet");
+  rows[1].quota = { fresh: false, observedAt: new Date(managedNow - 9999999).toISOString(), remainingPercent: 90 };
+  assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "stale" }, facts))?.alias, "sub2/sonnet");
+}));
+test("Flash requires confirmed subscription blockers and fresh positive paid balance", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts); rows[0].status = "unavailable";
+  for (const row of rows.slice(1, 3)) { row.status = "limited"; row.reasons = ["quota_exhausted"]; }
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "paid-worker" }, facts))?.alias, "paid/flash");
+  rows[3].balance = { fresh: false, observedAt: new Date(managedNow).toISOString(), remainingUsd: 20 };
+  await assert.rejects(router.resolve(config, managedRequest(), { threadId: "stale-paid" }, facts), { code: "managed_route_unavailable" });
+}));
+test("unknown quota and busy subscriptions never authorize paid escalation", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts); rows[0].status = "unavailable";
+  rows[1].status = "busy"; delete rows[2].quota;
+  await assert.rejects(router.resolve(config, managedRequest(), { threadId: "unknown-worker" }, facts), { code: "managed_route_unavailable" });
+  rows[1].status = "limited"; rows[1].reasons = ["quota_exhausted"];
+  await assert.rejects(router.resolve(config, managedRequest(), { threadId: "unknown-sub" }, facts), { code: "managed_route_unavailable" });
+}));
+test("an unavailable pinned route never replays the conversation onto another model", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), context = { threadId: "keep-context" };
+  await router.resolve(config, managedRequest(), context, facts); factsRows(facts)[0].status = "unavailable";
+  await assert.rejects(router.resolve(config, managedRequest(), context, facts), { code: "managed_route_unavailable" });
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "explicit-handoff" }, facts))?.alias, "sub/sol");
+}));
+test("identity, byte budget and unbound opaque continuation are rejected before a pin is created", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts();
+  await assert.rejects(router.resolve(config, managedRequest(), {}, facts), { code: "managed_route_identity_required" });
+  await assert.rejects(router.resolve(config, managedRequest({ input: "x".repeat(262144) }), { threadId: "huge" }, facts), { code: "context_length_exceeded" });
+  await assert.rejects(router.resolve(config, managedRequest({ previous_response_id: "opaque" }), { threadId: "opaque" }, facts), { code: "managed_route_state_unbound" });
+}));
+test("configuration and configured provider binding changes cannot silently move a saved worker", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), context = { threadId: "bound" };
+  await router.resolve(config, managedRequest(), context, facts);
+  config.providers[0].baseUrl = "http://127.0.0.1:4000/v1";
+  await assert.rejects(router.resolve(config, managedRequest(), context, facts), { code: "managed_route_changed" });
+  config.providers[0].baseUrl = "http://127.0.0.1:3000/v1"; config.managedRouting!.routes["managed/routine"]!.maxContextBytes++;
+  await assert.rejects(router.resolve(config, managedRequest(), context, facts), { code: "managed_route_changed" });
+}));
+test("a paid pin stops when subscription capacity returns, rather than silently changing provider", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts), context = { threadId: "paid-pinned" };
+  rows[0].status = "unavailable";
+  for (const row of rows.slice(1, 3)) { row.status = "limited"; row.reasons = ["quota_exhausted"]; }
+  await router.resolve(config, managedRequest(), context, facts);
+  rows[1].status = "available"; rows[1].reasons = [];
+  await assert.rejects(router.resolve(config, managedRequest(), context, facts), { code: "managed_route_unavailable" });
+}));
+test("requested reasoning and modalities select only a compatible candidate", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts();
+  config.providers[0].modelMetadata!["local/qwen"]!.reasoningEfforts = ["low"];
+  assert.equal((await router.resolve(config, managedRequest({ reasoning: { effort: "high" } }), { threadId: "effort" }, facts))?.alias, "sub/sol");
+  await assert.rejects(router.resolve(config, managedRequest({ reasoning: { effort: "unknown" } }), { threadId: "no-effort" }, facts), { code: "managed_route_unavailable" });
+}));
+test("native tool requirements cannot be silently discarded by selecting a different transport", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(); config.providers[1].toolSearch = "bridge";
+  assert.equal((await router.resolve(config, managedRequest({ tools: [{ type: "tool_search" }] }), { threadId: "search-worker" }, facts))?.alias, "sub/sol");
+  delete config.providers[1].toolSearch;
+  await assert.rejects(router.resolve(config, managedRequest({ tools: [{ type: "tool_search" }] }), { threadId: "unsupported-search" }, facts), { code: "managed_route_unavailable" });
+}));

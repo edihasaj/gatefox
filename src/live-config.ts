@@ -27,7 +27,16 @@ function withoutRemoved(config: GatewayConfig, wanted: GatewayConfig): GatewayCo
     const pick = <T>(table: Record<string, T>): Record<string, T> => Object.fromEntries(aliases.filter(alias => Object.hasOwn(table, alias)).map(alias => [alias, table[alias]]));
     return [{ ...provider, models: pick(provider.models), ...(provider.modelMetadata ? { modelMetadata: pick(provider.modelMetadata) } : {}) }];
   });
-  return removed ? { ...config, providers } : config;
+  const oldManaged = config.managedRouting;
+  const managed = Object.entries(oldManaged?.routes ?? {}).filter(([alias]) => Object.hasOwn(wanted.managedRouting?.routes ?? {}, alias));
+  const removedManaged = managed.length !== Object.keys(oldManaged?.routes ?? {}).length;
+  if (!removed && !removedManaged) return config;
+  const result = { ...config, providers };
+  if (removedManaged) {
+    if (managed.length) result.managedRouting = { routes: Object.fromEntries(managed) };
+    else delete result.managedRouting;
+  }
+  return result;
 }
 
 /**
