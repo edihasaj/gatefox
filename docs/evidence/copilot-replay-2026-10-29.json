@@ -1,0 +1,36 @@
+{
+  "checkedAt": "2026-10-29T15:36:29Z",
+  "release": "1.1.9",
+  "sourceCommit": "5bdc775",
+  "releaseCommit": "72b5aa309900e66951b2727b9938b2aef7a208be",
+  "archiveSha256": "342004155de90379aa738a21588950eb685abcf81b5ce04b04a5f6fd5e6556ee",
+  "validation": {
+    "build": "passed",
+    "typecheck": "passed",
+    "coreTests": { "host": "macbook-server", "passed": 3609, "skipped": 2, "failed": 0 },
+    "desktopTests": { "host": "Edis-Mac-Studio", "passed": 160, "skipped": 1, "failed": 0 },
+    "finalReplayAndCancellationTests": { "passed": 16, "failed": 0 },
+    "packagedSdkDirectToolEditAndCommit": "passed",
+    "independentReview": "no actionable findings",
+    "realCopilotSonnet55": {
+      "stagedLiveToolHandoffAndFollowup": "passed",
+      "stagedOneShotToolHandoffAndFollowup": "passed",
+      "installedHttpRelease": "1.1.9",
+      "installedHttpRequests": 2,
+      "installedToolCalls": 1,
+      "callerIdentityPreserved": true,
+      "followupProofReturned": true
+    }
+  },
+  "rollout": [
+    { "host": "Edis-Mac-Studio", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 4 },
+    { "host": "Edis-MacBook-Pro-2", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 3 },
+    { "host": "macbook-server", "inferenceRelease": "1.1.9", "httpStatus": 200, "state": "pending", "reason": "process_version_pending", "pendingProcesses": 5 }
+  ],
+  "limits": [
+    "The exact upstream tool name from the original unknown_tool failures was not recorded; approximate saved-history replay also succeeded before the patch.",
+    "Studio full-suite runs encountered unrelated executor recovery timing failures under load; the core suite passed on macbook-server and the desktop suite passed on Studio.",
+    "The macbook-server desktop suite encountered an unrelated installed-renderer asset mismatch; the full desktop suite passed against the pinned Studio application.",
+    "Full managed rollout readiness remains pending. Active work was not force-restarted."
+  ]
+}
