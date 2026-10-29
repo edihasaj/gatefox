@@ -112,11 +112,14 @@ export async function probeUpstreamCapacity(provider: ProviderConfig, seams: Ups
       const fail = (): void => reject(controller.signal.reason ?? new Error("aborted"));
       if (controller.signal.aborted) fail(); else controller.signal.addEventListener("abort", fail, { once: true });
     });
+    // A refused IP literal can return before any race is created. Final cleanup
+    // still aborts this promise, so its rejection always needs an observer.
+    void expired.catch(() => {});
     const within = <T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> => Promise.race([work(controller.signal), expired]);
     const read = async (request: (signal: AbortSignal) => Promise<Response>): Promise<UpstreamCapacityFact | undefined> => {
       try {
         const response = await within(signal => request(signal));
-        if (!response.ok) { await response.body?.cancel().catch(() => {}); return undefined; }
+        if (!response.ok) { void response.body?.cancel().catch(() => {}); return undefined; }
         return parseCapacitySnapshot(await within(() => boundedJson(response, maxCapacityBodyBytes)), configured, now());
       } catch { return undefined; }
     };
