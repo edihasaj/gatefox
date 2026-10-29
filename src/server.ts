@@ -23,7 +23,9 @@ import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from ".
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
 import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "./provider-failure.js";
-import { AdmissionRegistry, providerAdmissionLimit } from "./admission-registry.js";
+import { AdmissionRegistry } from "./admission-registry.js";
+import { UpstreamCapacityWatcher, type UpstreamCapacityDeps } from "./upstream-capacity.js";
+import { bindServerAdmission, type HandlerAdmissionState } from "./server-admission.js";
 import type { Admission } from "./admission.js";
 import { ProviderUsageStore } from "./provider-usage.js";
 import { ObservedContextWindows } from "./model-refresh.js";
@@ -123,12 +125,16 @@ export interface GatewayStartOptions {
   configRejection?: () => ConfigRejection | undefined;
   /** Test hook: the availability collectors this handler reports from. */
   availability?: AvailabilityService;
+  /** Test seams for the existing handler's opt-in upstream capacity collector. */
+  upstreamCapacity?: UpstreamCapacityDeps;
 }
 /**
  * One generation of request handling; a server can switch generations without closing its socket.
  * Members added after 0.3 are optional, so a generation adopted by an in-place upgrade still fits.
  */
 export interface GatewayHandler {
+  readonly admissionState?: HandlerAdmissionState;
+  adoptAdmissions?(state: HandlerAdmissionState, legacyBusy: () => boolean): void;
   readonly handle: (req: IncomingMessage, res: ServerResponse) => void; isIdle(): boolean;
   /** Refuses an HTTP upgrade (a WebSocket handshake among them) on its raw socket; no admission, no provider. */
   handleUpgrade?(req: IncomingMessage, socket: Duplex, head: Buffer): void;
@@ -157,6 +163,7 @@ const sendableTurnState = (value: unknown): value is string => typeof value === 
  * retryable, then runs the process shutdown hooks. Resolves when the listener has closed.
  */
 async function drain(target: HandledServer, close: Server["close"]): Promise<Error | undefined> {
+  for (const handler of target.gatewayHandlers || []) handler.retire?.();
   const closed = new Promise<Error | undefined>(resolve => close(error => resolve(error)));
   const handlers = () => target.gatewayHandlers || [];
   const idle = () => handlers().every(entry => entry.isIdle());
@@ -186,6 +193,8 @@ export function adoptGatewayHandler(server: Server, handler: GatewayHandler): Ga
   const target = server as HandledServer;
   const close = target.gatewayClose ??= server.close.bind(server);
   for (const previous of target.gatewayHandlers || []) if (previous !== handler) previous.retire?.();
+  const binding = bindServerAdmission(server, handler.admissionState, (target.gatewayHandlers || []).filter(previous => previous !== handler));
+  if (binding) handler.adoptAdmissions?.(binding.state, binding.legacyBusy);
   target.gatewayHandlers = [...(target.gatewayHandlers || []).filter(previous => !previous.isIdle()), handler];
   server.removeAllListeners("request"); server.on("request", handler.handle);
   // Upgrades (WebSocket handshakes among them) never reach an inference path; the newest generation still at work refuses them.
@@ -209,7 +218,8 @@ export async function startGateway(config: GatewayConfig, factory = createProvid
   const handler = await createGatewayHandler(config, factory, reload, options);
   const server = createServer(); server.requestTimeout = 30000;
   const controlled = adoptGatewayHandler(server, handler);
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+  try { await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(config.port, "127.0.0.1", () => { server.off("error", reject); resolve(); }); }); }
+  catch (error) { handler.retire?.(); throw error; }
   return controlled;
 }
 
@@ -224,31 +234,40 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
   const token = await gatewayToken(config.stateDirectory);
   const providerUsage = new ProviderUsageStore(config.stateDirectory); await providerUsage.restore(config.providers);
   const contextWindows = new ObservedContextWindows(config.stateDirectory);
-  const admissions = options.admissionRegistry ?? new AdmissionRegistry();
+  let admissions = options.admissionRegistry ?? new AdmissionRegistry();
+  let retired = false; let legacyBusy = () => false; let legacyTimer: NodeJS.Timeout | undefined;
+  const refreshLegacyHold = () => {
+    if (retired) return;
+    const busy = legacyBusy(); admissions.holdUntilLegacyDrains(busy);
+    if (!busy && legacyTimer) { clearInterval(legacyTimer); legacyTimer = undefined; }
+  };
+  const capacity = new UpstreamCapacityWatcher((id, fact) => admissions.setDiscoveredLimit(id, fact?.limit, fact?.observedAt), options.upstreamCapacity);
   const availability = options.availability ?? new AvailabilityService();
   availability.configure(config);
   const buildRoutes = (current: GatewayConfig) => {
     admissions.configure(current);
+    capacity.configure(current.providers);
     const adapters = new Map(current.providers.map(provider => [provider.id, factory(provider, limit => providerUsage.record(provider, limit), (model, window) => contextWindows.record(provider.id, model, window), (usage, revision) => providerUsage.recordCodex(provider, usage, revision))] as const));
-    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
+    const routes = new Map(current.providers.flatMap(provider => Object.entries(provider.models).map(([alias, model]) => [alias, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const)));
     // A reviewer slug is served by the same adapter instance as that provider's own rows, so its credential, turn-state and
     // reasoning scope match. Resolution follows autoReviewTarget, the same account rule /v1/model-catalog advertises under,
     // so the gateway never advertises a reviewer a request would resolve differently.
     const reviewers = new Map(autoReviewModels.flatMap(slug => {
       const provider = autoReviewTarget(current, slug);
-      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), limit: providerAdmissionLimit(provider, current), model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
+      return provider ? [[slug as string, { adapter: adapters.get(provider.id)!, admission: admissions.admission(provider.id), get limit() { return admissions.limit(provider.id); }, model: slug as string, id: provider.id, type: provider.type, reasoningScope: reasoningScope(provider) }] as const] : [];
     }));
     return { routes, reviewers, retain: () => admissions.retain(current.providers), release: admissions.retain(current.providers) };
   };
   let current = config; let currentRoutes = buildRoutes(config); let { routes, reviewers } = currentRoutes;
   const snapshot = async () => {
-    const next = reload ? await reload() : current;
-    if (next !== current) {
+    const next = !retired && reload ? await reload() : current;
+    if (!retired && next !== current) {
       const previous = currentRoutes; const updated = buildRoutes(next); currentRoutes = updated; routes = updated.routes; reviewers = updated.reviewers; current = next; previous.release();
       availability.configure(next);
       // Live Copilot sessions of a provider the new configuration removed or changed would otherwise live out their timers.
       retireUnconfiguredCopilotScopes(next.providers);
     }
+    refreshLegacyHold();
     return { config: current, routes, reviewers, release: currentRoutes.retain() };
   };
   const active = new Map<AbortController, (cause: "shutdown") => void>();
@@ -298,7 +317,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === availabilityPath) {
-      try { const config = state.config; await serveAvailability(req, res, availability, config, id => { const provider = config.providers.find(entry => entry.id === id); return { ...admissions.load(id), limit: provider ? providerAdmissionLimit(provider, config) : 0 }; }, providerUsage.snapshot(config.providers), pickerHiddenAliases(config)); }
+      try { const config = state.config; await serveAvailability(req, res, availability, config, id => ({ ...admissions.load(id), limit: admissions.limit(id) }), providerUsage.snapshot(config.providers), pickerHiddenAliases(config)); }
       finally { state.release(); } return;
     }
     if (req.method !== "POST" || (path !== "/v1/responses" && !messagesProtocol)) { try { fail(404, "not_found", "Unknown endpoint"); } finally { state.release(); } return; }
@@ -505,10 +524,21 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
     try { reportException(error, "request"); } catch { /* Reporting never replaces the answer. */ }
     try { if (!res.headersSent) send(res, 500, { error: { code: "internal_error", message: "Gateway failed to handle the request" } }); else res.destroy(); } catch { res.destroy(); }
   };
-  return { handle: (req, res) => { handle(req, res).catch(error => answerCrash(res, error)); }, handleUpgrade: (req, socket) => handleUpgrade(req, socket, token), isIdle: () => !requests && !active.size,
+  const releaseRetiredBase = () => {
+    if (!requests && !active.size) { currentRoutes.release(); return; }
+    const timer = setTimeout(releaseRetiredBase, 100); timer.unref();
+  };
+  return { get admissionState() { return { version: 1 as const, registry: admissions }; },
+    adoptAdmissions: (state, busy) => {
+      legacyBusy = busy;
+      if (admissions !== state.registry) { currentRoutes.release(); admissions = state.registry; currentRoutes = buildRoutes(current); ({ routes, reviewers } = currentRoutes); }
+      refreshLegacyHold();
+      if (legacyBusy() && !legacyTimer) { legacyTimer = setInterval(refreshLegacyHold, 100); legacyTimer.unref(); }
+    },
+    handle: (req, res) => { handle(req, res).catch(error => answerCrash(res, error)); }, handleUpgrade: (req, socket) => handleUpgrade(req, socket, token), isIdle: () => !requests && !active.size,
     abortAll: reason => { let aborted = 0; for (const [controller, abort] of active) { if (controller.signal.aborted) continue; aborted++; if (reason) abort(reason); else controller.abort(); } return aborted; },
     recordPending: () => { let recorded = 0; for (const record of [...pending]) if (record()) recorded++; return recorded; },
-    retire: () => availability.retire(),
+    retire: () => { if (retired) return; retired = true; if (legacyTimer) clearInterval(legacyTimer); capacity.retire(); availability.retire(); releaseRetiredBase(); },
     beginDrain: () => {
       draining = true; let running = 0;
       for (const [controller, abort] of active) { if (controller.signal.aborted) continue; if (admitted.has(controller)) running++; else abort("shutdown"); }

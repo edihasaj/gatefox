@@ -69,6 +69,11 @@ out of two reports `degraded`. Router-side load (running and waiting requests on
 the model servers) is not reachable from the Macs, so `load` covers this Mac's
 queue only.
 
+With [capacity discovery](upstream-capacity.md) enabled, `load.limit` follows a
+fresh authenticated upstream slot count. Running and queued counts remain local
+to this Gateway. Discovery never interprets a slot count as free farm capacity,
+adds replicated router totals together, or rewrites configuration.
+
 ## Settings
 
 ```json

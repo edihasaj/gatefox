@@ -47,6 +47,8 @@ export interface ProviderConfig {
   label?: string;
   /** Per-provider admission cap; falls back to top-level maxConcurrent, then 4. */
   maxConcurrent?: number;
+  /** Discover runtime admission from the local upstream's authenticated capacity endpoint. Explicit maxConcurrent remains a ceiling. */
+  capacityDiscovery?: boolean;
   modelMetadata?: Record<string, ModelMetadata>;
   /** Claude subscription only: one-shot replay or a live CLI session per Codex thread. */
   claudeSessions?: ClaudeSessionConfig;
@@ -232,6 +234,13 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
       if (provider.tailnet !== undefined && typeof provider.tailnet !== "boolean") throw new Error(`${provider.id}: tailnet must be boolean`);
       const tailnetHttp = provider.tailnet === true && url.protocol === "http:";
       if (url.protocol !== "https:" && !tailnetHttp && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw new Error("API providers require HTTPS except on loopback");
+    }
+    if (provider.capacityDiscovery !== undefined && typeof provider.capacityDiscovery !== "boolean") throw new Error(`${provider.id}: capacityDiscovery must be boolean`);
+    if (provider.capacityDiscovery === true) {
+      if (!["responses-api", "chat-completions-api"].includes(provider.type) || !provider.baseUrl
+        || (!provider.tailnet && !["localhost", "127.0.0.1", "[::1]"].includes(new URL(provider.baseUrl).hostname))) {
+        throw new Error(`${provider.id}: capacityDiscovery requires a loopback or tailnet inference provider`);
+      }
     }
     if (provider.grokHome !== undefined && (provider.type !== "grok-subscription" || typeof provider.grokHome !== "string" || !provider.grokHome)) throw new Error(`${provider.id}: grokHome is only valid for grok-subscription providers`);
     if (provider.defaultForBareModels !== undefined) {
