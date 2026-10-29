@@ -38,19 +38,23 @@ plus 32 requests, so a lower provider override does not reduce the previous capa
 `/health` reports the running and queued totals
 across all provider queues.
 
-Both admission settings accept integers from 1 through 64. For a local inference
-farm with twenty qualified slots, set only that provider's `maxConcurrent` to 20;
-other providers keep their own limits or the gateway-wide default. This is a
-per-Gateway admission limit, not a shared reservation across machines or a
-measurement of the upstream farm's load. Availability reports this local limit
-and marks the provider busy when it is reached or requests are queued.
+Both admission settings accept integers from 1 through 64. A local inference
+provider can opt into [upstream capacity discovery](upstream-capacity.md) once
+instead of maintaining a numeric worker count on every Gateway. Its explicit
+numeric override remains a ceiling; missing or stale discovery uses the static
+fallback. Other providers keep their existing limits. This is per-Gateway
+admission, not a shared reservation or measurement of farm load. Availability
+reports the effective local limit; an otherwise available provider becomes busy
+when it is reached or work is queued.
 
 On a live configuration reload, existing queues keep their in-flight work, changed
 limits take effect immediately, and new providers receive new queues. A removed
 provider's queue remains until it is idle and no live request snapshot refers to it,
 so requests accepted before the reload can finish and a later re-add reuses that
-queue. A hot-swapped handler retains its own queues until that handler is idle,
-alongside the requests it already accepted.
+queue. Compatible hot-swapped handlers share the listener's admission queues;
+retired generations keep their accepted requests and release their snapshots
+once they finish. Discovered admission waits for an older incompatible
+generation to drain before increasing capacity.
 
 ### Live configuration
 

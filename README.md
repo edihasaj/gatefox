@@ -259,6 +259,9 @@ history have passed through the real Codex engine on the test Mac.
 See [architecture](docs/architecture.md), [Responses support](docs/responses.md), [Messages support](docs/messages.md),
 [verification](docs/verification.md), [desktop adapter](docs/app-server.md), [remote clients](docs/remote.md).
 
+Local inference farms can opt into [automatic capacity discovery](docs/upstream-capacity.md)
+so worker concurrency changes update admission without editing every Gateway.
+
 ## Compatibility names
 
 The project was renamed from Subscription Gateway. Names that existing installations

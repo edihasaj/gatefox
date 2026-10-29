@@ -6,6 +6,20 @@ const claude = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "
 const codex = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", credentialFile: "codex.json", models: { "codex/sol": "sol" }, ...extra });
 const config = (providers: unknown[], extra: Record<string, unknown> = {}) => validateConfig({ version: 1, port: 1, stateDirectory: "/tmp/state", providers, ...extra }, "/tmp");
 
+test("capacity discovery requires an explicit local-provider boolean and preserves static limits", () => {
+  const local = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:8000/v1", apiKeyEnv: "TEST_KEY", models: { qwen: "qwen" }, capacityDiscovery: true };
+  const result = config([local], { maxConcurrent: 8 });
+  assert.equal(result.providers[0].capacityDiscovery, true);
+  assert.equal(result.providers[0].maxConcurrent, undefined);
+  assert.equal(result.maxConcurrent, 8);
+  assert.equal(config([{ ...local, type: "responses-api" }]).providers[0].capacityDiscovery, true);
+  assert.equal(config([{ ...local, baseUrl: "http://farm.test/v1", tailnet: true }]).providers[0].capacityDiscovery, true);
+  assert.throws(() => config([{ ...local, baseUrl: "https://remote.test/v1" }]), /requires a loopback or tailnet/);
+  assert.throws(() => config([claude({ capacityDiscovery: true })]), /requires a loopback or tailnet/);
+  assert.equal(config([claude({ capacityDiscovery: false })]).providers[0].capacityDiscovery, false);
+  for (const capacityDiscovery of [null, "true", 1, {}]) assert.throws(() => config([{ ...local, capacityDiscovery }]), /must be boolean/);
+});
+
 test("automatic project trust requires an explicit boolean operator choice", () => {
   assert.equal(config([codex()]).trustAllProjects, undefined);
   for (const value of [true, false]) assert.equal(config([codex()], { trustAllProjects: value }).trustAllProjects, value);
