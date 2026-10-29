@@ -187,6 +187,12 @@ JavaScript. Installing a CLI update preserves the registration. See
    `selected-turn` run also checks the shared execution host over stdio; a legacy
    `automatic` run only checks the safe refusal of automatic compaction, not
    seamless recovery.
+   For managed worker context changes, also run `scripts/e2e-managed-routing.mjs
+   --package INSTALLED_PACKAGE --code CHECKOUT --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`.
+   It uses the verified bundled SDK with a mock provider to prove compaction
+   exceeds the ordinary byte budget within its bounded recovery allowance,
+   preserves a proof from the original history, and resumes an ordinary turn
+   below the original limit. It uses private state and no paid inference.
    For Responses continuation changes, run
    `scripts/e2e-responses-continuation.mjs --package INSTALLED_PACKAGE --codex
    SIGNED_CODEX_MACH_O --root FRESH_PRIVATE_EVIDENCE_DIRECTORY`. It verifies actual

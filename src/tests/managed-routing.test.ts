@@ -58,6 +58,28 @@ test("identity, byte budget and unbound opaque continuation are rejected before 
   await assert.rejects(router.resolve(config, managedRequest({ input: "x".repeat(262144) }), { threadId: "huge" }, facts), { code: "context_length_exceeded" });
   await assert.rejects(router.resolve(config, managedRequest({ previous_response_id: "opaque" }), { threadId: "opaque" }, facts), { code: "managed_route_state_unbound" });
 }));
+test("compaction has bounded recovery room on the persisted worker binding only", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), context = { threadId: "compact-worker" };
+  const limit = config.managedRouting!.routes["managed/routine"]!.maxContextBytes;
+  const large = managedRequest({ input: "x".repeat(limit + 10) });
+  await router.resolve(config, managedRequest(), context, facts);
+  await assert.rejects(router.resolve(config, large, context, facts), { code: "context_length_exceeded" });
+  const reopened = new ManagedRouter(root, () => managedNow);
+  const recovery = { ...context, requestKind: "compaction" as const };
+  assert.equal((await reopened.resolve(config, large, recovery, facts))?.alias, "local/qwen");
+  assert.equal((await reopened.resolve(config, large, recovery, facts))?.reused, true);
+  await assert.rejects(reopened.resolve(config, large, { ...recovery, threadId: "new-compact" }, facts), { code: "managed_route_state_unbound" });
+  await assert.rejects(reopened.resolve(config, managedRequest({ input: "x".repeat(limit * 4) }), recovery, facts), { code: "context_length_exceeded" });
+  factsRows(facts)[0].status = "unavailable";
+  await assert.rejects(reopened.resolve(config, large, recovery, facts), { code: "managed_route_unavailable" });
+}));
+test("compaction recovery cannot exceed the global four MiB ceiling", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts();
+  config.managedRouting!.routes["managed/routine"]!.maxContextBytes = 4194304;
+  const context = { threadId: "compact-ceiling" };
+  await router.resolve(config, managedRequest(), context, facts);
+  await assert.rejects(router.resolve(config, managedRequest({ input: "x".repeat(4194304) }), { ...context, requestKind: "compaction" }, facts), { code: "context_length_exceeded" });
+}));
 test("configuration and configured provider binding changes cannot silently move a saved worker", () => fixture(async (root, router) => {
   const config = managedFixture(root), facts = managedFacts(), context = { threadId: "bound" };
   await router.resolve(config, managedRequest(), context, facts);

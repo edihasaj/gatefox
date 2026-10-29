@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Opt-in managed worker aliases now enforce provider selection, fresh capacity
+  checks, subscription reserves, permitted DeepSeek V4 Flash fallback and durable
+  provider affinity in Gateway code. Ordinary requests retain a bounded context
+  budget; client compaction has a separate capped allowance on the same existing
+  provider. Explicit models, permissions and independent reviewer roles retain
+  their bindings. Thanks to Edi Hasaj for requesting code-enforced routing and
+  identifying the duplicated instruction policy.
+
 - The desktop adapter no longer refuses to start when the native model cache lacks
   a model the engine lists. This happens when another Codex version wrote the cache
   or the engine could not refresh its models. Gateway chats start without native
