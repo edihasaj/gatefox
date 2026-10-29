@@ -65,3 +65,9 @@ tool canary passes. After combined adoption, the host must also hold the actual
 native-home lease; advertising the native capability alone is insufficient.
 The current canary requires gateway sharing. A native-only service uses its
 service status and the shared-native fixture instead of this combined gate.
+
+A live supervisor controller reports `runtime.controllerRelease` independently
+from its root's `runningRelease`. Controller adoption does not change the
+bootstrap process version or attest the retained host and relay. Those components
+remain pending in this gate until their own evidence agrees with the installed
+release; a controller swap must never be relabeled as full rollout readiness.

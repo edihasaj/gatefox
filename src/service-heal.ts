@@ -79,4 +79,4 @@ export const hostProbeStrikes = 2;
 /** Failures a retry cannot fix by itself: a kick buys at most one extra start for them between two backoff starts. */
 export const deterministicFailures = new Set<HostFailureReason>(["identity_changed", "sdk_invalid", "receipt_invalid", "live_owner"]);
 /** Why a running host is restarted: a failed probe, or a relay it owned the registration for that was set aside. */
-export type HostRestartReason = HostProbeReason | "relay_registered";
+export type HostRestartReason = HostProbeReason | "relay_registered" | "release_update";
