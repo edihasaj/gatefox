@@ -38,6 +38,10 @@ configuration or a pending login migration rather than taking over either.
 Closing or quitting the control panel leaves the gateway running. Its managed
 service and desktop registration return at login.
 Closing the last window exits the control panel after its pending setup cleanup.
+The app offers an optional Full Disk Access invitation after setup. Settings
+keeps controls for protected-file access, Automation and Local Network available.
+Access is enabled manually in macOS; see
+[gateway permissions](macos-permissions.md) for scope and verification.
 A signed app can associate the existing startup item with the app's name and fox
 icon without restarting it. See [background identity](macos-background-item.md)
 for signing, staging, and macOS display-refresh behavior.

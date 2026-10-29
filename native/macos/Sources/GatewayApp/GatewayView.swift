@@ -5,6 +5,7 @@ struct GatewayView: View {
     @ObservedObject var model: GatewayModel
     @ObservedObject var connections: GatewayConnectionsModel
     @EnvironmentObject private var navigation: GatewayNavigation
+    @EnvironmentObject private var permissions: GatewayPermissions
 
     var body: some View {
         NavigationSplitView {
@@ -31,6 +32,16 @@ struct GatewayView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .tint(GatewayTheme.vermilion)
+        .alert("Allow access to protected files?", isPresented: $permissions.showInvitation) {
+            Button("Open Full Disk Access") {
+                permissions.dismissInvitation()
+                navigation.selection = .settings
+                permissions.open(.fullDiskAccess)
+            }
+            Button("Not now", role: .cancel) { permissions.dismissInvitation() }
+        } message: {
+            Text("Full Disk Access is optional for development tasks that need protected files. It allows broad access to data such as Mail, Messages and backups. Enable Harness Gateway manually in System Settings → Privacy & Security → Full Disk Access. You can review permissions later in Settings.")
+        }
     }
 
     private var sidebar: some View {
