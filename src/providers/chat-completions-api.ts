@@ -1,7 +1,7 @@
 import { apiCredential, type ProviderConfig } from "../config.js";
 import { responsesToChatRequest } from "../protocol/request.js";
 import { readEvents } from "../protocol/sse.js";
-import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.js";
+import type { ResponsesRequest, InferenceEvent, Usage, OpenAIChatMessage } from "../protocol/types.js";
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
 import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
@@ -10,6 +10,7 @@ import { responsesHttpError, responsesStreamError } from "./responses-errors.js"
 import { historicalCallText, historicalResultText, toollessChoice, undeclaredCalls } from "./historical-tools.js";
 import { boundedJson, chatContextFailure } from "./context-errors.js";
 import { chatRejection } from "./chat-rejections.js";
+import { imagesOf, imageUrlPart, toolImagesMessage, userContent, type ChatContentPart } from "./chat-images.js";
 import { telemetry } from "../telemetry.js";
 
 const recoveryDeadlineMs = 90_000;
@@ -26,22 +27,37 @@ export interface ChatCompletionRecoveryPolicy {
   onRecovery?: (event: { outcome: "retry" | "recovered" | "exhausted"; model: string; attempt: 1 | 2; durationMs: number; usage: Usage }) => void;
 }
 
-function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string, declared: (name: string) => boolean) {
+type ReplayMessage = { role: OpenAIChatMessage["role"]; content: string | null | ChatContentPart[]; tool_call_id?: string;
+  tool_calls?: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }>; reasoningSummary?: true };
+
+function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string, declared: (name: string) => boolean, vision = false) {
   // Calls to tools this request does not declare, and their results, stay in the history as text (historical-tools.ts).
   const absent = undeclaredCalls(messages, declared);
-  const replay = messages.filter(message => message.role !== "system" && message.role !== "developer").map(({ parts, name: _name, tool_calls, role, ...message }) => {
+  const replay: ReplayMessage[] = [];
+  // Images from a run of tool results follow it in one user message (chat-images.ts).
+  let toolImages: ReturnType<typeof imagesOf> = [];
+  const flushToolImages = () => { if (toolImages.length) replay.push(toolImagesMessage(toolImages)); toolImages = []; };
+  for (const { parts, name: _name, tool_calls, role, ...message } of messages.filter(message => message.role !== "system" && message.role !== "developer")) {
+    const images = vision ? imagesOf(parts) : [];
     if (role === "tool" && message.tool_call_id !== undefined && absent.has(message.tool_call_id)) {
+      flushToolImages();
       const { tool_call_id: _id, ...rest } = message;
-      return { ...rest, role: "user" as const, content: historicalResultText(absent.get(message.tool_call_id)!, { content: message.content, parts }) };
+      const text = historicalResultText(absent.get(message.tool_call_id)!, { content: message.content, parts });
+      replay.push({ ...rest, role: "user", content: images.length ? [{ type: "text", text }, ...images.map(imageUrlPart)] : text });
+      continue;
     }
+    if (role === "tool") { replay.push({ ...message, role, content: message.content }); toolImages.push(...images); continue; }
+    flushToolImages();
+    if (role === "user" && images.length) { replay.push({ ...message, role, content: userContent(parts!) }); continue; }
     const kept = (tool_calls || []).filter(call => !absent.has(call.id));
     const notes = (tool_calls || []).filter(call => absent.has(call.id)).map(call => historicalCallText(call.function.name, call.function.arguments));
     const content = notes.length ? [message.content || "", ...notes].filter(Boolean).join("\n") : message.content;
-    return { ...message, content, role,
+    replay.push({ ...message, content, role,
       ...(kept.length ? { tool_calls: kept.map(({ id, function: fn }) => ({ id, type: "function" as const, function: { name: nativeName(fn.name), arguments: fn.arguments } })) } : {}),
-    };
-  });
-  const compacted: typeof replay = [];
+    });
+  }
+  flushToolImages();
+  const compacted: ReplayMessage[] = [];
   for (const message of replay) {
     const previous = compacted.at(-1);
     if (previous?.role !== "assistant" || message.role !== "assistant") { compacted.push(message); continue; }
@@ -112,7 +128,10 @@ export class ChatCompletionsAPI implements Provider {
     const normalized = responsesToChatRequest(request); const tools = normalized.tools || [];
     if (request.previous_response_id !== undefined) throw new ProviderError("invalid_request", "Chat API requires replayed history", 400);
     if (request.max_output_tokens !== undefined && (!Number.isInteger(request.max_output_tokens) || Number(request.max_output_tokens) < 1)) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
-    if (normalized.messages.some(message => message.parts?.some(part => part.type === "image"))) throw new ProviderError("unsupported_input", "This chat adapter currently supports text inputs only", 400);
+    const modelAlias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
+    // Images reach only a model whose metadata lists image input; a text-only server keeps the refusal.
+    const vision = !!modelAlias && this.config.modelMetadata?.[modelAlias]?.inputModalities?.includes("image") === true;
+    if (!vision && normalized.messages.some(message => message.parts?.some(part => part.type === "image"))) throw new ProviderError("unsupported_input", "This chat model does not accept images; its metadata does not list image input", 400);
     const nativeName = (name: string): string => {
       const index = tools.findIndex(tool => tool.function.name === name);
       if (index < 0) throw new ProviderError("invalid_request", "Historical tool is absent from the current catalog", 400);
@@ -127,7 +146,7 @@ export class ChatCompletionsAPI implements Provider {
     // Strict chat templates reject later system messages. Keep every instruction
     // at system priority and in source order; conversation replay keeps its order.
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
-    const messages = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name));
+    const messages: ReplayMessage[] = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name), vision);
     if (system) messages.unshift({ role: "system", content: system });
     const url = `${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`;
     const body = JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
