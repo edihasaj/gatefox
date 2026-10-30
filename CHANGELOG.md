@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The remote relay accepts the Codex app engine 0.166.0-alpha.5.1, which ChatGPT
+  shipped on 30 October. The relay refused it, paused itself after three exits, and
+  phones could no longer reach any Mac. The engine's remote-control contract was
+  reviewed against 0.165 and is unchanged.
+
 - A gateway chat that switches to a model with another tokenizer is checked before
   its turn is sent. Codex decides compaction with the previous model's counters, so a
   chat that GPT-6.1-Terra counted at 591K tokens exceeded Claude Sonnet 5.5's 1M

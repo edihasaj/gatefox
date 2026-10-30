@@ -87,3 +87,17 @@ thread-parent column and index without changing registration SQL. The signed
 0.165 engine passed isolated stdio and Unix shared-native checks for reconnect,
 steering, Stop, command execution exactly once and pending approval recovery.
 Relay admission also requires its separately rebuilt relay fixture to pass.
+
+Engine 0.166.0-alpha.5.1 corresponds to OpenAI commit
+`f79b26ccbb3116b052544666a181012fb45dc49b`. ChatGPT 26.1027.30824 shipped it on
+30 Oct 2026; the installed relay refused it at the next service restart, paused as
+`failing`, and the phone lost every Mac. Relative to the admitted 0.165 engine, the
+only `remote_control` change reads the account header from the shared
+`codex_http_client::CHATGPT_ACCOUNT_ID_HEADER` constant, whose value is still
+`chatgpt-account-id`. The other transport changes concern the local WebSocket
+listener's zstd compression. `state/migrations` is identical. The new SQLite
+journal-mode policy and NFS migration apply only under managed policy on NFS, not
+to a local `~/.codex`. `auth.json` keeps its format; 0.166 adds an advisory
+`auth.lock` around writes, which the linked 0.163 relay SDK does not take, as it did
+not with earlier admitted engines. The engine is admitted for the relay only; it
+joins `hostVerifiedAppEngines` after the shared-native fixture passes against it.

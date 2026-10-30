@@ -33,7 +33,7 @@ test("the relay and native host accept each verified app engine while gateway ch
   try {
     // 0.163.0-alpha.11.2 entered the relay list on byte-identical app-server-transport source, and joined the host list only
     // after scripts/e2e-shared-native.mjs passed against the signed engine on a Mac that runs it.
-    assert.deepEqual([...relayAcceptedAppEngines], ["0.165.0-alpha.1.2", "0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
+    assert.deepEqual([...relayAcceptedAppEngines], ["0.166.0-alpha.5.1", "0.165.0-alpha.1.2", "0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.deepEqual([...hostVerifiedAppEngines], ["0.165.0-alpha.1.2", "0.164.0-alpha.11.1", "0.163.0-alpha.11.2", "0.163.0-alpha.11.1", "0.163.0-alpha.11", "0.163.0-alpha.10.2", "0.162.0-alpha.17.2"]);
     assert.equal(gatewayEngineVersions.includes("0.162.0-alpha.17.2"), true);
     for (const version of [app1651_2, app16411_1, app16311_2, app16311_1, app16311, app163, app162]) await validateNativeEngine(await engine(directory, version));
