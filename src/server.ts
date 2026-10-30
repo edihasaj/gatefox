@@ -361,9 +361,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       // Typed provider and protocol failures stay local; an untyped exception is a gateway bug.
       if (known !== error && known.code === "provider_failed") reportException(error, `provider:${providerId ?? "unknown"}`);
       const diagnostic = providerFailureDiagnostic({ requestId, providerId, modelAlias: model, durationMs: Date.now() - startedAt, failure: known, abortCause, ...translation });
+      // A native overflow reports how many tokens the provider counted against its maximum: numbers only, never text.
+      const contextTokens = known.code === "context_length_exceeded" ? known.upstream?.contextTokens : undefined;
       telemetry("request_failed", { ...outcome(), code: known.code, status: known.status, abortCause,
         upstreamCode: diagnostic.upstreamCode, upstreamEvent: diagnostic.upstreamEvent, upstreamStage: diagnostic.upstreamStage,
-        upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, networkCodes: diagnostic.networkCodes, retryAfterMs: diagnostic.retryAfterMs, ...translation });
+        upstreamReason: diagnostic.upstreamReason, subtype: diagnostic.upstreamSubtype, networkCodes: diagnostic.networkCodes, retryAfterMs: diagnostic.retryAfterMs, ...translation,
+        ...(contextTokens ? { contextUsedTokens: contextTokens.used, contextMaximumTokens: contextTokens.maximum } : {}) });
       ledger("failed");
       const failure: GatewayFailure = { event: "request_failed", requestId, ...(providerId ? { providerId, model } : {}), durationMs: Date.now() - startedAt, code: known.code, status: known.status, ...(abortCause ? { abortCause } : {}) };
       if (providerId) availability.recordFailure(providerId, routedAs, known.code, typeof diagnostic.upstreamCode === "string" ? diagnostic.upstreamCode : undefined, typeof diagnostic.retryAfterMs === "number" ? diagnostic.retryAfterMs : undefined, abortCause);

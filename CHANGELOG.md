@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A gateway chat that switches to a model with another tokenizer is checked before
+  its turn is sent. Codex decides compaction with the previous model's counters, so a
+  chat that GPT-6.1-Terra counted at 591K tokens exceeded Claude Sonnet 5.5's 1M
+  window and failed with "ran out of room" on every retry. The adapter now recounts
+  the last measurement for the selected model and, when it would not fit, refuses the
+  turn with the way out: switch back, run /compact, then switch again. Claude CLI
+  overflows also keep their used and maximum token counts in `request_failed`.
+
 - Opt-in managed worker aliases now enforce provider selection, fresh capacity
   checks, subscription reserves, permitted DeepSeek V4 Flash fallback and durable
   provider affinity in Gateway code. Ordinary requests retain a bounded context

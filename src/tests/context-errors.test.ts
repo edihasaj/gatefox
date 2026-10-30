@@ -18,6 +18,10 @@ test("only authoritative native error envelopes identify context overflow", () =
   assert.equal(anthropicContextFailure({ error: { type: "authentication_error", message: "prompt is too long" } }), undefined);
   assert.equal(anthropicContextFailure({ error: { type: "invalid_request_error", message: "The caller quoted prompt is too long in its code" } }), undefined);
   assert.ok(claudeContextFailure({ type: "result", is_error: true, terminal_reason: "prompt_too_long" }));
+  // A terminal overflow keeps the CLI's own counts when its exact native form carries them, so telemetry records the real size.
+  assert.deepEqual(claudeContextFailure({ type: "result", is_error: true, terminal_reason: "prompt_too_long", result: "prompt is too long: 1043211 tokens > 1000000 maximum" })
+    ?.upstream?.contextTokens, { used: 1043211, maximum: 1000000 });
+  assert.equal(claudeContextFailure({ type: "result", is_error: true, terminal_reason: "prompt_too_long", result: "Prompt is too long · 12 tokens" })?.upstream?.contextTokens, undefined);
   assert.ok(claudeContextFailure({ type: "assistant", error: "invalid_request", message: { content: [{ type: "text", text: "Prompt is too long" }] } }));
   assert.equal(claudeContextFailure({ type: "result", subtype: "success", is_error: false, result: "Prompt is too long" }), undefined);
   assert.equal(claudeContextFailure({ type: "result", subtype: "error_max_budget_usd", is_error: true, result: "Prompt is too long" }), undefined);
