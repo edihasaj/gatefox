@@ -208,6 +208,18 @@ unique nonempty ID, and valid object JSON; custom tools also require string
 `stop` plus tool calls. Truncated streams and tool calls capped by `length`
 still fail. This applies to both Responses and Messages ingress.
 
+Chat Completions and Anthropic API providers address tools by position
+(`tool_0`, `tool_1`, …), so a replayed call can only stay structured when its
+tool is declared in the same request. Codex's local compaction replays the
+whole chat without its tools, and an MCP tool can be deferred or disconnected
+later in a chat. A replayed call to an undeclared tool therefore stays in the
+history as text, `[Earlier tool call NAME: ARGUMENTS]`, and its result becomes
+`[Result of earlier tool call NAME]` followed by the output. Calls to declared
+tools keep their structured form. Before this change the whole request failed
+with "Historical tool is absent from the current catalog", so long Qwen chats
+could not compact. A current `tool_choice` that names an undeclared tool is
+still refused.
+
 For Responses ingress, a Chat Completions reply that ends with `stop` but
 contains no answer text or tool call fails as `incomplete`. Reasoning alone,
 including reasoning hidden by `summary: "none"`, cannot complete an agent turn.
