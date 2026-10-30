@@ -7,7 +7,7 @@ import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
-import { historicalCallText, historicalResultText, undeclaredCalls } from "./historical-tools.js";
+import { historicalCallText, historicalResultText, toollessChoice, undeclaredCalls } from "./historical-tools.js";
 import { chatHttpContextFailure } from "./context-errors.js";
 
 const recoveryDeadlineMs = 90_000;
@@ -120,7 +120,7 @@ export class ChatCompletionsAPI implements Provider {
     const alias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];
     const levels = alias ? this.config.modelMetadata?.[alias]?.reasoningEfforts : undefined;
     if (reasoning?.effort !== undefined && (typeof reasoning.effort !== "string" || !levels?.includes(reasoning.effort))) throw new ProviderError("invalid_request", "Selected chat model does not support this reasoning effort", 400);
-    const choice = normalized.tool_choice;
+    const choice = tools.length ? normalized.tool_choice : toollessChoice(normalized.tool_choice);
     // Use the same leading-system normalization for both ingress protocols.
     // Strict chat templates reject later system messages. Keep every instruction
     // at system priority and in source order; conversation replay keeps its order.
