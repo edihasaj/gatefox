@@ -43,6 +43,16 @@ Some services expose one mixed catalog at another URL; enter explicit model IDs
 when that endpoint is unavailable. The wizard supports that fallback. Never
 assume an entire mixed catalog works through one protocol.
 
+For a vLLM chat provider behind a router that rejects an otherwise supported
+reasoning level, an operator can set `"chatTemplateReasoningEffort": true` on
+that `chat-completions-api` provider. The gateway then sends the caller's exact
+effort as `chat_template_kwargs.reasoning_effort` and sets `enable_thinking`
+according to the same choice. It does not map or upgrade the effort. This is
+opt-in because only servers whose chat template supports these fields can honor
+it. With the option absent, the standard `reasoning_effort` field is unchanged.
+Keep the model's advertised levels aligned with its actual template, and verify
+the router preserves these kwargs before enabling the option.
+
 ## Grok API credits
 
 Grok API connects with an xAI API key. API credits are managed at

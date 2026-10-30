@@ -26,6 +26,8 @@ export interface ProviderConfig {
    * Opt-in: the identifier never goes to a provider that has not asked for it.
    */
   sessionAffinity?: boolean;
+  /** Send the caller's reasoning effort through vLLM chat template kwargs, for routers with narrower effort enums. */
+  chatTemplateReasoningEffort?: boolean;
   apiKeyEnv?: string;
   credentialFile?: string;
   agentName?: string;
@@ -229,6 +231,10 @@ export function validateConfig(value: unknown, directory = process.cwd()): Gatew
     if (provider.sessionAffinity !== undefined) {
       if (provider.type !== "chat-completions-api") throw new Error(`${provider.id}: sessionAffinity is only valid for chat-completions-api providers`);
       if (typeof provider.sessionAffinity !== "boolean") throw new Error(`${provider.id}: sessionAffinity must be boolean`);
+    }
+    if (provider.chatTemplateReasoningEffort !== undefined) {
+      if (provider.type !== "chat-completions-api") throw new Error(`${provider.id}: chatTemplateReasoningEffort is only valid for chat-completions-api providers`);
+      if (typeof provider.chatTemplateReasoningEffort !== "boolean") throw new Error(`${provider.id}: chatTemplateReasoningEffort must be boolean`);
     }
     if (["responses-api", "anthropic-api", "chat-completions-api"].includes(provider.type)) {
       if (!provider.baseUrl || (!provider.apiKeyEnv && !provider.credentialFile) || (provider.apiKeyEnv && !/^[A-Z][A-Z0-9_]*$/.test(provider.apiKeyEnv)) || (provider.apiKeyEnv && provider.credentialFile)) throw new Error(`${provider.id}: baseUrl and exactly one of apiKeyEnv or credentialFile are required`);
