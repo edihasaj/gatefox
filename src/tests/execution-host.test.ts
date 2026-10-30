@@ -90,7 +90,7 @@ test("a shared host cleans flags from an older adapter before its SDK starts", {
     assert.ok(!observed.args.some(arg => /code_mode_tool_description_first|codex_hooks|guardianv2\.thread_context/.test(arg)));
     assert.ok(observed.args.includes("features.code_mode.enabled=true"));
     const settings = await readFile(join(observed.home, "config.toml"), "utf8");
-    assert.match(settings, /"hooks"\s*=\s*true/);
+    assert.match(settings, /hooks\s*=\s*true/);
     assert.equal(JSON.stringify(descriptor), original);
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await client?.close(); await host?.close(); await f.clean(); }

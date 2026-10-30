@@ -104,7 +104,7 @@ test("private snapshots normalize feature aliases without writing the native con
     const home = await gatewayEngineHome(join(root, "state"), { features: { codex_hooks: false, code_mode_tool_description_first: true, code_mode: { enabled: true }, guardianv2: { enabled: true, thread_context: false } }, profiles: { work: { features: { codex_hooks: true, guardianv2: { enabled: false, thread_context: true } } } } }, { nativeHome: native });
     const snapshot = await readFile(join(home, "config.toml"), "utf8");
     assert.equal(snapshot.includes("codex_hooks"), false); assert.equal(snapshot.includes("code_mode_tool_description_first"), false); assert.equal(snapshot.includes("thread_context"), false);
-    assert.match(snapshot, /"hooks" = false/); assert.match(snapshot, /"hooks" = true/); assert.match(snapshot, /"code_mode" = \{ "enabled" = true \}/);
+    assert.match(snapshot, /hooks = false/); assert.match(snapshot, /hooks = true/); assert.match(snapshot, /code_mode = \{ enabled = true \}/);
     assert.equal(await readFile(join(native, "config.toml"), "utf8"), original);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
