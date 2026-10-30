@@ -800,6 +800,15 @@ Their text conversation contains labels for image ownership and order, never the
 image bytes. Each native harness controls its own image preprocessing. Codex and
 ordinary Responses upstreams retain the original image parts and detail setting.
 Anthropic API requests retain ordered native image blocks, including tool results.
+Chat Completions providers (local Qwen through vLLM) receive images only for a model
+whose `modelMetadata` lists `"inputModalities": ["text", "image"]`. A user message
+keeps its text and images in order as `image_url` data URLs. A tool result keeps its
+text in the tool message, because Chat Completions tool messages carry text only; its
+images follow in one user message after the run of tool results, so the results stay
+contiguous after the assistant's calls. A model whose metadata lists only `text`
+still refuses images with `unsupported_input` ("This chat model does not accept
+images"). The vision check in `scripts/e2e-chat-compaction.mjs` verifies both paths
+against the real model.
 
 Model metadata carries `inputModalities`. The desktop adapter preserves those
 capabilities rather than declaring every added model text-only. Updating an older

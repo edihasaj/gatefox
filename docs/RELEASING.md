@@ -159,7 +159,9 @@ JavaScript. Installing a CLI update preserves the registration. See
    compaction shape (no tools, `tool_choice`, an undeclared historical tool), a turn
    with declared tools and an undeclared historical tool, and an oversized prompt to
    the real provider, and requires an answer, an answer, and `context_length_exceeded`.
-   1.2.2 fails all three. It prints only PASS/FAIL lines and fixed error codes.
+   1.2.2 fails all three. It prints only PASS/FAIL lines and fixed error codes. When
+   the model's metadata lists image input, or with `--vision`, it also sends a user
+   image and a tool-result image and requires the model to name their colors.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
    gateway SDK and a mock upstream it proves that new chats stay
