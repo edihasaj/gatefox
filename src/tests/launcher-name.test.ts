@@ -105,7 +105,7 @@ async function uninstallLayout(shape: "current" | "linked" | "foreign-alias") {
   return { home, bin };
 }
 const noop = async () => ({});
-const noDeps: UninstallDeps = { macService: noop, macNative: noop, macDesktop: noop, planDesktopUnregister: noop, macSsh: noop, macTunnel: noop } as unknown as UninstallDeps;
+const noDeps: UninstallDeps = { macService: noop, macNative: noop, macDesktop: noop, planDesktopUnregister: noop, macSsh: noop, macTunnel: noop, withdrawNativeProvider: async () => "absent" } as unknown as UninstallDeps;
 
 test("uninstall moves both launchers to the Trash whichever one ran it, and leaves a foreign harness-gateway alone", mac, async () => {
   for (const [shape, running] of [["current", "harness-gateway"], ["current", "gateway"], ["linked", "gateway"], ["foreign-alias", "gateway"]] as const) {
