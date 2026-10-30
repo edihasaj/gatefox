@@ -105,6 +105,6 @@ test("the private gateway home snapshot carries only features the pinned SDK acc
   try {
     const home = await gatewayEngineHome(join(root, "state"), { model: "m", features: { gateway_test_unstructured_feature: { enabled: true }, multi_agent_v2: { enabled: true, gateway_test_unknown_field: true } } }, { nativeHome: join(root, "native") });
     const lines = (await readFile(join(home, "config.toml"), "utf8")).split("\n").filter(Boolean);
-    assert.deepEqual(lines, ['"model" = "m"', '"features" = { "gateway_test_unstructured_feature" = true, "multi_agent_v2" = { "enabled" = true } }', `"sqlite_home" = ${JSON.stringify(join(root, "native"))}`]);
+    assert.deepEqual(lines, ['model = "m"', 'features = { gateway_test_unstructured_feature = true, multi_agent_v2 = { enabled = true } }', `sqlite_home = ${JSON.stringify(join(root, "native"))}`]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -369,9 +369,9 @@ test("legacy and canonical feature settings share one writer and retain current 
     assert.deepEqual(observed.cliFeatures, { "features.hooks": false, "features.code_mode.enabled": true, "features.step_model_switching": true });
     const snapshot = await readFile(join(f.config.stateDirectory, "desktop-generations", "shared-v1-" + oldOwner.revision, "desktop-engine", "config.toml"), "utf8");
     assert.equal(snapshot.includes("codex_hooks"), false); assert.equal(snapshot.includes("code_mode_tool_description_first"), false); assert.equal(snapshot.includes("thread_context"), false);
-    assert.match(snapshot, /"hooks" = false/);
-    assert.match(snapshot, /"code_mode" = \{ "enabled" = true, "default_exec_yield_time_ms" = 1500, "experimental_show_cell_overhead" = true \}/);
-    assert.match(snapshot, /"guardianv2" = \{ "enabled" = true, "persist_scores" = false, "review_threshold" = 0\.6 \}/);
+    assert.match(snapshot, /hooks = false/);
+    assert.match(snapshot, /code_mode = \{ enabled = true, default_exec_yield_time_ms = 1500, experimental_show_cell_overhead = true \}/);
+    assert.match(snapshot, /guardianv2 = \{ enabled = true, persist_scores = false, review_threshold = 0\.6 \}/);
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), 'model = "native-original"\n');
   } finally { await f.clean(); }
 });
@@ -390,7 +390,7 @@ test("shared priority-capable executors enable fast mode while native flags and 
     assert.equal(await readFile(join(f.nativeHome, "config.toml"), "utf8"), f.nativeConfig);
     const owner = await f.control.request("execution/find", { threadId: "priority-capable-standard-chat" });
     const snapshot = await readFile(join(f.config.stateDirectory, "desktop-generations", "shared-v1-" + owner.revision, "desktop-engine", "config.toml"), "utf8");
-    assert.match(snapshot, /"fast_mode" = false/); assert.equal(snapshot.includes('"service_tier" = "priority"'), false);
+    assert.match(snapshot, /fast_mode = false/); assert.equal(snapshot.includes('service_tier = "priority"'), false);
   } finally { await f.clean(); }
 });
 

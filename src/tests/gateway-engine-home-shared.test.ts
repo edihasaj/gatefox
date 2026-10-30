@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, readlink, lstat, stat, symlink, chmod, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { gatewayEngineHome } from "../gateway-engine-home.js";
+import { gatewayEngineHome, dropDuplicateRootKeys } from "../gateway-engine-home.js";
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "gateway-shared-home-"));
@@ -51,6 +51,31 @@ test("shared config preservation retains private SDK trust writes across connect
     assert.match(await readFile(join(next, "config.toml"), "utf8"), /new-snapshot/);
     assert.equal((await readFile(join(next, "config.toml"), "utf8")).includes("trust_level"), false);
   } finally { await f.close(); }
+});
+
+test("snapshot keys are bare so line-based installers find them, and preserved duplicates are repaired", async () => {
+  const f = await fixture();
+  try {
+    const state = join(f.root, "generation"); const options = { nativeHome: f.nativeHome, sharedWriterLocks: true, preserveConfig: true };
+    const home = await gatewayEngineHome(state, { notify: ["/native/client", "turn-ended"], projects: { "/a b": { trust_level: "trusted" } } }, options);
+    const config = join(home, "config.toml"); const initial = await readFile(config, "utf8");
+    assert.match(initial, /^notify = \["\/native\/client", "turn-ended"\]$/m);
+    assert.match(initial, /projects = \{ "\/a b" = \{ trust_level = "trusted" \} \}/);
+    // A snapshot written by an older release, then edited by an installer that appended a bare key.
+    const legacy = '"model" = "m"\n"notify" = ["/native/client", "turn-ended"]\n"sqlite_home" = "/x"\n\nnotify = ["/engine/client", "turn-ended"]\n[projects."/p"]\ntrust_level = "trusted"\n';
+    await writeFile(config, legacy, { mode: 0o600 });
+    await gatewayEngineHome(state, { model: "new" }, options);
+    const repaired = await readFile(config, "utf8");
+    assert.equal(repaired, '"model" = "m"\n"sqlite_home" = "/x"\n\nnotify = ["/engine/client", "turn-ended"]\n[projects."/p"]\ntrust_level = "trusted"\n');
+    assert.equal((await lstat(config)).mode & 0o777, 0o600);
+  } finally { await f.close(); }
+});
+
+test("duplicate repair ignores tables, multi-line values and distinct keys", () => {
+  const text = 'a = 1\nb = [\n  1,\n]\nb = 2\n"a.b" = 3\n[t]\na = 4\n';
+  assert.equal(dropDuplicateRootKeys(text), text);
+  assert.equal(dropDuplicateRootKeys('a = "x = ]"\na = 2\n'), "a = 2\n");
+  assert.equal(dropDuplicateRootKeys("x = 1\n"), "x = 1\n");
 });
 
 test("shared writer-lock collisions preserve unexpected directories and foreign links", async t => {

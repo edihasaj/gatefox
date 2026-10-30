@@ -966,6 +966,15 @@ Gateway executor homes link the native `AGENTS.md`, `agents`, `skills`, `plugins
 prompts work in gateway chats as in native ones. Authentication and `config.toml`
 are never linked.
 
+The executor home's `config.toml` snapshot writes bare keys (`notify = …`) wherever
+TOML allows them, and quotes only keys that need it. Tools that edit `config.toml`
+line by line, such as the Computer Use installer, look for a bare `notify =` and
+append their own when they miss a quoted `"notify" =`. That left two root `notify`
+keys and the engine failed with `duplicate key` on resume (30 Oct 2026). A shared
+generation keeps its snapshot across restarts, so on reuse the gateway also drops
+the earlier of two single-line root assignments to the same key; the later line is
+the newer intent. Tables and multi-line values are left alone.
+
 On 13 Oct 2026 a low-effort GPT-6.1-Sol turn through a development gateway sent
 the native 21,769-character base prompt as a developer message (Responses lite has
 no top-level `instructions`). With Codex 0.160.0 the model called the code-mode

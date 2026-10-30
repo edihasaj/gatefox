@@ -67,7 +67,7 @@ test("new gateway executors inherit agent limits changed after adapter initializ
     const started = await c.rpc("thread/start", { model: "claude/model" });
     const engine = await c.rpc("engine/info", { threadId: started.thread.id });
     const settings = await readFile(join(engine.home, "config.toml"), "utf8");
-    assert.ok(settings.includes('"max_concurrent_threads_per_session" = 30'));
+    assert.ok(settings.includes("max_concurrent_threads_per_session = 30"));
     assert.equal(await readFile(join(c.nativeHome, "config.toml"), "utf8"), 'model = "native"\n');
     assert.equal(engine.primaryAuthPresent, false);
   } finally { await c.stop(); }
@@ -89,9 +89,9 @@ test("client agent choices survive obsolete gateway role policy", { timeout: 150
     const started = await c.rpc("thread/start", { model: "claude/model" });
     const engine = await c.rpc("engine/info", { threadId: started.thread.id });
     const settings = await readFile(join(engine.home, "config.toml"), "utf8");
-    assert.match(settings, /"default_subagent_model" = "claude\/model"/);
-    assert.match(settings, /"default_subagent_reasoning_effort" = "low"/);
-    assert.match(settings, /"max_concurrent_threads_per_session" = 30/);
+    assert.match(settings, /default_subagent_model = "claude\/model"/);
+    assert.match(settings, /default_subagent_reasoning_effort = "low"/);
+    assert.match(settings, /max_concurrent_threads_per_session = 30/);
     assert.equal(settings.includes("obsolete"), false);
     assert.equal(await readlink(join(engine.home, "agents")), roles);
     assert.equal(await readFile(join(engine.home, "agents/reviewer.toml"), "utf8"), role);
