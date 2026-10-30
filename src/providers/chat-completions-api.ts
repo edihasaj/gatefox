@@ -7,6 +7,7 @@ import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
+import { historicalCallText, historicalResultText, undeclaredCalls } from "./historical-tools.js";
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -22,10 +23,21 @@ export interface ChatCompletionRecoveryPolicy {
   onRecovery?: (event: { outcome: "retry" | "recovered" | "exhausted"; model: string; attempt: 1 | 2; durationMs: number; usage: Usage }) => void;
 }
 
-function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string) {
-  const replay = messages.filter(message => message.role !== "system" && message.role !== "developer").map(({ parts: _parts, name: _name, tool_calls, role, ...message }) => ({ ...message, role,
-    ...(tool_calls ? { tool_calls: tool_calls.map(({ id, function: fn }) => ({ id, type: "function" as const, function: { name: nativeName(fn.name), arguments: fn.arguments } })) } : {}),
-  }));
+function compactAssistantReplay(messages: ReturnType<typeof responsesToChatRequest>["messages"], nativeName: (name: string) => string, declared: (name: string) => boolean) {
+  // Calls to tools this request does not declare, and their results, stay in the history as text (historical-tools.ts).
+  const absent = undeclaredCalls(messages, declared);
+  const replay = messages.filter(message => message.role !== "system" && message.role !== "developer").map(({ parts, name: _name, tool_calls, role, ...message }) => {
+    if (role === "tool" && message.tool_call_id !== undefined && absent.has(message.tool_call_id)) {
+      const { tool_call_id: _id, ...rest } = message;
+      return { ...rest, role: "user" as const, content: historicalResultText(absent.get(message.tool_call_id)!, { content: message.content, parts }) };
+    }
+    const kept = (tool_calls || []).filter(call => !absent.has(call.id));
+    const notes = (tool_calls || []).filter(call => absent.has(call.id)).map(call => historicalCallText(call.function.name, call.function.arguments));
+    const content = notes.length ? [message.content || "", ...notes].filter(Boolean).join("\n") : message.content;
+    return { ...message, content, role,
+      ...(kept.length ? { tool_calls: kept.map(({ id, function: fn }) => ({ id, type: "function" as const, function: { name: nativeName(fn.name), arguments: fn.arguments } })) } : {}),
+    };
+  });
   const compacted: typeof replay = [];
   for (const message of replay) {
     const previous = compacted.at(-1);
@@ -112,7 +124,7 @@ export class ChatCompletionsAPI implements Provider {
     // Strict chat templates reject later system messages. Keep every instruction
     // at system priority and in source order; conversation replay keeps its order.
     const system = normalized.messages.filter(message => message.role === "system" || message.role === "developer").map(message => message.content || "").filter(Boolean).join("\n\n");
-    const messages = compactAssistantReplay(normalized.messages, nativeName);
+    const messages = compactAssistantReplay(normalized.messages, nativeName, name => tools.some(tool => tool.function.name === name));
     if (system) messages.unshift({ role: "system", content: system });
     const url = `${this.config.baseUrl!.replace(/\/$/, "")}/chat/completions`;
     const body = JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
