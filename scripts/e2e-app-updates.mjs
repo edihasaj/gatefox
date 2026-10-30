@@ -142,16 +142,21 @@ async function canonicalExisting(path, kind) {
 function inside(parent, path) {
   return path === parent || path.startsWith(`${parent}/`);
 }
-async function evidenceRoot(requestedRoot, inputs) {
+export async function evidenceRoot(requestedRoot, inputs, homePath = priorHome) {
   if (requestedRoot === "/" || requestedRoot === "/tmp") throw new Error("invalid root");
   const parent = await unsymlinkedParent(requestedRoot);
   const candidate = join(parent, requestedRoot.slice(dirname(requestedRoot).length + 1));
-  const home = priorHome && isAbsolute(priorHome) ? await realpath(priorHome) : "";
-  if (!home || !inside(home, candidate) || candidate === home) throw new Error("unsafe root");
+  const home = homePath && isAbsolute(homePath) ? await realpath(homePath) : "";
+  const temporary = await realpath("/tmp");
+  const temporaryInfo = await lstat(temporary);
+  const privateTemporary = temporaryInfo.isDirectory() && temporaryInfo.uid === 0 && !!(temporaryInfo.mode & 0o1000);
+  const base = home && inside(home, candidate) && candidate !== home ? home
+    : privateTemporary && inside(temporary, candidate) && candidate !== temporary ? temporary : "";
+  if (!base) throw new Error("unsafe root");
   for (const path of Object.values(inputs)) if (inside(candidate, path) || inside(path, candidate)) throw new Error("unsafe root");
   const owner = process.getuid?.();
-  const relative = candidate.slice(home.length + 1).split("/");
-  let current = home;
+  const relative = candidate.slice(base.length + 1).split("/");
+  let current = base;
   for (const part of relative.slice(0, -1)) {
     current = join(current, part);
     const info = await lstat(current);
