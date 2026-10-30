@@ -220,6 +220,12 @@ with "Historical tool is absent from the current catalog", so long Qwen chats
 could not compact. A current `tool_choice` that names an undeclared tool is
 still refused.
 
+The same compaction request carries `tool_choice` but no tools. vLLM refuses
+that combination with HTTP 400 ("When using `tool_choice`, `tools` must be
+set"). For Chat Completions providers with no declared tools, `auto` and `none`
+both mean that nothing can be called, so the gateway omits the field. `required` and a named
+tool still fail, because no tool can satisfy them.
+
 For Responses ingress, a Chat Completions reply that ends with `stop` but
 contains no answer text or tool call fails as `incomplete`. Reasoning alone,
 including reasoning hidden by `summary: "none"`, cannot complete an agent turn.

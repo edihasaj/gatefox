@@ -66,3 +66,16 @@ test("the Anthropic API keeps a call to an undeclared tool and its result as tex
   assert.ok(blocks.some(block => block.role === "assistant" && /\[Earlier tool call mcp__recall__report_correction/.test(block.text || "")));
   assert.ok(blocks.some(block => block.role === "user" && /\[Result of earlier tool call mcp__recall__report_correction\]\nsaved/.test(block.text || "")));
 });
+
+test("a request with no tools drops auto or none tool_choice, as compaction sends it, and refuses required", async t => {
+  const config: ProviderConfig = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:4000/v1", apiKeyEnv: key, models: { "qwen/flash": "fixture" } };
+  for (const tool_choice of ["auto", "none"]) {
+    const body = await outbound(t, new ChatCompletionsAPI(config), { model: "fixture", input, tool_choice, parallel_tool_calls: true } as unknown as ResponsesRequest);
+    assert.equal(body.tool_choice, undefined, `${tool_choice} is not sent without tools`);
+    assert.equal(body.tools, undefined);
+  }
+  const withTools = await outbound(t, new ChatCompletionsAPI(config), { model: "fixture", input, tools, tool_choice: "auto" } as unknown as ResponsesRequest);
+  assert.equal(withTools.tool_choice, "auto", "a request with tools keeps its selection");
+  await assert.rejects(async () => { for await (const _ of new ChatCompletionsAPI(config).infer({ model: "fixture", input, tool_choice: "required" } as unknown as ResponsesRequest, new AbortController().signal)) { /* refused */ } },
+    /needs at least one declared tool|Required tool is not in the catalog/);
+});
