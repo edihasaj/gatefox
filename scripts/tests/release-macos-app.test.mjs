@@ -1,16 +1,30 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import test from 'node:test';
 import { gzipSync } from 'node:zlib';
 import { assertReleaseContext, assertRemoteProduction, assertRemoteTag, assertVersionLockfile, finalJson, inspectFinalZip,
   defaultRun, parseArgs, publishRelease, releaseAssets, releaseMacosApp, scrubFailureTail, validateBackendArchive, verifyUploadedAssets } from '../release-macos-app.mjs';
-import { classifyFixtureError, fixtureCommand } from '../e2e-app-updates.mjs';
+import { classifyFixtureError, evidenceRoot, fixtureCommand } from '../e2e-app-updates.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
+
+test('updater fixture accepts owned private temporary roots and refuses unsafe parents', async () => {
+  const temporary = realpathSync('/tmp');
+  const directory = mkdtempSync(join(temporary, 'gateway-fixture-boundary-'));
+  const privateParent = join(directory, 'private'); mkdirSync(privateParent, { mode: 0o700 });
+  const destination = join(privateParent, 'evidence');
+  assert.equal(await evidenceRoot(destination, {}, '/Users'), destination);
+  await assert.rejects(evidenceRoot(join(temporary, 'outside-owned-parent'), {}, '/Users'), /unsafe root/);
+  const publicParent = join(directory, 'public'); mkdirSync(publicParent, { mode: 0o700 }); chmodSync(publicParent, 0o777);
+  await assert.rejects(evidenceRoot(join(publicParent, 'evidence'), {}, '/Users'), /unsafe root/);
+  const link = join(directory, 'link'); symlinkSync(privateParent, link);
+  await assert.rejects(evidenceRoot(join(link, 'evidence'), {}, '/Users'), /unsafe root/);
+  await assert.rejects(evidenceRoot(destination, { existing: directory }, '/Users'), /unsafe root/);
+});
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, { cwd: options.cwd, env: options.env ?? process.env, encoding: 'utf8' });
   if (result.error || (!options.allowFailure && result.status !== 0)) {
