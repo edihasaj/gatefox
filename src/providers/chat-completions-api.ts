@@ -213,6 +213,12 @@ export class ChatCompletionsAPI implements Provider {
           if ((choice === "required" || typeof choice === "object") && !calls.size) throw new ProviderError("invalid_tool_call", "Chat API omitted the required tool");
           done = true;
           const noVisibleOutput = finish === "stop" && !calls.size && !textBytes && !toolFragments;
+          // Reasoning is not an answer. Responses clients otherwise end the agent
+          // turn successfully even when the model only planned its next action.
+          if (noVisibleOutput && context.clientProtocol !== "messages") {
+            yield { type: "usage", usage };
+            throw incomplete("Chat API returned no answer or tool call");
+          }
           if (strictEmpty && noVisibleOutput && (refusedOrMalformed || !sawChoiceModel || !exactChoiceModels)) throw incomplete("Chat API response was incomplete or refused");
           const empty = noVisibleOutput && sawChoiceModel && exactChoiceModels;
           if (empty && strictEmpty) { eofTimer = setTimeout(() => { eofExpired = true; eof.abort(); }, Math.min(recoveryEofMs, eofTimeoutMs)); continue; }
