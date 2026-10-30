@@ -232,7 +232,12 @@ Provider failures emit `response.failed`, including failures before the first
 output delta. Nonstream requests retain the corresponding HTTP error status.
 Responses upstream `context_length_exceeded` errors keep that code so Codex's
 compaction recovery can trim history and retry. The gateway does not choose a
-different model or account. Transport failures and deadline expiry have separate
+different model or account. Chat Completions servers such as vLLM report the same
+overflow as a plain HTTP 400 whose message says "maximum context length is N
+tokens", with no code. The gateway maps that message to `context_length_exceeded`
+too, keeping only the token counts, so a long local Qwen chat compacts instead of
+resending the same oversized request until it fails. Other 400s keep their
+ordinary classification. Transport failures and deadline expiry have separate
 messages; they do not imply a failed login. Responses upstream server errors retry
 once after one second only before any text, reasoning state, or tool output has
 been published. Known transient connection failures before output, including

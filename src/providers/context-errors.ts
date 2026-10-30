@@ -24,7 +24,14 @@ export function anthropicContextFailure(value: unknown): ProviderError | undefin
 
 /** Bound failure metadata before parsing; no upstream message is exposed. */
 export async function anthropicHttpContextFailure(response: Response): Promise<ProviderError | undefined> {
-  if (response.status !== 400 || !response.body) return;
+  if (response.status !== 400) return;
+  const body = await boundedJson(response);
+  return body === undefined ? undefined : anthropicContextFailure(body);
+}
+
+/** A 400 body of at most 64 KiB, parsed; nothing when it is larger, empty or not JSON. */
+async function boundedJson(response: Response): Promise<unknown> {
+  if (!response.body) return;
   const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0;
   try {
     for (;;) {
@@ -32,8 +39,32 @@ export async function anthropicHttpContextFailure(response: Response): Promise<P
       size += part.value.byteLength; if (size > 64 * 1024) { await reader.cancel().catch(() => {}); return; }
       chunks.push(part.value);
     }
-    try { return anthropicContextFailure(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch { return; }
+    try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return; }
   } finally { reader.releaseLock(); }
+}
+
+/**
+ * vLLM and other OpenAI-compatible Chat servers report input overflow as a plain 400 whose message reads "This model's
+ * maximum context length is N tokens. However, … your prompt contains at least M input tokens …" (vLLM) or "… your messages
+ * resulted in M tokens" (OpenAI's older form), with no `context_length_exceeded` code. Recognized so Codex's compaction can
+ * trim history instead of resending the same request. Only the counts are kept; the message text never leaves this function.
+ */
+export function chatContextFailure(value: unknown): ProviderError | undefined {
+  const error = object(object(value).error);
+  if (contextCode(error.code)) return contextWindowFailure();
+  const message = typeof error.message === "string" ? error.message : "";
+  const maximum = /maximum context length is (\d+) tokens/i.exec(message);
+  if (!maximum) return;
+  const used = /prompt contains (?:at least )?(\d+) input tokens|messages resulted in (\d+) tokens/i.exec(message);
+  const counts = used ? { used: Number(used[1] ?? used[2]), maximum: Number(maximum[1]) } : undefined;
+  return contextWindowFailure(counts && Number.isSafeInteger(counts.used) && Number.isSafeInteger(counts.maximum) ? counts : undefined);
+}
+
+/** The Chat transport's 400 check; reads a copy, so the original response stays available for ordinary error mapping. */
+export async function chatHttpContextFailure(response: Response): Promise<ProviderError | undefined> {
+  if (response.status !== 400) return;
+  const body = await boundedJson(response.clone());
+  return body === undefined ? undefined : chatContextFailure(body);
 }
 
 /** Only native error envelopes qualify, never ordinary assistant prose. */
