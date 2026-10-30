@@ -450,6 +450,17 @@ service re-registers the wrapper when it starts. It accepts `GATEWAY_CONFIG`,
 `GATEWAY_NODE_PATH`, and `GATEWAY_CODEX_PATH` when its defaults do not match the
 machine.
 
+The wrapper and the adapter ignore a `CODEX_HOME` that points inside the gateway's
+state directory or its `~/.local/state/gw-exec`, `gw-native`, `gw-ssh` and
+`gw-runtime` roots. Gateway executors run with such a home, and every command a
+gateway chat runs inherits it. When one of those commands started ChatGPT (an agent
+restarting the app with `open -a ChatGPT`), the adapter looked for
+`models_cache.json` in that internal home and the app failed to start with "The
+native model catalog is unavailable". With the guard, an agent-started ChatGPT reads
+`~/.codex` exactly as a launch from the Dock does. Any other `CODEX_HOME`, such as the
+isolated home of `gateway desktop --native-home`, is kept. The adapter records
+`codex_home_ignored` when it drops one (`src/native-home-env.ts`).
+
 For an `app-server` command, a newly generated wrapper passes the signed
 `CodexCLI.app/Contents/MacOS/codex` engine to the adapter. ChatGPT's ordinary
 `codex-cli/bin/codex` launcher stays in use for every other command. The shared host

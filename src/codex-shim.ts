@@ -1,4 +1,5 @@
 import { nativeProviderRow, providerOverrides } from "./native-provider-row.js";
+import { dropGatewayCodexHome } from "./native-home-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
@@ -96,6 +97,11 @@ export async function codexShim(argv: string[]): Promise<void> {
   const { values } = parseArgs({ args: options, options: { config: { type: "string" }, codex: { type: "string" }, ssh: { type: "boolean" }, "ssh-home": { type: "string" } }, strict: true });
   if (!values.config || !values.codex || !forwarded.length) throw new Error("codex-shim requires --config, --codex and -- followed by Codex arguments");
   if (values["ssh-home"] && !values.ssh) throw new Error("--ssh-home requires --ssh");
+  // Before anything reads CODEX_HOME (the SSH control home, the catalog, the native engine): a gateway-internal home
+  // inherited from an agent shell is never the user's native home (native-home-env.ts).
+  // Best effort: pass-through commands and the SSH proxy must keep working without a readable configuration.
+  const stateDirectory = await loadConfig(resolve(values.config)).then(config => config.stateDirectory, () => undefined);
+  const ignoredHome = stateDirectory !== undefined && dropGatewayCodexHome(process.env, stateDirectory);
   const controlHome = values.ssh ? resolve(values["ssh-home"] || sshControlHome(values.config)) : undefined;
   const executable = resolve(values.codex);
   if (executable === fileURLToPath(import.meta.url)) throw new Error("--codex must point to the original Codex executable");
@@ -133,6 +139,7 @@ export async function codexShim(argv: string[]): Promise<void> {
   }
   const path = resolve(values.config); const config = await loadConfig(path);
   configureTelemetry(config.stateDirectory, "adapter"); startErrorReports(config.stateDirectory, "adapter");
+  if (ignoredHome) telemetry("codex_home_ignored", { reason: "gateway_internal" });
   // One relay ownership decision per process: a registration owns every `remoteControl/*` request,
   // including while its private socket is reconnecting. This environment flag suppresses only the
   // stock engine's startup control; a later enable request can otherwise turn it back on and compete
