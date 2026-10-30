@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.9 — 2026-10-31
+
+- The remote relay accepts the Codex app engine 0.166.0-alpha.5.1, which ChatGPT
+  shipped on 30 October. The relay refused it, paused itself after three exits, and
+  phones could no longer reach any Mac. The engine's remote-control contract was
+  reviewed against 0.165 and is unchanged.
+
 ## 1.2.0 — 2026-10-29
 
 - Opt-in managed worker aliases now enforce provider selection, fresh capacity
