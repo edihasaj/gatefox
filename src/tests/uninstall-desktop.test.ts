@@ -51,7 +51,7 @@ function fakes(desktopResult: Record<string, unknown> = {}, runDesktop?: (action
   const calls: string[] = [];
   const record = (name: string) => async (): Promise<Record<string, unknown>> => { calls.push(name); return {}; };
   const deps: UninstallDeps = {
-    macService: record("service"), macNative: record("native"), macSsh: record("ssh"), macTunnel: record("tunnel"),
+    macService: record("service"), macNative: record("native"), macSsh: record("ssh"), macTunnel: record("tunnel"), withdrawNativeProvider: async () => "absent",
     macDesktop: async (action: string) => { calls.push(`desktop:${action}`); return runDesktop ? runDesktop(action) : desktopResult; },
     planDesktopUnregister: async () => { calls.push("desktop:plan"); return runPlan ? runPlan() : {}; },
   };
@@ -207,6 +207,7 @@ test("the uninstaller plans past a service plan its service step then removes", 
       macNative: async () => { calls.push("native"); return {}; },
       macSsh: async () => { calls.push("ssh"); return {}; },
       macTunnel: async () => { calls.push("tunnel"); return {}; },
+      withdrawNativeProvider: async () => "absent",
       macDesktop: async (action) => { calls.push(`desktop:${action}`); return macDesktop(action, f.config, f.app, false, f.exec); },
       planDesktopUnregister: async (configPath, exec, options) => {
         calls.push("desktop:plan");

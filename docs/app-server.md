@@ -379,6 +379,11 @@ objects in the caller's own order, including an entry the adapter cannot read,
 which is forwarded unchanged. The app writes those keys the same way without the
 gateway, so a setting changed in ChatGPT still reaches its own configuration.
 The adapter itself never writes native configuration on its own initiative.
+Desktop registration is the one exception, and it writes only a single entry: the
+`model_providers.subscription_gateway` row, so saved gateway chats open in any
+engine. See [the provider row](harness-identity.md#the-provider-row-in-native-configuration).
+A client edit that saves that row is still refused, as below, because only
+registration maintains it.
 
 A whole request is refused, before anything is written or forwarded, when a
 native edit would store gateway identity in native configuration. A key path is

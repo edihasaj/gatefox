@@ -1,4 +1,4 @@
-import { codexStreamIdleTimeoutMs } from "./codex-config.js";
+import { nativeProviderRow, providerOverrides } from "./native-provider-row.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { pipeline } from "node:stream/promises";
@@ -10,7 +10,6 @@ import { configureTelemetry, telemetry } from "./telemetry.js";
 import { startErrorReports } from "./error-report.js";
 import { prepareNativeCatalog } from "./native-catalog.js";
 import { emitMessage } from "./app-server-connection.js";
-import { gatewayCommand } from "./command.js";
 import { shimSession } from "./shim-session.js";
 import { unixSocketPath, serveUnix } from "./unix-transport.js";
 import { watchForUpgrade } from "./self-update.js";
@@ -143,12 +142,8 @@ export async function codexShim(argv: string[]): Promise<void> {
   if (registered) process.env.CODEX_INTERNAL_APP_SERVER_REMOTE_CONTROL_DISABLED = "1";
   const relay = registered;
   if (!config.port) throw new Error("codex-shim requires a fixed gateway port");
-  const helper = gatewayCommand();
-  const overrides = {
-    name: "Harness Gateway", base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: "responses", requires_openai_auth: false,
-    supports_websockets: false, request_max_retries: 2, stream_idle_timeout_ms: codexStreamIdleTimeoutMs,
-    "auth.command": helper.command, "auth.args": [...helper.args, "token", "--config", path], "auth.timeout_ms": 5000, "auth.refresh_interval_ms": 300000,
-  };
+  // The same row `gateway desktop register` publishes into the native configuration (native-provider-row.ts).
+  const overrides = providerOverrides(nativeProviderRow(config.port, path));
   const prepared = await prepareNativeCatalog(executable, preflightArgs, config);
   const nativeArgs = normalizeCodexFeatureArgs(preflightArgs, prepared.settings);
   const controller = new AbortController(); const stop = () => controller.abort();

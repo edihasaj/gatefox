@@ -8,6 +8,7 @@ import { macTunnel } from "./mac-tunnel.js";
 import { macDesktop, planDesktopUnregister } from "./mac-desktop.js";
 import { macSsh } from "./mac-ssh.js";
 import { macNative } from "./mac-native.js";
+import { withdrawNativeProvider } from "./native-provider-row.js";
 
 /**
  * The commands the uninstaller runs. Injectable so a test can walk the whole uninstall path, including the
@@ -20,9 +21,11 @@ export type UninstallDeps = {
   planDesktopUnregister: typeof planDesktopUnregister;
   macSsh: typeof macSsh;
   macTunnel: typeof macTunnel;
+  /** Removes the gateway's own provider row from the native configuration; reports instead of throwing. */
+  withdrawNativeProvider: (app: string) => Promise<string>;
 };
 
-const defaultDeps: UninstallDeps = { macService, macNative, macDesktop, planDesktopUnregister, macSsh, macTunnel };
+const defaultDeps: UninstallDeps = { macService, macNative, macDesktop, planDesktopUnregister, macSsh, macTunnel, withdrawNativeProvider: app => withdrawNativeProvider(app) };
 
 /** Where a desktop step failed, which is also what the install still holds at that point. */
 const failureStage = {
@@ -62,6 +65,8 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
   // A failure here is mid-removal, so the message says what is already gone and what to do next.
   const desktop = await deps.macDesktop("unregister", configPath).catch((error: unknown) => { throw uninstallFailure(error, "unregister"); });
   await deps.macSsh("unregister", configPath);
+  // Without the gateway the row would only point saved gateway chats at a credential helper that is gone.
+  const nativeProvider = process.platform === "darwin" ? await deps.withdrawNativeProvider("/Applications/ChatGPT.app") : "absent";
   const directory = resolve(homedir(), "Library/LaunchAgents");
   // The tunnel step keeps its login lock and staged login in the configured state directory, as the CLI's own tunnel command does.
   let stateDirectory: string | undefined;
@@ -81,14 +86,15 @@ export async function uninstallGateway(configPath: string, deps: UninstallDeps =
     if (ours) await rename(sibling, resolve(trash, `${name}.${suffix}`));
   }
   await rename(command, resolve(trash, `${basename(command)}.${suffix}`)); await rename(root, resolve(trash, `subscription-gateway.${suffix}`));
-  return uninstallResult(desktop);
+  return uninstallResult(desktop, nativeProvider);
 }
 
 /**
  * The uninstall contract. Pure so a test can prove the legacy FORCE_CLI warning passes through
  * without running the installer's launchctl, trash, or filesystem work.
  */
-export function uninstallResult(desktop: Record<string, unknown>): Record<string, unknown> {
-  return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: true,
+export function uninstallResult(desktop: Record<string, unknown>, nativeProvider = "absent"): Record<string, unknown> {
+  return { uninstalled: true, installationMovedToTrash: true, credentialsPreserved: true, nativeConfigUntouched: nativeProvider !== "removed",
+    ...(nativeProvider === "absent" ? {} : { nativeProvider }),
     ...(desktop.legacyForceCliKept === true ? { legacyForceCliKept: true } : {}) };
 }

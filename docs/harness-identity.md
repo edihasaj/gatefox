@@ -4,6 +4,7 @@ read_when:
   - Changing which provider id gateway chats are saved with, or the chatIdentity setting
   - Changing the gateway SDK patch, the executor marker, or the executor launch settings
   - Investigating why a gateway chat is missing from the phone or the native chat list
+  - Investigating "Model provider `subscription_gateway` not found" when ChatGPT opens a chat
   - Adding a harness, or a client that lists or resumes gateway chats
 ---
 
@@ -121,6 +122,36 @@ that installation's `current` release. A verified replacement can serve an exist
 legacy connection without changing it to `openai`; an existing `openai` connection
 remains fail-closed unless that replacement proves `gateway-executor-v3`. Saved chats
 always retain their saved provider id.
+
+### The provider row in native configuration
+
+Every engine the gateway starts registers `subscription_gateway` with `-c` settings.
+The ChatGPT app's own engine reads only the native `config.toml`. ChatGPT is a login item
+and can start its engine before the gateway service sets `CODEX_CLI_PATH`. Without a row
+in `config.toml`, every saved gateway chat then fails to open with "Model provider
+`subscription_gateway` not found", whatever model the chat used.
+
+`gateway desktop register` therefore publishes `[model_providers.subscription_gateway]`
+in the native `config.toml`, after it sets `CODEX_CLI_PATH`. It runs at installation and
+at every service start, so the row follows a changed port or configuration path. The row
+is the same table as the adapter's `-c` settings (`src/native-provider-row.ts`): the
+loopback gateway and the `gateway token` helper. The gateway writes it through the app's
+own engine, as API mode writes its settings, so comments and every other key stay as
+they are.
+
+- **What registration writes:** the row only. It never writes `model_provider`, a model or
+  a catalog, so new native chats keep `openai`.
+- **When it skips:** a row it already wrote is left unchanged. A row with the same id that
+  the gateway did not write is never replaced.
+- **Failures:** an unavailable engine is reported (`native_provider_row` telemetry and the
+  `nativeProvider` result field) and never fails registration.
+- **Uninstall:** `gateway uninstall` removes the row only when the gateway wrote it.
+- **Client edits:** the adapter still refuses a client edit that saves the row; only
+  registration maintains it.
+
+A chat opened by a stock engine this way gets its replies from the gateway, but without the
+adapter's extras, such as gateway tool registration and the compaction patch. The next
+app launch through the wrapper restores the full gateway path.
 
 ### Routing follows the chat
 

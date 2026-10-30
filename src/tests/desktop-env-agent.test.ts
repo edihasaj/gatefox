@@ -261,7 +261,7 @@ test("gateway uninstall removes the agent through the desktop unregister step", 
     await macDesktop("register", f.config, f.app, false, f.exec);
     assert.ok(await read(plistOf(f)), "registered with an agent");
     const none = async () => ({});
-    const deps: UninstallDeps = { macService: none, macNative: none, macSsh: none, macTunnel: none,
+    const deps: UninstallDeps = { macService: none, macNative: none, macSsh: none, macTunnel: none, withdrawNativeProvider: async () => "absent",
       macDesktop: (action, config) => macDesktop(action, config, undefined, false, f.exec),
       planDesktopUnregister: (config, _exec, options) => planDesktopUnregister(config, f.exec, options) };
     try { await uninstallGateway(f.config, deps); } finally { Object.defineProperty(process, "platform", savedPlatform); }

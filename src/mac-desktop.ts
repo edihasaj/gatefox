@@ -15,6 +15,7 @@ import { withLoginRegistrationLock } from "./login-registration-lock.js";
 import { agentRuntimeFile, envAgentFailure, envAgentNames, readEnvAgent, readGuiDesktopEnv, removeEnvAgent, writeEnvAgent } from "./desktop-env-agent.js";
 import { configureTelemetry, flushTelemetry, telemetry } from "./telemetry.js";
 import { apiModeActive, apiModeOnMessage, reportPresetSkipped } from "./desktop-api-mode.js";
+import { publishNativeProvider } from "./native-provider-row.js";
 
 const execFileAsync = promisify(execFile); const label = "com.edihasaj.subscription-gateway.desktop"; const marker = "<!-- Managed by subscription-gateway desktop -->";
 /** Seam for every launchctl call so a registration test can observe the GUI session without changing it. */
@@ -76,10 +77,10 @@ async function readDesktopPlist(path: string): Promise<string | undefined> {
   if (contents && !contents.includes(marker)) throw new Error("Refusing to change an unmanaged desktop LaunchAgent");
   return contents;
 }
-export async function macDesktop(action: string, configPath: string, app = "/Applications/ChatGPT.app", restoreOnly = false, exec: LaunchctlExec = launchctlExec): Promise<Record<string, unknown>> {
-  if (action === "status") return desktopOperation(action, configPath, app, restoreOnly, exec);
+export async function macDesktop(action: string, configPath: string, app = "/Applications/ChatGPT.app", restoreOnly = false, exec: LaunchctlExec = launchctlExec, provider: typeof publishNativeProvider = publishNativeProvider): Promise<Record<string, unknown>> {
+  if (action === "status") return desktopOperation(action, configPath, app, restoreOnly, exec, provider);
   const config = await loadConfig(configPath);
-  return withLoginRegistrationLock(config.stateDirectory, () => desktopOperation(action, configPath, app, restoreOnly, exec));
+  return withLoginRegistrationLock(config.stateDirectory, () => desktopOperation(action, configPath, app, restoreOnly, exec, provider));
 }
 
 /** How the caller owns the removal this plan describes. */
@@ -223,7 +224,7 @@ export async function desktopCliPathOwner(stateDirectory: string, exec: Launchct
 /** Take this gateway's adapter override out of the login session, leaving the registration receipt and the plan alone. */
 export async function clearDesktopCliPath(exec: LaunchctlExec = launchctlExec): Promise<void> { await exec("/bin/launchctl", ["unsetenv", "CODEX_CLI_PATH"]); }
 
-async function desktopOperation(action: string, configPath: string, app: string, restoreOnly: boolean, exec: LaunchctlExec): Promise<Record<string, unknown>> {
+async function desktopOperation(action: string, configPath: string, app: string, restoreOnly: boolean, exec: LaunchctlExec, provider: typeof publishNativeProvider): Promise<Record<string, unknown>> {
   if (process.platform !== "darwin" || !["register", "unregister", "status"].includes(action)) throw new Error("Choose gateway desktop register, unregister or status on macOS");
   const config = await loadConfig(configPath);
   // While API mode is on the app runs its own engine, so nothing may hand the desktop back to the adapter. A restore
@@ -290,12 +291,15 @@ async function desktopOperation(action: string, configPath: string, app: string,
   const contents = `<?xml version="1.0" encoding="UTF-8"?>\n${marker}\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join("")}</array><key>RunAtLoad</key><true/></dict></plist>\n`;
   await writePrivateJson(receipt, { wrapper, registeredAt: new Date().toISOString() });
   await exec("/bin/launchctl", ["setenv", "CODEX_CLI_PATH", wrapper]);
+  // Saved gateway chats must open even in an engine that never got the adapter's settings (docs/harness-identity.md).
+  const nativeProvider = await provider(config.port, configPath, app);
+  const native = { nativeProvider, nativeConfigUntouched: nativeProvider !== "written" };
   let envAgentRemoved = false;
   if (safeguard) {
     // The daemon presets the variable at its start, before ChatGPT can need it; the extra background item goes.
     if (!envFailure && envExisting !== undefined) { try { await removeEnvAgent(envExisting, exec); envAgentRemoved = true; } catch (error) { envFailure = error; } }
     if (envFailure) await reportEnvAgentFailure(config.stateDirectory, envFailure);
-    return { registered: true, activeForFutureLaunches: true, envAgent: false, loginEnv: "service", ...(envAgentRemoved ? { envAgentRemoved: true } : {}), nativeConfigUntouched: true,
+    return { registered: true, activeForFutureLaunches: true, envAgent: false, loginEnv: "service", ...(envAgentRemoved ? { envAgentRemoved: true } : {}), ...native,
       loginHook: pending ? "unified service at next login" : "unified service" };
   }
   // Standalone registration has no service to set the variable at login, so the agent sets it before ChatGPT starts.
@@ -304,5 +308,5 @@ async function desktopOperation(action: string, configPath: string, app: string,
   let loaded = false; try { await exec("/bin/launchctl", ["print", target]); loaded = true; } catch { /* Restore an explicitly registered login hook. */ }
   // One path for production and tests: every launchctl call goes through exec, so no branch decides whether a test reaches the real session.
   await ensureLaunchAgent(domain, label, path, loaded, args => exec("/bin/launchctl", args));
-  return { registered: true, activeForFutureLaunches: true, envAgent: true, loginEnv: "agent", freshAppLaunchRequired: true, nativeConfigUntouched: true };
+  return { registered: true, activeForFutureLaunches: true, envAgent: true, loginEnv: "agent", freshAppLaunchRequired: true, ...native };
 }
