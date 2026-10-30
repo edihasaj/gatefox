@@ -153,6 +153,13 @@ JavaScript. Installing a CLI update preserves the registration. See
    It proves requested and returned tiers, settings changes, saved-history resume,
    and native isolation; it sends no subscription inference and does not prove
    rendered desktop controls or the built-in cloud transport.
+   For Chat Completions translation changes (local Qwen or another
+   `chat-completions-api` provider), run `scripts/e2e-chat-compaction.mjs --package
+   INSTALLED_PACKAGE --config PRIVATE_GATEWAY_CONFIG [--provider qwen]`. It sends the
+   compaction shape (no tools, `tool_choice`, an undeclared historical tool), a turn
+   with declared tools and an undeclared historical tool, and an oversized prompt to
+   the real provider, and requires an answer, an answer, and `context_length_exceeded`.
+   1.2.2 fails all three. It prints only PASS/FAIL lines and fixed error codes.
    For chat identity changes, run `scripts/e2e-identity.mjs --package
    INSTALLED_PACKAGE --root PRIVATE_EVIDENCE_DIRECTORY`. With the package's own
    gateway SDK and a mock upstream it proves that new chats stay

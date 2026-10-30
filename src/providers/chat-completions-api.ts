@@ -8,7 +8,9 @@ import { generationOptions } from "./generation-options.js";
 import { tailnetFetch, type TailnetSeams } from "../tailnet.js";
 import { responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { historicalCallText, historicalResultText, toollessChoice, undeclaredCalls } from "./historical-tools.js";
-import { chatHttpContextFailure } from "./context-errors.js";
+import { boundedJson, chatContextFailure } from "./context-errors.js";
+import { chatRejection } from "./chat-rejections.js";
+import { telemetry } from "../telemetry.js";
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -206,7 +208,14 @@ export class ChatCompletionsAPI implements Provider {
         throw error;
       }
       if (!response.ok) {
-        const overflow = await chatHttpContextFailure(response); if (overflow) { await response.body?.cancel().catch(() => {}); throw overflow; }
+        if (response.status === 400) {
+          // A copy is read so ordinary error mapping below still sees the original body; only fixed classes leave here.
+          const rejected = await boundedJson(response.clone());
+          const rejection = chatRejection(rejected);
+          telemetry("chat_request_rejected", { provider: /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(this.config.id) ? this.config.id : "other", reason: rejection.reason, ...(rejection.param ? { param: rejection.param } : {}) });
+          const overflow = rejected === undefined ? undefined : chatContextFailure(rejected);
+          if (overflow) { await response.body?.cancel().catch(() => {}); throw overflow; }
+        }
         const typed = await responsesHttpError(response); if (typed.code === "context_length_exceeded" || response.status === 429) throw typed;
         throw new ProviderError(response.status === 429 ? "usage_limit" : response.status === 401 ? "authentication" : "upstream_error", `Chat API returned HTTP ${response.status}`, [400, 401, 403, 429].includes(response.status) ? response.status : 502);
       }

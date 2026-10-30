@@ -226,6 +226,13 @@ set"). For Chat Completions providers with no declared tools, `auto` and `none`
 both mean that nothing can be called, so the gateway omits the field. `required` and a named
 tool still fail, because no tool can satisfy them.
 
+Every HTTP 400 from a Chat Completions server records `chat_request_rejected` with
+the provider id, a fixed `reason` (`tool_choice_without_tools`, `context_length`,
+`output_tokens`, `reasoning_effort`, `tool_schema`, `model`, `message_format` or
+`unknown`) and, when the server names one from a fixed list, the `param`. The
+server's message text is never recorded. `scripts/e2e-chat-compaction.mjs` checks
+the compaction shapes against a real provider before a release.
+
 For Responses ingress, a Chat Completions reply that ends with `stop` but
 contains no answer text or tool call fails as `incomplete`. Reasoning alone,
 including reasoning hidden by `summary: "none"`, cannot complete an agent turn.

@@ -9,6 +9,7 @@ import { loadConfig, writePrivateJson } from "./config.js";
 import { gatewayCommand } from "./command.js";
 import { nativeEngineExecutable } from "./native-engine-path.js";
 import { appServerSessionShellGuard } from "./codex-invocation.js";
+import { wrapperHomeGuard } from "./native-home-env.js";
 
 export async function prepareDesktop(configPath: string, app = "/Applications/ChatGPT.app"): Promise<{ binary: string; wrapper: string }> {
   if (process.platform !== "darwin") throw new Error("Desktop activation currently supports macOS");
@@ -23,7 +24,8 @@ export async function prepareDesktop(configPath: string, app = "/Applications/Ch
   const command = [helper.command, ...helper.args, "codex-shim", "--config", configPath, "--codex", engine, "--"].map(quoted).join(" ");
   // Only long-lived app-server sessions need translation. Startup diagnostics,
   // help/version and tooling run the original CLI before gateway state is read.
-  const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\n' + appServerSessionShellGuard() + 'if gateway_app_server_session "$@"; then exec ' + command + ' "$@"; fi\nexec ' + quoted(codex) + ' "$@"\n';
+  // A gateway-internal CODEX_HOME inherited from an agent shell is never the user's native home (native-home-env.ts).
+  const content = '#!/bin/sh\n# Harness Gateway desktop adapter.\n' + wrapperHomeGuard(config.stateDirectory) + appServerSessionShellGuard() + 'if gateway_app_server_session "$@"; then exec ' + command + ' "$@"; fi\nexec ' + quoted(codex) + ' "$@"\n';
   const wrapper = resolve(config.stateDirectory, `desktop-wrapper-${createHash("sha256").update(content).digest("hex").slice(0, 16)}`);
   try { const file = await open(wrapper, "wx", 0o700); try { await file.writeFile(content); await file.sync(); } finally { await file.close(); } }
   catch (error) {
