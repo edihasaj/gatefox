@@ -61,3 +61,31 @@ test("chat API preserves custom calls, replay and reasoning, and rejects bad or 
     assert.equal(((await (await send({})).json()) as Result).status, "completed");
   } finally { delete process.env.GATEWAY_CHAT_FIXTURE_KEY; gateway.closeAllConnections(); await new Promise<void>(resolve => gateway.close(() => resolve())); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
 });
+
+test("opt-in template reasoning passes the exact caller choice through a narrow router", async () => {
+  let received: Record<string, unknown> = {};
+  const upstream = createServer(async (req, res) => {
+    const chunks = []; for await (const chunk of req) chunks.push(chunk);
+    received = JSON.parse(Buffer.concat(chunks).toString());
+    // Simulate the older router's enum check: xhigh is valid only in kwargs.
+    if (received.reasoning_effort === "xhigh") { res.writeHead(422); res.end(); return; }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify({ model: "qwen", choices: [{ index: 0, delta: { content: "ok" }, finish_reason: null }] })}\n\n`);
+    res.write(`data: ${JSON.stringify({ model: "qwen", choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  upstream.listen(0, "127.0.0.1"); await once(upstream, "listening");
+  const directory = await mkdtemp(join(tmpdir(), "gateway-chat-template-")); process.env.GATEWAY_CHAT_TEMPLATE_KEY = "fixture-key";
+  const config: GatewayConfig = { version: 1, port: 0, stateDirectory: directory, providers: [{ id: "local", type: "chat-completions-api", baseUrl: `http://127.0.0.1:${(upstream.address() as { port: number }).port}/v1`, apiKeyEnv: "GATEWAY_CHAT_TEMPLATE_KEY", models: { "local/qwen": "qwen" }, chatTemplateReasoningEffort: true, modelMetadata: { "local/qwen": { reasoningEfforts: ["none", "low", "medium", "xhigh"] } } }] };
+  const gateway = await startGateway(config); const token = await gatewayToken(directory);
+  const send = (reasoning?: Record<string, unknown>) => fetch(`http://127.0.0.1:${(gateway.address() as { port: number }).port}/v1/responses`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "local/qwen", input: "fixture", ...(reasoning ? { reasoning } : {}) }) });
+  try {
+    for (const effort of ["low", "medium", "xhigh", "none"]) {
+      const response = await send({ effort }); assert.equal(response.status, 200); assert.equal(((await response.json()) as Result).status, "completed");
+      assert.equal(received.reasoning_effort, undefined);
+      assert.deepEqual(received.chat_template_kwargs, { reasoning_effort: effort, enable_thinking: effort !== "none" });
+    }
+    assert.equal((await send({ effort: "high" })).status, 400);
+    assert.equal((await send()).status, 200); assert.equal(received.chat_template_kwargs, undefined); assert.equal(received.reasoning_effort, undefined);
+  } finally { delete process.env.GATEWAY_CHAT_TEMPLATE_KEY; gateway.closeAllConnections(); await new Promise<void>(resolve => gateway.close(() => resolve())); upstream.closeAllConnections(); await new Promise<void>(resolve => upstream.close(() => resolve())); }
+});

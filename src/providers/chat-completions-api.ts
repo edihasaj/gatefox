@@ -118,7 +118,9 @@ export class ChatCompletionsAPI implements Provider {
     const body = JSON.stringify({ model: request.model, messages, stream: true, stream_options: { include_usage: true },
         ...(tools.length ? { tools: tools.map(({ function: fn }, index) => ({ type: "function", function: { name: `tool_${index}`, description: fn.description, parameters: fn.parameters || { type: "object", properties: {} } } })) } : {}),
         ...(choice ? { tool_choice: typeof choice === "object" ? { type: "function", function: { name: nativeName(choice.function.name) } } : choice } : {}),
-        ...(reasoning?.effort !== undefined ? { reasoning_effort: reasoning.effort } : {}),
+        ...(reasoning?.effort === undefined ? {} : this.config.chatTemplateReasoningEffort
+          ? { chat_template_kwargs: { reasoning_effort: reasoning.effort, enable_thinking: reasoning.effort !== "none" } }
+          : { reasoning_effort: reasoning.effort }),
         ...(request.max_output_tokens !== undefined ? { max_tokens: request.max_output_tokens } : {}),
         ...(options.stop === undefined ? {} : { stop: options.stop }),
         ...(options.temperature === undefined ? {} : { temperature: options.temperature }),

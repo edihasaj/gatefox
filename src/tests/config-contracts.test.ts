@@ -6,6 +6,14 @@ const claude = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "
 const codex = (extra: Partial<ProviderConfig> = {}): ProviderConfig => ({ id: "codex", type: "codex-subscription", credentialFile: "codex.json", models: { "codex/sol": "sol" }, ...extra });
 const config = (providers: unknown[], extra: Record<string, unknown> = {}) => validateConfig({ version: 1, port: 1, stateDirectory: "/tmp/state", providers, ...extra }, "/tmp");
 
+test("template reasoning transport is an explicit chat-provider boolean", () => {
+  const chat = { id: "chat", type: "chat-completions-api", baseUrl: "http://127.0.0.1:8000/v1", apiKeyEnv: "TEST_KEY", models: { model: "model" } };
+  assert.equal(config([chat]).providers[0].chatTemplateReasoningEffort, undefined);
+  for (const value of [true, false]) assert.equal(config([{ ...chat, chatTemplateReasoningEffort: value }]).providers[0].chatTemplateReasoningEffort, value);
+  for (const value of [null, "true", 1, {}]) assert.throws(() => config([{ ...chat, chatTemplateReasoningEffort: value }]), /must be boolean/);
+  assert.throws(() => config([{ ...chat, type: "responses-api", chatTemplateReasoningEffort: true }]), /only valid for chat-completions-api/);
+});
+
 test("capacity discovery requires an explicit local-provider boolean and preserves static limits", () => {
   const local = { id: "qwen", type: "chat-completions-api", baseUrl: "http://127.0.0.1:8000/v1", apiKeyEnv: "TEST_KEY", models: { qwen: "qwen" }, capacityDiscovery: true };
   const result = config([local], { maxConcurrent: 8 });
