@@ -12,6 +12,7 @@ function historicalArguments(text: string): unknown {
 import { anthropicParts } from "../protocol/images.js";
 import { anthropicContextFailure, anthropicHttpContextFailure, contextWindowFailure } from "./context-errors.js";
 import { responsesHttpError } from "./responses-errors.js";
+import { historicalCallText, historicalResultText, undeclaredCalls } from "./historical-tools.js";
 
 /** Attaches up to four ephemeral breakpoints to an outbound body: the last tool, the last system block, then the tails of the last two messages. */
 function attachEphemeralCacheControl(body: {
@@ -57,6 +58,8 @@ export class AnthropicAPI implements Provider {
     const messages: Array<{ role: "user" | "assistant"; content: Array<Record<string, unknown>> }> = [];
     const system: string[] = [];
     let sawConversation = false;
+    // Calls to tools this request does not declare, and their results, stay in the history as text (historical-tools.ts).
+    const absent = undeclaredCalls(normalized.messages, name => tools.some(tool => tool.function.name === name));
     for (const message of normalized.messages) {
       if (message.role === "system" || message.role === "developer") {
         if (context.clientProtocol === "messages" && sawConversation) throw new ProviderError("invalid_request", "Anthropic Messages requests cannot represent mid-conversation system instructions", 400);
@@ -66,10 +69,13 @@ export class AnthropicAPI implements Provider {
       sawConversation = true;
       const role = message.role === "assistant" ? "assistant" : "user";
       const content: Array<Record<string, unknown>> = [];
-      if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.parts ? anthropicParts(message) : message.content || "" });
+      if (message.role === "tool" && message.tool_call_id !== undefined && absent.has(message.tool_call_id)) content.push({ type: "text", text: historicalResultText(absent.get(message.tool_call_id)!, message) });
+      else if (message.role === "tool") content.push({ type: "tool_result", tool_use_id: message.tool_call_id, content: message.parts ? anthropicParts(message) : message.content || "" });
       else {
         content.push(...anthropicParts(message));
-        for (const call of message.tool_calls || []) content.push({ type: "tool_use", id: call.id, name: nativeName(call.function.name), input: historicalArguments(call.function.arguments) });
+        for (const call of message.tool_calls || []) content.push(absent.has(call.id)
+          ? { type: "text", text: historicalCallText(call.function.name, call.function.arguments) }
+          : { type: "tool_use", id: call.id, name: nativeName(call.function.name), input: historicalArguments(call.function.arguments) });
       }
       if (!content.length) continue;
       const last = messages.at(-1);
