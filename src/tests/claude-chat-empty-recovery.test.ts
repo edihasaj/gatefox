@@ -182,6 +182,44 @@ test("visible output, whitespace, tool fragments, filters, malformed tails, and 
   } finally { await defaultProvider.close(); }
 });
 
+test("Responses rejects empty and reasoning-only completions without retrying or losing spend", async () => {
+  for (const frames of [empty(), empty(""), [terminal({ reasoning: "private" }), terminal({}, "stop"), usage(3, 2), "[DONE]"] as Frame[]]) {
+    for (const summary of [undefined, "none"] as const) {
+      const f = await fixture(() => frames);
+      try {
+        const result = await collect(f.provider, { clientProtocol: "responses" }, { reasoning: { summary } });
+        assert.equal(f.attempts(), 1);
+        assert.equal((result.error as { code?: string }).code, "incomplete");
+        assert.equal(result.events.some(event => event.type === "done"), false);
+        assert.equal(result.events.at(-1)?.type, "usage");
+        assert.ok((result.events.at(-1) as Extract<InferenceEvent, { type: "usage" }>).usage.output_tokens > 0);
+      } finally { await f.close(); }
+    }
+  }
+  const implicitResponses = await fixture(() => empty());
+  try {
+    const result = await collect(implicitResponses.provider, {});
+    assert.equal((result.error as { code?: string }).code, "incomplete");
+    assert.equal(implicitResponses.attempts(), 1);
+  } finally { await implicitResponses.close(); }
+});
+
+test("Responses still completes visible answers and tool calls after reasoning", async () => {
+  for (const frames of [[terminal({ reasoning_content: "private" }), ...text("answer")], [
+    terminal({ reasoning_content: "private" }),
+    terminal({ tool_calls: [{ index: 0, id: "call_1", function: { name: "tool_0", arguments: "{}" } }] }),
+    terminal({}, "tool_calls"), usage(3, 2), "[DONE]",
+  ] as Frame[]]) {
+    const f = await fixture(() => frames);
+    try {
+      const result = await collect(f.provider, { clientProtocol: "responses" }, { tools: [{ type: "function", name: "tool" }] });
+      assert.equal(result.error, undefined); assert.equal(f.attempts(), 1);
+      assert.equal(result.events.at(-1)?.type, "done");
+      assert.ok(result.events.some(event => event.type === "text" || event.type === "tool"));
+    } finally { await f.close(); }
+  }
+});
+
 test("Messages uses a retry's final context usage while server accounting retains total spend", () => {
   const wire: Array<Record<string, unknown>> = []; const writer = new MessagesWriter("qwen/flash", event => wire.push(event));
   writer.begin();

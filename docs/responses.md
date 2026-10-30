@@ -208,6 +208,14 @@ unique nonempty ID, and valid object JSON; custom tools also require string
 `stop` plus tool calls. Truncated streams and tool calls capped by `length`
 still fail. This applies to both Responses and Messages ingress.
 
+For Responses ingress, a Chat Completions reply that ends with `stop` but
+contains no answer text or tool call fails as `incomplete`. Reasoning alone,
+including reasoning hidden by `summary: "none"`, cannot complete an agent turn.
+The gateway preserves reported token usage and emits `response.failed` rather
+than silently marking the response completed. It does not retry that request
+internally or change the selected model. The separate opt-in Messages empty
+completion recovery policy remains unchanged.
+
 Provider failures emit `response.failed`, including failures before the first
 output delta. Nonstream requests retain the corresponding HTTP error status.
 Responses upstream `context_length_exceeded` errors keep that code so Codex's
