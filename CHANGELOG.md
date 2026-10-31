@@ -2,6 +2,13 @@
 
 ## 1.3.0 — 2026-10-31
 
+- The remote relay no longer pauses itself after a gateway restart that coincides
+  with the native Codex database being recovered. Its registration read had no busy
+  timeout, failed at once with "database is locked" and exited three times in a row,
+  which set the relay aside for half an hour and cut the phone off from that Mac. The
+  read now waits for the lock and retries briefly, and every relay stop logs its fixed
+  reason instead of the same generic line.
+
 - Native engine sharing accepts the Codex app engine 0.166.0-alpha.5.1 after the
   shared-native fixture passed against the signed engine over stdio and Unix.
   Macs that share native work report `ready` again instead of
