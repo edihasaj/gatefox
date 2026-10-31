@@ -12,7 +12,7 @@ const { values } = parseArgs({ options: { package: { type: 'string' }, code: { t
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
   v2: { type: 'boolean' }, managed: { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
-assert.ok(!values.managed || values.v2 && !values.accounts && !values.baseline, '--managed requires --v2 and excludes accounts/baseline');
+assert.ok(!values.managed || values.v2 && !values.accounts && !values.baseline && !values.private, '--managed requires shared --v2 and excludes private/accounts/baseline');
 assert.ok(!values['role-fork'] || values.v2, '--role-fork requires --v2');
 if (values['role-fork']) assert.ok(!values.accounts && !values.baseline, '--role-fork is incompatible with --accounts and --baseline');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
