@@ -10,8 +10,9 @@ import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
-  v2: { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
+  v2: { type: 'boolean' }, managed: { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
+assert.ok(!values.managed || values.v2 && !values.accounts && !values.baseline, '--managed requires --v2 and excludes accounts/baseline');
 assert.ok(!values['role-fork'] || values.v2, '--role-fork requires --v2');
 if (values['role-fork']) assert.ok(!values.accounts && !values.baseline, '--role-fork is incompatible with --accounts and --baseline');
 const code = resolve(values.code ?? new URL('..', import.meta.url).pathname);
@@ -44,7 +45,7 @@ setSdkSocketRootForTests();
 setOwnPidForTests(process.pid + 1_000_000);
 const runtime = await gatewaySdkRuntime(pkg);
 assert.ok(runtime?.executorIdentity, 'Use a verified installed gateway SDK');
-const sdk = runtime.executable, alias = 'fixture/parent', childModel = 'gpt-6.1-sol';
+const sdk = runtime.executable, alias = 'fixture/parent', nativeModel = 'gpt-6.1-sol', childModel = values.managed ? 'managed/routine' : nativeModel;
 const role = 'role_fork_fixture', rolePath = join(native, 'role-fork.toml');
 const configPath = join(fixture, 'gateway.json');
 const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
@@ -53,11 +54,19 @@ const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
     baseUrl: 'http://127.0.0.1:1', models: { [alias]: 'mock-parent' },
     modelMetadata: { [alias]: { contextWindow: 100_000, reasoningEfforts: ['low', 'ultra'],
       multiAgentVersion: values.v2 ? 'v2' : 'v1', multiAgentReasoningEffort: 'low' } } }] };
+let availability;
+if (values.managed) {
+  const { AvailabilityService } = await load('availability/service');
+  availability = new AvailabilityService({ probe: async () => ({ status: 'healthy', observedAt: Date.now(), endpoints: { healthy: 1, total: 1 }, servedModels: ['mock-child'], missingModels: [] }), accountEmail: async () => undefined, balance: async () => undefined });
+  config.providers.push({ id: 'local', type: 'chat-completions-api', baseUrl: 'http://127.0.0.1:1/v1', apiKeyEnv: 'FIXTURE_ONLY_KEY', models: { 'local/worker': 'mock-child' }, modelMetadata: { 'local/worker': { contextWindow: 100_000, reasoningEfforts: ['low', 'high'] } } },
+    { id: 'subscription', type: 'codex-subscription', credentialFile: join(state, 'unused.json'), models: { 'subscription/worker': 'unused' }, modelMetadata: { 'subscription/worker': { contextWindow: 100_000, reasoningEfforts: ['low', 'high'] } } });
+  config.managedRouting = { routes: { [childModel]: { purpose: 'routine', candidates: ['local/worker', 'subscription/worker'], maxContextBytes: 262144, contextWindow: 32768, minRemainingPercent: 2, allowPaid: false } } };
+}
 const serverConfig = structuredClone(config);
 if (values.accounts) {
   for (const id of ['other', 'selected']) serverConfig.providers.push({ id, type: 'codex-subscription',
     credentialFile: join(state, id + '.json'), defaultForBareModels: id === 'selected', models: { [id + '/' + childModel]: childModel } });
-} else serverConfig.providers[0].models[childModel] = 'mock-child';
+} else if (!values.managed) serverConfig.providers[0].models[childModel] = 'mock-child';
 const until = async (check, label, ms = 30_000) => {
   const end = Date.now() + ms;
   while (Date.now() < end) { const result = await check(); if (result) return result; await delay(25); }
@@ -94,6 +103,7 @@ try {
       const childRequest = request.model === (values.accounts ? childModel : 'mock-child');
       if (childRequest) {
         childCalls++;
+        if (values.managed) assert.equal(provider.id, 'local', 'The hidden worker policy must resolve to the local candidate');
         if (values['role-fork']) {
           evidence.observedChildUpstreamModel = request.model;
           evidence.observedChildReasoningEffort = request.reasoning?.effort;
@@ -148,17 +158,25 @@ try {
       yield { type: 'done', usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } };
       if (childRequest) evidence.childInferenceFinished = true;
     },
-  }), undefined, { copilotTempBase: join(fixture, 'provider-tmp') });
+  }), undefined, { copilotTempBase: join(fixture, 'provider-tmp'), ...(availability ? { availability } : {}) });
   config.port = gateway.address().port;
   await writePrivateJson(configPath, config);
   await writePrivateJson(join(state, 'service-plan.json'), { version: 1, config: configPath, sharedExecutors: !values.private,
     components: [{ id: 'native', kind: 'native', command: sdk,
       args: ['--codex', sdk, '--native-home', native], log: join(state, 'native.log') }] });
   const rows = modelCatalog(config).models;
-  const nativeRow = { ...rows[0], slug: childModel, multi_agent_version: undefined, default_reasoning_level: 'low',
+  if (values.managed) {
+    const hidden = rows.find(row => row.slug === childModel);
+    assert.equal(hidden?.visibility, 'hide');
+    const { gatewayModelList } = await load('app-server-model-list');
+    const visible = await gatewayModelList({}, async () => ({ data: [], nextCursor: null }), new Set(), rows, undefined);
+    assert.ok(!visible.data.some(row => row.model === childModel));
+    evidence.managedHiddenFromPicker = true;
+  }
+  const nativeRow = { ...rows[0], slug: nativeModel, multi_agent_version: undefined, default_reasoning_level: 'low',
     supported_reasoning_levels: ['low', 'high'].map(effort => ({ effort, description: effort })) };
   await writePrivateJson(join(native, 'models.json'), { models: [nativeRow] });
-  nativeConfig = `model = "${childModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
+  nativeConfig = `model = "${nativeModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
   if (values['role-fork']) {
     await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "high"\n`, { mode: 0o600 });
     nativeConfig += `\n[agents]\ndefault_subagent_model = "${alias}"\n[agents.${role}]\ndescription = "Fixture worker"\nconfig_file = ${JSON.stringify(rolePath)}\n`;
@@ -169,15 +187,15 @@ try {
   const catalogPath = join(state, 'fixture-catalog.json');
   await writePrivateJson(catalogPath, { models: [nativeRow, ...rows] });
   const catalog = { current: () => snapshot, refresh: async () => snapshot,
-    combined: value => ({ models: [nativeRow, ...value.models] }), nativeSlugs: new Set([childModel]),
-    isNative: model => model === childModel };
+    combined: value => ({ models: [nativeRow, ...value.models] }), nativeSlugs: new Set([nativeModel]),
+    isNative: model => model === nativeModel };
   if (!values.private) host = await startExecutionHost({ config, configPath, nativeHome: native, codex: sdk, gatewayRuntime: async () => runtime });
   const overrides = { name: 'Fixture', base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: 'responses',
     requires_openai_auth: false, supports_websockets: false, request_max_retries: 0, stream_idle_timeout_ms: 30_000,
     'auth.command': process.execPath, 'auth.args': [join(code, 'dist/cli.js'), 'token', '--config', configPath] };
   async function client(name) {
     const events = [];
-    const backend = await AppServerBackends.create(sdk, ['app-server', '--listen', 'stdio://'], config, {}, overrides, catalog,
+    const backend = await AppServerBackends.create(sdk, ['app-server', '--listen', 'stdio://'], config, values.managed ? { web_search: 'disabled' } : {}, overrides, catalog,
       async message => {
         events.push(message);
         if (message.method === 'item/completed' || message.method === 'error') {
@@ -198,7 +216,7 @@ try {
   phase = 'spawn';
   const writer = await client('subagent_sidebar_writer');
   const parent = await writer.router.request('thread/start', { model: alias, cwd: work, approvalPolicy: 'never', sandbox: 'read-only',
-    config: { model_reasoning_effort: 'ultra' } });
+    config: { model_reasoning_effort: 'ultra', ...(values.managed ? { web_search: 'disabled' } : {}) } });
   await writer.router.request('turn/start', { threadId: parent.thread.id, effort: 'ultra',
     input: [{ type: 'text', text: 'Spawn the fixture child.' + (forkMarker ? ' ' + forkMarker : '') }] });
   const child = await until(async () => {
@@ -246,6 +264,14 @@ try {
   }
   const read = await reader.router.request('thread/read', { threadId: id, includeTurns: false });
   assert.equal(read.thread.model, childModel);
+  if (values.managed) {
+    const { readActivity } = await load('activity');
+    const activity = await readActivity(configPath, state, { nativeHome: native });
+    const row = activity.rows.find(row => row.threadId === id);
+    assert.equal(row?.model, 'local/worker');
+    assert.equal(row?.requestedModel, childModel);
+    evidence.selectedWorkerModel = row.model;
+  }
   if (values['role-fork']) evidence.observedChildModel = read.thread.model;
   assert.equal(read.thread.modelProvider, evidence.identity);
   evidence.childStateReadable = true;
@@ -325,6 +351,7 @@ try {
   evidence.error = error.message;
   throw error;
 } finally {
+  availability?.stop();
   await Promise.allSettled(clients.map(client => client.stop()));
   await host?.close();
   await gateway?.close();

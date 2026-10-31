@@ -3,7 +3,7 @@ import type { GatewayConfig, ProviderConfig } from "./config.js";
 import type { ResponsesRequest } from "./protocol/types.js";
 import { ProviderError, type InferenceContext } from "./providers/provider.js";
 import { managedCandidateKind, type ManagedRoutePolicy } from "./managed-routing-config.js";
-import { ManagedRoutePins, type ManagedRoutePin } from "./managed-route-pins.js";
+import { ManagedRoutePins, managedWorkerKey, type ManagedRoutePin } from "./managed-route-pins.js";
 import { freshFor } from "./availability/report.js";
 
 type Row = Record<string, unknown>;
@@ -68,7 +68,7 @@ export class ManagedRouter {
     if (!routes || !Object.hasOwn(routes, request.model)) return;
     const policy = routes[request.model]!;
     const identity = context.threadId ?? context.sessionId;
-    if (!identity) failure("managed_route_identity_required", "Managed routing requires a stable worker thread or session identifier", 400);
+    if (!identity) return failure("managed_route_identity_required", "Managed routing requires a stable worker thread or session identifier", 400);
     const contextBytes = Buffer.byteLength(JSON.stringify(request), "utf8");
     // Summarizing accumulated history needs more room than an ordinary turn. This
     // allowance never creates a binding or moves an existing worker to another provider.
@@ -87,7 +87,7 @@ export class ManagedRouter {
       eligible(provider, alias, rows.get(provider.id) ?? {}, policy, request, now, pinned)
       && (managedCandidateKind(provider, provider.models[alias]!) !== "paid-flash" || paidAllowed);
     try {
-      return await this.pins.withPin(hash([request.model, identity]), async (pin, save) => {
+      return await this.pins.withPin(managedWorkerKey(request.model, identity), async (pin, save) => {
         const fingerprint = hash(policy);
         if (pin) {
           const candidate = candidates.find(c => c.alias === pin.alias);

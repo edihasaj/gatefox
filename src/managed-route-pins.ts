@@ -17,6 +17,9 @@ const lockSymbol = Symbol.for("harness-gateway.managed-route-pins.locks");
 const unsafe = () => new Error("Managed route pin state is unsafe or unreadable");
 const conflict = () => new Error("Managed route pin conflicts with the stored pin");
 
+/** Shared with read-only status projection; preserve the existing persisted key format. */
+export const managedWorkerKey = (model: string, identity: string): string => createHash("sha256").update(JSON.stringify([model, identity])).digest("hex");
+
 function locks(): Map<string, Promise<void>> {
   const holder = globalThis as unknown as Record<symbol, Map<string, Promise<void>> | undefined>;
   return holder[lockSymbol] ??= new Map();
@@ -125,6 +128,14 @@ function writeNew(directory: string, path: string, pin: ManagedRoutePin): void {
  */
 export class ManagedRoutePins {
   constructor(private readonly stateDirectory: string) {}
+  /** Read-only observation: never creates a store, writes a pin or reselects a provider. */
+  read(key: string): ManagedRoutePin | undefined {
+    if (typeof key !== "string" || key.length < 1 || key.length > 4096 || !isAbsolute(this.stateDirectory)) throw unsafe();
+    const directory = join(resolve(this.stateDirectory), "managed-route-pins");
+    try { privateDirectory(resolve(this.stateDirectory), false); privateDirectory(directory, false); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw unsafe(); }
+    return readExisting(join(directory, `${createHash("sha256").update(key).digest("hex")}.json`));
+  }
   async withPin<T>(key: string, run: (pin: ManagedRoutePin | undefined, save: (pin: ManagedRoutePin) => Promise<void>) => Promise<T>): Promise<T> {
     if (typeof key !== "string" || key.length < 1 || key.length > 4096 || !isAbsolute(this.stateDirectory)) throw unsafe();
     const stateDirectory = resolve(this.stateDirectory);

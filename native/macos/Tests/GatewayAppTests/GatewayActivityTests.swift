@@ -4,6 +4,14 @@ import XCTest
 
 @MainActor
 final class GatewayActivityTests: XCTestCase {
+    func testManagedWorkerDisplaysSelectedModelAndRetainsPolicy() throws {
+        let json = #"{"threadId":"worker","model":"local/qwen","requestedModel":"managed/routine","providerId":"local","state":"running","source":"sdk","observedAt":"2026-10-31T12:00:00.000Z"}"#
+        let row = try JSONDecoder().decode(GatewayActivityRow.self, from: Data(json.utf8))
+        XCTAssertEqual(row.model, "local/qwen")
+        XCTAssertEqual(row.requestedModel, "managed/routine")
+        XCTAssertEqual(row.providerId, "local")
+    }
+
     private func report(coverage: String = "available", state: String = "completed", source: String = "sdk") -> GatewayActivityReport {
         let at = ISO8601DateFormatter.string(from: Date(), timeZone: .gmt, formatOptions: [.withInternetDateTime, .withFractionalSeconds])
         return GatewayActivityReport(version: 1, hostname: "fixture", checkedAt: at, coverage: coverage, hasMore: false,

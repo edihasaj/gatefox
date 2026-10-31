@@ -2,6 +2,11 @@
 
 ## 1.3.1 — 2026-10-31
 
+- Managed worker policies are hidden from normal model pickers while configured
+  roles and existing chats retain their routes. Gateway Activity shows the pinned
+  model/account for locally served managed workers without changing their saved
+  model, permissions or execution state.
+
 - The remote relay no longer pauses itself after a gateway restart that coincides
   with the native Codex database being recovered. Its registration read had no busy
   timeout, failed at once with "database is locked" and exited three times in a row,

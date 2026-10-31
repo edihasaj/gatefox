@@ -60,6 +60,20 @@ thread/turn IDs, fixed status/error classes and timestamps survive projection.
 Messages, arguments, prompts and credentials are neither returned nor logged.
 An observation timestamp is not invented as the turn's completion timestamp.
 
+## Managed worker models
+
+For an observed SDK chat using an internal managed worker alias, Activity reads
+its existing private route pin and shows the selected model/account alias. The
+JSON row includes `requestedModel` and `providerId`; the app and CLI show the
+internal policy followed by the selected model. This is a read-only display:
+it never selects a provider, creates a pin, changes the saved chat model or
+restarts a worker. Missing pins leave the policy label unchanged. Unsafe pins
+produce partial coverage without guessing a model. A pin describes the worker's
+binding; the separately sampled SDK state still determines whether it is running.
+The selected-model projection uses this inference host's local pin store. A
+client-only execution host using remote inference cannot read those remote pins
+and retains the policy label instead.
+
 ## Boundary
 
 This is a **Harness Gateway feature**, not a patch for Codex's own unread dots.

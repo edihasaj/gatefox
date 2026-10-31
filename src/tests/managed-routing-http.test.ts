@@ -10,6 +10,7 @@ import type { Provider } from "../providers/provider.js";
 import type { ResponsesRequest } from "../protocol/types.js";
 import { managedFixture } from "./managed-routing-fixture.js";
 import { modelCatalog } from "../catalog.js";
+import { gatewayModelList } from "../app-server-model-list.js";
 
 test("the real Responses path selects a managed provider, preserves context and keeps explicit routes fixed", async () => {
   const root = await mkdtemp(join(tmpdir(), "managed-http-"));
@@ -34,8 +35,17 @@ test("the real Responses path selects a managed provider, preserves context and 
     response = await fetch(origin + "/v1/responses", { method: "POST", headers, body: JSON.stringify(body) });
     assert.equal(response.status, 200); assert.equal(response.headers.get("x-gateway-managed-reused"), "true"); await response.json();
     const advertised = await (await fetch(origin + "/v1/models", { headers })).json() as { data: Array<{ id: string }> };
-    assert.ok(advertised.data.some(m => m.id === "managed/routine"));
+    assert.ok(!advertised.data.some(m => m.id.startsWith("managed/")));
+    assert.ok(advertised.data.some(m => m.id === "local/qwen"), "named models remain offered");
     const row = modelCatalog(config).models.find(m => m.slug === "managed/routine");
+    assert.equal(row?.visibility, "hide");
+    const catalog = await (await fetch(origin + "/v1/model-catalog", { headers })).json() as { models: Array<Record<string, unknown>> };
+    assert.equal(catalog.models.find(m => m.slug === "managed/routine")?.visibility, "hide");
+    const native = async () => ({ data: [], nextCursor: null });
+    const visible = await gatewayModelList({}, native, new Set(), modelCatalog(config).models, undefined);
+    assert.ok(!(visible.data as Array<Record<string, unknown>>).some(m => m.model === "managed/routine"));
+    const full = await gatewayModelList({ includeHidden: true }, native, new Set(), modelCatalog(config).models, undefined);
+    assert.equal((full.data as Array<Record<string, unknown>>).find(m => m.model === "managed/routine")?.hidden, true);
     assert.equal(row?.context_window, 32768); assert.deepEqual(row?.model_messages, { instructions_template: "" }); assert.equal(row?.supports_search_tool, false);
     assert.equal(row?.multi_agent_version, "v2", "managed workers retain the Gateway collaboration protocol across candidate models");
     const before = seen.length;

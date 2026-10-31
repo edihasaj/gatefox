@@ -13,6 +13,8 @@ export interface ActivityRow {
   threadId: string;
   name?: string;
   model?: string;
+  requestedModel?: string;
+  providerId?: string;
   isSubagent?: boolean;
   state: ActivityState;
   waitingFor?: "approval" | "input";

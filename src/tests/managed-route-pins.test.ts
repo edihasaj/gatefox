@@ -42,6 +42,22 @@ test("construction does no filesystem I/O", async () => {
   } finally { f.cleanup(); }
 });
 
+test("status reads never create a store or rewrite pins, and reject unsafe files", async () => {
+  const f = fixture();
+  try {
+    const store = new ManagedRoutePins(f.state);
+    assert.equal(store.read(key), undefined);
+    assert.equal(existsSync(f.state), false);
+    await save(f.state, pin());
+    const before = readFileSync(f.file, "utf8");
+    assert.deepEqual(store.read(key), pin());
+    assert.equal(readFileSync(f.file, "utf8"), before);
+    assert.equal(store.read("another-worker"), undefined);
+    chmodSync(f.file, 0o644);
+    assert.throws(() => store.read(key), /unsafe or unreadable/);
+  } finally { f.cleanup(); }
+});
+
 test("a saved pin survives reopening and the store is private", async () => {
   const f = fixture();
   try {

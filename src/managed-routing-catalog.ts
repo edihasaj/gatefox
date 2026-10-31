@@ -6,7 +6,7 @@ export function managedCatalog(config: GatewayConfig): Array<Record<string, unkn
     const efforts = (metadata[0]?.reasoningEfforts ?? []).filter(effort => metadata.every(row => row?.reasoningEfforts?.includes(effort)));
     return {
       slug: alias, display_name: `Managed · ${policy.purpose}`, description: "Opt-in capacity-aware worker route; persistent provider affinity and bounded caller context",
-      priority: 0, visibility: "list", supported_in_api: true, availability_nux: null, upgrade: null,
+      priority: 0, visibility: "hide", supported_in_api: true, availability_nux: null, upgrade: null,
       supported_reasoning_levels: efforts.map(effort => ({ effort, description: `${effort} reasoning effort` })),
       default_reasoning_level: efforts.includes("medium") ? "medium" : efforts[0] ?? null,
       default_reasoning_summary: efforts.length ? "auto" : "none", supports_reasoning_summary_parameter: efforts.length > 0,
