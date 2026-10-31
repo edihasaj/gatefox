@@ -21,6 +21,8 @@ struct GatewayActivityRow: Codable, Identifiable, Sendable, Equatable {
     let threadId: String
     let name: String?
     let model: String?
+    var requestedModel: String? = nil
+    var providerId: String? = nil
     let isSubagent: Bool?
     let state: String
     var waitingFor: String? = nil

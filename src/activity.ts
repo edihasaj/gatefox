@@ -7,6 +7,7 @@ import { parentOf } from "./gateway-chat-classifier.js";
 import { threadFacts } from "./chat-identity.js";
 import { errorClass } from "./turn-telemetry.js";
 import { activityId, recordedActivity, type ActivityRow, type ActivityTurn } from "./activity-history.js";
+import { ManagedRoutePins, managedWorkerKey } from "./managed-route-pins.js";
 
 export interface ActivityReport {
   version: 1;
@@ -147,7 +148,16 @@ export async function readActivity(configPath: string, stateDirectory: string, o
           const state = waitingFor ? "waiting" : runtime === "active" ? "running"
             : !changed && ["idle", "notLoaded", "systemError"].includes(String(runtime)) && turn && turn.status !== "inProgress" ? turn.status : "unknown";
           if (!current()) return;
-          rows.set(id, { threadId: id, name: label(thread.name), model: label(thread.model), isSubagent: !!parentOf(threadFacts(thread) ?? {}),
+          const requestedModel = label(after.model);
+          let selected: { model?: string; requestedModel?: string; providerId?: string } = { model: requestedModel };
+          if (requestedModel?.startsWith("managed/")) {
+            try {
+              const key = managedWorkerKey(requestedModel, id);
+              const pin = new ManagedRoutePins(stateDirectory).read(key);
+              if (pin) selected = { model: label(pin.alias), requestedModel, providerId: label(pin.providerId) };
+            } catch { partial = true; }
+          }
+          rows.set(id, { threadId: id, name: label(thread.name), ...selected, isSubagent: !!parentOf(threadFacts(thread) ?? {}),
             state, ...(waitingFor ? { waitingFor } : {}), source: "sdk", observedAt: new Date().toISOString(), ...(turn ? { turn } : {}) });
         } catch { partial = true; }
       }

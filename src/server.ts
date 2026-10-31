@@ -316,7 +316,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
         if (info) send(res, 200, info); else fail(503, "catalog_unavailable", "The gateway catalog does not fit the shared-catalog protocol");
       } finally { state.release(); } return;
     }
-    if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...[...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })), ...Object.keys(state.config.managedRouting?.routes ?? {}).map(id => ({ id, object: "model", owned_by: "managed" }))] }); } finally { state.release(); } return; }
+    if (req.method === "GET" && path === "/v1/models") { try { const hidden = pickerHiddenAliases(state.config); send(res, 200, { object: "list", data: [...state.routes].filter(([id]) => !hidden.has(id)).map(([id, route]) => ({ id, object: "model", owned_by: route.id })) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/model-catalog") { try { const reviewing = await advertisedReviewers(state.config); send(res, 200, { ...modelCatalog(state.config), ...(reviewing.length ? { auto_review: { models: reviewing } } : {}) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === "/v1/provider-usage") { try { res.setHeader("Cache-Control", "no-store"); send(res, 200, { data: providerUsage.snapshot(state.config.providers) }); } finally { state.release(); } return; }
     if (req.method === "GET" && path === availabilityPath) {

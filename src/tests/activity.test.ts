@@ -1,17 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { readActivity, type ActivityConnection, type ActivityOptions, type ActivitySource } from "../activity.js";
 import { recordedActivity, type ActivityRow } from "../activity-history.js";
 import type { Message } from "../app-server-connection.js";
+import { ManagedRouter } from "../managed-routing.js";
+import { managedFixture, managedFacts, managedNow, managedRequest } from "./managed-routing-fixture.js";
 
 const source: ActivitySource = { socketPath: "/fixture/native.sock", native: true };
 function fixture(status = "completed", runtime = "notLoaded") {
   const calls: string[] = [];
   let stopped = 0, reads = 0;
-  const state = { runtime, flags: [] as string[], flip: false, mismatch: false, failHistory: false };
+  const state = { runtime, model: "fixture/model", flags: [] as string[], flip: false, mismatch: false, failHistory: false };
   const connection: ActivityConnection = {
     async request(method, params) {
       calls.push(method);
@@ -21,7 +23,7 @@ function fixture(status = "completed", runtime = "notLoaded") {
       if (method === "thread/read") {
         assert.equal(params.includeTurns, false);
         reads++;
-        return { thread: { id: state.mismatch ? "unrelated" : "one", model: "fixture/model", name: "Fixture\nname", updatedAt: 100,
+        return { thread: { id: state.mismatch ? "unrelated" : "one", model: state.model, name: "Fixture\nname", updatedAt: 100,
           status: { type: state.flip && reads > 1 ? "active" : state.runtime, activeFlags: state.flags } } };
       }
       assert.equal(method, "thread/turns/list");
@@ -37,6 +39,31 @@ function fixture(status = "completed", runtime = "notLoaded") {
     history: async () => ({ rows: [], partial: false }) };
   return { calls, state, options, stopped: () => stopped, read: () => readActivity("/fixture/config", "/fixture/state", options) };
 }
+
+test("managed activity shows the pinned model without changing SDK identity or selecting a provider", async () => {
+  const root = await mkdtemp(join(tmpdir(), "managed-activity-"));
+  try {
+    const f = fixture("inProgress", "active"); f.state.model = "managed/routine";
+    const beforePin = await readActivity("/fixture/config", root, f.options);
+    assert.equal(beforePin.rows[0].model, "managed/routine");
+    assert.deepEqual(await readdir(root), [], "observation does not create a pin store");
+    await new ManagedRouter(root, () => managedNow).resolve(managedFixture(root), managedRequest(), { threadId: "one" }, managedFacts());
+    const directory = join(root, "managed-route-pins");
+    const names = await readdir(directory), original = await readFile(join(directory, names[0]), "utf8");
+    const selected = await readActivity("/fixture/config", root, f.options);
+    assert.equal(selected.rows[0].model, "local/qwen");
+    assert.equal(selected.rows[0].requestedModel, "managed/routine");
+    assert.equal(selected.rows[0].providerId, "local");
+    assert.equal(selected.rows[0].state, "running");
+    assert.equal(f.state.model, "managed/routine");
+    assert.equal(await readFile(join(directory, names[0]), "utf8"), original);
+    await writeFile(join(directory, names[0]), "invalid");
+    const corrupt = await readActivity("/fixture/config", root, f.options);
+    assert.equal(corrupt.coverage, "partial");
+    assert.equal(corrupt.rows[0].model, "managed/routine");
+    assert.equal(corrupt.rows[0].providerId, undefined);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("saved offline completions and failures are visible without resuming any thread", async () => {
   for (const status of ["completed", "failed", "interrupted"]) {

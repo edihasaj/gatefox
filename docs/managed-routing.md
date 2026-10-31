@@ -61,8 +61,11 @@ the existing collectors and waits at most 2.5 seconds; it refuses if no eligible
 route is known after that wait. No provider call occurs on a refusal.
 
 The HTTP request uses the managed alias as its `model` and supplies a stable
-`thread-id` or `session-id`. The managed aliases are also listed by `/v1/models`
-and `/v1/model-catalog`; the catalog advertises common reasoning capabilities,
+`thread-id` or `session-id`. Managed aliases are internal worker policies, omitted
+from `/v1/models` and the normal desktop model picker. `/v1/model-catalog` retains
+them with `visibility: "hide"` so configured worker roles and existing managed
+chats remain routable. An explicit hidden-model listing can inspect them.
+The catalog advertises common reasoning capabilities,
 a text-only input surface and the configured context window. Managed aliases
 advertise Gateway's V2 client collaboration contract independently of an
 upstream's model-discovery metadata; fixed model rows keep their existing
@@ -110,8 +113,8 @@ managed worker. A changed policy or provider binding requires a fresh worker.
 Release the reviewed Gateway change before enabling managed aliases. On each
 target machine, require `gateway rollout --verify --json` to report ready and
 the authenticated `/health` response to advertise `managed-worker-routing-v1`.
-Then add the explicit route configuration and verify both `/v1/models` and
-`/v1/model-catalog` advertise the managed aliases. Do not add another daemon or
+Then add the explicit route configuration and verify `/v1/model-catalog` retains
+the hidden worker aliases while `/v1/models` offers only named models. Do not add another daemon or
 force-restart active chats to enable this feature.
 
 For future client workers, select `managed/routine` in the implementation/test
@@ -131,6 +134,13 @@ closed; they never trigger a fresh provider selection. There is no automatic
 pin eviction that could silently move an old conversation after restart.
 
 ## Limits
+
+The offline real-SDK check for hidden worker roles is
+`node scripts/e2e-subagent-sidebar.mjs --package VERIFIED_PACKAGE --code CHECKOUT
+--root TASK_DIRECTORY --v2 --role-fork --managed`. It requires a configured role
+to spawn a hidden managed worker, execute a real fixture command, retain its
+model across resume and follow-up, and expose the pinned model in Activity.
+All inference uses local mocks and private homes.
 
 This is provider admission before inference, not an agent scheduler or automatic
 semantic task classifier. Candidate suitability comes from the explicit managed

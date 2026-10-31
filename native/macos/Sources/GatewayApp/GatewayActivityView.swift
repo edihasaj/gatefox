@@ -105,7 +105,7 @@ struct GatewayActivityView: View {
                 Text("Recorded \(date.formatted(date: .abbreviated, time: .standard)); current execution is unverified.")
                     .font(GatewayTheme.body(12))
             }
-            Text([row.isSubagent == true ? "Subagent" : "Chat", row.model, row.threadId].compactMap { $0 }.joined(separator: " · "))
+            Text([row.isSubagent == true ? "Subagent" : "Chat", row.requestedModel.map { "\($0) → \(row.model ?? "pending")" } ?? row.model, row.threadId].compactMap { $0 }.joined(separator: " · "))
                 .font(GatewayTheme.body(11))
                 .foregroundStyle(GatewayTheme.charcoal.opacity(0.55))
                 .textSelection(.enabled)
