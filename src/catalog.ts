@@ -80,7 +80,8 @@ export async function discoverModels(provider: ProviderConfig, options: AccessTo
     const levels = model.supported_reasoning_levels as Array<{ effort: string }> | undefined;
     return { model: id, metadata: {
       ...readPublicServiceTierMetadata(model),
-      ...(typeof model.display_name === "string" ? { displayName: model.display_name } : {}),
+      ...(typeof model.display_name === "string" ? { displayName: model.display_name }
+        : typeof model.name === "string" ? { displayName: model.name } : {}),
       ...releasedAtMetadata(model),
       ...(typeof (model.context_window ?? model.max_model_len) === "number" ? { contextWindow: (model.context_window ?? model.max_model_len) as number } : {}),
       ...(typeof model.priority === "number" ? { priority: model.priority } : {}),

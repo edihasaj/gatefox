@@ -11,6 +11,7 @@ export interface ManagedRoutePolicy {
   allowPaid: boolean;
   candidateReasoningEfforts?: Record<string, string>;
   autoCompactTokenLimit?: number;
+  preferPaidFlash?: boolean;
 }
 export interface ManagedRoutingSettings { routes: Record<string, ManagedRoutePolicy> }
 
@@ -20,7 +21,7 @@ const flashPattern = /^deepseek\/deepseek-v4(?:\.\d+)?-flash((?:[:.-][a-z0-9-]+)
 const forbiddenSuffix = /(?:^|[:.-])(?:pro|glm)(?=$|[:.-])/i;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const rank: Record<ManagedCandidateKind, number> = { local: 0, subscription: 1, "paid-flash": 2 };
-const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts", "autoCompactTokenLimit"];
+const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts", "autoCompactTokenLimit", "preferPaidFlash"];
 
 function url(value: string | undefined): URL | undefined {
   try { return value ? new URL(value) : undefined; } catch { return undefined; }
@@ -89,6 +90,10 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
     const minRemainingPercent = integerField(row, "minRemainingPercent", 2, 1, 50, label);
     if (row.allowPaid !== undefined && typeof row.allowPaid !== "boolean") throw new Error(`${label}: allowPaid must be boolean`);
     const allowPaid = row.allowPaid === true;
+    if (row.preferPaidFlash !== undefined && typeof row.preferPaidFlash !== "boolean") throw new Error(`${label}: preferPaidFlash must be boolean`);
+    const preferPaidFlash = row.preferPaidFlash === true;
+    if (preferPaidFlash && (row.purpose !== "routine" || !allowPaid)) throw new Error(`${label}: preferPaidFlash requires a routine route with allowPaid`);
+    const candidateRank = preferPaidFlash ? { local: 0, "paid-flash": 1, subscription: 2 } : rank;
     const candidateReasoningEfforts: Record<string, string> = Object.create(null);
     if (row.candidateReasoningEfforts !== undefined) {
       const efforts = plain(row.candidateReasoningEfforts, `${label}.candidateReasoningEfforts`);
@@ -99,17 +104,18 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
         candidateReasoningEfforts[alias] = effort;
       }
     }
-    let previous = -1, subscriptions = 0;
+    let previous = -1, subscriptions = 0, paid = 0;
     for (const alias of candidates) {
       const owners = providers.filter(provider => Object.hasOwn(provider.models, alias));
       if (owners.length !== 1) throw new Error(`${label}: candidate ${alias} must name exactly one existing model alias`);
       const provider = owners[0]!, upstream = provider.models[alias]!;
       const kind = managedCandidateKind(provider, upstream);
       if (!kind) throw new Error(`${label}: candidate ${alias} is not a supported local, subscription or paid-flash route`);
-      if (rank[kind] < previous) throw new Error(`${label}: candidates must be ordered local, then subscriptions, then paid`);
-      previous = rank[kind];
+      if (candidateRank[kind] < previous) throw new Error(`${label}: candidates must be ordered ${preferPaidFlash ? "local, then paid Flash, then subscriptions" : "local, then subscriptions, then paid"}`);
+      previous = candidateRank[kind];
       if (kind === "local" && row.purpose === "strong") throw new Error(`${label}: strong routes cannot use local candidates`);
       if (kind === "paid-flash" && !allowPaid) throw new Error(`${label}: paid candidate ${alias} requires allowPaid`);
+      if (kind === "paid-flash") paid += 1;
       if (kind === "subscription") subscriptions += 1;
       const metadata = Object.hasOwn(provider.modelMetadata ?? {}, alias) ? provider.modelMetadata![alias] : undefined;
       let window = metadata?.contextWindow;
@@ -119,9 +125,11 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
       if (window < contextWindow) throw new Error(`${label}: candidate ${alias} context window is below the route's ${contextWindow}`);
     }
     if (subscriptions < 1) throw new Error(`${label}: at least one subscription candidate is required`);
+    if (preferPaidFlash && paid < 1) throw new Error(`${label}: preferPaidFlash requires a paid Flash candidate`);
     result[name] = { purpose: row.purpose, candidates, maxContextBytes, contextWindow, minRemainingPercent, allowPaid,
       ...(row.candidateReasoningEfforts === undefined ? {} : { candidateReasoningEfforts }),
       ...(autoCompactTokenLimit === undefined ? {} : { autoCompactTokenLimit }) };
+    if (row.preferPaidFlash !== undefined) result[name]!.preferPaidFlash = preferPaidFlash;
   }
   return { routes: result };
 }

@@ -25,7 +25,7 @@
 // A run that left a test's receipt in the user's real `~/.local/state/gw-native` or `gw-exec` fails, naming each file and
 // removing none (scripts/real-state-guard.mjs); test processes themselves refuse those roots (src/test-root-guard.ts).
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readlinkSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { availableParallelism, constants, homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -46,6 +46,9 @@ const timeout = Number(process.env.GATEWAY_TEST_TIMEOUT_MS) > 0 ? Math.round(Num
 // The path is short on purpose: tests put Unix sockets deep under this folder, and a socket path cannot exceed 104 bytes on
 // macOS, where the user's temp folder alone is 48. So on Unix the folder lives in /tmp, not in the user's temp folder.
 const folder = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "gwt-"));
+// A shared /tmp/package.json must not change how fixture executables load.
+// No type field: preserve Node's normal CommonJS/ESM syntax detection locally.
+writeFileSync(join(folder, "package.json"), "{}\n", { mode: 0o600 });
 // The home folder is private (0700) and inside it, so the execution-host folders the tests make go with the run's folder.
 const home = join(folder, "home"); mkdirSync(home, { mode: 0o700 });
 const codexHome = join(home, ".codex"); mkdirSync(codexHome, { mode: 0o700 });

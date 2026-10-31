@@ -39,6 +39,9 @@ is outside the current three gateway transports. Model availability and routing
 can change; use the vendor's current catalog.
 
 Model discovery uses the configured API's `/models` endpoint when available.
+Discovery accepts the upstream `display_name` or `name` as the model's label,
+including OpenRouter's published names. Internal aliases remain stable for
+saved chats and routing; labels do not rename the upstream model.
 Some services expose one mixed catalog at another URL; enter explicit model IDs
 when that endpoint is unavailable. The wizard supports that fallback. Never
 assume an entire mixed catalog works through one protocol.

@@ -88,6 +88,20 @@ test("candidates run local, then subscriptions, then paid, with a subscription p
   valid({ candidates: ["sub2/sonnet", "sub/sol"] });
 });
 
+test("paid Flash priority is explicit, routine-only and preserves default policy shapes", () => {
+  const candidates = ["local/qwen", "paid/flash", "sub/sol"];
+  const policy = valid({ preferPaidFlash: true, candidates }).routes["managed/routine"]!;
+  assert.equal(policy.preferPaidFlash, true);
+  assert.deepEqual(policy.candidates, candidates);
+  assert.equal(Object.hasOwn(valid().routes["managed/routine"]!, "preferPaidFlash"), false);
+  assert.throws(() => valid({ candidates }), /ordered/);
+  for (const preferPaidFlash of [null, "true", 1]) assert.throws(() => valid({ preferPaidFlash }), /preferPaidFlash/);
+  assert.throws(() => valid({ preferPaidFlash: true, candidates, allowPaid: false }), /requires a routine/);
+  assert.throws(() => valid({ preferPaidFlash: true, purpose: "strong", candidates: ["paid/flash", "sub/sol"] }), /requires a routine/);
+  assert.throws(() => valid({ preferPaidFlash: true, candidates: ["local/qwen", "sub/sol"] }), /requires a paid Flash/);
+  assert.throws(() => valid({ preferPaidFlash: true }), /ordered/);
+});
+
 test("strong routes forbid local and paid candidates need allowPaid", () => {
   assert.throws(() => valid({ purpose: "strong" }), /strong routes cannot use local/);
   assert.equal(valid({ purpose: "strong", candidates: ["sub/sol", "paid/flash"] }).routes["managed/routine"]!.purpose, "strong");
