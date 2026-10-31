@@ -1,10 +1,12 @@
 # Changelog
 
-## 1.3.1 — 2026-10-31
+## 1.3.3 — 2026-10-31
 
 - Managed coding/test profiles can advertise an explicit compaction threshold.
   Bounded 128K role settings avoid repeatedly compacting near a 32K window and
   prevent a newly added worker alias from inheriting a generic SDK context size.
+
+## 1.3.1 — 2026-10-31
 
 - Managed worker policies are hidden from normal model pickers while configured
   roles and existing chats retain their routes. Gateway Activity shows the pinned
