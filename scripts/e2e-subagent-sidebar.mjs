@@ -282,14 +282,6 @@ try {
   }
   const read = await reader.router.request('thread/read', { threadId: id, includeTurns: false });
   assert.equal(read.thread.model, childModel);
-  if (values.managed) {
-    const { readActivity } = await load('activity');
-    const activity = await readActivity(configPath, state, { nativeHome: native });
-    const row = activity.rows.find(row => row.threadId === id);
-    assert.equal(row?.model, 'local/worker');
-    assert.equal(row?.requestedModel, childModel);
-    evidence.selectedWorkerModel = row.model;
-  }
   if (values['role-fork']) evidence.observedChildModel = read.thread.model;
   assert.equal(read.thread.modelProvider, evidence.identity);
   evidence.childStateReadable = true;
@@ -358,6 +350,13 @@ try {
     if (values['role-fork']) assert.equal(persisted.thread.model, childModel, 'Followup keeps the role model on disk');
     evidence.savedIdentityPreserved = true;
     if (values.managed) {
+      // A cold host restores the managed Activity binding on the first continued inference.
+      const { readActivity } = await load('activity');
+      const activity = await readActivity(configPath, state, { nativeHome: native });
+      const row = activity.rows.find(row => row.threadId === id);
+      assert.equal(row?.model, 'local/worker');
+      assert.equal(row?.requestedModel, childModel);
+      evidence.selectedWorkerModel = row.model;
       const windows = usageEvents.filter(event => event.threadId === id).map(event => event.window).filter(Number.isFinite);
       evidence.childContextWindows = [...new Set(windows)];
       assert.ok(windows.length > 0, 'The real SDK must report the child context bound');
