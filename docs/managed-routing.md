@@ -24,7 +24,7 @@ new managed worker
 later requests -> the same binding, including across Gateway restarts
 ```
 
-Busy queues and unknown or stale quota never authorize paid escalation. Pro,
+By default, busy queues and unknown or stale quota never authorize paid escalation. Pro,
 GLM and other paid models are excluded from managed candidate chains. An explicit
 ordinary model request remains an explicit selection; these rules do not turn
 an unrelated fixed alias into an automatic route. Independent review remains an
@@ -53,12 +53,21 @@ must support the managed route's advertised window. For example:
 }
 ```
 
-Candidate order is local models, subscriptions, then paid Flash. A `strong`
+Default candidate order is local models, subscriptions, then paid Flash. A `strong`
 route starts with subscriptions and cannot contain local candidates. Paid
 routing defaults off. Missing subscription quota is unknown capacity, even when
 an availability row otherwise says `available`. A cold managed request starts
 the existing collectors and waits at most 2.5 seconds; it refuses if no eligible
 route is known after that wait. No provider call occurs on a refusal.
+
+A routine policy can explicitly set `preferPaidFlash: true` together with
+`allowPaid: true` to select local models, then paid DeepSeek V4 Flash, then
+subscriptions. This opts into per-token Flash spending even while subscriptions
+have quota; it is not a claim that paid tokens cost less than prepaid allowance.
+Flash still needs fresh positive balance and availability, compatible reasoning
+and context, and the existing Flash-only model restriction. Strong/review policies
+cannot select this preference. Omitted settings retain the previous admission
+rule and policy fingerprints. Use a fresh alias to preserve existing worker pins.
 
 The HTTP request uses the managed alias as its `model` and supplies a stable
 `thread-id` or `session-id`. Managed aliases are internal worker policies, omitted
@@ -132,8 +141,10 @@ cache availability and eviction remain upstream behavior.
 An unavailable pinned provider produces a refusal. It is never silently
 replayed onto another provider after a partial stream, tool call or missing
 usage. The caller may retry that provider, or start a new worker ID with a
-plaintext handoff. A paid pin also refuses when its prerequisite subscription
-blockers no longer hold. Provider-specific opaque state cannot start an unbound
+plaintext handoff. A paid pin under the default policy also refuses when its
+prerequisite subscription blockers no longer hold. Explicitly preferred Flash
+pins keep their binding while their own paid capacity remains eligible.
+Provider-specific opaque state cannot start an unbound
 managed worker. A changed policy or provider binding requires a fresh worker.
 
 ## Rollout

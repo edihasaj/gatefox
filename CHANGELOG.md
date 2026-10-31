@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Routine worker policies can explicitly prefer paid DeepSeek V4 Flash after
+  local models and before subscriptions, while preserving existing policies and
+  worker pins. OpenRouter discovery retains published model names as labels.
+
 - Managed coding/test profiles can advertise an explicit compaction threshold.
   Bounded 128K role settings avoid repeatedly compacting near a 32K window and
   prevent a newly added worker alias from inheriting a generic SDK context size.

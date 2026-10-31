@@ -26,6 +26,34 @@ test("a new bounded worker selects subscriptions when local capacity is busy", (
   assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "new-worker" }, facts))?.alias, "sub/sol");
 }));
 
+test("explicit Flash priority keeps local first and can spend before available subscriptions", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts);
+  config.managedRouting!.routes["managed/flash-first"] = { ...config.managedRouting!.routes["managed/routine"]!,
+    candidates: ["local/qwen", "paid/flash", "sub/sol", "sub2/sonnet"], preferPaidFlash: true };
+  const request = managedRequest({ model: "managed/flash-first" });
+  assert.equal((await router.resolve(config, request, { threadId: "local-first" }, facts))?.alias, "local/qwen");
+  rows[0].status = "busy";
+  assert.equal((await router.resolve(config, request, { threadId: "paid-before-quota" }, facts))?.alias, "paid/flash");
+  delete rows[1].quota; delete rows[2].quota;
+  assert.equal((await router.resolve(config, request, { threadId: "explicit-paid-unknown-quota" }, facts))?.alias, "paid/flash");
+  rows[0].status = "available";
+  assert.equal((await router.resolve(config, request, { threadId: "paid-before-quota" }, facts))?.alias, "paid/flash", "existing paid workers keep their binding when local capacity returns");
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "legacy-local" }, facts))?.alias, "local/qwen");
+}));
+
+test("Flash priority still requires fresh balance and never replays an existing pin", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts(), rows = factsRows(facts);
+  config.managedRouting!.routes["managed/routine"]!.preferPaidFlash = true;
+  config.managedRouting!.routes["managed/routine"]!.candidates = ["local/qwen", "paid/flash", "sub/sol", "sub2/sonnet"];
+  rows[0].status = "unavailable";
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "paid-pin" }, facts))?.alias, "paid/flash");
+  rows[3].balance = { fresh: false, remainingUsd: 20, observedAt: new Date(managedNow).toISOString() };
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "stale-balance" }, facts))?.alias, "sub/sol");
+  await assert.rejects(router.resolve(config, managedRequest(), { threadId: "paid-pin" }, facts), { code: "managed_route_unavailable" });
+  rows[3].balance = { fresh: true, remainingUsd: 0, observedAt: new Date(managedNow).toISOString() };
+  assert.equal((await router.resolve(config, managedRequest(), { threadId: "zero-balance" }, facts))?.alias, "sub/sol");
+}));
+
 test("a wider coding policy admits a realistic instruction/tool scaffold without widening legacy pins", () => fixture(async (root, router) => {
   const config = managedFixture(root), old = structuredClone(config.managedRouting!.routes["managed/routine"]);
   config.managedRouting!.routes["managed/coding"] = { ...old, contextWindow: 131072, maxContextBytes: 1048576, autoCompactTokenLimit: 104857 };

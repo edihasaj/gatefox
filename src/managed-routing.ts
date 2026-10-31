@@ -86,7 +86,8 @@ export class ManagedRouter {
     const rows = new Map((Array.isArray(report.providers) ? report.providers : []).map(v => { const row = object(v); return [row.id, row] as const; }));
     const now = this.now();
     const subscriptions = candidates.filter(c => managedCandidateKind(c.provider!, c.provider!.models[c.alias]!) === "subscription");
-    const paidAllowed = policy.allowPaid && subscriptions.length > 0 && subscriptions.every(c => confirmedBlocked(rows.get(c.provider!.id) ?? {}, policy, now));
+    const paidAllowed = policy.allowPaid && (policy.preferPaidFlash === true
+      || subscriptions.length > 0 && subscriptions.every(c => confirmedBlocked(rows.get(c.provider!.id) ?? {}, policy, now)));
     const allowed = (alias: string, provider: ProviderConfig, pinned: boolean) =>
       eligible(provider, alias, rows.get(provider.id) ?? {}, policy, managedReasoningRequest(request, policy.candidateReasoningEfforts?.[alias]), now, pinned)
       && (managedCandidateKind(provider, provider.models[alias]!) !== "paid-flash" || paidAllowed);

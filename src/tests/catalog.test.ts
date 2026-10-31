@@ -64,6 +64,23 @@ function worker(mode: string) {
   `], { stdio: ["pipe", "pipe", "pipe"] });
 }
 
+test("API discovery retains published names and stable configured aliases", async () => {
+  const original = globalThis.fetch, old = process.env.OPENROUTER_LABEL_FIXTURE_KEY;
+  globalThis.fetch = async () => Response.json({ data: [{ id: "deepseek/deepseek-v4-flash", name: "DeepSeek: DeepSeek V4 Flash" }] });
+  process.env.OPENROUTER_LABEL_FIXTURE_KEY = "fixture-only";
+  try {
+    const provider: ProviderConfig = { id: "openrouter", label: "OpenRouter", type: "chat-completions-api", baseUrl: "https://openrouter.ai/api/v1",
+      apiKeyEnv: "OPENROUTER_LABEL_FIXTURE_KEY", models: { "or-deepseek": "deepseek/deepseek-v4-flash" },
+      modelMetadata: { "or-deepseek": { displayName: "or-deepseek" } } };
+    loadDiscoveredModels(provider, await discoverModels(provider));
+    assert.deepEqual(provider.models, { "or-deepseek": "deepseek/deepseek-v4-flash" });
+    assert.equal(provider.modelMetadata?.["or-deepseek"]?.displayName, "DeepSeek: DeepSeek V4 Flash");
+  } finally {
+    globalThis.fetch = original;
+    if (old === undefined) delete process.env.OPENROUTER_LABEL_FIXTURE_KEY; else process.env.OPENROUTER_LABEL_FIXTURE_KEY = old;
+  }
+});
+
 test("native discovery sends only metadata initialization and cleans up its worker", async () => {
   const child = worker("ok");
   const models = await readClaudeModels(child);
