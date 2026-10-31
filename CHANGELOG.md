@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Native engine sharing accepts the Codex app engine 0.166.0-alpha.5.1 after the
+  shared-native fixture passed against the signed engine over stdio and Unix.
+  Macs that share native work report `ready` again instead of
+  `native_owner_pending`.
+
 - The remote relay accepts the Codex app engine 0.166.0-alpha.5.1, which ChatGPT
   shipped on 30 October. The relay refused it, paused itself after three exits, and
   phones could no longer reach any Mac. The engine's remote-control contract was

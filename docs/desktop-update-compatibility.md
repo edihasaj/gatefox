@@ -99,5 +99,9 @@ listener's zstd compression. `state/migrations` is identical. The new SQLite
 journal-mode policy and NFS migration apply only under managed policy on NFS, not
 to a local `~/.codex`. `auth.json` keeps its format; 0.166 adds an advisory
 `auth.lock` around writes, which the linked 0.163 relay SDK does not take, as it did
-not with earlier admitted engines. The engine is admitted for the relay only; it
-joins `hostVerifiedAppEngines` after the shared-native fixture passes against it.
+not with earlier admitted engines. On 31 Oct 2026 the signed engine
+(TeamIdentifier `2DC432GLL2`) passed every stdio and Unix shared-native phase:
+reconnect, steering, Stop, command execution exactly once, pending approval
+recovery and native/gateway capability separation, with no owned process left
+behind. It joined `hostVerifiedAppEngines` in 1.3.0; until then rollout reported
+`native_owner_pending` on Macs that share native work.
