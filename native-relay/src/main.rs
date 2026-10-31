@@ -160,9 +160,62 @@ impl Options {
 async fn main() {
     sdk_log::install();
     diagnostics::install_panic_hook();
-    if run().await.is_err() {
+    if let Err(error) = run().await {
+        diagnostics::emit_text(stop_reason(&error));
         diagnostics::emit_text("Native relay stopped; private state retained");
         std::process::exit(1);
+    }
+}
+
+/// The relay's own fixed refusals, which name no path, account or value. Without the reason, a refused app engine, a
+/// held lock and a locked native database all logged the same line.
+const KNOWN_REASONS: [&str; 18] = [
+    "Native relay requires the matching Codex CLI build",
+    "Relay state must be separate from the native home",
+    "Remote control is disabled by managed requirements",
+    "Native relay requires ChatGPT host authentication",
+    "Native host account is unavailable",
+    "Invalid original machine installation ID",
+    "Native registration scope closed",
+    "Another relay owns this native server",
+    "Relay home must be an owned private directory",
+    "Relay lock is not an owned private file",
+    "Invalid relay home",
+    "Cannot read the existing native machine registration",
+    "Invalid native registration metadata",
+    "Invalid native endpoint",
+    "This account has no existing Codex Desktop machine registration",
+    "The original machine registration must already be enabled",
+    "Unknown relay option",
+    "Missing relay option value",
+];
+
+/// A fixed reason for the log: one of the relay's own messages, otherwise only a coarse class of the error kind.
+fn stop_reason(error: &io::Error) -> &'static str {
+    let text = error.to_string();
+    if let Some(known) = KNOWN_REASONS.iter().find(|known| **known == text) { return known; }
+    if text.starts_with("Missing --") { return "Missing a required relay option"; }
+    match error.kind() {
+        io::ErrorKind::NotFound => "Relay stopped: a required file was not found",
+        io::ErrorKind::PermissionDenied => "Relay stopped: permission denied",
+        io::ErrorKind::TimedOut => "Relay stopped: an operation timed out",
+        _ => "Relay stopped on an unexpected error",
+    }
+}
+
+#[cfg(test)]
+mod stop_reason_tests {
+    use super::stop_reason;
+    use std::io;
+
+    #[test]
+    fn names_the_relays_own_refusals_and_only_the_kind_of_anything_else() {
+        assert_eq!(stop_reason(&io::Error::other("Another relay owns this native server")), "Another relay owns this native server");
+        assert_eq!(stop_reason(&io::Error::other("Native relay requires the matching Codex CLI build")), "Native relay requires the matching Codex CLI build");
+        assert_eq!(stop_reason(&io::Error::other("Cannot read the existing native machine registration")), "Cannot read the existing native machine registration");
+        assert_eq!(stop_reason(&io::Error::other("Missing --relay-home")), "Missing a required relay option");
+        assert_eq!(stop_reason(&io::Error::other("database at /Users/someone/.codex/state.sqlite is locked")), "Relay stopped on an unexpected error");
+        assert_eq!(stop_reason(&io::Error::from(io::ErrorKind::NotFound)), "Relay stopped: a required file was not found");
     }
 }
 

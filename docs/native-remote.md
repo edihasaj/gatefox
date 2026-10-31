@@ -89,6 +89,20 @@ the app's engine exits at once, and after three such exits the service sets it a
 with `component_paused` and reason `failing` instead of restarting it in a loop. A new
 app engine needs a new relay build and this verification again.
 
+Every stop now logs its reason on the line before `Native relay stopped; private state
+retained`: one of the relay's own fixed refusals, such as `Native relay requires the
+matching Codex CLI build` or `Another relay owns this native server`, or a coarse class
+for anything else. Paths, accounts and values are never printed.
+
+The relay reads the original machine registration from the native database with
+`/usr/bin/sqlite3 -readonly`. A service restart stops every engine that has that
+database open, and the next opener recovers or checkpoints its WAL under an exclusive
+lock. Without a busy timeout the read failed at once with `database is locked`, so the
+new relay exited about 30 ms after `Native relay host authenticated`, three times in a
+row, and paused for half an hour (MacBook Pro, 31 Oct 2026). The read now waits up to
+five seconds for the lock and retries a failed run twice, one second apart. A missing or
+disabled registration is an answer, not a failure, and is still refused at once.
+
 ## Relay sessions and native chats
 
 Each phone stream starts its own `gateway codex-shim` session, so the model list, the
