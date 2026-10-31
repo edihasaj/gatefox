@@ -10,9 +10,11 @@ import { randomUUID } from 'node:crypto';
 const { values } = parseArgs({ options: { package: { type: 'string' }, code: { type: 'string' },
   root: { type: 'string' }, private: { type: 'boolean' }, openai: { type: 'boolean' }, baseline: { type: 'boolean' },
   cold: { type: 'boolean' }, 'mixed-identity': { type: 'boolean' }, 'config-override': { type: 'boolean' },
-  v2: { type: 'boolean' }, managed: { type: 'boolean' }, 'child-status': { type: 'boolean' }, 'expect-status-unavailable': { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
+  v2: { type: 'boolean' }, managed: { type: 'boolean' }, 'managed-stale-catalog': { type: 'boolean' }, 'managed-compact': { type: 'boolean' }, 'child-status': { type: 'boolean' }, 'expect-status-unavailable': { type: 'boolean' }, accounts: { type: 'boolean' }, 'role-fork': { type: 'boolean' }, 'expect-payload-loss': { type: 'boolean' } } });
 assert.ok(values.package && values.root, 'Pass --package SDK_PACKAGE --root EVIDENCE_DIRECTORY');
 assert.ok(!values.managed || values.v2 && !values.accounts && !values.baseline && !values.private, '--managed requires shared --v2 and excludes private/accounts/baseline');
+assert.ok(!values['managed-stale-catalog'] || values.managed && values['role-fork'], '--managed-stale-catalog requires --managed --role-fork');
+assert.ok(!values['managed-compact'] || values.managed && values['role-fork'], '--managed-compact requires --managed --role-fork');
 assert.ok(!values['child-status'] || values.v2, '--child-status requires --v2');
 assert.ok(!values['expect-status-unavailable'] || values['child-status'], '--expect-status-unavailable requires --child-status');
 assert.ok(!values['role-fork'] || values.v2, '--role-fork requires --v2');
@@ -50,6 +52,7 @@ assert.ok(runtime?.executorIdentity, 'Use a verified installed gateway SDK');
 const sdk = runtime.executable, alias = 'fixture/parent', nativeModel = 'gpt-6.1-sol', childModel = values.managed ? 'managed/routine' : nativeModel;
 const workerEffort = values.managed ? 'medium' : 'high';
 const selectedEffort = values.managed ? 'xhigh' : workerEffort;
+const workerWindow = 131072, workerCompactLimit = 104857;
 const role = 'role_fork_fixture', rolePath = join(native, 'role-fork.toml');
 const configPath = join(fixture, 'gateway.json');
 const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
@@ -62,9 +65,9 @@ let availability;
 if (values.managed) {
   const { AvailabilityService } = await load('availability/service');
   availability = new AvailabilityService({ probe: async () => ({ status: 'healthy', observedAt: Date.now(), endpoints: { healthy: 1, total: 1 }, servedModels: ['mock-child'], missingModels: [] }), accountEmail: async () => undefined, balance: async () => undefined });
-  config.providers.push({ id: 'local', type: 'chat-completions-api', baseUrl: 'http://127.0.0.1:1/v1', apiKeyEnv: 'FIXTURE_ONLY_KEY', models: { 'local/worker': 'mock-child' }, modelMetadata: { 'local/worker': { contextWindow: 100_000, reasoningEfforts: ['low', workerEffort, selectedEffort] } } },
-    { id: 'subscription', type: 'codex-subscription', credentialFile: join(state, 'unused.json'), models: { 'subscription/worker': 'unused' }, modelMetadata: { 'subscription/worker': { contextWindow: 100_000, reasoningEfforts: ['low', workerEffort] } } });
-  config.managedRouting = { routes: { [childModel]: { purpose: 'routine', candidates: ['local/worker', 'subscription/worker'], candidateReasoningEfforts: { 'local/worker': selectedEffort }, maxContextBytes: 262144, contextWindow: 32768, minRemainingPercent: 2, allowPaid: false } } };
+  config.providers.push({ id: 'local', type: 'chat-completions-api', baseUrl: 'http://127.0.0.1:1/v1', apiKeyEnv: 'FIXTURE_ONLY_KEY', models: { 'local/worker': 'mock-child' }, modelMetadata: { 'local/worker': { contextWindow: 262144, reasoningEfforts: ['low', workerEffort, selectedEffort] } } },
+    { id: 'subscription', type: 'codex-subscription', credentialFile: join(state, 'unused.json'), models: { 'subscription/worker': 'unused' }, modelMetadata: { 'subscription/worker': { contextWindow: 262144, reasoningEfforts: ['low', workerEffort] } } });
+  config.managedRouting = { routes: { [childModel]: { purpose: 'routine', candidates: ['local/worker', 'subscription/worker'], candidateReasoningEfforts: { 'local/worker': selectedEffort }, maxContextBytes: 1048576, contextWindow: workerWindow, autoCompactTokenLimit: workerCompactLimit, minRemainingPercent: 2, allowPaid: false } } };
 }
 const serverConfig = structuredClone(config);
 if (values.accounts) {
@@ -76,8 +79,8 @@ const until = async (check, label, ms = 30_000) => {
   while (Date.now() < end) { const result = await check(); if (result) return result; await delay(25); }
   throw Error(label + ' timed out');
 };
-let calls = 0, childCalls = 0, spawned = false, gateway, host, phase = 'setup', parentOperation, nativeConfig;
-const clients = [];
+let calls = 0, childCalls = 0, seededHigh = false, spawned = false, gateway, host, phase = 'setup', parentOperation, nativeConfig;
+const clients = [], usageEvents = [], compactionThreads = [];
 const evidence = { fixture, shared: !values.private, identity: values.openai ? 'openai' : 'subscription_gateway',
   realGatewaySdk: true, paidInferenceRequests: 0, collaborationVersion: values.v2 ? 'v2' : 'v1',
   ...(values.accounts ? { codexAccounts: 2, childAccount: 'selected' } : {}), passed: false };
@@ -103,10 +106,16 @@ const callFor = (tool, id, args) => ({ type: 'tool', call: { type: 'function', i
   function: { name: tool.namespace ? `${tool.namespace}.${tool.name}` : tool.name, arguments: JSON.stringify(args) } } });
 try {
   gateway = await startGateway(serverConfig, provider => ({
-    async *infer(request) {
+    async *infer(request, _signal, context) {
       calls++;
       if (values['child-status'] && request.model === 'mock-parent' && JSON.stringify(request.input).includes(statusProof)) evidence.parentReceivedChildStatus = true;
       const childRequest = request.model === (values.accounts ? childModel : 'mock-child');
+      if (childRequest && context?.requestKind === 'compaction') {
+        evidence.compactionProviderCalls = (evidence.compactionProviderCalls ?? 0) + 1;
+        yield { type: 'text', text: `Continue the proof task: ${taskProof} ${requiredProof} ${fileProof} ${forkMarker ?? ''} ${queuedProof ?? ''}` };
+        yield { type: 'done', usage: { input_tokens: 20, output_tokens: 20, total_tokens: 40 } };
+        return;
+      }
       if (childRequest) {
         childCalls++;
         if (values.managed) assert.equal(provider.id, 'local', 'The hidden worker policy must resolve to the local candidate');
@@ -172,7 +181,11 @@ try {
           }
         }
       } else yield { type: 'text', text: 'SIDEBAR_FIXTURE_COMPLETE' };
-      yield { type: 'done', usage: { input_tokens: 20, output_tokens: 5, total_tokens: 25 } };
+      // Simulate a coding worker beyond the old 29.5K usable window, without paid inference or huge fixture output.
+      const crossThreshold = values['managed-compact'] && childRequest && !seededHigh;
+      const inputTokens = crossThreshold ? workerCompactLimit + 100 : values.managed && childRequest ? 60000 : 20;
+      if (crossThreshold) seededHigh = true;
+      yield { type: 'done', usage: { input_tokens: inputTokens, output_tokens: 5, total_tokens: inputTokens + 5 } };
       if (childRequest) evidence.childInferenceFinished = true;
     },
   }), undefined, { copilotTempBase: join(fixture, 'provider-tmp'), ...(availability ? { availability } : {}) });
@@ -195,16 +208,17 @@ try {
   await writePrivateJson(join(native, 'models.json'), { models: [nativeRow] });
   nativeConfig = `model = "${nativeModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
   if (values['role-fork']) {
-    await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "${workerEffort}"\n`, { mode: 0o600 });
+    await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "${workerEffort}"\n${values.managed ? `model_context_window = ${workerWindow}\nmodel_auto_compact_token_limit = ${workerCompactLimit}\n` : ''}`, { mode: 0o600 });
     nativeConfig += `\n[agents]\ndefault_subagent_model = "${alias}"\n[agents.${role}]\ndescription = "Fixture worker"\nconfig_file = ${JSON.stringify(rolePath)}\n`;
     assert.notEqual(childModel, alias, 'The role model must differ from both parent and default child models');
   }
   await writeFile(join(native, 'config.toml'), nativeConfig, { mode: 0o600 });
+  const executorRows = values['managed-stale-catalog'] ? rows.filter(row => row.slug !== childModel) : rows;
   const snapshot = { revision: 'a'.repeat(64), models: rows };
   const catalogPath = join(state, 'fixture-catalog.json');
-  await writePrivateJson(catalogPath, { models: [nativeRow, ...rows] });
+  await writePrivateJson(catalogPath, { models: [nativeRow, ...executorRows] });
   const catalog = { current: () => snapshot, refresh: async () => snapshot,
-    combined: value => ({ models: [nativeRow, ...value.models] }), nativeSlugs: new Set([nativeModel]),
+    combined: value => ({ models: [nativeRow, ...(values['managed-stale-catalog'] ? value.models.filter(row => row.slug !== childModel) : value.models)] }), nativeSlugs: new Set([nativeModel]),
     isNative: model => model === nativeModel };
   if (!values.private) host = await startExecutionHost({ config, configPath, nativeHome: native, codex: sdk, gatewayRuntime: async () => runtime });
   const overrides = { name: 'Fixture', base_url: `http://127.0.0.1:${config.port}/v1`, wire_api: 'responses',
@@ -215,6 +229,8 @@ try {
     const backend = await AppServerBackends.create(sdk, ['app-server', '--listen', 'stdio://'], config, values.managed ? { web_search: 'disabled' } : {}, overrides, catalog,
       async message => {
         events.push(message);
+        if (message.method === 'thread/tokenUsage/updated') usageEvents.push({ threadId: message.params?.threadId, window: message.params?.tokenUsage?.modelContextWindow });
+        if (message.method === 'item/completed' && message.params?.item?.type === 'contextCompaction') compactionThreads.push(message.params?.threadId);
         if (message.method === 'item/completed' || message.method === 'error') {
           const item = message.params?.item;
           (evidence.events ??= []).push({ method: message.method, type: item?.type, status: item?.status,
@@ -357,6 +373,15 @@ try {
     assert.equal(persisted.thread.modelProvider, evidence.identity, 'The child keeps its saved provider on disk');
     if (values['role-fork']) assert.equal(persisted.thread.model, childModel, 'Followup keeps the role model on disk');
     evidence.savedIdentityPreserved = true;
+    if (values.managed) {
+      const windows = usageEvents.filter(event => event.threadId === id).map(event => event.window).filter(Number.isFinite);
+      evidence.childContextWindows = [...new Set(windows)];
+      assert.ok(windows.length > 0, 'The real SDK must report the child context bound');
+      assert.ok(windows.every(window => window >= workerCompactLimit && window <= workerWindow), 'Role limits must prevent both the old 29.5K window and generic 258K fallback');
+      evidence.childCompactions = compactionThreads.filter(threadId => threadId === id).length;
+      assert.equal(evidence.childCompactions, values['managed-compact'] ? 1 : 0, 'Compact once above the configured threshold; avoid churn at 60K');
+      if (values['managed-compact']) assert.equal(evidence.compactionProviderCalls, 1, 'The configured threshold must trigger real provider compaction');
+    }
     if (values['child-status']) {
       assert.equal(evidence.childStatusUnavailable, !!values['expect-status-unavailable']);
       assert.equal(evidence.parentReceivedChildStatus === true, !values['expect-status-unavailable'], 'The parent must receive the child status payload');

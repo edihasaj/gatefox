@@ -240,6 +240,22 @@ test("a reused component origin wins over the parent bundle it was staged from",
   assert.equal((await gatewaySdkRuntime(f.root))?.binarySha256, f.metadata.binarySha256);
 });
 
+test("a fresh SDK keeps its binary and companion checks beside native-only reuse metadata", async t => {
+  const f = await fixture(t, undefined, gatewaySdkSourceSha256);
+  await writeFile(join(f.root, "release.json"), JSON.stringify({ version: f.metadata.version,
+    reusedComponents: { bundleVersion: "0.2.19", bundleSha256: "b".repeat(64),
+      components: { native: { buildVersion: "0.2.19", sourceSha256: "c".repeat(64),
+        origin: { bundleVersion: "0.2.19", bundleSha256: "b".repeat(64) }, files: [] } } } }), { mode: 0o600 });
+  await writeFile(join(f.directory, hostName), hostBytes, { mode: 0o700 });
+  await f.save({ sourceSha256: gatewaySdkSourceSha256, codeModeHostSha256: sha(hostBytes) });
+  assert.equal((await gatewaySdkRuntime(f.root))?.codeModeHost, true);
+  await writeFile(f.executable, "altered executable");
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/);
+  await writeFile(f.executable, "isolated gateway SDK fixture");
+  await writeFile(join(f.directory, hostName), "altered companion");
+  await assert.rejects(gatewaySdkRuntime(f.root), /does not match this release/);
+});
+
 test("a package that carries its code-mode host reports it, and every other pairing fails closed", async t => {
   const f = await fixture(t);
   const host = join(f.directory, hostName);

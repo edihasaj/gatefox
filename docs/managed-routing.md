@@ -74,6 +74,24 @@ not change account setup or the native app's connection-management UI.
 
 ## Context and cache behavior
 
+`autoCompactTokenLimit` optionally advertises an explicit SDK compaction
+threshold. It must fit inside 90% of the configured context window. Omitted
+values preserve existing policy fingerprints and catalog behavior.
+
+Coding and test roles need headroom beyond the client's stable instructions and
+tool definitions. The current 131,072-token profiles allow a 1 MiB serialized
+request and compact at 104,857 tokens. Their role files also set
+`model_context_window` and `model_auto_compact_token_limit` explicitly. This
+keeps a newly added alias bounded even when an already-loaded SDK lacks that
+alias in its frozen model catalog and would otherwise use generic defaults.
+The real-SDK fixture exercises both known and missing catalog rows at 60K
+reported input tokens, requiring task progress without compaction churn.
+
+Use fresh internal policy aliases for widened profiles. Existing pins and
+their old limits remain intact; old workers are not moved, restarted or
+silently assigned a different account. A larger window is a ceiling, not a
+request to fill it, and does not promise maximum context at maximum concurrency.
+
 An optional `candidateReasoningEfforts` map explicitly selects a provider-specific
 effort for that internal policy. Each key must name one of its candidates and
 the value must be an effort that candidate supports. This is an opt-in profile,
@@ -151,6 +169,10 @@ The offline real-SDK check for hidden worker roles is
 to spawn a hidden managed worker, execute a real fixture command, retain its
 model across resume and follow-up, and expose the pinned model in Activity.
 All inference uses local mocks and private homes.
+Repeat with `--managed-stale-catalog` to verify explicit role limits when the
+worker alias is missing from the executor's frozen catalog.
+Add `--managed-compact` to cross the configured threshold once and require real
+compaction followed by successful tool execution and continuation.
 
 This is provider admission before inference, not an agent scheduler or automatic
 semantic task classifier. Candidate suitability comes from the explicit managed

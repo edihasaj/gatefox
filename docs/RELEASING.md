@@ -420,7 +420,11 @@ after failed gateway turns. `scripts/patches/gateway-dynamic-tools.patch` also k
 declared-deferred client tools reachable when the selected model lacks search;
 Seven additional Rust cases preserve search, schemas, policy and namespace rules;
 the existing deferred-filtering regression also runs explicitly in the gate.
-All three patches contribute to the patch and source digests. A changed patch
+The managed role context patch also carries paired context and compaction limits
+through the SDK's typed role projection, only inside marked Gateway executors
+for explicitly selected managed aliases. Two Rust cases check its bounds and
+preservation of other runtime settings. All four patches contribute to the patch
+and source digests. A changed patch
 requires a new SDK build even when the capability name stays the same; it cannot
 reuse an SDK component with older source hashes. See
 [client tool reachability](client-tool-reachability.md) for the mock E2E gate and
@@ -443,6 +447,12 @@ Archive links and path overrides are refused. Validated macOS provenance metadat
 is ignored; only the six allowed files for each selected component are copied.
 Any changed component source requires a fresh build. Without both explicit reuse
 arguments, the usual matching-release artifact checks remain in force.
+
+A gateway SDK fix can reuse the unchanged relay from its original published
+archive. Build the SDK for this version first, then use `--with-native
+--with-gateway-sdk --reuse-native-from ORIGINAL_ARCHIVE --native-sha256 DIGEST`.
+The relay retains its verified original receipt; the fresh SDK must match the
+current source, patch digests and release version.
 
 A native relay fix can ship a freshly built relay while still reusing the gateway
 SDK from that bundle. Build the relay for this version first

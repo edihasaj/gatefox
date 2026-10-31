@@ -26,6 +26,14 @@ test("unknown keys and wrong types are refused", () => {
   }
 });
 
+test("managed compaction thresholds must fit inside the usable context window", () => {
+  const selected = valid({ contextWindow: 131072, maxContextBytes: 1048576, autoCompactTokenLimit: 104857 });
+  assert.equal(selected.routes["managed/routine"].autoCompactTokenLimit, 104857);
+  for (const value of [null, "10000", 1023, 32768, 1.5, Number.MAX_SAFE_INTEGER])
+    assert.throws(() => valid({ autoCompactTokenLimit: value }), /autoCompactTokenLimit/);
+  assert.equal(valid().routes["managed/routine"].autoCompactTokenLimit, undefined, "old pin policy shapes remain unchanged");
+});
+
 test("candidate-specific reasoning is explicit and must match a supported candidate capability", () => {
   const value = valid({ candidateReasoningEfforts: { "local/qwen": "high" } });
   assert.equal(value.routes["managed/routine"].candidateReasoningEfforts?.["local/qwen"], "high");
