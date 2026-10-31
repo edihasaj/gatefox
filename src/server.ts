@@ -45,7 +45,7 @@ import { pickerHiddenAliases } from "./model-auto-latest/metadata.js";
 import { handleUpgrade, isUpgradeRequest, requestPath, sendUpgradeRefusal } from "./server-upgrade.js";
 import { AvailabilityService } from "./availability/service.js";
 import { availabilityPath, serveAvailability } from "./availability/http.js";
-import { ManagedRouter } from "./managed-routing.js";
+import { ManagedRouter, managedReasoningRequest } from "./managed-routing.js";
 import { resolveManagedRequest } from "./server-managed-routing.js";
 
 const send = (res: ServerResponse, status: number, value: unknown) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
@@ -412,6 +412,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (managed) {
         res.setHeader("X-Gateway-Managed-Route", managed.alias);
         res.setHeader("X-Gateway-Managed-Reused", String(managed.reused));
+        if (managed.reasoningEffort) res.setHeader("X-Gateway-Managed-Reasoning-Effort", managed.reasoningEffort);
         telemetry("managed_route_selected", { logicalAlias: request.model, alias: managed.alias, providerId: managed.providerId, reused: managed.reused, contextBytes: managed.contextBytes });
       }
       const alias = managed?.alias ?? (state.routes.has(request.model) ? request.model : nativeModelAlias(state.config, request.model));
@@ -431,7 +432,8 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (countTokens) {
         throw new ProviderError("unsupported_protocol", "Exact token counting is unavailable for this gateway; use the client's local token estimate", 501);
       }
-      const providerRequest = messagesProtocol ? messagesProviderRequest(request, route.type) : request;
+      const selectedRequest = managedReasoningRequest(request, managed?.reasoningEffort);
+      const providerRequest = messagesProtocol ? messagesProviderRequest(selectedRequest, route.type) : selectedRequest;
       if (messagesProtocol && ["codex-subscription", "claude-subscription", "copilot-subscription"].includes(route.type)) res.setHeader("X-Gateway-Output-Limit", "provider-managed");
       // Compaction is refused for good below, whatever the queue holds, so a full queue cannot turn it into a retryable 429.
       if (!internal.unsupportedCompaction) admission.check();

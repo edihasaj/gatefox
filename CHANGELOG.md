@@ -7,6 +7,10 @@
   model/account for locally served managed workers without changing their saved
   model, permissions or execution state.
 
+- Internal worker policies can explicitly configure effort for one candidate,
+  allowing Qwen implementation at xhigh while subscription fallback keeps medium.
+  Existing policies and fixed model requests retain their reasoning behavior.
+
 - The remote relay no longer pauses itself after a gateway restart that coincides
   with the native Codex database being recovered. Its registration read had no busy
   timeout, failed at once with "database is locked" and exited three times in a row,

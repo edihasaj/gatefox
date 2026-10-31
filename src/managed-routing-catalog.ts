@@ -1,5 +1,5 @@
 import type { GatewayConfig } from "./config.js";
-/** Conservative common capabilities; no selected provider or caller instruction is invented. */
+/** Conservative common capabilities; configured per-candidate effort is applied at admission. */
 export function managedCatalog(config: GatewayConfig): Array<Record<string, unknown>> {
   return Object.entries(config.managedRouting?.routes ?? {}).map(([alias, policy]) => {
     const metadata = policy.candidates.map(candidate => config.providers.find(p => Object.hasOwn(p.models, candidate))?.modelMetadata?.[candidate]);

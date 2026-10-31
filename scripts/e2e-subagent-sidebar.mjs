@@ -48,6 +48,8 @@ setOwnPidForTests(process.pid + 1_000_000);
 const runtime = await gatewaySdkRuntime(pkg);
 assert.ok(runtime?.executorIdentity, 'Use a verified installed gateway SDK');
 const sdk = runtime.executable, alias = 'fixture/parent', nativeModel = 'gpt-6.1-sol', childModel = values.managed ? 'managed/routine' : nativeModel;
+const workerEffort = values.managed ? 'medium' : 'high';
+const selectedEffort = values.managed ? 'xhigh' : workerEffort;
 const role = 'role_fork_fixture', rolePath = join(native, 'role-fork.toml');
 const configPath = join(fixture, 'gateway.json');
 const config = { version: 1, port: 0, stateDirectory: state, timeoutMs: 30_000,
@@ -60,9 +62,9 @@ let availability;
 if (values.managed) {
   const { AvailabilityService } = await load('availability/service');
   availability = new AvailabilityService({ probe: async () => ({ status: 'healthy', observedAt: Date.now(), endpoints: { healthy: 1, total: 1 }, servedModels: ['mock-child'], missingModels: [] }), accountEmail: async () => undefined, balance: async () => undefined });
-  config.providers.push({ id: 'local', type: 'chat-completions-api', baseUrl: 'http://127.0.0.1:1/v1', apiKeyEnv: 'FIXTURE_ONLY_KEY', models: { 'local/worker': 'mock-child' }, modelMetadata: { 'local/worker': { contextWindow: 100_000, reasoningEfforts: ['low', 'high'] } } },
-    { id: 'subscription', type: 'codex-subscription', credentialFile: join(state, 'unused.json'), models: { 'subscription/worker': 'unused' }, modelMetadata: { 'subscription/worker': { contextWindow: 100_000, reasoningEfforts: ['low', 'high'] } } });
-  config.managedRouting = { routes: { [childModel]: { purpose: 'routine', candidates: ['local/worker', 'subscription/worker'], maxContextBytes: 262144, contextWindow: 32768, minRemainingPercent: 2, allowPaid: false } } };
+  config.providers.push({ id: 'local', type: 'chat-completions-api', baseUrl: 'http://127.0.0.1:1/v1', apiKeyEnv: 'FIXTURE_ONLY_KEY', models: { 'local/worker': 'mock-child' }, modelMetadata: { 'local/worker': { contextWindow: 100_000, reasoningEfforts: ['low', workerEffort, selectedEffort] } } },
+    { id: 'subscription', type: 'codex-subscription', credentialFile: join(state, 'unused.json'), models: { 'subscription/worker': 'unused' }, modelMetadata: { 'subscription/worker': { contextWindow: 100_000, reasoningEfforts: ['low', workerEffort] } } });
+  config.managedRouting = { routes: { [childModel]: { purpose: 'routine', candidates: ['local/worker', 'subscription/worker'], candidateReasoningEfforts: { 'local/worker': selectedEffort }, maxContextBytes: 262144, contextWindow: 32768, minRemainingPercent: 2, allowPaid: false } } };
 }
 const serverConfig = structuredClone(config);
 if (values.accounts) {
@@ -81,7 +83,7 @@ const evidence = { fixture, shared: !values.private, identity: values.openai ? '
   ...(values.accounts ? { codexAccounts: 2, childAccount: 'selected' } : {}), passed: false };
 if (values['role-fork']) Object.assign(evidence, { mode: 'role-fork', fullHistoryFork: true,
   parentModel: alias, defaultSubagentModel: alias, roleConfigPath: rolePath, roleModel: childModel,
-  roleReasoningEffort: 'high' });
+  roleReasoningEffort: workerEffort });
 const taskProof = 'TASK_' + randomUUID(), fileProof = 'FILE_' + randomUUID();
 const statusProof = 'STATUS_' + randomUUID(), statusCallId = 'fixture_child_status';
 // A marker written only into the parent's own turn text, so its presence in a child inference
@@ -111,7 +113,7 @@ try {
         if (values['role-fork']) {
           evidence.observedChildUpstreamModel = request.model;
           evidence.observedChildReasoningEffort = request.reasoning?.effort;
-          assert.equal(request.reasoning?.effort, 'high', 'Every child inference must use the role reasoning effort');
+          assert.equal(request.reasoning?.effort, selectedEffort, 'Only the selected local candidate receives its configured effort');
         }
         if (values.accounts) assert.equal(provider.id, 'selected', 'Every bare-model child inference uses the designated account');
       }
@@ -129,7 +131,7 @@ try {
         const spawnArgs = { task_name: 'sidebar_fixture',
           message: values.v2 ? `Read ${taskFile} using exec_command. Return its value and ${taskProof}.` : 'Return the fixture marker.',
           ...(values['role-fork'] ? { agent_type: role, fork_turns: 'all' }
-            : { model: childModel, reasoning_effort: 'high', fork_turns: 'none' }) };
+            : { model: childModel, reasoning_effort: workerEffort, fork_turns: 'none' }) };
         if (values['role-fork']) {
           evidence.spawnModelOverride = Object.hasOwn(spawnArgs, 'model');
           assert.equal(evidence.spawnModelOverride, false, 'The role must select the model without a spawn override');
@@ -193,7 +195,7 @@ try {
   await writePrivateJson(join(native, 'models.json'), { models: [nativeRow] });
   nativeConfig = `model = "${nativeModel}"\nmodel_catalog_json = ${JSON.stringify(join(native, 'models.json'))}\nweb_search = "disabled"\n[features]\nremote_control = false\n[analytics]\nenabled = false\n`;
   if (values['role-fork']) {
-    await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "high"\n`, { mode: 0o600 });
+    await writeFile(rolePath, `name = "${role}"\ndescription = "Fixture worker"\nmodel = "${childModel}"\nmodel_reasoning_effort = "${workerEffort}"\n`, { mode: 0o600 });
     nativeConfig += `\n[agents]\ndefault_subagent_model = "${alias}"\n[agents.${role}]\ndescription = "Fixture worker"\nconfig_file = ${JSON.stringify(rolePath)}\n`;
     assert.notEqual(childModel, alias, 'The role model must differ from both parent and default child models');
   }
@@ -310,7 +312,7 @@ try {
     const explicit = await reader.router.request('thread/resume', { ...shape, model: childModel });
     assert.equal(explicit.model, childModel); assert.equal(explicit.modelProvider, evidence.identity);
     assert.equal(explicit.reasoningEffort, resumed.reasoningEffort, 'An explicit same-model resume must keep saved reasoning');
-    assert.equal(explicit.reasoningEffort, 'high', 'A cold resume keeps the saved child effort, not the executor default');
+    assert.equal(explicit.reasoningEffort, workerEffort, 'A cold resume keeps the saved child effort, not the executor default');
     evidence.savedReasoning = explicit.reasoningEffort;
     await reader.router.request('thread/resume', shape);
     assert.equal(calls, before, 'Reading and opening the child must not start inference');

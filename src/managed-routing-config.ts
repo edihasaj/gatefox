@@ -9,6 +9,7 @@ export interface ManagedRoutePolicy {
   contextWindow: number;
   minRemainingPercent: number;
   allowPaid: boolean;
+  candidateReasoningEfforts?: Record<string, string>;
 }
 export interface ManagedRoutingSettings { routes: Record<string, ManagedRoutePolicy> }
 
@@ -18,7 +19,7 @@ const flashPattern = /^deepseek\/deepseek-v4(?:\.\d+)?-flash((?:[:.-][a-z0-9-]+)
 const forbiddenSuffix = /(?:^|[:.-])(?:pro|glm)(?=$|[:.-])/i;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const rank: Record<ManagedCandidateKind, number> = { local: 0, subscription: 1, "paid-flash": 2 };
-const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid"];
+const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts"];
 
 function url(value: string | undefined): URL | undefined {
   try { return value ? new URL(value) : undefined; } catch { return undefined; }
@@ -85,6 +86,16 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
     const minRemainingPercent = integerField(row, "minRemainingPercent", 2, 1, 50, label);
     if (row.allowPaid !== undefined && typeof row.allowPaid !== "boolean") throw new Error(`${label}: allowPaid must be boolean`);
     const allowPaid = row.allowPaid === true;
+    const candidateReasoningEfforts: Record<string, string> = Object.create(null);
+    if (row.candidateReasoningEfforts !== undefined) {
+      const efforts = plain(row.candidateReasoningEfforts, `${label}.candidateReasoningEfforts`);
+      for (const [alias, effort] of Object.entries(efforts)) {
+        const owner = providers.find(provider => Object.hasOwn(provider.models, alias));
+        if (!candidates.includes(alias) || typeof effort !== "string" || !owner?.modelMetadata?.[alias]?.reasoningEfforts?.includes(effort))
+          throw new Error(`${label}: candidate reasoning effort must name a supported effort on a configured candidate`);
+        candidateReasoningEfforts[alias] = effort;
+      }
+    }
     let previous = -1, subscriptions = 0;
     for (const alias of candidates) {
       const owners = providers.filter(provider => Object.hasOwn(provider.models, alias));
@@ -105,7 +116,8 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
       if (window < contextWindow) throw new Error(`${label}: candidate ${alias} context window is below the route's ${contextWindow}`);
     }
     if (subscriptions < 1) throw new Error(`${label}: at least one subscription candidate is required`);
-    result[name] = { purpose: row.purpose, candidates, maxContextBytes, contextWindow, minRemainingPercent, allowPaid };
+    result[name] = { purpose: row.purpose, candidates, maxContextBytes, contextWindow, minRemainingPercent, allowPaid,
+      ...(row.candidateReasoningEfforts === undefined ? {} : { candidateReasoningEfforts }) };
   }
   return { routes: result };
 }

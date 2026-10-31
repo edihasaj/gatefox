@@ -25,6 +25,30 @@ test("a new bounded worker selects subscriptions when local capacity is busy", (
   const facts = managedFacts(); factsRows(facts)[0].status = "busy";
   assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "new-worker" }, facts))?.alias, "sub/sol");
 }));
+test("xhigh workers retain exact effort and never downgrade to an incompatible Flash candidate", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts();
+  config.providers[0].modelMetadata!["local/qwen"].reasoningEfforts!.push("xhigh");
+  config.providers[1].modelMetadata!["sub/sol"].reasoningEfforts!.push("xhigh");
+  const request = managedRequest({ reasoning: { effort: "xhigh" } });
+  assert.equal((await router.resolve(config, request, { threadId: "xhigh-local" }, facts))?.alias, "local/qwen");
+  factsRows(facts)[0].status = "unavailable";
+  assert.equal((await router.resolve(config, request, { threadId: "xhigh-sub" }, facts))?.alias, "sub/sol");
+  for (const row of factsRows(facts).slice(1, 3)) { row.status = "unavailable"; row.reasons = ["authentication"]; }
+  await assert.rejects(router.resolve(config, request, { threadId: "xhigh-refused" }, facts), (error: { code?: string }) => error.code === "managed_route_unavailable");
+  assert.deepEqual(request.reasoning, { effort: "xhigh" });
+}));
+test("an opt-in implementation policy raises only Qwen while subscription fallback keeps medium", () => fixture(async (root, router) => {
+  const config = managedFixture(root), facts = managedFacts();
+  config.providers[0].modelMetadata!["local/qwen"].reasoningEfforts!.push("xhigh");
+  config.managedRouting!.routes["managed/routine"].candidateReasoningEfforts = { "local/qwen": "xhigh" };
+  const request = managedRequest({ reasoning: { effort: "medium", summary: "none" } });
+  const selected = await router.resolve(config, request, { threadId: "implementation-qwen" }, facts);
+  assert.equal(selected?.reasoningEffort, "xhigh");
+  factsRows(facts)[0].status = "unavailable";
+  const fallback = await router.resolve(config, request, { threadId: "implementation-sub" }, facts);
+  assert.equal(fallback?.alias, "sub/sol"); assert.equal(fallback?.reasoningEffort, undefined);
+  assert.deepEqual(request.reasoning, { effort: "medium", summary: "none" });
+}));
 test("subscription reserve and stale quota select the next known subscription, not paid capacity", () => fixture(async (root, router) => {
   const facts = managedFacts(), rows = factsRows(facts); rows[0].status = "unavailable";
   rows[1].quota = { fresh: true, observedAt: new Date(managedNow).toISOString(), remainingPercent: 2 };
