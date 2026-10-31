@@ -1,10 +1,12 @@
 # Changelog
 
-## 1.3.3 — 2026-10-31
+## 1.3.4 — 2026-11-01
 
 - Routine worker policies can explicitly prefer paid DeepSeek V4 Flash after
   local models and before subscriptions, while preserving existing policies and
   worker pins. OpenRouter discovery retains published model names as labels.
+
+## 1.3.3 — 2026-10-31
 
 - Managed coding/test profiles can advertise an explicit compaction threshold.
   Bounded 128K role settings avoid repeatedly compacting near a 32K window and
