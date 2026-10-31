@@ -57,9 +57,13 @@ function confirmedBlocked(row: Row, policy: ManagedRoutePolicy, now: number): bo
   return fresh(quota, freshFor.quota, now) && typeof quota.remainingPercent === "number" && Number.isFinite(quota.remainingPercent)
     && quota.remainingPercent >= 0 && quota.remainingPercent <= policy.minRemainingPercent;
 }
-export interface ManagedRouteDecision { alias: string; providerId: string; reused: boolean; contextBytes: number }
+export interface ManagedRouteDecision { alias: string; providerId: string; reused: boolean; contextBytes: number; reasoningEffort?: string }
 
-/** Opt-in provider selection before inference. It never rewrites or truncates caller context. */
+export function managedReasoningRequest(request: ResponsesRequest, effort: string | undefined): ResponsesRequest {
+  return effort === undefined ? request : { ...request, reasoning: { ...object(request.reasoning), effort } };
+}
+
+/** Opt-in provider and configured effort selection. Never rewrites or truncates caller task content. */
 export class ManagedRouter {
   private readonly pins: ManagedRoutePins;
   constructor(stateDirectory: string, private readonly now: () => number = Date.now) { this.pins = new ManagedRoutePins(stateDirectory); }
@@ -84,7 +88,7 @@ export class ManagedRouter {
     const subscriptions = candidates.filter(c => managedCandidateKind(c.provider!, c.provider!.models[c.alias]!) === "subscription");
     const paidAllowed = policy.allowPaid && subscriptions.length > 0 && subscriptions.every(c => confirmedBlocked(rows.get(c.provider!.id) ?? {}, policy, now));
     const allowed = (alias: string, provider: ProviderConfig, pinned: boolean) =>
-      eligible(provider, alias, rows.get(provider.id) ?? {}, policy, request, now, pinned)
+      eligible(provider, alias, rows.get(provider.id) ?? {}, policy, managedReasoningRequest(request, policy.candidateReasoningEfforts?.[alias]), now, pinned)
       && (managedCandidateKind(provider, provider.models[alias]!) !== "paid-flash" || paidAllowed);
     try {
       return await this.pins.withPin(managedWorkerKey(request.model, identity), async (pin, save) => {
@@ -95,7 +99,8 @@ export class ManagedRouter {
             || pin.upstreamModel !== candidate.provider.models[candidate.alias] || pin.bindingFingerprint !== binding(candidate.provider, pin.upstreamModel))
             return failure("managed_route_changed", "The managed worker binding changed; start a fresh worker with an explicit handoff", 400);
           if (!allowed(candidate.alias, candidate.provider, true)) return failure("managed_route_unavailable", "The pinned worker route is unavailable; retry it or start a fresh worker with a bounded handoff");
-          return { alias: candidate.alias, providerId: candidate.provider.id, reused: true, contextBytes };
+          return { alias: candidate.alias, providerId: candidate.provider.id, reused: true, contextBytes,
+            ...(policy.candidateReasoningEfforts?.[candidate.alias] ? { reasoningEffort: policy.candidateReasoningEfforts[candidate.alias] } : {}) };
         }
         if (compacting) return failure("managed_route_state_unbound", "Managed compaction needs an existing worker binding; start a fresh worker with a plaintext handoff", 400);
         // Opaque provider state cannot be assigned a new account without an existing pin.
@@ -106,7 +111,8 @@ export class ManagedRouter {
         const value: ManagedRoutePin = { schema: "managed-route-pin.v1", alias: selected.alias, providerId: selected.provider.id,
           upstreamModel: selected.provider.models[selected.alias]!, bindingFingerprint: binding(selected.provider, selected.provider.models[selected.alias]!), policyFingerprint: fingerprint };
         await save(value);
-        return { alias: selected.alias, providerId: selected.provider.id, reused: false, contextBytes };
+        return { alias: selected.alias, providerId: selected.provider.id, reused: false, contextBytes,
+          ...(policy.candidateReasoningEfforts?.[selected.alias] ? { reasoningEffort: policy.candidateReasoningEfforts[selected.alias] } : {}) };
       });
     } catch (error) {
       if (error instanceof ProviderError) throw error;

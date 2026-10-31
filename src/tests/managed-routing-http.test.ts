@@ -15,6 +15,8 @@ import { gatewayModelList } from "../app-server-model-list.js";
 test("the real Responses path selects a managed provider, preserves context and keeps explicit routes fixed", async () => {
   const root = await mkdtemp(join(tmpdir(), "managed-http-"));
   const config = managedFixture(root); const seen: Array<{ provider: string; request: ResponsesRequest }> = [];
+  config.providers[0].modelMetadata!["local/qwen"].reasoningEfforts!.push("xhigh");
+  config.managedRouting!.routes["managed/routine"].candidateReasoningEfforts = { "local/qwen": "xhigh" };
   const availability = new AvailabilityService({
     probe: async () => ({ status: "healthy", observedAt: Date.now(), endpoints: { healthy: 1, total: 1 }, servedModels: ["qwen"], missingModels: [] }),
     accountEmail: async () => undefined, balance: async () => undefined,
@@ -29,11 +31,18 @@ test("the real Responses path selects a managed provider, preserves context and 
     const body: ResponsesRequest = { model: "managed/routine", instructions: "Caller permissions and instructions", input: [{ role: "user", content: "Bounded task" }], tools: [] };
     let response = await fetch(origin + "/v1/responses", { method: "POST", headers, body: JSON.stringify(body) });
     assert.equal(response.status, 200); assert.equal(response.headers.get("x-gateway-managed-route"), "local/qwen"); assert.equal(response.headers.get("x-gateway-managed-reused"), "false"); await response.json();
+    assert.equal(response.headers.get("x-gateway-managed-reasoning-effort"), "xhigh");
+    assert.deepEqual(seen[0].request.reasoning, { effort: "xhigh" });
     assert.equal(seen[0].provider, "local"); assert.equal(seen[0].request.instructions, body.instructions); assert.deepEqual(seen[0].request.input, body.input); assert.deepEqual(seen[0].request.tools, []);
     response = await fetch(origin + "/v1/responses", { method: "POST", headers, body: JSON.stringify({ ...body, model: "sub/sol" }) });
     assert.equal(response.status, 200); await response.json(); assert.equal(seen[1].provider, "sub"); assert.equal(response.headers.get("x-gateway-managed-route"), null);
+    assert.equal(seen[1].request.reasoning, undefined, "fixed model requests receive no managed effort override");
     response = await fetch(origin + "/v1/responses", { method: "POST", headers, body: JSON.stringify(body) });
     assert.equal(response.status, 200); assert.equal(response.headers.get("x-gateway-managed-reused"), "true"); await response.json();
+    response = await fetch(origin + "/v1/responses", { method: "POST", headers, body: JSON.stringify({ ...body, model: "local/qwen", reasoning: { effort: "medium" } }) });
+    assert.equal(response.status, 200); await response.json();
+    assert.deepEqual(seen.at(-1)?.request.reasoning, { effort: "medium" }, "explicit Qwen requests retain their requested effort");
+    assert.equal(response.headers.get("x-gateway-managed-reasoning-effort"), null);
     const advertised = await (await fetch(origin + "/v1/models", { headers })).json() as { data: Array<{ id: string }> };
     assert.ok(!advertised.data.some(m => m.id.startsWith("managed/")));
     assert.ok(advertised.data.some(m => m.id === "local/qwen"), "named models remain offered");

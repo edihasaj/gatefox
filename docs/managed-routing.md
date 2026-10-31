@@ -74,6 +74,16 @@ not change account setup or the native app's connection-management UI.
 
 ## Context and cache behavior
 
+An optional `candidateReasoningEfforts` map explicitly selects a provider-specific
+effort for that internal policy. Each key must name one of its candidates and
+the value must be an effort that candidate supports. This is an opt-in profile,
+not an automatic increase for all models: an implementation policy can map only
+Qwen to `xhigh` while its subscription and Flash candidates retain the caller's
+`medium`. The map applies to managed requests only; fixed model requests bypass
+it. The response includes `X-Gateway-Managed-Reasoning-Effort` when a map entry
+was applied. Use a new policy alias for this change so existing pinned workers
+keep their original policy and reasoning behavior.
+
 Start a fresh worker with a bounded task, selected evidence, allowed files,
 acceptance checks and a compact handoff. A client role may select a managed alias
 for future workers; this does not rewrite roles or restart an existing worker.

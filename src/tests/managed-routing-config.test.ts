@@ -26,6 +26,14 @@ test("unknown keys and wrong types are refused", () => {
   }
 });
 
+test("candidate-specific reasoning is explicit and must match a supported candidate capability", () => {
+  const value = valid({ candidateReasoningEfforts: { "local/qwen": "high" } });
+  assert.equal(value.routes["managed/routine"].candidateReasoningEfforts?.["local/qwen"], "high");
+  for (const map of [null, [], { "missing/model": "high" }, { "local/qwen": "xhigh" }, { "local/qwen": 1 }])
+    assert.throws(() => valid({ candidateReasoningEfforts: map }), /candidate|object/);
+  assert.equal(valid().routes["managed/routine"].candidateReasoningEfforts, undefined, "old policy fingerprints retain their exact shape");
+});
+
 test("managed aliases are bounded, well formed and cannot collide with provider aliases", () => {
   refuses({ routes: {} }, /1 to 8/);
   const nine = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`managed/r${i}`, route()]));
