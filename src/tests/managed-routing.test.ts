@@ -25,6 +25,16 @@ test("a new bounded worker selects subscriptions when local capacity is busy", (
   const facts = managedFacts(); factsRows(facts)[0].status = "busy";
   assert.equal((await router.resolve(managedFixture(root), managedRequest(), { threadId: "new-worker" }, facts))?.alias, "sub/sol");
 }));
+
+test("a wider coding policy admits a realistic instruction/tool scaffold without widening legacy pins", () => fixture(async (root, router) => {
+  const config = managedFixture(root), old = structuredClone(config.managedRouting!.routes["managed/routine"]);
+  config.managedRouting!.routes["managed/coding"] = { ...old, contextWindow: 131072, maxContextBytes: 1048576, autoCompactTokenLimit: 104857 };
+  const request = managedRequest({ model: "managed/coding", instructions: "s".repeat(300000) });
+  assert.equal((await router.resolve(config, request, { threadId: "wide-scaffold" }, managedFacts()))?.alias, "local/qwen");
+  await assert.rejects(router.resolve(config, { ...request, model: "managed/routine" }, { threadId: "legacy-scaffold" }, managedFacts()), (error: { code?: string }) => error.code === "context_length_exceeded");
+  assert.deepEqual(config.managedRouting!.routes["managed/routine"], old);
+  await assert.rejects(router.resolve(config, { ...request, instructions: "s".repeat(1048576) }, { threadId: "still-bounded" }, managedFacts()), (error: { code?: string }) => error.code === "context_length_exceeded");
+}));
 test("xhigh workers retain exact effort and never downgrade to an incompatible Flash candidate", () => fixture(async (root, router) => {
   const config = managedFixture(root), facts = managedFacts();
   config.providers[0].modelMetadata!["local/qwen"].reasoningEfforts!.push("xhigh");

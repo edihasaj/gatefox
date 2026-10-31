@@ -85,17 +85,13 @@ const componentOrder = ['native', 'gatewaySdk'];
 /** Decide which components come from a previous published bundle and which are built here.
  * `freshNative` keeps reusing the gateway SDK while the relay comes from the local build.
  * `reuseNativeFrom` takes the relay from its own separately authenticated original archive
- * instead, and always arrives with the SDK reuse pair so the gateway SDK also comes from an
- * original archive rather than a fresh build.
+ * instead, while the gateway SDK is either built fresh or independently reused.
  */
 export function releaseComponentPlan({ withNative, withGatewaySdk, reuseFrom, componentsSha256, reuseNativeFrom, nativeSha256, freshNative }) {
   if (Boolean(reuseFrom) !== Boolean(componentsSha256)) throw new Error('Component reuse requires both --reuse-components-from and --components-sha256');
   if (Boolean(reuseNativeFrom) !== Boolean(nativeSha256)) throw new Error('Native component reuse requires both --reuse-native-from and --native-sha256');
   if (reuseNativeFrom && freshNative) throw new Error('--reuse-native-from and --fresh-native cannot be combined; pick one origin for the relay');
   if (reuseNativeFrom && !(withNative && withGatewaySdk)) throw new Error('--reuse-native-from requires --with-native and --with-gateway-sdk');
-  if (reuseNativeFrom && !(reuseFrom && componentsSha256)) {
-    throw new Error('--reuse-native-from requires --reuse-components-from and --components-sha256; the relay override never pairs with a freshly built gateway SDK');
-  }
   if (freshNative && !(reuseFrom && withNative && withGatewaySdk)) {
     throw new Error('--fresh-native requires --with-native, --with-gateway-sdk and component reuse');
   }

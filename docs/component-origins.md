@@ -20,8 +20,8 @@ flowchart LR
 ```
 
 `package/release.json` keeps the legacy top-level `bundleVersion` / `bundleSha256`,
-which name the SDK bundle, and adds `origin` to each component so the relay can point
-at its own archive:
+which name the reused SDK bundle when present, otherwise the reused relay bundle.
+Each component also has its own `origin`, so the relay can point at a separate archive:
 
 ```json
 { "reusedComponents": { "bundleVersion": "0.4.7", "bundleSha256": "…",
@@ -45,9 +45,10 @@ at its own archive:
 - An archive that already reused the selected component is refused. Reuse the
   bundle that built it, so the receipt's bytes stay the original's.
 - `--reuse-native-from` requires `--native-sha256`, both `--with-native` and
-  `--with-gateway-sdk`, and the full SDK reuse pair `--reuse-components-from` and
-  `--components-sha256`: the override means two original archives, so it never
-  pairs with a freshly built gateway SDK. It also excludes `--fresh-native`.
+  `--with-gateway-sdk`. Without the SDK reuse pair, the SDK must pass the normal
+  fresh-build checks. With `--reuse-components-from` and `--components-sha256`,
+  each component comes from its independently authenticated original archive.
+  Native reuse excludes `--fresh-native`.
 - Runtime resolution (src/gateway-sdk-runtime.ts): a component `origin` that is
   complete and valid wins; a missing `origin` falls back to the parent receipt, so
   releases built before this field still verify. A present but partial or malformed

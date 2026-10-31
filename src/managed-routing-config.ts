@@ -10,6 +10,7 @@ export interface ManagedRoutePolicy {
   minRemainingPercent: number;
   allowPaid: boolean;
   candidateReasoningEfforts?: Record<string, string>;
+  autoCompactTokenLimit?: number;
 }
 export interface ManagedRoutingSettings { routes: Record<string, ManagedRoutePolicy> }
 
@@ -19,7 +20,7 @@ const flashPattern = /^deepseek\/deepseek-v4(?:\.\d+)?-flash((?:[:.-][a-z0-9-]+)
 const forbiddenSuffix = /(?:^|[:.-])(?:pro|glm)(?=$|[:.-])/i;
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const rank: Record<ManagedCandidateKind, number> = { local: 0, subscription: 1, "paid-flash": 2 };
-const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts"];
+const routeKeys = ["purpose", "candidates", "maxContextBytes", "contextWindow", "minRemainingPercent", "allowPaid", "candidateReasoningEfforts", "autoCompactTokenLimit"];
 
 function url(value: string | undefined): URL | undefined {
   try { return value ? new URL(value) : undefined; } catch { return undefined; }
@@ -83,6 +84,8 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
     if (new Set(candidates).size !== candidates.length) throw new Error(`${label}: candidates must be unique`);
     const maxContextBytes = integerField(row, "maxContextBytes", 262144, 4096, 4194304, label);
     const contextWindow = integerField(row, "contextWindow", 32768, 4096, 262144, label);
+    const autoCompactTokenLimit = row.autoCompactTokenLimit === undefined ? undefined
+      : integerField(row, "autoCompactTokenLimit", 0, 1024, Math.floor(contextWindow * 0.9), label);
     const minRemainingPercent = integerField(row, "minRemainingPercent", 2, 1, 50, label);
     if (row.allowPaid !== undefined && typeof row.allowPaid !== "boolean") throw new Error(`${label}: allowPaid must be boolean`);
     const allowPaid = row.allowPaid === true;
@@ -117,7 +120,8 @@ export function validateManagedRouting(value: unknown, providers: ProviderConfig
     }
     if (subscriptions < 1) throw new Error(`${label}: at least one subscription candidate is required`);
     result[name] = { purpose: row.purpose, candidates, maxContextBytes, contextWindow, minRemainingPercent, allowPaid,
-      ...(row.candidateReasoningEfforts === undefined ? {} : { candidateReasoningEfforts }) };
+      ...(row.candidateReasoningEfforts === undefined ? {} : { candidateReasoningEfforts }),
+      ...(autoCompactTokenLimit === undefined ? {} : { autoCompactTokenLimit }) };
   }
   return { routes: result };
 }

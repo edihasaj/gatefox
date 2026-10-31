@@ -1,0 +1,131 @@
+--- a/codex-rs/core/src/agent/role.rs
++++ b/codex-rs/core/src/agent/role.rs
+@@ -38,6 +38,8 @@
+     developer_instructions: Option<String>,
+     model: Option<String>,
+     model_reasoning_effort: Option<ReasoningEffort>,
++    model_context_window: Option<i64>,
++    model_auto_compact_token_limit: Option<i64>,
+     model_reasoning_summary: Option<ReasoningSummary>,
+     model_verbosity: Option<Verbosity>,
+     personality: Option<Personality>,
+@@ -45,6 +47,32 @@
+     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+     features: BTreeMap<String, bool>,
+     skills: Option<SkillsConfig>,
++}
++
++// Gateway-managed role limits must survive an SDK catalog miss without changing
++// native roles, permissions, tool execution, model selection or reasoning effort.
++fn gateway_role_context_limits(
++    marked: bool,
++    model: Option<&str>,
++    window: Option<i64>,
++    compact: Option<i64>,
++) -> anyhow::Result<(Option<i64>, Option<i64>)> {
++    if !marked || !model.is_some_and(|value| value.starts_with("managed/")) {
++        return Ok((None, None));
++    }
++    match (window, compact) {
++        (None, None) => Ok((None, None)),
++        (Some(window), Some(compact))
++            if (4096..=262144).contains(&window)
++                && compact >= 1024
++                && compact <= window * 9 / 10 =>
++        {
++            Ok((Some(window), Some(compact)))
++        }
++        _ => Err(anyhow!(
++            "Managed role context limits must be paired and bounded"
++        )),
++    }
+ }
+ 
+ /// Applies typed role overrides to the existing parent-derived configuration.
+@@ -77,10 +105,18 @@
+     };
+     let role_layer_toml = load_role_layer_toml(config, config_file, is_built_in, role_name).await?;
+     let role_config = deserialize_config_toml_with_base(role_layer_toml, &config.codex_home)?;
++    let (model_context_window, model_auto_compact_token_limit) = gateway_role_context_limits(
++        codex_model_provider_info::gateway_executor_marker(),
++        role_config.model.as_deref().or(config.model.as_deref()),
++        role_config.model_context_window,
++        role_config.model_auto_compact_token_limit,
++    )?;
+     let mut overrides = AgentRoleOverrides {
+         developer_instructions: role_config.developer_instructions,
+         model: role_config.model,
+         model_reasoning_effort: role_config.model_reasoning_effort,
++        model_context_window,
++        model_auto_compact_token_limit,
+         model_reasoning_summary: role_config.model_reasoning_summary,
+         model_verbosity: role_config.model_verbosity,
+         personality: role_config.personality,
+@@ -189,6 +225,12 @@
+         }
+         if let Some(effort) = overrides.model_reasoning_effort.clone() {
+             next_config.model_reasoning_effort = Some(effort);
++        }
++        if let Some(window) = overrides.model_context_window {
++            next_config.model_context_window = Some(window);
++        }
++        if let Some(limit) = overrides.model_auto_compact_token_limit {
++            next_config.model_auto_compact_token_limit = Some(limit);
+         }
+         if let Some(summary) = overrides.model_reasoning_summary {
+             next_config.model_reasoning_summary = Some(summary);
+--- a/codex-rs/core/src/agent/role_tests.rs
++++ b/codex-rs/core/src/agent/role_tests.rs
+@@ -798,3 +798,52 @@
+         None
+     );
+ }
++
++#[test]
++fn gateway_role_context_requires_marked_managed_role_and_bounded_pair() {
++    assert_eq!(
++        gateway_role_context_limits(true, Some("managed/coding"), Some(131072), Some(104857))
++            .unwrap(),
++        (Some(131072), Some(104857))
++    );
++    assert_eq!(
++        gateway_role_context_limits(false, Some("managed/coding"), Some(131072), Some(104857))
++            .unwrap(),
++        (None, None)
++    );
++    assert_eq!(
++        gateway_role_context_limits(true, Some("gpt-6.1-sol"), Some(131072), Some(104857)).unwrap(),
++        (None, None)
++    );
++    assert_eq!(
++        gateway_role_context_limits(true, Some("managed/coding"), None, None).unwrap(),
++        (None, None)
++    );
++    for (window, limit) in [
++        (Some(131072), None),
++        (None, Some(104857)),
++        (Some(0), Some(1024)),
++        (Some(262145), Some(104857)),
++        (Some(131072), Some(131072)),
++        (Some(131072), Some(-1)),
++    ] {
++        assert!(gateway_role_context_limits(true, Some("managed/coding"), window, limit).is_err());
++    }
++}
++
++#[tokio::test]
++async fn gateway_role_context_projection_preserves_other_runtime_policy() {
++    let (_home, config) = test_config_with_cli_overrides(Vec::new()).await;
++    let overrides = AgentRoleOverrides {
++        model_context_window: Some(131072),
++        model_auto_compact_token_limit: Some(104857),
++        ..Default::default()
++    };
++    let layer = TomlValue::try_from(&overrides).unwrap();
++    let next = role_overrides::build_next_config(&config, layer, &overrides).unwrap();
++    let mut expected = config.clone();
++    expected.config_layer_stack = next.config_layer_stack.clone();
++    expected.model_context_window = Some(131072);
++    expected.model_auto_compact_token_limit = Some(104857);
++    assert_eq!(next, expected);
++}

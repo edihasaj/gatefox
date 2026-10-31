@@ -185,11 +185,12 @@ test("fresh native requires component reuse and both components", () => {
   assert.throws(() => releaseComponentPlan({ withNative: true, reuseFrom: "/bundle.tar.gz" }), /requires both/);
   assert.deepEqual(releaseComponentPlan({ withNative: true, withGatewaySdk: true }),
     { reuse: undefined, reuseNative: undefined, freshNative: true, freshGatewaySdk: true });
-  // A relay archive of its own needs both digests, both components, the SDK reuse pair, and never arrives with --fresh-native.
+  // A relay archive of its own needs its digest and both components, and excludes --fresh-native.
   const separate = { withNative: true, withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz", nativeSha256: "a".repeat(64) };
   assert.throws(() => releaseComponentPlan({ withNative: true, withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz" }), /requires both --reuse-native-from/);
   assert.throws(() => releaseComponentPlan({ withGatewaySdk: true, reuseNativeFrom: "/relay.tar.gz", nativeSha256: "a".repeat(64) }), /requires --with-native/);
-  assert.throws(() => releaseComponentPlan(separate), /requires --reuse-components-from and --components-sha256/);
+  assert.deepEqual(releaseComponentPlan(separate), { reuse: undefined,
+    reuseNative: { from: separate.reuseNativeFrom, sha256: separate.nativeSha256 }, freshNative: false, freshGatewaySdk: true });
   assert.throws(() => releaseComponentPlan({ ...separate, reuseFrom: "/bundle.tar.gz" }), /Component reuse requires both/);
   assert.throws(() => releaseComponentPlan({ ...separate, freshNative: true }), /cannot be combined/);
 });
@@ -267,13 +268,20 @@ test("two separately authenticated originals combine, each keeping its own origi
   assert.equal((await stat(join(stage, "native/build.json"))).mode & 0o777, 0o644);
 });
 
-test("a relay override never arrives without the gateway SDK reuse pair", async t => {
+test("an independently authenticated relay can accompany a fresh gateway SDK", async t => {
   const native = await originalBundle(t, { version: "0.5.0", native: true });
-  // The separate-relay feature means two original archives: the override alone is refused
-  // so a release can't reuse the relay while building the gateway SDK fresh.
-  assert.throws(() => releaseComponentPlan({ withNative: true, withGatewaySdk: true,
-    reuseNativeFrom: native.archive, nativeSha256: native.digest }),
-    /--reuse-native-from requires --reuse-components-from and --components-sha256/);
+  const plan = releaseComponentPlan({ withNative: true, withGatewaySdk: true,
+    reuseNativeFrom: native.archive, nativeSha256: native.digest });
+  assert.deepEqual(plan, { reuse: undefined, reuseNative: { from: native.archive, sha256: native.digest },
+    freshNative: false, freshGatewaySdk: true });
+  const verified = verifyReleaseComponentSources({ native: { archivePath: plan.reuseNative!.from,
+    expectedSha256: plan.reuseNative!.sha256, flag: "--native-sha256" } });
+  assert.deepEqual(Object.keys(verified.provenance.components), ["native"]);
+  assert.equal(verified.provenance.bundleVersion, "0.5.0");
+  const stage = join(native.directory, "fresh-sdk-stage"); await mkdir(stage, { mode: 0o700 });
+  copyReleaseComponents(verified, stage);
+  assert.deepEqual(await readFile(join(stage, "native/gateway-native-relay")), native.files.get("package/native/gateway-native-relay"));
+  await assert.rejects(stat(join(stage, "gateway-sdk")), { code: "ENOENT" });
   // With the complete pair the plan names both originals and builds nothing fresh.
   const sdk = await originalBundle(t, { version: "0.4.7", gatewaySdk: true });
   assert.deepEqual(releaseComponentPlan({ withNative: true, withGatewaySdk: true, reuseFrom: sdk.archive,

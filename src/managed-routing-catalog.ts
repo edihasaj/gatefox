@@ -15,6 +15,7 @@ export function managedCatalog(config: GatewayConfig): Array<Record<string, unkn
       support_verbosity: false, default_verbosity: null, truncation_policy: { mode: "bytes", limit: Math.min(12000, policy.maxContextBytes) },
       experimental_supported_tools: [], input_modalities: ["text"], context_window: policy.contextWindow,
       max_context_window: policy.contextWindow, effective_context_window_percent: 90,
+      ...(policy.autoCompactTokenLimit === undefined ? {} : { auto_compact_token_limit: policy.autoCompactTokenLimit }),
       supports_search_tool: false, supports_experimental_context: false, node_repl_disabled: true, node_repl_auto_review_required: true,
       // This is the managed interface's client-side tool protocol, not an
       // upstream model claim. Every candidate uses the same Gateway translator.
