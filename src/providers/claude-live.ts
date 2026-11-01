@@ -85,7 +85,11 @@ async function attach(registry: SessionRegistry, settings: Settings, input: Clau
     if (fallback) return fallback;
   }
   registry.starting.add(key);
-  try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal, { afterWarmup: cold && settings.warmup > 0 }); } finally { registry.starting.delete(key); }
+  registry.scopes.set(key, input.scope);
+  try { await (swept ??= sweepSessionDirectories()); return await place(registry, settings, key, input, signal, { afterWarmup: cold && settings.warmup > 0 }); } finally {
+    registry.starting.delete(key); registry.retiringStarts?.delete(key);
+    if (!registry.sessions.has(key)) registry.scopes.delete(key);
+  }
 }
 
 async function place(registry: SessionRegistry, settings: Settings, key: string, input: ClaudeLiveInput, signal: AbortSignal, admission: { afterWarmup: boolean }): Promise<ClaudeLiveOutcome> {
@@ -173,10 +177,14 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   registry.scopes.set(key, input.scope);
   if (plan.kind !== "seed") input.replayBudget?.beforeRequest("continued");
   session.compacted = false;
-  return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
+  const events = start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
     afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined,
-  }) };
+  });
+  // Scope changes must also retire a CLI whose initialization was still pending.
+  // Start the accepted turn first so retirement drains it rather than interrupting it.
+  if (registry.retiringStarts?.has(key)) void session.retire("mode_replay");
+  return { kind: "stream", events };
 }
 
 function start(registry: SessionRegistry, settings: Settings, session: ClaudeSession, input: ClaudeLiveInput, prefix: string[], plan: Plan, signal: AbortSignal, decision: Record<string, unknown>) {
@@ -202,7 +210,7 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
 
 function ended(registry: SessionRegistry, session: ClaudeSession, outcome: SessionEnd, reason?: string): void {
   if (registry.sessions.get(session.key) === session) registry.sessions.delete(session.key);
-  if (!registry.sessions.has(session.key)) registry.scopes.delete(session.key);
+  if (!registry.sessions.has(session.key) && !registry.starting.has(session.key)) registry.scopes.delete(session.key);
   // A crash says the CLI died on us; another process would only die on the same cache write, so hold the thread.
   if (outcome === "crashed") pinReplay(registry, session.key, session.lastUse, outcome);
   else if (replayPinned(registry, session.key) === undefined) rememberEnd(registry, session.key, outcome);

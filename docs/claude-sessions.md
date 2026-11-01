@@ -20,6 +20,8 @@ that carries across tool steps, and a prompt cache that grows by appending.
 The daemon reads the change on its next request. `"replay"` turns it off again;
 running sessions finish their turn and close. A provider in replay mode retires its
 own parked sessions on its next request, so they do not wait out the park timer.
+Retirement also tracks CLIs still initializing. Their already-accepted request
+finishes normally, then the session closes instead of remaining parked in replay mode.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

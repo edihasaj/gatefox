@@ -36,6 +36,8 @@ export interface SessionRegistry {
   sessions: Map<string, ClaudeSession>;
   /** Keys with an attach in progress: deciding, applying effort or starting a process. */
   starting: Set<string>;
+  /** Pending starts a scope retirement must close after their accepted turn ends. */
+  retiringStarts?: Set<string>;
   /** How each key's last session ended, so the next spawn reports why it had none. */
   ended: Map<string, string>;
   /** Keys held to the one-shot path, so a hold keeps its reason when the ended log cycles. */
@@ -74,6 +76,7 @@ function adopt(): SessionRegistry | undefined {
   existing.replayUntil ??= new Map();
   existing.warmups ??= new Map();
   existing.scopes ??= new Map();
+  existing.retiringStarts ??= new Set();
   return existing as SessionRegistry;
 }
 
@@ -81,7 +84,7 @@ function adopt(): SessionRegistry | undefined {
 export function sessionRegistry(): SessionRegistry {
   const existing = adopt();
   if (existing) return existing;
-  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), ended: new Map(), replayUntil: new Map(), warmups: new Map(), scopes: new Map() };
+  const registry: SessionRegistry = { interfaceVersion: 1, sessions: new Map(), starting: new Set(), retiringStarts: new Set(), ended: new Map(), replayUntil: new Map(), warmups: new Map(), scopes: new Map() };
   (globalThis as unknown as Record<symbol, SessionRegistry>)[symbol] = registry;
   registerActivityProbe("claude_sessions", () => sessionsBusy(registry));
   registerShutdownHook("claude_sessions", () => closeSessions(registry, "shutdown", false));
@@ -182,6 +185,7 @@ export async function closeSessions(registry: SessionRegistry, reason: string, e
 export function retireScope(scope: string, reason: string): void {
   const registry = adopt();
   if (!registry) return;
+  for (const key of registry.starting) if (registry.scopes.get(key) === scope) registry.retiringStarts!.add(key);
   // A registry from a release without scopes adopts with an empty one: those sessions are not
   // attributable to any provider here, so their own park timers are what closes them.
   for (const [key, session] of registry.sessions) if (registry.scopes.get(key) === scope) void session.retire(reason);

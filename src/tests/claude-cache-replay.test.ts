@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
+import { ClaudeSession } from "../providers/claude-session.js";
 import { evictable, idleMs, pinReplay, rememberEnd, replayPinned, sessionRegistry } from "../providers/claude-session-registry.js";
 import { systemPrefixCacheReadTokens, systemPrefixOnly } from "../providers/claude-usage.js";
 import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.js";
@@ -202,6 +203,35 @@ test("a returning thread costs live sessions no more cache than replay would hav
     assert.ok(replayWrites > 0 && liveWrites <= replayWrites, `live sessions wrote ${liveWrites} cache tokens against replay's ${replayWrites}`);
     assert.ok((await liveSetup.starts()).filter(entry => entry === "live").length <= 3, "at most one session per live thread");
   } finally { await claudeLive({ max: 2, parkMinutes: 60 }).stop(); await liveSetup.f.restore(); }
+});
+
+for (const reseed of [false, true]) test(`switching to replay during ${reseed ? "replacement" : "initial"} CLI initialization retires it after the accepted turn`, { timeout: 30000 }, async () => {
+  const { f } = await setup({ replies: [...(reseed ? [{ text: "Initial" }] : []), { text: "Replay answer" }, { text: "Live answer" }] });
+  const start = ClaudeSession.start;
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let pending: Promise<string> | undefined;
+  try {
+    if (reseed) await turn(adapter({ mode: "live" }), [user("Initial request")], { ...thread("starting-switch"), windowId: "before" });
+    ClaudeSession.start = async (...args) => { enter(); await gate; return start(...args); };
+    pending = turn(adapter({ mode: "live" }), reseed ? [user("Initial request"), said("Initial"), user("Live request")] : [user("Live request")],
+      { ...thread("starting-switch"), ...(reseed ? { windowId: "after" } : {}) });
+    await entered;
+    assert.ok(sessionRegistry().starting.has(keyOf("starting-switch")));
+    assert.equal(sessionRegistry().sessions.has(keyOf("starting-switch")), false);
+    assert.equal(await turn(adapter({ mode: "replay" }), [user("Replay request")], thread("replay-switch")), "Replay answer");
+    release();
+    assert.equal(await pending, "Live answer", "the accepted in-flight request finishes normally");
+    for (let attempt = 0; attempt < 100 && sessionRegistry().sessions.size; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(sessionRegistry().sessions.size, 0, "the newly initialized session does not remain parked");
+    assert.equal(sessionRegistry().starting.size, 0);
+    assert.equal(sessionRegistry().retiringStarts?.size, 0);
+    assert.equal(sessionRegistry().scopes.size, 0);
+  } finally {
+    release(); await pending?.catch(() => {}); ClaudeSession.start = start;
+    await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore();
+  }
 });
 
 test("switching a provider to replay closes its parked sessions at once and leaves other providers' alone", async () => {
