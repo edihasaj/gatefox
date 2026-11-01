@@ -5,6 +5,7 @@ import type { ResponsesRequest, InferenceEvent, Usage } from "../protocol/types.
 import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
 import { apiRoutingHeaders } from "./api-routing.js";
 import { generationOptions } from "./generation-options.js";
+import { canonicalTools } from "./tool-catalog.js";
 
 function historicalArguments(text: string): unknown {
   try { return JSON.parse(text); } catch { throw new ProviderError("invalid_request", "Historical tool arguments are not valid JSON", 400); }
@@ -49,7 +50,7 @@ export class AnthropicAPI implements Provider {
     const supported = alias ? this.config.modelMetadata?.[alias]?.reasoningEfforts : undefined;
     const noEffort = effort === "none" && supported?.length === 0;
     if (effort !== undefined && !noEffort && (typeof effort !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(effort) || (supported && !supported.includes(effort)))) throw new ProviderError("invalid_request", "Selected Anthropic model does not support this reasoning effort", 400);
-    const tools = normalized.tools || [];
+    const tools = canonicalTools(normalized.tools || []);
     const nativeName = (name: string): string => {
       const index = tools.findIndex(tool => tool.function.name === name);
       if (index < 0) throw new ProviderError("invalid_request", "Historical tool is absent from the current catalog", 400);

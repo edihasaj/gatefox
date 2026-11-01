@@ -38,7 +38,7 @@ test("real HTTP Responses upstream cap becomes native Messages max_tokens while 
     assert.equal(existing.status, 502);
     partialTool = true;
     const truncated = await post("/v1/messages", { ...request, tools: [{ name: "lookup", input_schema: { type: "object" } }] });
-    assert.equal(truncated.status, 502); assert.equal((await truncated.json() as any).type, "error");
+    assert.equal(truncated.status, 400); assert.equal((await truncated.json() as any).type, "error");
   } finally {
     delete process.env[envKey]; gateway.closeAllConnections(); upstream.closeAllConnections();
     await Promise.all([new Promise<void>(resolve => gateway.close(() => resolve())), new Promise<void>(resolve => upstream.close(() => resolve()))]);

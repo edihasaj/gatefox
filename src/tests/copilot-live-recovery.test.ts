@@ -14,18 +14,20 @@ import { adapter, alive, harness, live, outputFor, providerId, queuedUsage, slee
 // replaced session.
 const kinds = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 const creates = async (h: Harness): Promise<Entry[]> => (await h.log()).filter(entry => entry.op === "create");
+const unavailable = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable";
+/** Marks every session as unused for longer than the cold threshold, so a newcomer at the cap may legitimately evict one. */
+const cool = (age = 31 * 60000) => { for (const session of live().sessions()) session.lastUse = Math.min(session.lastUse, Date.now() - age); };
 
-test("a session that misbehaves while it starts is never handed out: the request is served one-shot and nothing is left", { timeout: 30000 }, async () => {
+test("a session that misbehaves while it starts is never handed out: the request is refused without a replay and nothing is left", { timeout: 30000 }, async () => {
   // The event comes just before session.create answers, or well before it.
   for (const delay of ["0", "150"]) {
     const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_BOOT_EVENT = "assistant.usage"; process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = delay;
     try {
-      const a = await turn(adapter(), [user("hello")]);
-      assert.match(a.text, /^answer/);
+      await assert.rejects(turn(adapter(), [user("hello")]), unavailable, delay);
       const outcomes = await kinds(h);
-      assert.deepEqual(outcomes, ["fallback:spawn_failed"], `${delay}: a session that never served is not reported as spawned or crashed`);
-      const [first, second] = await creates(h); assert.ok(String(first.directory).includes("-live-") && String(second.directory).includes("-run-"));
-      assert.equal(second.alivePeers.length, 0, `${delay}: the CLI that misbehaved was gone before the one-shot CLI started`);
+      assert.deepEqual(outcomes, ["blocked:spawn_failed"], `${delay}: a session that never served is not reported as spawned or crashed`);
+      const all = await creates(h); assert.equal(all.length, 1, `${delay}: no one-shot CLI was started`); assert.ok(String(all[0].directory).includes("-live-"));
+      assert.ok(await until(() => !alive(all[0].pid)), `${delay}: the CLI that misbehaved was killed`);
       assert.ok(await until(async () => (await h.liveDirs()).length === 0)); assert.equal(live().sessions().length, 0);
     } finally { await h.restore(); }
   }
@@ -68,9 +70,10 @@ test("a reseed and an eviction wait until the old process and its folder are gon
   try {
     const provider = adapter({ mode: "live", max: 1 }); const first = [user("go [tool]")];
     await turn(provider, first);
-    // An edited history while tools wait: the old session is aborted (slowly) and killed, then the thread reseeds.
-    await turn(provider, [user("go [tool] EDITED"), user("again [tool]")]);
-    // Another thread at the cap evicts the waiting session.
+    // Other instructions while tools wait are another identity: the old session is aborted (slowly) and killed, then the thread reseeds.
+    await turn(provider, [user("go [tool] again"), user("again [tool]")], { extra: { instructions: "Be brief" } });
+    // Another thread at the cap evicts the waiting session once it has been unused long enough to be cold.
+    cool();
     await turn(provider, [user("other")], { context: { threadId: "B" } });
     const [first_, reseed, evicting] = await creates(h);
     assert.ok(reseed && evicting, "three sessions were created");
@@ -78,23 +81,38 @@ test("a reseed and an eviction wait until the old process and its folder are gon
       assert.ok(!alive(before.pid), "the replaced CLI is gone");
       assert.deepEqual([entry.alivePeers, entry.folders], [[], []], `no earlier CLI ran and no earlier folder was left when ${entry.pid} was created`);
     }
-    const outcomes = await kinds(h); assert.ok(outcomes.includes("reseeded:prefix_diverged") && outcomes.includes("evicted"), outcomes.join(","));
+    const outcomes = await kinds(h); assert.ok(outcomes.includes("reseeded:fingerprint_changed") && outcomes.includes("evicted"), outcomes.join(","));
+    assert.ok(!outcomes.includes("preserved:prefix_diverged"));
   } finally { await h.restore(); }
 });
 
-test("an unexpected failure while placing a request in its session serves it one-shot instead of failing it", { timeout: 30000 }, async () => {
+test("a warm session is not evicted for a newcomer at the cap, which is refused without a replay", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter({ mode: "live", max: 1 });
+    await turn(provider, [user("a")], { context: { threadId: "A" } });
+    const [pid] = await h.pids();
+    await assert.rejects(turn(provider, [user("b")], { context: { threadId: "B" } }), unavailable);
+    assert.ok(alive(pid), "the warm session survived"); assert.equal(live().sessions().length, 1); assert.equal((await creates(h)).length, 1, "no replay or second process");
+    assert.ok((await kinds(h)).includes("blocked:capacity"));
+    cool(); await turn(provider, [user("b")], { context: { threadId: "B" } });
+    assert.ok(await until(() => !alive(pid)), "once cold it may be evicted"); assert.equal(live().sessions().length, 1);
+    assert.ok((await kinds(h)).includes("evicted"));
+  } finally { await h.restore(); }
+});
+
+test("an unexpected failure while placing a request in its session refuses it instead of replaying it one-shot", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     live(); // The registry exists from here.
     const registry = (globalThis as unknown as Record<symbol, { sessions: Map<string, unknown> }>)[Symbol.for("harness-gateway/copilot-sessions/v1")];
     const get = registry.sessions.get;
     registry.sessions.get = () => { throw new Error("placement bug"); };
-    try {
-      const a = await turn(adapter(), [user("hello")]);
-      assert.match(a.text, /^answer/);
-    } finally { registry.sessions.get = get; }
-    assert.ok((await kinds(h)).includes("fallback:attach_failed"), (await kinds(h)).join(","));
-    assert.ok((await creates(h)).every(entry => String(entry.directory).includes("-run-")), "the request ran one-shot");
+    try { await assert.rejects(turn(adapter(), [user("hello")]), unavailable); } finally { registry.sessions.get = get; }
+    assert.ok((await kinds(h)).includes("blocked:attach_failed"), (await kinds(h)).join(","));
+    assert.equal((await creates(h)).length, 0, "no CLI of either kind ran for the refused request");
+    assert.equal(live().sessions().length, 0, "nothing is left registered");
+    const a = await turn(adapter(), [user("hello")]); assert.match(a.text, /^answer/);
   } finally { await h.restore(); }
 });
 
@@ -162,6 +180,8 @@ test("a thread whose session is being evicted waits for it and reseeds as evicte
     const a = await turn(provider, first, { context: { threadId: "A" } }); await sleep(5);
     await turn(provider, [user("c [tool]")], { context: { threadId: "C" } });
     const [old] = await h.pids();
+    // Both sessions are cold, so the least recently used one may be evicted.
+    live().sessions().forEach((session, index) => { session.lastUse = Date.now() - (32 - index) * 60000; });
     // Thread B needs a slot: A, the least recently used session, waits for tools, so it is aborted and killed.
     newcomer = turn(provider, [user("b")], { context: { threadId: "B" } }).catch(error => error as unknown);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "abort" && entry.pid === old)));

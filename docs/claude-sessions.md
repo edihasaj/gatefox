@@ -7,8 +7,7 @@ read_when:
 
 # Live Claude sessions
 
-By default every Claude request starts a new `claude -p` process and replays the
-whole history (`claudeSessions.mode: "replay"`). With `"live"`, the gateway keeps
+By default (`claudeSessions.mode: "live"`), the gateway keeps
 one stream-json CLI process per identified client conversation, the way Claude Code
 itself runs. Codex thread IDs and native Claude Code session metadata identify
 their own conversations. Session-only clients have a separate internal namespace;
@@ -20,7 +19,7 @@ that carries across tool steps, and a prompt cache that grows by appending.
 { "id": "claude", "type": "claude-subscription", "claudeSessions": { "mode": "live" } }
 ```
 
-The daemon reads the change on its next request. `"replay"` turns it off again;
+The daemon reads the change on its next request. Explicit `"replay"` turns it off;
 running sessions finish their turn and close. A provider in replay mode retires its
 own parked sessions on its next request, so they do not wait out the park timer.
 Retirement also tracks CLIs still initializing. Their already-accepted request
@@ -28,7 +27,7 @@ finishes normally, then the session closes instead of remaining parked in replay
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `mode` | `replay` | `live` keeps a session per thread |
+| `mode` | `live` | `live` keeps a session per conversation; explicit `replay` uses standalone requests |
 | `max` | 10% of RAM | Live sessions in the whole process (1–32). The default is `clamp(floor(0.10 × totalmem / 300 MB), 6, 32)`: 6 up to 20 GiB, 21 on 64 GiB, 32 from about 94 GiB. A session being started counts toward it |
 | `parkMinutes` | 60 | Idle time before a session closes (5–240), per session |
 | `warmup` | 1 | Completed requests a thread needs before its first live session may start (0–5). `0` restores immediate spawning. |
@@ -85,11 +84,13 @@ finishes normally, then the session closes instead of remaining parked in replay
   occupying a parked CLI for an hour. The default of one is cheap: the promoted
   session seed reads the cache the one-shot request wrote and writes only its new
   content.
-- **One-shot fallback:** explicitly identified compaction, prewarm and memory
-  requests; requests without a conversation ID; a second request for a conversation
-  that is still generating; and eligible CLI failures before the first event,
-  including a CLI that exits right after the seed. Queued-update handoff failures
-  remain final even if the CLI acknowledged input before failing.
+- **Standalone requests:** explicitly identified compaction, prewarm and memory
+  requests, first questions without a conversation ID, and configured warmup.
+  Anonymous historical conversations require an ID instead of repeated replay.
+- **Continuity refusal:** capacity, concurrent requests, failed startup or an
+  unavailable live adapter stop before one-shot replay. CLI failure remains final
+  after partial output too. A failed forced-tool choice never retries with a
+  changed catalog. See [provider reuse](provider-reuse.md).
 
 ### Bounded cache rewrites
 
@@ -154,12 +155,12 @@ provider classifier rejected or override a provider refusal.
 ## Admission
 
 A session is evicted only after it has been idle for 60 minutes, the length of the 1 h
-cache. While every slot holds a warm session, a new thread runs one-shot (`capacity`)
-and stays on replay until a slot frees; nothing is evicted and no warm cache is spent
+cache. While every slot holds a warm session, a new thread is refused (`capacity`)
+until a slot frees; nothing is evicted and no warm cache is spent
 on a newcomer. Sessions being started count toward `max`, in arrival order, so
 concurrent attaches can never run more processes than the cap. Telemetry records the
-`warmup` and `capacity` fallbacks and each replay-hold reason as `claude_session`
-events with the `fallback` outcome and the thread's `threadKey`. A promoted spawn has
+`warmup` standalone requests and refused capacity/replay-hold reasons as
+`claude_session` events with `fallback` or `blocked` and the thread's `threadKey`. A promoted spawn has
 `afterWarmup: true`, so diagnostics records its cache cost; see
 [diagnostics](diagnostics.md).
 

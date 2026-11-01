@@ -21,15 +21,25 @@ test("the subscription endpoint receives the caller's routing headers so its pro
   const credentialFile = join(directory, "registration.json");
   await writeFile(credentialFile, JSON.stringify({ access_token: "fixture-only", scopes: ["resource.invoke", "chatgpt.tokens.use.direct"], expires_at: Date.now() + 3600000 }), { mode: 0o600 });
   const seen: Array<Record<string, string>> = [];
-  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => { seen.push({ ...(options.headers as Record<string, string>) }); return completed(); });
+  const bodies: Array<Record<string, unknown>> = [];
+  t.mock.method(globalThis, "fetch", async (_url: string, options: RequestInit) => { seen.push({ ...(options.headers as Record<string, string>) }); bodies.push(JSON.parse(String(options.body))); return completed(); });
   const plan = new ResponsesAPI({ id: "codex", type: "codex-subscription", credentialFile, models: { "codex/upstream": "upstream" } } as ProviderConfig);
   const api = new ResponsesAPI({ id: "api", type: "responses-api", baseUrl: "http://127.0.0.1:1/v1", apiKeyEnv: "GATEWAY_AFFINITY_FIXTURE_KEY", models: { fixture: "upstream" } } as ProviderConfig);
   process.env.GATEWAY_AFFINITY_FIXTURE_KEY = "fixture-only";
   try {
     for await (const _ of plan.infer({ model: "upstream", input: "fixture" }, new AbortController().signal, { sessionId: "s-1", threadId: "t-1" })) { /* drain */ }
     assert.equal(seen.at(-1)?.["session-id"], "s-1"); assert.equal(seen.at(-1)?.["thread-id"], "t-1");
+    const key = bodies.at(-1)?.prompt_cache_key;
+    assert.match(String(key), /^[a-f0-9]{64}$/);
+    for await (const _ of plan.infer({ model: "upstream", input: "follow-up" }, new AbortController().signal, { sessionId: "s-2", threadId: "t-1" })) {}
+    assert.equal(bodies.at(-1)?.prompt_cache_key, key, "a client connection change retains the thread cache identity");
+    for await (const _ of plan.infer({ model: "upstream", input: "other" }, new AbortController().signal, { threadId: "t-2" })) {}
+    assert.notEqual(bodies.at(-1)?.prompt_cache_key, key);
+    for await (const _ of plan.infer({ model: "upstream", input: "caller", prompt_cache_key: "explicit-key" }, new AbortController().signal, { threadId: "t-1" })) {}
+    assert.equal(bodies.at(-1)?.prompt_cache_key, "explicit-key");
     for await (const _ of plan.infer({ model: "upstream", input: "fixture" }, new AbortController().signal)) { /* drain */ }
     assert.equal(seen.at(-1)?.["session-id"], undefined);
+    assert.equal(bodies.at(-1)?.prompt_cache_key, undefined, "anonymous calls are not merged");
     // Third-party Responses endpoints keep only the cache key Codex puts in the body.
     for await (const _ of api.infer({ model: "upstream", input: "fixture" }, new AbortController().signal, { sessionId: "s-1", threadId: "t-1" })) { /* drain */ }
     assert.equal(seen.at(-1)?.["session-id"], undefined); assert.equal(seen.at(-1)?.["thread-id"], undefined);

@@ -15,6 +15,7 @@ import { sessionKey } from "./claude-live-contract.js";
 import { leadingInstructions, markCustomCalls, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { telemetry } from "../telemetry.js";
 import { reportException } from "../error-report.js";
+import { CliContinuityUnavailable, CopilotSessionPreserved, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
 
 export { nativeCopilotCalls } from "./copilot-turn.js";
 
@@ -89,6 +90,8 @@ export function retireUnconfiguredCopilotScopes(providers: ProviderConfig[]): vo
 export function copilotLiveInput(config: ProviderConfig, run: CopilotRun, threadId: string): CopilotLiveInput {
   const { request, context, tools, native, choice, effort, summary, conversation, images, leading, create } = run;
   return { scope: copilotScope(config), threadId, windowId: context.windowId, model: request.model, effort, fingerprint: sessionFingerprint(create), create,
+    callerHistoryReplacement: context.clientProtocol === "messages" && !context.threadId && !!context.sessionId
+      && (request.client_metadata as { session_id?: unknown } | undefined)?.session_id === context.sessionId,
     config, catalog: tools, native, request, conversation, images, leading, choice,
     newTurn: () => new CopilotTurn({ model: request.model, offered: Object.values(config.models), tools, choice, summary }) };
 }
@@ -99,6 +102,7 @@ export class CopilotSubscription implements Provider {
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
     const run = copilotRun(this.config, request, signal, context);
     const settings = copilotSessionSettings(this.config);
+    if (settings.mode === "live" && !providerConversationId(context) && !oneShotKinds.has(context.requestKind) && unidentifiedCliHistory(run.conversation)) throw new CliContinuityUnavailable("Copilot", "conversation_id_required");
     if (settings.mode !== "live") retireCopilotScope(copilotScope(this.config), "mode_oneshot");
     else {
       const conversationId = providerConversationId(context);
@@ -108,19 +112,25 @@ export class CopilotSubscription implements Provider {
       catch (error) {
         // Placing the request failed unexpectedly, before any session work: the one-shot path still serves it.
         if (signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw cancelled();
+        if (error instanceof CopilotSessionPreserved || error instanceof CliContinuityUnavailable) throw error;
         if (!(error instanceof ProviderError)) reportException(error, "copilot_live_attach");
         outcome = { kind: "fallback", reason: "attach_failed" };
       }
       if (outcome.kind === "stream") {
-        let yielded = false;
-        try { for await (const event of outcome.events) { yielded = true; yield event; } return; }
+        try { for await (const event of outcome.events) yield event; return; }
         catch (error) {
-          // A session that dies before its first event falls back to one-shot. Limits, cancellation and caller errors would only repeat.
+          // An accepted live request never silently changes to full-history replay.
           if (signal.aborted) throw cancelled();
-          if (yielded || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
-          telemetry("copilot_session", { outcome: "fallback", missReason: error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed", provider: this.config.id, model: request.model, threadKey });
+          if (!(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
+          const reason = error.upstream?.code === "delivery_rejected" ? "delivery_rejected" : "stream_failed";
+          telemetry("copilot_session", { outcome: "blocked", missReason: reason, provider: this.config.id, model: request.model, threadKey });
+          throw new CliContinuityUnavailable("Copilot", reason);
         }
-      } else telemetry("copilot_session", { outcome: "fallback", missReason: outcome.reason, provider: this.config.id, model: request.model, threadKey });
+      } else {
+        const allowed = standaloneCliReasons.has(outcome.reason);
+        telemetry("copilot_session", { outcome: allowed ? "fallback" : "blocked", missReason: outcome.reason, provider: this.config.id, model: request.model, threadKey });
+        if (!allowed) throw new CliContinuityUnavailable("Copilot", outcome.reason);
+      }
     }
     yield* this.oneShot(run);
   }

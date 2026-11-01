@@ -28,22 +28,22 @@ test("a model change between turns starts a new session: the CLI fixes the model
   } finally { await h.restore(); }
 });
 
-test("two first requests of one thread at once start one live CLI; the second is served one-shot", { timeout: 30000 }, async () => {
-  // No CLI answers session.create until the test has seen both requests start theirs, so the first is still starting when the second comes.
+test("two first requests of one thread at once start one live CLI; the second is refused without a one-shot replay", { timeout: 30000 }, async () => {
+  // No CLI answers session.create until the test has seen the first request start its own, so the first is still starting when the second comes.
   const h = await harness(); const gate = join(h.directory, "create-gate"); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = gate;
+  let first: Promise<unknown> | undefined;
   try {
     const provider = adapter();
-    const first = turn(provider, [user("a")]);
+    first = settled(turn(provider, [user("a")]));
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "create")), "the first request is starting its session");
-    const secondRequest = turn(provider, [user("a")]);
-    assert.ok(await until(async () => (await h.log()).filter(entry => entry.op === "create").length === 2), "the second request, served one-shot, started its own CLI");
+    const error = await within(settled(turn(provider, [user("a")])), 5000);
+    assert.ok(error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable", String(error));
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "the refused request did not start a CLI of its own");
     await writeFile(gate, "x");
-    const second = await secondRequest;
-    await first;
-    assert.match(second.text, /^answer/);
+    assert.equal(await within(first, 10000), undefined, "the first request completed on its live session");
     assert.equal((await liveCreates(h)).length, 1, "exactly one live CLI"); assert.equal(live().sessions().length, 1);
-    assert.deepEqual((await kinds(h)).filter(kind => kind.startsWith("fallback")), ["fallback:concurrent"]);
-  } finally { await h.restore(); }
+    assert.deepEqual((await kinds(h)).filter(kind => kind.startsWith("fallback") || kind.startsWith("blocked")), ["blocked:concurrent"]);
+  } finally { await writeFile(gate, "x").catch(() => undefined); if (first) await first; await h.restore(); }
 });
 
 test("the park timer never closes a session while its turn runs", { timeout: 30000 }, async () => {
@@ -62,11 +62,11 @@ test("the park timer never closes a session while its turn runs", { timeout: 300
 test("switching the provider to one-shot lets a running turn finish, then closes its session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
-    const running = turn(adapter(), [user("go [slow]")]);
+    const started = turn(adapter(), [user("go [slow]")]); const running = settled(started);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages")));
     const [pid] = await h.pids();
     await turn(adapter({ mode: "oneshot" }), [user("other")], { context: { threadId: "other" } });
-    const a = await running;
+    await running; const a = await started;
     assert.match(a.text, /^answer/); assert.equal(a.events.at(-1)?.type, "done");
     // The end event follows the process exit and the folder's removal, so wait for the event itself.
     assert.ok(await until(async () => (await kinds(h)).includes("closed:mode_oneshot")), `then its session closes: ${(await kinds(h)).join(",")}`);
@@ -84,7 +84,8 @@ test("a session closed under a running request fails that request at once", { ti
       assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages"))); await sleep(50);
       if (close === "stop") await live().stop(); else await (await import("../runtime-activity.js")).runShutdownHooks(3000);
       const error = await within(running, 2000);
-      assert.ok(error instanceof ProviderError && error.code === "cli_failed", `${close}: ${String(error)}`);
+      assert.ok(error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable", `${close}: ${String(error)}`);
+      assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, `${close}: no replacement or replay CLI started`);
     } finally { await h.restore(); }
   }
 });
@@ -108,18 +109,25 @@ test("closing a live session kills its CLI at once, even one that ignores SIGTER
   } finally { await h.restore(); }
 });
 
-test("a session that dies while its effort change is in flight is reported as dead, not as a refused change", { timeout: 30000 }, async () => {
+test("a session that dies while its effort change is in flight refuses the request: no second CLI starts inside it", { timeout: 30000 }, async () => {
   // The CLI answers the change only when the test lets it, which is after the CLI has been killed.
   const h = await harness(); const gate = join(h.directory, "switch-gate"); process.env.GATEWAY_COPILOT_LIVE_SWITCH_GATE = gate;
+  let next: Promise<unknown> | undefined;
   try {
     const provider = adapter(); const first = [user("hello")];
     const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
     const [pid] = await h.pids();
-    const next = turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "high" } } });
+    next = settled(turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "high" } } }));
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "switch")));
     process.kill(pid, "SIGKILL"); await writeFile(gate, "x");
-    const b = await next; assert.match(b.text, /^answer/);
+    const error = await within(next, 10000);
+    assert.ok(error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable", String(error));
+    assert.equal((await liveCreates(h)).length, 1); assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replacement or one-shot CLI started inside the refused request");
     const outcomes = await kinds(h);
-    assert.ok(outcomes.includes("reseeded:session_dead") && !outcomes.includes("reseeded:effort_rejected"), outcomes.join(","));
-  } finally { await h.restore(); }
+    assert.ok(!outcomes.some(kind => kind.startsWith("reseeded")) && !outcomes.includes("preserved:effort_rejected"), outcomes.join(","));
+    // A later, independent request is a controlled seed that says the old session was dead.
+    const b = await turn(provider, [...first, ...a.output, user("more")]);
+    assert.match(b.text, /^answer/); assert.equal((await liveCreates(h)).length, 2);
+    assert.ok((await kinds(h)).includes("reseeded:session_dead"), (await kinds(h)).join(","));
+  } finally { await writeFile(gate, "x").catch(() => undefined); await next; await h.restore(); }
 });

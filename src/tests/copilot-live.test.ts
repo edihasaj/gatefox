@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdir, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { sessionLimits } from "../providers/copilot-live-session.js";
 import { ProviderError } from "../providers/provider.js";
+import { streamFailureCode } from "../provider-failure.js";
+import { restoreReasoning } from "../protocol/reasoning-state.js";
+import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
 import { adapter, alive, callIds, defaultAdapter, harness, kind, live, lookupName, outputFor, png, sleep, tools, turn, until, user, type Entry } from "./copilot-live-harness.js";
 
 const operations = (entries: Entry[]) => entries.map(entry => entry.op).filter(op => op !== "stdin_closed");
@@ -55,7 +59,7 @@ test("a tool loop keeps one CLI process, answers the waiting call and bills each
     assert.equal(c.text, "answer 3");
 
     const entries = await h.log();
-    assert.deepEqual(operations(entries), ["create", "session.sendMessages", "deliver", "deliver"], "one session; the history is sent once, then only tool outputs");
+    assert.deepEqual(operations(entries), ["create", "session.sendMessages", "deliver", "continuation", "deliver", "continuation"], "one session; the history is sent once, then only tool outputs, each answered by one continuation");
     assert.equal((await h.pids()).length, 1, "three requests used one CLI process");
     const send = entries.find(entry => entry.op === "session.sendMessages")!;
     assert.equal(send.prompts.length, 1); assert.match(send.prompts[0], /^<<item 1 user>>\nstart \[tool\]\n<<\/item>>$/);
@@ -111,7 +115,7 @@ test("parallel tool calls: each output reaches the waiting call it belongs to, w
   } finally { await h.restore(); }
 });
 
-test("a continued turn sends only its new items; divergence and changed instructions reseed in a new process", { timeout: 30000 }, async () => {
+test("a continued turn sends only new items; divergence preserves the session and controlled changes still reseed", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -122,22 +126,22 @@ test("a continued turn sends only its new items; divergence and changed instruct
     const more = entries.filter(entry => entry.op === "session.sendMessages")[1];
     assert.equal(more.prompts.length, 1); assert.ok(more.prompts[0].startsWith("<<item 3 user>>") && !more.prompts[0].includes("hello"), "the history is not resent");
     const oldPid = entries[0].pid;
-    // An earlier message was edited: the session's history no longer matches, so the thread starts a new session.
+    // An earlier message was edited: the session's history no longer matches. Preserve it and refuse the request.
     const third = [user("hello EDITED"), ...a.output, user("more"), ...b.output, user("again")];
-    await turn(provider, third);
-    entries = await h.log(); const creates = entries.filter(entry => entry.op === "create");
-    assert.equal(creates.length, 2); assert.notEqual(creates[1].pid, oldPid);
-    const seed = entries.filter(entry => entry.op === "session.sendMessages").at(-1)!;
-    assert.equal(seed.prompts.length, 5, "the new session is seeded with the whole history, one message per item");
-    assert.ok(await until(() => !alive(oldPid)), "the old process is gone");
-    assert.ok(await until(async () => (await h.liveDirs()).length === 1), "and so is its folder");
+    await assert.rejects(turn(provider, third),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "copilot_session_preserved");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replay or replacement was created");
+    assert.equal(alive(oldPid), true, "the warm session survived the mismatch");
     // A changed system prompt is part of the session's identity.
-    await turn(provider, [...third, ...b.output, user("fourth")], { extra: { instructions: "Be brief" } });
-    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 3);
+    const matching = [...first, ...a.output, user("more"), ...b.output, user("again")];
+    await turn(provider, [...matching, user("fourth")], { extra: { instructions: "Be brief" } });
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 2);
     // So is the window: the same history under another context window starts over.
-    await turn(provider, [...third, ...b.output, user("fourth"), user("fifth")], { extra: { instructions: "Be brief" }, context: { threadId: "thread-1", windowId: "window-2" } });
-    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 4);
-    assert.deepEqual(outcomes(await h.sessions()).filter(value => /^(spawned|continued|reseeded)/.test(value)), ["spawned", "continued", "reseeded:prefix_diverged", "reseeded:fingerprint_changed", "reseeded:window_changed"]);
+    await turn(provider, [...matching, user("fourth"), user("fifth")], { extra: { instructions: "Be brief" }, context: { threadId: "thread-1", windowId: "window-2" } });
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 3);
+    const kinds = outcomes(await h.sessions());
+    assert.deepEqual(kinds.filter(value => /^(spawned|continued|reseeded)/.test(value)), ["spawned", "continued", "reseeded:fingerprint_changed", "reseeded:window_changed"]);
+    assert.ok(kinds.includes("preserved:prefix_diverged"), kinds.join(","));
   } finally { await h.restore(); }
 });
 
@@ -199,7 +203,7 @@ test("a tool that keeps its name but changes its description or parameters is a 
   } finally { await h.restore(); }
 });
 
-test("an effort change between turns switches in place; one while tools wait, or a set effort that goes unset, starts a new session", { timeout: 30000 }, async () => {
+test("an effort change between turns switches in place; a mid-tool change preserves, and a set effort going unset reseeds", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("hello")];
@@ -210,13 +214,60 @@ test("an effort change between turns switches in place; one while tools wait, or
     assert.deepEqual(entries.filter(entry => entry.op === "switch").map(entry => entry.effort), ["high"]);
     assert.equal(entries.filter(entry => entry.op === "create").length, 1, "the cache survives an effort change");
     const third = [...second, ...b.output, ...outputFor(b.output, "plain")];
-    const c = await turn(provider, third, { extra: { reasoning: { effort: "low" } } });
-    entries = await h.log(); assert.equal(entries.filter(entry => entry.op === "create").length, 2);
-    // No effort now means the model's default, which the old session (still at "low") cannot give.
+    await assert.rejects(turn(provider, third, { extra: { reasoning: { effort: "low" } } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "copilot_session_preserved");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "the pending warm session survived");
+    const c = await turn(provider, third, { extra: { reasoning: { effort: "high" } } });
+    entries = await h.log(); assert.equal(entries.filter(entry => entry.op === "create").length, 1);
+    // No effort now means the model's default, which the old session (now at "high") cannot give.
     await turn(provider, [...third, ...c.output, user("again")]);
-    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 3);
-    assert.deepEqual((await h.log()).filter(entry => entry.op === "create").map(entry => entry.params.reasoningEffort), ["low", "low", undefined]);
-    const kinds = outcomes(await h.sessions()); assert.ok(kinds.includes("reseeded:effort_midturn") && kinds.includes("reseeded:fingerprint_changed"), kinds.join(","));
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 2);
+    assert.deepEqual((await h.log()).filter(entry => entry.op === "create").map(entry => entry.params.reasoningEffort), ["low", undefined]);
+    const kinds = outcomes(await h.sessions()); assert.ok(kinds.includes("preserved:effort_midturn") && kinds.includes("reseeded:fingerprint_changed"), kinds.join(","));
+  } finally { await h.restore(); }
+});
+
+test("an effort change the CLI does not answer in time ends the session and refuses the request, without waiting the native limit or replaying", { timeout: 30000 }, async () => {
+  const h = await harness(); const limit = sessionLimits.switchMs; sessionLimits.switchMs = 100;
+  // The CLI reads its switches when it starts: it answers a model switch only 300 ms after it was asked, which is past the limit.
+  process.env.GATEWAY_COPILOT_LIVE_SLOW_SWITCH = "300";
+  try {
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const [pid] = await h.pids(); const started = Date.now();
+    await assert.rejects(turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.ok(Date.now() - started < 5000, "the limit, not the native ten seconds, bounded the wait");
+    assert.ok(await until(() => !alive(pid)), "a session whose effort is unknown is killed"); assert.ok(await until(() => live().sessions().length === 0));
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no second CLI started inside the refused request");
+    assert.equal((await h.log()).filter(entry => entry.op === "session.sendMessages").length, 1, "nothing was sent for the refused request");
+    assert.ok(!outcomes(await h.sessions()).some(kind => kind.startsWith("reseeded")));
+  } finally { sessionLimits.switchMs = limit; await h.restore(); }
+});
+
+test("a CLI that rejects an effort change preserves the session: the request is refused and the same effort continues it", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    // The CLI reads its switches when it starts, so this one is set before the session spawns; it only affects effort changes.
+    process.env.GATEWAY_COPILOT_LIVE_SWITCH_REJECT = "1";
+    const provider = adapter(); const first = [user("hello")];
+    const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
+    const [pid] = await h.pids(); const second = [...first, ...a.output, user("more")];
+    await assert.rejects(turn(provider, second, { extra: { reasoning: { effort: "medium" } } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "copilot_session_preserved");
+    let entries = await h.log();
+    assert.deepEqual(entries.filter(entry => entry.op === "switch").map(entry => entry.effort), ["medium"], "the change was asked for once");
+    assert.equal(entries.filter(entry => entry.op === "create").length, 1, "no reseed or replay process");
+    assert.equal(entries.filter(entry => entry.op === "session.sendMessages").length, 1, "the refused request sent nothing to the session");
+    assert.ok(alive(pid)); assert.equal(live().sessions().length, 1); assert.equal(live().sessions()[0].effort, "low", "the session still runs at its own effort");
+    assert.ok(outcomes(await h.sessions()).includes("preserved:effort_rejected"));
+    // The same request at the effort the session has continues it.
+    const b = await turn(provider, second, { extra: { reasoning: { effort: "low" } } });
+    assert.match(b.text, /^answer/);
+    entries = await h.log();
+    assert.equal(entries.filter(entry => entry.op === "create").length, 1); assert.equal((await h.pids()).length, 1); assert.equal(live().sessions()[0].pid, pid);
+    assert.equal(entries.filter(entry => entry.op === "switch").length, 1, "no further switch was needed");
+    assert.ok(outcomes(await h.sessions()).includes("continued"));
   } finally { await h.restore(); }
 });
 
@@ -234,16 +285,25 @@ test("the CLI's own confirmation of an effort change, which comes before its ans
   } finally { await h.restore(); }
 });
 
-test("an effort confirmation for another effort than the one asked for ends the session; the request is served by a new one", { timeout: 30000 }, async () => {
+test("an effort confirmation for another effort than the one asked for ends the session; the request is refused without a replay", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT = "xhigh";
   try {
     const provider = adapter(); const first = [user("hello")];
     const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
     const [pid] = await h.pids();
-    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
-    assert.match(b.text, /^answer/); assert.ok(await until(() => !alive(pid)), "the session that changed to an effort nobody asked for is killed");
+    await assert.rejects(turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.ok(await until(() => !alive(pid)), "the session that changed to an effort nobody asked for is killed");
+    assert.ok(await until(() => live().sessions().length === 0), "and no session keeps it");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no second CLI of either kind started inside the refused request");
     const kinds = outcomes(await h.sessions());
-    assert.ok(kinds.includes("crashed:effort_mismatch") && kinds.includes("reseeded:session_dead"), kinds.join(","));
+    assert.ok(kinds.includes("crashed:effort_mismatch") || kinds.includes("crashed:effort_unconfirmed"), kinds.join(","));
+    assert.ok(!kinds.some(kind => kind.startsWith("reseeded")), "nothing reseeded within the request");
+    // A later, independent request is a new controlled seed, which says why.
+    delete process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT;
+    const later = await turn(provider, [...first, ...a.output, user("more")]);
+    assert.match(later.text, /^answer/); assert.equal((await h.log()).filter(entry => entry.op === "create").length, 2);
+    assert.ok(outcomes(await h.sessions()).includes("reseeded:session_dead"), outcomes(await h.sessions()).join(","));
   } finally { await h.restore(); }
 });
 
@@ -260,19 +320,20 @@ test("an effort confirmation that arrives in the same read as the answer to the 
   } finally { await h.restore(); }
 });
 
-test("an effort confirmation for another effort that arrives in the same read as the answer to the change ends the session before its answer is read", { timeout: 30000 }, async () => {
+test("an effort confirmation for another effort that arrives in the same read as the answer to the change ends the session before its answer is read, and the request is refused without a replay", { timeout: 30000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_SWITCH_EFFORT = "xhigh"; process.env.GATEWAY_COPILOT_LIVE_SWITCH_ONE_WRITE = "1";
   try {
     const provider = adapter(); const first = [user("hello")];
     const a = await turn(provider, first, { extra: { reasoning: { effort: "low" } } });
     const [pid] = await h.pids();
     // The confirmation is routed after the change returned and the request attached; it must not be read as a part of the answer.
-    const b = await turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } });
-    assert.match(b.text, /^answer/, "the request is still served, one-shot");
+    await assert.rejects(turn(provider, [...first, ...a.output, user("more")], { extra: { reasoning: { effort: "medium" } } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     assert.ok(await until(() => !alive(pid)), "the session that runs at an effort nobody asked for is killed");
-    assert.equal(live().sessions().length, 0, "and no session keeps it");
+    assert.ok(await until(() => live().sessions().length === 0), "and no session keeps it");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replay process was created");
     const kinds = outcomes(await h.sessions());
-    assert.ok(kinds.includes("crashed:effort_mismatch") && kinds.includes("fallback:stream_failed"), kinds.join(","));
+    assert.ok(kinds.includes("crashed:effort_mismatch") && kinds.includes("blocked:stream_failed"), kinds.join(","));
   } finally { await h.restore(); }
 });
 
@@ -304,47 +365,76 @@ test("a finished turn that the client abandons afterwards keeps its session", { 
   } finally { await h.restore(); }
 });
 
-test("a thread's second request while its first still runs is served one-shot", { timeout: 30000 }, async () => {
+test("a live CLI killed after text was streamed ends the request as a final refusal: no replay, no new CLI, and the SDK is told not to retry", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const events: InferenceEvent[] = []; let failure: unknown; let victim: number | undefined;
+    const request = restoreReasoning({ model: "fixture", input: [user("go [slow]")], tools } as ResponsesRequest, "scope");
+    try {
+      for await (const event of adapter().infer(request, new AbortController().signal, { threadId: "thread-1" })) {
+        events.push(event);
+        // Only the fixture CLI this test started is killed, once the caller has already received text.
+        if (event.type === "text" && victim === undefined) { [victim] = await h.pids(); process.kill(victim, "SIGKILL"); }
+      }
+    } catch (error) { failure = error; }
+    assert.ok(events.some(event => event.type === "text"), "the caller had already received text");
+    assert.ok(failure instanceof ProviderError && failure.status === 400 && failure.upstream?.code === "session_continuity_unavailable", String(failure));
+    assert.equal(streamFailureCode(failure as ProviderError), "invalid_prompt", "the client does not retry the full conversation");
+    assert.ok(victim !== undefined && await until(() => !alive(victim!)));
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no one-shot replay or second live CLI started");
+    assert.ok(await until(() => live().sessions().length === 0), "nothing usable is left registered");
+    assert.ok(await until(async () => outcomes(await h.sessions()).includes("blocked:stream_failed")), outcomes(await h.sessions()).join(","));
+  } finally { await h.restore(); }
+});
+
+test("a thread's second request while its first runs refuses without disturbing the active session", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const controller = new AbortController();
     const running = turn(provider, [user("go [hang]")], { controller }).then(() => undefined, () => undefined);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages")));
-    const other = await turn(provider, [user("hello")]); assert.match(other.text, /^answer/);
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "concurrent"));
+    const [pid] = await h.pids();
+    await assert.rejects(turn(provider, [user("hello")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.ok(alive(pid), "the original session survived"); assert.equal((await h.log()).filter(entry => String(entry.directory).includes("-run-")).length, 0);
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "concurrent"));
     controller.abort(); await running;
   } finally { await h.restore(); }
 });
 
-test("at the session cap a newcomer evicts the least recently used parked session, preferring one that finished its turn", { timeout: 30000 }, async () => {
+test("at the session cap a newcomer evicts only a cold parked session, preferring one that finished its turn", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 2 }); const ctx = (threadId: string) => ({ context: { threadId } });
-    const a = await turn(provider, [user("a [tool]")], ctx("A")); await sleep(5);   // waiting for tool outputs, the oldest
+    const a = await turn(provider, [user("a [tool]")], ctx("A")); await sleep(5);   // waiting for tool outputs
     await turn(provider, [user("b")], ctx("B")); await sleep(5);                    // finished its turn
     const [pidA, pidB] = await h.pids();
+    for (const session of live().sessions()) session.lastUse = Date.now() - 31 * 60000;
     await turn(provider, [user("c [tool]")], ctx("C"));
     assert.ok(await until(() => !alive(pidB)), "the finished session goes first, though a waiting one is older"); assert.ok(alive(pidA));
     assert.equal(live().sessions().length, 2); assert.ok(await until(async () => (await h.liveDirs()).length === 2), "its folder went with it");
     await sleep(5); await turn(provider, [user("d")], ctx("D"));
     assert.ok(await until(() => !alive(pidA)), "then, with none finished, the least recently used waiting one"); assert.equal(live().sessions().length, 2);
-    // An evicted thread starts over and says why.
+    // An evicted thread starts over and says why, once the sessions it would displace are cold too.
+    for (const session of live().sessions()) session.lastUse = Date.now() - 31 * 60000;
     await turn(provider, [user("a [tool]"), ...a.output, ...outputFor(a.output, "late"), user("a again")], ctx("A"));
     assert.ok(outcomes(await h.sessions()).includes("reseeded:evicted"));
     assert.ok(!(await h.sessions()).some(entry => entry.missReason === "capacity"), "nothing fell back for lack of a slot");
   } finally { await h.restore(); }
 });
 
-test("a running session is never evicted: at the cap with every session generating, a newcomer is served one-shot", { timeout: 30000 }, async () => {
+test("a running session is never evicted: at the cap with every session generating, a newcomer refuses", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 1 }); const controller = new AbortController();
     const running = turn(provider, [user("go [hang]")], { controller, context: { threadId: "A" } }).then(() => undefined, () => undefined);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages")));
     const [pid] = await h.pids();
-    const b = await turn(provider, [user("b")], { context: { threadId: "B" } }); assert.match(b.text, /^answer/);
+    await assert.rejects(turn(provider, [user("b")], { context: { threadId: "B" } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     assert.ok(alive(pid)); assert.equal(live().sessions().length, 1);
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "capacity"));
+    assert.equal((await h.log()).filter(entry => String(entry.directory).includes("-run-")).length, 0);
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "capacity"));
     controller.abort(); await running;
   } finally { await h.restore(); }
 });
@@ -359,11 +449,12 @@ test("a session whose own next request is still being placed is not evicted for 
     // Thread A's next request waits on the CLI to apply an effort change; the only slot is its session.
     const again = turn(provider, [...first, ...a.output, user("more")], { context: { threadId: "A" }, extra: { reasoning: { effort: "high" } } });
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "switch")));
-    const b = await turn(provider, [user("b")], { context: { threadId: "B" } }); assert.match(b.text, /^answer/);
+    await assert.rejects(turn(provider, [user("b")], { context: { threadId: "B" } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     await writeFile(gate, "x"); await again;
     assert.ok(alive(pid), "thread A kept its session"); assert.equal((await h.log()).filter(entry => entry.op === "create" && entry.pid === pid).length, 1);
     const kinds = outcomes(await h.sessions());
-    assert.ok(kinds.includes("fallback:capacity") && kinds.includes("continued") && !kinds.includes("reseeded:evicted"), kinds.join(","));
+    assert.ok(kinds.includes("blocked:capacity") && kinds.includes("continued") && !kinds.includes("reseeded:evicted"), kinds.join(","));
   } finally { await h.restore(); }
 });
 

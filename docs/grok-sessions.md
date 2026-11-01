@@ -10,7 +10,18 @@ read_when:
 A `grok-subscription` provider spends a Grok subscription allowance by running
 the official Grok Build CLI (`grok`) once per request, the way the one-shot
 Claude path runs `claude -p`. API keys are never used: `XAI_*` and `GROK_*`
-variables are removed from the CLI's environment.
+variables are removed from the CLI's environment. This transport now admits only
+standalone requests. Historical assistant/tool turns and another request for a
+previously admitted conversation are refused before a CLI starts, rather than
+automatically seeding full history again. The bounded admission record survives
+handler upgrades in the process; a full restart resets it, while historical input
+is still refused independently. Model choices are never changed automatically.
+
+Persistent Grok ACP sessions remain unqualified. Isolated native 1.0.52 tests
+found that empty/invalid tool allowlists can restore native tools, resumed sessions
+can lose confinement, and the CLI initiates title/summary inference. Those must be
+resolved and independently qualified before enabling continued subscription chats.
+See [provider reuse](provider-reuse.md).
 
 ```json
 { "id": "grok", "type": "grok-subscription", "label": "Grok",
@@ -51,7 +62,7 @@ tool, a server-side tool block, or a `use_tool` for a non-gateway tool.
 ## Limits
 
 - Text only: image input is refused before the CLI starts.
-- Each request replays the conversation. The CLI adds about 13,000 tokens of its
+- Each admitted standalone request seeds its input. The CLI adds about 13,000 tokens of its
   own setup, so a tiny reply costs about 2 cents of allowance and long tool loops
   cost much more. `grok_cli` telemetry records `costUsd` from the CLI's result.
 - Every tool step adds a `search_tool` round trip before the `use_tool` call.

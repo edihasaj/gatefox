@@ -41,6 +41,7 @@ const usageMessage = () => {
 const usage = () => send(usageMessage());
 const message = (data: Record<string, unknown>) => event("assistant.message", { model: config.model, providerId: "copilot", content: "", toolRequests: [], ...data });
 const env = (name: string) => process.env[`GATEWAY_COPILOT_LIVE_${name}`];
+const steering: string[] = [];
 /** The end of a finished turn as CLI 1.0.97 sends it: `assistant.idle`, then `session.idle` a moment later, both ephemeral. */
 const idle = () => { event("assistant.idle", {}, { ephemeral: true }); setTimeout(() => event("session.idle", {}, { ephemeral: true }), 5); };
 const later = (ms: number, run: () => void) => { if (ms > 0) setTimeout(run, ms); else run(); };
@@ -148,6 +149,12 @@ if (noise) { const timer = setInterval(() => process.stdout.write(String.fromCha
     const messages = params.messages as Array<{ prompt: string; attachments?: Array<Record<string, unknown>> }>;
     log({ op: frame.method, prompts: messages.map(entry => entry.prompt), attachments: messages.map(entry => entry.attachments), files: messages.map(entry => (entry.attachments ?? []).map(fileOf)) }); ok({ messageIds: ["fixture"] });
     respond(messages.at(-1)!.prompt);
+  } else if (frame.method === "session.send") {
+    log({ op: "steering", mode: params.mode, prompt: params.prompt, attachments: params.attachments });
+    if (env("STEERING_REJECT")) { send({ jsonrpc: "2.0", id, error: { code: -32000, message: "refused" } }); continue; }
+    if (env("STEERING_SILENT")) continue;
+    if (env("STEERING_CRASH")) process.exit(9);
+    steering.push(String(params.prompt)); ok({ messageId: "steering" });
   } else if (frame.method === "session.tools.handlePendingToolCall") {
     const requestId = String(params.requestId); const known = pending.get(requestId);
     log({ op: "deliver", requestId, toolCallId: known?.toolCallId, result: params.result });
@@ -162,7 +169,9 @@ if (noise) { const timer = setInterval(() => process.stdout.write(String.fromCha
       event("external_tool.completed", { requestId });
       if (!pending.size) {
         const results = delivered.splice(0).map(value => typeof value === "string" ? value : String(record(value).textResultForLlm));
-        respond(results.some(value => value.includes("NEXT")) ? "[next]" : `final ${results.join("|")}`);
+        const updates = steering.splice(0); log({ op: "continuation", steering: updates, results: results.length });
+        if (env("POST_STEERING_CRASH") && updates.length) process.exit(9);
+        respond(results.some(value => value.includes("NEXT")) ? "[next]" : `final ${results.join("|")} ${updates.join("\n")}`);
       }
     });
     if (env("DELIVER_AFTER_ABORT")) held.push(accept); else accept();
@@ -177,6 +186,7 @@ if (noise) { const timer = setInterval(() => process.stdout.write(String.fromCha
   }
   else if (frame.method === "session.model.switchTo") {
     log({ op: "switch", effort: params.reasoningEffort });
+    if (env("SWITCH_REJECT")) { ok({ status: "rejected", deferred: false }); continue; }
     const changed = eventMessage("session.model_change", { source: "sdk", previousModel: config.model, newModel: params.modelId, previousReasoningEffort: config.reasoningEffort, reasoningEffort: env("SWITCH_EFFORT") ?? params.reasoningEffort });
     config.reasoningEffort = params.reasoningEffort;
     // A CLI that applies the change and says nothing about it.

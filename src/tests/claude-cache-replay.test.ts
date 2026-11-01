@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { ProviderError } from "../providers/provider.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { ClaudeSession } from "../providers/claude-session.js";
@@ -23,6 +24,9 @@ const providerId = `claude-b4-${process.pid}`;
 const keyOf = (threadId: string) => createHash("sha256").update(`${providerId}\0\0${threadId}`).digest("hex");
 const adapter = (sessions: Record<string, unknown>) => new ClaudeSubscription({ id: providerId, type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "replay", warmup: 0, ...sessions } });
 const thread = (id: string): InferenceContext => ({ threadId: id });
+
+/** A request refused without a hidden one-shot replay. */
+const unavailable = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable";
 
 async function turn(provider: ClaudeSubscription, input: ResponsesInputItem[], context: InferenceContext): Promise<string> {
   const events: InferenceEvent[] = [];
@@ -111,18 +115,19 @@ test("an in-place upgrade adopts the registry an earlier release left, sessions 
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
-test("a full registry replays a new thread rather than evicting a warm one", async () => {
+test("a full registry refuses a new thread rather than evicting a warm one or replaying it", async () => {
   const { f, starts, livePids, events } = await setup({ replies: [{ text: "a" }, { text: "b" }, { text: "c" }] });
   try {
     const provider = adapter({ mode: "live", max: 2 });
     await turn(provider, [user("first")], thread("t1"));
     await turn(provider, [user("second")], thread("t2"));
-    assert.equal(await turn(provider, [user("third")], thread("t3")), "c");
-    assert.deepEqual(await starts(), ["live", "live", "oneshot"], "the newcomer paid for itself instead of spending another thread's cache");
+    await assert.rejects(turn(provider, [user("third")], thread("t3")), unavailable);
+    assert.deepEqual(await starts(), ["live", "live"], "the newcomer neither spent another thread's cache nor paid for a replay");
     assert.equal(claudeLive({ max: 2, parkMinutes: 60 }).sessions().length, 2, "nothing was closed to make room");
     for (const pid of await livePids()) assert.ok(alive(pid), "both sessions are still running");
     assert.equal(evictable(sessionRegistry()), undefined, "a session a minute old is not evictable");
-    assert.deepEqual((await events()).map(entry => entry.outcome), ["spawned", "spawned", "fallback"], "and no session was reported evicted");
+    assert.deepEqual((await events()).map(entry => entry.outcome), ["spawned", "spawned", "fallback", "blocked"], "the miss is reported, then the refusal; no session was reported evicted");
+    assert.equal(await turn(provider, [user("first"), said("a"), user("again")], thread("t1")), "c", "the warm sessions still serve their own threads");
   } finally { await claudeLive({ max: 2, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
@@ -141,13 +146,15 @@ test("a session whose cache has gone cold is the one that makes room", async () 
   } finally { await claudeLive({ max: 1, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
-test("concurrent attaches never start more sessions than the cap", async () => {
+test("concurrent attaches never start more sessions than the cap: the one without a slot is refused, not replayed", async () => {
   const { f, livePids, starts } = await setup();
   try {
     const provider = adapter({ mode: "live", max: 2 });
-    await Promise.all([1, 2, 3].map(n => turn(provider, [user(`t${n}`)], thread(`c${n}`))));
+    const results = await Promise.allSettled([1, 2, 3].map(n => turn(provider, [user(`t${n}`)], thread(`c${n}`))));
     assert.ok((await livePids()).length <= 2, "the starting set counts toward the cap");
-    assert.deepEqual((await starts()).sort(), ["live", "live", "oneshot"], "the attach that found no slot replayed");
+    assert.deepEqual(results.map(result => result.status), ["fulfilled", "fulfilled", "rejected"], "the attach that found no slot was refused");
+    assert.ok(unavailable((results[2] as PromiseRejectedResult).reason));
+    assert.deepEqual((await starts()).sort(), ["live", "live"], "and no replay ran for it");
   } finally { await claudeLive({ max: 2, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
@@ -165,19 +172,19 @@ test("a diverged history is refused repeatedly without discarding its live sessi
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
-test("a crashed session holds its thread; only an idle hour lets a new process start", async () => {
-  const { f, starts, events } = await setup({ replies: [{ text: "one" }, { text: "two" }, { text: "three" }], exitAtFirstUser: true });
+test("a crashed session holds its thread: requests are refused without a replay until an idle hour lets a new process start", async () => {
+  const { f, starts, events } = await setup({ replies: [{ text: "unexpected" }], exitAtFirstUser: true });
   try {
     const provider = adapter({ mode: "live", max: 6 });
-    assert.equal(await turn(provider, [user("first")], thread("c1")), "one", "the live CLI died on its seed, so the one-shot path answered");
-    assert.deepEqual(await starts(), ["live", "oneshot"]);
+    await assert.rejects(turn(provider, [user("first")], thread("c1")), unavailable, "the live CLI died on its seed and nothing replayed it");
+    assert.deepEqual(await starts(), ["live"]);
     assert.ok((await events()).some(entry => entry.outcome === "crashed"), "and the crash itself is reported");
-    assert.equal(await turn(provider, [user("first"), said("one"), user("again")], thread("c1")), "two", "the next request replays: a new process would only die on the same cache write");
-    assert.ok((await events()).some(entry => entry.outcome === "fallback" && entry.missReason === "session_dead"), "held by the dead session");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "starting no live CLI");
+    await assert.rejects(turn(provider, [user("first"), said("one"), user("again")], thread("c1")), unavailable, "the next request is held: a new process would only die on the same cache write");
+    assert.ok((await events()).some(entry => entry.outcome === "blocked" && entry.missReason === "session_dead"), "held by the dead session");
+    assert.deepEqual(await starts(), ["live"], "starting no live CLI and no one-shot CLI");
     sessionRegistry().replayUntil.set(keyOf("c1"), { since: Date.now() - idleMs - 1, why: "crashed" });
-    assert.equal(await turn(provider, [user("first"), said("one"), said("two"), user("later")], thread("c1")), "three");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 2, "a thread quiet for an hour may hold a session again");
+    await assert.rejects(turn(provider, [user("first"), said("one"), said("two"), user("later")], thread("c1")), unavailable, "this fixture's CLI dies again");
+    assert.deepEqual(await starts(), ["live", "live"], "a thread quiet for an hour may hold a session again, and still never replays");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
@@ -186,22 +193,29 @@ test("a returning thread costs live sessions no more cache than replay would hav
   // inside its cache's hour, with a user message that trails spaces and a tool result that trails a newline.
   // Distinct text per thread: two chats that happen to ask the same thing share one replay cache prefix.
   const open = (n: number) => `start thread ${n}`;
+  let refused = 0;
+  // Live mode refuses the thread that finds no free slot instead of replaying it; the others carry on.
+  const attempt = async (provider: ClaudeSubscription, input: ResponsesInputItem[], context: InferenceContext) => {
+    try { await turn(provider, input, context); } catch (error) { if (!unavailable(error)) throw error; refused++; }
+  };
   const pattern = async (provider: ClaudeSubscription) => {
-    for (const n of [1, 2, 3]) await turn(provider, [user(open(n))], thread(`r${n}`));
-    await turn(provider, [user(open(1)), said("ok"), user(`follow up ${1}?  `)], thread("r1"));
-    await turn(provider, [user(open(2)), said("ok"), user(`follow up ${2}?  `)], thread("r2"));
-    await turn(provider, [user(open(1)), said("ok"), user(`follow up ${1}?  `), said("ok"), user(`third ${1}`)], thread("r1"));
+    for (const n of [1, 2, 3]) await attempt(provider, [user(open(n))], thread(`r${n}`));
+    await attempt(provider, [user(open(1)), said("ok"), user(`follow up ${1}?  `)], thread("r1"));
+    await attempt(provider, [user(open(2)), said("ok"), user(`follow up ${2}?  `)], thread("r2"));
+    await attempt(provider, [user(open(1)), said("ok"), user(`follow up ${1}?  `), said("ok"), user(`third ${1}`)], thread("r1"));
   };
   let replayWrites = 0; let replayStarts: string[] = [];
   const replaySetup = await setup({ replies: [{ text: "ok" }], cache: true });
   try { await pattern(adapter({ mode: "replay" })); replayWrites = await replaySetup.writes(); replayStarts = await replaySetup.starts(); } finally { await replaySetup.f.restore(); }
-  assert.equal(replayStarts.filter(entry => entry === "oneshot").length, 6, "every replay request ran its own CLI");
+  assert.equal(replayStarts.filter(entry => entry === "oneshot").length, 6, "every replay request ran its own CLI"); assert.equal(refused, 0);
   const liveSetup = await setup({ replies: [{ text: "ok" }], cache: true });
   try {
     await pattern(adapter({ mode: "live", max: 2 }));
     const liveWrites = await liveSetup.writes();
     assert.ok(replayWrites > 0 && liveWrites <= replayWrites, `live sessions wrote ${liveWrites} cache tokens against replay's ${replayWrites}`);
     assert.ok((await liveSetup.starts()).filter(entry => entry === "live").length <= 3, "at most one session per live thread");
+    assert.equal((await liveSetup.starts()).filter(entry => entry === "oneshot").length, 0, "no refused request was replayed");
+    assert.equal(refused, 1, "only the thread that found both slots warm was refused");
   } finally { await claudeLive({ max: 2, parkMinutes: 60 }).stop(); await liveSetup.f.restore(); }
 });
 

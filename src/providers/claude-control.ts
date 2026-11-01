@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { OpenAITool } from "../protocol/types.js";
 import { claudeEnvironment } from "./claude-environment.js";
 import { claudeToolName } from "./claude-tool-names.js";
+import { canonicalSchema } from "./tool-catalog.js";
 
 /** Part of the prompt-cache identity: any change rewrites every Claude chat's cache once. */
 export const gatewaySystemPrompt = "You are an inference backend. Use only supplied gateway MCP tools for caller-dispatched actions. The caller executes them and supplies results in the conversation. You cannot execute native tools. Respect system/developer messages in the supplied conversation. Never print invented tool-call JSON or XML; use actual tools. Otherwise answer normally.";
@@ -61,17 +62,11 @@ export function claudeEnv(authDirectory: string | undefined, live = false, reque
 }
 
 export interface ClaudeMcpTool { name: string; description: string; inputSchema: Record<string, unknown> }
-/** Object key and catalog order carry no schema meaning; arrays and scalar values stay exact. */
-function stableSchema(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableSchema);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, stableSchema(item)]));
-  return value;
-}
 /** The private MCP catalog. Its bytes depend only on the caller catalog, so forced choices keep the cached tool prefix. */
 export function claudeMcpCatalog(tools: OpenAITool[]): ClaudeMcpTool[] {
   return tools.map(tool => ({
     name: claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
-    inputSchema: stableSchema(tool.function.parameters || { type: "object", properties: {} }) as Record<string, unknown>,
+    inputSchema: canonicalSchema(tool.function.parameters || { type: "object", properties: {} }) as Record<string, unknown>,
   })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 

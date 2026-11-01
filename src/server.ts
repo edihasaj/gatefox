@@ -23,7 +23,7 @@ import { stripOpenAIInternal } from "./protocol/openai-internal.js";
 import type { InferenceEvent, ResponsesRequest, Usage, UsageAccounting } from "./protocol/types.js";
 import { modelCatalog } from "./catalog.js";
 import { reasoningScope, restoreReasoning, wrapReasoning } from "./protocol/reasoning-state.js";
-import { classifyProviderFailure, providerFailureDiagnostic, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "./provider-failure.js";
+import { classifyProviderFailure, providerFailureDiagnostic, providerFailureStatus, streamFailureCode, translationFailureFields, unsupportedCompactionFailure } from "./provider-failure.js";
 import { AdmissionRegistry } from "./admission-registry.js";
 import { UpstreamCapacityWatcher, type UpstreamCapacityDeps } from "./upstream-capacity.js";
 import { bindServerAdmission, type HandlerAdmissionState } from "./server-admission.js";
@@ -527,12 +527,12 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!res.destroyed) {
         if (res.writableNeedDrain && controller.signal.aborted) res.destroy();
         else if (res.headersSent && writer) {
-          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, known.status, known.upstream?.contextTokens);
+          if (writer instanceof MessagesWriter) writer.fail(known.code, known.message, providerFailureStatus(known), known.upstream?.contextTokens);
           else writer.fail(streamFailureCode(known), known.message);
           if (res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (!res.destroyed) { if (controller.signal.aborted && res.writableNeedDrain) res.destroy(); else res.end(); }
         }
-        else fail(known.status, known.code, known.message, known.upstream?.contextTokens);
+        else fail(providerFailureStatus(known), known.code, known.message, known.upstream?.contextTokens);
       }
     } finally { clearInterval(heartbeat); clearTimeout(headWait); res.off("close", cancel); controller.abort(); releaseAdmission?.(); releaseSnapshot(); active.delete(controller); admitted.delete(controller); pending.delete(recordPending); }
   };

@@ -10,7 +10,7 @@ import { restoreReasoning } from "../protocol/reasoning-state.js";
 import { ProviderError } from "../providers/provider.js";
 import { sessionLimits } from "../providers/copilot-live-session.js";
 import type { InferenceEvent, ResponsesRequest } from "../protocol/types.js";
-import { adapter, alive, harness, live, outputFor, queuedUsage, sleep, thread, tools, turn, until, user, type Harness } from "./copilot-live-harness.js";
+import { adapter, alive, callIds, harness, live, outputFor, queuedUsage, sleep, thread, tools, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 /** The process is dead, its folder is gone and the registry holds nothing. */
 async function closed(h: Harness, pid: number): Promise<void> {
@@ -18,6 +18,11 @@ async function closed(h: Harness, pid: number): Promise<void> {
   assert.ok(await until(() => live().sessions().length === 0), "the registry forgot it");
 }
 const kinds = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
+/** A request refused without a hidden one-shot replay, or a live session kept as it was. */
+const unavailable = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.code === "invalid_request" && error.upstream?.code === "session_continuity_unavailable";
+const preserved = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "copilot_session_preserved";
+/** Create calls of the one-shot path run in a `-run-` folder; the live path uses `-live-`. */
+const oneShots = async (h: Harness) => (await h.log()).filter(entry => entry.op === "create" && String(entry.directory).includes("-run-"));
 
 // A tool call is pending and the model then does something on its own: each of these means the runtime is acting (or about to act, and bill) without a request.
 const killers: Array<[string, string]> = [
@@ -79,7 +84,7 @@ test("a request for a tool call the model never announced fails the request and 
   } finally { await h.restore(); }
 });
 
-test("a stop while tools wait, followed by outputs and a new message, starts over: the session is aborted and never handed the outputs", { timeout: 30000 }, async () => {
+test("tool outputs followed by a new message continue the same session: the message is queued as steering before the results, in one continuation", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool]")];
@@ -87,23 +92,35 @@ test("a stop while tools wait, followed by outputs and a new message, starts ove
     const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "aborted by the user"), user("never mind, do this instead")]);
     assert.match(b.text, /^answer/);
     const entries = await h.log();
-    assert.ok(!entries.some(entry => entry.op === "deliver"), "no output was delivered to the old session");
-    assert.ok(entries.some(entry => entry.op === "abort" && entry.pid === pid), "the old session's pending turn was aborted");
-    assert.equal(entries.filter(entry => entry.op === "create").length, 2);
-    assert.equal(entries.filter(entry => entry.op === "session.sendMessages").at(-1)!.prompts.length, 4, "the new session is seeded with the whole history");
-    assert.ok((await kinds(h)).includes("reseeded:unexpected_tail"));
-    assert.ok(await until(() => !alive(pid)));
+    assert.equal(entries.filter(entry => entry.op === "create").length, 1, "no reseed, replacement or replay process");
+    assert.deepEqual([...new Set(entries.map(entry => entry.pid))], [pid], "one CLI served every call");
+    const index = (op: string) => entries.findIndex(entry => entry.op === op);
+    const steering = entries.filter(entry => entry.op === "steering"); const delivered = entries.filter(entry => entry.op === "deliver"); const continuations = entries.filter(entry => entry.op === "continuation");
+    assert.equal(steering.length, 1); assert.equal(steering[0].mode, "immediate"); assert.match(String(steering[0].prompt), /never mind, do this instead/);
+    assert.equal(delivered.length, callIds(a.output).length, "each pending call received its result once");
+    assert.ok(index("steering") < index("deliver"), "the message was acknowledged before any result was delivered");
+    assert.equal(continuations.length, 1, "exactly one continuation, so one model call");
+    assert.equal(continuations[0].results, delivered.length); assert.equal(continuations[0].steering.length, 1); assert.match(continuations[0].steering[0], /never mind, do this instead/, "the continuation that answered saw the new message");
+    assert.deepEqual(delivered.map(entry => entry.result), ["aborted by the user"], "with the tool result");
+    assert.equal(entries.filter(entry => entry.op === "abort").length, 0, "the pending turn was not aborted");
+    assert.ok(alive(pid)); assert.equal(live().sessions().length, 1);
+    const kinds_ = await kinds(h);
+    assert.ok(kinds_.includes("continued") && !kinds_.some(kind => kind.startsWith("reseeded") || kind.startsWith("blocked") || kind.startsWith("preserved")), kinds_.join(","));
   } finally { await h.restore(); }
 });
 
-test("two threads starting at once never run more live sessions than the cap", { timeout: 30000 }, async () => {
+test("two threads starting at once never run more live sessions than the cap: the later one is refused, not replayed", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter({ mode: "live", max: 1 });
-    await Promise.all([turn(provider, [user("a")], { context: { threadId: "A" } }), turn(provider, [user("b")], { context: { threadId: "B" } })]);
+    const [a, b] = await Promise.allSettled([turn(provider, [user("a")], { context: { threadId: "A" } }), turn(provider, [user("b")], { context: { threadId: "B" } })]);
+    assert.equal(a.status, "fulfilled", "the first start kept the only slot");
+    assert.equal(b.status, "rejected"); assert.ok(unavailable((b as PromiseRejectedResult).reason), "the later start was refused");
     assert.equal(live().sessions().length, 1);
     const creates = (await h.log()).filter(entry => entry.op === "create");
-    assert.equal(creates.length, 2); assert.equal(creates.filter(entry => String(entry.directory).includes("-live-")).length, 1, "one live process; the other request ran one-shot");
+    assert.equal(creates.length, 1, "no second process of either kind"); assert.equal(creates.filter(entry => String(entry.directory).includes("-live-")).length, 1);
+    assert.equal((await oneShots(h)).length, 0, "the refused request was not replayed one-shot");
+    assert.ok((await kinds(h)).includes("blocked:capacity"));
   } finally { await h.restore(); }
 });
 
@@ -138,35 +155,39 @@ test("usage that arrived but was not read when the client cancelled is still rep
   } finally { await h.restore(); }
 });
 
-test("tool outputs whose pending requests the session lost start the thread over instead of guessing", { timeout: 30000 }, async () => {
+test("tool outputs whose pending requests the session lost are refused and the session is kept instead of guessing", { timeout: 30000 }, async () => {
   const h = await harness(); const wait = sessionLimits.pendingMs; sessionLimits.pendingMs = 100;
   try {
-    const provider = adapter(); const first = [user("go [tool]")]; const a = await turn(provider, first);
+    const provider = adapter(); const first = [user("go [tool]")]; const a = await turn(provider, first); const [pid] = await h.pids();
     (live().sessions()[0] as unknown as { requests: Map<string, string> }).requests.clear();
-    const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]);
-    assert.match(b.text, /^answer/); assert.ok((await kinds(h)).includes("reseeded:tool_request_missing"));
-    assert.ok(!(await h.log()).some(entry => entry.op === "deliver"));
+    await assert.rejects(turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]), preserved);
+    assert.ok((await kinds(h)).includes("preserved:tool_request_missing"));
+    assert.ok(!(await h.log()).some(entry => entry.op === "deliver"), "nothing was handed to the session");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replacement or replay started");
+    assert.ok(alive(pid)); assert.equal(live().sessions().length, 1); assert.equal(live().sessions()[0].state, "awaiting_outputs", "the session still holds its pending tool call");
   } finally { sessionLimits.pendingMs = wait; await h.restore(); }
 });
 
-test("a session that refuses a tool result is replaced by a one-shot answer, and its process and folder go", { timeout: 30000 }, async () => {
+test("a session that refuses a tool result ends, and the request is refused without a one-shot replay", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const first = [user("go [tool][reject]")]; const a = await turn(provider, first);
-    const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]);
-    assert.match(b.text, /^answer/);
-    assert.ok((await kinds(h)).includes("fallback:delivery_rejected"));
+    await assert.rejects(turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]), unavailable);
+    assert.ok((await kinds(h)).includes("blocked:delivery_rejected"));
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replay process was created");
     const [pid] = await h.pids(); await closed(h, pid);
   } finally { await h.restore(); }
 });
 
-test("a session that never answers session.create falls back to one-shot within the start bound and leaves nothing behind", { timeout: 30000 }, async () => {
+test("a session that never answers session.create is refused within the start bound and leaves nothing behind", { timeout: 30000 }, async () => {
   const h = await harness(); const start = sessionLimits.startMs; sessionLimits.startMs = 200; process.env.GATEWAY_COPILOT_LIVE_STALL = h.stall;
   try {
-    const a = await turn(adapter(), [user("hello")]);
-    assert.match(a.text, /^answer/); assert.ok((await kinds(h)).includes("fallback:initialize_timeout"));
-    const [stalled] = await h.pids(); assert.ok(await until(() => !alive(stalled)), "the stalled CLI was killed");
+    await assert.rejects(turn(adapter(), [user("hello")]), unavailable);
+    assert.ok((await kinds(h)).includes("blocked:initialize_timeout"));
+    const pids = await h.pids(); assert.equal(pids.length, 1, "the stalled CLI is the only process; nothing replayed");
+    assert.ok(await until(() => !alive(pids[0])), "the stalled CLI was killed");
     assert.equal(live().sessions().length, 0);
+    assert.ok(await until(async () => (await h.liveDirs()).length === 0), "its folder was removed");
   } finally { sessionLimits.startMs = start; await h.restore(); }
 });
 

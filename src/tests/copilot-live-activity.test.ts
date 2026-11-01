@@ -21,10 +21,10 @@ test("the gateway is busy while a Copilot session starts and while it generates,
     // The CLI is started and does not answer session.create until the test lets it.
     const starting = turn(provider, [user("hello")]);
     assert.ok(await until(() => busy()), "busy while the session starts"); assert.equal(runtimeBusy(), true);
-    await writeFile(gate, "x"); await starting; idle();
+    await writeFile(gate, "x"); const hello = await starting; idle();
     // The turn streams its answer for a while.
     let during: boolean | undefined;
-    const request = restoreReasoning({ model: "fixture", input: [user("go [slow]")], tools } as ResponsesRequest, "scope");
+    const request = restoreReasoning({ model: "fixture", input: [user("hello"), ...hello.output, user("go [slow]")], tools } as ResponsesRequest, "scope");
     for await (const event of provider.infer(request, new AbortController().signal, thread)) if (event.type === "text" && during === undefined) during = busy();
     assert.equal(during, true, "busy while a turn generates");
     assert.ok(await until(() => !busy())); idle();

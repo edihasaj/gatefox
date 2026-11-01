@@ -8,6 +8,7 @@ import { reportException } from "../error-report.js";
 import { record } from "./copilot-rpc.js";
 import type { CopilotTurn } from "./copilot-turn.js";
 import { ProviderError } from "./provider.js";
+import { CliContinuityUnavailable } from "./cli-continuity.js";
 
 export type SessionState = "starting" | "generating" | "awaiting_outputs" | "turn_done" | "closed";
 export type SessionEnd = "reaped" | "evicted" | "crashed" | "closed";
@@ -25,6 +26,8 @@ export const sessionLimits = {
   idleMs: 5000,
   /** How long a continuation waits for the pending requests of the calls it answers. */
   pendingMs: 2000,
+  /** Bound confirmation of a requested effort change. */
+  switchMs: 10000,
   /** How long the CLI may take to accept one tool result. */
   deliverMs: 15000,
 };
@@ -57,7 +60,8 @@ export interface LiveTurn {
    * New conversation items as user messages (rendered into the session's folder, which holds their images), or the caller's tool outputs by call id.
    * `stopped` says the request is over: the rendering must write nothing more, since the folder is about to go.
    */
-  begin: { prompts: (directory: string, stopped: () => boolean) => Promise<Prompt[]> } | { outputs: Map<string, string | ToolResult> };
+  begin: { prompts: (directory: string, stopped: () => boolean) => Promise<Prompt[]> }
+    | { outputs: Map<string, string | ToolResult>; prompts?: (directory: string, stopped: () => boolean) => Promise<Prompt[]> };
   /** Ledger digests of this request's canonical input. */
   prefix: string[];
   turn: CopilotTurn;
@@ -87,6 +91,7 @@ interface Attached {
  * whenever the session ends, however it ends.
  */
 export class CopilotLiveSession {
+  readonly queuedInputVersion = 1;
   state: SessionState = "starting";
   readonly key: string; readonly fingerprint: string; readonly window: string; effort?: string;
   ledger: LedgerState = { items: [] }; pending: string[] = [];
@@ -174,11 +179,18 @@ export class CopilotLiveSession {
     if (this.state !== "turn_done" || !this.client) return false;
     this.switching = { model, effort };
     const rpc = this.client.rpc;
-    const result = await rpc.request("session.model.switchTo", { sessionId: this.sessionId, modelId: model, reasoningEffort: effort }, 10000).catch(() => undefined);
+    const result = await rpc.request("session.model.switchTo", { sessionId: this.sessionId, modelId: model, reasoningEffort: effort }, sessionLimits.switchMs).catch(() => undefined);
     // A change that failed because the CLI is gone is the session's death, whether or not the event router has noticed yet.
     if (!result && rpc.closed) this.crash(new ProviderError("cli_failed", "Copilot CLI closed before completion"), "exited");
+    if ((this.state as SessionState) === "closed") throw new CliContinuityUnavailable("Copilot", "effort_unconfirmed");
     const ok = result?.status === "applied" && result.deferred !== true;
     if (ok) this.effort = effort;
+    else if (result?.status === "rejected" && this.switching) this.switching = undefined;
+    else {
+      const error = new CliContinuityUnavailable("Copilot", "effort_unconfirmed");
+      if ((this.state as SessionState) !== "closed") this.violation(error, "effort_unconfirmed");
+      throw error;
+    }
     return ok && this.state === "turn_done";
   }
 
@@ -243,6 +255,18 @@ export class CopilotLiveSession {
       // A rendering that failed because the session ended under it (its folder is gone) failed because of that.
       const messages = await render.catch(error => { throw attached.error ?? error; }); stillWanted();
       await rpc.request("session.sendMessages", { sessionId: this.sessionId, messages }, 30000); return;
+    }
+    if (begin.prompts) {
+      const render = begin.prompts(this.client!.directory, () => attached.error !== undefined);
+      this.rendering = render.then(() => {}, () => {});
+      const messages = await render.catch(error => { throw attached.error ?? error; });
+      for (const message of messages) {
+        stillWanted();
+        // Native immediate-mode admission queues steering at the active tool/model gap.
+        // Acknowledgment must precede every tool result; rejection never falls back.
+        await rpc.request("session.send", { sessionId: this.sessionId, ...message, mode: "immediate" }, sessionLimits.deliverMs)
+          .catch(() => { throw attached.error ?? new CliContinuityUnavailable("Copilot", "steering_rejected"); });
+      }
     }
     // Anything but a confirmed delivery (a refusal, an error reply, no answer in time, a full connection) means the
     // session may not hold the result. Nothing has been streamed yet, so the request falls back to one-shot.

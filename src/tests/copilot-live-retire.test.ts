@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { gatewayToken, validateConfig, type GatewayConfig } from "../config.js";
 import { createGatewayHandler, startGateway } from "../server.js";
 import { CopilotSubscription, retireUnconfiguredCopilotScopes } from "../providers/copilot.js";
-import type { Provider } from "../providers/provider.js";
+import { ProviderError, type Provider } from "../providers/provider.js";
 import { adapter, alive, harness, live, providerId, registeredScopes, sleep, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 // A provider that a configuration no longer serves must not keep a live session, which holds a CLI process and the
@@ -64,8 +64,8 @@ test("a session reseeded in place is still retired by a reload that no longer se
   try {
     const provider = adapter();
     await turn(provider, [user("hello")]);
-    // Unrelated input: the history does not extend what the session holds, so the thread starts over in a new process.
-    await turn(provider, [user("something else entirely")]);
+    // Other instructions are another session identity, so the thread starts over in a new process.
+    await turn(provider, [user("something else entirely")], { extra: { instructions: "Be brief" } });
     assert.ok((await outcomesOf(h)).some(outcome => outcome.startsWith("reseeded")), (await outcomesOf(h)).join(","));
     assert.equal(live().sessions().length, 1); const pid = (await h.pids()).at(-1)!;
     assert.deepEqual([...registeredScopes().values()], [`${providerId}\0`], "the reseeded session has its provider scope");
@@ -81,7 +81,7 @@ test("a reload that arrives while a reseeded session is still starting retires i
     const provider = adapter();
     await turn(provider, [user("hello")]);
     process.env.GATEWAY_COPILOT_LIVE_SLOW_CREATE = "800";
-    const answered = turn(provider, [user("something else entirely")]);
+    const answered = turn(provider, [user("something else entirely")], { extra: { instructions: "Be brief" } });
     // The old session is gone and the new process has not answered session.create: the attach is starting it.
     assert.ok(await until(async () => (await h.log()).filter(entry => entry.op === "create").length === 2));
     assert.equal(live().sessions().length, 0, "the new session is not registered yet");
@@ -93,15 +93,17 @@ test("a reload that arrives while a reseeded session is still starting retires i
   } finally { await h.restore(); }
 });
 
-test("an attach that falls back to the one-shot path leaves no provider scope behind", { timeout: 30000 }, async () => {
+test("an attach that is refused for want of a slot leaves no provider scope behind", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     // One slot, and a running session is never evicted: the second thread cannot get one.
     const provider = adapter({ mode: "live", max: 1 }); const controller = new AbortController();
     const running = turn(provider, [user("go [hang]")], { controller, context: { threadId: "busy" } }).then(() => undefined, () => undefined);
     assert.ok(await until(async () => (await h.log()).some(entry => entry.op === "session.sendMessages")));
-    assert.match((await turn(provider, [user("hello")], { context: { threadId: "other" } })).text, /^answer/, "the second thread is served one-shot");
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "capacity"), "it fell back for want of a slot");
+    await assert.rejects(turn(provider, [user("hello")], { context: { threadId: "other" } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable", "the second thread is refused");
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "capacity"), "it was refused for want of a slot");
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, "no replay process was created");
     assert.equal(registeredScopes().size, 1, "only the session that exists has a scope");
     controller.abort(); await running;
   } finally { await h.restore(); }

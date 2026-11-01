@@ -52,14 +52,14 @@ test("bare-model defaults require subscription accounts and one boolean designat
 test("claudeSessions is optional, defaulted, limited and only valid on Claude subscriptions", () => {
   const gib = 1024 ** 3;
   // The default cap is a tenth of RAM in 300 MB slots, clamped to 6..32: small Macs keep today's 6.
-  assert.deepEqual(claudeSessionSettings(claude(), 8 * gib), { mode: "replay", max: 6, parkMinutes: 60, warmup: 1, replayFormat: "text" });
+  assert.deepEqual(claudeSessionSettings(claude(), 8 * gib), { mode: "live", max: 6, parkMinutes: 60, warmup: 1, replayFormat: "text" });
   assert.deepEqual([claudeSessionMax(16 * gib), claudeSessionMax(64 * gib), claudeSessionMax(256 * gib), claudeSessionMax(gib)], [6, 21, 32, 6]);
-  assert.deepEqual(claudeSessionSettings(claude(), 64 * gib), { mode: "replay", max: 21, parkMinutes: 60, warmup: 1, replayFormat: "text" });
+  assert.deepEqual(claudeSessionSettings(claude(), 64 * gib), { mode: "live", max: 21, parkMinutes: 60, warmup: 1, replayFormat: "text" });
   assert.equal(claudeSessionSettings(claude({ claudeSessions: { max: 3 } }), 64 * gib).max, 3, "an explicit value wins over the memory default");
   assert.equal(claudeSessionSettings(claude()).max, claudeSessionMax(), "this machine's default comes from its own memory");
   const live = config([claude({ claudeSessions: { mode: "live", max: 16, parkMinutes: 5, warmup: 2, replayFormat: "json" } })]).providers[0];
   assert.deepEqual(claudeSessionSettings(live), { mode: "live", max: 16, parkMinutes: 5, warmup: 2, replayFormat: "json" });
-  assert.deepEqual(claudeSessionSettings(config([claude({ claudeSessions: { max: 1, parkMinutes: 240 } })]).providers[0]), { mode: "replay", max: 1, parkMinutes: 240, warmup: 1, replayFormat: "text" });
+  assert.deepEqual(claudeSessionSettings(config([claude({ claudeSessions: { max: 1, parkMinutes: 240 } })]).providers[0]), { mode: "live", max: 1, parkMinutes: 240, warmup: 1, replayFormat: "text" });
   for (const claudeSessions of [{ mode: "live-ish" }, { max: 0 }, { max: 33 }, { max: 2.5 }, { parkMinutes: 4 }, { parkMinutes: 241 }, { warmup: -1 }, { warmup: 6 }, { warmup: 1.5 }, { warmup: "1" }, { replayFormat: "yaml" }, [], null, "live"]) {
     assert.throws(() => config([claude({ claudeSessions: claudeSessions as ProviderConfig["claudeSessions"] })]), /claudeSessions/, JSON.stringify(claudeSessions));
   }

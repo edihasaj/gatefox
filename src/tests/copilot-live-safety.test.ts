@@ -77,7 +77,7 @@ test("gateway shutdown closes every live session", { timeout: 30000 }, async () 
   } finally { await h.restore(); }
 });
 
-test("requests that cannot join a session run one-shot; forced and disabled tool choices are served in the session", { timeout: 30000 }, async () => {
+test("standalone requests run one-shot; forced and disabled tool choices are served in the session, and a forced choice over tool outputs is refused", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); const creates = async () => (await h.log()).filter(entry => entry.op === "create");
@@ -95,11 +95,15 @@ test("requests that cannot join a session run one-shot; forced and disabled tool
     assert.match(last.prompts.at(-1), /\nUse the required caller tool tool_lookup_[0-9a-f]{16}\.$/);
     assert.equal(entries.filter(entry => entry.op === "create").at(-1)!.params.availableTools.length, 1, "the catalog is whole");
     assert.equal(live().sessions().length, 1); assert.equal(live().sessions()[0].pid, pid);
-    // Tool outputs cannot carry the choice line, so that one request starts a new session.
+    // Tool outputs cannot carry the choice line, so that one request is refused and the session, with its pending call, is kept.
     const third = [...second, ...forced.output, ...outputFor(forced.output, "again [tool]")];
-    await turn(provider, third, { extra: { tool_choice: "required" } });
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "reseeded" && entry.missReason === "forced_choice"));
-    assert.notEqual(live().sessions()[0].pid, pid); assert.ok(await until(() => !alive(pid)));
+    await assert.rejects(turn(provider, third, { extra: { tool_choice: "required" } }),
+      (failure: unknown) => failure instanceof ProviderError && failure.status === 400 && failure.upstream?.code === "copilot_session_preserved");
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "preserved" && entry.missReason === "forced_choice"));
+    assert.equal((await creates()).length, 3, "nothing was reseeded or replayed"); assert.equal(live().sessions()[0].pid, pid); assert.ok(alive(pid));
+    assert.ok(!(await h.log()).some(entry => entry.op === "deliver"), "the outputs were not handed to the session");
+    // The same outputs under the ordinary choice continue that very session.
+    await turn(provider, third); assert.equal((await creates()).length, 3); assert.equal(live().sessions()[0].pid, pid);
     // `none` keeps the catalog and adds a line instead of emptying it.
     const before = (await creates()).length;
     await turn(provider, [user("fresh")], { context: { threadId: "thread-none" }, extra: { tool_choice: "none" } });
@@ -112,13 +116,14 @@ test("requests that cannot join a session run one-shot; forced and disabled tool
   } finally { await h.restore(); }
 });
 
-test("a session whose CLI dies before its first event falls back to one-shot, and one-shot mode retires parked sessions", { timeout: 30000 }, async () => {
+test("a session whose CLI dies before its first event is refused without a replay, and one-shot mode retires parked sessions", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const provider = adapter(); process.env.GATEWAY_COPILOT_LIVE_DIE = h.die;
-    const a = await turn(provider, [user("hello [die]")], { context: thread });
-    assert.match(a.text, /^answer/); assert.equal((await h.pids()).length, 2, "the dead CLI was replaced by a one-shot CLI");
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "stream_failed"));
+    await assert.rejects(turn(provider, [user("hello [die]")], { context: thread }),
+      (failure: unknown) => failure instanceof ProviderError && failure.status === 400 && failure.upstream?.code === "session_continuity_unavailable");
+    assert.equal((await h.pids()).length, 1, "only the dead CLI ran; nothing replaced it");
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "stream_failed"));
     await closed(h, (await h.pids())[0]);
     await turn(provider, [user("fresh")], { context: { threadId: "thread-2" } }); const pid = (await h.pids()).at(-1)!; assert.equal(live().sessions().length, 1);
     // The same provider switched to one-shot: its parked session ends with the next request.
