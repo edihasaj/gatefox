@@ -38,6 +38,14 @@ Messages requests use the existing gateway client credential in either
 They are client credentials for this gateway, not upstream provider credentials.
 Provider authentication remains on the inference host.
 
+Claude Code's structured JSON `metadata.user_id` carries a conversation UUID
+alongside device and account fields. Gateway extracts only that bounded UUID into
+internal session routing. Explicit valid session/thread headers take precedence;
+arbitrary user IDs, malformed JSON and invalid UUIDs never group conversations.
+Device and account identity fields are not forwarded. Live Claude and Copilot
+adapters can use this session identity without a Codex thread header. Each client
+still owns its saved chat, archive, permissions, instructions and tool execution.
+
 Token counting is optional in the Claude Code gateway contract. The gateway does
 not return fabricated exact token counts. Endpoint absence or the unsupported
 response lets Claude Code use its own character-based estimate.
@@ -236,6 +244,22 @@ token counts and the Copilot cache-write figure stay in the local ledger and nev
 appear in the reply. A Responses reply never carries cache writes.
 
 ## Verification
+
+For session continuity with real client processes and synthetic backend inference:
+
+```sh
+node scripts/e2e-client-sessions.mjs \
+  --package /absolute/path/to/verified/installed/package \
+  --claude /absolute/path/to/claude \
+  --code /absolute/path/to/harness-gateway \
+  --root /tmp/fresh-client-session-proof
+```
+
+It checks Claude Code Write/Read and Codex app-server command execution, saved-chat
+resume and follow-up, requiring one backend process per client conversation.
+Private homes isolate the clients, and native configuration hashes must remain
+unchanged. This fixture sends no paid inference and does not establish provider
+cache-hit rates or billing parity. Real provider verification remains separate.
 
 Run the repository gates first:
 

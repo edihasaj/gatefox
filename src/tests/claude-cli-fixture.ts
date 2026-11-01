@@ -27,6 +27,8 @@ export interface FixtureReply {
   failureCode?: string;
 }
 export interface FixtureScenario { replies: FixtureReply[]; exitAtSpawn?: boolean; /** A live CLI exits when its first user message arrives, before any output. */ exitAtFirstUser?: boolean; perTurnEffort?: boolean; /** Never starts the MCP server, so no relay hello arrives. */ noMcp?: boolean;
+  /** Reject or delay the empty settings acknowledgment used to order queued steering. */
+  rejectSteering?: boolean; delaySteeringMs?: number; crashSteering?: boolean;
   /** Report cache tokens from what this CLI was actually sent, the way Claude bills a growing prefix; see `cacheModel`. */
   cache?: boolean }
 export interface FixtureEntry {
@@ -124,7 +126,8 @@ async function fixtureMain(): Promise<void> {
   let cache = { read: 100, write: 10 };
   const usage = (output: number) => ({ input_tokens: 3, cache_read_input_tokens: scenario.cache ? cache.read : 100, cache_creation_input_tokens: scenario.cache ? cache.write : 10, output_tokens: output });
   const event = (value: Json) => out({ type: "stream_event", event: value });
-  let counter = 0; let active: { interrupt(): void } | undefined;
+  let counter = 0; let active: { interrupt(): void } | undefined; let waitingTools = false;
+  const queued: Json[][] = [];
   const interrupted = (id: string, partial: string, timer: NodeJS.Timeout) => () => {
     clearInterval(timer); active = undefined;
     if (partial) out({ type: "assistant", message: { id, content: [{ type: "text", text: partial }] } });
@@ -179,6 +182,7 @@ async function fixtureMain(): Promise<void> {
     if (reply.text) text(reply.text);
     if (reply.foreign) { event({ type: "content_block_start", index, content_block: { type: "tool_use", id: "toolu_foreign", name: reply.foreign, input: {} } }); return; }
     const calls = ((reply.calls || []) as Json[]).map((entry, n) => ({ id: `toolu_${process.pid}_${counter}_${n}`, name: `mcp__gateway__${names.get(entry.tool) ?? entry.tool}`, input: entry.input }));
+    waitingTools = calls.length > 0;
     for (const [n, entry] of calls.entries()) {
       if (n === 1 && reply.between) text(reply.between);
       event({ type: "content_block_start", index, content_block: { type: "tool_use", id: entry.id, name: entry.name, input: {} } });
@@ -195,11 +199,16 @@ async function fixtureMain(): Promise<void> {
       return;
     }
     out({ type: "tool_progress", tool_use_id: calls[0].id, elapsed_time_seconds: 30 });
+    const delivered: Json[] = [];
     for (const entry of calls) {
       const response = await call("tools/call", { name: entry.name.replace("mcp__gateway__", ""), arguments: entry.input, _meta: { "claudecode/toolUseId": entry.id, progressToken: entry.id } });
       log({ toolResult: (response.result.content as Json[]).map(part => part.type === "text" ? part.text : `[${part.type} ${part.mimeType}]`).join("") });
+      delivered.push(...response.result.content);
       out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: entry.id }] } });
     }
+    waitingTools = false;
+    const steering = queued.splice(0).flat();
+    if (scenario.cache) cache = cacheUsage([...delivered, ...steering]);
     out({ type: "system", subtype: "status", status: null });
     await play(nextReply());
   };
@@ -209,12 +218,16 @@ async function fixtureMain(): Promise<void> {
     if (message.type === "control_request") {
       const subtype = message.request.subtype as string;
       log({ control: subtype, ...(subtype === "apply_flag_settings" ? { effort: message.request.settings?.effortLevel } : {}) });
-      out({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: {} } });
+      const barrier = subtype === "apply_flag_settings" && Object.keys(message.request.settings || {}).length === 0;
+      if (barrier && scenario.crashSteering) { mcp?.kill(); process.exit(9); }
+      const respond = () => out({ type: "control_response", response: { subtype: barrier && scenario.rejectSteering ? "error" : "success", request_id: message.request_id, response: {} } });
+      if (barrier && scenario.delaySteeringMs) setTimeout(respond, scenario.delaySteeringMs); else respond();
       if (subtype === "interrupt") active?.interrupt();
       if (subtype === "end_session") { log({ exit: "end_session" }); mcp?.kill(); process.exit(0); }
     } else if (message.type === "user") {
       const content = message.message.content as Json[];
       log({ user: content.length, heads: content.map(block => block.type === "text" ? String(block.text).split("\n")[0] : block.type) });
+      if (waitingTools) { queued.push(content); return; }
       if (scenario.cache) cache = cacheUsage(content);
       if (live && scenario.exitAtFirstUser) { mcp?.kill(); process.exit(5); }
       out({ type: "system", subtype: "init", per_turn_effort_active: scenario.perTurnEffort ?? true, fast_mode_state: "off" });

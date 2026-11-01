@@ -33,6 +33,11 @@ export interface Provider {
   infer(request: ResponsesRequest, signal: AbortSignal, context?: InferenceContext): AsyncIterable<InferenceEvent>;
 }
 
+/** Existing thread identities stay stable; session-only clients occupy a separate key space. */
+export function providerConversationId(context: InferenceContext): string | undefined {
+  return context.threadId ?? (context.sessionId ? JSON.stringify(["session", context.sessionId]) : undefined);
+}
+
 /** Longest accepted x-codex-turn-state; a wrapped upstream value must fit within it. */
 export const maxTurnStateLength = 8192;
 type Headers = Record<string, string | string[] | undefined>;

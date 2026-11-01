@@ -25,7 +25,7 @@ export const sessionKey = (scope: string, threadId: string) => createHash("sha25
 
 /** Why a request used the one-shot path instead of a live session. Fixed values only. */
 export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "warmup" | "capacity" | "spawn_failed" | "initialize_timeout" |
-  "fingerprint_changed" | "window_changed" | "context_compacted" | "prefix_diverged" | "unexpected_tail" | "messages_after_tools" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
+  "fingerprint_changed" | "window_changed" | "context_compacted" | "client_history_replaced" | "prefix_diverged" | "unexpected_tail" | "messages_after_tools" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
 export interface ClaudeLiveInput {
@@ -35,6 +35,8 @@ export interface ClaudeLiveInput {
   threadId: string;
   windowId?: string;
   turnId?: string;
+  /** Identified native Messages clients own history replacement; this never bypasses the cache budget. */
+  callerHistoryReplacement?: boolean;
   /** The CLI model id. */
   model: string;
   /** The mapped CLI effort; absent means thinking is off. */

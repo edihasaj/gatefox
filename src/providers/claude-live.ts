@@ -3,7 +3,7 @@ import type { ChatToolSelection } from "../protocol/types.js";
 import { telemetry } from "../telemetry.js";
 import { ProviderError } from "./provider.js";
 import { choiceBlock } from "./claude-render.js";
-import { decide, ledgerEntries, messagesAfterTools, type LedgerDecision, type LedgerPhase } from "./claude-ledger.js";
+import { decide, ledgerEntries, messagesAfterTools, queuedToolContinuation, type LedgerDecision, type LedgerPhase, type LedgerEntry } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
@@ -11,10 +11,9 @@ import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveInput, type ClaudeLi
 import { systemPrefixOnly } from "./claude-usage.js";
 
 /**
- * Live Claude sessions: one long-lived CLI process per Codex thread, loaded lazily by
- * claude.ts. A request continues its thread's session when the history extends what the
- * session holds; otherwise it reseeds the thread in a new process. Anything that fails
- * before output falls back to the one-shot path.
+ * Live Claude sessions: one long-lived CLI process per identified conversation, loaded
+ * lazily by claude.ts. Compatible history continues; validated replacements reseed.
+ * Mismatches preserve and refuse; eligible pre-output CLI failures may fall back.
  */
 type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected";
 /**
@@ -22,7 +21,8 @@ type ReseedReason = ClaudeMissReason | "idle_expired" | "effort_rejected";
  * provider with a lower cap may evict another provider's idle sessions; park time is per session.
  */
 type Settings = { max: number; parkMinutes: number; warmup: number };
-type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" };
+type Plan = Exclude<LedgerDecision, { kind: "reseed" }> | { kind: "seed" }
+  | { kind: "continue_outputs_with_messages"; outputs: LedgerEntry[]; from: number };
 
 const sha = (value: string) => createHash("sha256").update(value).digest("hex");
 // Bump when rendered replay semantics change so adopted sessions reseed safely once.
@@ -108,7 +108,13 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     else if (session.window !== window) reason = "window_changed";
     else if (parkedMs >= idleMs) reason = "idle_expired";
     else if (decision.kind === "reseed") {
-      reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
+      const queued = decision.reason === "unexpected_tail" && session.state === "awaiting_outputs"
+        ? queuedToolContinuation(entries, decision.divergedAt, session.pending, messages) : undefined;
+      if (queued && session.queuedInputVersion === 1 && messages === input.conversation.length && input.effort === session.effort) {
+        plan = { kind: "continue_outputs_with_messages", ...queued };
+      } else reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
+        : decision.reason === "prefix_diverged" && input.callerHistoryReplacement && session.state === "turn_done" && !session.pending.length
+          ? "client_history_replaced"
         : decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && messagesAfterTools(entries, decision.divergedAt, session.pending)
           ? "messages_after_tools" : decision.reason;
       divergedAt = decision.divergedAt;
@@ -189,8 +195,9 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
 
 function start(registry: SessionRegistry, settings: Settings, session: ClaudeSession, input: ClaudeLiveInput, prefix: string[], plan: Plan, signal: AbortSignal, decision: Record<string, unknown>) {
   const forcedBlock = choiceBlock(input.choice, input.tools);
-  const begin = plan.kind === "continue_outputs"
-    ? { outputs: new Map<string, RelayContent[]>(plan.outputs.map(entry => [entry.callId!, relayContent(entry.item?.output)])) }
+  const begin = plan.kind === "continue_outputs" || plan.kind === "continue_outputs_with_messages"
+    ? { outputs: new Map<string, RelayContent[]>(plan.outputs.map(entry => [entry.callId!, relayContent(entry.item?.output)])),
+      ...(plan.kind === "continue_outputs_with_messages" ? { user: [...input.render(plan.from), ...(forcedBlock ? [forcedBlock] : [])] } : {}) }
     : { user: [...input.render(plan.kind === "continue_user" ? plan.from : 0), ...(forcedBlock ? [forcedBlock] : [])] };
   session.park(settings.parkMinutes * 60000);
   return session.run({

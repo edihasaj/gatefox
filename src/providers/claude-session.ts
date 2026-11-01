@@ -36,7 +36,7 @@ export interface SessionOptions {
 
 /** One request served by the session. */
 export interface SessionTurn {
-  begin: { user: ContentBlock[] } | { outputs: Map<string, RelayContent[]> };
+  begin: { user: ContentBlock[] } | { outputs: Map<string, RelayContent[]>; user?: ContentBlock[] };
   /** Ledger digests of this request's canonical input. */
   prefix: string[];
   stream: ClaudeMessageStream;
@@ -52,11 +52,17 @@ export interface SessionTurn {
 
 type Block = { type?: unknown; name?: unknown };
 interface Attached {
+  steeringPending?: boolean;
+  /** Once queued, a transport failure must never fall back to replay, even after acknowledgment. */
+  steered?: boolean;
   turn: SessionTurn; queue: Array<Record<string, unknown>>; wake?: () => void; error?: Error; onAbort: () => void;
   /** The text this request emitted: Codex replays it, and it can differ from the native text (paragraph breaks). */
   text: string;
 }
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
+const steeringEnded = () => new ProviderError("invalid_request",
+  "Claude ended while handling a queued conversation update. Gateway stopped without replaying history. Start a fresh chat to recover.",
+  400, { code: "steering_barrier_failed", event: "claude.session" });
 const maxLine = 8 * 1024 * 1024;
 /** Startup bound (spawn, initialize and the relay hello); tests shorten it. */
 export const sessionLimits = { startMs: 15000 };
@@ -100,6 +106,8 @@ async function privateDirectory(path: string): Promise<void> {
  * violation that closes the session.
  */
 export class ClaudeSession {
+  /** Adopted older instances lack this capability and use one controlled reseed. */
+  readonly queuedInputVersion = 1;
   /** A completed client compaction permits one explicit replacement history. */
   compacted?: boolean;
   state: SessionState = "starting";
@@ -204,11 +212,33 @@ export class ClaudeSession {
 
   /** Attaches one request and starts it. The returned events end with `done`, or throw. */
   run(turn: SessionTurn): AsyncIterable<InferenceEvent> {
+    if (turn.signal.aborted) throw cancelled();
     const attached: Attached = { turn, queue: [], text: "", onAbort: () => this.abort(attached) };
     this.attached = attached; this.state = "generating"; this.messageTool = false; this.onUsage = turn.onUsage;
     turn.signal.addEventListener("abort", attached.onAbort, { once: true });
-    if ("user" in turn.begin) this.write(userLine(turn.begin.user)); else this.relay?.deliver(turn.begin.outputs);
+    if ("outputs" in turn.begin) {
+      if (turn.begin.user?.length) {
+        attached.steered = attached.steeringPending = true;
+        this.write(userLine(turn.begin.user));
+        void this.deliverAfterSteering(attached, turn.begin.outputs);
+      } else this.relay?.deliver(turn.begin.outputs);
+    } else this.write(userLine(turn.begin.user));
     return this.events(attached);
+  }
+
+  /** The stdin control response orders queued user input before releasing pending MCP results. */
+  private async deliverAfterSteering(attached: Attached, outputs: Map<string, RelayContent[]>): Promise<void> {
+    const accepted = await this.control("apply_flag_settings", { settings: {} }, 5000);
+    if (this.attached !== attached) return;
+    if (!accepted || attached.turn.signal.aborted) {
+      attached.error = attached.turn.signal.aborted ? cancelled() : new ProviderError("invalid_request",
+        "Claude could not confirm the queued conversation update. Gateway stopped before delivering tool results or replaying history. Start a fresh chat or retry after checking the provider.",
+        400, { code: "steering_barrier_failed", event: "claude.session" });
+      void this.close("closed", "steering_barrier_failed", true);
+      return;
+    }
+    attached.steeringPending = false;
+    this.relay?.deliver(outputs);
   }
 
   private async *events(attached: Attached): AsyncGenerator<InferenceEvent> {
@@ -265,6 +295,7 @@ export class ClaudeSession {
     if (this.attached !== attached) return;
     this.detach(attached); attached.error = cancelled(); attached.wake?.();
     attached.turn.onEnd("interrupted", attached.turn.stream.observedTokens);
+    if (attached.steeringPending) { void this.close("closed", "interrupted_steering", true); return; }
     if (this.messageTool) { void this.close("closed", "interrupted_tool", true); return; }
     this.pending = []; this.ledger = { items: attached.turn.prefix, partial: partialDigest(attached.text) };
     const rest = attached.queue.splice(0);
@@ -284,6 +315,7 @@ export class ClaudeSession {
 
   /** A stream failure closes the session at once: the CLI must not act on a foreign or failed turn. */
   private failed(attached: Attached, error: unknown): unknown {
+    if (attached.steered && error instanceof ProviderError && error.code === "cli_failed") error = steeringEnded();
     if (this.attached === attached) {
       this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
       void this.close("crashed", error instanceof ProviderError ? error.upstream?.code ?? error.code : "failed", true);
@@ -374,7 +406,9 @@ export class ClaudeSession {
     const attached = this.attached;
     if (attached) {
       this.detach(attached); attached.turn.onEnd("failed", attached.turn.stream.observedTokens);
-      attached.error ??= new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" });
+      attached.error ??= attached.steered
+        ? steeringEnded()
+        : new ProviderError("cli_failed", "Claude CLI session ended; run gateway doctor", 502, { code: reason, event: "claude.session" });
       attached.wake?.();
     }
     for (const done of [...this.controls.values(), ...this.settled]) done(false);

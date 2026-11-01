@@ -60,6 +60,24 @@ test("Messages retains routing context and upstream transport headers without le
   } finally { await gateway.close(); }
 });
 
+test("native Claude Code metadata reaches every provider as conversation routing, not user identity", async () => {
+  const contexts: InferenceContext[] = [];
+  const gateway = await fixture({ async *infer(_request, _signal, context) { contexts.push(context!); yield { type: "done", usage }; } });
+  const session = "019a1234-5678-7890-abcd-0123456789ab";
+  try {
+    const native = { ...input, metadata: { user_id: JSON.stringify({ device_id: "private-device", account_uuid: "private-account", session_id: session }) } };
+    await collect(await gateway.post(native));
+    await collect(await gateway.post(native, { "session-id": "explicit" }));
+    await collect(await gateway.post({ ...input, metadata: { user_id: "same-user" } }));
+    assert.equal(contexts[0].sessionId, session);
+    assert.equal(contexts[0].threadId, undefined);
+    assert.equal(contexts[1].sessionId, "explicit");
+    assert.equal(contexts[2].sessionId, undefined, "arbitrary user identity never joins conversations");
+    assert.equal(JSON.stringify(contexts).includes("private-account"), false);
+    assert.equal(JSON.stringify(contexts).includes("private-device"), false);
+  } finally { await gateway.close(); }
+});
+
 test("Messages arriving after drain starts receive native retryable errors before inference", async () => {
   let calls = 0;
   const gateway = await fixture({ async *infer() { calls++; yield { type: "done", usage }; } });

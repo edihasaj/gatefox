@@ -35,9 +35,9 @@ test("repeated cold live reseeds stop without falling back to a paid one-shot", 
   ] });
   configureTelemetry(fixture.directory, "test");
   const provider = new ClaudeSubscription({ id: `seed-guard-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "live", warmup: 0 } });
-  const turn = async (input: ResponsesInputItem[]) => {
+  const turn = async (input: ResponsesInputItem[], windowId: string) => {
     const writer = new ResponsesWriter("fixture", () => {});
-    for await (const event of provider.infer({ model: "fixture", input, tools: [{ type: "function", name: "read", parameters: { type: "object", properties: {} } }] }, new AbortController().signal, { threadId: "reseed" })) writer.accept(event);
+    for await (const event of provider.infer({ model: "fixture", input, tools: [{ type: "function", name: "read", parameters: { type: "object", properties: {} } }] }, new AbortController().signal, { threadId: "reseed", windowId })) writer.accept(event);
     return writer.result().output as ResponsesInputItem[];
   };
   const append = (input: ResponsesInputItem[], output: ResponsesInputItem[]): ResponsesInputItem[] => [...input, ...output,
@@ -45,11 +45,11 @@ test("repeated cold live reseeds stop without falling back to a paid one-shot", 
     { type: "message", role: "developer", content: "New caller instructions" }];
   try {
     const first: ResponsesInputItem[] = [{ type: "message", role: "user", content: "a".repeat(400000) }];
-    const a = await turn(first); const second = append(first, a); const b = await turn(second);
+    const a = await turn(first, "before"); const second = append(first, a); const b = await turn(second, "after");
     const [kept] = claudeLive({ max: 6, parkMinutes: 60 }).sessions();
     assert.ok(kept);
     const pending = [...kept.pending];
-    await assert.rejects(turn(append(second, b)), { code: "invalid_request", status: 400 });
+    await assert.rejects(turn(append(second, b), "another"), { code: "invalid_request", status: 400 });
     assert.deepEqual((await fixture.capture()).flatMap(entry => entry.start ? [entry.start] : []), ["live", "live"]);
     assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0], kept, "the cache guard refuses before discarding the live session");
     assert.equal(kept.state, "awaiting_outputs");
