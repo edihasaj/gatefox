@@ -46,8 +46,14 @@ test("repeated cold live reseeds stop without falling back to a paid one-shot", 
   try {
     const first: ResponsesInputItem[] = [{ type: "message", role: "user", content: "a".repeat(400000) }];
     const a = await turn(first); const second = append(first, a); const b = await turn(second);
+    const [kept] = claudeLive({ max: 6, parkMinutes: 60 }).sessions();
+    assert.ok(kept);
+    const pending = [...kept.pending];
     await assert.rejects(turn(append(second, b)), { code: "invalid_request", status: 400 });
     assert.deepEqual((await fixture.capture()).flatMap(entry => entry.start ? [entry.start] : []), ["live", "live"]);
+    assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions()[0], kept, "the cache guard refuses before discarding the live session");
+    assert.equal(kept.state, "awaiting_outputs");
+    assert.deepEqual(kept.pending, pending, "pending relay calls remain available");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }
@@ -92,7 +98,9 @@ for (const mode of ["replay", "live"] as const) test(`cancelled charged requests
   const provider = new ClaudeSubscription({ id: `cancel-guard-${mode}-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode, warmup: 0 } });
   const turn = async (text: string) => {
     const controller = new AbortController();
-    for await (const event of provider.infer({ model: "fixture", input: text }, controller.signal, { threadId: "cancelled" })) {
+    // Explicit client window changes permit replacement histories; cancellation
+    // accounting must still stop the third charged seed and retain the second CLI.
+    for await (const event of provider.infer({ model: "fixture", input: text }, controller.signal, { threadId: "cancelled", windowId: text[0] })) {
       if (event.type === "text") controller.abort();
     }
   };

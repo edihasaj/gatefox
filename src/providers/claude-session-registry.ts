@@ -1,5 +1,27 @@
 import { registerActivityProbe, registerShutdownHook } from "../runtime-activity.js";
 import type { ClaudeSession } from "./claude-session.js";
+import { sessionKey } from "./claude-live-contract.js";
+
+/** A failed/cancelled compaction or a concurrently replaced session grants no reset. */
+export function compactionCheckpoint(scope: string, threadId: string): (() => void) | undefined {
+  const registry = adopt();
+  if (!registry) return;
+  const key = sessionKey(scope, threadId), session = registry.sessions.get(key);
+  if (!session || session.state === "closed") {
+    const hold = registry.replayUntil.get(key), reason = replayPinned(registry, key);
+    if (!hold || !["prefix_diverged", "unexpected_tail", "forced_choice", "effort_midturn"].includes(reason ?? "")) return;
+    return () => {
+      if (!registry.sessions.has(key) && registry.replayUntil.get(key) === hold) {
+        registry.replayUntil.delete(key); registry.ended.delete(key);
+      }
+    };
+  }
+  if (session.state !== "turn_done" && session.state !== "awaiting_outputs") return;
+  const ledger = session.ledger, phase = session.state;
+  return () => {
+    if (registry.sessions.get(session.key) === session && session.ledger === ledger && session.state === phase) session.compacted = true;
+  };
+}
 
 /**
  * Process-wide live Claude sessions. An in-place upgrade loads a second copy of the

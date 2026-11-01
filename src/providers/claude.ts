@@ -17,8 +17,8 @@ import { claudeCliModel } from "./claude-models.js";
 import { claudeCliArgs, claudeEnv, claudeMcpCatalog, claudeSystemPrompt, userLine } from "./claude-control.js";
 import { ClaudeMessageStream, resultWindows, type ClaudeStreamEnd, type ClaudeTokens } from "./claude-stream.js";
 import { choiceBlock, leadingInstructions, markCustomCalls, renderConversation, renderItems, type ClaudeConversation, type ClaudeImages, type ReplayFormat } from "./claude-render.js";
-import { retireScope } from "./claude-session-registry.js";
-import { sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
+import { compactionCheckpoint, retireScope } from "./claude-session-registry.js";
+import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeLiveOutcome } from "./claude-live-contract.js";
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
 import { providerCommand } from "../provider-tool-runtime.js";
@@ -116,7 +116,7 @@ export class ClaudeSubscription implements Provider {
     }
     // Switching to replay ends this provider's parked sessions now instead of when their park timers fire.
     if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
-    let completed: (() => void) | undefined;
+    let completed = context.requestKind === "compaction" && context.threadId ? compactionCheckpoint(this.scope(), context.threadId) : undefined;
     const markCompleted = (event: InferenceEvent) => {
       if (event.type === "done" && !signal.aborted && event.interrupted !== true && completed) { const complete = completed; completed = undefined; complete(); }
     };
@@ -231,7 +231,7 @@ export class ClaudeSubscription implements Provider {
       return { outcome, complete };
     } catch (error) {
       // Startup failures can fall back; cancellation and the replay safety stop remain final.
-      if (error instanceof ClaudeReplayBlocked || signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
+      if (error instanceof ClaudeReplayBlocked || error instanceof ClaudeSessionPreserved || signal.aborted || (error instanceof ProviderError && error.code === "cancelled")) throw signal.aborted ? cancelled() : error;
       outcome = { kind: "fallback", reason: "spawn_failed" };
     }
     telemetry("claude_session", { outcome: "fallback", missReason: outcome.reason, threadKey: run.threadKey });

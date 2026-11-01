@@ -150,28 +150,17 @@ test("concurrent attaches never start more sessions than the cap", async () => {
   } finally { await claudeLive({ max: 2, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
-test("a diverged history replays instead of paying for a second cache write", async () => {
+test("a diverged history is refused repeatedly without discarding its live session or spending on replay", async () => {
   const { f, starts, events } = await setup({ replies: [{ text: "one" }, { text: "two" }, { text: "three" }, { text: "four" }, { text: "five" }, { text: "six" }] });
   try {
     const provider = adapter({ mode: "live", max: 6 });
     await turn(provider, [user("first")], thread("d1"));
-    assert.equal(await turn(provider, [user("first, edited")], thread("d1")), "two", "the diverged turn answered from the one-shot path");
-    assert.deepEqual(await starts(), ["live", "oneshot"], "no second process was started for the same thread");
-    assert.ok((await events()).some(entry => entry.outcome === "fallback" && entry.missReason === "prefix_diverged"));
-    assert.equal(await turn(provider, [user("first, edited"), said("two"), user("again")], thread("d1")), "three", "still replaying while its cache could not survive a reseed");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1);
-    // A request 59 minutes into the hold is still inside the cache hour, so it stays on replay and
-    // restarts the hour: a busy thread never gets a session that would have to reseed it next turn.
-    sessionRegistry().replayUntil.set(keyOf("d1"), { since: Date.now() - 59 * 60 * 1000, why: "prefix_diverged" });
-    assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), user("still")], thread("d1")), "four", "the minute that was left did not buy a reseed");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "and it started no second process");
-    assert.ok(Date.now() - sessionRegistry().replayUntil.get(keyOf("d1"))!.since < 60_000, "the request kept the hold, with the hour starting at it");
-    assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), said("four"), user("still going")], thread("d1")), "five", "the next turn is held the same way");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 1, "still one live process for this thread");
-    // An hour quiet later the cache is gone either way, so the thread may hold a session again.
-    sessionRegistry().replayUntil.set(keyOf("d1"), { since: Date.now() - idleMs - 1, why: "prefix_diverged" });
-    assert.equal(await turn(provider, [user("first, edited"), said("two"), said("three"), said("four"), said("five"), user("now")], thread("d1")), "six");
-    assert.deepEqual((await starts()).filter(entry => entry === "live").length, 2, "and it seeded a live session");
+    for (let attempt = 0; attempt < 3; attempt++) await assert.rejects(turn(provider, [user("first, edited")], thread("d1")), { code: "invalid_request", status: 400 });
+    assert.deepEqual(await starts(), ["live"]);
+    assert.ok((await events()).some(entry => entry.outcome === "preserved" && entry.missReason === "prefix_diverged"));
+    assert.equal(sessionRegistry().replayUntil.has(keyOf("d1")), false);
+    assert.equal(await turn(provider, [user("first"), said("one"), user("again")], thread("d1")), "two");
+    assert.deepEqual(await starts(), ["live"], "matching history continues the preserved session");
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await f.restore(); }
 });
 
