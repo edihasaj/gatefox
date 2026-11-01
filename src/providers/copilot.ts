@@ -4,7 +4,7 @@ import { responsesToChatRequest } from "../protocol/request.js";
 import type { ChatToolSelection, ResponsesRequest, InferenceEvent, OpenAITool } from "../protocol/types.js";
 import { openCopilot } from "./copilot-client.js";
 import { record } from "./copilot-rpc.js";
-import { ProviderError, type InferenceContext, type Provider } from "./provider.js";
+import { ProviderError, providerConversationId, type InferenceContext, type Provider } from "./provider.js";
 import { imageConversation } from "../protocol/images.js";
 import { CopilotTurn } from "./copilot-turn.js";
 import { sessionLimits } from "./copilot-live-session.js";
@@ -101,7 +101,8 @@ export class CopilotSubscription implements Provider {
     const settings = copilotSessionSettings(this.config);
     if (settings.mode !== "live") retireCopilotScope(copilotScope(this.config), "mode_oneshot");
     else {
-      const threadKey = context.threadId ? sessionKey(copilotScope(this.config), context.threadId).slice(0, 8) : undefined;
+      const conversationId = providerConversationId(context);
+      const threadKey = conversationId ? sessionKey(copilotScope(this.config), conversationId).slice(0, 8) : undefined;
       let outcome: CopilotLiveOutcome;
       try { outcome = await this.live(run, settings); }
       catch (error) {
@@ -127,9 +128,10 @@ export class CopilotSubscription implements Provider {
   /** Serves the request from the thread's live session, or says why it cannot. */
   private async live(run: CopilotRun, settings: ReturnType<typeof copilotSessionSettings>): Promise<CopilotLiveOutcome> {
     const skip = (reason: "no_thread" | "request_kind") => ({ kind: "fallback" as const, reason });
-    if (!run.context.threadId) return skip("no_thread");
+    const conversationId = providerConversationId(run.context);
+    if (!conversationId) return skip("no_thread");
     if (oneShotKinds.has(run.context.requestKind)) return skip("request_kind");
-    return copilotLive(settings).attach(copilotLiveInput(this.config, run, run.context.threadId), run.signal);
+    return copilotLive(settings).attach(copilotLiveInput(this.config, run, conversationId), run.signal);
   }
 
   /** One session for one request, with the same system message, tools and per-item messages a live session is seeded with. */

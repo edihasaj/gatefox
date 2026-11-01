@@ -10,6 +10,19 @@ const operations = (entries: Entry[]) => entries.map(entry => entry.op).filter(o
 const outcomes = (events: Entry[]) => events.map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
 const imageUser = (text: string) => ({ type: "message" as const, role: "user" as const, content: [{ type: "input_text" as const, text }, { type: "input_image" as const, image_url: png }] });
 
+test("a session-only client keeps its Copilot CLI through tools and a new user turn", { timeout: 30000 }, async () => {
+  const h = await harness();
+  try {
+    const provider = adapter(), context = { sessionId: "native-session-only" };
+    const first = [user("start [tool]")], a = await turn(provider, first, { context });
+    const second = [...first, ...a.output, ...outputFor(a.output, "plain")];
+    const b = await turn(provider, second, { context });
+    await turn(provider, [...second, ...b.output, user("Follow up")], { context });
+    assert.equal((await h.pids()).length, 1);
+    assert.equal((await h.log()).filter(row => row.op === "deliver").length, 1);
+  } finally { await h.restore(); }
+});
+
 test("Copilot's omitted function type completes a live tool loop without a session failure", { timeout: 30000 }, async () => {
   const h = await harness();
   try {

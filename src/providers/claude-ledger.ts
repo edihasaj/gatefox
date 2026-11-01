@@ -141,3 +141,11 @@ export function messagesAfterTools(entries: LedgerEntry[], from: number, pending
     && outputs.every(entry => entry.kind === "o" && waiting.delete(entry.callId!))
     && messages.every(entry => entry.kind === "m" && !entry.assistant);
 }
+
+/** Complete tool outputs followed only by fully ledgered caller messages. */
+export function queuedToolContinuation(entries: LedgerEntry[], from: number, pending: readonly string[], messages: number): { outputs: LedgerEntry[]; from: number } | undefined {
+  if (!messagesAfterTools(entries, from, pending)) return;
+  const tail = entries.slice(from + pending.length), first = tail[0].first;
+  if (tail.reduce((count, entry) => count + entry.count, 0) !== messages - first) return;
+  return { outputs: entries.slice(from, from + pending.length), from: first };
+}

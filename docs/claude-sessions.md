@@ -1,5 +1,5 @@
 ---
-summary: 'Live Claude CLI sessions per Codex thread: when they continue, reseed or fall back.'
+summary: 'Live Claude CLI sessions per client conversation: when they continue, reseed or fall back.'
 read_when:
   - Changing the Claude provider, its live sessions, relay or ledger
   - Turning claudeSessions on or off, or investigating Claude cache spend
@@ -9,7 +9,10 @@ read_when:
 
 By default every Claude request starts a new `claude -p` process and replays the
 whole history (`claudeSessions.mode: "replay"`). With `"live"`, the gateway keeps
-one stream-json CLI process per Codex thread, the way Claude Code itself runs. The
+one stream-json CLI process per identified client conversation, the way Claude Code
+itself runs. Codex thread IDs and native Claude Code session metadata identify
+their own conversations. Session-only clients have a separate internal namespace;
+an arbitrary user ID never groups chats. The
 CLI holds the native history: real tool_use and tool_result turns, signed thinking
 that carries across tool steps, and a prompt cache that grows by appending.
 
@@ -44,11 +47,17 @@ finishes normally, then the session closes instead of remaining parked in replay
   below). The cache of the old session is gone or unusable either way, so the new
   process costs no more than the next one-shot request would.
 - **Messages after tools:** when every pending tool result is followed by new
-  user or developer messages, the gateway seeds the complete caller history once
-  (`messages_after_tools`). Subsequent tool steps continue that live session.
-  It does not attach those messages to a tool result, change their roles or hold
-  the chat on repeated replay. Missing, duplicate or interleaved tool results,
+  user or developer messages, the gateway queues only those new messages on the
+  existing CLI. An empty-settings control acknowledgment orders that input before
+  Gateway releases the waiting MCP results. This acknowledgment does not start
+  another inference. Caller roles remain in the rendered message blocks. Missing,
+  duplicate or interleaved tool results,
   edited prefixes and appended assistant output keep their existing checks.
+  Older adopted instances without queued-input support reseed once through
+  `messages_after_tools`. A rejected or timed-out acknowledgment, cancellation
+  during the handoff, or CLI/relay failure during the steered request closes the
+  unsafe session and ends the request without automatic history replay. Results
+  are withheld until acknowledgment; after delivery they cannot be recalled.
 - **Preserve and refuse** (no inference): an earlier message was edited
   (`prefix_diverged`), the history had an unexpected tail (`unexpected_tail`), a forced
   tool choice arrived (`forced_choice`), an effort change arrived while tools were
@@ -58,6 +67,14 @@ finishes normally, then the session closes instead of remaining parked in replay
   A corrected request can continue the same session; edited history requires client
   compaction through Gateway, a new compaction window, or a fresh chat. Old replay holds for these mismatch
   reasons also refuse further replay after an in-place upgrade.
+- **Native Messages history replacement:** an identified Claude Code session
+  without a thread header owns its full history. Native `/compact` can edit an
+  earlier message and remove the latest answer without a compaction/window marker.
+  Once the CLI has finished and no tools are pending, a changed prefix therefore
+  uses one cache-budgeted replacement (`client_history_replaced`). Gateway does
+  not infer compaction from prompt text or grant a separate compaction budget for
+  that unmarked request. Pending tool mismatches still preserve and refuse.
+  Explicit thread IDs retain the preservation behavior above.
 - **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
   remains bounded by the shared cache guard and expires after an idle hour.
 
@@ -68,9 +85,11 @@ finishes normally, then the session closes instead of remaining parked in replay
   occupying a parked CLI for an hour. The default of one is cheap: the promoted
   session seed reads the cache the one-shot request wrote and writes only its new
   content.
-- **One-shot fallback:** compaction, prewarm and memory requests; requests without a
-  thread id; a second request for a thread that is still generating; and any failure
-  before the first event, including a CLI that exits right after the seed.
+- **One-shot fallback:** explicitly identified compaction, prewarm and memory
+  requests; requests without a conversation ID; a second request for a conversation
+  that is still generating; and eligible CLI failures before the first event,
+  including a CLI that exits right after the seed. Queued-update handoff failures
+  remain final even if the CLI acknowledged input before failing.
 
 ### Bounded cache rewrites
 
@@ -79,8 +98,8 @@ protocol. The Claude adapter also retains native input measurements on failures.
 A replacement seed checks the cache budget and cancellation before retiring the
 old session. A refused replacement leaves the live process and pending tools intact.
 Between-turn effort changes check that budget before sending a control update.
-Normal model, tools, system instructions, compaction-window changes, idle expiry
-and the validated `messages_after_tools` shape still require a controlled reseed;
+Normal model, tools, system instructions, compaction-window changes and idle expiry
+still require a controlled reseed;
 the gateway never pretends incompatible history can continue unchanged. Process
 crashes, unsafe native tools, shutdown and expired park timers still close sessions.
 This does not preserve a CLI across a full inference-process restart.
@@ -165,6 +184,11 @@ gateway's fixed text to the caller's leading system and developer content.
 `--exclude-dynamic-system-prompt-sections` is ignored with a custom system prompt. The
 CLI sorts tools alphabetically and marks no tool.
 
+Gateway also canonicalizes the caller tool catalog by native name and sorts schema
+object keys without changing array order or values. Harmless catalog reordering
+therefore keeps the same fingerprint. Existing adopted sessions with an older
+fingerprint may need one controlled replacement.
+
 A new thread therefore reuses the tools, billing header and identity block from
 another thread's cache. It reuses caller instructions only when they are byte-identical,
 such as two root chats within the cache lifetime. On 2026-10-19, a new thread's first
@@ -238,6 +262,20 @@ least 20 tool uses. A session idle 60 minutes or more is therefore reseeded rath
 than continued, so Claude's history always matches what Codex sent.
 
 ## Measured
+
+On 1 November 2026, native Claude Code 2.1.299 and the installed Codex app-server
+SDK each completed a three-request tool loop using one backend process through an
+isolated Gateway. Codex also resumed the saved chat and continued its next turn.
+Backend inference was synthetic, so this proves client and session continuity,
+not subscription cost parity or a guaranteed provider cache hit. An independent
+native CLI probe on 2.1.299 and 2.1.303 with a local mock Anthropic API confirmed the queued-input
+ordering barrier with two inference requests and about 17 ms of control overhead.
+The barrier runs only when caller messages follow pending tool results.
+The same native client also completed `/compact` and continued two subsequent
+turns against the candidate with synthetic backend replies: five requests used
+three backend processes. The summary request replaced history once; the changed
+native system attribution after compaction required another replacement. Ordinary
+follow-ups continued. This establishes compatibility, not cost-free compaction.
 
 Haiku 5.5 and Sonnet 5.5, CLI 2.1.293:
 - A continued request reads the whole cached prefix and writes only its new content

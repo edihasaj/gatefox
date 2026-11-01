@@ -61,12 +61,18 @@ export function claudeEnv(authDirectory: string | undefined, live = false, reque
 }
 
 export interface ClaudeMcpTool { name: string; description: string; inputSchema: Record<string, unknown> }
+/** Object key and catalog order carry no schema meaning; arrays and scalar values stay exact. */
+function stableSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableSchema);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, item]) => [key, stableSchema(item)]));
+  return value;
+}
 /** The private MCP catalog. Its bytes depend only on the caller catalog, so forced choices keep the cached tool prefix. */
 export function claudeMcpCatalog(tools: OpenAITool[]): ClaudeMcpTool[] {
   return tools.map(tool => ({
     name: claudeToolName(tool), description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
-    inputSchema: tool.function.parameters || { type: "object", properties: {} },
-  }));
+    inputSchema: stableSchema(tool.function.parameters || { type: "object", properties: {} }) as Record<string, unknown>,
+  })).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 }
 
 /** One newline-terminated stream-json control request. */

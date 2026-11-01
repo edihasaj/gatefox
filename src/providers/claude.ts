@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { responsesToChatRequest } from "../protocol/request.js";
 import type { ResponsesRequest, InferenceEvent, OpenAITool, ChatToolSelection, PublicServiceTier } from "../protocol/types.js";
-import { ProviderError, type Provider, type InferenceContext } from "./provider.js";
+import { ProviderError, providerConversationId, type Provider, type InferenceContext } from "./provider.js";
 import { claudeSessionSettings, type ProviderConfig } from "../config.js";
 import { validateForcedChoice } from "./claude-calls.js";
 import { imageConversation } from "../protocol/images.js";
@@ -89,6 +89,7 @@ export class ClaudeSubscription implements Provider {
   constructor(private readonly config?: ProviderConfig, private readonly onUsage?: (limit: ClaudeLimit) => Promise<void>,
     private readonly onContextWindow?: (model: string, contextWindow: number) => void, private readonly liveModule = "./claude-live.js") {}
   async *infer(request: ResponsesRequest, signal: AbortSignal, context: InferenceContext = {}): AsyncGenerator<InferenceEvent> {
+    const conversationId = providerConversationId(context);
     const normalized = responsesToChatRequest(request, { reasoningSummaryMetadata: true });
     const choice = normalized.tool_choice;
     // The catalog stays whole for forced choices: a changed tool list breaks the prompt cache.
@@ -103,9 +104,9 @@ export class ClaudeSubscription implements Provider {
       summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
       format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
       // The same key the live registry derives, so one thread's one-shot and live events line up.
-      ...(context.threadId ? { threadKey: sessionKey(this.scope(), context.threadId).slice(0, 8) } : {}) };
+      ...(conversationId ? { threadKey: sessionKey(this.scope(), conversationId).slice(0, 8) } : {}) };
     {
-      const budget = claudeReplayBudget(this.scope(), context.threadId ?? context.sessionId, run.model, Buffer.byteLength(JSON.stringify(request.input)));
+      const budget = claudeReplayBudget(this.scope(), conversationId, run.model, Buffer.byteLength(JSON.stringify(request.input)));
       run.replayBudget = { beforeRequest: mode => { if (context.requestKind !== "compaction") budget.beforeRequest(mode); }, record: tokens => {
         if (context.requestKind !== "compaction") budget.record(tokens);
         const measured = tokens?.input !== undefined && tokens.cacheRead !== undefined && tokens.cacheWrite !== undefined;
@@ -116,7 +117,7 @@ export class ClaudeSubscription implements Provider {
     }
     // Switching to replay ends this provider's parked sessions now instead of when their park timers fire.
     if (settings.mode !== "live") retireScope(this.scope(), "mode_replay");
-    let completed = context.requestKind === "compaction" && context.threadId ? compactionCheckpoint(this.scope(), context.threadId) : undefined;
+    let completed = context.requestKind === "compaction" && conversationId ? compactionCheckpoint(this.scope(), conversationId) : undefined;
     const markCompleted = (event: InferenceEvent) => {
       if (event.type === "done" && !signal.aborted && event.interrupted !== true && completed) { const complete = completed; completed = undefined; complete(); }
     };
@@ -144,8 +145,8 @@ export class ClaudeSubscription implements Provider {
         telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "recovered" });
       }
     };
-    if (settings.mode === "live" && context.threadId && !oneShotKinds.has(context.requestKind)) {
-      const live = await this.live(run, request, context, settings, signal);
+    if (settings.mode === "live" && conversationId && !oneShotKinds.has(context.requestKind)) {
+      const live = await this.live(run, request, context, settings, signal, conversationId);
       completed = live?.complete;
       if (live?.outcome.kind === "stream") {
         try { for await (const event of live.outcome.events) {
@@ -202,7 +203,7 @@ export class ClaudeSubscription implements Provider {
   /** The provider half of a live session key; the thread's half is whatever the caller added. */
   private scope(): string { return `${this.config?.id ?? "claude"}` + `\0` + `${this.config?.authDirectory ?? ""}`; }
 
-  private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number; warmup: number }, signal: AbortSignal): Promise<{ outcome: ClaudeLiveOutcome; complete: () => void } | undefined> {
+  private async live(run: Run, request: ResponsesRequest, context: InferenceContext, settings: { max: number; parkMinutes: number; warmup: number }, signal: AbortSignal, conversationId: string): Promise<{ outcome: ClaudeLiveOutcome; complete: () => void } | undefined> {
     const module = await loadLive(this.liveModule);
     if (!module) {
       if (!unavailable.has(this.liveModule)) { unavailable.add(this.liveModule); telemetry("claude_session", { outcome: "fallback", missReason: "unavailable", threadKey: run.threadKey }); }
@@ -213,10 +214,12 @@ export class ClaudeSubscription implements Provider {
     let complete = () => {};
     try {
       const live = module.claudeLive({ max: settings.max, parkMinutes: settings.parkMinutes, warmup: settings.warmup });
-      complete = () => live.complete?.(this.scope(), context.threadId!);
+      complete = () => live.complete?.(this.scope(), conversationId);
       outcome = await live.attach({
         replayBudget: run.replayBudget,
-        scope: this.scope(), threadId: context.threadId!, windowId: context.windowId, turnId: context.turnId,
+        scope: this.scope(), threadId: conversationId, windowId: context.windowId, turnId: context.turnId,
+        callerHistoryReplacement: context.clientProtocol === "messages" && !context.threadId && !!context.sessionId
+          && (request.client_metadata as { session_id?: unknown } | undefined)?.session_id === context.sessionId,
         model, effort, fast, summaryVisible, instructionsDigest: digest(systemPrompt), leading,
         toolsDigest: digest(JSON.stringify(mcpCatalog)), tools, choice: run.choice, request, conversation, images,
         // Thinking display is fixed for a session's lifetime; summaries are hidden locally instead.

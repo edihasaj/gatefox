@@ -1,6 +1,7 @@
 import { ProviderError } from "../providers/provider.js";
 import type { ResponsesContentPart, ResponsesFunctionTool, ResponsesInputItem, ResponsesRequest } from "./types.js";
 import { inlineImage } from "./images.js";
+import { messagesSessionId } from "./messages-session.js";
 
 type Data = Record<string, unknown>;
 function invalid(): never { throw new ProviderError("invalid_request", "Messages request contains invalid or unsupported data", 400); }
@@ -232,6 +233,8 @@ export function messagesToResponses(value: unknown, options: { countTokens?: boo
   if ([...replay.calls.keys()].some(id => !replay.results.has(id))) invalid();
   const control = controls(request, declared, effort);
   const stream = request.stream;
+  const sessionId = messagesSessionId(request.metadata);
   return { model, input: replay.items, ...(request.max_tokens === undefined ? {} : { max_output_tokens: positiveInteger(request.max_tokens) }), ...(stream === undefined ? {} : { stream: stream as boolean }),
+    ...(sessionId ? { client_metadata: { session_id: sessionId } } : {}),
     ...(catalog.length ? { tools: catalog } : {}), ...control };
 }
