@@ -47,15 +47,17 @@ own parked sessions on its next request, so they do not wait out the park timer.
   It does not attach those messages to a tool result, change their roles or hold
   the chat on repeated replay. Missing, duplicate or interleaved tool results,
   edited prefixes and appended assistant output keep their existing checks.
-- **Forced downgrade** (no reseed): an earlier message was edited
+- **Preserve and refuse** (no inference): an earlier message was edited
   (`prefix_diverged`), the history had an unexpected tail (`unexpected_tail`), a forced
   tool choice arrived (`forced_choice`), an effort change arrived while tools were
-  pending (`effort_midturn`), or the session died or crashed. A second process would
-  pay the whole cache write again for one turn, so that request is served one-shot and
-  the thread stays on replay (`replayUntil`) for 60 minutes, when a session of its own
-  could keep a cache again. A held request inside that window is served the same way and
-  starts the window over, so a thread that keeps talking is never seeded a process it
-  would have to reseed on its next turn. The old session closes at once.
+  pending (`effort_midturn`). Gateway keeps the existing CLI, ledger and pending
+  relay calls intact and returns a final HTTP 400 (`invalid_prompt` in Responses
+  streams). It neither sends the rejected input nor falls back to one-shot replay.
+  A corrected request can continue the same session; edited history requires client
+  compaction through Gateway, a new compaction window, or a fresh chat. Old replay holds for these mismatch
+  reasons also refuse further replay after an in-place upgrade.
+- **Dead session:** a crashed CLI cannot be preserved. Its existing replay hold
+  remains bounded by the shared cache guard and expires after an idle hour.
 
 - **Capacity** (no eviction): see Admission below.
 - **Warmup** (no session): a thread must complete `warmup` ordinary requests before
@@ -72,6 +74,17 @@ own parked sessions on its next request, so they do not wait out the park timer.
 
 The [shared cache guard](cache-safety.md) applies to every provider and ingress
 protocol. The Claude adapter also retains native input measurements on failures.
+A replacement seed checks the cache budget and cancellation before retiring the
+old session. A refused replacement leaves the live process and pending tools intact.
+Between-turn effort changes check that budget before sending a control update.
+Normal model, tools, system instructions, compaction-window changes, idle expiry
+and the validated `messages_after_tools` shape still require a controlled reseed;
+the gateway never pretends incompatible history can continue unchanged. Process
+crashes, unsafe native tools, shutdown and expired park timers still close sessions.
+This does not preserve a CLI across a full inference-process restart.
+A completed compaction through Gateway permits one replacement history even when
+the client does not send a window ID. Failed or cancelled compaction grants no
+replacement, and completion cannot authorize resetting a concurrently replaced session.
 
 Two consecutive measured requests that each write at least 65,536 cache tokens and
 write more than they read stop the next request before inference. This applies to

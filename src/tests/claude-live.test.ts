@@ -131,25 +131,27 @@ test("an adopted pre-replay-contract fingerprint reseeds once without a replay h
   } finally { await teardown(f); }
 });
 
-test("editing an earlier message answers one-shot, stops the old process and starts no new one", { timeout: 30000 }, async () => {
+test("editing an earlier message refuses replay and preserves the original process for matching history", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "One" }, { text: "Two" }] });
   try {
     const provider = adapter();
     const a = await turn(provider, [user("first")]);
-    const b = await turn(provider, [user("first, edited"), ...a.output, user("second")]);
-    assert.equal(b.text, "Two", "the one-shot path answered");
+    await assert.rejects(turn(provider, [user("first, edited"), ...a.output, user("second")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "claude_session_preserved");
     const [old, ...others] = await pids(f);
-    assert.deepEqual(others, [], "a second cache write in a new process would only repeat what the one-shot path already pays");
-    assert.ok(await gone(old), "the diverged session exits");
-    assert.equal((await pids(f, "oneshot")).length, 1);
+    assert.deepEqual(others, []);
+    assert.ok(alive(old), "the original session remains usable");
+    assert.equal((await pids(f, "oneshot")).length, 0);
+    assert.equal((await turn(provider, [user("first"), ...a.output, user("second")])).text, "Two");
+    assert.deepEqual(await pids(f), [old]);
     const events = await sessions();
     assert.equal(events.filter(entry => entry.outcome === "reseeded").length, 0);
-    const held = events.find(entry => entry.outcome === "fallback")!;
+    const held = events.find(entry => entry.outcome === "preserved")!;
     assert.deepEqual([held.missReason, typeof held.threadKey], ["prefix_diverged", "string"]);
   } finally { await teardown(f); }
 });
 
-test("an effort change between turns keeps the process; thinking off reseeds and a change while tools run answers one-shot", { timeout: 30000 }, async () => {
+test("an effort change between turns keeps the process; thinking off reseeds and a mid-tool change preserves it", { timeout: 30000 }, async () => {
   const { f, sessions } = await setup({ replies: [{ text: "A" }, { text: "B" }, { text: "C" }, { calls: [{ tool: "alpha", input: { id: 1 } }] }, { text: "D" }] });
   try {
     const provider = adapter(); const first = [user("one")];
@@ -161,10 +163,13 @@ test("an effort change between turns keeps the process; thinking off reseeds and
     await turn(provider, [...second, ...b.output, user("three")]);
     const other = { threadId: "thread-2" }; const start = [user("tools")];
     const d = await turn(provider, start, { context: other, effort: "low" });
-    await turn(provider, [...start, ...d.output, ...outputFor(d.output, "r")], { context: other, effort: "high" });
+    await assert.rejects(turn(provider, [...start, ...d.output, ...outputFor(d.output, "r")], { context: other, effort: "high" }),
+      (error: unknown) => error instanceof ProviderError && error.upstream?.code === "claude_session_preserved");
+    assert.equal((await turn(provider, [...start, ...d.output, ...outputFor(d.output, "r")], { context: other, effort: "low" })).text, "D");
     const events = await sessions();
     assert.deepEqual(events.filter(entry => entry.outcome === "reseeded").map(entry => entry.missReason), ["fingerprint_changed"]);
-    assert.deepEqual(events.filter(entry => entry.outcome === "fallback").map(entry => entry.missReason), ["effort_midturn"], "a forced downgrade serves this request one-shot");
+    assert.deepEqual(events.filter(entry => entry.outcome === "preserved").map(entry => entry.missReason), ["effort_midturn"]);
+    assert.equal(events.some(entry => entry.outcome === "fallback"), false);
     assert.equal((await pids(f)).length, 3, "two threads and one reseed; the held thread started no process");
   } finally { await teardown(f); }
 });

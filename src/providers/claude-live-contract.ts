@@ -5,6 +5,17 @@ import type { ClaudeMessageStream } from "./claude-stream.js";
 import type { ClaudeMcpTool } from "./claude-control.js";
 import type { ClaudeConversation, ClaudeImages, ContentBlock } from "./claude-render.js";
 import type { ClaudeReplayBudget } from "./claude-replay-budget.js";
+import { ProviderError } from "./provider.js";
+
+/** Final before inference: a mismatched request must not destroy a usable live session. */
+export class ClaudeSessionPreserved extends ProviderError {
+  constructor(readonly missReason: "prefix_diverged" | "unexpected_tail" | "forced_choice" | "effort_midturn", retained = true) {
+    super("invalid_request", retained
+      ? "Claude's live session was preserved. This request cannot safely continue its history or pending tools. Resume with the matching history and settings, or compact or start a fresh chat. Gateway did not replay the conversation."
+      : "This Claude conversation was previously moved to replay after a history or pending-tool mismatch. Gateway stopped further replay. Compact or start a fresh chat to recover.",
+    400, { code: retained ? "claude_session_preserved" : "claude_session_replay_blocked" });
+  }
+}
 
 /**
  * The live session key for one provider scope and Codex thread. Its first 8 hex are the
@@ -14,7 +25,7 @@ export const sessionKey = (scope: string, threadId: string) => createHash("sha25
 
 /** Why a request used the one-shot path instead of a live session. Fixed values only. */
 export type ClaudeMissReason = "unavailable" | "no_thread" | "request_kind" | "concurrent" | "warmup" | "capacity" | "spawn_failed" | "initialize_timeout" |
-  "fingerprint_changed" | "window_changed" | "prefix_diverged" | "unexpected_tail" | "messages_after_tools" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
+  "fingerprint_changed" | "window_changed" | "context_compacted" | "prefix_diverged" | "unexpected_tail" | "messages_after_tools" | "forced_choice" | "effort_midturn" | "session_dead" | "interrupted_tool" | "evicted" | "stream_failed";
 
 /** Everything a live session needs for one request; claude.ts builds it after validation. */
 export interface ClaudeLiveInput {
@@ -72,7 +83,7 @@ export interface ClaudeLiveModule {
    * changed settings to it; a fresh registry per call would never reuse a session.
    */
   claudeLive(settings: { max: number; parkMinutes: number; warmup?: number }): {
-    /** A throw before the stream exists falls back to one-shot (spawn_failed), except cancellation. */
+    /** Startup failures may fall back; cancellation, safety stops and preserved-session refusals are final. */
     attach(input: ClaudeLiveInput, signal: AbortSignal): Promise<ClaudeLiveOutcome>;
     /** Records a completed live-mode request after its final `done` reached the caller. */
     complete?(scope: string, threadId: string): void;

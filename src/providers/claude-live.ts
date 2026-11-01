@@ -7,7 +7,7 @@ import { decide, ledgerEntries, messagesAfterTools, type LedgerDecision, type Le
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
-import { sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
+import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveInput, type ClaudeLiveOutcome, type ClaudeMissReason } from "./claude-live-contract.js";
 import { systemPrefixOnly } from "./claude-usage.js";
 
 /**
@@ -30,12 +30,10 @@ const replayContractRevision = 2;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const forced = (choice: ChatToolSelection | undefined) => choice === "required" || typeof choice === "object";
 /**
- * Misses where a second process would rewrite the cache the one-shot path already holds, and
- * keep rewriting it: the thread replays until `idleMs` has passed and a session could keep a
- * cache of its own again. Divergent, dead and crashed sessions belong here; a changed model,
- * window or idle expiry is a normal one-time reseed.
+ * Request mismatches must be refused before closing the live CLI or spending on replay.
+ * A changed model, window or idle expiry remains a normal one-time reseed.
  */
-function pinned(reason: ReseedReason): ClaudeMissReason | undefined {
+function preserved(reason: ReseedReason): ClaudeSessionPreserved["missReason"] | undefined {
   switch (reason) {
     case "prefix_diverged": case "unexpected_tail": case "forced_choice": case "effort_midturn": return reason;
     default: return;
@@ -61,6 +59,8 @@ export function claudeLive(settings: Omit<Settings, "warmup"> & { warmup?: numbe
 /** Refreshes a replay hold exactly when a cold request reaches it. */
 function replayFallback(registry: SessionRegistry, key: string): Extract<ClaudeLiveOutcome, { kind: "fallback" }> | undefined {
   const hold = replayPinned(registry, key);
+  const mismatch = hold && preserved(hold as ReseedReason);
+  if (mismatch) throw new ClaudeSessionPreserved(mismatch, false);
   // Asking again starts the hour over: a thread that keeps talking has no use for a session that
   // would reseed it every turn, so the hold only lapses once the thread has actually gone quiet.
   if (hold !== undefined) { registry.replayUntil.set(key, { since: Date.now(), why: hold }); return { kind: "fallback", reason: heldReason(hold) }; }
@@ -104,8 +104,9 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     else if (session.window !== window) reason = "window_changed";
     else if (parkedMs >= idleMs) reason = "idle_expired";
     else if (decision.kind === "reseed") {
-      reason = decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && messagesAfterTools(entries, decision.divergedAt, session.pending)
-        ? "messages_after_tools" : decision.reason;
+      reason = decision.reason === "prefix_diverged" && session.compacted ? "context_compacted"
+        : decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && messagesAfterTools(entries, decision.divergedAt, session.pending)
+          ? "messages_after_tools" : decision.reason;
       divergedAt = decision.divergedAt;
     }
     // The tail renders from the conversation; a count that does not match the translation is not trusted.
@@ -114,17 +115,25 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     else if (decision.kind === "continue_outputs" && forced(input.choice)) reason = "forced_choice";
     else if (input.effort !== undefined && input.effort !== session.effort) {
       if (session.state === "awaiting_outputs") reason = "effort_midturn";
-      else if (!(await session.applyEffort(input.effort))) reason = "effort_rejected";
+      else {
+        input.replayBudget?.beforeRequest("continued");
+        if (!(await session.applyEffort(input.effort))) reason = "effort_rejected";
+      }
     }
     if (!reason && decision.kind !== "reseed") plan = decision;
     if (reason) {
+      const mismatch = preserved(reason);
+      if (mismatch) {
+        telemetry("claude_session", { outcome: "preserved", missReason: mismatch, threadKey: key.slice(0, 8), liveSessions: registry.sessions.size });
+        throw new ClaudeSessionPreserved(mismatch);
+      }
+      // Validate the replacement before retiring the existing session. A refused or
+      // cancelled request must leave its CLI, ledger and pending relay calls intact.
+      input.replayBudget?.beforeRequest("seed");
+      if (signal.aborted) throw cancelled();
       const dropped = session;
       registry.sessions.delete(key); session = undefined;
-      const hold = pinned(reason);
-      // A new process would pay that whole cache write again for one turn: answer this one from the one-shot path.
-      if (hold) pinReplay(registry, key, dropped.lastUse, reason);
       void dropped.close("closed", reason);
-      if (hold) return { kind: "fallback", reason: hold };
     }
   } else {
     session = undefined;
@@ -163,6 +172,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   // and switching the provider to replay must retire that session along with the ones it started.
   registry.scopes.set(key, input.scope);
   if (plan.kind !== "seed") input.replayBudget?.beforeRequest("continued");
+  session.compacted = false;
   return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
     afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined,

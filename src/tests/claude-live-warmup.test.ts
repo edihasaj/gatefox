@@ -181,7 +181,7 @@ test("a session that closes during waitIdle replays a hold or spawns without aft
   try {
     const registry = sessionRegistry(); const held = "closed-held"; const open = "closed-open";
     registry.sessions.set(key(held), closing() as never);
-    pinReplay(registry, key(held), Date.now(), "prefix_diverged");
+    pinReplay(registry, key(held), Date.now(), "crashed");
     await turn(provider({ max: 6 }), [user("held")], { threadId: held });
     registry.sessions.delete(key(held));
 
@@ -189,7 +189,7 @@ test("a session that closes during waitIdle replays a hold or spawns without aft
     await turn(provider({ max: 6 }), [user("open")], { threadId: open });
     await flushTelemetry();
     const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
-    assert.ok(events.some(event => event.threadKey === key(held).slice(0, 8) && event.missReason === "prefix_diverged"));
+    assert.ok(events.some(event => event.threadKey === key(held).slice(0, 8) && event.missReason === "session_dead"));
     const spawned = events.find(event => event.threadKey === key(open).slice(0, 8) && event.outcome === "spawned");
     assert.equal(spawned?.afterWarmup, undefined);
     assert.deepEqual((await starts(fixture)).sort(), ["live", "oneshot"]);
@@ -271,7 +271,7 @@ test("capacity and replay-hold one-shots still count once they complete", { time
     recordWarmupCompletion(registry, key("capacity"));
     await turn(provider({ max: 1 }), [user("capacity")], { threadId: "capacity" });
     assert.equal(warmupCompletions(registry, key("capacity")), 2);
-    pinReplay(registry, key("held"), Date.now(), "prefix_diverged");
+    pinReplay(registry, key("held"), Date.now(), "crashed");
     await turn(provider({ max: 1 }), [user("held")], { threadId: "held" });
     assert.equal(warmupCompletions(registry, key("held")), 1);
   } finally { await teardown(fixture); }

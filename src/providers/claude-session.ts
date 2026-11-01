@@ -100,6 +100,8 @@ async function privateDirectory(path: string): Promise<void> {
  * violation that closes the session.
  */
 export class ClaudeSession {
+  /** A completed client compaction permits one explicit replacement history. */
+  compacted?: boolean;
   state: SessionState = "starting";
   readonly key: string; readonly fingerprint: string; readonly window: string; effort?: string;
   ledger: LedgerState = { items: [] }; pending: string[] = [];
