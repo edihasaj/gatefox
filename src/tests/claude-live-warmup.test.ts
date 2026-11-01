@@ -106,7 +106,7 @@ test("a cold warmup fallback does not reserve capacity from an eligible concurre
   } finally { await teardown(fixture); }
 });
 
-test("a passed warmup admission remains eligible when its entry is evicted during sweep", { timeout: 30000 }, async () => {
+test("two passed warmup admissions at capacity refuse the later start without losing the first admission", { timeout: 30000 }, async () => {
   const { fixture, since } = await setup({ replies: [] });
   const removeSweep = await slowSweep("cap-one");
   try {
@@ -117,15 +117,17 @@ test("a passed warmup admission remains eligible when its entry is evicted durin
     const first = turn(subscription, [user("a")], { threadId: a });
     await waitFor(() => registry.starting.has(key(a)));
     recordWarmupCompletion(registry, "unrelated");
-    const second = turn(subscription, [user("b")], { threadId: b });
-    await Promise.all([first, second]);
+    await Promise.all([first, assert.rejects(turn(subscription, [user("b")], { threadId: b }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable")]);
     assert.equal(claudeLive({ max: 1, parkMinutes: 60 }).sessions().length, 1);
     assert.equal(registry.starting.size, 0);
     await flushTelemetry();
     const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
     assert.equal(events.some(event => event.threadKey === key(a).slice(0, 8) && event.missReason === "warmup"), false);
     assert.ok(events.some(event => event.threadKey === key(a).slice(0, 8) && event.outcome === "spawned"));
-    assert.ok(events.some(event => event.threadKey === key(b).slice(0, 8) && event.missReason === "capacity"));
+    assert.ok(events.some(event => event.threadKey === key(b).slice(0, 8) && event.outcome === "blocked" && event.missReason === "capacity"));
+    assert.equal((await starts(fixture)).filter(start => start === "oneshot").length, 0, "the admitted late start did not replay");
+    assert.equal(await warmupCompletions(registry, key(b)), 1, "the refused start did not erase its passed admission");
   } finally { await removeSweep(); await teardown(fixture); }
 });
 
@@ -169,12 +171,13 @@ test("a warmup entry expiring during sweep does not revise its passed admission"
   } finally { Date.now = originalNow; await removeSweep(); await teardown(fixture); }
 });
 
-test("a session that closes during waitIdle replays a hold or spawns without afterWarmup", { timeout: 30000 }, async () => {
-  const { fixture, since } = await setup({ replies: [{ text: "held" }, { text: "spawned" }] });
+test("a session that closes during waitIdle preserves its hold or closes safely before a controlled spawn", { timeout: 30000 }, async () => {
+  const { fixture, since } = await setup({ replies: [{ text: "spawned" }] });
   const closing = () => {
-    const session: { state: "interrupting" | "closed"; waitIdle: () => Promise<boolean> } = {
+    const session: { state: "interrupting" | "closed"; waitIdle: () => Promise<boolean>; close: () => Promise<void> } = {
       state: "interrupting",
       waitIdle: async () => { session.state = "closed"; return false; },
+      close: async () => { session.state = "closed"; },
     };
     return session;
   };
@@ -182,17 +185,19 @@ test("a session that closes during waitIdle replays a hold or spawns without aft
     const registry = sessionRegistry(); const held = "closed-held"; const open = "closed-open";
     registry.sessions.set(key(held), closing() as never);
     pinReplay(registry, key(held), Date.now(), "crashed");
-    await turn(provider({ max: 6 }), [user("held")], { threadId: held });
+    await assert.rejects(turn(provider({ max: 6 }), [user("held")], { threadId: held }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     registry.sessions.delete(key(held));
 
     registry.sessions.set(key(open), closing() as never);
     await turn(provider({ max: 6 }), [user("open")], { threadId: open });
     await flushTelemetry();
     const events = (await readTelemetry(fixture.directory, since)).filter(event => event.event === "claude_session");
-    assert.ok(events.some(event => event.threadKey === key(held).slice(0, 8) && event.missReason === "session_dead"));
+    assert.ok(events.some(event => event.threadKey === key(held).slice(0, 8) && event.outcome === "blocked" && event.missReason === "session_dead"));
     const spawned = events.find(event => event.threadKey === key(open).slice(0, 8) && event.outcome === "spawned");
+    assert.notEqual(spawned, undefined);
     assert.equal(spawned?.afterWarmup, undefined);
-    assert.deepEqual((await starts(fixture)).sort(), ["live", "oneshot"]);
+    assert.deepEqual(await starts(fixture), ["live"], "the held request did not replay; the independent thread spawned once");
   } finally { await teardown(fixture); }
 });
 
@@ -263,17 +268,15 @@ test("warmup state expires, evicts its oldest key, and survives compatible regis
   } finally { await claudeLive({ max: 6, parkMinutes: 60 }).stop(); }
 });
 
-test("capacity and replay-hold one-shots still count once they complete", { timeout: 30000 }, async () => {
-  const { fixture } = await setup({ replies: [{ text: "session" }, { text: "capacity" }, { text: "held" }] });
+test("warmup completions remain independent of a fixed session and a refused capacity request", { timeout: 30000 }, async () => {
+  const { fixture } = await setup({ replies: [{ text: "session" }] });
   try {
     const registry = sessionRegistry();
     await turn(provider({ max: 1, warmup: 0 }), [user("session")], { threadId: "session" });
     recordWarmupCompletion(registry, key("capacity"));
-    await turn(provider({ max: 1 }), [user("capacity")], { threadId: "capacity" });
-    assert.equal(warmupCompletions(registry, key("capacity")), 2);
-    pinReplay(registry, key("held"), Date.now(), "crashed");
-    await turn(provider({ max: 1 }), [user("held")], { threadId: "held" });
-    assert.equal(warmupCompletions(registry, key("held")), 1);
+    await assert.rejects(turn(provider({ max: 1 }), [user("capacity")], { threadId: "capacity" }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal(warmupCompletions(registry, key("capacity")), 1, "a refused request is not counted as a warmup completion");
   } finally { await teardown(fixture); }
 });
 

@@ -71,7 +71,7 @@ export function claudeSessionMax(memoryBytes = totalmem()): number {
 }
 export function claudeSessionSettings(provider: Pick<ProviderConfig, "claudeSessions">, memoryBytes = totalmem()): ClaudeSessionSettings {
   const value = provider.claudeSessions || {};
-  return { mode: value.mode ?? "replay", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, warmup: value.warmup ?? 1, replayFormat: value.replayFormat ?? "text" };
+  return { mode: value.mode ?? "live", max: value.max ?? claudeSessionMax(memoryBytes), parkMinutes: value.parkMinutes ?? 60, warmup: value.warmup ?? 1, replayFormat: value.replayFormat ?? "text" };
 }
 /** `live` is the default; `replay` is accepted as another name for `oneshot`, matching claudeSessions. */
 export interface CopilotSessionConfig { mode?: "oneshot" | "replay" | "live"; max?: number; parkMinutes?: number; toolWaitMinutes?: number }

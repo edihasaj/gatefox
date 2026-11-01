@@ -4,6 +4,7 @@ import type { ChatToolSelection, OpenAITool } from "../protocol/types.js";
 import { claudeToolBindings, claudeToolName } from "./claude-tool-names.js";
 import { itemText, type ClaudeConversation, type ClaudeImages } from "./claude-render.js";
 import { ProviderError } from "./provider.js";
+import { canonicalSchema } from "./tool-catalog.js";
 
 /** What the caller's history looks like to Copilot, shared by the live seed and the one-shot fallback. */
 
@@ -38,7 +39,7 @@ export function copilotSystem(caller: string[], catalog: NativeTool[]): string {
 
 /** The tools as `session.create` takes them: every one answered by the caller, never deferred behind the CLI's tool search. */
 export const nativeTools = (catalog: NativeTool[]) => catalog.map(({ name, tool }) => ({ name, description: `Caller tool ${tool.function.name}. ${tool.function.description || ""}`,
-  parameters: tool.function.parameters || { type: "object", properties: {} }, skipPermission: true, defer: "never" }));
+  parameters: canonicalSchema(tool.function.parameters || { type: "object", properties: {} }), skipPermission: true, defer: "never" }));
 
 /** The final instruction for a forced, required or disabled tool choice; the catalog itself never changes. */
 export function choiceLine(choice: ChatToolSelection | undefined, catalog: NativeTool[]): string | undefined {

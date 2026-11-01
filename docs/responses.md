@@ -447,12 +447,11 @@ request hands over the usage the CLI reports meanwhile and then ends. The next r
 starts a new session and sends the caller-supplied history once. Cancelling a one-shot request stops
 its CLI process and waits for it to exit; a process outside the CLI's group that keeps its output open
 delays that by half a second of silence on the CLI's output, or by at most about 5 seconds (100 ticks) when output keeps arriving, after which the gateway closes its pipes. Either way, usage the CLI reported before the
-cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry. A request a live session
-cannot serve gets its own session, with the same system message, the caller's whole tool
-catalog and one user message per history item. That happens, for example, for a request
-without a thread id; a compaction, prewarm or memory request; a second request while the
-thread's first still runs; no free slot; a session that fails to start, does not accept a
-tool result or dies before its first event; or `copilotSessions.mode: "oneshot"`. The
+cancellation, or reports while it is being aborted, still reaches the usage ledger and telemetry.
+Anonymous first questions, explicit compaction/prewarm/memory requests and explicitly
+selected one-shot mode use standalone sessions. Capacity, concurrent work, startup,
+delivery and live-stream failures return a final refusal instead of automatic replay.
+Historical anonymous conversations require a caller conversation ID. The
 [full list](copilot-sessions.md#how-a-request-is-served) names each case.
 The current Copilot CLI exposes no selected-model priority tier. Direct
 `priority` or `fast` requests return `invalid_request` before opening a session.
@@ -728,14 +727,13 @@ returns only the calls it completed. Output tokens come from the final
 `message_delta`, so tool turns report what was actually generated. Cancelling a
 request stops the CLI at once instead of waiting 1.5 seconds. A forced
 `tool_choice` keeps the full catalog, so it does not break the prompt cache; a final
-block names the required tool, and one retry with only that tool follows a
-mismatched call when no text was streamed.
+block names the required tool. A mismatched call ends the request without
+changing the catalog or automatically retrying inference.
 
 With `claudeSessions.mode: "live"`, the gateway instead keeps one CLI session per
 Codex thread, so history, thinking and the prompt cache stay native; see
-[live Claude sessions](claude-sessions.md). Replay stays the default. After streamed text, a mismatched call
-fails with a code Codex treats as final, because a caller retry would repeat the
-same full-catalog inference.
+[live Claude sessions](claude-sessions.md). Live mode is the default. A mismatched call
+fails with a code Codex treats as final; Gateway does not retry with another catalog.
 
 The caller's instructions and the system and developer messages before the first
 other message become the CLI's system prompt, after the gateway's fixed backend

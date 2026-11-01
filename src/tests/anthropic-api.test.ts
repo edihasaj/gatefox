@@ -72,7 +72,7 @@ test("Anthropic API wire path preserves images, replay and native custom calls, 
     }
     stop = "end_turn";
     for (const invalid of ["duplicate", "bad-json", "foreign", "eof"]) { mode = invalid; const failed = await request({}); assert.ok(failed.status >= 400); }
-    mode = "text"; const missing = await request({ tool_choice: "required" }); assert.equal(missing.status, 502);
+    mode = "text"; const missing = await request({ tool_choice: "required" }); assert.equal(missing.status, 400);
     const unsupported = await request({ reasoning: { effort: "ultra" } }); assert.equal(unsupported.status, 400);
 
     mode = "hang"; const control = new AbortController(); const streaming = await request({ stream: true }, control.signal);

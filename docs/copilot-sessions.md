@@ -39,8 +39,8 @@ A session whose turn is running closes when the turn ends, and so does one that 
 starting when its provider was removed (it closes when the request that started it ends).
 A gateway generation that an in-place upgrade starts does the same for the sessions it
 adopts from the release before it: those whose provider its configuration no longer serves
-close at once. One-shot is also what a
-request falls back to whenever a live session cannot serve it.
+close at once. An ordinary live request that cannot continue receives a final
+refusal instead of silently switching to one-shot. See [provider reuse](provider-reuse.md).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -107,45 +107,32 @@ their string input) remains rejected.
   from the cache, the follow-up model calls are agent-initiated, and the request is billed
   for its own model calls only. An effort change between turns keeps the session: the
   gateway calls `session.model.switchTo`, which keeps the cache.
-- **Reseed** (a new process, one cache write, which a one-shot request pays on every
-  call). A session that was waiting for tools is aborted first, and the old process and
-  its folder are gone before the new process starts: the request waits for that, at most
-  2 seconds for the abort and then the SIGKILL. The telemetry `missReason` is one of:
-  `fingerprint_changed` (model, summary mode, system message, tools, or whether a reasoning
-  effort is set), `window_changed` (the context window changed), `prefix_diverged` (an
-  earlier message was edited), `unexpected_tail` (for example a new message together with
-  tool outputs, which is what Stop followed by a new message sends), `forced_choice`
-  (tool outputs arrived with a forced, required or `none` choice, which a tool result
-  cannot carry), `large_tool_result` (a tool result with images is too large to hand over
-  inline), `effort_midturn` (an effort change while tools were pending),
-  `effort_rejected` (the CLI refused an in-place effort change),
-  `tool_request_missing` (the session had no pending request for a call whose output
-  arrived), and, when the thread's previous session had ended or ended while the request
-  was being placed, `session_dead` (it crashed or was killed for a violation), `evicted`,
-  `reaped`, `interrupted`, `tool_wait_expired` or `idle_missing`.
-- **One-shot fallback** (the request is answered with its own session and no live session
-  starts or changes): `no_thread` (no thread id), `request_kind` (compaction, prewarm and
-  memory requests), `concurrent` (a second request for a thread whose first still runs or
-  is still being placed), `capacity` (every slot is held by a running session, a session
-  whose own request is being placed, or a session still starting), `spawn_failed` or
-  `initialize_timeout` (the process or its handshake did not come up in time, or the
-  session misbehaved while starting), `delivery_rejected` (the session did not confirm a
-  tool result: it refused it, answered with an error, did not answer within 15 seconds,
-  or had no pending request for the call; the session is then closed), `stream_failed`
-  (the session died before its first event), and `attach_failed`
-  (an unexpected error while placing the request; one that is not a provider error is
-  also reported as an exception).
-  Images and forced choices are served live.
+- **Queued caller updates:** complete pending results followed by user/developer
+  messages continue the same session. Each new item is acknowledged through
+  immediate `session.send` before any result is delivered. Old adopted instances
+  without that capability preserve and refuse rather than dropping messages.
+- **Controlled reseed:** genuine model/system/tool or window changes, oversized
+  inline results, an idle/dead/expired session found before placement, or a completed
+  native Messages caller-owned history replacement can require a new process.
+  A failed session during the current placement cannot seed again in that request.
+- **Preserve and refuse:** unexplained `prefix_diverged`, `unexpected_tail`,
+  `forced_choice`, `effort_midturn`, an explicit `effort_rejected`, or
+  `tool_request_missing` leaves a usable session and its pending tools intact.
+  Matching corrected input can continue it. An uncertain effort change closes the
+  unsafe session and returns a final continuity refusal.
+- **Standalone:** explicit compaction/prewarm/memory requests and anonymous first
+  questions can use one-shot. Historical anonymous conversations require an ID.
+- **Final continuity refusal:** concurrency, capacity, startup, tool-delivery,
+  stream and attachment failures cannot silently replay history. This also applies
+  after partial output/usage. Images and forced choices remain supported on
+  compatible live paths.
 
 ## Admission
 
 While every slot holds a session, a new thread first waits for a session that is already
-closing, then takes the slot of the least recently used session that finished its turn,
-then of the least recently used one that waits for tool outputs. A running session is
-never evicted, and neither is one whose own request is being placed. When no slot can be
-freed, because every slot is held by a running session, a session whose own request is
-being placed, or a session still starting (another thread's attach that has no session
-yet), the newcomer is served one-shot (`capacity`). An evicted session's process and
+closing, then can take a session idle at least 30 minutes. Warm and running sessions,
+and sessions whose own request is being placed, are never evicted. Without a cold
+slot, the newcomer receives a final `capacity` refusal. An evicted session's process and
 folder are gone before its replacement starts. The evicted thread reseeds on its next
 request (`evicted`). If that request arrives while the old session is still ending, it
 takes over the slot: the old session stops counting toward `max` and the request waits
@@ -172,14 +159,14 @@ accepts the CLI's start-up announcements `session.start` and
 `session.model_change` that confirms the effort change the gateway asked for (the CLI
 sends it before it answers `session.model.switchTo`; the gateway recognizes it even when
 it is read after the next request attached). A confirmation for another effort than the one
-asked for ends the session (`effort_mismatch`), and the request is served one-shot. Anything
+asked for ends the session (`effort_mismatch`), and the request is refused. Anything
 else kills the session at
 once, before it can spend: a `tool.execution_complete` or `external_tool.completed` for a
 call nobody answered (the timeout, or a failed call), a model call, any assistant output
 or usage, compaction, truncation or an error, a model change nobody asked for, a
 permission request, a sub-agent event, or a tool request for a call that is not pending.
 A session that misbehaves while it is starting is never handed to a request; the request
-is served one-shot (`spawn_failed`). A timer cannot be trusted alone, because a sleeping
+receives a final refusal (`spawn_failed`). A timer cannot be trusted alone, because a sleeping
 Mac stops it while the CLI's clock goes on.
 
 ## Stopping a session
@@ -209,8 +196,8 @@ CLI has exited and its output has been silent for half a second, or at most abou
 ticks) after the exit when output keeps arriving, the gateway closes its pipes and the request
 ends. A reseed or
 an eviction waits for the old session to be gone. Closing a session under a running
-request fails that request at once, or, before its first event, hands it to the one-shot
-path (`stream_failed`). The next request after a cancellation reseeds,
+request fails that request at once with a final continuity refusal (`stream_failed`).
+The next independent request after a cancellation reseeds,
 because the half-written answer cannot be matched against what Codex replays. A request
 that has already finished is not affected when the client closes the connection
 afterwards.

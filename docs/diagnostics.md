@@ -32,6 +32,12 @@ counts to zero; that original observation coverage cannot be recovered.
 Copilot session token totals have separate read/write sample counts; a total of
 zero with no samples is unreported usage, not a measured cold cache.
 
+Claude, Copilot and Grok `blocked`/`preserved` continuity decisions appear among
+diagnostic issues. They indicate that Gateway stopped instead of silently replaying
+history. Deterministic tool/protocol failures keep their original diagnostic class
+and usage even when the client-facing response is a final HTTP 400 or terminal
+stream error. See [provider reuse](provider-reuse.md).
+
 New Copilot failures record fixed discriminants such as `unknown_tool`,
 `duplicate_tool_id`, `malformed_tool_call`, `invalid_tool_arguments`,
 `nontext_custom_input` and `tool_request_missing`. They preserve the existing

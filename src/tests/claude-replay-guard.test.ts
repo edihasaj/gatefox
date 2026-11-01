@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ProviderError } from "../providers/provider.js";
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeLive } from "../providers/claude-live.js";
 import { configureTelemetry, flushTelemetry } from "../telemetry.js";
@@ -68,9 +69,11 @@ for (const mode of ["replay", "live"] as const) test(`measured cache writes from
   };
   try {
     await assert.rejects(turn("a".repeat(400000)), { code: "invalid_tool_call" });
-    await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
+    // Replay pays for a second CLI before the stop; a live thread whose session died is refused at once, without any second CLI.
+    if (mode === "replay") await assert.rejects(turn("b".repeat(400000)), { code: "invalid_tool_call" });
+    else await assert.rejects(turn("b".repeat(400000)), (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     await assert.rejects(turn("c".repeat(400000)), { code: "invalid_request", status: 400 });
-    assert.equal((await fixture.capture()).filter(entry => entry.start).length, 2, "a charged failure cannot bypass the stop");
+    assert.equal((await fixture.capture()).filter(entry => entry.start).length, mode === "replay" ? 2 : 1, "a charged failure cannot bypass the stop");
   } finally {
     await claudeLive({ max: 6, parkMinutes: 60 }).stop(); await flushTelemetry(); await fixture.restore();
   }
@@ -79,7 +82,7 @@ for (const mode of ["replay", "live"] as const) test(`measured cache writes from
 test("compacted conversation recovery is independent of large fixed instructions", { timeout: 30000 }, async () => {
   const fixture = await installClaudeFixture({ cache: true, replies: [{ text: "one" }, { text: "two" }, { text: "recovered" }] });
   configureTelemetry(fixture.directory, "test");
-  const provider = new ClaudeSubscription({ id: `fixed-prefix-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" } });
+  const provider = new ClaudeSubscription({ id: `fixed-prefix-${process.pid}`, type: "claude-subscription", models: { fixture: "fixture" }, claudeSessions: { mode: "replay" } });
   const turn = async (text: string) => {
     for await (const _ of provider.infer({ model: "fixture", input: text, instructions: "Fixed instructions".repeat(100000) }, new AbortController().signal, { threadId: "fixed" })) {}
   };

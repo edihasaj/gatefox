@@ -44,10 +44,15 @@ function allowlisted(value: unknown, allowed: ReadonlySet<string>): string | und
 // Codex retries a failed stream up to five times unless its code is one Codex treats
 // as final. These failures repeat identically, so the stream reports such a code and
 // the turn stops at once instead of re-running inference.
-const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota"]);
+const deterministicOutputCodes = new Set(["invalid_tool_call", "invalid_stream", "invalid_output", "inconsistent_stream", "output_too_large", "unsupported_output", "unsupported_input"]);
+const permanentCodes = new Set(["invalid_request", "invalid_json", "request_too_large", "model_not_found", "unsupported_protocol", "authentication", "usage_limit", "insufficient_quota", ...deterministicOutputCodes]);
 for (const code of ["managed_route_identity_required", "managed_route_changed", "managed_route_state_unbound", "managed_route_state_unavailable"]) permanentCodes.add(code);
 const finalUpstreamCodes = new Set(["cyber_policy", "bio_policy", "misalignment_policy_violation", "usage_not_included", "invalid_prompt"]);
 const rejectedStatuses = new Set([400, 404, 413, 422]);
+/** Client-facing status only; diagnostics and accounting keep the original failure class/status. */
+export function providerFailureStatus(error: ProviderError): number {
+  return deterministicOutputCodes.has(error.code) ? 400 : error.status;
+}
 /** The error code a failed stream sends to Codex. */
 export function streamFailureCode(error: ProviderError): string {
   const upstream = own(error, "upstream"); const upstreamCode = own(upstream, "code"); const httpStatus = own(upstream, "httpStatus");

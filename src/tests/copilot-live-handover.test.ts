@@ -6,20 +6,23 @@ import { ResponsesWriter } from "../protocol/responses.js";
 import type { ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
 import { CopilotSubscription, copilotLiveInput, copilotRun } from "../providers/copilot.js";
 import { sessionLimits } from "../providers/copilot-live-session.js";
+import { ProviderError } from "../providers/provider.js";
 import { adapter, alive, callIds, harness, live, outputFor, providerId, thread, tools, turn, until, user, type Harness } from "./copilot-live-harness.js";
 
 // How a continuation hands the caller's tool outputs to the calls waiting in the session.
 const kinds = async (h: Harness) => (await h.sessions()).map(entry => [entry.outcome, entry.missReason].filter(Boolean).join(":"));
+const unavailable = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable";
+const preserved = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "copilot_session_preserved";
 
-test("a tool result the CLI answers with an error, or not in time, is a refused delivery: the request is served one-shot", { timeout: 30000 }, async () => {
+test("a tool result the CLI answers with an error, or not in time, is a refused delivery: the request is refused without a one-shot replay", { timeout: 30000 }, async () => {
   for (const marker of ["rpcerror", "nodeliver"]) {
     const h = await harness(); const deliver = sessionLimits.deliverMs; sessionLimits.deliverMs = 300;
     try {
       const provider = adapter(); const first = [user(`go [tool][${marker}]`)]; const a = await turn(provider, first);
       const [pid] = await h.pids();
-      const b = await turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]);
-      assert.match(b.text, /^answer/, marker);
-      assert.ok((await kinds(h)).includes("fallback:delivery_rejected"), `${marker}: ${(await kinds(h)).join(",")}`);
+      await assert.rejects(turn(provider, [...first, ...a.output, ...outputFor(a.output, "x")]), unavailable, marker);
+      assert.ok((await kinds(h)).includes("blocked:delivery_rejected"), `${marker}: ${(await kinds(h)).join(",")}`);
+      assert.equal((await h.log()).filter(entry => entry.op === "create").length, 1, `${marker}: no replay process was created`);
       assert.ok(await until(async () => (await kinds(h)).includes("crashed:delivery_rejected")), `${marker}: the session ends for it`);
       assert.ok(!alive(pid)); assert.equal(live().sessions().length, 0);
     } finally { sessionLimits.deliverMs = deliver; await h.restore(); }
@@ -51,7 +54,7 @@ test("an empty tool output is handed over as a placeholder, so the waiting call 
   } finally { await h.restore(); }
 });
 
-test("a translation that does not match the session's ledger starts the thread over instead of sending the wrong items", { timeout: 30000 }, async () => {
+test("a translation that does not match the session's ledger is refused and the session is kept instead of sending the wrong items", { timeout: 30000 }, async () => {
   const h = await harness();
   try {
     const config: ProviderConfig = { id: providerId, type: "copilot-subscription", models: { alias: "fixture" }, copilotSessions: { mode: "live" } };
@@ -66,17 +69,21 @@ test("a translation that does not match the session's ledger starts the thread o
       return writer.result().output as ResponsesInputItem[];
     };
     // Waiting for tool outputs, while the translated message at the output's place is not that call's tool message.
-    const first = [user("go [tool]")]; const a = await turn(provider, first, { context: thread });
+    const first = [user("go [tool]")]; const a = await turn(provider, first, { context: thread }); const [pid] = await h.pids();
     const outputs = prepare([...first, ...a.output, ...outputFor(a.output, "x")], "thread-1");
     outputs.conversation = outputs.conversation.map(message => message.role === "tool" ? { ...message, tool_call_id: "call_other" } : message);
-    await serve(outputs);
+    await assert.rejects(serve(outputs), preserved);
     assert.ok(!(await h.log()).some(entry => entry.op === "deliver"), "nothing was handed to the waiting call");
-    // After a finished turn: an untouched translation continues; one with a message the ledger does not count starts over.
+    assert.ok(alive(pid), "the waiting session survived the refusal");
+    // After a finished turn: an untouched translation continues; one with a message the ledger does not count is refused and the session stays usable.
     const hello = [user("hello")]; const b = await turn(provider, hello, { context: { threadId: "thread-2" } });
     const more = [...hello, ...b.output, user("more")];
     const c = await serve(prepare(more, "thread-2"));
     const extra = prepare([...more, ...c, user("again")], "thread-2"); extra.conversation = [...extra.conversation, extra.conversation.at(-1)!];
-    await serve(extra);
-    assert.deepEqual((await kinds(h)).filter(kind => /^(spawned|continued|reseeded)/.test(kind)), ["spawned", "reseeded:unexpected_tail", "spawned", "continued", "reseeded:unexpected_tail"]);
+    await assert.rejects(serve(extra), preserved);
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 2, "no reseed or replay process: one session per thread");
+    await serve(prepare([...more, ...c, user("again")], "thread-2"));
+    assert.deepEqual((await kinds(h)).filter(kind => /^(spawned|continued|reseeded|preserved)/.test(kind)), ["spawned", "preserved:unexpected_tail", "spawned", "continued", "preserved:unexpected_tail", "continued"]);
+    assert.equal((await h.log()).filter(entry => entry.op === "create").length, 2);
   } finally { await h.restore(); }
 });

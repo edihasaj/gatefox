@@ -13,6 +13,7 @@ import { chatRejection } from "./chat-rejections.js";
 import { imagesOf, imageUrlPart, toolImagesMessage, userContent, type ChatContentPart } from "./chat-images.js";
 import { telemetry } from "../telemetry.js";
 import { largeUncachedUsage } from "../cache-guarded-inference.js";
+import { canonicalTools } from "./tool-catalog.js";
 
 const recoveryDeadlineMs = 90_000;
 const recoveryEofMs = 5_000;
@@ -126,7 +127,7 @@ export class ChatCompletionsAPI implements Provider {
     const options = generationOptions(request, 2);
     const credential = await apiCredential(this.config);
     if (!credential) throw new ProviderError("authentication", "Chat API credential is missing", 401);
-    const normalized = responsesToChatRequest(request); const tools = normalized.tools || [];
+    const normalized = responsesToChatRequest(request); const tools = canonicalTools(normalized.tools || []);
     if (request.previous_response_id !== undefined) throw new ProviderError("invalid_request", "Chat API requires replayed history", 400);
     if (request.max_output_tokens !== undefined && (!Number.isInteger(request.max_output_tokens) || Number(request.max_output_tokens) < 1)) throw new ProviderError("invalid_request", "max_output_tokens must be a positive integer", 400);
     const modelAlias = Object.entries(this.config.models).find(([, model]) => model === request.model)?.[0];

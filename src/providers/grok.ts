@@ -17,6 +17,9 @@ import { leadingInstructions, markCustomCalls, renderConversation } from "./clau
 import { validateForcedChoice } from "./claude-calls.js";
 import { ensureGrokHome } from "./grok-home.js";
 import { GrokMessageStream, grokUsage, type GrokStreamEnd } from "./grok-stream.js";
+import { createHash } from "node:crypto";
+import { CliContinuityUnavailable } from "./cli-continuity.js";
+import { providerConversationId } from "./provider.js";
 
 /** Every built-in Grok Build tool. search_tool and use_tool stay: they are Grok's only route to the gateway's MCP tools. */
 export const grokBuiltinTools = ["run_terminal_command", "read_file", "search_replace", "list_dir", "grep", "kill_command_or_subagent", "todo_write",
@@ -30,6 +33,22 @@ const resultWaitMs = 1000;
 const cancelled = () => new ProviderError("cancelled", "Request cancelled", 499);
 const grokSystem = `${gatewaySystemPrompt} Caller tools are in the gateway MCP server: find one with search_tool, then call it with use_tool and its full name, gateway__<name>.`;
 const toolsScript = fileURLToPath(new URL("./grok-cli-tools.js", import.meta.url));
+const continuitySymbol = Symbol.for("harness-gateway/grok-standalone/v1");
+/** The current Grok transport is standalone-only until its persistent ACP confinement is qualified. */
+function standaloneGrok(config: ProviderConfig, model: string, context: InferenceContext, history: OpenAIChatMessage[]): () => void {
+  const state = globalThis as unknown as Record<symbol, Map<string, number> | undefined>;
+  const conversations = state[continuitySymbol] ??= new Map();
+  const conversation = providerConversationId(context);
+  const key = conversation ? createHash("sha256").update(JSON.stringify([config.id, config.grokHome, model, conversation])).digest("hex") : undefined;
+  if (history.some(message => message.role === "assistant" || message.role === "tool") || key && conversations.has(key)) {
+    telemetry("grok_cli", { model, outcome: "blocked", missReason: "persistent_session_unqualified" });
+    throw new CliContinuityUnavailable("Grok", "persistent_session_unqualified");
+  }
+  return () => {
+    if (key && conversations.has(key)) throw new CliContinuityUnavailable("Grok", "persistent_session_unqualified");
+    if (key) { conversations.set(key, Date.now()); if (conversations.size > 4096) conversations.delete(conversations.keys().next().value!); }
+  };
+}
 
 /** Replayed tool calls carry the gateway catalog name Grok uses with use_tool. Arguments, ids and results stay intact. */
 export function grokToolHistory(messages: OpenAIChatMessage[], tools: OpenAITool[]): OpenAIChatMessage[] {
@@ -84,6 +103,7 @@ export class GrokSubscription implements Provider {
       throw new ProviderError("invalid_request", "Grok through the gateway accepts text only; remove the image or choose another model", 400);
     }
     const history = grokToolHistory(markCustomCalls(normalized.messages, normalized.tools || []), normalized.tools || []);
+    const admit = standaloneGrok(this.config, request.model, context, history);
     const leading = leadingInstructions(history);
     const system = [grokSystem, ...history.slice(0, leading).map(message => message.content ?? "")].filter(Boolean).join("\n\n");
     if (Buffer.byteLength(system) > maxSystemBytes) throw new ProviderError("invalid_request", "Instructions are too large for the Grok CLI", 400);
@@ -101,6 +121,7 @@ export class GrokSubscription implements Provider {
     if (!home) throw new ProviderError("invalid_request", "The Grok provider has no Grok home", 400);
     await ensureGrokHome(home);
     if (signal.aborted) throw cancelled();
+    admit();
 
     const directory = await mkdtemp(join(tmpdir(), "gateway-grok-"));
     const catalogPath = join(directory, "tools.json"); const promptPath = join(directory, "prompt.md");

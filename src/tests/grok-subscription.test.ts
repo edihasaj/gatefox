@@ -65,7 +65,7 @@ async function collect(provider: GrokSubscription, request: Record<string, unkno
 }
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-test("charged Grok tool failures retain cache measurements and stop the third CLI", async () => {
+test("charged Grok failure is retained and repeating the conversation stops before another CLI", async () => {
   const f = await setup([init(), ev({ type: "message_start", message: { usage: { input_tokens: 200000, cache_read_input_tokens: 10000 } } }),
     ev({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "bad", name: "run_terminal_command" } })], true);
   const turn = async () => {
@@ -73,9 +73,10 @@ test("charged Grok tool failures retain cache measurements and stop the third CL
       { threadId: "grok-failure" }, "grok-native-failure")) {}
   };
   try {
-    await assert.rejects(turn(), { code: "invalid_tool_call" }); await assert.rejects(turn(), { code: "invalid_tool_call" });
+    await assert.rejects(turn(), { code: "invalid_tool_call" });
     await assert.rejects(turn(), { code: "invalid_request", status: 400 });
-    assert.equal((await f.captured()).length, 2);
+    await assert.rejects(turn(), { code: "invalid_request", status: 400 });
+    assert.equal((await f.captured()).length, 1);
   } finally { await f.restore(); }
 });
 async function gone(pid: number) { for (let i = 0; i < 300 && alive(pid); i++) await new Promise(resolve => setTimeout(resolve, 10)); return !alive(pid); }
@@ -93,6 +94,23 @@ test("a text turn streams text and usage with a scrubbed environment and a manag
     assert.equal(run.args[run.args.indexOf("--reasoning-effort") + 1], "high");
     const config = await readFile(join(f.home, "config.toml"), "utf8");
     assert.match(config, /\[marketplace\]/); assert.match(config, /\[mcp_servers\.gateway\]/); assert.match(config, /backend_tools = false/);
+  } finally { await f.restore(); }
+});
+
+test("Grok rejects conversation replay before starting a CLI or touching its private home", async () => {
+  const f = await setup(textTurn("OK"));
+  const ask = async (input: string | Array<{ role: "user" | "assistant"; content: string }>, threadId?: string) => {
+    for await (const _ of f.provider.infer({ model: "grok-4.7", input }, new AbortController().signal, { threadId })) {}
+  };
+  try {
+    await assert.rejects(ask([{ role: "user", content: "First" }, { role: "assistant", content: "Answer" }, { role: "user", content: "Next" }]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal((await f.captured()).length, 0);
+    await ask("First", "identified");
+    await assert.rejects(ask("A second request", "identified"), { code: "invalid_request", status: 400 });
+    assert.equal((await f.captured()).length, 1, "the second standalone request did not replay a known conversation");
+    await ask("Independent question", "another");
+    assert.equal((await f.captured()).length, 2, "independent standalone requests remain usable");
   } finally { await f.restore(); }
 });
 

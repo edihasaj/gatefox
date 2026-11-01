@@ -22,7 +22,7 @@ console.log(JSON.stringify({type:'result',is_error:false,subtype:'success',resul
   await writeFile(join(directory, "claude"), script); await chmod(join(directory, "claude"), 0o700);
   const previous = process.env.PATH; process.env.PATH = directory + delimiter + process.env.PATH;
   try {
-    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } });
+    const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "replay" } });
     const tools = [{ type: "function" as const, name: "read_note", description: "Reads a note", parameters: { type: "object", properties: { id: { type: "string" } } } }];
     const first: ResponsesInputItem[] = [{ type: "message", role: "developer", content: "Stable instructions" }, { type: "message", role: "user", content: "Read note alpha" }];
     const second: ResponsesInputItem[] = [...first, { type: "function_call", call_id: "call_1", name: "read_note", arguments: "{\"id\":\"alpha\"}" }, { type: "function_call_output", call_id: "call_1", output: "blue harbor" }];
@@ -112,42 +112,43 @@ test("forced choices keep the whole catalog, and block 0 does not depend on it",
   } finally { await f.restore(); }
 });
 
-test("a forced choice answered with another tool retries once with only the forced tool", async () => {
+test("a forced choice answered with another tool is a final refusal: one call per request, an unchanged catalog, no retry", async () => {
   const f = await catalogFixture();
   try {
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" } });
     const request = { model: "fixture", input: "go", tools: noteTools, tool_choice: { type: "function" as const, name: "write_note" } };
-    process.env.GATEWAY_FIXTURE_CALL = "wrong";
-    const events = await drain(adapter.infer(request, new AbortController().signal));
-    assert.deepEqual(events.map(event => event.type === "tool" ? event.call.function.name : event.type), ["write_note", "done"]);
-    const [first, retry] = await f.captured();
-    assert.equal(JSON.parse(first.catalog).length, 2); assert.equal(JSON.parse(retry.catalog).length, 1, "the retry offers only the forced tool");
-    // Text already streamed cannot be taken back, so that attempt fails instead of retrying,
-    // with a code Codex treats as final rather than repeating the full-catalog inference.
-    process.env.GATEWAY_FIXTURE_CALL = "wrong-text";
-    await assert.rejects(drain(adapter.infer(request, new AbortController().signal)), (error: unknown) => error instanceof ProviderError && error.code === "upstream_rejected" &&
-      error.upstream?.code === "forced_tool_mismatch" && streamFailureCode(error) === "invalid_prompt");
-    assert.equal((await f.captured()).length, 3);
+    // Both with and without text streamed first, the refusal is final for the client's stream and no second CLI runs.
+    let calls = 0;
+    for (const mode of ["wrong", "wrong-text"]) {
+      process.env.GATEWAY_FIXTURE_CALL = mode;
+      await assert.rejects(drain(adapter.infer(request, new AbortController().signal)), (error: unknown) => unavailable(error) && streamFailureCode(error as ProviderError) === "invalid_prompt", mode);
+      calls++; assert.equal((await f.captured()).length, calls, `${mode}: exactly one CLI call for the rejected request`);
+    }
+    const runs = await f.captured();
+    for (const run of runs) assert.equal(JSON.parse(run.catalog).length, 2, "the catalog was never narrowed to the forced tool");
+    assert.equal(runs[0].catalog, runs[1].catalog);
   } finally { await f.restore(); }
 });
 
-test("live mode without the live module runs one-shot and records the fallback once", async () => {
+const unavailable = (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable";
+
+test("live mode without the live module runs standalone requests one-shot and refuses ordinary turns", async () => {
   const f = await catalogFixture();
   configureTelemetry(f.directory, "test"); const since = Date.now();
   try {
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live" } }, undefined, undefined, "./claude-live-missing-fixture.js");
-    for (const context of [{ threadId: "thread-1", requestKind: "compaction" as const }, {}, { threadId: "thread-1", requestKind: "turn" as const }, { threadId: "thread-1" }]) {
-      const events = await drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, context));
-      assert.equal(events.at(-1)?.type, "done");
-    }
-    assert.equal((await f.captured()).length, 4, "every request ran one-shot");
+    const ask = (context: { threadId?: string; requestKind?: "compaction" | "turn" }) => drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, context));
+    for (const context of [{ threadId: "thread-1", requestKind: "compaction" as const }, {}]) assert.equal((await ask(context)).at(-1)?.type, "done", JSON.stringify(context));
+    assert.equal((await f.captured()).length, 2, "compaction and thread-less requests ran one-shot");
+    for (const context of [{ threadId: "thread-1", requestKind: "turn" as const }, { threadId: "thread-1" }]) await assert.rejects(ask(context), unavailable, JSON.stringify(context));
+    assert.equal((await f.captured()).length, 2, "ordinary turns were refused, not replayed");
     await flushTelemetry();
     const sessions = (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session");
-    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "unavailable"]]);
+    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "unavailable"], ["blocked", "unavailable"], ["blocked", "unavailable"]]);
   } finally { await f.restore(); }
 });
 
-test("a live attach that throws before streaming falls back to one-shot, except for cancellation", async () => {
+test("a live attach that throws before streaming is refused without a replay, and cancellation stays a cancellation", async () => {
   const f = await catalogFixture();
   const module = join(f.directory, "live.mjs");
   await writeFile(module, `import {ProviderError} from ${JSON.stringify(new URL("../providers/provider.js", import.meta.url).href)};
@@ -155,11 +156,11 @@ export function claudeLive(){return{async attach(input){throw input.threadId==='
   configureTelemetry(f.directory, "test"); const since = Date.now();
   try {
     const adapter = new ClaudeSubscription({ id: "claude", type: "claude-subscription", models: { alias: "fixture" }, claudeSessions: { mode: "live" } }, undefined, undefined, pathToFileURL(module).href);
-    assert.equal((await drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, { threadId: "thread-1" }))).at(-1)?.type, "done");
+    await assert.rejects(drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, { threadId: "thread-1" })), unavailable);
     await assert.rejects(drain(adapter.infer({ model: "fixture", input: "go" }, new AbortController().signal, { threadId: "cancel" })), { code: "cancelled" });
-    assert.equal((await f.captured()).length, 1, "only the failed attach ran one-shot");
+    assert.deepEqual(await f.captured().catch(() => []), [], "neither request ran one-shot (the fixture never wrote a capture)");
     await flushTelemetry();
     const sessions = (await readTelemetry(f.directory, since)).filter(entry => entry.event === "claude_session");
-    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
+    assert.deepEqual(sessions.map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"], ["blocked", "spawn_failed"]]);
   } finally { await f.restore(); }
 });

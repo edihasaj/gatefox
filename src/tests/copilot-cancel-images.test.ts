@@ -138,7 +138,7 @@ for (const mode of modes) {
   });
 }
 
-test("a live session that dies while its images are being written serves the request one-shot, not as a cancellation nobody asked for", { skip: process.platform === "win32", timeout: 60000 }, async () => {
+test("a live session that dies while its images are being written is refused without a one-shot replay, not as a cancellation nobody asked for", { skip: process.platform === "win32", timeout: 60000 }, async () => {
   const h = await harness(); process.env.GATEWAY_COPILOT_LIVE_CREATE_GATE = join(h.directory, "create-gate");
   let held: Held | undefined; let running: Promise<unknown> | undefined;
   try {
@@ -149,10 +149,9 @@ test("a live session that dies while its images are being written serves the req
     const [pid] = await h.pids(); process.kill(pid, "SIGKILL");
     await pipe.drain();
     const result = await running;
-    assert.ok(!(result instanceof Error), `the request was served: ${String(result)}`);
-    assert.match((result as { text: string }).text, /^answer/);
-    assert.ok((await h.sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "stream_failed"), "by the one-shot path, after the live session failed");
-    assert.deepEqual((await h.pids()).length, 2, "a live CLI and a one-shot CLI");
+    assert.ok(result instanceof ProviderError && result.code !== "cancelled" && result.status === 400 && result.upstream?.code === "session_continuity_unavailable", `the request was refused, not cancelled: ${String(result)}`);
+    assert.ok((await h.sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "stream_failed"), "after the live session failed");
+    assert.deepEqual((await h.pids()).length, 1, "only the live CLI that died; nothing replayed the request");
   } finally { held?.keepDraining(); await release(join(h.directory, "create-gate")); await running; await h.restore(); await held?.close(); }
 });
 

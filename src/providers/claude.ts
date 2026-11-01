@@ -22,6 +22,7 @@ import { ClaudeSessionPreserved, sessionKey, type ClaudeLiveModule, type ClaudeL
 import { telemetry } from "../telemetry.js";
 import { claudeReplayBudget, ClaudeReplayBlocked, type ClaudeReplayBudget } from "./claude-replay-budget.js";
 import { providerCommand } from "../provider-tool-runtime.js";
+import { CliContinuityUnavailable, standaloneCliReasons, unidentifiedCliHistory } from "./cli-continuity.js";
 
 export function claudeEffort(config: ProviderConfig | undefined, request: ResponsesRequest): string | undefined {
   const effort = (request.reasoning as { effort?: string } | undefined)?.effort;
@@ -100,6 +101,7 @@ export class ClaudeSubscription implements Provider {
     // The caller's leading system and developer content is the CLI's system prompt, as in Claude Code; the rest stays history.
     const leading = leadingInstructions(history);
     const { conversation, images } = imageConversation(history.slice(leading));
+    if (settings.mode === "live" && !conversationId && !oneShotKinds.has(context.requestKind) && unidentifiedCliHistory(conversation)) throw new CliContinuityUnavailable("Claude", "conversation_id_required");
     const run: Run = { alias: request.model, model: claudeCliModel(request.model), effort: claudeEffort(this.config, request), fast: claudeFastMode(this.config, request),
       summaryVisible: (request.reasoning as { summary?: string } | undefined)?.summary !== "none", requestedEffort: (request.reasoning as { effort?: string } | undefined)?.effort,
       format: settings.replayFormat, tools, choice, conversation, images, systemPrompt: claudeSystemPrompt(history.slice(0, leading).map(message => message.content ?? "")), leading,
@@ -124,12 +126,8 @@ export class ClaudeSubscription implements Provider {
     let recovery: ProviderError | undefined;
     let recovering = false;
     let recoveryReported = false;
-    let forcedRetried = false;
-    let current = run;
-    // Authentication recovery cannot repeat work the caller saw in any form. The older
-    // forced-tool recovery remains narrower: only already-visible text would duplicate.
+    // Authentication recovery cannot repeat work the caller saw in any form.
     let authVisible = false;
-    let streamedText = false;
     const beginRecovery = async (error: unknown): Promise<boolean> => {
       const eligible = credentialRecovery(error);
       if (!eligible || recovery) return false;
@@ -148,9 +146,14 @@ export class ClaudeSubscription implements Provider {
     if (settings.mode === "live" && conversationId && !oneShotKinds.has(context.requestKind)) {
       const live = await this.live(run, request, context, settings, signal, conversationId);
       completed = live?.complete;
+      if (!live || live.outcome.kind === "fallback" && !standaloneCliReasons.has(live.outcome.reason)) {
+        const reason = live?.outcome.kind === "fallback" ? live.outcome.reason : "unavailable";
+        telemetry("claude_session", { outcome: "blocked", missReason: reason, threadKey: run.threadKey });
+        throw new CliContinuityUnavailable("Claude", reason);
+      }
       if (live?.outcome.kind === "stream") {
         try { for await (const event of live.outcome.events) {
-          authVisible = true; if (event.type === "text") streamedText = true;
+          authVisible = true;
           markCompleted(event); yield event;
         } return; }
         catch (error) {
@@ -158,18 +161,18 @@ export class ClaudeSubscription implements Provider {
             // A failed live session synchronously removes itself from the registry; the
             // cancellable backoff also gives its killed CLI time to exit before this spawn.
           } else {
-          // A session that dies before its first event (the CLI or relay exits right after the seed)
-          // falls back to one-shot. Limits, cancellation and caller errors would only repeat.
-          if (authVisible || signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
-          telemetry("claude_session", { outcome: "fallback", missReason: "stream_failed", threadKey: run.threadKey });
+          // An accepted live request never silently changes to a full-history one-shot.
+          if (signal.aborted || !(error instanceof ProviderError) || error.code !== "cli_failed") throw error;
+          telemetry("claude_session", { outcome: "blocked", missReason: "stream_failed", threadKey: run.threadKey });
+          throw new CliContinuityUnavailable("Claude", "stream_failed");
           }
         }
       }
     }
     for (;;) {
       try {
-        for await (const event of this.oneShot(current, signal)) {
-          authVisible = true; if (event.type === "text") streamedText = true;
+        for await (const event of this.oneShot(run, signal)) {
+          authVisible = true;
           markCompleted(event); markRecoveryDone(event); yield event;
         }
         return;
@@ -182,19 +185,13 @@ export class ClaudeSubscription implements Provider {
           throw cancelled();
         }
         if (!authVisible && !recovery && await beginRecovery(error)) continue;
-        if (!streamedText && !forcedRetried && error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch" && typeof choice === "object") {
-          // One retry with only the forced tool: a single cache miss instead of a failed turn.
-          forcedRetried = true; current = { ...run, tools: tools.filter(tool => tool.function.name === choice.function.name), retry: true }; continue;
-        }
+        if (error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") throw new CliContinuityUnavailable("Claude", "forced_tool_mismatch");
         if (recovering && !recoveryReported) {
           recoveryReported = true;
           telemetry("claude_credential_recovery", { reason: recovery?.upstream?.reason, attempt: 2, outcome: "failed" });
           // A second native 401 is the same final authentication failure that started recovery.
           if (credentialRecovery(error)) throw recovery!;
         }
-        // Text, reasoning, tools and accounting are all visible events. An auth retry after one
-        // would duplicate state at the caller. Forced-tool recovery retains its historic text-only guard.
-        if (streamedText && error instanceof ProviderError && error.upstream?.code === "forced_tool_mismatch") throw new ProviderError("upstream_rejected", error.message, 502, error.upstream);
         throw error;
       }
     }

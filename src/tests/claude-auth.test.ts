@@ -141,26 +141,27 @@ test("cancelling during credential backoff starts no replacement", async () => {
   } finally { await fixture.restore(); }
 });
 
-test("forced-tool recovery shares the one authentication budget", async () => {
+test("a forced-tool mismatch stops before a second billed attempt or authentication recovery", async () => {
   const fixture = await installClaudeFixture({ replies: [
     { calls: [{ tool: "beta", input: {} }] }, { authenticationFailed: generic401 }, { calls: [{ tool: "alpha", input: {} }] },
   ] });
   const tools = ["alpha", "beta"].map(name => ({ type: "function" as const, name, parameters: { type: "object", properties: {} } }));
   try {
-    assert.equal((await infer(provider(), new AbortController().signal, { tools, tool_choice: { type: "function", name: "alpha" } })).at(-1)?.type, "done");
-    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 3);
+    await assert.rejects(infer(provider(), new AbortController().signal, { tools, tool_choice: { type: "function", name: "alpha" } }),
+      error => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 1);
   } finally { await fixture.restore(); }
 });
 
-test("a forced-tool retry after reasoning cannot reset the authentication visibility budget", async () => {
+test("a forced-tool mismatch after reasoning remains final without retry or authentication recovery", async () => {
   const fixture = await installClaudeFixture({ replies: [
     { thinking: "private planning", calls: [{ tool: "beta", input: {} }] }, { authenticationFailed: generic401 }, { text: "must not run" },
   ] });
   const tools = ["alpha", "beta"].map(name => ({ type: "function" as const, name, parameters: { type: "object", properties: {} } }));
   try {
     await assert.rejects(infer(provider(), new AbortController().signal, { tools, tool_choice: { type: "function", name: "alpha" } }),
-      error => error instanceof ProviderError && error.code === "authentication" && error.upstream?.reason === "upstream_rejected");
-    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 2);
+      error => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal((await fixture.capture()).filter(entry => entry.start === "oneshot").length, 1);
   } finally { await fixture.restore(); }
 });
 

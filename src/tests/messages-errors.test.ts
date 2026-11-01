@@ -34,6 +34,31 @@ async function gateway(t: TestContext, provider: Provider, providerType = "respo
 }
 const failing = (error: ProviderError): Provider => ({ async *infer() { throw error; } });
 
+test("deterministic tool failures stop Messages and Responses clients without losing original diagnostics or charged usage", async t => {
+  const provider: Provider = { async *infer() {
+    yield { type: "usage", usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101, input_tokens_details: { cached_tokens: 80 } } };
+    throw new ProviderError("invalid_tool_call", "Provider returned an unknown tool", 502, { code: "unknown_tool", event: "copilot.tool_use" });
+  } };
+  const g = await gateway(t, provider);
+  for (const protocol of ["messages", "responses"] as const) for (const stream of [false, true]) {
+    const response = await g.post("/v1/" + protocol, { ...(protocol === "messages" ? messagesBody : { model: "alias", input: "hello" }), stream });
+    if (stream) {
+      const frames = await events(response);
+      if (protocol === "messages") assert.ok(frames.some(frame => frame.type === "error" && (frame.error as { type?: string })?.type === "invalid_request_error"));
+      else assert.ok(frames.some(frame => frame.type === "response.failed" && (frame.response as { error?: { code?: string } })?.error?.code === "invalid_prompt"));
+    } else {
+      assert.equal(response.status, 400);
+      const result = await response.json() as { error: { code?: string; type?: string } };
+      if (protocol === "messages") assert.equal(result.error.type, "invalid_request_error");
+      else assert.equal(result.error.code, "invalid_tool_call");
+    }
+  }
+  assert.ok(g.failures.every(failure => failure.code === "invalid_tool_call" && failure.status === 502));
+  await flushUsageLedger();
+  const usage = await readUsageLedger(g.directory, 0);
+  assert.equal(usage.length, 4); assert.ok(usage.every(row => row.inputTokens === 100 && row.cachedTokens === 80));
+});
+
 test("a context overflow is a Claude Code prompt-too-long error, with the token gap when the provider reported it", () => {
   const known = anthropicError("context_length_exceeded", limit, 400, { used: 250000, maximum: 200000 });
   assert.deepEqual(known, { type: "error", error: { type: "invalid_request_error", message: "prompt is too long: 250000 tokens > 200000 maximum" } });

@@ -4,7 +4,7 @@ import { agentMessageInput, declaredResponsesTools, normalizeResponsesTools, sea
 import { BridgeCallError, bridgeToolSearch, bridgedSearchCall, missingTools } from "../protocol/tool-search-bridge.js";
 import { readEvents } from "../protocol/sse.js";
 import type { ResponsesInputItem, ResponsesNamespaceTool, ResponsesRequest, ResponsesTool, ResponsesToolSearchTool, InferenceEvent, ResponseToolIdentity, Usage } from "../protocol/types.js";
-import { ProviderError, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
+import { ProviderError, providerConversationId, type InferenceContext, type Provider, type ProviderStreamDiagnostic } from "./provider.js";
 import { observeResponsesStream, responsesEOFError, responsesHttpError, responsesStreamError } from "./responses-errors.js";
 import { publicServiceTier } from "../protocol/types.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -152,6 +152,10 @@ export class ResponsesAPI implements Provider {
     const hostedItem = (item: unknown) => item !== null && typeof item === "object" && !Array.isArray(item) && (item as { type?: unknown }).type === "web_search_call";
     let defaultNamespace = "";
     if (plan) {
+      // Native Messages clients supply a conversation ID but no Responses cache key.
+      // Preserve explicit keys; otherwise bind cache routing to this account/conversation.
+      const conversation = providerConversationId(context);
+      if (body.prompt_cache_key === undefined && conversation) body.prompt_cache_key = createHash("sha256").update(`${this.scope}\0${conversation}`).digest("hex");
       if (body.previous_response_id) throw new ProviderError("invalid_request", "ChatGPT plan requires replayed history rather than previous_response_id", 400);
       const unsupported = ["background", "conversation", "max_output_tokens", "max_tool_calls", "metadata", "moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier", "temperature", "top_logprobs", "top_p", "truncation", "user"];
       if (unsupported.some(key => body[key] !== undefined)) throw new ProviderError("invalid_request", "ChatGPT plan request contains unsupported options", 400);

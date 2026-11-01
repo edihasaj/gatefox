@@ -35,6 +35,9 @@ for (const protocol of ["responses", "messages"] as const) {
     const upstream = createServer(async (req, res) => {
       const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk);
       received = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>; requests++;
+      const catalog = received.tools as Array<{ function: { name: string; description?: string } }>;
+      const selected = catalog.find(tool => tool.function.description?.includes("Selected caller tool"))!.function.name;
+      const other = catalog.find(tool => tool.function.name !== selected)!.function.name;
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       const emit = (delta: unknown, finish_reason: string | null = null) => res.write(`data: ${JSON.stringify({
         model: "fixture", choices: [{ index: 0, delta, finish_reason }],
@@ -43,11 +46,11 @@ for (const protocol of ["responses", "messages"] as const) {
         const args = completion.arguments ?? JSON.stringify(input);
         const split = Math.floor(args.length / 2);
         emit({ tool_calls: [{ index: 0, id: completion.id ?? "call_selected", function: {
-          name: completion.name ?? "tool_0", arguments: args.slice(0, split),
+          name: completion.name === "__other__" ? other : completion.name ?? selected, arguments: args.slice(0, split),
         } }] });
         emit({ tool_calls: [{ index: 0, function: { arguments: args.slice(split) } }] });
         if (completion.duplicate) emit({ tool_calls: [{ index: 1, id: "call_selected", function: {
-          name: "tool_0", arguments: JSON.stringify(input),
+          name: selected, arguments: JSON.stringify(input),
         } }] });
       }
       if (completion.finish !== undefined) emit({}, completion.finish);
@@ -70,9 +73,9 @@ for (const protocol of ["responses", "messages"] as const) {
     });
     const send = async (choice: Choice = "named", custom = false) => {
       const tools = protocol === "responses" ? [
-        custom ? { type: "custom", name: "selected" } : { type: "function", name: "selected", parameters },
-        { type: "function", name: "other", parameters },
-      ] : [{ name: "selected", input_schema: parameters }, { name: "other", input_schema: parameters }];
+        custom ? { type: "custom", name: "selected", description: "Selected caller tool" } : { type: "function", name: "selected", description: "Selected caller tool", parameters },
+        { type: "function", name: "other", description: "Other caller tool", parameters },
+      ] : [{ name: "selected", description: "Selected caller tool", input_schema: parameters }, { name: "other", description: "Other caller tool", input_schema: parameters }];
       const tool_choice = protocol === "responses" ? choice === "named"
         ? { type: custom ? "custom" : "function", name: "selected" } : choice
         : choice === "named" ? { type: "tool", name: "selected" } : { type: choice === "required" ? "any" : choice };
@@ -87,7 +90,8 @@ for (const protocol of ["responses", "messages"] as const) {
         completion = { finish }; const before = requests;
         const response = await send(); const result = await response.json() as Result;
         assert.equal(response.status, 200); assert.equal(requests - before, 1, "exactly one upstream request");
-        assert.deepEqual(received.tool_choice, { type: "function", function: { name: "tool_0" } });
+        const native = (received.tools as Array<{ function: { name: string; description?: string } }>).find(tool => tool.function.description?.includes("Selected caller tool"))!.function.name;
+        assert.deepEqual(received.tool_choice, { type: "function", function: { name: native } });
         if (protocol === "responses") {
           assert.equal(result.status, "completed");
           assert.equal(result.output?.length, 1);
@@ -105,7 +109,7 @@ for (const protocol of ["responses", "messages"] as const) {
     const failures: Array<{ name: string; choice?: Choice; completion: Completion }> = [
       ...(["auto", "required", "none"] as const).map(choice => ({ name: `${choice} cannot return stop with a tool`, choice, completion: { finish: "stop" } })),
       { name: "none cannot return normal tool_calls", choice: "none", completion: { finish: "tool_calls" } },
-      { name: "the named tool must match", completion: { finish: "stop", name: "tool_1" } },
+      { name: "the named tool must match", completion: { finish: "stop", name: "__other__" } },
       { name: "an unknown tool is rejected", completion: { finish: "stop", name: "tool_9" } },
       { name: "malformed JSON is rejected", completion: { finish: "stop", arguments: '{"count":' } },
       { name: "array input is rejected", completion: { finish: "stop", arguments: "[]" } },
@@ -122,7 +126,9 @@ for (const protocol of ["responses", "messages"] as const) {
     for (const failure of failures) await t.test(failure.name, async () => {
       completion = failure.completion; const before = requests;
       const response = await send(failure.choice); const result = await response.json() as Result;
-      assert.equal(response.status, 502); assert.ok(result.error);
+      const incomplete = !failure.completion.missingCall && (failure.completion.finish === undefined || failure.completion.finish === "length" || failure.completion.finish === "unexpected" || failure.completion.done === false
+        || failure.choice !== undefined && failure.choice !== "named" && failure.completion.finish === "stop");
+      assert.equal(response.status, incomplete ? 502 : 400); assert.ok(result.error);
       assert.equal(result.output, undefined, "no tool result dispatched to a nonstreaming Responses caller");
       assert.equal(result.content, undefined, "no tool result dispatched to a nonstreaming Messages caller");
       assert.equal(requests - before, 1, "rejected output does not trigger a retry");
@@ -137,7 +143,7 @@ for (const protocol of ["responses", "messages"] as const) {
       await t.test("named custom input still requires a string", async () => {
         completion = { finish: "stop", arguments: '{"input":7}' };
         const response = await send("named", true); const result = await response.json() as Result;
-        assert.equal(response.status, 502); assert.ok(result.error); assert.equal(result.output, undefined);
+        assert.equal(response.status, 400); assert.ok(result.error); assert.equal(result.output, undefined);
       });
     }
   });

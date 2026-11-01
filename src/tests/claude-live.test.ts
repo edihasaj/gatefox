@@ -16,6 +16,7 @@ import { configureTelemetry, flushTelemetry, readTelemetry } from "../telemetry.
 import { installClaudeFixture, type ClaudeFixture, type FixtureScenario } from "./claude-cli-fixture.js";
 import type { InferenceEvent, ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
 import type { ClaudeLimit } from "../providers/claude-usage.js";
+import { streamFailureCode } from "../provider-failure.js";
 import { ClaudeSession, sessionLimits } from "../providers/claude-session.js";
 
 const tools = ["alpha", "beta"].map(name => ({ type: "function" as const, name, description: `Tool ${name}`, parameters: { type: "object", properties: { id: { type: "number" } } } }));
@@ -233,8 +234,8 @@ test("a CLI tool_use for a non-gateway tool fails the request and kills the sess
   } finally { await teardown(f); }
 });
 
-test("at capacity a cold session makes room, a generating one never does", { timeout: 30000 }, async () => {
-  const { f, sessions } = await setup({ replies: [{ text: "one" }, { slow: true }, { text: "fallback" }] });
+test("at capacity a cold session makes room, while a running session makes a newcomer refuse without replay", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "one" }, { slow: true }] });
   try {
     const provider = adapter({ max: 1 });
     await turn(provider, [user("first")]);
@@ -245,10 +246,11 @@ test("at capacity a cold session makes room, a generating one never does", { tim
     const slow = (async () => { for await (const event of provider.infer({ model: "fixture", input: [user("slow")], tools }, controller.signal, { threadId: "thread-2" })) events.push(event); })();
     while (!events.length) await sleep(10);
     assert.ok(await gone(first), "the cold session made room");
-    const third = await turn(provider, [user("third")], { context: { threadId: "thread-3" } });
-    assert.equal(third.text, "fallback");
+    await assert.rejects(turn(provider, [user("third")], { context: { threadId: "thread-3" } }),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal(events.length > 0, true, "the running request stayed alive");
+    assert.equal((await f.capture()).filter(entry => entry.start === "oneshot").length, 0, "the newcomer was not replayed");
     controller.abort(); await assert.rejects(slow, { code: "cancelled" });
-    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "live", "oneshot"], "the running turn kept its slot and the newcomer replayed");
     assert.ok((await sessions()).some(entry => entry.outcome === "evicted"));
   } finally { await teardown(f); }
 });
@@ -283,22 +285,46 @@ test("module copies share one registry; another interface version is not reused"
   } finally { await teardown(f); }
 });
 
-test("a CLI that exits at spawn falls back to one-shot with spawn_failed", { timeout: 30000 }, async () => {
-  const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], exitAtSpawn: true });
+test("a live request whose CLI exits at spawn refuses instead of replaying", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "unexpected" }], exitAtSpawn: true });
   try {
-    assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
-    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "oneshot"]);
-    assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
+    await assert.rejects(turn(adapter(), [user("hi")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live"], "no one-shot replay was started");
+    assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"], ["blocked", "spawn_failed"]]);
     assert.equal(existsSync(join(tmpdir(), "gateway-claude", sessionKey("thread-1").slice(0, 16))), false, "a failed start leaves no thread directory behind");
   } finally { await teardown(f); }
 });
 
-test("a live CLI that dies before its first event falls back to one-shot with stream_failed", { timeout: 30000 }, async () => {
-  const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], exitAtFirstUser: true });
+test("a live CLI that dies before its first event refuses instead of replaying", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "unexpected" }], exitAtFirstUser: true });
   try {
-    assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
-    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live", "oneshot"]);
-    assert.ok((await sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "stream_failed"));
+    await assert.rejects(turn(adapter(), [user("hi")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live"], "no one-shot replay was started");
+    assert.ok((await sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "stream_failed"));
+  } finally { await teardown(f); }
+});
+
+test("a live CLI killed after text was streamed ends the request as a final refusal: no replay, no new CLI, and the SDK is told not to retry", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ slow: true }, { text: "unexpected" }] });
+  try {
+    const provider = adapter(); const events: InferenceEvent[] = []; let failure: unknown; let victim: number | undefined;
+    const request = restoreReasoning({ model: "fixture", input: [user("stream then die")], tools } as ResponsesRequest, "scope", { preserveSummaries: true });
+    try {
+      for await (const event of provider.infer(request, new AbortController().signal, thread)) {
+        events.push(event);
+        // Only the fixture CLI this test started is killed, once the caller has already received text.
+        if (event.type === "text" && victim === undefined) { [victim] = await pids(f); process.kill(victim, "SIGKILL"); }
+      }
+    } catch (error) { failure = error; }
+    assert.ok(events.some(event => event.type === "text"), "the caller had already received text");
+    assert.ok(failure instanceof ProviderError && failure.status === 400 && failure.upstream?.code === "session_continuity_unavailable", String(failure));
+    assert.equal(streamFailureCode(failure as ProviderError), "invalid_prompt", "the client does not retry the full conversation");
+    assert.ok(victim !== undefined && await gone(victim));
+    assert.deepEqual((await f.capture()).filter(entry => entry.start).map(entry => entry.start), ["live"], "no one-shot replay or second live CLI started");
+    await eventually(async () => (await sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "stream_failed"));
+    assert.equal(claudeLive({ max: 6, parkMinutes: 60 }).sessions().filter(session => session.state !== "closed").length, 0, "nothing usable is left registered");
   } finally { await teardown(f); }
 });
 
@@ -311,15 +337,19 @@ test("compaction requests and requests without a thread run one-shot", { timeout
   } finally { await teardown(f); }
 });
 
-test("a request for a thread that is still generating falls back", { timeout: 30000 }, async () => {
-  const { f, sessions } = await setup({ replies: [{ slow: true }, { text: "parallel" }] });
+test("a request for a thread that is still generating refuses while the original session survives", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ slow: true }] });
   try {
     const provider = adapter(); const controller = new AbortController(); const events: InferenceEvent[] = [];
     const slow = (async () => { for await (const event of provider.infer({ model: "fixture", input: [user("slow")], tools }, controller.signal, thread)) events.push(event); })();
     while (!events.length) await sleep(10);
-    assert.equal((await turn(provider, [user("again")])).text, "parallel");
+    const [pid] = await pids(f);
+    await assert.rejects(turn(provider, [user("again")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
+    assert.equal(alive(pid), true, "the generating session survived the refused request");
+    assert.equal((await f.capture()).filter(entry => entry.start === "oneshot").length, 0, "the second request was not replayed");
     controller.abort(); await assert.rejects(slow, { code: "cancelled" });
-    assert.ok((await sessions()).some(entry => entry.outcome === "fallback" && entry.missReason === "concurrent"));
+    assert.ok((await sessions()).some(entry => entry.outcome === "blocked" && entry.missReason === "concurrent"));
   } finally { await teardown(f); }
 });
 
@@ -367,14 +397,16 @@ test("a follow-up sent the moment done arrives continues the session instead of 
   } finally { await teardown(f); }
 });
 
-test("a CLI whose MCP child never says hello falls back before any user message is sent", { timeout: 30000 }, async () => {
-  const { f, sessions } = await setup({ replies: [{ text: "one-shot" }], noMcp: true });
+test("a CLI whose MCP child never says hello refuses before any user message is sent", { timeout: 30000 }, async () => {
+  const { f, sessions } = await setup({ replies: [{ text: "unexpected" }], noMcp: true });
   const previous = sessionLimits.startMs; sessionLimits.startMs = 3000;
   try {
-    assert.equal((await turn(adapter(), [user("hi")])).text, "one-shot");
+    await assert.rejects(turn(adapter(), [user("hi")]),
+      (error: unknown) => error instanceof ProviderError && error.status === 400 && error.upstream?.code === "session_continuity_unavailable");
     const capture = await f.capture(); const [live] = await pids(f);
     assert.equal(capture.some(entry => entry.pid === live && entry.user !== undefined), false, "the live CLI never got the seed");
-    assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"]]);
+    assert.deepEqual((await sessions()).map(entry => [entry.outcome, entry.missReason]), [["fallback", "spawn_failed"], ["blocked", "spawn_failed"]]);
+    assert.equal(capture.filter(entry => entry.start === "oneshot").length, 0, "no one-shot replay was started");
     assert.ok(await gone(live));
   } finally { sessionLimits.startMs = previous; await teardown(f); }
 });
