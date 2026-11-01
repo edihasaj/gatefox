@@ -2,6 +2,10 @@
 
 ## 1.3.4 — 2026-11-01
 
+- Fix Claude live-session recovery when tool results arrive with new caller
+  messages. Apply a shared large-context cache safety stop across every provider,
+  including measured failures, cancellations and repeated missing cache metrics.
+
 - Routine worker policies can explicitly prefer paid DeepSeek V4 Flash after
   local models and before subscriptions, while preserving existing policies and
   worker pins. OpenRouter discovery retains published model names as labels.

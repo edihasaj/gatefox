@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decide, echoDigests, ledgerEntries, partialDigest } from "../providers/claude-ledger.js";
+import { decide, echoDigests, ledgerEntries, messagesAfterTools, partialDigest } from "../providers/claude-ledger.js";
 import { normalizeResponsesTools, responsesToChatRequest } from "../protocol/request.js";
 import { restoreReasoning } from "../protocol/reasoning-state.js";
 import type { OpenAIToolCall, ResponsesInputItem, ResponsesRequest } from "../protocol/types.js";
@@ -15,6 +15,16 @@ const entries = (input: ResponsesInputItem[], instructions?: string) => ledgerEn
 const call = (id: string, name: string, args: string, responseTool?: OpenAIToolCall["responseTool"]): OpenAIToolCall => ({ type: "function", id, function: { name, arguments: args }, ...(responseTool ? { responseTool } : {}) });
 const user = (text: string): ResponsesInputItem => ({ type: "message", role: "user", content: [{ type: "input_text", text }] });
 const assistant = (text: string): ResponsesInputItem => ({ type: "message", role: "assistant", content: [{ type: "output_text", text }] });
+
+test("steering recovery requires every pending output exactly once before only caller messages", () => {
+  const output = (id: string): ResponsesInputItem => ({ type: "function_call_output", call_id: id, output: "result" });
+  const developer: ResponsesInputItem = { type: "message", role: "developer", content: "New instruction" };
+  const classify = (input: ResponsesInputItem[]) => messagesAfterTools(entries(input).entries, 0, ["c1", "c2"]);
+  assert.equal(classify([output("c2"), output("c1"), user("Update"), developer]), true);
+  for (const tail of [[output("c1"), user("Missing")], [output("c1"), output("c1"), user("Duplicate")],
+    [output("c1"), output("c2"), assistant("Foreign answer")], [output("c1"), user("Interleaved"), output("c2")],
+    [output("c1"), output("c2")]]) assert.equal(classify(tail), false);
+});
 
 test("canonical entries ignore transport fields and match what Codex replays for each emitted item", () => {
   const replayed: ResponsesInputItem[] = [

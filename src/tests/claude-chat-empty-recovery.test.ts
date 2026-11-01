@@ -48,8 +48,9 @@ async function fixture(frames: (attempt: number) => Frame[], policy: ChatComplet
 const request: ResponsesRequest = { model: "qwen-flash", input: "reply", stream: false };
 const terminal = (delta: Record<string, unknown>, finish_reason: string | null = null): Frame =>
   ({ model: "qwen-flash", choices: [{ index: 0, delta, finish_reason }] });
-const usage = (input: number, output: number): Frame => ({ choices: [], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output } });
-const empty = (reasoning = "private"): Frame[] => [terminal({ reasoning_content: reasoning }), terminal({}, "stop"), usage(193_000, 1), "[DONE]"];
+const usage = (input: number, output: number, cached?: number): Frame => ({ choices: [], usage: { prompt_tokens: input, completion_tokens: output, total_tokens: input + output,
+  ...(cached === undefined ? {} : { prompt_tokens_details: { cached_tokens: cached } }) } });
+const empty = (reasoning = "private"): Frame[] => [terminal({ reasoning_content: reasoning }), terminal({}, "stop"), usage(193_000, 1, 192_000), "[DONE]"];
 const text = (value: string): Frame[] => [terminal({ content: value }), terminal({}, "stop"), usage(193_000, 2), "[DONE]"];
 
 async function collect(provider: ChatCompletionsAPI, context: InferenceContext = { clientProtocol: "messages" }, overrides: Partial<ResponsesRequest> = {}): Promise<{ events: InferenceEvent[]; error?: unknown }> {
@@ -80,6 +81,15 @@ test("retries a clean reasoning-only empty Messages completion once with exact r
     const result = await collect(legacyReasoning.provider, undefined, { reasoning: { summary: "none" } });
     assert.equal(result.error, undefined); assert.equal(legacyReasoning.attempts(), 2);
   } finally { await legacyReasoning.close(); }
+});
+
+test("large uncached or unverified empty completions never trigger a hidden recovery request", async () => {
+  const f = await fixture(() => [terminal({ reasoning_content: "private" }), terminal({}, "stop"), usage(193000, 1), "[DONE]"]);
+  try {
+    const result = await collect(f.provider);
+    assert.equal((result.error as { code?: string })?.code, "incomplete");
+    assert.equal(f.attempts(), 1);
+  } finally { await f.close(); }
 });
 
 test("null usage chunks are ignored until a numeric usage snapshot arrives", async () => {

@@ -87,6 +87,7 @@ export class ClaudeMessageStream {
   private readonly tools: OpenAITool[]; private readonly summaryVisible: boolean; private readonly endTurn: boolean;
   private readonly bindings: Map<string, OpenAITool | undefined>;
   private message?: Message; private last?: ClaudeTokens; private limit?: ClaudeLimit; private raw = "";
+  private measured?: Partial<ClaudeTokens>;
   /** A non-text block started after text was streamed, so the next text begins a new paragraph. */
   private split = false;
   constructor({ tools, summaryVisible, endTurn = false }: { tools: OpenAITool[]; summaryVisible: boolean; endTurn?: boolean }) {
@@ -95,7 +96,24 @@ export class ClaudeMessageStream {
   /** Text streamed so far, for the final result's consistency check. */
   get text(): string { return this.raw; }
 
+  /** Measured input counts remain usable for safety checks even when parsing later fails. */
+  get observedTokens(): Partial<ClaudeTokens> | undefined { return this.measured ? { ...this.measured } : undefined; }
+
+  /** Idempotent, content-free observation before a live transport rejects a foreign tool. */
+  observeUsage(message: Record<string, unknown>): void {
+    const event = message.type === "stream_event" ? message.event as Record<string, unknown> | undefined : undefined;
+    const native = event?.type === "message_start" ? event.message as Record<string, unknown> | undefined
+      : message.type === "assistant" ? message.message as Record<string, unknown> | undefined : undefined;
+    const usage = native?.usage ?? (event?.type === "message_delta" ? event.usage : message.type === "result" && !this.measured ? message.usage : undefined);
+    if (!usage || typeof usage !== "object") return;
+    const base = event?.type === "message_start" ? undefined : this.measured;
+    const next = tokensOf(usage, { ...base, output: base?.output ?? 0 });
+    const output = count((usage as NativeUsage).output_tokens) ?? base?.output;
+    this.measured = { input: next.input, cacheRead: next.cacheRead, cacheWrite: next.cacheWrite, ...(output === undefined ? {} : { output }) };
+  }
+
   accept(message: Record<string, unknown>): ClaudeStreamStep {
+    this.observeUsage(message);
     const step: ClaudeStreamStep = { events: [] };
     // The CLI falls back to standard speed (cooldown) when fast mode credits are refused.
     if (typeof message.fast_mode_state === "string" && fastStates.has(message.fast_mode_state)) step.fastState = message.fast_mode_state;

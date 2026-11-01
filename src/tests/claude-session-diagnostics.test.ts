@@ -32,3 +32,11 @@ test("diagnostics summarize live Claude sessions by outcome and miss reason, wit
   assert.deepEqual(summary.accountEngines, { "account_route_fallback:not_logged_in": 2, account_engine_started: 1 });
   assert.deepEqual(summary.claudeCli, { interrupted: 1 });
 });
+
+test("a stopped cache rewrite is visible among recent diagnostic problems", () => {
+  const summary = summarizeTelemetry([event("claude_cache_guard", { outcome: "blocked", mode: "oneshot", threadKey: "abc12345", rewrites: 2 })], new Date(0));
+  const problems = summary.recentProblems as Array<Record<string, unknown>>;
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].event, "claude_cache_guard");
+  assert.equal(problems[0].rewrites, 2);
+});

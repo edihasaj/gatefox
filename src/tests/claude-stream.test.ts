@@ -5,6 +5,17 @@ import { existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { ClaudeMessageStream } from "../providers/claude-stream.js";
+
+test("measured input cache counts survive a rejected stream without inventing missing output usage", () => {
+  const stream = new ClaudeMessageStream({ tools: [], summaryVisible: false });
+  stream.accept({ type: "stream_event", event: { type: "message_start", message: { id: "usage", usage: { input_tokens: 2, cache_read_input_tokens: 40000, cache_creation_input_tokens: 700000 } } } });
+  assert.throws(() => stream.accept({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "bad", name: "Bash" } } }));
+  assert.deepEqual(stream.observedTokens, { input: 2, cacheRead: 40000, cacheWrite: 700000 });
+  const unknown = new ClaudeMessageStream({ tools: [], summaryVisible: false });
+  assert.equal(unknown.observedTokens, undefined);
+  assert.throws(() => unknown.accept({ type: "result", is_error: true, subtype: "error", error_code: "server_error", usage: { cache_read_input_tokens: 5, cache_creation_input_tokens: 100000 } }));
+  assert.deepEqual(unknown.observedTokens, { input: undefined, cacheRead: 5, cacheWrite: 100000 });
+});
 import { ClaudeSubscription } from "../providers/claude.js";
 import { claudeNativeToolName } from "../providers/claude-tool-names.js";
 import { ProviderError } from "../providers/provider.js";

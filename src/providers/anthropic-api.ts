@@ -130,6 +130,9 @@ export class AnthropicAPI implements Provider {
           cached_tokens: cacheRead,
           ...(writesReported ? { cache_creation_tokens: cacheCreation } : {}),
         };
+        context.observeCacheUsage?.({ ...(inputReported && cacheReported && writesReported ? { inputTokens: usage.input_tokens }
+          : inputReported || cacheReported || writesReported ? { inputTokensLowerBound: usage.input_tokens } : {}),
+          ...(cacheReported ? { cachedTokens: cacheRead } : {}), ...(writesReported ? { cacheWriteTokens: cacheCreation } : {}) });
       } else if (event.type === "content_block_start") {
         const block = event.content_block as { type: string; id: string; name: string; input: unknown };
         if (!["text", "thinking", "redacted_thinking", "tool_use"].includes(block.type)) throw new ProviderError("unsupported_output", "Anthropic returned an unsupported content block");

@@ -54,7 +54,9 @@ test("Messages retains routing context and upstream transport headers without le
     const events = await collect(response);
     assert.equal(events[0].type, "message_start"); assert.equal(events.at(-1)!.type, "message_stop");
     assert.equal(events.some(event => event.type === "transport" || event.type.startsWith("response.")), false);
-    assert.deepEqual(context, { sessionId: "fixture-session", threadId: "fixture-thread", turnState: "gts1:caller-route", clientProtocol: "messages", adaptiveThinking: true });
+    const { observeCacheUsage, ...routing } = context!;
+    assert.equal(typeof observeCacheUsage, "function", "internal count-only observer stays separate from routing metadata");
+    assert.deepEqual(routing, { sessionId: "fixture-session", threadId: "fixture-thread", turnState: "gts1:caller-route", clientProtocol: "messages", adaptiveThinking: true });
   } finally { await gateway.close(); }
 });
 

@@ -11,6 +11,7 @@ import { sweepCopilotDirectories } from "./providers/copilot-directories.js";
 import { ResponsesAPI } from "./providers/responses-api.js";
 import { AnthropicAPI } from "./providers/anthropic-api.js";
 import { ChatCompletionsAPI } from "./providers/chat-completions-api.js";
+import { cacheGuardedInference } from "./cache-guarded-inference.js";
 import { ProviderError, inferenceContext, maxTurnStateLength, type InferenceContext, type Provider } from "./providers/provider.js";
 import { ResponsesWriter } from "./protocol/responses.js";
 import { MessagesWriter, anthropicError } from "./protocol/messages.js";
@@ -471,8 +472,9 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
       if (!opened) headWait = setTimeout(() => open?.(), heartbeatMs);
       // Spend a provider already reported is recorded even when the caller has gone: the ledger and telemetry never lose it.
       const take = (event: InferenceEvent) => { if (event.type === "usage" || event.type === "done") { usage = event.usage; accounting = event.accounting ?? accounting; } };
-      const source = route.adapter.infer({ ...restoreReasoning(providerRequest, route.reasoningScope,
-        route.type === "claude-subscription" ? { preserveSummaries: true } : undefined), model: route.model }, controller.signal, context)[Symbol.asyncIterator]();
+      const source = cacheGuardedInference(route.adapter, { ...restoreReasoning(providerRequest, route.reasoningScope,
+        route.type === "claude-subscription" ? { preserveSummaries: true } : undefined), model: route.model }, controller.signal, context,
+        config.stateDirectory + "\0" + route.reasoningScope)[Symbol.asyncIterator]();
       // This view has no `return`, so leaving the loop early keeps the provider open for the usage drain below.
       const kept = { [Symbol.asyncIterator]: () => ({ next: () => source.next() }) };
       let stopped = false;
@@ -495,7 +497,7 @@ export async function createGatewayHandler(config: GatewayConfig, factory = crea
           if (streaming && res.writableNeedDrain) await waitForDrain(res, controller.signal);
           if (controller.signal.aborted || res.destroyed) { stopped = true; break; }
         }
-      } catch (error) { await Promise.resolve(source.return?.()).catch(() => undefined); throw error; }
+      } catch (error) { await Promise.resolve(source.return?.(undefined)).catch(() => undefined); throw error; }
       if (stopped) {
         // The caller has gone or the request was aborted: stop the provider, then read it on for usage only.
         if (!controller.signal.aborted) { abortCause ||= "cancelled"; clearInterval(heartbeat); controller.abort(); }

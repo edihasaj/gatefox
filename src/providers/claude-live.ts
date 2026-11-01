@@ -3,7 +3,7 @@ import type { ChatToolSelection } from "../protocol/types.js";
 import { telemetry } from "../telemetry.js";
 import { ProviderError } from "./provider.js";
 import { choiceBlock } from "./claude-render.js";
-import { decide, ledgerEntries, type LedgerDecision, type LedgerPhase } from "./claude-ledger.js";
+import { decide, ledgerEntries, messagesAfterTools, type LedgerDecision, type LedgerPhase } from "./claude-ledger.js";
 import { relayContent, type RelayContent } from "./claude-relay.js";
 import { ClaudeSession, SessionStartFailure, sweepSessionDirectories, type SessionEnd } from "./claude-session.js";
 import { closeSessions, evictable, idleMs, pinReplay, recordWarmupCompletion, rememberEnd, replayPinned, sessionRegistry, slotsTaken, warmupCompletions, type SessionRegistry } from "./claude-session-registry.js";
@@ -103,7 +103,11 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
     if (session.fingerprint !== fingerprint) reason = "fingerprint_changed";
     else if (session.window !== window) reason = "window_changed";
     else if (parkedMs >= idleMs) reason = "idle_expired";
-    else if (decision.kind === "reseed") { reason = decision.reason; divergedAt = decision.divergedAt; }
+    else if (decision.kind === "reseed") {
+      reason = decision.reason === "unexpected_tail" && session.state === "awaiting_outputs" && messagesAfterTools(entries, decision.divergedAt, session.pending)
+        ? "messages_after_tools" : decision.reason;
+      divergedAt = decision.divergedAt;
+    }
     // The tail renders from the conversation; a count that does not match the translation is not trusted.
     else if (decision.kind === "continue_user" && messages !== input.conversation.length) reason = "unexpected_tail";
     // Tool outputs go through the relay, so there is no user message to state a forced choice in.
@@ -131,6 +135,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   }
   if (signal.aborted) throw cancelled();
   if (!session || !plan) {
+    input.replayBudget?.beforeRequest("seed");
     // A session and an earlier attach that is still starting both hold a slot, so concurrent starts can never pass the cap.
     while (slotsTaken(registry, key) >= settings.max) {
       const victim = evictable(registry);
@@ -157,6 +162,7 @@ async function place(registry: SessionRegistry, settings: Settings, key: string,
   // A continued session records its scope too: a registry adopted from an earlier release had none,
   // and switching the provider to replay must retire that session along with the ones it started.
   registry.scopes.set(key, input.scope);
+  if (plan.kind !== "seed") input.replayBudget?.beforeRequest("continued");
   return { kind: "stream", events: start(registry, settings, session, input, entries.map(entry => entry.digest), plan, signal, {
     outcome: plan.kind === "seed" ? reason ? "reseeded" : "spawned" : "continued", missReason: reason, divergedAt, parkedMs, threadKey: key.slice(0, 8),
     afterWarmup: plan.kind === "seed" && !reason && admission.afterWarmup || undefined,
@@ -172,12 +178,15 @@ function start(registry: SessionRegistry, settings: Settings, session: ClaudeSes
   return session.run({
     begin, prefix, stream: input.newStream(), tools: input.tools, choice: input.choice, fast: input.fast, signal,
     onUsage: input.onUsage, onContextWindow: input.onContextWindow,
-    onEnd: (end, tokens) => telemetry("claude_session", {
-      ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined,
-      systemPrefixOnly: decision.outcome === "spawned" || decision.outcome === "reseeded" ? systemPrefixOnly(tokens?.cacheRead, tokens?.cacheWrite) : undefined,
-      liveSessions: registry.sessions.size, perTurnEffort: session.perTurnEffort,
-      inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output,
-    }),
+    onEnd: (end, tokens) => {
+      input.replayBudget?.record(tokens);
+      telemetry("claude_session", {
+        ...decision, ...(end === "interrupted" ? { outcome: "interrupted" } : {}), failed: end === "failed" || undefined,
+        systemPrefixOnly: decision.outcome === "spawned" || decision.outcome === "reseeded" ? systemPrefixOnly(tokens?.cacheRead, tokens?.cacheWrite) : undefined,
+        liveSessions: registry.sessions.size, perTurnEffort: session.perTurnEffort,
+        inputTokens: tokens?.input, cacheReadTokens: tokens?.cacheRead, cacheWriteTokens: tokens?.cacheWrite, outputTokens: tokens?.output,
+      });
+    },
   });
 }
 

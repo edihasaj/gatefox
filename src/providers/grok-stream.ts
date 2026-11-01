@@ -39,6 +39,8 @@ export function grokFailure(message: Record<string, unknown>, event: "grok.assis
  */
 export class GrokMessageStream {
   readonly tokens: GrokTokens = { input: 0, output: 0 };
+  private measured?: Partial<GrokTokens>;
+  get observedTokens(): Partial<GrokTokens> | undefined { return this.measured ? { ...this.measured } : undefined; }
   costUsd?: number;
   readonly contextWindows: Array<{ model: string; contextWindow: number }> = [];
   private readonly blocks = new Map<number, { id: string; name: string; json: string }>();
@@ -71,6 +73,7 @@ export class GrokMessageStream {
   }
 
   private assistant(message: Record<string, unknown>): void {
+    this.usage(object(message.message).usage);
     if (typeof message.error === "string") throw grokFailure(message, "grok.assistant");
     const content = object(message.message).content;
     for (const value of Array.isArray(content) ? content : []) {
@@ -94,6 +97,9 @@ export class GrokMessageStream {
 
   private usage(value: unknown): void {
     const usage = object(value);
+    const input = count(usage.input_tokens), cacheRead = count(usage.cache_read_input_tokens), output = count(usage.output_tokens);
+    if (input !== undefined || cacheRead !== undefined || output !== undefined) this.measured = { ...this.measured,
+      ...(input === undefined ? {} : { input }), ...(cacheRead === undefined ? {} : { cacheRead }), ...(output === undefined ? {} : { output }) };
     this.tokens.input = count(usage.input_tokens) ?? this.tokens.input;
     this.tokens.cacheRead = count(usage.cache_read_input_tokens) ?? this.tokens.cacheRead;
     this.tokens.output = count(usage.output_tokens) ?? this.tokens.output;
@@ -138,8 +144,8 @@ export class GrokMessageStream {
   }
 
   private result(result: Record<string, unknown>, step: GrokStep): void {
-    if (result.is_error === true || result.subtype !== "success") throw grokFailure(result, "grok.result");
     this.usage(result.usage);
+    if (result.is_error === true || result.subtype !== "success") throw grokFailure(result, "grok.result");
     this.costUsd = count(result.total_cost_usd);
     for (const [model, value] of Object.entries(object(result.modelUsage))) {
       const window = object(value).contextWindow;

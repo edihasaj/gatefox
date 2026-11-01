@@ -4,7 +4,7 @@ import { diagnosticDetails } from "./diagnostics-details.js";
 // The service's own self-heal reports count too: a child that keeps exiting at once, a running host that failed two probes,
 // a status file that could not be written, and a change to gateway.json the server refused to apply.
 const problems = new Set(["turn_error", "turn_empty_completion", "turn_quiet", "request_failed", "request_empty", "rpc_error", "component_exit",
-  "execution_host_failed", "adapter_start_failed", "claude_cli_failed", "component_failing", "execution_host_unhealthy", "status_write_failed", "config_rejected"]);
+  "execution_host_failed", "adapter_start_failed", "claude_cli_failed", "claude_cache_guard", "context_cache_guard", "component_failing", "execution_host_unhealthy", "status_write_failed", "config_rejected"]);
 type Counts = Record<string, number>;
 const bump = (counts: Counts, key: unknown) => { const name = String(key ?? "unknown"); counts[name] = (counts[name] || 0) + 1; };
 const accountEvents = new Set(["account_engine_started", "account_engine_failed", "account_route_refused", "account_route_fallback", "account_usage_merged"]);
